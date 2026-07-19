@@ -11,3 +11,10 @@ dist/
 build/
 .coverage
 htmlcov/
+
+# oh-my-grok
+.omg/state/
+.omg/artifacts/
+.omg/handoffs/
+.omg/ultragoal/
+*.pid
