@@ -2,14 +2,14 @@
 
 OMC-style multi-agent orchestration for **Grok Build**.
 
-**Option B architecture:** a Grok plugin (skills, agents, hooks) paired with the **`omg` CLI**. Workers fan out only via Grok-native **`spawn_subagent`**. No Rust fork of grok-build. **No tmux in v1.**
+**Option B architecture:** a Grok plugin (skills, agents, hooks) paired with the **`omg` CLI**. Workers fan out only via Grok-native **`spawn_subagent`**. No Rust fork of grok-build. **No tmux in v1/v0.2.**
 
 | Component | Role |
 |-----------|------|
 | **Grok plugin** (`plugin.json`, `skills/`, `agents/`, `hooks/`) | In-session playbooks, custom agents, event spool + PreToolUse soft-guard |
-| **`omg` CLI** (`bin/omg`, `omg_cli/`) | Hard keywords (`ulw` / `ralph` / `ralplan`), project setup, state single-writer, outer loops |
+| **`omg` CLI** (`bin/omg`, `omg_cli/`) | Hard keywords (`ulw` / `ralph` / `ralplan`), project setup, state single-writer, outer loops, acceptance, integrate, ralplan FSM |
 
-Version: **0.1.0** · License: MIT
+Version: **0.2.0** · License: MIT
 
 ---
 
@@ -19,7 +19,7 @@ Grok Build already ships subagents, worktrees, plugins, and hooks. oh-my-grok ad
 
 - **ulw (ultrawork)** — parallel decompose → `spawn_subagent` → integrate → verify
 - **ralph** — persistence loop (one story per iteration; outer CLI owns the loop)
-- **ralplan** — plan consensus (plan → critic → revise; **no implementation**)
+- **ralplan** — plan consensus FSM (draft → critic → revise → verifier; **no implementation**)
 
 Agents may write proposals under `.omg/artifacts/`. Only the **`omg` CLI** is authoritative for `passes` / `verified` under `.omg/state/`.
 
@@ -34,7 +34,7 @@ Agents may write proposals under `.omg/artifacts/`. Only the **`omg` CLI** is au
 
 ### 1. Install the plugin
 
-From a clone of this repo:
+From a clone of this repo (private install is fine):
 
 ```bash
 cd /path/to/oh-my-grok
@@ -83,14 +83,12 @@ Inside the project you want to orchestrate:
 ```bash
 omg setup
 omg doctor
+omg doctor --strict   # treat compat / inspect gaps as FAIL
 ```
 
-`setup` creates `.omg/` directories and merges:
+`setup` creates `.omg/` directories, merges AGENTS + `.gitignore` fragments, and prints a **compat.claude isolation** banner.
 
-- `AGENTS.md` fragment (`<!-- OMG:START -->` … `<!-- OMG:END -->`)
-- `.gitignore` fragment for runtime state / artifacts
-
-`doctor` checks plugin layout, hooks, skills (`omg-*`), agents, and that `grok` is on `PATH`.
+`doctor` checks plugin layout, hooks, skills (`omg-*`), agents, `grok` on `PATH`, plugin trust/inventory (best-effort), and Claude/OMC keyword leakage under `~/.claude` (warn by default; `--strict` fails).
 
 ---
 
@@ -105,11 +103,16 @@ These are non-negotiable in skills, agent prompts, and CLI-injected reminders:
 3. **Use Grok tool names:** `read_file`, `search_replace`, `run_terminal_command`, `spawn_subagent`, `grep`, `list_dir`, …
 4. **State ownership:** only the **`omg` CLI** mutates `passes` / `verified` under `.omg/state/runs/<run-id>/`.
    - Agents/hooks write proposals under `.omg/artifacts/` and event spools — never mark verified themselves.
-5. **Cancel** with `omg cancel` (PID files). **Never** self-matching `pkill -f`.
+5. **Cancel** with `omg cancel` (PID / process-group). **Never** self-matching `pkill -f`.
 
-### Soft-guard (defense-in-depth, not a hard guarantee)
+### Soft-guard limits (defense-in-depth, not a hard guarantee)
 
-`PreToolUse` denies external agent CLIs in command position. Grok hooks can **fail-open** (timeout / crash / malformed → tool may still run), so skills + CLI HARD RULES remain the primary contract.
+`PreToolUse` denies external agent CLIs in **command position** on matching tools. Grok hooks can **fail-open** (timeout / crash / malformed → tool may still run), so skills + CLI HARD RULES remain the primary contract.
+
+**Known limits:**
+
+- Soft-gate is **not** a sandbox. Interpreter escapes (`python3 -c …`, `node -e`, `npx …`) and some shell constructs may still slip through.
+- **Subagent PreToolUse coverage is not verified as a hard guarantee** in all host versions — treat leader-hook deny as defense-in-depth. Compensation: prefer `capability_mode: read-write` (no shell) for implementers and `read-only` for critic/verifier; run acceptance shell **only** via `omg accept`. See [`docs/research/subagent-pretooluse-spike.md`](docs/research/subagent-pretooluse-spike.md).
 
 Bypass is **process-env only**:
 
@@ -122,6 +125,34 @@ export OMG_ALLOW_EXTERNAL_CLI=1   # only in a controlled parent process
 
 ---
 
+## v0.2 dual-review completion (C1–C9)
+
+Ship bar from dual-review Criticals. Status:
+
+| ID | Contract | Status | Where |
+|----|----------|--------|--------|
+| **C1** | compat.claude doctor/setup isolation | **Done** | `omg_cli/compat.py`, `omg doctor`, `omg setup` banner |
+| **C2** | trusted/active hook inventory | **Done** | `omg doctor` best-effort `grok` inspect; WARN if unavailable; footer soft-gate honesty |
+| **C3** | deny residuals documented | **Done** | README soft-guard limits; tests keep deny paths; residual `python -c` / `npx` noted |
+| **C4** | frozen acceptance runner (writer stamp) | **Done** | `omg_cli/acceptance.py`, `omg accept`; forged `{passed:true}` cannot `set_verified` |
+| **C5** | active-run mutex | **Done** | `create_run` blocks concurrent non-terminal runs; process-group cancel |
+| **C6** | ULW integrator | **Done** | `omg_cli/integrate.py`, `omg integrate`; clean-tree preflight + envelope cherry-pick |
+| **C7** | ralplan CLI FSM | **Done** | `omg_cli/ralplan.py` draft→critic→revise→verifier; max_rounds; APPROVE gate |
+| **C8** | omg-* agents | **Done** | `agents/omg-{orchestrator,executor,critic,verifier}.md` |
+| **C9** | scaffold / project setup | **Done** | `omg setup`, templates, skills |
+
+Additional v0.2 items:
+
+| Item | Status | Where |
+|------|--------|--------|
+| Subagent PreToolUse spike + capability defaults | **Done** (ASSUMPTION if not live-verified) | `docs/research/subagent-pretooluse-spike.md`, skills |
+| Headless argv + ralph context pack | **Done** | `build_grok_argv` / `build_prompt`: `--cwd`, `--output-format plain`, timeout default **3600s**, ralph pack |
+| `doctor --strict` | **Done** | compat risks → FAIL |
+
+Plan: [`docs/superpowers/plans/2026-07-19-oh-my-grok-v0.2-dual-review-complete.md`](docs/superpowers/plans/2026-07-19-oh-my-grok-v0.2-dual-review-complete.md)
+
+---
+
 ## Commands
 
 ```text
@@ -130,15 +161,15 @@ omg [-h] [--safe] [--yolo] {setup,doctor,state,cancel,accept,integrate,ulw,ralph
 
 | Command | Purpose |
 |---------|---------|
-| `omg setup` | Ensure `.omg/` dirs; merge AGENTS + gitignore fragments |
-| `omg doctor` | Health checks (plugin, hooks, skills, agents, `grok` on PATH) |
+| `omg setup` | Ensure `.omg/` dirs; merge AGENTS + gitignore; print compat isolation banner |
+| `omg doctor` | Health checks (+ compat scan). `--strict` → FAIL on compat/inspect gaps |
 | `omg state` | Print active run JSON (`--run <id>` for a specific run) |
-| `omg cancel` | Cancel active run (`--run <id>` optional); uses PID files |
+| `omg cancel` | Cancel active run; SIGTERM process group then optional SIGKILL |
 | `omg accept` | Freeze PRD commands + run acceptance; set `verified` only with CLI stamp |
 | `omg integrate` | ULW: clean-tree preflight + cherry-pick result envelopes (`--run`, `--dry-run`) |
 | `omg ulw "goal"` | Ultrawork — parallel `spawn_subagent` fan-out (records `base_sha` when git available) |
-| `omg ralph "goal"` | Ralph — persistence loop (one story per iteration) |
-| `omg ralplan "goal"` | Ralplan — plan consensus only (no implementation) |
+| `omg ralph "goal"` | Ralph — persistence loop (one story per iteration; context pack each iter) |
+| `omg ralplan "goal"` | Ralplan — CLI-owned plan consensus FSM only (no implementation) |
 
 ### Shared flags
 
@@ -147,30 +178,79 @@ omg [-h] [--safe] [--yolo] {setup,doctor,state,cancel,accept,integrate,ulw,ralph
 | `--dry-run` | Create run state + write `last_argv.json` / prompt; **do not** exec `grok` (mode subcommands) |
 | `--yolo` | Elevated permissions for mode launchers (maps to Grok `--permission-mode bypassPermissions` + `--always-approve`; off by default) |
 | `--safe` | Prefer non-elevated defaults (`--permission-mode default`); if both `--yolo` and `--safe`, **safe wins** (no elevation) |
-| `--max-iter N` | Max iterations (`ralph` default **3**; `ulw` / `ralplan` default **1**) |
+| `--max-iter N` | Max iterations (`ralph` default **3**; `ulw` default **1**; `ralplan` = max_rounds default **3**) |
+| `--timeout SEC` | Per-launch grok timeout (default **3600**); `0` = unlimited |
 
 ### Examples
 
 ```bash
 omg doctor
+omg doctor --strict
 omg setup
 
 omg ulw "parallelize the flaky test fix" --dry-run
-omg ralph "ship the auth migration" --max-iter 5
+omg ralph "ship the auth migration" --max-iter 5 --timeout 7200
 omg ralplan "consensus plan for Option B state layout" --safe
 
 omg state
 omg state --run 20260719T094708Z-7048b749
 omg cancel
 
+# Acceptance (writer stamp required for verified)
+omg accept
+omg accept --run <id> --dry-run
+
 # ULW convergence: workers write .omg/artifacts/ulw-results/<task_id>.json
 omg integrate --dry-run
 omg integrate --run <run-id>
 ```
 
-**ULW envelopes** (under `.omg/artifacts/ulw-results/`): `task_id`, `base_sha`, `head_sha`, `worktree_path`, `changed_files`, `status` (`ok`|`failed`). `omg integrate` sorts by `task_id`, requires clean git tree (no auto-stash), matches run `base_sha`, cherry-picks each `head_sha`, stops on conflict, writes `integrate.result.json`.
+### Acceptance runner (writer stamp)
 
-Modes load the matching skill body (`skills/omg-ultrawork`, `skills/omg-ralph`, `skills/omg-ralplan`), inject HARD RULES, create a run under `.omg/state/runs/`, and launch `grok -p …` (unless `--dry-run`).
+PRD / acceptance manifest schema (argv arrays only — no bare shell strings by default):
+
+```json
+{
+  "version": 1,
+  "goal": "...",
+  "stories": [
+    {"id": "s1", "title": "...", "commands": [["pytest", "tests/test_foo.py", "-q"]]}
+  ],
+  "global_commands": [["pytest", "tests/", "-q"]]
+}
+```
+
+Flow:
+
+1. `freeze_acceptance` → `acceptance.manifest.json` + `acceptance.sha256`
+2. `run_acceptance` → `acceptance.result.json` with `"writer": "omg-cli"` and per-command exit codes
+3. `set_verified` requires CLI stamp + matching manifest sha — **agent-forged `{passed: true}` is rejected**
+
+Ralph after each iteration: if PRD has valid commands → freeze → run → maybe verify. Without acceptance commands → never verified; ralph defaults to non-zero exit (`require_acceptance`).
+
+### ULW integrate
+
+**ULW envelopes** (under `.omg/artifacts/ulw-results/`): `task_id`, `base_sha`, `head_sha`, `worktree_path`, `changed_files`, `status` (`ok`|`failed`).
+
+`omg integrate` sorts by `task_id`, requires clean git tree (no auto-stash), matches run `base_sha`, cherry-picks each `head_sha`, stops on conflict, writes `integrate.result.json`. Does **not** set `verified` alone.
+
+### Ralplan FSM (CLI-owned)
+
+```text
+draft → critic → revise → verifier → (accept | revise)* → accepted | failed
+max_rounds default 3
+```
+
+State: `.omg/state/runs/<id>/ralplan.json` + `stages/`. Terminal **accepted** only if verifier artifact contains whole-word **APPROVE**. Never starts product implementation.
+
+### Headless launch details
+
+Modes load the matching skill body, inject HARD RULES, create a run under `.omg/state/runs/`, and launch `grok -p …` (unless `--dry-run`) with:
+
+- `--cwd <project>` when path known
+- `--output-format plain` (headless default)
+- timeout default **3600s** (`--timeout` to override; `0` = unlimited)
+- **ralph context pack** each iteration: `run_id`, `iteration`, `story`, `frozen_commands_summary`, path to `acceptance.result.json`
 
 ---
 
@@ -188,12 +268,12 @@ Modes load the matching skill body (`skills/omg-ultrawork`, `skills/omg-ralph`, 
 │  · setup / doctor / state │   │  SessionStart / Stop /      │
 │  · cancel / accept        │   │  SubagentStop → event spool │
 │  · integrate (ULW)        │   │  PreToolUse → soft deny     │
-│  · ulw / ralph / ralplan  │   │  (OMG_ALLOW_EXTERNAL_CLI)   │
+│  · ralplan FSM            │   │  (OMG_ALLOW_EXTERNAL_CLI)   │
 │  · verified / passes only │   │                             │
 └───────────────┬───────────┘   └─────────────────────────────┘
                 │
                 ▼
-        .omg/state/runs/<run-id>/   status.json, acceptance.*, integrate.result.json
+        .omg/state/runs/<run-id>/   status.json, acceptance.*, ralplan.json, integrate.result.json
         .omg/artifacts/ulw-results/ worker result envelopes
         .omg/artifacts/             other agent proposals only
 ```
@@ -205,9 +285,11 @@ Modes load the matching skill body (`skills/omg-ultrawork`, `skills/omg-ralph`, 
 | **Env bypass** | Process env `OMG_ALLOW_EXTERNAL_CLI=1` only — never parsed from command text |
 | **State** | `.omg/state/runs/<run-id>/` atomic JSON via `omg_cli/state.py`; hooks must not write `verified` |
 | **Workers** | Grok `spawn_subagent` only (depth 1); custom agents: orchestrator, executor, critic, verifier |
+| **compat.claude** | Doctor/setup scan for OMC/Claude hooks & magic keywords; isolation advice |
 | **Acceptance** | Frozen `acceptance.manifest.json` + CLI-stamped `acceptance.result.json` (`writer=omg-cli`); forged `{passed:true}` cannot `set_verified` |
 | **ULW integrate** | Clean-tree preflight + envelope cherry-pick (`omg_cli/integrate.py`); does not set `verified` alone |
-| **Soft-guard limits** | Defense-in-depth, not a sandbox. Still may miss interpreter escapes (`python3 -c …`, `npx …`) and some shell constructs; HARD RULES remain primary |
+| **Ralplan FSM** | CLI-owned stages + max_rounds; critic/verifier read-only capability defaults |
+| **Soft-guard limits** | Defense-in-depth, not a sandbox. Still may miss interpreter escapes; subagent hook coverage ASSUMPTION — see research spike |
 
 Project layout after `omg setup`:
 
@@ -237,6 +319,7 @@ grok plugin validate .
 
 # CLI smoke
 ./bin/omg doctor
+./bin/omg doctor --strict || true
 ./bin/omg ulw "noop" --dry-run
 ```
 
@@ -259,17 +342,21 @@ grok plugin validate .
 | Agent | Role |
 |-------|------|
 | `omg-orchestrator` | Decompose + coordinate |
-| `omg-executor` | Implement |
-| `omg-critic` | Challenge plans/code (read-oriented) |
-| `omg-verifier` | Check evidence (does not own `verified` flag) |
+| `omg-executor` | Implement (`capability_mode` prefer read-write, no shell) |
+| `omg-critic` | Challenge plans/code (read-only) |
+| `omg-verifier` | Check evidence (read-only; does not own `verified` flag) |
+
+**Capability defaults:** implementers → `read-write` (prefer no unrestricted shell); critic/verifier/explore → `read-only`; acceptance shell → **`omg` CLI only**.
 
 ---
 
 ## Research & plan docs
 
-In-repo plan:
+In-repo:
 
-- [`docs/superpowers/plans/2026-07-19-oh-my-grok.md`](docs/superpowers/plans/2026-07-19-oh-my-grok.md) — MVP implementation plan (task checklist)
+- [`docs/superpowers/plans/2026-07-19-oh-my-grok.md`](docs/superpowers/plans/2026-07-19-oh-my-grok.md) — MVP implementation plan
+- [`docs/superpowers/plans/2026-07-19-oh-my-grok-v0.2-dual-review-complete.md`](docs/superpowers/plans/2026-07-19-oh-my-grok-v0.2-dual-review-complete.md) — v0.2 dual-review completion plan
+- [`docs/research/subagent-pretooluse-spike.md`](docs/research/subagent-pretooluse-spike.md) — PreToolUse child coverage spike + ASSUMPTION/compensation
 
 Sibling research (written during design; live next to [grok-build](../grok-build) when that tree is present):
 
