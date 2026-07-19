@@ -60,6 +60,29 @@ def test_cancel_active_without_run_id(tmp_path):
     assert load_active_run(tmp_path) is None
 
 
+def test_cancel_run_sigterms_pid_best_effort(tmp_path, monkeypatch):
+    """cancel_run sends SIGTERM when pid file exists; ProcessLookupError is ignored."""
+    import os
+    import signal
+
+    run = create_run(tmp_path, mode="ulw", goal="kill me")
+    rid = run["run_id"]
+    pid_path = tmp_path / ".omg" / "state" / "runs" / rid / "pid"
+    pid_path.write_text("999999\n", encoding="utf-8")
+
+    kills: list[tuple[int, int]] = []
+
+    def fake_kill(pid, sig):
+        kills.append((pid, sig))
+        raise ProcessLookupError(f"no process {pid}")
+
+    monkeypatch.setattr(os, "kill", fake_kill)
+
+    cancelled = cancel_run(tmp_path, rid)
+    assert cancelled["status"] == "cancelled"
+    assert kills == [(999999, signal.SIGTERM)]
+
+
 def test_write_status(tmp_path):
     """write_status: reserved keys protected; verified only via set_verified + acceptance."""
     run = create_run(tmp_path, mode="ralph", goal="v")

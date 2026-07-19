@@ -125,9 +125,10 @@ def build_grok_argv(
 ) -> list[str]:
     """Build argv for ``grok -p <prompt>``.
 
-    Never includes ``--yolo`` / ``bypassPermissions`` unless ``yolo=True``.
-    Grok CLI has no ``--yolo`` flag; when yolo we map to
-    ``--permission-mode bypassPermissions`` (+ ``--always-approve``).
+    Grok CLI has no bare ``--yolo`` flag. When ``yolo=True`` (and safe is
+    not set) we map to ``--permission-mode bypassPermissions`` plus
+    ``--always-approve``. **safe wins**: if ``safe=True``, always pass
+    ``--permission-mode default`` even when yolo is also set.
     """
     if mode not in MODE_SKILL_REL:
         raise ValueError(f"unknown mode {mode!r}")
@@ -147,14 +148,13 @@ def build_grok_argv(
     if cwd is not None:
         argv.extend(["--cwd", str(cwd)])
 
-    # safe: prefer non-elevated defaults (no yolo). If both set, yolo wins.
-    if yolo and not safe:
+    # safe wins over yolo for elevation (safer default when both present)
+    if safe:
+        argv.extend(["--permission-mode", "default"])
+    elif yolo:
         # Documented mapping: grok has no --yolo; use permission-mode + always-approve
         argv.extend(["--permission-mode", "bypassPermissions"])
         argv.append("--always-approve")
-    elif safe and not yolo:
-        # Keep plan-friendly / non-elevated mode when user asked for safe
-        argv.extend(["--permission-mode", "default"])
 
     argv.extend(["-p", prompt])
 
@@ -235,12 +235,18 @@ def _launch_grok(
         (run_dir / "dry_run").write_text("1\n", encoding="utf-8")
         return 0
 
-    # Prefer Popen so we can record child PID
-    proc = subprocess.Popen(
-        argv,
-        cwd=str(cwd),
-        env=os.environ.copy(),
-    )
+    # Prefer Popen so we can record child PID. OSError (e.g. FileNotFoundError
+    # when grok is missing) must not leave status stuck at "running".
+    try:
+        proc = subprocess.Popen(
+            argv,
+            cwd=str(cwd),
+            env=os.environ.copy(),
+        )
+    except OSError as exc:
+        (run_dir / "launch_error").write_text(f"{exc}\n", encoding="utf-8")
+        return 127
+
     (run_dir / "pid").write_text(f"{proc.pid}\n", encoding="utf-8")
     try:
         return int(proc.wait(timeout=timeout))
@@ -359,19 +365,14 @@ def run_mode(
         return last_rc
 
     # Completed iterations without acceptance — not verified
+    # (write_status never sets verified=true; only set_verified can)
     write_status(
         root_path,
         run_id,
         "completed",
         extra={
             "exit_code": 0,
-            "verified": False,  # write_status ignores verified keys; explicit guard
             "note": "completed without acceptance artifact; verified remains false",
         },
     )
-    # Double-check verified stayed false
-    final = load_run(root_path, run_id)
-    if final and final.get("verified") is True:
-        # Should not happen without acceptance; strip via cancel-style rewrite
-        write_status(root_path, run_id, "completed", extra={"note": "verified stripped"})
     return 0

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -198,7 +199,11 @@ def clear_active(root: Path, run_id: str | None = None) -> None:
 
 
 def cancel_run(root: Path, run_id: str | None = None) -> dict[str, Any]:
-    """Mark run cancelled and clear active if it matches. Does not delete artifacts."""
+    """Mark run cancelled and clear active if it matches. Does not delete artifacts.
+
+    Best-effort: if a pid file exists under the run dir, send SIGTERM
+    (ignore ProcessLookupError / permission errors).
+    """
     root = Path(root)
     if run_id is None:
         active = load_active_run(root)
@@ -208,6 +213,16 @@ def cancel_run(root: Path, run_id: str | None = None) -> dict[str, Any]:
     current = load_run(root, run_id)
     if current is None:
         raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
+
+    # Best-effort SIGTERM via pid file (never self-matching pkill)
+    pid_path = _runs_dir(root) / run_id / "pid"
+    if pid_path.is_file():
+        try:
+            pid = int(pid_path.read_text(encoding="utf-8").strip())
+            os.kill(pid, signal.SIGTERM)
+        except (ValueError, ProcessLookupError, OSError):
+            pass
+
     current["status"] = "cancelled"
     current["verified"] = False
     current["updated_at"] = _utc_now()

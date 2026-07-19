@@ -53,6 +53,9 @@ def test_safe_without_yolo_not_elevated():
     joined = " ".join(argv)
     assert "bypassPermissions" not in joined
     assert "--always-approve" not in argv
+    assert "--permission-mode" in argv
+    pm_idx = argv.index("--permission-mode")
+    assert argv[pm_idx + 1] == "default"
 
 
 def test_yolo_ignored_when_safe_also_set():
@@ -60,6 +63,10 @@ def test_yolo_ignored_when_safe_also_set():
     argv = build_grok_argv(mode="ulw", goal="go", yolo=True, safe=True, cwd="/tmp")
     joined = " ".join(argv)
     assert "bypassPermissions" not in joined
+    assert "--always-approve" not in argv
+    assert "--permission-mode" in argv
+    pm_idx = argv.index("--permission-mode")
+    assert argv[pm_idx + 1] == "default"
 
 
 def test_unknown_mode_raises():
@@ -197,3 +204,29 @@ def test_failed_subprocess_marks_failed(monkeypatch, tmp_path):
     assert run is not None
     assert run["status"] == "failed"
     assert run["verified"] is False
+
+
+def test_popen_oserror_marks_failed_not_stuck_running(monkeypatch, tmp_path):
+    """FileNotFoundError/OSError from Popen → failed status, non-zero rc, launch_error."""
+
+    def raise_not_found(*_a, **_k):
+        raise FileNotFoundError("No such file or directory: 'grok'")
+
+    monkeypatch.setattr(subprocess, "Popen", raise_not_found)
+
+    rc = run_mode("ulw", "missing binary", root=tmp_path, dry_run=False)
+    assert rc != 0
+    assert rc == 127
+
+    run = load_active_run(tmp_path)
+    assert run is not None
+    assert run["status"] == "failed"
+    assert run["verified"] is False
+    assert run.get("exit_code") == 127
+
+    run_dir = tmp_path / ".omg" / "state" / "runs" / run["run_id"]
+    launch_err = run_dir / "launch_error"
+    assert launch_err.is_file()
+    assert "No such file" in launch_err.read_text(encoding="utf-8") or "grok" in launch_err.read_text(
+        encoding="utf-8"
+    )
