@@ -11,9 +11,12 @@ import pytest
 
 from omg_cli.acceptance import (
     CLI_WRITER,
+    clear_cli_acceptance_tokens,
     freeze_acceptance,
     freeze_and_run,
+    has_cli_acceptance_token,
     is_cli_acceptance_result,
+    is_trusted_acceptance,
     load_prd,
     manifest_path,
     prd_has_acceptance_commands,
@@ -109,6 +112,7 @@ def test_bad_schema_fails():
 
 
 def test_forge_passed_true_without_writer_rejected(tmp_path):
+    clear_cli_acceptance_tokens()
     run = create_run(tmp_path, mode="ralph", goal="forge")
     rid = run["run_id"]
     # Agent-forged legacy paths
@@ -121,7 +125,7 @@ def test_forge_passed_true_without_writer_rejected(tmp_path):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps({"passed": True}), encoding="utf-8")
 
-    with pytest.raises(PermissionError, match="CLI acceptance|acceptance"):
+    with pytest.raises(PermissionError, match="CLI acceptance|acceptance|trusted"):
         set_verified(tmp_path, rid)
 
     # stamped but missing/wrong sha still fails
@@ -141,7 +145,50 @@ def test_forge_passed_true_without_writer_rejected(tmp_path):
         set_verified(tmp_path, rid)
 
 
+def test_full_forge_with_correct_sha_without_run_acceptance_rejected(tmp_path):
+    """CRITICAL: disk-forged full stamp (writer + sha + passed) cannot set_verified.
+
+    Only an in-process token from run_acceptance makes the result trusted.
+    """
+    clear_cli_acceptance_tokens()
+    run = create_run(tmp_path, mode="ralph", goal="full-forge")
+    rid = run["run_id"]
+    prd = _valid_prd(goal="full-forge")
+    manifest = freeze_acceptance(tmp_path, rid, prd)
+    digest = manifest["sha256"]
+
+    # Agent forges a perfect-looking result without calling run_acceptance
+    result_path(tmp_path, rid).write_text(
+        json.dumps(
+            {
+                "writer": CLI_WRITER,
+                "passed": True,
+                "manifest_sha256": digest,
+                "results": [
+                    {"command": ["true"], "returncode": 0},
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert has_cli_acceptance_token(tmp_path, rid) is False
+    assert is_trusted_acceptance(tmp_path, rid) is False
+    assert (
+        is_cli_acceptance_result(
+            result_path(tmp_path, rid), root=tmp_path, run_id=rid
+        )
+        is False
+    )
+    with pytest.raises(PermissionError, match="trusted|token|acceptance"):
+        set_verified(tmp_path, rid)
+    assert load_run(tmp_path, rid)["verified"] is False
+
+
 def test_run_acceptance_true_then_set_verified(tmp_path):
+    clear_cli_acceptance_tokens()
     run = create_run(tmp_path, mode="ralph", goal="ok")
     rid = run["run_id"]
     prd = _valid_prd(goal="ok", stories=[
@@ -170,10 +217,24 @@ def test_run_acceptance_true_then_set_verified(tmp_path):
     assert result["results"][0]["returncode"] == 0
     assert result["results"][0]["command"] == ["true"]
 
+    assert has_cli_acceptance_token(tmp_path, rid, digest) is True
+    assert is_trusted_acceptance(tmp_path, rid) is True
     assert is_cli_acceptance_result(rpath, root=tmp_path, run_id=rid) is True
     verified = set_verified(tmp_path, rid)
     assert verified["verified"] is True
     assert verified["status"] == "verified"
+
+
+def test_same_process_token_required_for_set_verified(tmp_path):
+    """After real run_acceptance in this process, set_verified succeeds."""
+    clear_cli_acceptance_tokens()
+    run = create_run(tmp_path, mode="ralph", goal="token-ok")
+    rid = run["run_id"]
+    freeze_acceptance(tmp_path, rid, _valid_prd())
+    assert run_acceptance(tmp_path, rid) is True
+    assert is_trusted_acceptance(tmp_path, rid) is True
+    set_verified(tmp_path, rid)
+    assert load_run(tmp_path, rid)["verified"] is True
 
 
 def test_run_acceptance_python_c_pass(tmp_path):

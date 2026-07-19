@@ -363,22 +363,24 @@ def cancel_run(
 
 
 def _has_acceptance_artifact(root: Path, run_id: str) -> bool:
-    """True only for CLI-stamped acceptance.result.json with matching manifest sha.
+    """True only for process-trusted CLI acceptance (disk stamp + in-process token).
 
-    Agent-forged ``{passed: true}`` (any path, missing writer/sha) is rejected.
+    Agent-forged ``{passed: true}`` — even with ``writer=omg-cli`` and a
+    matching manifest sha — is rejected unless ``run_acceptance`` registered a
+    process-local token in this process.
     """
-    from omg_cli.acceptance import is_cli_acceptance_result, result_path
+    from omg_cli.acceptance import is_trusted_acceptance
 
-    path = result_path(Path(root), run_id)
-    return is_cli_acceptance_result(path, root=Path(root), run_id=run_id)
+    return is_trusted_acceptance(Path(root), run_id)
 
 
 def set_verified(root: Path, run_id: str, *, force: bool = False) -> dict[str, Any]:
-    """Mark verified only when CLI acceptance result exists (unless force=True).
+    """Mark verified only when trusted CLI acceptance exists (unless force=True).
 
     Requires ``acceptance.result.json`` with ``writer=="omg-cli"``, ``passed``
-    true, and ``manifest_sha256`` matching the frozen manifest. force is
-    intentionally not exposed by the CLI router.
+    true, matching frozen manifest sha, **and** a process-local token from
+    ``run_acceptance`` in this process. Disk-only forgeries are rejected.
+    force is intentionally not exposed by the CLI router.
     """
     root = Path(root)
     current = load_run(root, run_id)
@@ -386,9 +388,9 @@ def set_verified(root: Path, run_id: str, *, force: bool = False) -> dict[str, A
         raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
     if not force and not _has_acceptance_artifact(root, run_id):
         raise PermissionError(
-            "refusing to set verified=true without CLI acceptance result "
-            f"(writer=omg-cli, passed=true, matching manifest sha) "
-            f"for run_id={run_id!r}"
+            "refusing to set verified=true without trusted CLI acceptance "
+            f"(writer=omg-cli, passed=true, matching manifest sha, "
+            f"in-process run_acceptance token) for run_id={run_id!r}"
         )
     current["verified"] = True
     current["status"] = "verified"

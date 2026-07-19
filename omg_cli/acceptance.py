@@ -3,7 +3,8 @@
 
 Only this module (via the omg CLI) may write ``acceptance.result.json`` with
 ``writer: "omg-cli"``. ``set_verified`` requires that stamp + matching manifest
-sha — agent-forged ``{passed: true}`` alone is rejected.
+sha **and** a process-local token registered by ``run_acceptance`` — a full
+disk forge (writer + passed + correct sha) without the token is rejected.
 """
 from __future__ import annotations
 
@@ -29,6 +30,43 @@ _STRIP_ENV_KEYS = frozenset(
 )
 
 DEFAULT_COMMAND_TIMEOUT: float | None = 300.0
+
+# Process-local trust: only ``run_acceptance`` may register tokens after it
+# writes acceptance.result.json. Agent-forged disk stamps (even with writer /
+# passed / correct manifest sha) lack a token and cannot set_verified.
+# Key: (root.resolve(), run_id, manifest_sha256)
+_CLI_ACCEPTANCE_TOKENS: set[tuple[str, str, str]] = set()
+
+
+def _token_key(root: Path | str, run_id: str, manifest_sha: str) -> tuple[str, str, str]:
+    return (str(Path(root).resolve()), str(run_id), str(manifest_sha))
+
+
+def register_cli_acceptance_token(
+    root: Path | str, run_id: str, manifest_sha: str
+) -> None:
+    """Record that this process wrote a CLI acceptance result (internal / tests)."""
+    if not manifest_sha:
+        return
+    _CLI_ACCEPTANCE_TOKENS.add(_token_key(root, run_id, manifest_sha))
+
+
+def clear_cli_acceptance_tokens() -> None:
+    """Clear process-local tokens (tests only)."""
+    _CLI_ACCEPTANCE_TOKENS.clear()
+
+
+def has_cli_acceptance_token(
+    root: Path | str,
+    run_id: str,
+    manifest_sha: str | None = None,
+) -> bool:
+    """True if this process registered a token for root/run_id (and optional sha)."""
+    root_s = str(Path(root).resolve())
+    rid = str(run_id)
+    if manifest_sha is not None:
+        return (root_s, rid, str(manifest_sha)) in _CLI_ACCEPTANCE_TOKENS
+    return any(t[0] == root_s and t[1] == rid for t in _CLI_ACCEPTANCE_TOKENS)
 
 
 def _runs_dir(root: Path) -> Path:
@@ -349,6 +387,8 @@ def run_acceptance(
             "results": results,
         }
         _atomic_write_json(result_path(root, run_id), payload)
+        # Still register: proves CLI wrote the file; passed=false blocks verify.
+        register_cli_acceptance_token(root, run_id, manifest_sha)
         return False
 
     for cmd in argv_list:
@@ -397,6 +437,7 @@ def run_acceptance(
         "results": results,
     }
     _atomic_write_json(result_path(root, run_id), payload)
+    register_cli_acceptance_token(root, run_id, manifest_sha)
     return all_ok
 
 
@@ -405,11 +446,16 @@ def is_cli_acceptance_result(
     *,
     root: Path | None = None,
     run_id: str | None = None,
+    require_token: bool = True,
 ) -> bool:
-    """True if result is CLI-stamped, passed, and matches frozen manifest sha.
+    """True if result is CLI-stamped, passed, matches frozen manifest sha.
 
     Accepts a path, a loaded dict, or (with root+run_id) reads the standard
     result path. When a frozen manifest exists, ``manifest_sha256`` must match.
+
+    When ``require_token`` is True (default) and root/run_id can be resolved,
+    also requires a process-local token from ``run_acceptance`` so full disk
+    forgeries (writer + passed + correct sha) cannot pass.
     """
     data: dict[str, Any] | None
     if path_or_data is None:
@@ -456,8 +502,28 @@ def is_cli_acceptance_result(
         recorded = read_manifest_sha256(Path(check_root), check_id)
         if recorded is not None and result_sha != recorded:
             return False
+        if require_token and not has_cli_acceptance_token(
+            check_root, check_id, result_sha
+        ):
+            return False
+    elif require_token:
+        # Cannot bind disk fields to a process token without root/run_id.
+        # Pure dict checks without location are not trusted for set_verified.
+        return False
 
     return True
+
+
+def is_trusted_acceptance(root: Path | str, run_id: str) -> bool:
+    """True only when CLI acceptance result is on disk *and* token is in-process.
+
+    Used by ``set_verified``. Empty PRD / no runnable commands never produce a
+    passing trusted result (freeze/run refuse empty command lists).
+    """
+    root = Path(root)
+    return is_cli_acceptance_result(
+        None, root=root, run_id=run_id, require_token=True
+    )
 
 
 def freeze_and_run(

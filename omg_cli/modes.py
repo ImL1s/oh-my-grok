@@ -630,7 +630,10 @@ def run_mode(
             dry_run=dry_run,
         )
 
-        # After each iter: freeze+run acceptance when PRD has commands, then verify
+        # After each iter: freeze+run acceptance when PRD has commands, then verify.
+        # Never honor disk-only acceptance.result.json forgeries: set_verified
+        # requires an in-process token from run_acceptance. Empty PRD / no
+        # runnable commands → _try_acceptance_and_verify returns False.
         write_status(root_path, run_id, "verifying", extra={"iteration": i})
         if _try_acceptance_and_verify(
             root_path,
@@ -641,7 +644,9 @@ def run_mode(
             verified = True
             break
 
-        # Also honor a pre-existing CLI acceptance result (e.g. `omg accept`)
+        # Same-process only: token from run_acceptance earlier in this process
+        # (e.g. worker path that called freeze_and_run). Disk forge without
+        # token → PermissionError inside set_verified → False.
         if _try_set_verified(root_path, run_id):
             verified = True
             break

@@ -353,6 +353,14 @@ def _cherry_pick(root: Path, head_sha: str) -> None:
     raise IntegrateError(f"cherry-pick conflict or failure for {head_sha}: {err}")
 
 
+def _reset_hard(root: Path, sha: str) -> None:
+    """Hard-reset leader to ``sha`` (atomic rollback after partial apply)."""
+    r = _run_git(["reset", "--hard", sha], cwd=root, timeout=60.0)
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "reset --hard failed").strip()
+        raise IntegrateError(f"partial_reset reset --hard {sha} failed: {err}")
+
+
 def integrate_results(
     root: Path | str,
     run_id: str,
@@ -369,7 +377,8 @@ def integrate_results(
     - ``status != ok`` → stop, overall failed (no apply for that task)
     - If run has ``base_sha``, each envelope ``base_sha`` must match
     - Apply: ensure ``head_sha`` reachable, then ``git cherry-pick head_sha``
-    - Conflict → abort cherry-pick, mark failed, stop
+    - Conflict → abort cherry-pick; if any prior pick succeeded, ``reset --hard``
+      to ``start_sha`` (unless dry_run) and set ``partial_reset=true``
     - Missing envelopes → result status ``missing`` (not an exception)
     """
     root = Path(root).resolve()
@@ -394,6 +403,10 @@ def integrate_results(
     if not dry_run and not skip_preflight:
         preflight_clean_tree(root)
 
+    # Record leader HEAD before any cherry-pick so partial failure can roll back.
+    start_sha = git_rev_parse_head(root) if not dry_run else None
+    applied_ok_count = 0
+
     result: dict[str, Any] = {
         "writer": CLI_WRITER,
         "run_id": run_id,
@@ -401,9 +414,11 @@ def integrate_results(
         "dry_run": bool(dry_run),
         "envelopes_dir": str(env_dir),
         "base_sha": run_base,
+        "start_sha": start_sha,
         "applied": [],
         "failed_task": None,
         "error": None,
+        "partial_reset": False,
         "created_at": _utc_now(),
         "note": None,
     }
@@ -479,6 +494,7 @@ def integrate_results(
             entry["status"] = "applied"
             entry["worktree_path"] = str(worktree)
             result["applied"].append(entry)
+            applied_ok_count += 1
         except IntegrateError as exc:
             entry["status"] = "failed"
             entry["error"] = str(exc)
@@ -486,7 +502,44 @@ def integrate_results(
             result["status"] = "failed"
             result["failed_task"] = task_id
             result["error"] = str(exc)
+            # Atomic integrate: if earlier cherry-picks succeeded, roll back
+            # to start_sha so leader is not left in a partial-merge state.
+            if applied_ok_count > 0 and start_sha and not dry_run:
+                try:
+                    _reset_hard(root, start_sha)
+                    result["partial_reset"] = True
+                    result["reset_to"] = start_sha
+                except IntegrateError as reset_exc:
+                    # Surface both the original conflict and the reset failure.
+                    result["error"] = (
+                        f"{exc}; additionally partial_reset failed: {reset_exc}"
+                    )
+                    result["partial_reset"] = False
             break
+
+    # Also roll back if we failed for non-pick reasons after some applies
+    # (e.g. later envelope base_sha mismatch should not leave partial state).
+    # Those breaks happen before apply for that task; if applied_ok_count>0
+    # and status failed without partial_reset yet, reset now.
+    if (
+        not dry_run
+        and result["status"] == "failed"
+        and applied_ok_count > 0
+        and start_sha
+        and not result.get("partial_reset")
+        and result.get("reset_to") is None
+    ):
+        # Check whether failure was after successful applies without reset
+        # (base_sha / skipped_failed paths break without incrementing after
+        # prior applies — rare if all share same base, but be safe).
+        try:
+            _reset_hard(root, start_sha)
+            result["partial_reset"] = True
+            result["reset_to"] = start_sha
+        except IntegrateError as reset_exc:
+            result["error"] = (
+                f"{result.get('error')}; additionally partial_reset failed: {reset_exc}"
+            )
 
     result["finished_at"] = _utc_now()
     _atomic_write_json(result_path(root, run_id), result)
@@ -508,6 +561,7 @@ def integrate_results(
                 extra={
                     "integrate_status": "failed",
                     "integrate_error": result.get("error"),
+                    "partial_reset": bool(result.get("partial_reset")),
                 },
             )
 

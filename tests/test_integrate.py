@@ -379,6 +379,8 @@ def test_integrate_conflict_marks_failed(tmp_path):
     assert "cherry-pick" in (result.get("error") or "").lower() or "conflict" in (
         result.get("error") or ""
     ).lower()
+    # First-envelope conflict: no prior applies → no partial_reset
+    assert result.get("partial_reset") is False
     # Tree should not stay mid-cherry-pick
     st = _git(leader, "status", "--porcelain").stdout
     # After abort, only clean or at worst no CHERRY_PICK_HEAD
@@ -390,6 +392,83 @@ def test_integrate_conflict_marks_failed(tmp_path):
     r = _git(leader, "rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD", check=False)
     assert r.returncode != 0  # no in-progress cherry-pick
     del st  # status may still show nothing interesting
+
+
+def test_integrate_partial_reset_on_second_conflict(tmp_path):
+    """HIGH: first cherry-pick ok, second conflicts → reset --hard to start_sha."""
+    leader = tmp_path / "leader"
+    base = _init_repo(leader, first_file="shared.txt", content="base-line\n")
+
+    # Worker A: additive file (clean cherry-pick onto leader)
+    wt_a = tmp_path / "wt-a"
+    _git(leader, "worktree", "add", "-b", "worker-a", str(wt_a), "HEAD")
+    (wt_a / "feature_a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    _git(wt_a, "add", "feature_a.py")
+    _git(wt_a, "commit", "-m", "worker a")
+    head_a = _git(wt_a, "rev-parse", "HEAD").stdout.strip()
+
+    # Worker B: edits shared.txt from base (will conflict after leader also edits)
+    wt_b = tmp_path / "wt-b"
+    _git(leader, "worktree", "add", "-b", "worker-b", str(wt_b), "HEAD")
+    (wt_b / "shared.txt").write_text("from-worker-b\n", encoding="utf-8")
+    _git(wt_b, "add", "shared.txt")
+    _git(wt_b, "commit", "-m", "worker b conflict")
+    head_b = _git(wt_b, "rev-parse", "HEAD").stdout.strip()
+
+    # Divergent leader edit so worker-b cherry-pick conflicts
+    (leader / "shared.txt").write_text("from-leader\n", encoding="utf-8")
+    _git(leader, "add", "shared.txt")
+    _git(leader, "commit", "-m", "leader edits shared")
+    start_sha = git_rev_parse_head(leader)
+    assert start_sha is not None
+    assert start_sha != base
+
+    run = create_run(
+        leader, mode="ulw", goal="partial", extra={"base_sha": base}
+    )
+    env_dir = default_envelopes_dir(leader)
+    # task-a sorts before task-b → first applies, second conflicts
+    _write_envelope(
+        env_dir,
+        {
+            "task_id": "task-a",
+            "base_sha": base,
+            "head_sha": head_a,
+            "worktree_path": str(wt_a),
+            "status": "ok",
+            "changed_files": ["feature_a.py"],
+        },
+    )
+    _write_envelope(
+        env_dir,
+        {
+            "task_id": "task-b",
+            "base_sha": base,
+            "head_sha": head_b,
+            "worktree_path": str(wt_b),
+            "status": "ok",
+            "changed_files": ["shared.txt"],
+        },
+    )
+
+    result = integrate_results(leader, run["run_id"])
+    assert result["status"] == "failed", result
+    assert result["failed_task"] == "task-b"
+    assert result.get("partial_reset") is True, result
+    assert result.get("reset_to") == start_sha
+    assert result.get("start_sha") == start_sha
+    # Applied list: first ok, second failed
+    statuses = [a["status"] for a in result["applied"]]
+    assert statuses == ["applied", "failed"]
+
+    # Leader HEAD restored to pre-integrate start (feature_a gone)
+    assert git_rev_parse_head(leader) == start_sha
+    assert not (leader / "feature_a.py").exists()
+    assert (leader / "shared.txt").read_text(encoding="utf-8") == "from-leader\n"
+
+    disk = json.loads(result_path(leader, run["run_id"]).read_text(encoding="utf-8"))
+    assert disk.get("partial_reset") is True
+    assert disk.get("reset_to") == start_sha
 
 
 def test_integrate_dirty_tree_refuses(tmp_path):
