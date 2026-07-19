@@ -257,7 +257,12 @@ def test_dry_run_does_not_call_subprocess(monkeypatch, tmp_path):
     assert (run_dir / "last_argv.json").is_file()
     argv = json.loads((run_dir / "last_argv.json").read_text(encoding="utf-8"))
     assert argv[0] == "grok"
-    assert "-p" in argv
+    # _launch_grok rewrites -p skill bodies to --prompt-file (YAML --- frontmatter)
+    assert "--prompt-file" in argv or "-p" in argv
+    if "--prompt-file" in argv:
+        pf = Path(argv[argv.index("--prompt-file") + 1])
+        assert pf.is_file()
+        assert (run_dir / "last_prompt.md").is_file()
     assert "bypassPermissions" not in " ".join(argv)
 
 

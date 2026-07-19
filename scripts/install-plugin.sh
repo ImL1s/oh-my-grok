@@ -19,6 +19,33 @@ echo "== grok plugin install . --trust =="
 # SOURCE is this repo root; --trust for non-interactive hook/skill activation.
 grok plugin install "$ROOT" --trust
 
+echo "== global PreToolUse soft-gate (~/.grok/hooks) =="
+# Live 2026-07-19: plugin-bundled hooks/hooks.json did not appear in session
+# hook_execution runs; only global/settings + ~/.grok/hooks fired. Install deny
+# as a global hook so soft-gate is effective for leader + subagents.
+HOOKS_DIR="${HOME}/.grok/hooks"
+mkdir -p "$HOOKS_DIR"
+DENY_PY="${ROOT}/hooks/bin/pre_tool_use_deny.py"
+cat > "${HOOKS_DIR}/omg-pretool-deny.json" <<EOF
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "run_terminal_command|Bash|Shell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${DENY_PY}\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+EOF
+echo "wrote ${HOOKS_DIR}/omg-pretool-deny.json -> ${DENY_PY}"
+
 echo "== inventory (best-effort) =="
 if grok plugin list --json >/dev/null 2>&1; then
   grok plugin list --json | head -c 4000 || true
@@ -37,5 +64,6 @@ echo "  3. Dry smoke from this repo:"
 echo "       \"$ROOT/scripts/smoke.sh\""
 echo "  4. Optional PreToolUse canary (never runs real claude/codex):"
 echo "       python3 \"$ROOT/scripts/canary_pretool.py\" --dry"
+echo "       python3 \"$ROOT/scripts/canary_pretool.py\" --live   # needs grok + global hook"
 echo
 echo "install-plugin OK"

@@ -79,7 +79,8 @@ def test_dry_run_process_fanout_skeleton(monkeypatch, tmp_path):
         assert argv_path.is_file(), wid
         argv = json.loads(argv_path.read_text(encoding="utf-8"))
         assert argv[0] == "grok"
-        assert "-p" in argv
+        # prompt-file preferred (skill YAML --- breaks -p parsing)
+        assert "--prompt-file" in argv or "-p" in argv
         # leaders/workers keep shell unless explicitly disallowed
         assert "--disallowed-tools" not in argv
         pid_path = wdir / f"{wid}.pid.json"

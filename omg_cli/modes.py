@@ -370,6 +370,10 @@ def build_grok_argv(
     ):
         argv.extend(["--disallowed-tools", DISALLOW_SHELL_TOOLS])
 
+    # Prefer --prompt-file over -p: skill bodies start with YAML ``---`` which
+    # Grok CLI treats as an unexpected argument when passed as -p value.
+    # Caller (_launch_grok) materializes the file next to last_prompt.md.
+    # Here we only mark intent; _launch_grok rewrites to --prompt-file path.
     argv.extend(["-p", prompt])
 
     if extra:
@@ -487,6 +491,29 @@ def _try_acceptance_and_verify(
     return _try_set_verified(root, run_id)
 
 
+def _materialize_prompt_file(argv: list[str], run_dir: Path) -> list[str]:
+    """Rewrite ``-p <prompt>`` to ``--prompt-file <path>`` when present.
+
+    Skill bodies begin with YAML ``---`` frontmatter; Grok CLI rejects that as
+    an unexpected argument when embedded after ``-p``. Writing the prompt to a
+    file and using ``--prompt-file`` avoids the parse error.
+    """
+    out = list(argv)
+    try:
+        p_idx = out.index("-p")
+    except ValueError:
+        return out
+    if p_idx + 1 >= len(out):
+        return out
+    prompt_text = out[p_idx + 1]
+    run_dir.mkdir(parents=True, exist_ok=True)
+    prompt_path = run_dir / "last_prompt.md"
+    prompt_path.write_text(prompt_text, encoding="utf-8")
+    # Replace -p PROMPT with --prompt-file PATH (single path arg, no --- issues)
+    out[p_idx : p_idx + 2] = ["--prompt-file", str(prompt_path)]
+    return out
+
+
 def _launch_grok(
     argv: list[str],
     *,
@@ -500,16 +527,21 @@ def _launch_grok(
     Returns process exit code (0 for dry_run).
     """
     run_dir.mkdir(parents=True, exist_ok=True)
+    # Convert -p skill bodies to --prompt-file before exec / record
+    argv = _materialize_prompt_file(list(argv), run_dir)
     (run_dir / "last_argv.json").write_text(
         json.dumps(argv, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
-    # Also store prompt for debugging (argv may be huge)
-    try:
-        p_idx = argv.index("-p")
-        prompt_text = argv[p_idx + 1] if p_idx + 1 < len(argv) else ""
-        (run_dir / "last_prompt.md").write_text(prompt_text, encoding="utf-8")
-    except ValueError:
-        pass
+    # Ensure last_prompt.md exists even if argv already used --prompt-file
+    if not (run_dir / "last_prompt.md").is_file():
+        try:
+            if "--prompt-file" in argv:
+                pf = argv[argv.index("--prompt-file") + 1]
+                (run_dir / "last_prompt.md").write_text(
+                    Path(pf).read_text(encoding="utf-8"), encoding="utf-8"
+                )
+        except (ValueError, OSError, IndexError):
+            pass
 
     if dry_run:
         (run_dir / "dry_run").write_text("1\n", encoding="utf-8")

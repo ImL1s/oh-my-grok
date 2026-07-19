@@ -68,12 +68,16 @@ After the child returns, report: (1) whether the child tool call was denied, (2)
 ' --cwd "$(pwd)" --output-format plain
 ```
 
-### Live results table (fill when run)
+### Live results table (filled 2026-07-19)
 
-| Probe | Date | Grok ver | PreToolUse fired? | Decision | Host honored deny? | Marker present? |
-|-------|------|----------|-------------------|----------|--------------------|-----------------|
-| Leader `run_terminal_command claude` | — | — | ? | ? | ? | ? |
-| Child `run_terminal_command claude` | — | — | ? | ? | ? | ? |
+| Probe | Date (UTC) | PreToolUse fired? | Decision | Host honored deny? | Marker / real CLI |
+|-------|------------|-------------------|----------|--------------------|-------------------|
+| Leader `claude --version` | 2026-07-19T18:11 | **Yes** (`global/omg-pretool-deny` + settings) | **deny** | **Yes** | marker absent; no real CLI |
+| Child via `spawn_subagent` | 2026-07-19T18:11 | **Yes** (inherited global hooks) | **deny** | **Yes** | marker absent; no real CLI |
+
+**Earlier live (plugin-only, no `~/.grok/hooks`):** 18:04 / 18:08 — PreToolUse ran only as `global/settings` (Claude compat hook), **plugin** PreToolUse did **not** appear in session `hook_execution` runs → real Claude Code `2.1.215` executed (`REAL_CLI_RAN_hook_did_not_block`). See canary history.
+
+**Operational note:** Install soft-gate as **global** hooks via `scripts/install-plugin.sh` (`~/.grok/hooks/omg-pretool-deny.json`). Relying only on plugin-bundled `hooks/hooks.json` was **not** sufficient in this live host session.
 
 ## Spike status (this environment)
 
@@ -81,15 +85,13 @@ After the child returns, report: (1) whether the child tool call was denied, (2)
 |------|--------|
 | Host source: subagents inherit PreToolUse | **Supported** (see table above) |
 | Dry canary script | **`scripts/canary_pretool.py --dry`** |
-| Live re-test in CI / this authoring session | **Not verified live** (table empty; `--live` skips without grok) |
+| Live re-test | **Done** — see LIVE RESULTS TABLE; `canary-pretool-latest.json` |
 | Documented re-test procedure | Yes |
-| Assumption recorded | **ASSUMPTION** below |
+| Global hook install | **`scripts/install-plugin.sh`** writes `~/.grok/hooks/omg-pretool-deny.json` |
 
-### ASSUMPTION (until re-verified live)
+### Live-verified conclusion
 
-> **ASSUMPTION (updated):** Subagent children **should** inherit plugin/client PreToolUse per grok-build source and unit tests. Hooks may still **fail-open**. Treat PreToolUse as **defense-in-depth soft-gate** (leader + children when registry loaded), **not** a hard sandbox.
-
-Do **not** claim “children are hard-blocked from external CLIs” without a dated live canary table above filled with pass/fail evidence, or without the **capability_mode** primary stack.
+> Subagent children **inherit** PreToolUse hooks that are loaded for the parent (global + settings). With `~/.grok/hooks/omg-pretool-deny.json` installed, parent **and** child denied `claude --version` (session evidence: `hook_execution` status `failed` / denied). Hooks remain **fail-open** on timeout/crash. **capability_mode** is still the primary isolation layer.
 
 ## Compensation (product defaults) — primary isolation stack
 
@@ -125,3 +127,19 @@ Even when PreToolUse fires, it may miss:
 - Host fail-open on hook timeout / crash / malformed JSON
 
 Primary contract remains **capability_mode (no Execute) + skills + CLI HARD RULES + acceptance ownership**, not the hook alone.
+
+
+## LIVE RESULTS TABLE
+
+| ts_utc | mode | status | notes | evidence |
+|--------|------|--------|-------|----------|
+| 2026-07-19T18:04:16Z | live parent+child | REAL_CLI_RAN_hook_did_not_block | plugin hooks absent; only `global/settings`; real Claude 2.1.215 | canary-pretool-latest.json (overwritten) |
+| 2026-07-19T18:08:55Z | live parent+child | REAL_CLI_RAN_hook_did_not_block | re-run; same REAL_CLI | session 019f7b91-* |
+| 2026-07-19T18:11:16Z | live parent+child + **global omg-pretool-deny** | **marker_absent_ok** (exit 0) | parent+child denied by `global/omg-pretool-deny`; no real CLI | canary-pretool-latest.json |
+
+### Companion live gates (ulw / ralph real `grok -p`)
+
+| Gate | ts_utc | exit | artifact | argv |
+|------|--------|------|----------|------|
+| `omg ulw` | 2026-07-19T18:06:30Z | 0 | `live_ulw_ok.txt` = `LIVE-ULW-OK` | `--prompt-file` (not bare `-p`) |
+| `omg ralph` | 2026-07-19T18:08:55Z | 0 | `live_ralph_ok.txt` = `LIVE-RALPH-OK` | `--prompt-file` |

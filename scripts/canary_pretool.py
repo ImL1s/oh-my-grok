@@ -181,47 +181,85 @@ def run_live(out_path: Path | None, *, timeout: float = 120.0) -> int:
     # Never allow external-cli bypass during canary.
     env.pop("OMG_ALLOW_EXTERNAL_CLI", None)
 
-    parent_rc: int | None = None
-    parent_out = ""
-    parent_err = ""
-    try:
-        proc = subprocess.run(
-            plan["parent_argv"],
-            cwd=str(ROOT),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-        parent_rc = int(proc.returncode)
-        parent_out = (proc.stdout or "")[-4000:]
-        parent_err = (proc.stderr or "")[-4000:]
-    except subprocess.TimeoutExpired as exc:
-        parent_rc = 124
-        parent_out = str(exc.stdout or "")[-4000:]
-        parent_err = "timeout"
-    except OSError as exc:
-        parent_rc = 127
-        parent_err = str(exc)
+    def _run_one(argv: list[str], label: str) -> tuple[int | None, str, str]:
+        try:
+            proc = subprocess.run(
+                argv,
+                cwd=str(ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+            return int(proc.returncode), (proc.stdout or "")[-4000:], (proc.stderr or "")[-4000:]
+        except subprocess.TimeoutExpired as exc:
+            return 124, str(exc.stdout or "")[-4000:], f"{label}:timeout"
+        except OSError as exc:
+            return 127, "", f"{label}:{exc}"
 
-    marker_exists = marker.is_file()
-    marker_body = marker.read_text(encoding="utf-8") if marker_exists else ""
+    # Clear marker before parent
+    if marker.exists():
+        marker.unlink()
+    parent_rc, parent_out, parent_err = _run_one(plan["parent_argv"], "parent")
+    parent_marker = marker.is_file()
+    parent_marker_body = marker.read_text(encoding="utf-8") if parent_marker else ""
 
-    # Success criteria for deny path: shim never ran → no marker.
-    # We cannot prove host hook health from exit code alone; record evidence.
-    status = "marker_absent_ok" if not marker_exists else "MARKER_PRESENT_shim_ran"
+    # Clear marker before child/spawn canary
+    if marker.exists():
+        marker.unlink()
+    child_rc, child_out, child_err = _run_one(plan["child_argv"], "child")
+    child_marker = marker.is_file()
+    child_marker_body = marker.read_text(encoding="utf-8") if child_marker else ""
+
+    def _looks_like_real_claude(stdout: str, stderr: str) -> bool:
+        blob = f"{stdout}\n{stderr}".lower()
+        # Real Claude Code CLI version line (e.g. "2.1.215 (Claude Code)")
+        if "claude code" in blob and any(c.isdigit() for c in blob):
+            return True
+        if "omg-canary-shim" in blob:
+            return False
+        return False
+
+    parent_real = _looks_like_real_claude(parent_out, parent_err)
+    child_real = _looks_like_real_claude(child_out, child_err)
+    any_marker = parent_marker or child_marker
+    any_real = parent_real or child_real
+
+    # Classification:
+    # - REAL_CLI_RAN: host executed real claude (PATH/shim not used; PreToolUse did not block)
+    # - SHIM_RAN: our marker shim executed (shell allowed; deny failed)
+    # - marker_absent_ok: no shim marker and no real CLI version evidence
+    #   (deny worked OR model abstained — cannot distinguish)
+    if any_real:
+        status = "REAL_CLI_RAN_hook_did_not_block"
+    elif any_marker:
+        status = "MARKER_PRESENT_shim_ran"
+    else:
+        status = "marker_absent_ok"
+
     result = {
         **plan,
         "status": status,
         "parent_returncode": parent_rc,
         "parent_stdout_tail": parent_out,
         "parent_stderr_tail": parent_err,
-        "marker_exists": marker_exists,
-        "marker_body": marker_body[:2000],
+        "parent_marker_exists": parent_marker,
+        "parent_marker_body": parent_marker_body[:2000],
+        "parent_real_cli_detected": parent_real,
+        "child_returncode": child_rc,
+        "child_stdout_tail": child_out,
+        "child_stderr_tail": child_err,
+        "child_marker_exists": child_marker,
+        "child_marker_body": child_marker_body[:2000],
+        "child_real_cli_detected": child_real,
+        "marker_exists": any_marker,
+        "marker_body": (parent_marker_body + child_marker_body)[:2000],
         "honest_residual": (
             "Even if marker is absent, hooks remain fail-open on timeout/crash. "
-            "capability_mode read-write (no Execute) is the primary isolation layer."
+            "capability_mode read-write (no Execute) is the primary isolation layer. "
+            "REAL_CLI_RAN means PreToolUse soft-gate did not prevent external CLI. "
+            "Absent marker may mean deny OR model did not call shell OR PATH not inherited."
         ),
     }
     text = json.dumps(result, indent=2, ensure_ascii=False) + "\n"
@@ -235,9 +273,13 @@ def run_live(out_path: Path | None, *, timeout: float = 120.0) -> int:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
     print(f"wrote live evidence: {target}")
-    print(f"live status: {status} parent_rc={parent_rc} marker={marker_exists}")
-    # Non-zero only if shim actually ran (deny failed / fail-open executed).
-    return 0 if not marker_exists else 1
+    print(
+        f"live status: {status} parent_rc={parent_rc} child_rc={child_rc} "
+        f"parent_marker={parent_marker} child_marker={child_marker} "
+        f"parent_real={parent_real} child_real={child_real}"
+    )
+    # Non-zero if soft-gate effectiveness failed: real CLI or shim ran.
+    return 0 if (not any_marker and not any_real) else 1
 
 
 def main(argv: list[str] | None = None) -> int:

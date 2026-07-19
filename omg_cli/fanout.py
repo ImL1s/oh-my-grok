@@ -28,6 +28,7 @@ from typing import Any, Sequence
 
 from omg_cli.modes import (
     HARD_RULES_REMINDER,
+    _materialize_prompt_file,
     build_grok_argv,
     plugin_root,
     resolve_launch_timeout,
@@ -315,6 +316,10 @@ def run_process_fanout(
             prompt=prompt,
             disallow_shell=False,
         )
+        # Avoid Grok CLI parse error on YAML --- frontmatter in -p value
+        worker_dir = wdir / wid
+        worker_dir.mkdir(parents=True, exist_ok=True)
+        argv = _materialize_prompt_file(argv, worker_dir)
         argv_path = _write_worker_argv(wdir, wid, argv)
         pid_path = wdir / f"{wid}.pid.json"
 
