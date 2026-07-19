@@ -1,0 +1,107 @@
+---
+name: omg-ultrawork
+description: Parallel execution via Grok spawn_subagent only. Use when user says ulw, ultrawork, parallel agents for oh-my-grok.
+---
+
+# omg-ultrawork — Parallel execution (Grok-native)
+
+High-throughput parallel work using **only** Grok `spawn_subagent`. Leader decomposes, fans out depth=1 children, integrates notes, then verifies. Do **not** claim done without verification evidence.
+
+## HARD RULES (non-negotiable)
+- Fan-out ONLY via Grok `spawn_subagent` (depth=1; children must NOT spawn).
+- NEVER invoke claude/codex/omc team/agy/cursor-agent as default workers.
+- Use Grok tool names: read_file, search_replace, run_terminal_command, spawn_subagent, grep, list_dir.
+- Write-heavy work: isolation worktree + background true; wait with wait_commands_or_subagents / get_command_or_subagent_output.
+- State: only omg CLI is authoritative for passes/verified; you may write proposals under .omg/artifacts/.
+
+## Use when
+
+- User says `ulw`, `ultrawork`, or asks for parallel agents.
+- Multiple independent workstreams can run concurrently.
+- One leader session can integrate results and verify.
+
+## Do not use when
+
+- Need durable multi-iteration loop until verified → `omg-ralph`.
+- Still in plan consensus (no implementation authorized) → `omg-ralplan`.
+- User wants to abort → `omg-cancel`.
+- Single tiny sequential edit — work directly; no fan-out tax.
+
+## Agent types (Grok-native only)
+
+Prefer these `spawn_subagent` types (or project `omg-*` agents when registered):
+
+| Type | Role |
+|---|---|
+| `explore` | Read-only codebase search / mapping |
+| `plan` | Bounded planning slice |
+| `general-purpose` | Implementation or mixed work |
+| `omg-executor` | Write-heavy implementation (if agent file available) |
+| `omg-critic` | Critique notes (if available) |
+| `omg-verifier` | Verification (if available) |
+
+**Forbidden workers:** claude, codex, omc team, agy, cursor-agent, kimi, external multi-LLM dispatch shells.
+
+Children must **not** call `spawn_subagent` again (depth=1 hard cap).
+
+## Playbook
+
+### 1. Decompose
+
+- State goal in one sentence.
+- Split into **independent** slices (file ownership / no shared-write conflicts).
+- Define pass/fail acceptance criteria **before** spawning (command, artifact, or check).
+- Shared-file or prerequisite-heavy slices stay on the leader or run staged.
+
+### 2. Parallel spawn
+
+- Emit **multiple** `spawn_subagent` calls in one turn for independent slices.
+- Write-heavy slices: isolation worktree + `background: true`.
+- Read-only explore/plan: prefer capability_mode read-only when available.
+- Prompt each child with: goal slice, allowed paths, acceptance criteria, "do NOT spawn children", tool name list.
+
+### 3. Wait + collect
+
+- Wait with `wait_commands_or_subagents` / `get_command_or_subagent_output`.
+- Read summaries / notes under `.omg/artifacts/` if children wrote them.
+- Do not dump entire raw child logs into leader context — integrate deltas.
+
+### 4. Integrate
+
+- Merge results; resolve conflicts on leader only.
+- Re-run greps/tests as needed on integrated tree.
+- Write integration notes to `.omg/artifacts/` (proposal only).
+
+### 5. Leader verification (required)
+
+- Run the acceptance checks defined in step 1.
+- No green evidence → **not done** (fix, re-spawn failed slice, or escalate).
+- Convergence rule: **never claim complete without verification**.
+- Do **not** set `passes` / `verified` yourself — report evidence; `omg` CLI owns authoritative state when a run is supervised.
+
+## Tooling cheat sheet
+
+```text
+read_file / grep / list_dir          — context
+spawn_subagent                       — fan-out (depth=1)
+run_terminal_command (background)    — long builds/tests
+wait_commands_or_subagents           — join
+get_command_or_subagent_output       — poll/read results
+search_replace                       — leader integration edits
+```
+
+## Launch via CLI (when available)
+
+```bash
+omg ulw "goal text"
+```
+
+CLI may inject this skill and track run state under `.omg/state/`. Inside the session, still follow HARD RULES.
+
+## Anti-patterns
+
+- Serializing independent work "to be safe".
+- Nested spawn from children.
+- Shelling out to claude/codex as workers.
+- Declaring done because children "said" success without leader-run checks.
+- Self-matching `pkill -f` — use `omg cancel` if aborting.
