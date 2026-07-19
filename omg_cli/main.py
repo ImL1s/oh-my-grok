@@ -60,44 +60,6 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_integrate(args: argparse.Namespace) -> int:
-    """Apply ULW result envelopes (cherry-pick) for active or --run run."""
-    from omg_cli.integrate import integrate_results, result_path
-    from omg_cli.state import load_active_run, load_run
-
-    root = _project_root()
-    run_id = getattr(args, "run_id", None)
-    if not run_id:
-        active = load_active_run(root)
-        if active is None:
-            print("integrate failed: no active run (pass --run ID)", file=sys.stderr)
-            return 1
-        run_id = active["run_id"]
-
-    if load_run(root, run_id) is None:
-        print(f"integrate failed: no run found: {run_id}", file=sys.stderr)
-        return 1
-
-    dry_run = bool(getattr(args, "dry_run", False))
-    try:
-        result = integrate_results(root, run_id, dry_run=dry_run)
-    except (FileNotFoundError, OSError) as exc:
-        print(f"integrate failed: {exc}", file=sys.stderr)
-        return 1
-
-    rpath = result_path(root, run_id)
-    print(f"integrate result: {rpath}")
-    print(json.dumps(result, indent=2, ensure_ascii=False))
-
-    status = result.get("status")
-    if status == "ok":
-        return 0
-    if status == "missing":
-        # No envelopes yet — not a hard failure for dry document path
-        return 0 if dry_run else 1
-    return 1
-
-
 def cmd_mode(args: argparse.Namespace) -> int:
     """Launch ulw / ralph / ralplan via omg_cli.modes.run_mode."""
     from omg_cli.modes import DEFAULT_MAX_ITER, run_mode

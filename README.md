@@ -125,7 +125,7 @@ export OMG_ALLOW_EXTERNAL_CLI=1   # only in a controlled parent process
 ## Commands
 
 ```text
-omg [-h] [--safe] [--yolo] {setup,doctor,state,cancel,ulw,ralph,ralplan} ...
+omg [-h] [--safe] [--yolo] {setup,doctor,state,cancel,accept,integrate,ulw,ralph,ralplan} ...
 ```
 
 | Command | Purpose |
@@ -134,7 +134,9 @@ omg [-h] [--safe] [--yolo] {setup,doctor,state,cancel,ulw,ralph,ralplan} ...
 | `omg doctor` | Health checks (plugin, hooks, skills, agents, `grok` on PATH) |
 | `omg state` | Print active run JSON (`--run <id>` for a specific run) |
 | `omg cancel` | Cancel active run (`--run <id>` optional); uses PID files |
-| `omg ulw "goal"` | Ultrawork — parallel `spawn_subagent` fan-out |
+| `omg accept` | Freeze PRD commands + run acceptance; set `verified` only with CLI stamp |
+| `omg integrate` | ULW: clean-tree preflight + cherry-pick result envelopes (`--run`, `--dry-run`) |
+| `omg ulw "goal"` | Ultrawork — parallel `spawn_subagent` fan-out (records `base_sha` when git available) |
 | `omg ralph "goal"` | Ralph — persistence loop (one story per iteration) |
 | `omg ralplan "goal"` | Ralplan — plan consensus only (no implementation) |
 
@@ -160,7 +162,13 @@ omg ralplan "consensus plan for Option B state layout" --safe
 omg state
 omg state --run 20260719T094708Z-7048b749
 omg cancel
+
+# ULW convergence: workers write .omg/artifacts/ulw-results/<task_id>.json
+omg integrate --dry-run
+omg integrate --run <run-id>
 ```
+
+**ULW envelopes** (under `.omg/artifacts/ulw-results/`): `task_id`, `base_sha`, `head_sha`, `worktree_path`, `changed_files`, `status` (`ok`|`failed`). `omg integrate` sorts by `task_id`, requires clean git tree (no auto-stash), matches run `base_sha`, cherry-picks each `head_sha`, stops on conflict, writes `integrate.result.json`.
 
 Modes load the matching skill body (`skills/omg-ultrawork`, `skills/omg-ralph`, `skills/omg-ralplan`), inject HARD RULES, create a run under `.omg/state/runs/`, and launch `grok -p …` (unless `--dry-run`).
 
@@ -178,14 +186,16 @@ Modes load the matching skill body (`skills/omg-ultrawork`, `skills/omg-ralph`, 
 ┌───────────────────────────┐   ┌─────────────────────────────┐
 │  omg CLI (single-writer)  │   │  Hooks (fail-open safe)     │
 │  · setup / doctor / state │   │  SessionStart / Stop /      │
-│  · cancel (PID files)     │   │  SubagentStop → event spool │
-│  · ulw / ralph / ralplan  │   │  PreToolUse → soft deny     │
-│  · verified / passes only │   │  (OMG_ALLOW_EXTERNAL_CLI)   │
+│  · cancel / accept        │   │  SubagentStop → event spool │
+│  · integrate (ULW)        │   │  PreToolUse → soft deny     │
+│  · ulw / ralph / ralplan  │   │  (OMG_ALLOW_EXTERNAL_CLI)   │
+│  · verified / passes only │   │                             │
 └───────────────┬───────────┘   └─────────────────────────────┘
                 │
                 ▼
-        .omg/state/runs/<run-id>/   status.json, pid, last_argv.json
-        .omg/artifacts/             agent proposals only
+        .omg/state/runs/<run-id>/   status.json, acceptance.*, integrate.result.json
+        .omg/artifacts/ulw-results/ worker result envelopes
+        .omg/artifacts/             other agent proposals only
 ```
 
 | Layer | Notes |
@@ -195,7 +205,8 @@ Modes load the matching skill body (`skills/omg-ultrawork`, `skills/omg-ralph`, 
 | **Env bypass** | Process env `OMG_ALLOW_EXTERNAL_CLI=1` only — never parsed from command text |
 | **State** | `.omg/state/runs/<run-id>/` atomic JSON via `omg_cli/state.py`; hooks must not write `verified` |
 | **Workers** | Grok `spawn_subagent` only (depth 1); custom agents: orchestrator, executor, critic, verifier |
-| **Verified gate (MVP)** | Modes set `verified` only via `set_verified` when an acceptance artifact exists; **no frozen acceptance runner yet** — treat as soft completion gate |
+| **Acceptance** | Frozen `acceptance.manifest.json` + CLI-stamped `acceptance.result.json` (`writer=omg-cli`); forged `{passed:true}` cannot `set_verified` |
+| **ULW integrate** | Clean-tree preflight + envelope cherry-pick (`omg_cli/integrate.py`); does not set `verified` alone |
 | **Soft-guard limits** | Defense-in-depth, not a sandbox. Still may miss interpreter escapes (`python3 -c …`, `npx …`) and some shell constructs; HARD RULES remain primary |
 
 Project layout after `omg setup`:

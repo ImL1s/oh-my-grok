@@ -66,15 +66,43 @@ Children must **not** call `spawn_subagent` again (depth=1 hard cap).
 - Read summaries / notes under `.omg/artifacts/` if children wrote them.
 - Do not dump entire raw child logs into leader context — integrate deltas.
 
-### 4. Integrate
+### 4. Integrate (result envelopes + CLI)
 
-- Merge results; resolve conflicts on leader only.
-- Re-run greps/tests as needed on integrated tree.
-- Write integration notes to `.omg/artifacts/` (proposal only).
+Write-heavy children must leave a **result envelope** before exit:
+
+```text
+.omg/artifacts/ulw-results/<task_id>.json
+```
+
+```json
+{
+  "task_id": "t1",
+  "base_sha": "<leader HEAD at spawn>",
+  "head_sha": "<worker commit to apply>",
+  "worktree_path": "<absolute isolation worktree>",
+  "changed_files": ["path/a.py"],
+  "status": "ok",
+  "evidence": "pytest -q path/tests …"
+}
+```
+
+- `status` is `ok` or `failed`. Leader base is recorded by `omg ulw` as `base_sha` on the run.
+- Prefer clean leader tree (no auto-stash). Apply with:
+
+```bash
+omg integrate              # active run
+omg integrate --run <id>
+omg integrate --dry-run    # validate envelopes only
+```
+
+CLI sorts by `task_id`, rejects `base_sha` mismatch, cherry-picks each `head_sha`, stops on conflict, writes `integrate.result.json`. Do **not** claim merge success from agent notes alone.
+
+- Resolve residual conflicts on leader only; re-run greps/tests on integrated tree.
+- Write human notes under `.omg/artifacts/` (proposal only).
 
 ### 5. Leader verification (required)
 
-- Run the acceptance checks defined in step 1.
+- Run the acceptance checks defined in step 1 (or `omg accept` when a PRD exists).
 - No green evidence → **not done** (fix, re-spawn failed slice, or escalate).
 - Convergence rule: **never claim complete without verification**.
 - Do **not** set `passes` / `verified` yourself — report evidence; `omg` CLI owns authoritative state when a run is supervised.
