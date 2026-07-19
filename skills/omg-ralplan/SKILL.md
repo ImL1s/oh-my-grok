@@ -45,13 +45,22 @@ max_rounds default 3
 | **accepted** | **omg CLI only** | `ralplan.json` status | Only if verifier artifact contains whole-word **APPROVE** |
 | **failed** | **omg CLI only** | `ralplan.json` status | After max_rounds without APPROVE |
 
-### Read-only for critic / verifier
+### Capability defaults
+
+| Role | Prefer `capability_mode` | Notes |
+|------|--------------------------|--------|
+| **draft / revise** (leader) | `read-write` only for plan artifacts under run `stages/` + `.omg/artifacts/` | No product implementation |
+| **critic / verifier** | **`read-only`** (or permissionMode `plan`) | Cannot edit the repo |
+| **implementer agents** | **Do not spawn** in ralplan | Implementation is out of scope |
+| **Shell / acceptance** | N/A in ralplan | Product tests run later via **`omg accept`** / ulw/ralph only |
 
 When spawning critic or verifier, set **capability_mode read-only** (or equivalent) so they cannot edit the repo. They may only:
 
 - `read_file`, `grep`, `list_dir`
 - Return structured findings
 - Optionally append critique notes under `.omg/artifacts/` if the host allows write to that path; prefer returning findings to the leader who writes
+
+PreToolUse is a soft-gate and may not cover all subagent children — **read-only capability is the primary control** for critic/verifier. See `docs/research/subagent-pretooluse-spike.md`.
 
 ### No implementation
 

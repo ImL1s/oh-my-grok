@@ -57,8 +57,11 @@ Children must **not** call `spawn_subagent` again (depth=1 hard cap).
 
 - Emit **multiple** `spawn_subagent` calls in one turn for independent slices.
 - Write-heavy slices: isolation worktree + `background: true`.
-- Read-only explore/plan: prefer capability_mode read-only when available.
-- Prompt each child with: goal slice, allowed paths, acceptance criteria, "do NOT spawn children", tool name list.
+- **Capability defaults (prefer when host supports `capability_mode`):**
+  - **Implementers / write workers** (`general-purpose`, `omg-executor`): `capability_mode: read-write` — file edit tools OK; **prefer no unrestricted shell**. Do not rely on PreToolUse alone for children (see `docs/research/subagent-pretooluse-spike.md`).
+  - **Explore / plan / critic / verifier**: `capability_mode: read-only` (or permissionMode `plan`).
+  - **Shell / tests / acceptance**: execute via **`omg accept`** / frozen acceptance only (CLI stamps results). Leader may run checks; children should not self-verify the run.
+- Prompt each child with: goal slice, allowed paths, acceptance criteria, "do NOT spawn children", tool name list, capability_mode.
 
 ### 3. Wait + collect
 
