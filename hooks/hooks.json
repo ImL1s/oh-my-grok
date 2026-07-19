@@ -35,7 +35,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "run_terminal_command|Bash|Shell",
+        "matcher": "run_terminal_command|Bash|Shell|spawn_subagent|Task",
         "hooks": [
           {
             "type": "command",

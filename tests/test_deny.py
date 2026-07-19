@@ -77,6 +77,102 @@ def test_process_env_allow_only_when_set(monkeypatch):
     assert d["decision"] == "allow"
 
 
+def test_spawn_missing_capability_mode_denied():
+    d = decide_pre_tool_use(
+        {
+            "toolName": "spawn_subagent",
+            "toolInput": {
+                "subagent_type": "general-purpose",
+                "prompt": "do work",
+            },
+        }
+    )
+    assert d["decision"] == "deny"
+    assert "capability_mode" in d.get("reason", "")
+
+
+def test_spawn_executor_read_write_allowed():
+    d = decide_pre_tool_use(
+        {
+            "toolName": "spawn_subagent",
+            "toolInput": {
+                "subagent_type": "omg-executor",
+                "capability_mode": "read-write",
+                "prompt": "implement",
+            },
+        }
+    )
+    assert d["decision"] == "allow"
+
+
+def test_spawn_general_purpose_requires_read_write():
+    d = decide_pre_tool_use(
+        {
+            "toolName": "spawn_subagent",
+            "toolInput": {
+                "subagent_type": "general-purpose",
+                "capability_mode": "read-only",
+                "prompt": "x",
+            },
+        }
+    )
+    assert d["decision"] == "deny"
+    assert "read-write" in d.get("reason", "")
+
+
+def test_spawn_explore_requires_read_only():
+    d = decide_pre_tool_use(
+        {
+            "toolName": "spawn_subagent",
+            "toolInput": {
+                "subagent_type": "explore",
+                "capability_mode": "read-write",
+                "prompt": "x",
+            },
+        }
+    )
+    assert d["decision"] == "deny"
+    d2 = decide_pre_tool_use(
+        {
+            "toolName": "spawn_subagent",
+            "toolInput": {
+                "subagent_type": "explore",
+                "capability_mode": "read-only",
+                "prompt": "x",
+            },
+        }
+    )
+    assert d2["decision"] == "allow"
+
+
+def test_spawn_task_alias_and_camel_case_keys():
+    d = decide_pre_tool_use(
+        {
+            "tool_name": "Task",
+            "tool_input": {
+                "subagentType": "omg-critic",
+                "capabilityMode": "read-only",
+                "prompt": "review",
+            },
+        }
+    )
+    assert d["decision"] == "allow"
+
+
+def test_spawn_execute_mode_denied():
+    d = decide_pre_tool_use(
+        {
+            "toolName": "spawn_subagent",
+            "toolInput": {
+                "subagent_type": "general-purpose",
+                "capability_mode": "execute",
+                "prompt": "x",
+            },
+        }
+    )
+    assert d["decision"] == "deny"
+
+
 def _run_pre_tool(event: dict, env: dict | None = None) -> subprocess.CompletedProcess:
     run_env = os.environ.copy()
     run_env["PYTHONPATH"] = str(ROOT) + os.pathsep + run_env.get("PYTHONPATH", "")

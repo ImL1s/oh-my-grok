@@ -50,6 +50,16 @@ Beyond basename allowlisting, acceptance applies **argv grammar** per family (`P
 
 **Canary pass criteria:** `scripts/canary_pretool.py --live` exits 0 only when **both** parent and child output contain the exact PreToolUse reason `oh-my-grok: external agent CLI blocked` (host signature). Free-form model “denied” prose is `DENIED_CLAIMED_NO_HOOK_ORACLE` (exit 2), not a soft-gate pass.
 
+### Spawn fail-closed (0.3.0 Option A)
+
+PreToolUse matcher includes `spawn_subagent|Task`. When the hook runs, `omg_cli.deny.decide_spawn_subagent` **denies** spawns that:
+
+- omit `capability_mode` / `capabilityMode`, or
+- set `execute` / `all`, or
+- mismatch the role table (`general-purpose` / `omg-executor` → `read-write`; `explore` / critic / verifier → `read-only`).
+
+This is still a **soft-gate** (host fail-open on hook crash/timeout). Primary isolation remains host `capability_mode` when correctly set. Escape hatch: process env `OMG_ALLOW_UNSAFE_SPAWN=1` only.
+
 `--yes` skips confirmation UX only — **never** policy.
 
 ## Canary
