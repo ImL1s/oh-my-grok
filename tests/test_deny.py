@@ -39,6 +39,13 @@ PRE_TOOL = ROOT / "hooks" / "bin" / "pre_tool_use_deny.py"
     "nohup nice claude -p x",
     "sudo /usr/local/bin/codex exec",
     "env nohup claude -p x",
+    # path-prefixed env / shell / eval
+    "/usr/bin/env claude -p x",
+    "/bin/bash -c 'claude -p x'",
+    "/bin/bash -lc \"codex exec foo\"",
+    "eval claude -p x",
+    "exec claude -p x",
+    "/usr/bin/env bash -c 'claude -p x'",
 ])
 def test_deny_external_cli(cmd):
     assert should_deny_command(cmd) is True

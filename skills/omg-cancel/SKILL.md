@@ -39,27 +39,35 @@ The CLI should:
 3. Mark run cancelled in authoritative state (CLI only).
 4. Leave artifacts intact for post-mortem (do not delete unless user asks).
 
-## PID files (layout)
-
-Expected layout (v1):
+## PID / state layout (actual v0.1)
 
 ```text
-.omg/state/runs/
-  <run_id>/
-    run.json          # metadata (mode, goal, status)
-    leader.pid        # optional
-    workers/
-      <name>.pid      # one PID per background worker
+.omg/state/
+  active.json                 # pointer to active run_id (CLI-managed)
+  runs/<run_id>/
+    status.json               # authoritative status, verified, goal, mode
+    pid                       # last launched grok PID (single file)
+    last_argv.json            # last argv (if written by mode launcher)
+    last_prompt.md            # last prompt (if written)
+    prd.json                  # ralph scaffold (if present)
+    launch_error              # present when Popen failed
 ```
 
-Rules for any manual fallback:
+`omg cancel` (when CLI available):
+
+1. Loads active run (or `--run <id>`).
+2. Best-effort `SIGTERM` to the PID in `runs/<id>/pid` (ignores missing process).
+3. Marks status `cancelled` and clears `active.json` if it pointed at that run.
+4. Leaves artifacts under `.omg/artifacts/` for post-mortem.
+
+Manual fallback rules:
 
 1. Prefer `omg cancel` always.
 2. If CLI missing, kill by **PID file only**:
 
 ```bash
-# Example — kill one worker by recorded PID
-kill "$(cat .omg/state/runs/<run_id>/workers/<name>.pid)" 2>/dev/null || true
+# Example — kill the recorded mode launcher PID
+kill "$(cat .omg/state/runs/<run_id>/pid)" 2>/dev/null || true
 ```
 
 3. **Never** use self-matching patterns:
@@ -71,6 +79,8 @@ pkill -f "spawn_subagent"
 ```
 
 4. If you must scan processes, use `ps` + `awk` with a pattern that does **not** appear verbatim in the same shell command line, or kill only exact PIDs from files.
+
+Note: v0.1 records a **single** PID per run (last launch). Process groups / multi-worker PIDs are not fully tracked yet.
 
 ## Session behavior after cancel
 

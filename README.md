@@ -144,7 +144,7 @@ omg [-h] [--safe] [--yolo] {setup,doctor,state,cancel,ulw,ralph,ralplan} ...
 |------|---------|
 | `--dry-run` | Create run state + write `last_argv.json` / prompt; **do not** exec `grok` (mode subcommands) |
 | `--yolo` | Elevated permissions for mode launchers (maps to Grok `--permission-mode bypassPermissions` + `--always-approve`; off by default) |
-| `--safe` | Prefer non-elevated defaults (`--permission-mode default`); if both `--yolo` and `--safe`, **yolo wins** |
+| `--safe` | Prefer non-elevated defaults (`--permission-mode default`); if both `--yolo` and `--safe`, **safe wins** (no elevation) |
 | `--max-iter N` | Max iterations (`ralph` default **3**; `ulw` / `ralplan` default **1**) |
 
 ### Examples
@@ -195,6 +195,8 @@ Modes load the matching skill body (`skills/omg-ultrawork`, `skills/omg-ralph`, 
 | **Env bypass** | Process env `OMG_ALLOW_EXTERNAL_CLI=1` only — never parsed from command text |
 | **State** | `.omg/state/runs/<run-id>/` atomic JSON via `omg_cli/state.py`; hooks must not write `verified` |
 | **Workers** | Grok `spawn_subagent` only (depth 1); custom agents: orchestrator, executor, critic, verifier |
+| **Verified gate (MVP)** | Modes set `verified` only via `set_verified` when an acceptance artifact exists; **no frozen acceptance runner yet** — treat as soft completion gate |
+| **Soft-guard limits** | Defense-in-depth, not a sandbox. Still may miss interpreter escapes (`python3 -c …`, `npx …`) and some shell constructs; HARD RULES remain primary |
 
 Project layout after `omg setup`:
 

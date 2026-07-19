@@ -13,8 +13,10 @@ _DENY_BINS = r"(?:claude|codex|omx|agy|cursor-agent|kimi)"
 # Bare "echo claude is a word" must NOT match (claude is an argument, not a command head).
 _CMD_POS = r"(?:^|[;&|(`]|\|\||&&)"
 _ENV_ASSIGNS = r"(?:(?:[A-Za-z_][\w]*=\S*\s+)*)"
-# Wrappers that still leave the denied bin in command position after them
-_WRAPPERS = r"(?:(?:env|command|xargs|nice|nohup|sudo|time)\s+(?:--\s+)*)*"
+# Wrappers that still leave the denied bin in command position after them.
+# Path-prefixed env/exec allowed: /usr/bin/env claude, /bin/exec codex.
+_WRAPPER_BIN = r"(?:(?:\S*/)?(?:env|command|xargs|nice|nohup|sudo|time|exec))"
+_WRAPPERS = rf"(?:{_WRAPPER_BIN}\s+(?:--\s+)*)*"
 _PATH_PREFIX = r"(?:\S*/)?"
 
 _DENY_AT_CMD_POS = re.compile(
@@ -23,18 +25,20 @@ _DENY_AT_CMD_POS = re.compile(
 )
 _OMC_TEAM = re.compile(rf"{_CMD_POS}\s*omc\s+team\b", re.IGNORECASE)
 
+# eval claude ... (command-position eval of a deny bin)
+_EVAL = re.compile(
+    rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}(?:\S*/)?eval\s+(?:['\"]?){_PATH_PREFIX}{_DENY_BINS}\b",
+    re.IGNORECASE,
+)
+
 # sh/bash/zsh -c / -lc (login+command) with quoted OR unquoted body containing a deny bin.
+# Path-prefixed shells: /bin/bash -c 'claude'
 # Requires short-flag cluster that includes `c` (so bare `bash -l` is not a hit).
-# Examples:
-#   sh -c 'claude -p x'
-#   bash -lc "claude ..."
-#   zsh -c claude
-#   bash -c claude -p x
 _SH_C = re.compile(
     rf"{_CMD_POS}\s*"
     rf"{_ENV_ASSIGNS}"
-    rf"(?:(?:env|command|nice|nohup|sudo|time)\s+(?:--\s+)*)*"
-    rf"(?:sh|bash|zsh)\s+-"
+    rf"{_WRAPPERS}"
+    rf"(?:\S*/)?(?:sh|bash|zsh)\s+-"
     rf"[A-Za-z]*c[A-Za-z]*"  # -c, -lc, -cl, any short-flag soup that includes c
     rf"\s+"
     rf"(?:"
@@ -56,6 +60,8 @@ def should_deny_command(command: str) -> bool:
         return True
     # sh/bash/zsh -c/-lc '...claude...' (quoted or unquoted) and similar wrappers
     if _SH_C.search(command):
+        return True
+    if _EVAL.search(command):
         return True
     return False
 
