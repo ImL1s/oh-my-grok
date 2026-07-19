@@ -26,6 +26,12 @@ def test_build_launch_argv_no_yolo_by_default():
     assert any(
         "spawn_subagent" in a or "HARD RULE" in a or "omg-ultrawork" in a for a in argv
     )
+    # headless defaults: --cwd when known + --output-format plain
+    assert "--cwd" in argv
+    assert "/tmp/proj" in argv
+    assert "--output-format" in argv
+    of_idx = argv.index("--output-format")
+    assert argv[of_idx + 1] == "plain"
 
 
 def test_build_argv_includes_cwd_and_goal():
@@ -36,6 +42,15 @@ def test_build_argv_includes_cwd_and_goal():
     prompt = argv[p_idx + 1]
     assert "ship feature X" in prompt
     assert "omg-ralph" in prompt or "ONE" in prompt or "HARD RULE" in prompt
+
+
+def test_build_argv_always_cwd_when_path_known():
+    argv = build_grok_argv(mode="ulw", goal="x", cwd="/known/path")
+    assert argv.index("--cwd") >= 0
+    assert argv[argv.index("--cwd") + 1] == "/known/path"
+    # without cwd, flag absent
+    argv2 = build_grok_argv(mode="ulw", goal="x", cwd=None)
+    assert "--cwd" not in argv2
 
 
 def test_yolo_maps_to_permission_mode_not_bare_yolo():
@@ -84,6 +99,95 @@ def test_build_prompt_contains_hard_rules():
     text = build_prompt("ralplan", "consensus on schema")
     assert "HARD RULE" in text or "spawn_subagent" in text
     assert "consensus on schema" in text
+
+
+def test_ralph_prompt_context_pack_when_iteration_set(tmp_path):
+    """When ralph iteration is set, prompt includes context pack fields."""
+    from omg_cli.modes import ralph_context_pack
+    from omg_cli.state import create_run
+
+    run = create_run(tmp_path, mode="ralph", goal="ctx pack")
+    rid = run["run_id"]
+    # seed prd with a story + commands for frozen summary
+    prd_path = tmp_path / ".omg" / "state" / "runs" / rid / "prd.json"
+    prd_path.parent.mkdir(parents=True, exist_ok=True)
+    prd_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "goal": "ctx pack",
+                "current_story": "s1: wire acceptance",
+                "stories": [
+                    {
+                        "id": "s1",
+                        "title": "wire acceptance",
+                        "commands": [["pytest", "tests/test_foo.py", "-q"]],
+                    }
+                ],
+                "global_commands": [["true"]],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    text = build_prompt(
+        "ralph",
+        "ctx pack goal",
+        iteration=2,
+        max_iter=5,
+        run_id=rid,
+        project_root=tmp_path,
+    )
+    assert "Ralph context pack" in text
+    assert f"run_id: {rid}" in text or rid in text
+    assert "iteration: 2/5" in text
+    assert "story:" in text
+    assert "s1" in text or "wire acceptance" in text
+    assert "frozen_commands_summary:" in text
+    assert "pytest" in text or "true" in text
+    assert "acceptance.result.json" in text
+    assert rid in text
+
+    pack = ralph_context_pack(
+        run_id=rid,
+        iteration=2,
+        max_iter=5,
+        project_root=tmp_path,
+    )
+    assert "run_id:" in pack
+    assert "iteration: 2/5" in pack
+    assert "story:" in pack
+    assert "frozen_commands_summary:" in pack
+    assert "acceptance.result.json" in pack
+
+
+def test_ralph_prompt_context_pack_without_prd():
+    """Context pack still emits required fields with placeholders when no prd."""
+    text = build_prompt(
+        "ralph",
+        "bare",
+        iteration=1,
+        max_iter=3,
+        run_id="run-abc",
+    )
+    assert "Ralph context pack" in text
+    assert "run_id: run-abc" in text
+    assert "iteration: 1/3" in text
+    assert "story:" in text
+    assert "frozen_commands_summary:" in text
+    assert "acceptance.result.json" in text
+
+
+def test_resolve_launch_timeout_defaults():
+    from omg_cli.modes import DEFAULT_TIMEOUT, resolve_launch_timeout
+
+    assert DEFAULT_TIMEOUT == 3600.0
+    assert resolve_launch_timeout(None, dry_run=False) == 3600.0
+    assert resolve_launch_timeout(120.0, dry_run=False) == 120.0
+    assert resolve_launch_timeout(0, dry_run=False) is None  # unlimited
+    # dry_run leaves None alone (no process)
+    assert resolve_launch_timeout(None, dry_run=True) is None
 
 
 def test_dry_run_does_not_call_subprocess(monkeypatch, tmp_path):

@@ -80,6 +80,10 @@ def cmd_mode(args: argparse.Namespace) -> int:
         if getattr(args, "no_require_acceptance", False):
             require_acceptance = False
 
+    timeout = getattr(args, "timeout", None)
+    if timeout is not None:
+        timeout = float(timeout)
+
     return run_mode(
         mode,
         goal,
@@ -88,6 +92,7 @@ def cmd_mode(args: argparse.Namespace) -> int:
         root=_project_root(),
         max_iter=int(max_iter),
         dry_run=bool(getattr(args, "dry_run", False)),
+        timeout=timeout,
         require_acceptance=require_acceptance,
     )
 
@@ -316,6 +321,16 @@ def build_parser() -> argparse.ArgumentParser:
             action="store_true",
             default=False,
             help="allow completed-without-verified exit 0",
+        )
+        p.add_argument(
+            "--timeout",
+            dest="timeout",
+            type=float,
+            default=None,
+            help=(
+                "seconds per grok launch (default 3600); "
+                "0 = unlimited; dry-run ignores"
+            ),
         )
         p.set_defaults(func=cmd_mode)
 

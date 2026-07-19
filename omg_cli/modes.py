@@ -34,8 +34,10 @@ DEFAULT_MAX_ITER: dict[str, int] = {
     "ralplan": 3,
 }
 
-# Default subprocess timeout (seconds); None = no limit
-DEFAULT_TIMEOUT: float | None = None
+# Default subprocess timeout (seconds) for non-dry-run launches.
+# None means "use DEFAULT_TIMEOUT when launching" (see resolve_launch_timeout).
+# Override via run_mode(timeout=…) / CLI --timeout. Use 0 for unlimited.
+DEFAULT_TIMEOUT: float = 3600.0
 
 HARD_RULES_REMINDER = """
 ## HARD RULES reminder (omg CLI injection — non-negotiable)
@@ -70,6 +72,127 @@ def load_skill_body(mode: str, *, root: Path | None = None) -> str:
     return skill_path_for(mode, root=root).read_text(encoding="utf-8")
 
 
+def resolve_launch_timeout(
+    timeout: float | None,
+    *,
+    dry_run: bool = False,
+) -> float | None:
+    """Effective subprocess timeout for a grok launch.
+
+    - dry_run: unused (no process); returns timeout unchanged
+    - timeout is None → DEFAULT_TIMEOUT (3600s)
+    - timeout == 0 → unlimited (None for subprocess.wait)
+    - timeout > 0 → that many seconds
+    """
+    if dry_run:
+        return timeout
+    if timeout is None:
+        return float(DEFAULT_TIMEOUT)
+    if timeout == 0 or timeout == 0.0:
+        return None
+    return float(timeout)
+
+
+def ralph_context_pack(
+    *,
+    run_id: str | None = None,
+    iteration: int | None = None,
+    max_iter: int | None = None,
+    project_root: Path | str | None = None,
+    story: str | None = None,
+    frozen_commands_summary: str | None = None,
+    acceptance_result_path: str | None = None,
+) -> str:
+    """Build ralph iteration context block for prompt injection.
+
+    Includes run_id, iteration, current story, frozen commands summary, and
+    path to acceptance.result.json (for the worker to read failures — not write).
+    """
+    root = Path(project_root) if project_root is not None else None
+    story_text = story
+    cmds_summary = frozen_commands_summary
+    acc_path = acceptance_result_path
+
+    if root is not None and run_id:
+        try:
+            from omg_cli.acceptance import (
+                collect_commands,
+                load_prd,
+                result_path,
+            )
+
+            if acc_path is None:
+                acc_path = str(result_path(root, run_id))
+
+            prd = load_prd(root, run_id)
+            if prd is not None:
+                if story_text is None:
+                    current = prd.get("current_story")
+                    if isinstance(current, str) and current.strip():
+                        story_text = current.strip()
+                    elif isinstance(current, dict):
+                        sid = current.get("id") or "?"
+                        title = current.get("title") or ""
+                        story_text = f"{sid}: {title}".strip(": ")
+                    else:
+                        stories = prd.get("stories") or []
+                        if stories and isinstance(stories[0], dict):
+                            s0 = stories[0]
+                            story_text = (
+                                f"{s0.get('id', '?')}: {s0.get('title', '')}".strip(
+                                    ": "
+                                )
+                            )
+                        else:
+                            story_text = "(none — pick ONE story; update prd current_story)"
+
+                if cmds_summary is None:
+                    try:
+                        cmds = collect_commands(prd)
+                    except Exception:
+                        cmds = []
+                    if cmds:
+                        shown = [" ".join(c) for c in cmds[:8]]
+                        cmds_summary = "; ".join(shown)
+                        if len(cmds) > 8:
+                            cmds_summary += f" … (+{len(cmds) - 8} more)"
+                    else:
+                        cmds_summary = (
+                            "(none — fill prd stories[].commands / global_commands "
+                            "as argv arrays; CLI freezes before verified)"
+                        )
+        except Exception:
+            # Context pack is best-effort; never fail prompt build
+            pass
+
+    if story_text is None:
+        story_text = "(none — pick ONE story this iteration)"
+    if cmds_summary is None:
+        cmds_summary = (
+            "(none — fill prd stories[].commands; acceptance only via omg CLI)"
+        )
+    if acc_path is None and run_id:
+        acc_path = f".omg/state/runs/{run_id}/acceptance.result.json"
+    if acc_path is None:
+        acc_path = "(no run_id — path unknown)"
+
+    total = max_iter if max_iter is not None else "?"
+    iter_label = f"{iteration}/{total}" if iteration is not None else f"?/{total}"
+
+    lines = [
+        "## Ralph context pack (CLI injection — fresh each iteration)",
+        f"- run_id: {run_id or '(unknown)'}",
+        f"- iteration: {iter_label}",
+        f"- story: {story_text}",
+        f"- frozen_commands_summary: {cmds_summary}",
+        f"- acceptance.result.json: {acc_path}",
+        "- Do **not** forge acceptance.result.json; only `omg accept` / CLI runner stamps "
+        "`writer: omg-cli`. Prefer capability_mode read-write (no shell) for implementers; "
+        "shell/tests via omg CLI only.",
+    ]
+    return "\n".join(lines)
+
+
 def build_prompt(
     mode: str,
     goal: str,
@@ -78,8 +201,12 @@ def build_prompt(
     max_iter: int | None = None,
     run_id: str | None = None,
     skill_root: Path | None = None,
+    project_root: Path | str | None = None,
+    story: str | None = None,
+    frozen_commands_summary: str | None = None,
+    acceptance_result_path: str | None = None,
 ) -> str:
-    """Compose the -p prompt: skill body + HARD RULES + goal (+ ralph iter note)."""
+    """Compose the -p prompt: skill body + HARD RULES + goal (+ ralph context pack)."""
     skill = load_skill_body(mode, root=skill_root)
     parts = [
         skill,
@@ -99,6 +226,19 @@ def build_prompt(
         if iteration is not None:
             total = max_iter if max_iter is not None else "?"
             parts.append(f"## Iteration: {iteration}/{total}")
+            # Full context pack when iteration is set (ralph loop)
+            parts.append("")
+            parts.append(
+                ralph_context_pack(
+                    run_id=run_id,
+                    iteration=iteration,
+                    max_iter=max_iter,
+                    project_root=project_root,
+                    story=story,
+                    frozen_commands_summary=frozen_commands_summary,
+                    acceptance_result_path=acceptance_result_path,
+                )
+            )
     parts.extend(
         [
             "",
@@ -123,7 +263,12 @@ def build_grok_argv(
     max_iter: int | None = None,
     run_id: str | None = None,
     skill_root: Path | None = None,
+    project_root: Path | str | None = None,
     prompt: str | None = None,
+    story: str | None = None,
+    frozen_commands_summary: str | None = None,
+    acceptance_result_path: str | None = None,
+    output_format: str | None = "plain",
 ) -> list[str]:
     """Build argv for ``grok -p <prompt>``.
 
@@ -131,9 +276,15 @@ def build_grok_argv(
     not set) we map to ``--permission-mode bypassPermissions`` plus
     ``--always-approve``. **safe wins**: if ``safe=True``, always pass
     ``--permission-mode default`` even when yolo is also set.
+
+    Always passes ``--cwd`` when ``cwd`` is known. Headless default
+    ``--output-format plain`` (documented Grok flag).
     """
     if mode not in MODE_SKILL_REL:
         raise ValueError(f"unknown mode {mode!r}")
+
+    # Prefer project_root for context pack; fall back to cwd when path known
+    root_for_pack = project_root if project_root is not None else cwd
 
     if prompt is None:
         prompt = build_prompt(
@@ -143,12 +294,20 @@ def build_grok_argv(
             max_iter=max_iter,
             run_id=run_id,
             skill_root=skill_root,
+            project_root=root_for_pack,
+            story=story,
+            frozen_commands_summary=frozen_commands_summary,
+            acceptance_result_path=acceptance_result_path,
         )
 
     argv: list[str] = ["grok"]
 
+    # Always pass --cwd when path is known
     if cwd is not None:
         argv.extend(["--cwd", str(cwd)])
+
+    if output_format:
+        argv.extend(["--output-format", str(output_format)])
 
     # safe wins over yolo for elevation (safer default when both present)
     if safe:
@@ -351,7 +510,7 @@ def run_mode(
     root: Path | str | None = None,
     max_iter: int | None = None,
     dry_run: bool = False,
-    timeout: float | None = DEFAULT_TIMEOUT,
+    timeout: float | None = None,
     extra: Sequence[str] | None = None,
     require_acceptance: bool | None = None,
     acceptance_timeout: float | None = None,
@@ -365,6 +524,8 @@ def run_mode(
     - Never sets verified without CLI-stamped acceptance.result.json
     - dry_run: build argv / scaffolds, skip grok + acceptance exec (schema ok)
     - require_acceptance: default True for ralph; when True and not verified → non-zero
+    - timeout: seconds for each grok launch; None → DEFAULT_TIMEOUT (3600);
+      0 → unlimited. Configurable via CLI ``--timeout``.
     """
     if mode not in MODE_SKILL_REL:
         print(f"unknown mode: {mode}", file=sys.stderr)
@@ -372,6 +533,7 @@ def run_mode(
 
     root_path = Path(root) if root is not None else Path.cwd().resolve()
     goal = (goal or "").strip() or "(no goal)"
+    launch_timeout = resolve_launch_timeout(timeout, dry_run=dry_run)
 
     if max_iter is None:
         max_iter = DEFAULT_MAX_ITER.get(mode, 1)
@@ -389,7 +551,7 @@ def run_mode(
             yolo=yolo,
             safe=safe,
             dry_run=dry_run,
-            timeout=timeout,
+            timeout=launch_timeout,
             extra=extra,
         )
 
@@ -450,6 +612,7 @@ def run_mode(
             max_iter=max_iter if mode == "ralph" else None,
             run_id=run_id,
             skill_root=plugin_root(),
+            project_root=root_path,
         )
 
         write_status(
@@ -463,7 +626,7 @@ def run_mode(
             argv,
             cwd=root_path,
             run_dir=run_dir,
-            timeout=timeout,
+            timeout=launch_timeout,
             dry_run=dry_run,
         )
 
