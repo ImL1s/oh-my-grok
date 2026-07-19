@@ -1,10 +1,13 @@
 # tests/test_state.py
-from pathlib import Path
+import json
+
+import pytest
 
 from omg_cli.state import (
     cancel_run,
     create_run,
     load_active_run,
+    set_verified,
     write_status,
 )
 
@@ -57,9 +60,47 @@ def test_cancel_active_without_run_id(tmp_path):
     assert load_active_run(tmp_path) is None
 
 
-def test_write_status_does_not_set_verified(tmp_path):
+def test_write_status(tmp_path):
+    """write_status: reserved keys protected; verified only via set_verified + acceptance."""
     run = create_run(tmp_path, mode="ralph", goal="v")
-    updated = write_status(tmp_path, run["run_id"], "running", extra={"note": "ok"})
+    rid = run["run_id"]
+    created_at = run["created_at"]
+
+    # Normal extra fields are allowed
+    updated = write_status(tmp_path, rid, "running", extra={"note": "ok"})
     assert updated["status"] == "running"
     assert updated["verified"] is False
     assert updated["note"] == "ok"
+
+    # extra={"verified": True} must stay False (reserved; use set_verified)
+    hijack_v = write_status(tmp_path, rid, "running", extra={"verified": True})
+    assert hijack_v["verified"] is False
+
+    # extra={"status": "verified"} cannot hijack the status parameter
+    hijack_s = write_status(tmp_path, rid, "running", extra={"status": "verified"})
+    assert hijack_s["status"] == "running"
+    assert hijack_s["verified"] is False
+
+    # run_id / created_at cannot be rewritten via extra
+    hijack_id = write_status(
+        tmp_path,
+        rid,
+        "running",
+        extra={"run_id": "evil-id", "created_at": "1970-01-01T00:00:00+00:00"},
+    )
+    assert hijack_id["run_id"] == rid
+    assert hijack_id["created_at"] == created_at
+
+    # set_verified without acceptance artifact raises
+    with pytest.raises(PermissionError, match="acceptance"):
+        set_verified(tmp_path, rid)
+
+    # with acceptance artifact, set_verified succeeds
+    accept_path = tmp_path / ".omg" / "state" / "runs" / rid / "acceptance.json"
+    accept_path.write_text(
+        json.dumps({"passed": True}),
+        encoding="utf-8",
+    )
+    verified = set_verified(tmp_path, rid)
+    assert verified["verified"] is True
+    assert verified["status"] == "verified"

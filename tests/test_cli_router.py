@@ -1,6 +1,6 @@
 # tests/test_cli_router.py
-import json
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -90,7 +90,7 @@ def test_state_no_active(tmp_path):
     _run_omg("setup", cwd=tmp_path)
     r = _run_omg("state", cwd=tmp_path)
     assert r.returncode == 0
-    assert "no active" in r.stdout.lower() or "none" in r.stdout.lower() or r.stdout.strip()
+    assert "no active run" in r.stdout.lower()
 
 
 def test_state_and_cancel_via_cli(tmp_path):
@@ -107,7 +107,7 @@ def test_state_and_cancel_via_cli(tmp_path):
 
 
 def test_mode_launchers_dry_run(tmp_path):
-    """Mode launchers create run state without execing grok when --dry-run."""
+    """Task 6 modes: create run state without execing grok when --dry-run."""
     for mode in ("ulw", "ralph", "ralplan"):
         r = _run_omg(mode, "do something", "--dry-run", cwd=tmp_path)
         assert r.returncode == 0, r.stderr + r.stdout
@@ -127,3 +127,31 @@ def test_safe_and_yolo_flags_accepted():
     assert r2.returncode in (0, 1)
     r3 = _run_omg("doctor", "--yolo")
     assert r3.returncode in (0, 1)
+
+
+def test_doctor_hooks_missing_plugin_root(monkeypatch, tmp_path):
+    """Fail-path: monkeypatched empty plugin root → hooks scripts check fails."""
+    import omg_cli.doctor as doctor
+
+    monkeypatch.setattr(doctor, "plugin_root", lambda: tmp_path)
+    name, ok, detail = doctor.check_hooks_scripts()
+    assert name == "hooks scripts"
+    assert ok is False
+    assert "missing" in detail.lower()
+
+
+def test_doctor_hooks_not_executable(monkeypatch, tmp_path):
+    """Fail-path: hooks present but lacking +x → check fails."""
+    import omg_cli.doctor as doctor
+
+    for rel in doctor.HOOK_SCRIPTS:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# stub\n", encoding="utf-8")
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+
+    monkeypatch.setattr(doctor, "plugin_root", lambda: tmp_path)
+    name, ok, detail = doctor.check_hooks_scripts()
+    assert name == "hooks scripts"
+    assert ok is False
+    assert "not executable" in detail.lower() or "+x" in detail.lower()

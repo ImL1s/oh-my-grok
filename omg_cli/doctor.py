@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -10,6 +11,14 @@ from typing import Callable
 
 
 CheckFn = Callable[[], tuple[bool, str]]
+
+HOOK_SCRIPTS = (
+    "hooks/bin/_common.py",
+    "hooks/bin/session_start.py",
+    "hooks/bin/subagent_stop.py",
+    "hooks/bin/stop.py",
+    "hooks/bin/pre_tool_use_deny.py",
+)
 
 
 def plugin_root() -> Path:
@@ -41,18 +50,28 @@ def check_plugin_json() -> tuple[str, bool, str]:
 
 
 def check_hooks_scripts() -> tuple[str, bool, str]:
+    """Require each hooks/bin script to exist as a file and be executable (X_OK)."""
     root = plugin_root()
-    required = [
-        "hooks/bin/_common.py",
-        "hooks/bin/session_start.py",
-        "hooks/bin/subagent_stop.py",
-        "hooks/bin/stop.py",
-        "hooks/bin/pre_tool_use_deny.py",
-    ]
-    missing = [p for p in required if not (root / p).is_file()]
+    missing: list[str] = []
+    not_exec: list[str] = []
+    for rel in HOOK_SCRIPTS:
+        path = root / rel
+        if not path.is_file():
+            missing.append(rel)
+            continue
+        # os.access X_OK is the portable executable bit check on Unix;
+        # on non-Unix platforms without execute bits this may always be True.
+        if not os.access(path, os.X_OK):
+            not_exec.append(rel)
     if missing:
         return _check("hooks scripts", False, f"missing: {', '.join(missing)}")
-    return _check("hooks scripts", True, f"{len(required)} present")
+    if not_exec:
+        return _check(
+            "hooks scripts",
+            False,
+            f"not executable (+x required): {', '.join(not_exec)}",
+        )
+    return _check("hooks scripts", True, f"{len(HOOK_SCRIPTS)} present and executable")
 
 
 def check_pre_tool_use() -> tuple[str, bool, str]:

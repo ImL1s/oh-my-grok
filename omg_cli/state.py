@@ -122,6 +122,10 @@ def create_run(
     return status
 
 
+# Keys that extra must never override; status param / identity fields win.
+_WRITE_STATUS_RESERVED = frozenset({"status", "run_id", "verified", "created_at"})
+
+
 def write_status(
     root: Path,
     run_id: str,
@@ -135,18 +139,26 @@ def write_status(
     current = _read_json(path)
     if current is None:
         raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
-    current["status"] = status
-    current["updated_at"] = _utc_now()
+    preserved_run_id = current.get("run_id", run_id)
+    preserved_created_at = current.get("created_at")
+    preserved_verified = current.get("verified", False)
+
     if extra:
         for k, v in extra.items():
-            if k == "verified":
-                continue  # use set_verified only
-            if k in ("run_id",):
-                continue
+            if k in _WRITE_STATUS_RESERVED:
+                continue  # use set_verified for verified; identity/status are protected
             current[k] = v
-    # Guard: never flip verified via write_status
+
+    # Parameter and reserved fields always win over extra
+    current["status"] = status
+    current["run_id"] = preserved_run_id
+    if preserved_created_at is not None:
+        current["created_at"] = preserved_created_at
+    # Never allow extra (or residual state) to set verified=true via this path
+    current["verified"] = preserved_verified
     if current.get("verified") is True and not _has_acceptance_artifact(root, run_id):
         current["verified"] = False
+    current["updated_at"] = _utc_now()
     _atomic_write_json(path, current)
     return current
 
