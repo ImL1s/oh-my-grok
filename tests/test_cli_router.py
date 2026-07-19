@@ -106,17 +106,17 @@ def test_state_and_cancel_via_cli(tmp_path):
     assert load_active_run(tmp_path) is None
 
 
-def test_mode_stubs_not_implemented(tmp_path):
+def test_mode_launchers_dry_run(tmp_path):
+    """Mode launchers create run state without execing grok when --dry-run."""
     for mode in ("ulw", "ralph", "ralplan"):
-        r = _run_omg(mode, "do something", cwd=tmp_path)
-        # stubs may exit non-zero with clear message, or create state + message
-        combined = (r.stdout + r.stderr).lower()
-        assert (
-            "not implemented" in combined
-            or "task 6" in combined
-            or "coming soon" in combined
-            or r.returncode == 0
-        )
+        r = _run_omg(mode, "do something", "--dry-run", cwd=tmp_path)
+        assert r.returncode == 0, r.stderr + r.stdout
+        # active run should exist under project cwd (tmp_path)
+        state = _run_omg("state", cwd=tmp_path)
+        assert state.returncode == 0
+        assert "do something" in state.stdout or mode in state.stdout
+        # cancel so next mode can create a new active cleanly
+        _run_omg("cancel", cwd=tmp_path)
 
 
 def test_safe_and_yolo_flags_accepted():

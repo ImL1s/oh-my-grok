@@ -59,20 +59,29 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_mode_stub(args: argparse.Namespace) -> int:
-    """Stub for Task 6 mode launchers (ulw / ralph / ralplan)."""
+def cmd_mode(args: argparse.Namespace) -> int:
+    """Launch ulw / ralph / ralplan via omg_cli.modes.run_mode."""
+    from omg_cli.modes import DEFAULT_MAX_ITER, run_mode
+
     mode = args.command
-    goal = " ".join(args.goal or []).strip() or "(no goal)"
-    safe = getattr(args, "safe", False)
-    yolo = getattr(args, "yolo", False)
-    print(
-        f"omg {mode}: not implemented yet (Task 6).\n"
-        f"  goal={goal!r}\n"
-        f"  --safe={safe} --yolo={yolo}\n"
-        f"Mode launchers will create run state and invoke grok -p with skill bodies.",
-        file=sys.stderr,
+    goal = " ".join(args.goal or []).strip()
+    if not goal:
+        print(f"omg {mode}: goal text required", file=sys.stderr)
+        return 2
+
+    max_iter = getattr(args, "max_iter", None)
+    if max_iter is None:
+        max_iter = DEFAULT_MAX_ITER.get(mode, 1)
+
+    return run_mode(
+        mode,
+        goal,
+        yolo=bool(getattr(args, "yolo", False)),
+        safe=bool(getattr(args, "safe", False)),
+        root=_project_root(),
+        max_iter=int(max_iter),
+        dry_run=bool(getattr(args, "dry_run", False)),
     )
-    return 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -127,13 +136,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_cancel.set_defaults(func=cmd_cancel)
 
     for mode, help_text in (
-        ("ulw", "ultrawork parallel mode (stub — Task 6)"),
-        ("ralph", "ralph persistence loop (stub — Task 6)"),
-        ("ralplan", "ralplan consensus planning (stub — Task 6)"),
+        ("ulw", "ultrawork parallel mode (spawn_subagent fan-out)"),
+        ("ralph", "ralph persistence loop (one story per iteration)"),
+        ("ralplan", "ralplan consensus planning (no implementation)"),
     ):
         p = sub.add_parser(mode, parents=[common], help=help_text)
         p.add_argument("goal", nargs="*", help="goal text")
-        p.set_defaults(func=cmd_mode_stub)
+        p.add_argument(
+            "--max-iter",
+            dest="max_iter",
+            type=int,
+            default=None,
+            help="max iterations (ralph default 3; ulw/ralplan default 1)",
+        )
+        p.add_argument(
+            "--dry-run",
+            dest="dry_run",
+            action="store_true",
+            help="create run + argv only; do not exec grok",
+        )
+        p.set_defaults(func=cmd_mode)
 
     return parser
 
