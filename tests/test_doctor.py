@@ -186,3 +186,71 @@ def test_summarize_plugin_payload_from_list():
     assert name == "plugin trust/inventory"
     assert level == "ok"
     assert "0.1.0" in detail
+
+
+def test_check_global_pretool_hook_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    name, ok, detail = doctor.check_global_pretool_hook()
+    assert ok is False
+    assert "missing" in detail.lower() or "not found" in detail.lower()
+
+
+def test_check_global_pretool_hook_ok(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    hooks = tmp_path / ".grok" / "hooks"
+    hooks.mkdir(parents=True)
+    # MUST be named pre_tool_use_deny.py so path regex matches
+    deny = tmp_path / "pre_tool_use_deny.py"
+    deny.write_text("print(1)\n", encoding="utf-8")
+    deny.chmod(0o755)
+    (hooks / "omg-pretool-deny.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "run_terminal_command|Bash|Shell",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": f'python3 "{deny}"',
+                                    "timeout": 5,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    name, ok, detail = doctor.check_global_pretool_hook()
+    assert ok is True
+    assert str(deny) in detail or "omg-pretool-deny" in detail
+
+
+def test_check_global_pretool_hook_broken_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    hooks = tmp_path / ".grok" / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "omg-pretool-deny.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": 'python3 "/no/such/pre_tool_use_deny.py"',
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    name, ok, detail = doctor.check_global_pretool_hook()
+    assert ok is False

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,8 @@ HOOK_SCRIPTS = (
 )
 
 PLUGIN_NAME = "oh-my-grok"
+
+GLOBAL_PRETOOL_HOOK_NAME = "omg-pretool-deny.json"
 
 SOFT_GATE_FOOTER = (
     "PreToolUse is fail-open soft-gate; not hard guarantee."
@@ -158,6 +161,72 @@ def check_deny_importable() -> tuple[str, bool, str]:
         return _check("deny module", True, "omg_cli.deny importable")
     except Exception as e:
         return _check("deny module", False, f"{type(e).__name__}: {e}")
+
+
+def _home() -> Path:
+    return Path(os.environ.get("HOME") or Path.home())
+
+
+def check_global_pretool_hook() -> tuple[str, bool, str]:
+    """Require ~/.grok/hooks/omg-pretool-deny.json with a resolvable deny script.
+
+    Live 2026-07-19: plugin-bundled hooks alone did not appear in session
+    hook_execution; soft-gate requires this global hook file.
+    """
+    path = _home() / ".grok" / "hooks" / GLOBAL_PRETOOL_HOOK_NAME
+    if not path.is_file():
+        return _check(
+            "global PreToolUse soft-gate",
+            False,
+            f"missing {path} (run scripts/install-plugin.sh)",
+        )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        return _check("global PreToolUse soft-gate", False, f"invalid JSON: {e}")
+    # Extract first command string under hooks.PreToolUse[*].hooks[*].command
+    commands: list[str] = []
+    hooks_root = (data.get("hooks") or {}) if isinstance(data, dict) else {}
+    for group in hooks_root.get("PreToolUse") or []:
+        if not isinstance(group, dict):
+            continue
+        for h in group.get("hooks") or []:
+            if isinstance(h, dict) and isinstance(h.get("command"), str):
+                commands.append(h["command"])
+    if not commands:
+        return _check(
+            "global PreToolUse soft-gate",
+            False,
+            f"{path} has no PreToolUse command entries",
+        )
+    # Prefer a path that looks like pre_tool_use_deny.py
+    ok_path: str | None = None
+    for cmd in commands:
+        m = re.search(r'["\']([^"\']*pre_tool_use_deny\.py)["\']', cmd)
+        if not m:
+            m = re.search(r"(\S*pre_tool_use_deny\.py)", cmd)
+        if m:
+            candidate = Path(m.group(1))
+            if candidate.is_file() and os.access(candidate, os.R_OK):
+                ok_path = str(candidate)
+                break
+            return _check(
+                "global PreToolUse soft-gate",
+                False,
+                f"deny script not found or unreadable: {candidate}",
+            )
+    if ok_path is None:
+        # Command present but not our deny script — hard fail for this gate
+        return _check(
+            "global PreToolUse soft-gate",
+            False,
+            f"{path} commands do not reference pre_tool_use_deny.py: {commands!r}",
+        )
+    return _check(
+        "global PreToolUse soft-gate",
+        True,
+        f"{path} → {ok_path}",
+    )
 
 
 def _run_grok_json(argv: tuple[str, ...] | list[str], *, timeout: float = 8.0) -> Any | None:
@@ -313,6 +382,7 @@ def run_checks() -> list[tuple[str, bool, str]]:
         check_plugin_json(),
         check_hooks_scripts(),
         check_pre_tool_use(),
+        check_global_pretool_hook(),
         check_skills_omg_prefix(),
         check_agents_present(),
         check_deny_importable(),
