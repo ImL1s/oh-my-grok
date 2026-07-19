@@ -63,11 +63,11 @@ Outer CLI re-invokes this skill (or a fresh Grok session) until acceptance passe
 - Parallelize **within** the story only if slices are independent (`spawn_subagent` depth=1).
 - Allowed agents: Grok-native `general-purpose`, `explore`, `plan`, or `omg-executor` / `omg-orchestrator` if registered.
 - Forbidden: claude, codex, omc team, agy, cursor-agent as workers.
-- **Capability defaults (when host supports `capability_mode`):**
-  - **Implementers** (`omg-executor`, write `general-purpose`): `capability_mode: read-write` (edit tools; prefer **no unrestricted shell**).
-  - **Critic / verifier / explore**: `capability_mode: read-only`.
-  - **Acceptance / test shell**: only via outer **`omg` CLI** (`omg accept`, frozen commands) — never mark `verified` yourself.
-  - PreToolUse on children is **not** a hard guarantee; see `docs/research/subagent-pretooluse-spike.md`.
+- **Capability defaults (HARD REQUIRE when host supports `capability_mode`):**
+  - **Implementers** (`omg-executor`, write `general-purpose`): **MUST** use `capability_mode: read-write` (edit tools; **no Execute/shell**).
+  - **Critic / verifier / explore**: **MUST** use `capability_mode: read-only`.
+  - **Acceptance / test shell**: only via outer **`omg` CLI** (`omg accept`, semantic policy + frozen commands) — never mark `verified` yourself.
+  - PreToolUse on children is **not** a hard guarantee; primary isolation is capability_mode — see `docs/security-model.md` and `docs/research/subagent-pretooluse-spike.md`.
 
 ### 4. Evidence + stop
 

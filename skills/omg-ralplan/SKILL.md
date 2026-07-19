@@ -54,7 +54,7 @@ max_rounds default 3
 | **implementer agents** | **Do not spawn** in ralplan | Implementation is out of scope |
 | **Shell / acceptance** | N/A in ralplan | Product tests run later via **`omg accept`** / ulw/ralph only |
 
-When spawning critic or verifier, set **capability_mode read-only** (or equivalent) so they cannot edit the repo. They may only:
+When spawning critic or verifier, **MUST** set **capability_mode=read-only** (or equivalent) so they cannot edit the repo. They may only:
 
 - `read_file`, `grep`, `list_dir`
 - Return structured findings

@@ -10,7 +10,7 @@ Implementer must not self-approve. Use **omg-critic** then **omg-verifier** (rea
 ## HARD RULES (non-negotiable)
 
 - Fan-out ONLY via Grok `spawn_subagent` (depth=1).
-- Critic and verifier: **capability_mode read-only** / plan permissions.
+- Critic and verifier: **MUST** spawn with `capability_mode=read-only` / plan permissions (no shell).
 - NEVER mark omg `verified` yourself.
 - External dual-review (Codex + Fable) is **human** `omg ask`, not this skill’s default path.
 

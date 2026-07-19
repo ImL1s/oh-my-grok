@@ -57,11 +57,11 @@ Children must **not** call `spawn_subagent` again (depth=1 hard cap).
 
 - Emit **multiple** `spawn_subagent` calls in one turn for independent slices.
 - Write-heavy slices: isolation worktree + `background: true`.
-- **Capability defaults (prefer when host supports `capability_mode`):**
-  - **Implementers / write workers** (`general-purpose`, `omg-executor`): `capability_mode: read-write` — file edit tools OK; **prefer no unrestricted shell**. Do not rely on PreToolUse alone for children (see `docs/research/subagent-pretooluse-spike.md`).
-  - **Explore / plan / critic / verifier**: `capability_mode: read-only` (or permissionMode `plan`).
-  - **Shell / tests / acceptance**: execute via **`omg accept`** / frozen acceptance only (CLI stamps results). Leader may run checks; children should not self-verify the run.
-- Prompt each child with: goal slice, allowed paths, acceptance criteria, "do NOT spawn children", tool name list, capability_mode.
+- **Capability defaults (HARD REQUIRE when host supports `capability_mode`):**
+  - **Implementers / write workers** (`general-purpose`, `omg-executor`): **MUST** spawn with `capability_mode: read-write` — file edit tools OK; **no Execute/shell**. `omg-executor` also lists `run_terminal_command` / `spawn_subagent` in `disallowedTools`. Do not rely on PreToolUse alone (see `docs/research/subagent-pretooluse-spike.md` and `docs/security-model.md`).
+  - **Explore / plan / critic / verifier**: **MUST** spawn with `capability_mode: read-only` (or permissionMode `plan`).
+  - **Shell / tests / acceptance**: execute via **`omg accept`** / frozen acceptance only (CLI stamps results + semantic command policy). Leader may run checks; children must not self-verify the run.
+- Prompt each child with: goal slice, allowed paths, acceptance criteria, "do NOT spawn children", tool name list, **explicit capability_mode**.
 
 ### 3. Wait + collect
 

@@ -46,6 +46,9 @@ HARD_RULES_REMINDER = """
 - Use Grok tool names: read_file, search_replace, run_terminal_command, spawn_subagent, grep, list_dir.
 - State: only the omg CLI is authoritative for passes/verified; write proposals under .omg/artifacts/ only.
 - Do NOT set verified yourself. Cancel with `omg cancel` — never self-matching `pkill -f`.
+- MUST spawn implementers with capability_mode=read-write (no shell / no Execute).
+- MUST spawn critic/verifier/explore with capability_mode=read-only.
+- Shell/tests/acceptance only via `omg accept` (semantic command policy); never forge verified.
 """.strip()
 
 
@@ -187,7 +190,7 @@ def ralph_context_pack(
         f"- frozen_commands_summary: {cmds_summary}",
         f"- acceptance.result.json: {acc_path}",
         "- Do **not** forge acceptance.result.json; only `omg accept` / CLI runner stamps "
-        "`writer: omg-cli`. Prefer capability_mode read-write (no shell) for implementers; "
+        "`writer: omg-cli`. MUST spawn implementers with capability_mode=read-write (no shell); "
         "shell/tests via omg CLI only.",
     ]
     return "\n".join(lines)
@@ -241,6 +244,14 @@ def build_prompt(
             )
     parts.extend(
         [
+            "",
+            "## Capability spawn contract (hard — host-enforced when set)",
+            "- Implementers (`omg-executor`, write `general-purpose`): "
+            "**MUST** spawn with `capability_mode=read-write` (edit tools; **no Execute/shell**).",
+            "- Critic / verifier / explore / plan: **MUST** spawn with `capability_mode=read-only`.",
+            "- Do **not** give workers `execute` or `all`. Shell/tests only via outer `omg accept`.",
+            "- Children must not call `spawn_subagent` (depth=1); executor also disallows "
+            "`run_terminal_command` + `spawn_subagent` in frontmatter.",
             "",
             "## Goal",
             goal.strip() or "(no goal provided)",
@@ -444,6 +455,7 @@ def _try_acceptance_and_verify(
     try:
         freeze_acceptance(root, run_id, prd)
     except (ValueError, FileNotFoundError, OSError):
+        # CommandPolicyError subclasses ValueError — policy rejects return False.
         return False
 
     if dry_run:
