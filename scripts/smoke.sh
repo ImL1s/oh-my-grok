@@ -14,6 +14,9 @@ OMG=(python3 "${ROOT}/bin/omg")
 # Default 0: dry-run matrix + canary still fail-fast; doctor soft.
 STRICT="${OMG_SMOKE_STRICT:-0}"
 
+# Default ON for hermetic e2e (no LLM). Set OMG_E2E=0 to skip.
+OMG_E2E="${OMG_E2E:-1}"
+
 fail() {
   echo "ERROR: $*" >&2
   exit 1
@@ -84,8 +87,8 @@ python3 "${ROOT}/scripts/canary_pretool.py" --dry >/dev/null \
 
 echo "smoke OK"
 
-# Optional full real-path e2e (temp git project; no external LLM)
-if [[ "${OMG_E2E:-}" == "1" ]]; then
+# Hermetic real-path e2e (temp git project; no external LLM). Default OMG_E2E=1.
+if [[ "${OMG_E2E}" == "1" ]]; then
   echo "== e2e_realpath.py =="
   python3 "$ROOT/scripts/e2e_realpath.py"
 fi
