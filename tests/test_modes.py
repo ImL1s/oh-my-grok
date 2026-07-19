@@ -230,3 +230,51 @@ def test_popen_oserror_marks_failed_not_stuck_running(monkeypatch, tmp_path):
     assert "No such file" in launch_err.read_text(encoding="utf-8") or "grok" in launch_err.read_text(
         encoding="utf-8"
     )
+
+
+def test_launch_grok_uses_start_new_session_on_posix(monkeypatch, tmp_path):
+    """_launch_grok passes start_new_session=True on POSIX for process-group cancel."""
+    import os
+
+    captured: dict = {}
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 1111
+    mock_proc.wait.return_value = 0
+
+    def fake_popen(argv, **kwargs):
+        captured.update(kwargs)
+        return mock_proc
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    rc = run_mode("ulw", "session leader", root=tmp_path, dry_run=False)
+    assert rc == 0
+    if os.name == "posix":
+        assert captured.get("start_new_session") is True
+    else:
+        assert "start_new_session" not in captured
+
+
+def test_run_mode_mutex_blocks_second_active(monkeypatch, tmp_path):
+    """Second run_mode while first is non-terminal returns non-zero (mutex)."""
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no popen")),
+    )
+    rc = run_mode("ulw", "first", root=tmp_path, dry_run=True)
+    assert rc == 0
+    # dry_run ends as completed (terminal) — re-open as running to simulate active
+    active = load_active_run(tmp_path)
+    assert active is not None
+    from omg_cli.state import write_status
+
+    write_status(tmp_path, active["run_id"], "running")
+
+    rc2 = run_mode("ralph", "second", root=tmp_path, dry_run=True)
+    assert rc2 != 0
+    # first run still active
+    still = load_active_run(tmp_path)
+    assert still is not None
+    assert still["run_id"] == active["run_id"]

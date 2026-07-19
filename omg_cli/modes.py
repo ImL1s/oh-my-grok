@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -237,12 +238,17 @@ def _launch_grok(
 
     # Prefer Popen so we can record child PID. OSError (e.g. FileNotFoundError
     # when grok is missing) must not leave status stuck at "running".
+    # start_new_session=True on POSIX makes the child a session leader so
+    # cancel_run can killpg the whole process group.
+    popen_kwargs: dict[str, Any] = {
+        "cwd": str(cwd),
+        "env": os.environ.copy(),
+    }
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
+
     try:
-        proc = subprocess.Popen(
-            argv,
-            cwd=str(cwd),
-            env=os.environ.copy(),
-        )
+        proc = subprocess.Popen(argv, **popen_kwargs)
     except OSError as exc:
         (run_dir / "launch_error").write_text(f"{exc}\n", encoding="utf-8")
         return 127
@@ -251,7 +257,17 @@ def _launch_grok(
     try:
         return int(proc.wait(timeout=timeout))
     except subprocess.TimeoutExpired:
-        proc.kill()
+        # Prefer killing the process group when we started a new session
+        try:
+            if os.name == "posix":
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
+        except (ProcessLookupError, OSError):
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -290,12 +306,17 @@ def run_mode(
         max_iter = DEFAULT_MAX_ITER.get(mode, 1)
     max_iter = max(1, int(max_iter))
 
-    run = create_run(
-        root_path,
-        mode=mode,
-        goal=goal,
-        extra={"max_iter": max_iter, "yolo": bool(yolo), "safe": bool(safe)},
-    )
+    try:
+        run = create_run(
+            root_path,
+            mode=mode,
+            goal=goal,
+            extra={"max_iter": max_iter, "yolo": bool(yolo), "safe": bool(safe)},
+        )
+    except RuntimeError as exc:
+        # Active-run mutex: refuse concurrent non-terminal runs
+        print(f"omg {mode}: {exc}", file=sys.stderr)
+        return 1
     run_id = run["run_id"]
     run_dir = _run_dir(root_path, run_id)
 

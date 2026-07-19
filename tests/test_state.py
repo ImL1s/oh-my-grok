@@ -1,5 +1,7 @@
 # tests/test_state.py
 import json
+import os
+import signal
 
 import pytest
 
@@ -20,6 +22,40 @@ def test_create_run_atomic(tmp_path):
     assert active["run_id"] == run["run_id"]
     write_status(tmp_path, run["run_id"], "running")
     assert load_active_run(tmp_path)["status"] == "running"
+
+
+def test_create_run_mutex_blocks_active_non_terminal(tmp_path):
+    first = create_run(tmp_path, mode="ralph", goal="first")
+    assert first["status"] == "initialized"
+    with pytest.raises(RuntimeError, match="active run already exists"):
+        create_run(tmp_path, mode="ulw", goal="second")
+    # still the first active
+    active = load_active_run(tmp_path)
+    assert active is not None
+    assert active["run_id"] == first["run_id"]
+
+
+def test_create_run_mutex_allows_after_terminal(tmp_path):
+    first = create_run(tmp_path, mode="ralph", goal="done-ish")
+    write_status(tmp_path, first["run_id"], "completed")
+    second = create_run(tmp_path, mode="ulw", goal="next")
+    assert second["run_id"] != first["run_id"]
+    assert load_active_run(tmp_path)["run_id"] == second["run_id"]
+
+
+def test_create_run_mutex_force_overrides(tmp_path):
+    first = create_run(tmp_path, mode="ralph", goal="a")
+    write_status(tmp_path, first["run_id"], "running")
+    second = create_run(tmp_path, mode="ulw", goal="b", force=True)
+    assert second["run_id"] != first["run_id"]
+    assert load_active_run(tmp_path)["run_id"] == second["run_id"]
+
+
+def test_create_run_mutex_blocks_verifying(tmp_path):
+    first = create_run(tmp_path, mode="ralph", goal="v")
+    write_status(tmp_path, first["run_id"], "verifying")
+    with pytest.raises(RuntimeError, match="verifying"):
+        create_run(tmp_path, mode="ulw", goal="nope")
 
 
 def test_status_json_atomic_and_fields(tmp_path):
@@ -61,26 +97,57 @@ def test_cancel_active_without_run_id(tmp_path):
 
 
 def test_cancel_run_sigterms_pid_best_effort(tmp_path, monkeypatch):
-    """cancel_run sends SIGTERM when pid file exists; ProcessLookupError is ignored."""
-    import os
-    import signal
-
+    """cancel_run prefers killpg(SIGTERM); ProcessLookupError is ignored."""
     run = create_run(tmp_path, mode="ulw", goal="kill me")
     rid = run["run_id"]
     pid_path = tmp_path / ".omg" / "state" / "runs" / rid / "pid"
     pid_path.write_text("999999\n", encoding="utf-8")
 
+    killpgs: list[tuple[int, int]] = []
     kills: list[tuple[int, int]] = []
+
+    def fake_killpg(pgid, sig):
+        killpgs.append((pgid, sig))
+        raise ProcessLookupError(f"no process group {pgid}")
 
     def fake_kill(pid, sig):
         kills.append((pid, sig))
         raise ProcessLookupError(f"no process {pid}")
 
+    monkeypatch.setattr(os, "killpg", fake_killpg)
     monkeypatch.setattr(os, "kill", fake_kill)
 
     cancelled = cancel_run(tmp_path, rid)
     assert cancelled["status"] == "cancelled"
+    # killpg tried first; fallback kill after killpg fails
+    assert killpgs == [(999999, signal.SIGTERM)]
     assert kills == [(999999, signal.SIGTERM)]
+
+
+def test_cancel_run_killpg_success_skips_single_kill(tmp_path, monkeypatch):
+    run = create_run(tmp_path, mode="ulw", goal="pg")
+    rid = run["run_id"]
+    pid_path = tmp_path / ".omg" / "state" / "runs" / rid / "pid"
+    pid_path.write_text("424242\n", encoding="utf-8")
+
+    killpgs: list[tuple[int, int]] = []
+    kills: list[tuple[int, int]] = []
+
+    def fake_killpg(pgid, sig):
+        killpgs.append((pgid, sig))
+        # success — no raise
+
+    def fake_kill(pid, sig):
+        kills.append((pid, sig))
+
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr(os, "kill", fake_kill)
+
+    cancelled = cancel_run(tmp_path, rid)
+    assert cancelled["status"] == "cancelled"
+    assert killpgs == [(424242, signal.SIGTERM)]
+    assert kills == []
+    assert cancelled.get("kill_actions") == ["killpg:SIGTERM"]
 
 
 def test_write_status(tmp_path):

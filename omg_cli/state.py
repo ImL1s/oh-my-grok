@@ -85,16 +85,41 @@ def _make_run_id() -> str:
     return f"{ts}-{uuid.uuid4().hex[:8]}"
 
 
+# Statuses that block a second concurrent create_run (active mutex).
+ACTIVE_NON_TERMINAL_STATUSES = frozenset({"initialized", "running", "verifying"})
+TERMINAL_STATUSES = frozenset(
+    {"cancelled", "completed", "failed", "verified"}
+)
+
+
 def create_run(
     root: Path,
     *,
     mode: str,
     goal: str,
     extra: dict[str, Any] | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
-    """Create a new run directory + status.json and point active.json at it."""
+    """Create a new run directory + status.json and point active.json at it.
+
+    Refuses when an active run exists with status in
+    ``{initialized, running, verifying}`` unless ``force=True``. Terminal
+    statuses (cancelled/completed/failed/verified) do not block.
+    """
     root = Path(root)
     ensure_omg_dirs(root)
+
+    if not force:
+        active = load_active_run(root)
+        if active is not None:
+            st = str(active.get("status") or "")
+            if st in ACTIVE_NON_TERMINAL_STATUSES:
+                raise RuntimeError(
+                    "active run already exists: "
+                    f"run_id={active.get('run_id')!r} status={st!r}; "
+                    "cancel it first or pass force=True"
+                )
+
     run_id = _make_run_id()
     now = _utc_now()
     status: dict[str, Any] = {
@@ -198,11 +223,53 @@ def clear_active(root: Path, run_id: str | None = None) -> None:
         _atomic_write_json(path, {"run_id": None, "updated_at": _utc_now()})
 
 
-def cancel_run(root: Path, run_id: str | None = None) -> dict[str, Any]:
+def _kill_run_process_group(pid: int, *, grace_s: float = 0.0) -> list[str]:
+    """Best-effort kill of process group then process. Returns actions taken.
+
+    Prefer ``os.killpg`` when the pid is a session leader (``start_new_session``).
+    Ignores ESRCH / ProcessLookupError. Optional grace then SIGKILL.
+    """
+    actions: list[str] = []
+    # Prefer process-group signal when possible (POSIX session leader)
+    try:
+        os.killpg(pid, signal.SIGTERM)
+        actions.append("killpg:SIGTERM")
+    except (ProcessLookupError, PermissionError, OSError):
+        # Fall back to single-pid SIGTERM
+        try:
+            os.kill(pid, signal.SIGTERM)
+            actions.append("kill:SIGTERM")
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    if grace_s and grace_s > 0:
+        import time
+
+        time.sleep(grace_s)
+        # Escalate to SIGKILL on group, then pid
+        try:
+            os.killpg(pid, signal.SIGKILL)
+            actions.append("killpg:SIGKILL")
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                os.kill(pid, signal.SIGKILL)
+                actions.append("kill:SIGKILL")
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+    return actions
+
+
+def cancel_run(
+    root: Path,
+    run_id: str | None = None,
+    *,
+    kill_grace_s: float = 0.0,
+) -> dict[str, Any]:
     """Mark run cancelled and clear active if it matches. Does not delete artifacts.
 
-    Best-effort: if a pid file exists under the run dir, send SIGTERM
-    (ignore ProcessLookupError / permission errors).
+    Best-effort: if a pid file exists under the run dir, send SIGTERM to the
+    process group (``killpg``) when possible, else the single pid. Ignore
+    ProcessLookupError / ESRCH / permission errors. Optional grace then SIGKILL.
     """
     root = Path(root)
     if run_id is None:
@@ -214,19 +281,23 @@ def cancel_run(root: Path, run_id: str | None = None) -> dict[str, Any]:
     if current is None:
         raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
 
-    # Best-effort SIGTERM via pid file (never self-matching pkill)
+    # Best-effort process-group kill via pid file (never self-matching pkill)
     pid_path = _runs_dir(root) / run_id / "pid"
+    kill_actions: list[str] = []
     if pid_path.is_file():
         try:
             pid = int(pid_path.read_text(encoding="utf-8").strip())
-            os.kill(pid, signal.SIGTERM)
-        except (ValueError, ProcessLookupError, OSError):
-            pass
+        except ValueError:
+            pid = -1
+        if pid > 0:
+            kill_actions = _kill_run_process_group(pid, grace_s=kill_grace_s)
 
     current["status"] = "cancelled"
     current["verified"] = False
     current["updated_at"] = _utc_now()
     current["cancelled_at"] = current["updated_at"]
+    if kill_actions:
+        current["kill_actions"] = kill_actions
     _atomic_write_json(_status_path(root, run_id), current)
     clear_active(root, run_id)
     return current
