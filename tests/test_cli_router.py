@@ -176,11 +176,14 @@ def test_accept_cli_freeze_and_run(tmp_path):
         + "\n",
         encoding="utf-8",
     )
-    # non-tty subprocess requires --yes; --review prints commands first
+    # non-tty subprocess requires --yes; --review prints sha/cwd/commands first
     r = _run_omg("accept", "--run", rid, "--review", "--yes", cwd=tmp_path)
     assert r.returncode == 0, r.stderr + r.stdout
     assert "verified" in r.stdout.lower() or rid in r.stdout
-    assert "acceptance commands" in r.stdout.lower() or "true" in r.stdout
+    out = r.stdout.lower()
+    assert "manifest_sha256" in out or "manifest_sha" in out
+    assert "acceptance commands" in out or "true" in r.stdout
+    assert rid in r.stdout or "run_id" in out
     result = tmp_path / ".omg" / "state" / "runs" / rid / "acceptance.result.json"
     assert result.is_file()
     data = json.loads(result.read_text(encoding="utf-8"))
@@ -211,6 +214,36 @@ def test_accept_cli_review_requires_yes(tmp_path):
     r = _run_omg("accept", "--run", rid, "--review", cwd=tmp_path)
     assert r.returncode == 2, r.stderr + r.stdout
     assert "yes" in (r.stderr + r.stdout).lower()
+
+
+def test_accept_cli_yes_cannot_bypass_policy(tmp_path):
+    """--yes skips confirmation only; python -c still rejected."""
+    from omg_cli.state import create_run
+
+    run = create_run(tmp_path, mode="ralph", goal="policy floor")
+    rid = run["run_id"]
+    prd_path = tmp_path / ".omg" / "state" / "runs" / rid / "prd.json"
+    prd_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "goal": "policy floor",
+                "stories": [
+                    {
+                        "id": "s1",
+                        "title": "bad",
+                        "commands": [["python3", "-c", "pass"]],
+                    }
+                ],
+                "global_commands": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    r = _run_omg("accept", "--run", rid, "--yes", cwd=tmp_path)
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "-c" in (r.stderr + r.stdout) or "policy" in (r.stderr + r.stdout).lower()
 
 
 def test_safe_and_yolo_flags_accepted():

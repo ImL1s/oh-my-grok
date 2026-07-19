@@ -125,12 +125,13 @@ def cmd_mode(args: argparse.Namespace) -> int:
 def cmd_accept(args: argparse.Namespace) -> int:
     """Freeze PRD acceptance commands and run them for active (or --run) run."""
     from omg_cli.acceptance import (
-        CommandAllowlistError,
+        CommandPolicyError,
         freeze_acceptance,
         freeze_and_run,
         format_commands_review,
         load_frozen_commands,
         load_prd,
+        read_manifest_sha256,
         result_path,
     )
     from omg_cli.state import load_active_run, load_run, set_verified
@@ -162,52 +163,106 @@ def cmd_accept(args: argparse.Namespace) -> int:
     no_allowlist = bool(getattr(args, "no_allowlist", False))
     extra_allow = list(getattr(args, "allow_cmd", None) or [])
 
+    # --no-allowlist is TTY-only break-glass; floors still apply at run time.
     if no_allowlist:
+        if not sys.stdin.isatty():
+            print(
+                "accept: --no-allowlist is TTY-only break-glass "
+                "(non-tty refuses; always-deny floor cannot be bypassed)",
+                file=sys.stderr,
+            )
+            return 2
         print(
-            "WARNING: --no-allowlist disables the positive acceptance allowlist "
-            "(always-deny bins and shells still blocked). Dangerous; use only in "
-            "controlled emergencies.",
+            "WARNING: --no-allowlist is break-glass (positive allowlist skipped). "
+            "Shells, agent CLIs, python -c, npx, and always-deny bins still blocked.",
             file=sys.stderr,
         )
 
-    # Freeze early so --review can print the exact command list.
+    # Freeze early so --review can print the exact frozen command list + sha.
     try:
-        freeze_acceptance(root, run_id, prd)
+        freeze_acceptance(
+            root,
+            run_id,
+            prd,
+            extra_allow=extra_allow or None,
+            no_allowlist=no_allowlist,
+        )
         commands = load_frozen_commands(root, run_id)
+        manifest_sha = read_manifest_sha256(root, run_id)
+    except CommandPolicyError as exc:
+        print(f"accept policy rejected: {exc}", file=sys.stderr)
+        return 1
     except (ValueError, FileNotFoundError, OSError) as exc:
         print(f"accept failed: {exc}", file=sys.stderr)
         return 1
 
-    if review or not dry_run:
-        print(format_commands_review(commands))
+    # Always show review block (sha / cwd / numbered shlex) before exec or dry-run.
+    print(
+        format_commands_review(
+            commands,
+            root=root,
+            run_id=run_id,
+            manifest_sha=manifest_sha,
+        )
+    )
 
-    # Gate: --review always requires --yes to exec; non-tty requires --yes too.
-    needs_yes = (review or not sys.stdin.isatty()) and not dry_run
-    if needs_yes and not yes:
-        if review:
-            print(
-                "accept --review: pass --yes to execute the commands above",
-                file=sys.stderr,
+    if dry_run:
+        try:
+            ok = freeze_and_run(
+                root,
+                run_id,
+                prd,
+                dry_run=True,
+                extra_allow=extra_allow or None,
+                no_allowlist=no_allowlist,
             )
-        else:
+        except CommandPolicyError as exc:
+            print(f"accept policy rejected: {exc}", file=sys.stderr)
+            return 1
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            print(f"accept failed: {exc}", file=sys.stderr)
+            return 1
+        rpath = result_path(root, run_id)
+        print(f"acceptance result: {rpath}")
+        if rpath.is_file():
+            print(rpath.read_text(encoding="utf-8"))
+        print("dry_run: commands not executed; verified not set")
+        return 0
+
+    # Confirmation gate (policy already enforced at freeze; --yes never skips policy):
+    # - non-TTY: require --yes
+    # - TTY + --review without --yes: interactive y/N prompt
+    # - TTY without --review: execute (operator already invoked accept)
+    # - --yes: skip prompt
+    if not yes:
+        if not sys.stdin.isatty():
             print(
                 "accept: non-tty stdin requires --yes to execute acceptance commands "
-                "(or use --dry-run / --review)",
+                "(or use --dry-run)",
                 file=sys.stderr,
             )
-        return 2
+            return 2
+        if review:
+            try:
+                answer = input("run frozen acceptance commands? [y/N] ").strip().lower()
+            except EOFError:
+                print("accept: confirmation aborted (EOF)", file=sys.stderr)
+                return 2
+            if answer not in ("y", "yes"):
+                print("accept: aborted (not confirmed)", file=sys.stderr)
+                return 2
 
     try:
         ok = freeze_and_run(
             root,
             run_id,
             prd,
-            dry_run=dry_run,
+            dry_run=False,
             extra_allow=extra_allow or None,
             no_allowlist=no_allowlist,
         )
-    except CommandAllowlistError as exc:
-        print(f"accept allowlist rejected: {exc}", file=sys.stderr)
+    except CommandPolicyError as exc:
+        print(f"accept policy rejected: {exc}", file=sys.stderr)
         return 1
     except (ValueError, FileNotFoundError, OSError) as exc:
         print(f"accept failed: {exc}", file=sys.stderr)
@@ -217,10 +272,6 @@ def cmd_accept(args: argparse.Namespace) -> int:
     print(f"acceptance result: {rpath}")
     if rpath.is_file():
         print(rpath.read_text(encoding="utf-8"))
-
-    if dry_run:
-        print("dry_run: commands not executed; verified not set")
-        return 0
 
     if not ok:
         print("acceptance FAILED", file=sys.stderr)
@@ -490,17 +541,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="NAME",
-        help="extend acceptance basename allowlist (repeatable)",
+        help="extend acceptance basename allowlist (repeatable; floors still apply)",
     )
     p_accept.add_argument(
         "--no-allowlist",
         dest="no_allowlist",
         action="store_true",
         help=(
-            "DANGEROUS: skip positive allowlist (shells + always-deny bins "
-            "like claude/rm still blocked)"
+            "DANGEROUS TTY-only break-glass: skip positive allowlist "
+            "(shells, agent CLIs, python -c, npx still blocked)"
         ),
     )
+
     p_accept.set_defaults(func=cmd_accept)
 
     p_integrate = sub.add_parser(
