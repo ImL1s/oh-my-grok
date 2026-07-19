@@ -402,17 +402,16 @@ def verify_changed_files(
     head: str,
     claimed: list[str],
 ) -> None:
-    """If *claimed* is non-empty, require it matches ``git diff --name-only base head``.
+    """Require *claimed* paths match ``git diff --name-only base head``.
 
-    Empty claimed list skips the check (workers may omit detail). Order-
-    independent set compare after path normalization.
+    - Actual non-empty + claimed empty → refuse (anti-forge skip).
+    - Both empty → ok (true no-op range, base==head or empty diff).
+    - Claimed non-empty → order-independent set equality after path normalize.
 
     Raises:
-        IntegrateError: mismatch between claimed and actual paths.
+        IntegrateError: empty claim with non-empty diff, or set mismatch.
     """
     root = Path(root)
-    if not claimed:
-        return
     b = (base or "").strip()
     h = (head or "").strip()
     if not b or not h:
@@ -429,6 +428,13 @@ def verify_changed_files(
         if line.strip()
     }
     claimed_norm = {_normalize_path_for_compare(p) for p in claimed if p}
+    if actual and not claimed_norm:
+        raise IntegrateError(
+            "verify_changed_files: changed_files is empty but git diff "
+            f"{b}..{h} has {len(actual)} path(s); refuse skip (anti-forge)"
+        )
+    if not claimed_norm and not actual:
+        return  # true no-op range
     if claimed_norm != actual:
         missing = sorted(actual - claimed_norm)
         extra = sorted(claimed_norm - actual)

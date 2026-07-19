@@ -19,6 +19,7 @@ from omg_cli.integrate import (
     list_range_commits,
     load_envelopes,
     preflight_clean_tree,
+    preflight_envelope_range,
     record_base_sha,
     reject_merge_commits,
     result_path,
@@ -251,7 +252,8 @@ def test_integrate_sorts_by_task_id(tmp_path):
 
     run = create_run(leader, mode="ulw", goal="order", extra={"base_sha": base})
     env_dir = default_envelopes_dir(leader)
-    # Write out of order on disk; integrate sorts by task_id
+    # Write out of order on disk; integrate sorts by task_id.
+    # claimed paths must match git diff (empty claim + non-empty range is refused).
     _write_envelope(
         env_dir,
         {
@@ -260,8 +262,7 @@ def test_integrate_sorts_by_task_id(tmp_path):
             "head_sha": head_b,
             "worktree_path": str(wt),
             "status": "ok",
-            # empty claimed skips verify_changed_files (order-only dry_run)
-            "changed_files": [],
+            "changed_files": ["b.txt"],
         },
     )
     _write_envelope(
@@ -272,7 +273,7 @@ def test_integrate_sorts_by_task_id(tmp_path):
             "head_sha": head_a,
             "worktree_path": str(wt),
             "status": "ok",
-            "changed_files": [],
+            "changed_files": ["a.txt", "b.txt"],
         },
     )
 
@@ -753,6 +754,62 @@ def test_changed_files_lie_fails(tmp_path):
     result = integrate_results(leader, run["run_id"], dry_run=True)
     assert result["status"] == "failed"
     assert "changed_files" in (result.get("error") or "")
+
+
+def test_ok_envelope_empty_changed_files_fails(tmp_path):
+    """status=ok with empty changed_files must not skip verify (anti-forge)."""
+    leader = tmp_path / "leader"
+    base = _init_repo(leader)
+    wt = leader / ".omg" / "worktrees" / "empty-claim"
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    _git(leader, "worktree", "add", "-b", "empty-claim-br", str(wt), "HEAD")
+    (wt / "secret.py").write_text("forged\n", encoding="utf-8")
+    _git(wt, "add", "secret.py")
+    _git(wt, "commit", "-m", "real change hidden by empty claim")
+    head = _git(wt, "rev-parse", "HEAD").stdout.strip()
+
+    env = validate_envelope(
+        {
+            "task_id": "t-empty",
+            "base_sha": base,
+            "head_sha": head,
+            "worktree_path": str(wt),
+            "changed_files": [],
+            "status": "ok",
+        }
+    )
+    with pytest.raises(IntegrateError, match="changed_files"):
+        preflight_envelope_range(
+            wt,
+            env["base_sha"],
+            env["head_sha"],
+            claimed=env["changed_files"],
+        )
+    with pytest.raises(IntegrateError, match="changed_files"):
+        verify_changed_files(wt, base, head, [])
+
+    run = create_run(leader, mode="ulw", goal="empty-claim", extra={"base_sha": base})
+    _write_envelope(
+        default_envelopes_dir(leader),
+        {
+            "task_id": "t-empty",
+            "base_sha": base,
+            "head_sha": head,
+            "worktree_path": str(wt),
+            "status": "ok",
+            "changed_files": [],
+        },
+    )
+    result = integrate_results(leader, run["run_id"], dry_run=True)
+    assert result["status"] == "failed"
+    assert "changed_files" in (result.get("error") or "")
+
+
+def test_empty_changed_files_ok_when_base_equals_head(tmp_path):
+    """True no-op range: both claimed and actual empty is allowed."""
+    base = _init_repo(tmp_path)
+    verify_changed_files(tmp_path, base, base, [])
+    preflight_envelope_range(tmp_path, base, base, claimed=[])
 
 
 def test_require_squash_with_2_commits_fails(tmp_path):
