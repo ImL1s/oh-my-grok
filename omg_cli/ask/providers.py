@@ -1,12 +1,20 @@
 """Fixed argv templates for omg ask external advisors.
 
 Never free-form shell. Prefer read-only / non-elevated provider flags.
+
+By default prompts are fed via **stdin** (``prompt_mode="stdin"``) so the
+full prompt body never appears in process argv. Set ``OMG_ASK_STDIN=0`` to
+fall back to argv embedding (legacy).
 """
 from __future__ import annotations
 
+import os
 import shutil
+import stat
+import tempfile
 from dataclasses import dataclass
-from typing import Sequence
+from pathlib import Path
+from typing import Literal, Sequence
 
 # Providers supported in v0.2.1
 PROVIDERS = frozenset({"codex", "claude", "gemini"})
@@ -14,6 +22,8 @@ ALIASES: dict[str, str] = {
     "fable": "claude",
     "agy": "gemini",
 }
+
+PromptMode = Literal["stdin", "argv", "file"]
 
 # Optional model allowlists (empty = any non-empty model string accepted with caution)
 ALLOWED_CODEX_MODELS: frozenset[str] | None = None  # None → accept any
@@ -87,10 +97,31 @@ def resolve_binary(provider: str) -> str:
     return spec.binary
 
 
+def extras_allowed() -> bool:
+    """True only when ``OMG_ASK_ALLOW_EXTRA=1`` (default: freeform extras denied)."""
+    return os.environ.get("OMG_ASK_ALLOW_EXTRA", "").strip() == "1"
+
+
+def default_prompt_mode() -> PromptMode:
+    """Default prompt transport. ``OMG_ASK_STDIN=0`` → argv (legacy)."""
+    val = os.environ.get("OMG_ASK_STDIN", "1").strip().lower()
+    if val in ("0", "false", "no", "off"):
+        return "argv"
+    return "stdin"
+
+
 def validate_extra(extra: Sequence[str] | None) -> list[str]:
-    """Validate --extra passthrough; reject elevation / write flags."""
+    """Validate --extra passthrough; reject elevation / write flags.
+
+    When ``OMG_ASK_ALLOW_EXTRA`` is not ``1``, any non-empty extra is rejected.
+    """
     if not extra:
         return []
+    if not extras_allowed():
+        raise AskProviderError(
+            "freeform --extra is disabled by default; "
+            "set OMG_ASK_ALLOW_EXTRA=1 to enable validated passthrough"
+        )
     out: list[str] = []
     i = 0
     items = list(extra)
@@ -134,18 +165,55 @@ def _check_model(model: str | None, allowlist: frozenset[str] | None) -> str | N
     return m
 
 
+def write_prompt_temp(
+    prompt: str,
+    *,
+    root: Path | str | None = None,
+) -> Path:
+    """Write prompt to a 0600 temp file under ``.omg/artifacts/.ask-prompt-*``."""
+    base = Path(root) if root is not None else Path.cwd()
+    art = base / ".omg" / "artifacts"
+    art.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(
+        prefix=".ask-prompt-",
+        suffix=".txt",
+        dir=str(art),
+    )
+    path = Path(name)
+    try:
+        os.write(fd, prompt.encode("utf-8"))
+    finally:
+        os.close(fd)
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    except OSError:
+        pass
+    return path
+
+
 def argv_codex(
     prompt: str,
     *,
     model: str | None = None,
     extra: Sequence[str] | None = None,
+    prompt_mode: PromptMode | None = None,
+    prompt_file: Path | str | None = None,
 ) -> list[str]:
-    """codex exec -s read-only [ -m MODEL ] PROMPT [extra…]."""
+    """codex exec -s read-only [ -m MODEL ] [PROMPT|stdin|-]."""
     m = _check_model(model, ALLOWED_CODEX_MODELS)
+    mode = prompt_mode or default_prompt_mode()
     argv: list[str] = ["codex", "exec", "-s", "read-only"]
     if m:
         argv.extend(["-m", m])
-    argv.append(prompt)
+    if mode == "stdin":
+        # Read prompt from stdin; do not embed body in argv
+        argv.append("-")
+    elif mode == "file":
+        if prompt_file is None:
+            raise AskProviderError("prompt_mode=file requires prompt_file")
+        argv.extend(["--", str(prompt_file)])
+    else:
+        argv.append(prompt)
     argv.extend(validate_extra(extra))
     return argv
 
@@ -155,10 +223,22 @@ def argv_claude(
     *,
     model: str | None = None,
     extra: Sequence[str] | None = None,
+    prompt_mode: PromptMode | None = None,
+    prompt_file: Path | str | None = None,
 ) -> list[str]:
-    """claude -p PROMPT [ --model MODEL ] [extra…]. Never skip-permissions."""
+    """claude [ -p PROMPT | stdin ] [ --model MODEL ] [extra…]. Never skip-permissions."""
     m = _check_model(model, ALLOWED_CLAUDE_MODELS)
-    argv: list[str] = ["claude", "-p", prompt]
+    mode = prompt_mode or default_prompt_mode()
+    argv: list[str] = ["claude"]
+    if mode == "stdin":
+        # No -p; broker feeds stdin
+        pass
+    elif mode == "file":
+        if prompt_file is None:
+            raise AskProviderError("prompt_mode=file requires prompt_file")
+        argv.extend(["-p", str(prompt_file)])
+    else:
+        argv.extend(["-p", prompt])
     if m:
         argv.extend(["--model", m])
     argv.extend(validate_extra(extra))
@@ -170,10 +250,21 @@ def argv_gemini(
     *,
     model: str | None = None,
     extra: Sequence[str] | None = None,
+    prompt_mode: PromptMode | None = None,
+    prompt_file: Path | str | None = None,
 ) -> list[str]:
-    """gemini -p PROMPT [ --model MODEL ] [extra…]. Optional provider."""
+    """gemini [ -p PROMPT | stdin ] [ --model MODEL ] [extra…]. Optional provider."""
     m = _check_model(model, ALLOWED_GEMINI_MODELS)
-    argv: list[str] = ["gemini", "-p", prompt]
+    mode = prompt_mode or default_prompt_mode()
+    argv: list[str] = ["gemini"]
+    if mode == "stdin":
+        pass
+    elif mode == "file":
+        if prompt_file is None:
+            raise AskProviderError("prompt_mode=file requires prompt_file")
+        argv.extend(["-p", str(prompt_file)])
+    else:
+        argv.extend(["-p", prompt])
     if m:
         argv.extend(["--model", m])
     argv.extend(validate_extra(extra))
@@ -187,18 +278,33 @@ def build_provider_argv(
     model: str | None = None,
     extra: Sequence[str] | None = None,
     check_binary: bool = True,
+    prompt_mode: PromptMode | None = None,
+    prompt_file: Path | str | None = None,
 ) -> list[str]:
-    """Build fixed argv for provider. Optionally verify binary on PATH."""
+    """Build fixed argv for provider. Optionally verify binary on PATH.
+
+    When ``prompt_mode`` is ``stdin`` (default), the prompt body is **not**
+    included in argv.
+    """
     canon = normalize_provider(provider)
     if check_binary:
         resolve_binary(canon)
+    mode = prompt_mode or default_prompt_mode()
+    kwargs = dict(model=model, extra=extra, prompt_mode=mode, prompt_file=prompt_file)
     if canon == "codex":
-        return argv_codex(prompt, model=model, extra=extra)
+        return argv_codex(prompt, **kwargs)  # type: ignore[arg-type]
     if canon == "claude":
-        return argv_claude(prompt, model=model, extra=extra)
+        return argv_claude(prompt, **kwargs)  # type: ignore[arg-type]
     if canon == "gemini":
-        return argv_gemini(prompt, model=model, extra=extra)
+        return argv_gemini(prompt, **kwargs)  # type: ignore[arg-type]
     raise AskProviderError(f"unknown provider {provider!r}")
+
+
+def argv_contains_prompt(argv: Sequence[str], prompt: str) -> bool:
+    """True if the full prompt body appears as an argv element."""
+    if not prompt:
+        return False
+    return any(prompt == a for a in argv)
 
 
 __all__ = [
@@ -209,9 +315,13 @@ __all__ = [
     "SPECS",
     "argv_claude",
     "argv_codex",
+    "argv_contains_prompt",
     "argv_gemini",
     "build_provider_argv",
+    "default_prompt_mode",
+    "extras_allowed",
     "normalize_provider",
     "resolve_binary",
     "validate_extra",
+    "write_prompt_temp",
 ]

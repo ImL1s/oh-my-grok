@@ -309,6 +309,170 @@ def _commit_exists(root: Path, sha: str) -> bool:
     return r.returncode == 0
 
 
+def assert_ancestor(root: Path | str, base_sha: str, head_sha: str) -> None:
+    """Require ``base_sha`` is an ancestor of ``head_sha`` (or equal).
+
+    Uses ``git merge-base --is-ancestor base head``. Skips the check when
+    base and head normalize to the same object id.
+
+    Raises:
+        IntegrateError: not an ancestor, or git failure.
+    """
+    root = Path(root)
+    base = (base_sha or "").strip().lower()
+    head = (head_sha or "").strip().lower()
+    if not base or not head:
+        raise IntegrateError("assert_ancestor: base_sha and head_sha required")
+    if base == head:
+        return
+    r = _run_git(["merge-base", "--is-ancestor", base, head], cwd=root)
+    if r.returncode == 0:
+        return
+    # Non-zero: either not ancestor or git error
+    err = (r.stderr or r.stdout or "").strip()
+    if r.returncode == 1 and not err:
+        raise IntegrateError(
+            f"assert_ancestor: {base} is not an ancestor of {head}"
+        )
+    raise IntegrateError(
+        f"assert_ancestor: merge-base --is-ancestor failed for "
+        f"{base}..{head}: {err or f'exit {r.returncode}'}"
+    )
+
+
+def list_range_commits(root: Path | str, base: str, head: str) -> list[str]:
+    """Return commits in ``base..head`` (exclusive base) topo-order oldest-first.
+
+    Empty list when base == head or range is empty.
+    """
+    root = Path(root)
+    b = (base or "").strip()
+    h = (head or "").strip()
+    if not b or not h:
+        raise IntegrateError("list_range_commits: base and head required")
+    if b.lower() == h.lower():
+        return []
+    r = _run_git(
+        ["rev-list", "--reverse", "--topo-order", f"{b}..{h}"],
+        cwd=root,
+    )
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip()
+        raise IntegrateError(
+            f"list_range_commits: rev-list failed for {b}..{h}: {err}"
+        )
+    out: list[str] = []
+    for line in (r.stdout or "").splitlines():
+        sha = line.strip().lower()
+        if sha:
+            out.append(sha)
+    return out
+
+
+def reject_merge_commits(root: Path | str, commits: list[str]) -> None:
+    """Raise IntegrateError if any commit in *commits* is a merge (>1 parent)."""
+    root = Path(root)
+    for sha in commits:
+        r = _run_git(["rev-list", "--parents", "-n", "1", sha], cwd=root)
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout or "").strip()
+            raise IntegrateError(
+                f"reject_merge_commits: cannot inspect {sha}: {err}"
+            )
+        parts = (r.stdout or "").strip().split()
+        # format: <commit> <parent1> [parent2 ...]
+        if len(parts) > 2:
+            raise IntegrateError(
+                f"reject_merge_commits: merge commit not allowed in range: {sha} "
+                f"(parents={parts[1:]})"
+            )
+
+
+def _normalize_path_for_compare(p: str) -> str:
+    """Normalize a path string for claimed-vs-actual changed_files compare."""
+    s = (p or "").strip().replace("\\", "/")
+    while s.startswith("./"):
+        s = s[2:]
+    return s
+
+
+def verify_changed_files(
+    root: Path | str,
+    base: str,
+    head: str,
+    claimed: list[str],
+) -> None:
+    """If *claimed* is non-empty, require it matches ``git diff --name-only base head``.
+
+    Empty claimed list skips the check (workers may omit detail). Order-
+    independent set compare after path normalization.
+
+    Raises:
+        IntegrateError: mismatch between claimed and actual paths.
+    """
+    root = Path(root)
+    if not claimed:
+        return
+    b = (base or "").strip()
+    h = (head or "").strip()
+    if not b or not h:
+        raise IntegrateError("verify_changed_files: base and head required")
+    r = _run_git(["diff", "--name-only", b, h], cwd=root)
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip()
+        raise IntegrateError(
+            f"verify_changed_files: git diff --name-only failed: {err}"
+        )
+    actual = {
+        _normalize_path_for_compare(line)
+        for line in (r.stdout or "").splitlines()
+        if line.strip()
+    }
+    claimed_norm = {_normalize_path_for_compare(p) for p in claimed if p}
+    if claimed_norm != actual:
+        missing = sorted(actual - claimed_norm)
+        extra = sorted(claimed_norm - actual)
+        parts = []
+        if missing:
+            parts.append(f"missing from claim: {missing}")
+        if extra:
+            parts.append(f"claimed but not in diff: {extra}")
+        raise IntegrateError(
+            "verify_changed_files: claimed changed_files do not match "
+            f"git diff --name-only {b} {h}: " + "; ".join(parts)
+        )
+
+
+def preflight_envelope_range(
+    root: Path | str,
+    base_sha: str,
+    head_sha: str,
+    claimed: list[str] | None = None,
+    *,
+    require_squash: bool = False,
+) -> list[str]:
+    """Ancestry + merge reject + optional changed_files + require_squash.
+
+    Returns the list of commits in ``base..head`` (may be empty when equal).
+    Call before cherry-pick.
+    """
+    root = Path(root)
+    base = base_sha.strip().lower()
+    head = head_sha.strip().lower()
+    assert_ancestor(root, base, head)
+    commits = list_range_commits(root, base, head)
+    if commits:
+        reject_merge_commits(root, commits)
+    if require_squash and len(commits) > 1:
+        raise IntegrateError(
+            f"require_squash: range {base}..{head} has {len(commits)} commits; "
+            "squash to a single commit (or set require_squash=False)"
+        )
+    if claimed is not None:
+        verify_changed_files(root, base, head, list(claimed))
+    return commits
+
+
 def worktree_path_allowed(root: Path, worktree: Path) -> bool:
     """True if *worktree* resolves under project root or ``root/.omg/worktrees``.
 
@@ -447,6 +611,7 @@ def integrate_results(
     *,
     dry_run: bool = False,
     skip_preflight: bool = False,
+    require_squash: bool = False,
 ) -> dict[str, Any]:
     """Load ULW envelopes, apply in task_id order, write integrate.result.json.
 
@@ -455,7 +620,9 @@ def integrate_results(
     - Envelopes default path: ``.omg/artifacts/ulw-results/*.json``
     - ``status != ok`` → stop, overall failed (no apply for that task)
     - If run has ``base_sha``, each envelope ``base_sha`` must match
-    - Apply: ensure ``head_sha`` reachable, then ``git cherry-pick head_sha``
+    - Before cherry-pick: ancestry check, reject merge commits, optional
+      ``changed_files`` vs ``git diff --name-only``, optional ``require_squash``
+    - Apply: ensure ``head_sha`` reachable, then ``git cherry-pick`` range
     - Conflict → abort cherry-pick; if any prior pick succeeded, ``reset --hard``
       to ``start_sha`` (unless dry_run) and set ``partial_reset=true``
     - Missing envelopes → result status ``missing`` (not an exception)
@@ -479,21 +646,17 @@ def integrate_results(
     else:
         run_base = None
 
-    if not dry_run and not skip_preflight:
-        preflight_clean_tree(root)
-
-    # Record leader HEAD before any cherry-pick so partial failure can roll back.
-    start_sha = git_rev_parse_head(root) if not dry_run else None
-    applied_ok_count = 0
-
+    # Probe envelopes before clean-tree preflight so "missing" is reportable
+    # even when the tree is dirty / not a git repo (pipeline ULW gate).
     result: dict[str, Any] = {
         "writer": CLI_WRITER,
         "run_id": run_id,
         "status": "ok",
         "dry_run": bool(dry_run),
+        "require_squash": bool(require_squash),
         "envelopes_dir": str(env_dir),
         "base_sha": run_base,
-        "start_sha": start_sha,
+        "start_sha": None,
         "applied": [],
         "failed_task": None,
         "error": None,
@@ -528,6 +691,14 @@ def integrate_results(
         )
         _atomic_write_json(result_path(root, run_id), result)
         return result
+
+    if not dry_run and not skip_preflight:
+        preflight_clean_tree(root)
+
+    # Record leader HEAD before any cherry-pick so partial failure can roll back.
+    start_sha = git_rev_parse_head(root) if not dry_run else None
+    result["start_sha"] = start_sha
+    applied_ok_count = 0
 
     for env in envelopes:
         task_id = env["task_id"]
@@ -579,18 +750,70 @@ def integrate_results(
         else:
             entry["pick"] = env["head_sha"]
 
+        # Range preflight (ancestry / merge / changed_files / require_squash)
+        # needs objects reachable in the leader object store first.
+        try:
+            if not dry_run:
+                _ensure_commit_reachable(
+                    root,
+                    env["head_sha"],
+                    worktree,
+                    base_sha=pick_base if isinstance(pick_base, str) else None,
+                )
+            # dry_run still needs objects if present; try best-effort fetch
+            elif not _commit_exists(root, env["head_sha"]):
+                try:
+                    _ensure_commit_reachable(
+                        root,
+                        env["head_sha"],
+                        worktree,
+                        base_sha=pick_base if isinstance(pick_base, str) else None,
+                    )
+                except IntegrateError:
+                    pass  # dry_run may skip if worktree absent
+
+            if _commit_exists(root, env["head_sha"]) and (
+                not pick_base
+                or pick_base.lower() == env["head_sha"].lower()
+                or _commit_exists(root, str(pick_base))
+            ):
+                preflight_envelope_range(
+                    root,
+                    str(pick_base or env["head_sha"]),
+                    env["head_sha"],
+                    list(env.get("changed_files") or []),
+                    require_squash=require_squash,
+                )
+            elif not dry_run:
+                raise IntegrateError(
+                    f"commits not reachable for range preflight: "
+                    f"base={pick_base} head={env['head_sha']}"
+                )
+        except IntegrateError as exc:
+            entry["status"] = "failed"
+            entry["error"] = str(exc)
+            result["applied"].append(entry)
+            result["status"] = "failed"
+            result["failed_task"] = task_id
+            result["error"] = str(exc)
+            if applied_ok_count > 0 and start_sha and not dry_run:
+                try:
+                    _reset_hard(root, start_sha)
+                    result["partial_reset"] = True
+                    result["reset_to"] = start_sha
+                except IntegrateError as reset_exc:
+                    result["error"] = (
+                        f"{exc}; additionally partial_reset failed: {reset_exc}"
+                    )
+                    result["partial_reset"] = False
+            break
+
         if dry_run:
             entry["status"] = "dry_run_ok"
             result["applied"].append(entry)
             continue
 
         try:
-            _ensure_commit_reachable(
-                root,
-                env["head_sha"],
-                worktree,
-                base_sha=pick_base if isinstance(pick_base, str) else None,
-            )
             picked = _cherry_pick(
                 root,
                 env["head_sha"],

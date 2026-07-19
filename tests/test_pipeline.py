@@ -1,10 +1,12 @@
 """Tests for omg pipeline FSM — dry-run stage order, no allow env, hooks."""
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+from pathlib import Path
 
-from omg_cli.pipeline import load_pipeline_state, run_pipeline
+from omg_cli.pipeline import load_pipeline_state, report_path, run_pipeline
 from omg_cli.state import create_run, load_active_run, load_run
 
 
@@ -48,6 +50,14 @@ def test_pipeline_dry_run_plan_implement_order(monkeypatch, tmp_path):
     assert enter_stages.index("plan") < enter_stages.index("implement")
     assert enter_stages.index("implement") < enter_stages.index("dual_review")
     assert enter_stages.index("dual_review") < enter_stages.index("accept")
+    # report.json written
+    rpath = report_path(tmp_path, rid)
+    assert rpath.is_file()
+    report = json.loads(rpath.read_text(encoding="utf-8"))
+    assert report["writer"] == "omg-cli"
+    assert report["run_id"] == rid
+    assert "stages" in report
+    assert report.get("verified") is False
 
 
 def test_pipeline_skip_plan(monkeypatch, tmp_path):
@@ -168,3 +178,113 @@ def test_pipeline_with_hooks_no_allow_on_launch(monkeypatch, tmp_path):
     assert "OMG_ALLOW_EXTERNAL_CLI" not in os.environ
     active = load_run(tmp_path, load_active_run(tmp_path)["run_id"])
     assert active.get("verified") is False
+
+
+def test_pipeline_integrate_with_envelope_mock(monkeypatch, tmp_path):
+    """Implement writes envelope → integrate stage runs before dual_review."""
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no popen")),
+    )
+    integrate_calls: list[dict] = []
+
+    def impl_write_envelope(**_k):
+        env_dir = tmp_path / ".omg" / "artifacts" / "ulw-results"
+        env_dir.mkdir(parents=True, exist_ok=True)
+        (env_dir / "t1.json").write_text(
+            json.dumps(
+                {
+                    "task_id": "t1",
+                    "base_sha": "abc1234",
+                    "head_sha": "def5678",
+                    "worktree_path": str(tmp_path),
+                    "status": "ok",
+                    "changed_files": [],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return 0
+
+    def fake_integrate(*_a, **kwargs):
+        integrate_calls.append(dict(kwargs))
+        return {
+            "status": "ok",
+            "dry_run": bool(kwargs.get("dry_run")),
+            "applied": [{"task_id": "t1", "status": "dry_run_ok"}],
+            "writer": "omg-cli",
+        }
+
+    rc = run_pipeline(
+        "with envelope",
+        root=tmp_path,
+        dry_run=True,
+        skip_plan=True,
+        dual_review=False,
+        require_acceptance=False,
+        implement="ralph",
+        implement_fn=impl_write_envelope,
+        integrate_fn=fake_integrate,
+        max_iter=1,
+    )
+    assert rc == 0
+    assert len(integrate_calls) == 1
+    active = load_active_run(tmp_path)
+    state = load_pipeline_state(tmp_path, active["run_id"])
+    enter = [h["stage"] for h in state["history"] if h.get("event") == "enter"]
+    assert "integrate" in enter
+    assert enter.index("implement") < enter.index("integrate")
+    assert state.get("integrate_status") == "ok"
+    report = json.loads(report_path(tmp_path, active["run_id"]).read_text(encoding="utf-8"))
+    assert report["integrate_status"] == "ok"
+    assert report["writer"] == "omg-cli"
+
+
+def test_pipeline_ulw_missing_envelopes_fails(tmp_path):
+    """ULW implement without envelopes → integrate missing → fail (not dry_run)."""
+
+    def ok_impl(**_k):
+        return 0
+
+    rc = run_pipeline(
+        "ulw no envelopes",
+        root=tmp_path,
+        dry_run=False,
+        skip_plan=True,
+        dual_review=False,
+        require_acceptance=False,
+        implement="ulw",
+        implement_fn=ok_impl,
+        max_iter=1,
+    )
+    assert rc == 1
+    active = load_active_run(tmp_path)
+    state = load_pipeline_state(tmp_path, active["run_id"])
+    assert state["status"] == "failed"
+    assert state.get("integrate_status") == "missing"
+    report = json.loads(report_path(tmp_path, active["run_id"]).read_text(encoding="utf-8"))
+    assert report["integrate_status"] == "missing"
+    assert report["verified"] is False
+
+
+def test_pipeline_report_json_on_plan_fail(tmp_path):
+    def fail_plan(**_k):
+        return 1
+
+    rc = run_pipeline(
+        "bad plan report",
+        root=tmp_path,
+        dry_run=False,
+        plan_fn=fail_plan,
+        dual_review=False,
+        max_plan_rounds=1,
+    )
+    assert rc == 1
+    active = load_active_run(tmp_path)
+    rpath = report_path(tmp_path, active["run_id"])
+    assert rpath.is_file()
+    report = json.loads(rpath.read_text(encoding="utf-8"))
+    assert report["writer"] == "omg-cli"
+    assert report["status"] == "failed"

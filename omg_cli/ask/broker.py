@@ -22,7 +22,9 @@ from omg_cli.ask.providers import (
     AskProviderError,
     AskProviderMissing,
     build_provider_argv,
+    default_prompt_mode,
     normalize_provider,
+    write_prompt_temp,
 )
 
 DEFAULT_TIMEOUT: float = 600.0
@@ -228,8 +230,12 @@ def run_ask(
     write_json: bool = True,
     files: Sequence[Path | str] | None = None,
     check_binary: bool | None = None,
+    prompt_mode: str | None = None,
 ) -> AskResult:
     """User-invoked trusted broker. Sets OMG_ALLOW_EXTERNAL_CLI only in child env.
+
+    Default ``prompt_mode`` is stdin (``OMG_ASK_STDIN=1``): prompt body is not
+    placed in process argv. Parent ``os.environ`` never gains allow key.
 
     Returns AskResult. Raises AskProviderError (usage), AskProviderMissing (binary).
     Does not set verified. Does not mutate parent os.environ for allow key.
@@ -256,13 +262,29 @@ def run_ask(
     if check_binary is None:
         check_binary = not dry_run
 
+    mode = prompt_mode or default_prompt_mode()
+    if mode not in ("stdin", "argv", "file"):
+        raise AskProviderError(f"invalid prompt_mode {mode!r}")
+
+    prompt_file: Path | None = None
+    if mode == "file":
+        prompt_file = write_prompt_temp(prompt, root=root_path)
+
     argv = build_provider_argv(
         canon,
         prompt,
         model=model,
         extra=extra,
         check_binary=check_binary,
+        prompt_mode=mode,  # type: ignore[arg-type]
+        prompt_file=prompt_file,
     )
+
+    # Safety: when using stdin mode, prompt body must not appear in argv
+    if mode == "stdin" and prompt in argv:
+        raise AskProviderError(
+            "internal error: prompt body leaked into argv under stdin mode"
+        )
 
     ts = _utc_ts_slug()
     artifact = Path(out) if out is not None else default_artifact_path(root_path, canon, ts)
@@ -272,12 +294,14 @@ def run_ask(
         meta_path = artifact.parent / (artifact.stem + ".meta.json")
 
     parent_had_allow = os.environ.get("OMG_ALLOW_EXTERNAL_CLI")
+    use_stdin = mode == "stdin"
 
     if dry_run:
         # Print argv + child env keys + out path; no exec
         child_keys = sorted(child_env_for_ask().keys())
         print(f"omg ask dry-run provider={canon}")
         print(f"argv: {json.dumps(argv, ensure_ascii=False)}")
+        print(f"prompt_mode: {mode}")
         print(f"out: {artifact}")
         print(f"cwd: {cwd_path}")
         print(f"child_env_keys: {json.dumps(child_keys)}")
@@ -350,6 +374,8 @@ def run_ask(
         "stderr": subprocess.STDOUT,
         "shell": False,
     }
+    if use_stdin:
+        popen_kwargs["stdin"] = subprocess.PIPE
     if os.name == "posix":
         popen_kwargs["start_new_session"] = True
 
@@ -361,7 +387,13 @@ def run_ask(
         exit_code = 127
     else:
         try:
-            out_b, _ = proc.communicate(timeout=eff_timeout)
+            if use_stdin:
+                out_b, _ = proc.communicate(
+                    input=prompt.encode("utf-8"),
+                    timeout=eff_timeout,
+                )
+            else:
+                out_b, _ = proc.communicate(timeout=eff_timeout)
             captured = out_b or b""
             exit_code = int(proc.returncode if proc.returncode is not None else 1)
         except subprocess.TimeoutExpired:

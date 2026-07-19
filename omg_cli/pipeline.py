@@ -1,4 +1,4 @@
-"""AUTO_PILOT-like pipeline FSM: plan → implement → dual_review → accept.
+"""AUTO_PILOT-like pipeline FSM: plan → implement → integrate → dual_review → accept → report.
 
 Grok-native workers only. Never sets OMG_ALLOW_EXTERNAL_CLI.
 """
@@ -17,6 +17,10 @@ from omg_cli.state import create_run, load_run, write_status
 DEFAULT_MAX_PLAN_ROUNDS = 3
 DEFAULT_MAX_ITER = 3
 DEFAULT_MAX_DUAL_REVIEW_ROUNDS = 2
+CLI_WRITER = "omg-cli"
+
+# Stage order for resume and report
+STAGE_ORDER = ["plan", "implement", "integrate", "dual_review", "accept"]
 
 
 def _utc_now() -> str:
@@ -29,6 +33,10 @@ def _run_dir(root: Path, run_id: str) -> Path:
 
 def pipeline_state_path(root: Path, run_id: str) -> Path:
     return _run_dir(root, run_id) / "pipeline.json"
+
+
+def report_path(root: Path, run_id: str) -> Path:
+    return _run_dir(root, run_id) / "report.json"
 
 
 def load_pipeline_state(root: Path, run_id: str) -> dict[str, Any] | None:
@@ -50,6 +58,57 @@ def save_pipeline_state(root: Path, run_id: str, state: dict[str, Any]) -> Path:
     state["updated_at"] = _utc_now()
     path.write_text(
         json.dumps(state, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_pipeline_report(
+    root: Path,
+    run_id: str,
+    state: dict[str, Any],
+    *,
+    integrate_status: str | None = None,
+    exit_code: int | None = None,
+) -> Path:
+    """Write ``runs/<id>/report.json`` with stages history and verified flag.
+
+    Always ``writer: omg-cli``. Called on success and terminal failure paths.
+    """
+    root = Path(root)
+    run = load_run(root, run_id) or {}
+    verified = bool(run.get("verified") is True)
+    integ = integrate_status
+    if integ is None:
+        integ = state.get("integrate_status")
+    if integ is None:
+        integ = run.get("integrate_status")
+
+    report: dict[str, Any] = {
+        "version": 1,
+        "writer": CLI_WRITER,
+        "run_id": run_id,
+        "goal": state.get("goal") or run.get("goal"),
+        "status": state.get("status") or run.get("status"),
+        "stage": state.get("stage"),
+        "implement": state.get("implement"),
+        "stages": list(state.get("history") or []),
+        "integrate_status": integ,
+        "verified": verified,
+        "exit_code": exit_code,
+        "dual_review": bool(state.get("dual_review")),
+        "plan_accepted": bool(state.get("plan_accepted")),
+        "created_at": state.get("created_at"),
+        "finished_at": _utc_now(),
+        "note": (
+            "pipeline report; Grok-native workers only; "
+            "never sets OMG_ALLOW_EXTERNAL_CLI"
+        ),
+    }
+    path = report_path(root, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return path
@@ -86,6 +145,7 @@ def initial_pipeline_state(
         "skip_plan": bool(skip_plan),
         "plan_only": bool(plan_only),
         "require_acceptance": bool(require_acceptance),
+        "integrate_status": None,
         "history": [],
         "note": (
             "CLI-owned pipeline FSM; Grok-native workers only; "
@@ -120,6 +180,20 @@ def _assert_no_allow_env() -> None:
         pass
 
 
+def _envelopes_exist(root: Path) -> bool:
+    env_dir = Path(root) / ".omg" / "artifacts" / "ulw-results"
+    if not env_dir.is_dir():
+        return False
+    return any(env_dir.glob("*.json"))
+
+
+def _should_integrate(implement: str, root: Path) -> bool:
+    """Integrate after implement when ULW mode or ULW envelopes are present."""
+    if (implement or "").strip().lower() == "ulw":
+        return True
+    return _envelopes_exist(root)
+
+
 def run_pipeline(
     goal: str,
     *,
@@ -138,13 +212,17 @@ def run_pipeline(
     timeout: float | None = None,
     resume_run_id: str | None = None,
     force: bool = False,
+    require_squash: bool = False,
     # Test hooks
     plan_fn: Callable[..., int] | None = None,
     implement_fn: Callable[..., int] | None = None,
+    integrate_fn: Callable[..., dict[str, Any]] | None = None,
     dual_review_fn: Callable[..., str] | None = None,
     accept_fn: Callable[..., bool] | None = None,
 ) -> int:
     """Run pipeline FSM. Returns exit code (0 verified/plan-only accepted/etc).
+
+    Stage order: plan → implement → integrate → dual_review → accept → report.
 
     Never sets OMG_ALLOW_EXTERNAL_CLI. Never product-executes external advisors.
     """
@@ -227,6 +305,7 @@ def run_pipeline(
 
     # Import stage modules lazily
     from omg_cli.dual_review import run_dual_review
+    from omg_cli.integrate import integrate_results
     from omg_cli.modes import run_mode
     from omg_cli.ralplan import load_ralplan_state, run_ralplan
 
@@ -256,6 +335,14 @@ def run_pipeline(
             require_acceptance=False,  # pipeline owns accept stage
             existing_run_id=run_id,
             force=False,
+        )
+
+    def _default_integrate(**kw: Any) -> dict[str, Any]:
+        return integrate_results(
+            root_path,
+            run_id,
+            dry_run=dry_run,
+            require_squash=require_squash,
         )
 
     def _default_dual(**kw: Any) -> str:
@@ -295,8 +382,23 @@ def run_pipeline(
 
     do_plan = plan_fn or _default_plan
     do_implement = implement_fn or _default_implement
+    do_integrate = integrate_fn or _default_integrate
     do_dual = dual_review_fn or _default_dual
     do_accept = accept_fn or _default_accept
+
+    def _finish(exit_code: int) -> int:
+        """Write report.json then return exit_code."""
+        try:
+            write_pipeline_report(
+                root_path,
+                run_id,
+                state,
+                integrate_status=state.get("integrate_status"),
+                exit_code=exit_code,
+            )
+        except OSError as exc:
+            print(f"omg pipeline: report write failed: {exc}", file=sys.stderr)
+        return exit_code
 
     # Determine start stage on resume
     start_stage = str(state.get("stage") or "initialized")
@@ -312,12 +414,11 @@ def run_pipeline(
                 return True
             return False
         # Order: only run from current stage forward
-        order = ["plan", "implement", "dual_review", "accept"]
         if start_stage in ("initialized", "running"):
             return True
-        if start_stage not in order:
+        if start_stage not in STAGE_ORDER:
             return True
-        return order.index(stage_name) >= order.index(start_stage)
+        return STAGE_ORDER.index(stage_name) >= STAGE_ORDER.index(start_stage)
 
     # --- plan ---
     plan_ok = bool(state.get("plan_accepted"))
@@ -372,7 +473,7 @@ def run_pipeline(
                 extra={"stage": "plan", "note": "plan not accepted"},
             )
             print(f"omg pipeline: plan failed run={run_id}", file=sys.stderr)
-            return 1
+            return _finish(1)
 
         if state.get("plan_only"):
             state["status"] = "completed"
@@ -389,7 +490,7 @@ def run_pipeline(
                 },
             )
             print(f"omg pipeline: plan-only complete run={run_id}")
-            return 0
+            return _finish(0)
     elif state.get("skip_plan"):
         plan_ok = True
         state["plan_accepted"] = True
@@ -421,7 +522,90 @@ def run_pipeline(
                 "failed",
                 extra={"stage": "implement", "exit_code": rc_impl},
             )
-            return rc_impl
+            return _finish(rc_impl)
+
+    # --- integrate (ULW mode or envelopes present) ---
+    if _should_run("integrate") and _should_integrate(implement, root_path):
+        state["stage"] = "integrate"
+        _history(state, "integrate", "enter", detail=f"implement={implement}")
+        save_pipeline_state(root_path, run_id, state)
+        write_status(
+            root_path, run_id, "running", extra={"stage": "integrate"}
+        )
+        if dry_run:
+            print(f"omg pipeline dry-run: stage=integrate")
+
+        try:
+            integ = do_integrate()
+        except (FileNotFoundError, OSError, RuntimeError) as exc:
+            integ = {
+                "status": "failed",
+                "error": str(exc),
+            }
+
+        integ_status = str(integ.get("status") or "failed")
+        state["integrate_status"] = integ_status
+        _history(
+            state,
+            "integrate",
+            "exit",
+            detail=f"status={integ_status}",
+        )
+        save_pipeline_state(root_path, run_id, state)
+
+        # Policy:
+        # - failed → pipeline fails (always; dry_run missing is not failed)
+        # - missing + implement==ulw + not dry_run → fail (expected envelopes)
+        # - missing + ralph → continue
+        # - missing + dry_run → OK (continue)
+        if integ_status == "failed":
+            state["status"] = "failed"
+            state["stage"] = "failed"
+            save_pipeline_state(root_path, run_id, state)
+            write_status(
+                root_path,
+                run_id,
+                "failed",
+                extra={
+                    "stage": "integrate",
+                    "integrate_status": "failed",
+                    "integrate_error": integ.get("error"),
+                },
+            )
+            print(
+                f"omg pipeline: integrate failed run={run_id}: {integ.get('error')}",
+                file=sys.stderr,
+            )
+            return _finish(1)
+
+        if integ_status == "missing":
+            if implement == "ulw" and not dry_run:
+                state["status"] = "failed"
+                state["stage"] = "failed"
+                save_pipeline_state(root_path, run_id, state)
+                write_status(
+                    root_path,
+                    run_id,
+                    "failed",
+                    extra={
+                        "stage": "integrate",
+                        "integrate_status": "missing",
+                        "note": "ULW expected envelopes under .omg/artifacts/ulw-results/",
+                    },
+                )
+                print(
+                    f"omg pipeline: ULW missing envelopes run={run_id}",
+                    file=sys.stderr,
+                )
+                return _finish(1)
+            # ralph or dry_run: continue
+            _history(
+                state,
+                "integrate",
+                "note",
+                detail="missing envelopes; continuing (ralph or dry_run)",
+            )
+            save_pipeline_state(root_path, run_id, state)
 
     # --- dual_review (optional loop) ---
     if state.get("dual_review") and _should_run("dual_review"):
@@ -464,7 +648,7 @@ def run_pipeline(
                     "failed",
                     extra={"stage": "dual_review", "verdict": verdict},
                 )
-                return 1
+                return _finish(1)
             # REQUEST_CHANGES / UNKNOWN → re-implement if budget remains
             if dr_i >= max_dr:
                 state["status"] = "failed"
@@ -480,7 +664,7 @@ def run_pipeline(
                         "note": "dual_review rounds exhausted",
                     },
                 )
-                return 1
+                return _finish(1)
             # re-implement once before next dual_review
             _history(state, "implement", "enter", detail="re-implement after REQUEST_CHANGES")
             save_pipeline_state(root_path, run_id, state)
@@ -490,7 +674,7 @@ def run_pipeline(
                 state["status"] = "failed"
                 save_pipeline_state(root_path, run_id, state)
                 write_status(root_path, run_id, "failed", extra={"stage": "implement"})
-                return rc_impl
+                return _finish(rc_impl)
 
     # --- accept ---
     if _should_run("accept"):
@@ -511,7 +695,7 @@ def run_pipeline(
             save_pipeline_state(root_path, run_id, state)
             # set_verified already wrote status
             print(f"omg pipeline: verified run={run_id}")
-            return 0
+            return _finish(0)
 
         # No acceptance commands or failed
         if state.get("require_acceptance"):
@@ -532,7 +716,7 @@ def run_pipeline(
                 f"omg pipeline: not verified run={run_id} (require_acceptance)",
                 file=sys.stderr,
             )
-            return 1 if not dry_run else 0
+            return _finish(1 if not dry_run else 0)
 
         state["status"] = "completed"
         state["stage"] = "completed"
@@ -543,19 +727,22 @@ def run_pipeline(
             "completed",
             extra={"stage": "completed", "require_acceptance": False},
         )
-        return 0
+        return _finish(0)
 
     save_pipeline_state(root_path, run_id, state)
-    return 0
+    return _finish(0)
 
 
 __all__ = [
     "DEFAULT_MAX_DUAL_REVIEW_ROUNDS",
     "DEFAULT_MAX_ITER",
     "DEFAULT_MAX_PLAN_ROUNDS",
+    "STAGE_ORDER",
     "initial_pipeline_state",
     "load_pipeline_state",
     "pipeline_state_path",
+    "report_path",
     "run_pipeline",
     "save_pipeline_state",
+    "write_pipeline_report",
 ]

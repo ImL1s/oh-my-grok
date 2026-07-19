@@ -318,8 +318,11 @@ def cmd_integrate(args: argparse.Namespace) -> int:
         return 1
 
     dry_run = bool(getattr(args, "dry_run", False))
+    require_squash = bool(getattr(args, "require_squash", False))
     try:
-        result = integrate_results(root, run_id, dry_run=dry_run)
+        result = integrate_results(
+            root, run_id, dry_run=dry_run, require_squash=require_squash
+        )
     except (FileNotFoundError, OSError, IntegrateError) as exc:
         print(f"integrate failed: {exc}", file=sys.stderr)
         return 1
@@ -335,6 +338,57 @@ def cmd_integrate(args: argparse.Namespace) -> int:
         # No envelopes yet — not a hard failure for dry-run document path
         return 0 if dry_run else 1
     return 1
+
+
+def cmd_worker(args: argparse.Namespace) -> int:
+    """prepare/seal worktrees and ULW result envelopes (no-shell bridge)."""
+    from omg_cli.state import load_active_run, load_run
+    from omg_cli.workers import WorkerError, prepare_task, seal_task
+
+    root = _project_root()
+    action = getattr(args, "worker_action", None)
+    task_id = getattr(args, "task_id", None)
+    if not task_id:
+        print("omg worker: --task ID required", file=sys.stderr)
+        return 2
+
+    run_id = getattr(args, "run_id", None)
+    if not run_id:
+        active = load_active_run(root)
+        if active is None:
+            print(
+                "omg worker: no active run (pass --run ID)",
+                file=sys.stderr,
+            )
+            return 1
+        run_id = active["run_id"]
+
+    if load_run(root, run_id) is None:
+        print(f"omg worker: no run found: {run_id}", file=sys.stderr)
+        return 1
+
+    try:
+        if action == "prepare":
+            wt = prepare_task(root, run_id, task_id)
+            print(f"omg worker prepare: task={task_id} worktree={wt}")
+            return 0
+        if action == "seal":
+            env = seal_task(
+                root,
+                run_id,
+                task_id,
+                message=str(getattr(args, "message", None) or "omg seal"),
+                status=str(getattr(args, "status", None) or "ok"),
+                evidence=str(getattr(args, "evidence", None) or ""),
+            )
+            print(f"omg worker seal: task={task_id} status={env.get('status')}")
+            print(json.dumps(env, indent=2, ensure_ascii=False))
+            return 0 if env.get("status") == "ok" else 1
+        print(f"omg worker: unknown action {action!r}", file=sys.stderr)
+        return 2
+    except WorkerError as exc:
+        print(f"omg worker: {exc}", file=sys.stderr)
+        return 1
 
 
 def cmd_ask(args: argparse.Namespace) -> int:
@@ -580,7 +634,64 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="validate envelopes / base_sha only; do not cherry-pick",
     )
+    p_integrate.add_argument(
+        "--require-squash",
+        dest="require_squash",
+        action="store_true",
+        help="reject envelopes whose base..head range has more than one commit",
+    )
     p_integrate.set_defaults(func=cmd_integrate)
+
+    p_worker = sub.add_parser(
+        "worker",
+        parents=[common],
+        help="prepare/seal ULW worktrees and result envelopes (no-shell bridge)",
+    )
+    worker_sub = p_worker.add_subparsers(dest="worker_action")
+    p_w_prep = worker_sub.add_parser(
+        "prepare",
+        parents=[common],
+        help="create .omg/worktrees/<run>/<task> via git worktree add",
+    )
+    p_w_prep.add_argument(
+        "--task", dest="task_id", required=True, help="task_id for worktree"
+    )
+    p_w_prep.add_argument(
+        "--run", dest="run_id", default=None, help="run_id (default: active)"
+    )
+    p_w_prep.set_defaults(func=cmd_worker, worker_action="prepare")
+    p_w_seal = worker_sub.add_parser(
+        "seal",
+        parents=[common],
+        help="git add/commit in worktree and write ulw-results envelope",
+    )
+    p_w_seal.add_argument(
+        "--task", dest="task_id", required=True, help="task_id for envelope"
+    )
+    p_w_seal.add_argument(
+        "--run", dest="run_id", default=None, help="run_id (default: active)"
+    )
+    p_w_seal.add_argument(
+        "--message",
+        dest="message",
+        default="omg seal",
+        help="commit message (default: omg seal)",
+    )
+    p_w_seal.add_argument(
+        "--status",
+        dest="status",
+        choices=("ok", "failed"),
+        default="ok",
+        help="envelope status (default: ok)",
+    )
+    p_w_seal.add_argument(
+        "--evidence",
+        dest="evidence",
+        default="",
+        help="optional evidence string on envelope",
+    )
+    p_w_seal.set_defaults(func=cmd_worker, worker_action="seal")
+    p_worker.set_defaults(func=cmd_worker)
 
     for mode, help_text in (
         ("ulw", "ultrawork parallel mode (spawn_subagent fan-out)"),
@@ -730,7 +841,10 @@ def build_parser() -> argparse.ArgumentParser:
         dest="extra",
         action="append",
         default=[],
-        help="passthrough arg after fixed template (deny elevation flags)",
+        help=(
+            "passthrough arg after fixed template (disabled by default; "
+            "set OMG_ASK_ALLOW_EXTRA=1; elevation flags always denied)"
+        ),
     )
     p_ask.set_defaults(func=cmd_ask)
 

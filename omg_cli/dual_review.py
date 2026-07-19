@@ -1,7 +1,19 @@
-"""Grok-native dual-review: critic → verifier (read-only). Never sets verified."""
+"""Grok-native dual-review: sequential headless critic → verifier (read-only).
+
+**Interim mode (explicit):** the CLI path launches critic then verifier as two
+sequential headless Grok processes. This is **not** native ``spawn_subagent``
+parallel dual-review. Preferred TUI path: skill ``omg-dual-review`` with
+``spawn_subagent`` (depth=1, capability_mode=read-only).
+
+Set ``OMG_DUAL_REVIEW_REQUIRE_NATIVE=1`` to refuse the sequential headless
+CLI path (exit 2) until a native spawn-based dual-review ships.
+
+Never sets verified.
+"""
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -301,6 +313,11 @@ def _execute_dual_stage(
     return int(rc)
 
 
+def require_native_dual_review() -> bool:
+    """True when ``OMG_DUAL_REVIEW_REQUIRE_NATIVE=1`` (refuse sequential CLI path)."""
+    return os.environ.get("OMG_DUAL_REVIEW_REQUIRE_NATIVE", "").strip() == "1"
+
+
 def run_dual_review(
     goal: str,
     *,
@@ -316,11 +333,24 @@ def run_dual_review(
     stage_executor: Callable[..., int] | None = None,
     extra: Sequence[str] | None = None,
 ) -> str:
-    """Run critic then verifier. Returns APPROVE|REQUEST_CHANGES|FAILED|UNKNOWN.
+    """Run critic then verifier sequentially (headless interim mode).
 
-    Never sets verified. When ``run_id`` is None and create_if_missing, creates
-    a mode=dual-review run.
+    Returns APPROVE|REQUEST_CHANGES|FAILED|UNKNOWN.
+
+    This is **explicit interim** dual-review: two sequential headless launches,
+    not native spawn_subagent dual-review. Never sets verified.
+
+    When ``run_id`` is None and create_if_missing, creates a mode=dual-review run.
+    Raises RuntimeError if ``OMG_DUAL_REVIEW_REQUIRE_NATIVE=1``.
     """
+    if require_native_dual_review():
+        raise RuntimeError(
+            "OMG_DUAL_REVIEW_REQUIRE_NATIVE=1: sequential headless dual-review "
+            "is disabled. Native spawn_subagent dual-review is not yet shipped; "
+            "unset the env var to use the interim CLI path, or run the "
+            "omg-dual-review skill in a TUI session with spawn_subagent."
+        )
+
     root_path = Path(root) if root is not None else Path.cwd().resolve()
     goal = (goal or "").strip() or "(no goal)"
     round_n = max(1, int(round_n))
@@ -360,7 +390,11 @@ def run_dual_review(
         "goal": goal,
         "round": round_n,
         "history": history,
-        "note": "Grok-native dual-review; never sets verified",
+        "mode": "sequential_headless_interim",
+        "note": (
+            "Grok-native dual-review (sequential headless interim; "
+            "not native spawn_subagent); never sets verified"
+        ),
         "created_at": _utc_now(),
         "updated_at": _utc_now(),
     }
@@ -484,17 +518,25 @@ def run_dual_review_cli(
     safe: bool = False,
     force: bool = False,
 ) -> int:
-    """CLI exit: 0 on APPROVE, 1 otherwise. Never sets verified."""
-    verdict = run_dual_review(
-        goal,
-        root=root,
-        run_id=run_id,
-        dry_run=dry_run,
-        timeout=timeout,
-        yolo=yolo,
-        safe=safe,
-        force=force,
-    )
+    """CLI exit: 0 on APPROVE, 1 otherwise, 2 if native-only gate set.
+
+    Never sets verified. Sequential headless path is interim (see module doc).
+    """
+    try:
+        verdict = run_dual_review(
+            goal,
+            root=root,
+            run_id=run_id,
+            dry_run=dry_run,
+            timeout=timeout,
+            yolo=yolo,
+            safe=safe,
+            force=force,
+        )
+    except RuntimeError as exc:
+        # Feature gate for incomplete native path
+        print(f"omg dual-review: {exc}", file=sys.stderr)
+        return 2
     if verdict == "APPROVE":
         return 0
     return 1
@@ -506,6 +548,7 @@ __all__ = [
     "load_agent_body",
     "parse_verdict",
     "parse_verdict_file",
+    "require_native_dual_review",
     "run_dual_review",
     "run_dual_review_cli",
     "stage_artifact_path",

@@ -1,0 +1,135 @@
+"""Tests for omg worker prepare/seal — worktree + ULW envelope."""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from omg_cli.state import create_run, load_run
+from omg_cli.workers import (
+    WorkerError,
+    envelope_path,
+    prepare_task,
+    seal_task,
+    worktree_dir,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+BIN_OMG = REPO_ROOT / "bin" / "omg"
+PYTHON = sys.executable
+
+
+def _git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=check,
+    )
+
+
+def _init_repo(path: Path) -> str:
+    path.mkdir(parents=True, exist_ok=True)
+    _git(path, "init")
+    _git(path, "config", "user.email", "omg-test@example.com")
+    _git(path, "config", "user.name", "omg-test")
+    _git(path, "config", "commit.gpgsign", "false")
+    (path / ".gitignore").write_text(".omg/\n", encoding="utf-8")
+    (path / "README.md").write_text("base\n", encoding="utf-8")
+    _git(path, "add", "README.md", ".gitignore")
+    _git(path, "commit", "-m", "initial")
+    return _git(path, "rev-parse", "HEAD").stdout.strip()
+
+
+def _run_omg(*args, cwd=None):
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO_ROOT) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    return subprocess.run(
+        [PYTHON, str(BIN_OMG), *args],
+        cwd=cwd or REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_prepare_and_seal_writes_envelope(tmp_path):
+    base = _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="seal", extra={"base_sha": base})
+    rid = run["run_id"]
+
+    wt = prepare_task(tmp_path, rid, "task-a")
+    assert wt.is_dir()
+    assert wt == worktree_dir(tmp_path, rid, "task-a")
+    # Linked worktree should have .git
+    assert (wt / ".git").exists() or (wt / ".git").is_file()
+
+    (wt / "feature.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    env = seal_task(tmp_path, rid, "task-a", message="add feature")
+    assert env["status"] == "ok"
+    assert env["base_sha"] == base
+    assert env["head_sha"] != base
+    assert "feature.py" in env["changed_files"]
+    assert env["writer"] == "omg-cli"
+
+    epath = envelope_path(tmp_path, "task-a")
+    assert epath.is_file()
+    disk = json.loads(epath.read_text(encoding="utf-8"))
+    assert disk["task_id"] == "task-a"
+    assert disk["status"] == "ok"
+    assert disk["head_sha"] == env["head_sha"]
+
+
+def test_seal_no_changes_fails(tmp_path):
+    base = _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="empty", extra={"base_sha": base})
+    prepare_task(tmp_path, run["run_id"], "empty-t")
+    env = seal_task(tmp_path, run["run_id"], "empty-t")
+    assert env["status"] == "failed"
+    assert "no changes" in (env.get("note") or env.get("evidence") or "")
+
+
+def test_prepare_invalid_task_id(tmp_path):
+    _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="bad")
+    with pytest.raises(WorkerError, match="task_id"):
+        prepare_task(tmp_path, run["run_id"], "../evil")
+
+
+def test_cli_worker_prepare_seal(tmp_path):
+    base = _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="cli-w", extra={"base_sha": base})
+    rid = run["run_id"]
+
+    r1 = _run_omg("worker", "prepare", "--task", "w1", "--run", rid, cwd=tmp_path)
+    assert r1.returncode == 0, r1.stderr + r1.stdout
+    wt = worktree_dir(tmp_path, rid, "w1")
+    assert wt.is_dir()
+    (wt / "x.txt").write_text("x\n", encoding="utf-8")
+
+    r2 = _run_omg(
+        "worker",
+        "seal",
+        "--task",
+        "w1",
+        "--run",
+        rid,
+        "--message",
+        "cli seal",
+        cwd=tmp_path,
+    )
+    assert r2.returncode == 0, r2.stderr + r2.stdout
+    assert envelope_path(tmp_path, "w1").is_file()
+
+
+def test_cli_worker_help():
+    r = _run_omg("worker", "--help")
+    assert r.returncode == 0
+    assert "prepare" in r.stdout or "seal" in r.stdout

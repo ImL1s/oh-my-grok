@@ -34,7 +34,8 @@ def test_unknown_provider_exit_2():
 
 
 def test_argv_codex_fixed_no_shell():
-    argv = argv_codex("summarize HARD RULES")
+    # Legacy argv mode still embeds prompt
+    argv = argv_codex("summarize HARD RULES", prompt_mode="argv")
     assert argv[0] == "codex"
     assert "exec" in argv
     assert "-s" in argv and "read-only" in argv
@@ -42,8 +43,17 @@ def test_argv_codex_fixed_no_shell():
     assert all(isinstance(x, str) for x in argv)
 
 
+def test_argv_codex_stdin_no_prompt_body():
+    secret = "TOP_SECRET_PROMPT_BODY_xyz"
+    argv = argv_codex(secret, prompt_mode="stdin")
+    assert argv[0] == "codex"
+    assert "read-only" in argv
+    assert secret not in argv
+    assert "-" in argv  # stdin sentinel
+
+
 def test_argv_claude_no_skip_permissions():
-    argv = argv_claude("review this")
+    argv = argv_claude("review this", prompt_mode="argv")
     assert argv[:2] == ["claude", "-p"]
     joined = " ".join(argv)
     assert "dangerously-skip-permissions" not in joined
@@ -52,12 +62,15 @@ def test_argv_claude_no_skip_permissions():
 
 def test_fable_alias():
     assert normalize_provider("fable") == "claude"
-    argv = build_provider_argv("fable", "hi", check_binary=False)
+    argv = build_provider_argv(
+        "fable", "hi", check_binary=False, prompt_mode="argv"
+    )
     assert argv[0] == "claude"
 
 
 def test_child_env_has_allow_parent_does_not(monkeypatch, tmp_path):
     monkeypatch.delenv("OMG_ALLOW_EXTERNAL_CLI", raising=False)
+    monkeypatch.setenv("OMG_ASK_STDIN", "1")
     parent_before = os.environ.get("OMG_ALLOW_EXTERNAL_CLI")
 
     captured: dict = {}
@@ -66,9 +79,15 @@ def test_child_env_has_allow_parent_does_not(monkeypatch, tmp_path):
         captured["argv"] = argv
         captured["env"] = kwargs.get("env")
         captured["shell"] = kwargs.get("shell", False)
+        captured["stdin"] = kwargs.get("stdin")
         m = MagicMock()
         m.pid = 12345
-        m.communicate.return_value = (b"advisor says ok\n", None)
+
+        def comm(input=None, timeout=None):
+            captured["stdin_input"] = input
+            return (b"advisor says ok\n", None)
+
+        m.communicate.side_effect = comm
         m.returncode = 0
         return m
 
@@ -79,9 +98,10 @@ def test_child_env_has_allow_parent_does_not(monkeypatch, tmp_path):
         lambda name: f"/usr/bin/{name}",
     )
 
+    prompt = "hello advisor SECRET_NOT_IN_ARGV"
     result = run_ask(
         "codex",
-        "hello advisor",
+        prompt,
         root=tmp_path,
         dry_run=False,
         timeout=30,
@@ -95,6 +115,10 @@ def test_child_env_has_allow_parent_does_not(monkeypatch, tmp_path):
     assert "OMG_ALLOW_EXTERNAL_CLI" not in os.environ or parent_before is not None
     assert parent_before is None
     assert "OMG_ALLOW_EXTERNAL_CLI" not in os.environ
+    # stdin mode: prompt not in argv; fed via communicate(input=)
+    assert prompt not in captured["argv"]
+    assert captured.get("stdin") is subprocess.PIPE
+    assert captured.get("stdin_input") == prompt.encode("utf-8")
 
 
 def test_dry_run_writes_no_provider_exec(monkeypatch, tmp_path):
@@ -132,13 +156,37 @@ def test_artifact_written_under_omg_artifacts(tmp_path):
     assert result.artifact.name.startswith("ask-")
 
 
-def test_extra_rejects_bypass_permissions():
+def test_extra_rejects_by_default_without_allow_env(monkeypatch):
+    monkeypatch.delenv("OMG_ASK_ALLOW_EXTRA", raising=False)
+    with pytest.raises(AskProviderError, match="OMG_ASK_ALLOW_EXTRA"):
+        validate_extra(["--temperature", "0"])
+    with pytest.raises(AskProviderError, match="OMG_ASK_ALLOW_EXTRA"):
+        argv_claude("x", extra=["--yolo"], prompt_mode="argv")
+
+
+def test_extra_rejects_bypass_permissions_when_allow_extra(monkeypatch):
+    monkeypatch.setenv("OMG_ASK_ALLOW_EXTRA", "1")
     with pytest.raises(AskProviderError):
         validate_extra(["--dangerously-skip-permissions"])
     with pytest.raises(AskProviderError):
         validate_extra(["-s", "workspace-write"])
     with pytest.raises(AskProviderError):
-        argv_claude("x", extra=["--yolo"])
+        argv_claude("x", extra=["--yolo"], prompt_mode="argv")
+
+
+def test_stdin_mode_default_argv_excludes_prompt(monkeypatch, tmp_path):
+    monkeypatch.setenv("OMG_ASK_STDIN", "1")
+    monkeypatch.delenv("OMG_ASK_ALLOW_EXTRA", raising=False)
+    secret = "PROMPT_BODY_MUST_NOT_LEAK_INTO_ARGV_99"
+    result = run_ask(
+        "codex",
+        secret,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+    )
+    assert secret not in result.argv
+    assert "OMG_ALLOW_EXTERNAL_CLI" not in os.environ
 
 
 def test_provider_missing_exit_3(monkeypatch, tmp_path):
@@ -197,7 +245,7 @@ def test_timeout_kills_process_group(monkeypatch, tmp_path):
     # communicate after timeout
     orig_comm = SlowProc.communicate
 
-    def comm(self, timeout=None):
+    def comm(self, input=None, timeout=None):
         if not getattr(self, "_timed", False):
             self._timed = True
             raise subprocess.TimeoutExpired(cmd=["x"], timeout=timeout or 0)

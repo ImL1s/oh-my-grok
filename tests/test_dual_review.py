@@ -173,3 +173,21 @@ def test_dual_review_ro_stages_ignore_yolo(monkeypatch, tmp_path):
         assert "--always-approve" not in argv, role
         assert "--permission-mode" in argv
         assert argv[argv.index("--permission-mode") + 1] == "plan"
+
+
+def test_require_native_gate_exits_2(monkeypatch, tmp_path):
+    """OMG_DUAL_REVIEW_REQUIRE_NATIVE=1 refuses sequential headless path."""
+    monkeypatch.setenv("OMG_DUAL_REVIEW_REQUIRE_NATIVE", "1")
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no popen")),
+    )
+    from omg_cli.dual_review import run_dual_review_cli
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="OMG_DUAL_REVIEW_REQUIRE_NATIVE"):
+        run_dual_review("native only", root=tmp_path, dry_run=True)
+    rc = run_dual_review_cli("native only", root=tmp_path, dry_run=True)
+    assert rc == 2

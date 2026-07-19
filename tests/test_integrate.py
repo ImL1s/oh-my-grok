@@ -12,14 +12,18 @@ import pytest
 
 from omg_cli.integrate import (
     IntegrateError,
+    assert_ancestor,
     default_envelopes_dir,
     git_rev_parse_head,
     integrate_results,
+    list_range_commits,
     load_envelopes,
     preflight_clean_tree,
     record_base_sha,
+    reject_merge_commits,
     result_path,
     validate_envelope,
+    verify_changed_files,
 )
 from omg_cli.state import create_run, load_run
 
@@ -256,7 +260,8 @@ def test_integrate_sorts_by_task_id(tmp_path):
             "head_sha": head_b,
             "worktree_path": str(wt),
             "status": "ok",
-            "changed_files": ["b.txt"],
+            # empty claimed skips verify_changed_files (order-only dry_run)
+            "changed_files": [],
         },
     )
     _write_envelope(
@@ -267,7 +272,7 @@ def test_integrate_sorts_by_task_id(tmp_path):
             "head_sha": head_a,
             "worktree_path": str(wt),
             "status": "ok",
-            "changed_files": ["a.txt"],
+            "changed_files": [],
         },
     )
 
@@ -483,6 +488,18 @@ def test_integrate_dirty_tree_refuses(tmp_path):
     base = _init_repo(leader)
     (leader / "dirt").write_text("z\n", encoding="utf-8")
     run = create_run(leader, mode="ulw", goal="dirty", extra={"base_sha": base})
+    # Envelope present so preflight runs (missing envelopes skip clean-tree)
+    _write_envelope(
+        default_envelopes_dir(leader),
+        {
+            "task_id": "t-dirty",
+            "base_sha": base,
+            "head_sha": base,
+            "worktree_path": str(leader),
+            "status": "ok",
+            "changed_files": [],
+        },
+    )
     with pytest.raises(IntegrateError, match="dirty"):
         integrate_results(leader, run["run_id"])
 
@@ -624,3 +641,161 @@ def test_integrate_multi_commit_range(tmp_path):
     assert result["applied"][0]["pick"] == f"{base}..{head_sha}"
     assert (leader / "c1.txt").read_text(encoding="utf-8") == "one\n"
     assert (leader / "c2.txt").read_text(encoding="utf-8") == "two\n"
+
+
+# ---------------------------------------------------------------------------
+# ancestry / merge reject / changed_files / require_squash
+# ---------------------------------------------------------------------------
+
+
+def test_assert_ancestor_ok_and_equal(tmp_path):
+    base = _init_repo(tmp_path)
+    assert_ancestor(tmp_path, base, base)  # equal skip
+    (tmp_path / "n.txt").write_text("n\n", encoding="utf-8")
+    _git(tmp_path, "add", "n.txt")
+    _git(tmp_path, "commit", "-m", "n")
+    head = git_rev_parse_head(tmp_path)
+    assert head is not None
+    assert_ancestor(tmp_path, base, head)
+
+
+def test_assert_ancestor_bad_fails(tmp_path):
+    """Divergent histories: sibling commit is not an ancestor of leader HEAD."""
+    leader = tmp_path / "leader"
+    base = _init_repo(leader)
+    # Side branch with unique commit
+    _git(leader, "checkout", "-b", "side")
+    (leader / "side.txt").write_text("s\n", encoding="utf-8")
+    _git(leader, "add", "side.txt")
+    _git(leader, "commit", "-m", "side")
+    side_head = git_rev_parse_head(leader)
+    assert side_head is not None
+    # Back to mainline and diverge
+    _git(leader, "checkout", "-")
+    (leader / "main.txt").write_text("m\n", encoding="utf-8")
+    _git(leader, "add", "main.txt")
+    _git(leader, "commit", "-m", "main")
+    main_head = git_rev_parse_head(leader)
+    assert main_head is not None
+    with pytest.raises(IntegrateError, match="not an ancestor"):
+        assert_ancestor(leader, side_head, main_head)
+
+
+def test_merge_commit_in_range_fails(tmp_path):
+    leader = tmp_path / "leader"
+    base = _init_repo(leader)
+
+    # Create two branches and merge
+    _git(leader, "checkout", "-b", "feat")
+    (leader / "f.txt").write_text("f\n", encoding="utf-8")
+    _git(leader, "add", "f.txt")
+    _git(leader, "commit", "-m", "feat")
+    _git(leader, "checkout", "-")
+    (leader / "m.txt").write_text("m\n", encoding="utf-8")
+    _git(leader, "add", "m.txt")
+    _git(leader, "commit", "-m", "mainline")
+    # merge feat into main
+    _git(leader, "merge", "--no-ff", "feat", "-m", "merge feat")
+    head = git_rev_parse_head(leader)
+    assert head is not None
+    commits = list_range_commits(leader, base, head)
+    assert len(commits) >= 2
+    with pytest.raises(IntegrateError, match="merge commit"):
+        reject_merge_commits(leader, commits)
+
+    # Wire through integrate_results
+    wt = leader / ".omg" / "worktrees" / "merge-wt"
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    # Use leader itself as worktree (allowed: under project root)
+    run = create_run(leader, mode="ulw", goal="merge", extra={"base_sha": base})
+    _write_envelope(
+        default_envelopes_dir(leader),
+        {
+            "task_id": "t-merge",
+            "base_sha": base,
+            "head_sha": head,
+            "worktree_path": str(leader),
+            "status": "ok",
+            "changed_files": [],
+        },
+    )
+    result = integrate_results(leader, run["run_id"], dry_run=True)
+    assert result["status"] == "failed"
+    assert "merge" in (result.get("error") or "").lower()
+
+
+def test_changed_files_lie_fails(tmp_path):
+    leader = tmp_path / "leader"
+    base = _init_repo(leader)
+    wt = leader / ".omg" / "worktrees" / "lie"
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    _git(leader, "worktree", "add", "-b", "lie-br", str(wt), "HEAD")
+    (wt / "real.py").write_text("x\n", encoding="utf-8")
+    _git(wt, "add", "real.py")
+    _git(wt, "commit", "-m", "real")
+    head = _git(wt, "rev-parse", "HEAD").stdout.strip()
+
+    with pytest.raises(IntegrateError, match="changed_files"):
+        verify_changed_files(wt, base, head, ["fake.py"])
+
+    run = create_run(leader, mode="ulw", goal="lie", extra={"base_sha": base})
+    _write_envelope(
+        default_envelopes_dir(leader),
+        {
+            "task_id": "t-lie",
+            "base_sha": base,
+            "head_sha": head,
+            "worktree_path": str(wt),
+            "status": "ok",
+            "changed_files": ["fake.py", "also-fake.py"],
+        },
+    )
+    result = integrate_results(leader, run["run_id"], dry_run=True)
+    assert result["status"] == "failed"
+    assert "changed_files" in (result.get("error") or "")
+
+
+def test_require_squash_with_2_commits_fails(tmp_path):
+    leader = tmp_path / "leader"
+    base = _init_repo(leader)
+    wt = leader / ".omg" / "worktrees" / "squash"
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    _git(leader, "worktree", "add", "-b", "sq", str(wt), "HEAD")
+    (wt / "c1.txt").write_text("1\n", encoding="utf-8")
+    _git(wt, "add", "c1.txt")
+    _git(wt, "commit", "-m", "one")
+    (wt / "c2.txt").write_text("2\n", encoding="utf-8")
+    _git(wt, "add", "c2.txt")
+    _git(wt, "commit", "-m", "two")
+    head = _git(wt, "rev-parse", "HEAD").stdout.strip()
+    commits = list_range_commits(wt, base, head)
+    assert len(commits) == 2
+
+    run = create_run(leader, mode="ulw", goal="sq", extra={"base_sha": base})
+    _write_envelope(
+        default_envelopes_dir(leader),
+        {
+            "task_id": "t-sq",
+            "base_sha": base,
+            "head_sha": head,
+            "worktree_path": str(wt),
+            "status": "ok",
+            "changed_files": ["c1.txt", "c2.txt"],
+        },
+    )
+    result = integrate_results(
+        leader, run["run_id"], dry_run=True, require_squash=True
+    )
+    assert result["status"] == "failed"
+    assert "require_squash" in (result.get("error") or "")
+    # Without flag, multi-commit happy path still works
+    result_ok = integrate_results(
+        leader, run["run_id"], dry_run=True, require_squash=False
+    )
+    assert result_ok["status"] == "ok"
+
+
+def test_cli_integrate_require_squash_flag():
+    r = _run_omg("integrate", "--help")
+    assert r.returncode == 0
+    assert "--require-squash" in r.stdout

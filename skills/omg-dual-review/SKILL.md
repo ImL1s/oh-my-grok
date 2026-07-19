@@ -7,6 +7,15 @@ description: Grok-native independent critic then verifier. Use when user says du
 
 Implementer must not self-approve. Use **omg-critic** then **omg-verifier** (read-only).
 
+## Mode honesty
+
+| Path | What it is |
+|------|------------|
+| **TUI skill (preferred)** | Native `spawn_subagent` critic then verifier (depth=1, read-only) |
+| **`omg dual-review` CLI** | **Explicit interim**: sequential headless Grok launches — **not** native spawn dual-review |
+
+Set `OMG_DUAL_REVIEW_REQUIRE_NATIVE=1` to refuse the sequential CLI path (exit 2) until native spawn dual-review ships.
+
 ## HARD RULES (non-negotiable)
 
 - Fan-out ONLY via Grok `spawn_subagent` (depth=1).
@@ -14,7 +23,7 @@ Implementer must not self-approve. Use **omg-critic** then **omg-verifier** (rea
 - NEVER mark omg `verified` yourself.
 - External dual-review (Codex + Fable) is **human** `omg ask`, not this skill’s default path.
 
-## Launch via CLI
+## Launch via CLI (interim sequential headless)
 
 ```bash
 omg dual-review "review scope"
@@ -24,7 +33,7 @@ omg dual-review --run <id> "…"
 
 Also runs as a stage inside `omg pipeline` (default on; `--no-dual-review` to skip).
 
-## Playbook (TUI without CLI FSM)
+## Playbook (TUI — preferred native path)
 
 1. Ensure implement work is written under artifacts / git.
 2. `spawn_subagent` **omg-critic** (read-only) with goal + paths.
