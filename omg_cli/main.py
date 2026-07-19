@@ -21,7 +21,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
 def cmd_doctor(args: argparse.Namespace) -> int:
     from omg_cli.doctor import run_doctor
 
-    return run_doctor()
+    return run_doctor(strict=bool(getattr(args, "strict", False)))
 
 
 def cmd_state(args: argparse.Namespace) -> int:
@@ -116,6 +116,11 @@ def build_parser() -> argparse.ArgumentParser:
         "doctor",
         parents=[common],
         help="check plugin + environment health",
+    )
+    p_doctor.add_argument(
+        "--strict",
+        action="store_true",
+        help="treat compat.claude isolation risks as FAIL (exit 1)",
     )
     p_doctor.set_defaults(func=cmd_doctor)
 

@@ -88,6 +88,8 @@ def merge_gitignore_fragment(project_root: Path) -> str:
 
 
 def run_setup(project_root: Path | None = None) -> int:
+    from omg_cli.compat import format_isolation_banner
+
     root = Path(project_root or Path.cwd()).resolve()
     ensure_omg_dirs(root)
 
@@ -106,6 +108,9 @@ def run_setup(project_root: Path | None = None) -> int:
     print()
     print("Then verify:")
     print("  omg doctor")
+    print()
+    # Always print isolation banner after success (compat.claude C1)
+    print(format_isolation_banner())
     return 0
 
 

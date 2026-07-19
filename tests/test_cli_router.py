@@ -61,6 +61,10 @@ def test_setup_on_tmp_path(tmp_path):
         encoding="utf-8"
     )
     assert "plugin install" in r.stdout.lower() or "grok plugin" in r.stdout.lower()
+    # isolation banner always printed after setup success
+    assert "[compat.claude]" in r.stdout
+    assert "skills = false" in r.stdout
+    assert "hooks = false" in r.stdout
 
 
 def test_setup_idempotent_agents_marker(tmp_path):
@@ -83,6 +87,16 @@ def test_doctor_runnable():
     assert "plugin.json" in out.lower() or "OK" in out or "FAIL" in out
     # process always finishes cleanly (0 or 1), not crash
     assert r.returncode in (0, 1)
+    # always runs compat.claude section + isolation banner
+    assert "compat.claude" in out
+    assert "skills = false" in out
+
+
+def test_doctor_strict_flag_accepted():
+    r = _run_omg("doctor", "--strict", cwd=REPO_ROOT)
+    assert r.returncode in (0, 1)
+    out = r.stdout + r.stderr
+    assert "compat.claude" in out or "plugin.json" in out.lower()
 
 
 def test_state_no_active(tmp_path):

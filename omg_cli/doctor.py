@@ -154,7 +154,24 @@ def run_checks() -> list[tuple[str, bool, str]]:
     ]
 
 
-def run_doctor() -> int:
+def run_doctor(
+    *,
+    strict: bool = False,
+    project_root: Path | None = None,
+) -> int:
+    """Run hard checks + compat.claude isolation scan.
+
+    Hard check failures always exit 1.
+    Compat risks are WARN by default (exit 0 if only warns);
+    with ``strict=True`` any compat risk becomes FAIL (exit 1).
+    """
+    from omg_cli.compat import (
+        compat_exit_should_fail,
+        format_compat_lines,
+        format_isolation_banner,
+        scan_compat,
+    )
+
     results = run_checks()
     failed = 0
     print("oh-my-grok doctor")
@@ -164,17 +181,35 @@ def run_doctor() -> int:
         print(f"[{tag}] {name}: {detail}")
         if not ok:
             failed += 1
+
+    # compat.claude isolation scan (always runs)
+    print("-" * 48)
+    print("compat.claude isolation")
+    root = Path(project_root) if project_root is not None else Path.cwd().resolve()
+    report = scan_compat(project_root=root)
+    for line in format_compat_lines(report, strict=strict):
+        print(line)
+    if compat_exit_should_fail(report, strict=strict):
+        failed += 1
+        print(f"[FAIL] compat.claude: risks present under --strict")
+
+    print("-" * 48)
+    print(format_isolation_banner())
     print("-" * 48)
     if failed:
         print(f"{failed} check(s) failed")
         return 1
+    if report.has_risks:
+        print("all hard checks passed (compat risks WARN only; use --strict to fail)")
+        return 0
     print("all checks passed")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    _ = argv
-    return run_doctor()
+    argv = list(argv) if argv is not None else sys.argv[1:]
+    strict = "--strict" in argv
+    return run_doctor(strict=strict)
 
 
 if __name__ == "__main__":
