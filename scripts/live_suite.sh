@@ -104,27 +104,51 @@ if [[ "$MODE" == "quick" || "$MODE" == "full" || "$MODE" == "quota-heavy" ]]; th
   grep -qx 'LIVE-RALPH-OK' "$RALPH/live_ralph_ok.txt" 2>/dev/null \
     || fail "L-RALPH-1 missing LIVE-RALPH-OK"
 
-  # L-ACCEPT-1: freeze trivial true PRD if accept supports writing — else write PRD artifact
+  # L-ACCEPT-1: write hermetic prd.json with [["true"]], then omg accept --yes
   echo "== L-ACCEPT-1 =="
   (
     cd "$RALPH"
-    # Minimal PRD with true command via python helper if needed
     python3 - <<'PY'
+import json
 from pathlib import Path
-import json, time
-root = Path(".")
-art = root / ".omg" / "artifacts"
-art.mkdir(parents=True, exist_ok=True)
-# Find active run
-from omg_cli.state import load_active, load_run
-# Prefer writing acceptance via CLI after freeze — use omg accept if PRD exists
-print("accept helper: ensure PRD with commands [[\"true\"]] if API available")
+from omg_cli.state import load_active_run
+
+root = Path(".").resolve()
+active = load_active_run(root)
+if not active:
+    raise SystemExit("L-ACCEPT-1: no active run after ralph")
+run_id = active["run_id"]
+prd_path = root / ".omg" / "state" / "runs" / run_id / "prd.json"
+prd_path.parent.mkdir(parents=True, exist_ok=True)
+prd = {
+    "version": 1,
+    "goal": "live suite accept gate",
+    "stories": [
+        {
+            "id": "S-accept",
+            "title": "hermetic true",
+            "commands": [["true"]],
+        }
+    ],
+    "global_commands": [],
+}
+prd_path.write_text(json.dumps(prd, indent=2) + "\n", encoding="utf-8")
+print(f"L-ACCEPT-1 wrote {prd_path}")
 PY
-    # If a run is active with prd, try accept --yes; tolerate skip
-    set +e
-    "${OMG[@]}" accept --yes 2>/dev/null
-    set -e
-  ) || true
+    "${OMG[@]}" accept --yes
+    python3 - <<'PY'
+import json
+from pathlib import Path
+from omg_cli.state import load_active_run, load_run
+
+root = Path(".").resolve()
+active = load_active_run(root)
+assert active, "no active run"
+data = load_run(root, active["run_id"])
+assert data and data.get("verified") is True, f"expected verified true, got {data}"
+print("L-ACCEPT-1 verified=true OK")
+PY
+  ) || fail "L-ACCEPT-1 accept/verified failed"
 fi
 
 if [[ "$MODE" == "full" || "$MODE" == "quota-heavy" ]]; then
