@@ -96,6 +96,38 @@ def test_seal_no_changes_fails(tmp_path):
     assert "no changes" in (env.get("note") or env.get("evidence") or "")
 
 
+def test_seal_dirty_no_commit_fails(tmp_path, monkeypatch):
+    """Dirty worktree that produces no new commit must not seal status=ok."""
+    base = _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="dirty", extra={"base_sha": base})
+    rid = run["run_id"]
+    prepare_task(tmp_path, rid, "dirty-t")
+    wt = worktree_dir(tmp_path, rid, "dirty-t")
+    # Untracked file that gets add'd but we force "no staged changes" path:
+    # write file then mock cached-diff quiet (no staged) while porcelain was dirty.
+    (wt / "noise.bin").write_bytes(b"\x00\x01")
+    import omg_cli.workers as workers
+
+    real_run = workers._run_git
+
+    def selective_git(args, cwd=None, timeout=30.0):
+        # After add -A, pretend index has nothing staged (returncode 0 for --quiet)
+        if list(args[:3]) == ["diff", "--cached", "--quiet"]:
+            class R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            return R()
+        return real_run(args, cwd=cwd, timeout=timeout)
+
+    monkeypatch.setattr(workers, "_run_git", selective_git)
+    env = seal_task(tmp_path, rid, "dirty-t")
+    assert env["status"] == "failed"
+    assert env["head_sha"] == base or env["head_sha"] == env["base_sha"]
+    blob = (env.get("note") or "") + (env.get("evidence") or "")
+    assert "no new commit" in blob or "head_sha==base_sha" in blob or "dirty" in blob
+
+
 def test_prepare_invalid_task_id(tmp_path):
     _init_repo(tmp_path)
     run = create_run(tmp_path, mode="ulw", goal="bad")

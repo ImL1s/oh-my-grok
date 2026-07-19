@@ -8,6 +8,8 @@ agentsMd: true
 disallowedTools:
   - spawn_subagent
   - search_replace
+  - run_terminal_command
+  - run_terminal_cmd
 ---
 
 # omg-verifier — Evidence gate (read-only leaf)

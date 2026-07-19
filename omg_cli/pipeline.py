@@ -194,6 +194,40 @@ def _should_integrate(implement: str, root: Path) -> bool:
     return _envelopes_exist(root)
 
 
+def _envelope_heads(root: Path) -> list[str]:
+    """Return head_sha values from current ULW envelope JSON files."""
+    env_dir = Path(root) / ".omg" / "artifacts" / "ulw-results"
+    if not env_dir.is_dir():
+        return []
+    heads: list[str] = []
+    for path in sorted(env_dir.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        h = data.get("head_sha")
+        if isinstance(h, str) and h.strip():
+            heads.append(h.strip().lower())
+    return heads
+
+
+def _integrate_stale(state: dict[str, Any], root: Path) -> bool:
+    """True when envelopes exist and their heads are not all in last_integrated_heads.
+
+    Used on resume so we never skip integrate after re-implement/reseal (AC4).
+    """
+    current = _envelope_heads(root)
+    if not current:
+        return False
+    last = state.get("last_integrated_heads") or []
+    if not isinstance(last, list):
+        last = []
+    last_norm = {str(x).strip().lower() for x in last if x}
+    return any(h not in last_norm for h in current)
+
+
 def _execute_integrate_stage(
     *,
     root_path: Path,
@@ -512,6 +546,10 @@ def run_pipeline(
     def _should_run(stage_name: str) -> bool:
         if resume_run_id is None:
             return True
+        # AC4: if ULW envelopes changed after last integrate, force re-integrate
+        # even when history already has an integrate exit (resume after re-implement).
+        if stage_name == "integrate" and _integrate_stale(state, root_path):
+            return True
         # Resume: skip stages already exited successfully
         if stage_name in stages_done and start_stage not in (stage_name, "initialized"):
             # If current stage is this one and not exited, re-run
@@ -662,7 +700,27 @@ def run_pipeline(
             if dry_run:
                 print(f"omg pipeline dry-run: stage=dual_review round={dr_i}")
 
-            verdict = str(do_dual())
+            try:
+                verdict = str(do_dual())
+            except RuntimeError as exc:
+                # OMG_DUAL_REVIEW_REQUIRE_NATIVE=1 etc. — fail closed, exit 2
+                print(f"omg pipeline: dual_review gate: {exc}", file=sys.stderr)
+                state["status"] = "failed"
+                state["stage"] = "failed"
+                _history(
+                    state,
+                    "dual_review",
+                    "exit",
+                    detail=f"gate_error={exc}",
+                )
+                save_pipeline_state(root_path, run_id, state)
+                write_status(
+                    root_path,
+                    run_id,
+                    "failed",
+                    extra={"stage": "dual_review", "error": str(exc)},
+                )
+                return _finish(2)
             _history(
                 state,
                 "dual_review",
@@ -704,6 +762,7 @@ def run_pipeline(
                 )
                 return _finish(1)
             # re-implement then RE-INTEGRATE before next dual_review (AC4)
+            state["stage"] = "implement"
             _history(
                 state,
                 "implement",
@@ -711,10 +770,14 @@ def run_pipeline(
                 detail="re-implement after REQUEST_CHANGES",
             )
             save_pipeline_state(root_path, run_id, state)
+            write_status(
+                root_path, run_id, "running", extra={"stage": "implement"}
+            )
             rc_impl = int(do_implement())
             _history(state, "implement", "exit", detail=f"rc={rc_impl}")
             if rc_impl != 0 and not dry_run:
                 state["status"] = "failed"
+                state["stage"] = "failed"
                 save_pipeline_state(root_path, run_id, state)
                 write_status(
                     root_path, run_id, "failed", extra={"stage": "implement"}

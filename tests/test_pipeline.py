@@ -385,3 +385,140 @@ def test_pipeline_reintegrate_after_request_changes(tmp_path):
     ]
     assert len(integrate_exits) >= 2
     assert any("after-re-implement" in (h.get("detail") or "") for h in integrate_exits)
+
+
+def test_pipeline_resume_reintegrates_stale_envelopes(tmp_path):
+    """Resume after re-implement (before integrate) must re-integrate new heads.
+
+    Simulates crash between re-implement and integrate: history has integrate
+    exit + implement exit, stage still dual_review, but envelope head changed.
+    """
+    env_dir = tmp_path / ".omg" / "artifacts" / "ulw-results"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    env_path = env_dir / "t1.json"
+    integrated_heads: list[str] = []
+
+    def write_envelope(head: str) -> None:
+        env_path.write_text(
+            json.dumps(
+                {
+                    "task_id": "t1",
+                    "base_sha": "base0001",
+                    "head_sha": head,
+                    "worktree_path": str(tmp_path),
+                    "status": "ok",
+                    "changed_files": ["a.py"],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    # First pipeline run: implement + integrate + REQUEST_CHANGES + re-implement
+    # then we stop via dual_fn raising after first REQUEST_CHANGES path... 
+    # Better: craft pipeline.json manually after partial first run.
+
+    def impl_fn(**_k):
+        write_envelope("headAAAA")
+        return 0
+
+    def integrate_fn(*_a, **kwargs):
+        data = json.loads(env_path.read_text(encoding="utf-8"))
+        head = data["head_sha"]
+        integrated_heads.append(head)
+        return {
+            "status": "ok",
+            "applied": [{"task_id": "t1", "head_sha": head, "status": "applied"}],
+            "writer": "omg-cli",
+        }
+
+    dual_calls = {"n": 0}
+
+    def dual_fn(**_k):
+        dual_calls["n"] += 1
+        if dual_calls["n"] == 1:
+            return "REQUEST_CHANGES"
+        return "APPROVE"
+
+    # First call: full loop — will re-implement and re-integrate in-process
+    # We need crash simulation: run until after re-implement without second integrate.
+    # Instead craft state:
+    write_envelope("headOLD1")
+    run = create_run(tmp_path, mode="pipeline", goal="resume reint")
+    rid = run["run_id"]
+    from omg_cli.pipeline import initial_pipeline_state, save_pipeline_state
+
+    state = initial_pipeline_state(
+        run_id=rid,
+        goal="resume reint",
+        implement="ulw",
+        skip_plan=True,
+        dual_review=True,
+        max_dual_review_rounds=2,
+        require_acceptance=False,
+    )
+    # History as if: implement, integrate(old), dual REQUEST_CHANGES, re-implement
+    # but crash before after-re-implement integrate. Envelope already resealed to NEW.
+    write_envelope("headNEW2")
+    state["stage"] = "dual_review"
+    state["plan_accepted"] = True
+    state["skip_plan"] = True
+    state["last_integrated_heads"] = ["headold1"]  # stale vs headNEW2
+    state["history"] = [
+        {"ts": "t0", "stage": "implement", "event": "enter", "detail": ""},
+        {"ts": "t1", "stage": "implement", "event": "exit", "detail": "rc=0"},
+        {"ts": "t2", "stage": "integrate", "event": "enter", "detail": "after-implement"},
+        {"ts": "t3", "stage": "integrate", "event": "exit", "detail": "status=ok"},
+        {"ts": "t4", "stage": "dual_review", "event": "enter", "detail": "round=1"},
+        {
+            "ts": "t5",
+            "stage": "dual_review",
+            "event": "exit",
+            "detail": "verdict=REQUEST_CHANGES",
+        },
+        {
+            "ts": "t6",
+            "stage": "implement",
+            "event": "enter",
+            "detail": "re-implement after REQUEST_CHANGES",
+        },
+        {"ts": "t7", "stage": "implement", "event": "exit", "detail": "rc=0"},
+    ]
+    save_pipeline_state(tmp_path, rid, state)
+    from omg_cli.state import write_status
+
+    write_status(tmp_path, rid, "running", extra={"stage": "dual_review"})
+
+    # Resume: dual_fn approves on first call of this resume; implement should skip
+    # but integrate must run because heads stale
+    dual_resume = {"n": 0}
+
+    def dual_resume_fn(**_k):
+        dual_resume["n"] += 1
+        return "APPROVE"
+
+    def impl_should_not_run(**_k):
+        raise AssertionError("implement should be skipped on this resume")
+
+    rc = run_pipeline(
+        "resume reint",
+        root=tmp_path,
+        dry_run=False,
+        resume_run_id=rid,
+        skip_plan=True,
+        dual_review=True,
+        max_dual_review_rounds=2,
+        require_acceptance=False,
+        implement="ulw",
+        implement_fn=impl_should_not_run,
+        integrate_fn=integrate_fn,
+        dual_review_fn=dual_resume_fn,
+        max_iter=1,
+    )
+    assert rc == 0
+    assert [h.lower() for h in integrated_heads] == ["headnew2"], (
+        f"resume must integrate current envelope head; got {integrated_heads!r}"
+    )
+    state2 = load_pipeline_state(tmp_path, rid)
+    assert state2 is not None
+    assert "headnew2" in [str(x).lower() for x in (state2.get("last_integrated_heads") or [])]

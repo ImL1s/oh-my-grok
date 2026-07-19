@@ -142,10 +142,11 @@ def _list_changed_files(worktree: Path, base_sha: str, head_sha: str) -> list[st
     return [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
 
 
-def _porcelain_has_changes(worktree: Path) -> bool:
+def _porcelain_has_changes(worktree: Path) -> bool | None:
+    """Return True if dirty, False if clean, None if status failed (fail-closed)."""
     r = _run_git(["status", "--porcelain"], cwd=worktree)
     if r.returncode != 0:
-        return False
+        return None
     return bool((r.stdout or "").strip())
 
 
@@ -203,7 +204,15 @@ def seal_task(
     seal_note: str | None = None
 
     is_git = git_available(wt) or (wt / ".git").exists()
-    if is_git and _porcelain_has_changes(wt):
+    dirty = _porcelain_has_changes(wt) if is_git else None
+    if is_git and dirty is None:
+        seal_note = "git status --porcelain failed; fail-closed seal"
+        status = "failed"
+        evidence = (evidence + "\n" if evidence else "") + seal_note
+        head_now = git_rev_parse_head(wt)
+        if head_now:
+            head_sha = head_now.strip().lower()
+    elif is_git and dirty:
         r_add = _run_git(["add", "-A"], cwd=wt)
         if r_add.returncode != 0:
             raise WorkerError(
@@ -225,6 +234,17 @@ def seal_task(
         head_now = git_rev_parse_head(wt)
         if head_now:
             head_sha = head_now.strip().lower()
+        # Still dirty after seal attempt → failed
+        still_dirty = _porcelain_has_changes(wt)
+        if still_dirty is True:
+            seal_note = "worktree still dirty after seal; refuse ok envelope"
+            status = "failed"
+            evidence = (evidence + "\n" if evidence else "") + seal_note
+        elif head_sha == base_sha:
+            # Dirty but nothing staged/committed (e.g. ignored-only noise)
+            seal_note = "dirty worktree produced no new commit (head==base)"
+            status = "failed"
+            evidence = (evidence + "\n" if evidence else "") + seal_note
     elif is_git:
         head_now = git_rev_parse_head(wt)
         if head_now:
@@ -240,6 +260,12 @@ def seal_task(
         seal_note = "worktree is not a git checkout; cannot commit"
         status = "failed"
         evidence = (evidence + "\n" if evidence else "") + seal_note
+
+    # Final integrity: ok envelope must advance head beyond base
+    if status == "ok" and head_sha == base_sha:
+        seal_note = (seal_note or "") + "; refuse ok when head_sha==base_sha"
+        status = "failed"
+        evidence = (evidence + "\n" if evidence else "") + seal_note.strip("; ")
 
     changed = _list_changed_files(wt, base_sha, head_sha) if is_git else []
 

@@ -265,7 +265,8 @@ def build_prompt(
 # Built-in tools stripped when disallow_shell is active (Grok --disallowed-tools).
 # Do NOT inject this for ulw/ralph leaders — they may need shell for tests via omg CLI
 # coordination. Prefer critic/verifier (read-only stages) and opt-in env.
-DISALLOW_SHELL_TOOLS = "run_terminal_command"
+# Both tool ids used across headless vs interactive naming.
+DISALLOW_SHELL_TOOLS = "run_terminal_command,run_terminal_cmd"
 
 
 def _env_disallow_shell() -> bool:

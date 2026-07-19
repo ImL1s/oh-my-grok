@@ -25,15 +25,17 @@ omg pipeline "goal" --dry-run
 ## Stages (CLI-owned)
 
 ```text
-plan (ralplan) → implement (ralph|ulw) → dual_review → accept
+plan → implement → integrate → dual_review → accept → report
 ```
 
 | Stage | Module | Notes |
 |-------|--------|-------|
 | plan | ralplan FSM | Consensus plan; no product code |
 | implement | ralph or ulw | Default ralph |
-| dual_review | omg-critic → omg-verifier | Grok-native; optional |
+| integrate | ULW envelopes / re-integrate after reseal | Required when ulw or envelopes exist; re-runs after REQUEST_CHANGES re-implement |
+| dual_review | omg-critic → omg-verifier | Sequential headless interim (optional native gate) |
 | accept | freeze + acceptance | Only path to `verified` |
+| report | `runs/<id>/report.json` | Always written by CLI |
 
 ## Use when
 

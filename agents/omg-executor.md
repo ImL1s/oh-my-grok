@@ -3,6 +3,7 @@ name: omg-executor
 description: Implements code changes for oh-my-grok tasks. Use for write-heavy workstreams under ULW/RALPH.
 promptMode: extend
 permissionMode: default
+capabilityMode: read-write
 agentsMd: true
 disallowedTools:
   - spawn_subagent
