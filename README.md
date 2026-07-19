@@ -9,7 +9,7 @@ OMC-style multi-agent orchestration for **Grok Build**.
 | **Grok plugin** (`plugin.json`, `skills/`, `agents/`, `hooks/`) | In-session playbooks, custom agents, event spool + PreToolUse soft-guard |
 | **`omg` CLI** (`bin/omg`, `omg_cli/`) | Hard keywords (`ulw` / `ralph` / `ralplan`), project setup, state single-writer, outer loops, acceptance, integrate, ralplan FSM |
 
-Version: **0.2.2** · License: MIT
+Version: **0.2.3** · License: MIT
 
 ---
 
@@ -27,20 +27,24 @@ Agents may write proposals under `.omg/artifacts/`. Only the **`omg` CLI** is au
 
 ## Isolation stack (honest)
 
+**Canonical layer table:** [`docs/security-model.md`](docs/security-model.md).
+
 Workers must not run external agent CLIs as a **hard** property of tool policy — not of PreToolUse regex alone.
 
 | Purpose | Primary mechanism | Secondary |
 |---------|-------------------|-----------|
-| Workers cannot shell external CLIs | `capability_mode: read-write` / `read-only` (**no Execute** → no `run_terminal_command`) | agent `disallowedTools`; parent `--disallowed-tools` clamp |
+| Workers cannot shell external CLIs | `capability_mode: read-write` / `read-only` (**no Execute** → no `run_terminal_command`) | agent `disallowedTools` (executor bans shell+spawn); parent `--disallowed-tools` clamp |
 | Leader shell still soft-guarded | PreToolUse deny (**fail-open** honest) | skill HARD RULES |
-| Acceptance shell only via CLI | `omg accept` + basename **allowlist** (pytest/python/…); always-deny `claude`/`rm`/shells | strip `OMG_ALLOW_*` from child env |
+| Acceptance shell only via CLI | `omg accept` + **semantic command policy** (`omg_cli/command_policy.py`); deny `python -c` / `npx` / shells / agent CLIs | strip `OMG_ALLOW_*` from child env |
 | Parallel without tmux | `spawn_subagent` (default) + worktrees | opt-in `omg ulw --fanout process --workers N` multi-PID (`workers/*.pid.json`) |
 
-**PreToolUse:** grok-build source shows subagents **inherit** parent hooks (still fail-open). Live canary optional — see [`docs/research/subagent-pretooluse-spike.md`](docs/research/subagent-pretooluse-spike.md). Do **not** claim hard CLI ban from hooks alone.
+**PreToolUse:** grok-build source shows subagents **inherit** parent hooks (still fail-open). Canary: `python3 scripts/canary_pretool.py --dry` (PATH shim, never real claude) — see [`docs/research/subagent-pretooluse-spike.md`](docs/research/subagent-pretooluse-spike.md).
 
 **v0.2.1 hardening:** acceptance allowlist + `--review`/`--yes`; `create_run` flock; cancel `pid.json` starttime verify; integrate path whitelist + `base..head` cherry-pick; `scripts/smoke.sh`.
 
 **v0.2.2:** `build_grok_argv(disallow_shell=…)` injects `--disallowed-tools run_terminal_command` for dual-review / ralplan critic+verifier (not ulw/ralph leaders); `OMG_DISALLOW_SHELL=1` opt-in; process fanout skeleton.
+
+**v0.2.3:** semantic acceptance policy (`python -c` denied; `-m pytest|unittest` / project `.py` ok); `omg accept --review` prints manifest sha + cwd + `shlex` argv; TTY y/N; `--no-allowlist` TTY-only break-glass; `scripts/install-plugin.sh` + `canary_pretool.py`; executor disallows shell tools; capability spawn contract injected in prompts.
 
 ---
 
@@ -57,17 +61,15 @@ From a clone of this repo (private install is fine):
 
 ```bash
 cd /path/to/oh-my-grok
+# one-shot: validate → install --trust → next steps
+./scripts/install-plugin.sh
+# or manually:
+grok plugin validate .
 grok plugin install . --trust
 ```
 
 - `SOURCE` may be a local path, git URL, or GitHub `user/repo` (supports `@ref` and `#subdir`).
 - `--trust` skips the confirmation prompt (required for non-interactive install).
-
-Validate the manifest anytime:
-
-```bash
-grok plugin validate .
-```
 
 ### 2. Put `omg` on your PATH
 
@@ -216,19 +218,19 @@ omg state
 omg state --run 20260719T094708Z-7048b749
 omg cancel
 
-# Acceptance (writer stamp + allowlist required for verified)
+# Acceptance (writer stamp + semantic policy required for verified)
 omg accept --yes                    # non-tty / CI: always pass --yes
-omg accept --review --yes           # print commands, then run
+omg accept --review --yes           # print sha/cwd/commands; --yes skips TTY prompt
 omg accept --run <id> --dry-run
-omg accept --allow-cmd mytool --yes # extend basename allowlist
-# omg accept --no-allowlist --yes   # DANGEROUS emergency only
+omg accept --allow-cmd mytool --yes # extend basename allowlist (floors remain)
+# omg accept --no-allowlist        # DANGEROUS TTY-only break-glass
 
 # ULW convergence: workers write .omg/artifacts/ulw-results/<task_id>.json
 omg integrate --dry-run
 omg integrate --run <run-id>
 ```
 
-### Acceptance runner (writer stamp + allowlist)
+### Acceptance runner (writer stamp + semantic policy)
 
 PRD / acceptance manifest schema (argv arrays only — no bare shell strings by default):
 
@@ -239,22 +241,23 @@ PRD / acceptance manifest schema (argv arrays only — no bare shell strings by 
   "stories": [
     {"id": "s1", "title": "...", "commands": [["pytest", "tests/test_foo.py", "-q"]]}
   ],
-  "global_commands": [["pytest", "tests/", "-q"]]
+  "global_commands": [["python3", "-m", "pytest", "tests/", "-q"]]
 }
 ```
 
-**Allowlist (default basenames):** `pytest`, `python`, `python3`, `true`, `false`, `make`, `npm`, `npx`, `node`, `cargo`, `go`, `dart`, `flutter`, `ruff`, `mypy`, `black`, `git`.
+**Default families:** `true` / `false` / `pytest` (+args) / `python*` with only `-m pytest|unittest` or a project `.py` path / `npm test` or `npm run test|pytest` / `make` / `cargo` / `go` / `dart` / `flutter` / linters / `git`.
 
-**Always denied:** `claude`, `codex`, `omx`, `agy`, `cursor-agent`, `kimi`, `rm`, `sudo`, shell interpreters (`bash`/`sh`/…). `--no-allowlist` skips only the *positive* allowlist; always-deny still applies.
+**Always denied (floors):** `claude`, `codex`, `omx`, `agy`, `cursor-agent`, `kimi`, `rm`, `sudo`, shells, **`npx`**, **`python -c` / `-e`**, other `python -m` modules. See [`docs/security-model.md`](docs/security-model.md).
+
+`--no-allowlist` is **TTY-only** break-glass; floors still apply. `--yes` never bypasses policy.
 
 Flow:
 
-1. `freeze_acceptance` → `acceptance.manifest.json` + `acceptance.sha256`
-2. Allowlist check on every argv
-3. `run_acceptance` → `acceptance.result.json` with `"writer": "omg-cli"` and per-command exit codes
-4. `set_verified` requires CLI stamp + matching manifest sha + in-process token — **agent-forged `{passed: true}` is rejected**
+1. `freeze_acceptance` → policy check → `acceptance.manifest.json` + `acceptance.sha256` (includes `policy_version` / `allow_cmd`)
+2. `run_acceptance` re-checks policy → `acceptance.result.json` with `"writer": "omg-cli"`
+3. `set_verified` requires CLI stamp + matching manifest sha + in-process token — **agent-forged `{passed: true}` is rejected**
 
-CLI gates: `--review` prints commands and requires `--yes`; non-tty stdin also requires `--yes`.
+CLI gates: prints run_id / cwd / manifest sha / numbered `shlex` commands; non-tty requires `--yes`; TTY + `--review` prompts `[y/N]` unless `--yes`.
 
 Ralph after each iteration: if PRD has valid commands → freeze → run → maybe verify. Without acceptance commands → never verified; ralph defaults to non-zero exit (`require_acceptance`).
 
