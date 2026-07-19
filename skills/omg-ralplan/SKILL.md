@@ -28,16 +28,22 @@ Finite-state planning loop that produces a **consensus plan** before any code ex
 
 ## FSM
 
+CLI-owned state machine (``omg_cli/ralplan.py``). Artifacts + transitions live
+under ``.omg/state/runs/<id>/ralplan.json`` and ``stages/``.
+
 ```text
-plan → critic → revise → verifier → (accept | back to revise)
+draft → critic → revise → verifier → (accept | revise)* → accepted | failed
+max_rounds default 3
 ```
 
 | State | Actor | Writes? | Notes |
 |---|---|---|---|
-| **plan** | Leader (or `plan` / `omg-orchestrator`) | Yes — plan draft under `.omg/artifacts/` | Goals, constraints, steps, risks, acceptance |
+| **draft** | Leader (or `plan` / `omg-orchestrator`) | Yes — plan draft under run `stages/` + `.omg/artifacts/` | Goals, constraints, steps, risks, acceptance |
 | **critic** | `spawn_subagent` **read-only** | Proposals/notes only | Attack assumptions, missing tests, scope holes |
 | **revise** | Leader | Yes — update plan artifact | Address critic findings; no product code |
 | **verifier** | `spawn_subagent` **read-only** | Notes only | Check plan is coherent, testable, scoped; no code |
+| **accepted** | **omg CLI only** | `ralplan.json` status | Only if verifier artifact contains whole-word **APPROVE** |
+| **failed** | **omg CLI only** | `ralplan.json` status | After max_rounds without APPROVE |
 
 ### Read-only for critic / verifier
 
@@ -55,17 +61,20 @@ When spawning critic or verifier, set **capability_mode read-only** (or equivale
 
 ## Playbook
 
-1. **Plan draft** — Write `.omg/artifacts/plan-draft.md` (or CLI-designated path): problem, goals, non-goals, steps, risks, acceptance criteria.
+1. **Draft** — Write stage artifact (CLI path `stages/draft-01.md` or `.omg/artifacts/plan-draft.md`): problem, goals, non-goals, steps, risks, acceptance criteria.
 2. **Critic fan-out** — `spawn_subagent` with read-only capability; prompt to find blind spots (security, migration, test theatre, contract mismatch). Depth=1; Grok-native types only (`explore`, `plan`, `omg-critic`, `general-purpose` in read-only).
 3. **Revise** — Leader merges valid critique into the plan; restate acceptance checks.
-4. **Verifier** — `spawn_subagent` read-only; pass/fail against: clarity, testability, scope, risk coverage.
-5. **Loop or accept** — If verifier fails material items → revise again. If accept → stop and hand off plan path. Do not start coding here.
+4. **Verifier** — `spawn_subagent` read-only; pass/fail against: clarity, testability, scope, risk coverage. Emit explicit **APPROVE** | **REQUEST CHANGES** | **FAILED** into the verifier stage artifact.
+5. **Loop or accept** — CLI reads verifier artifact: whole-word `APPROVE` (or JSON `"verdict":"APPROVE"`) → `accepted`. Else revise again until `max_rounds` → `failed`. Do not start coding here.
 
 ## Launch via CLI
 
 ```bash
 omg ralplan "goal or problem statement"
+omg ralplan "goal" --max-iter 3 --dry-run   # max_rounds=3; record FSM only
 ```
+
+State file: `.omg/state/runs/<id>/ralplan.json`. Stage prompts/artifacts under `stages/`.
 
 ## Anti-patterns
 

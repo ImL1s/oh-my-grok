@@ -230,7 +230,10 @@ def build_parser() -> argparse.ArgumentParser:
             dest="max_iter",
             type=int,
             default=None,
-            help="max iterations (ralph default 3; ulw/ralplan default 1)",
+            help=(
+                "max iterations (ralph default 3; ulw default 1) "
+                "or max_rounds for ralplan verifier attempts (default 3)"
+            ),
         )
         p.add_argument(
             "--dry-run",

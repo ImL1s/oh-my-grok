@@ -130,15 +130,26 @@ def test_mode_launchers_dry_run(tmp_path):
     for mode in ("ulw", "ralph", "ralplan"):
         # ralph defaults require_acceptance → non-zero when not verified;
         # opt out for this scaffold smoke test.
+        # ralplan FSM dry_run without verifier APPROVE → failed (exit 1).
         args = [mode, "do something", "--dry-run"]
         if mode == "ralph":
             args.append("--no-require-acceptance")
         r = _run_omg(*args, cwd=tmp_path)
-        assert r.returncode == 0, r.stderr + r.stdout
+        if mode == "ralplan":
+            assert r.returncode == 1, r.stderr + r.stdout
+        else:
+            assert r.returncode == 0, r.stderr + r.stdout
         # active run should exist under project cwd (tmp_path)
         state = _run_omg("state", cwd=tmp_path)
         assert state.returncode == 0
         assert "do something" in state.stdout or mode in state.stdout
+        if mode == "ralplan":
+            assert "ralplan" in state.stdout.lower() or "failed" in state.stdout.lower()
+            runs = list((tmp_path / ".omg" / "state" / "runs").glob("*/ralplan.json"))
+            assert runs, "ralplan.json missing"
+            data = json.loads(runs[0].read_text(encoding="utf-8"))
+            assert data["status"] == "failed"
+            assert data["accepted"] is False
         # cancel so next mode can create a new active cleanly
         _run_omg("cancel", cwd=tmp_path)
 

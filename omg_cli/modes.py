@@ -30,7 +30,8 @@ MODE_SKILL_REL: dict[str, str] = {
 DEFAULT_MAX_ITER: dict[str, int] = {
     "ulw": 1,
     "ralph": 3,
-    "ralplan": 1,
+    # ralplan: max_rounds for verifier attempts (CLI FSM in ralplan.py)
+    "ralplan": 3,
 }
 
 # Default subprocess timeout (seconds); None = no limit
@@ -357,8 +358,10 @@ def run_mode(
 ) -> int:
     """Create run, launch grok for mode, update status. Returns exit code.
 
-    - ulw / ralplan: typically one launch (max_iter default 1)
+    - ulw: typically one launch (max_iter default 1)
     - ralph: loop up to max_iter (default 3); one story per iteration
+    - ralplan: delegates to ``omg_cli.ralplan.run_ralplan`` FSM
+      (draft → critic → revise → verifier; max_rounds default 3)
     - Never sets verified without CLI-stamped acceptance.result.json
     - dry_run: build argv / scaffolds, skip grok + acceptance exec (schema ok)
     - require_acceptance: default True for ralph; when True and not verified → non-zero
@@ -373,6 +376,22 @@ def run_mode(
     if max_iter is None:
         max_iter = DEFAULT_MAX_ITER.get(mode, 1)
     max_iter = max(1, int(max_iter))
+
+    # RALPLAN is owned by the CLI FSM (artifacts + max rounds), not the
+    # generic single/loop launcher below.
+    if mode == "ralplan":
+        from omg_cli.ralplan import run_ralplan
+
+        return run_ralplan(
+            goal,
+            root=root_path,
+            max_rounds=max_iter,
+            yolo=yolo,
+            safe=safe,
+            dry_run=dry_run,
+            timeout=timeout,
+            extra=extra,
+        )
 
     if require_acceptance is None:
         require_acceptance = mode == "ralph"
