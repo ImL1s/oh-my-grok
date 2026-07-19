@@ -194,6 +194,111 @@ def _should_integrate(implement: str, root: Path) -> bool:
     return _envelopes_exist(root)
 
 
+def _execute_integrate_stage(
+    *,
+    root_path: Path,
+    run_id: str,
+    state: dict[str, Any],
+    implement: str,
+    dry_run: bool,
+    do_integrate: Callable[[], dict[str, Any]],
+    finish: Callable[[int], int],
+    reason: str = "",
+) -> int | None:
+    """Run integrate stage. Returns exit code if pipeline must stop, else None.
+
+    Call after every implement (including re-implement after dual_review
+    REQUEST_CHANGES) so resealed ULW envelopes are never skipped (AC4).
+    """
+    if not _should_integrate(implement, root_path):
+        return None
+
+    detail = f"implement={implement}"
+    if reason:
+        detail = f"{detail}; {reason}"
+    state["stage"] = "integrate"
+    _history(state, "integrate", "enter", detail=detail)
+    save_pipeline_state(root_path, run_id, state)
+    write_status(root_path, run_id, "running", extra={"stage": "integrate"})
+    if dry_run:
+        print(f"omg pipeline dry-run: stage=integrate reason={reason or 'initial'}")
+
+    try:
+        integ = do_integrate()
+    except (FileNotFoundError, OSError, RuntimeError) as exc:
+        integ = {"status": "failed", "error": str(exc)}
+
+    integ_status = str(integ.get("status") or "failed")
+    state["integrate_status"] = integ_status
+    # Track last integrated head(s) for diagnostics / tests
+    applied = integ.get("applied") if isinstance(integ, dict) else None
+    if isinstance(applied, list):
+        heads = [
+            a.get("head_sha") or a.get("pick")
+            for a in applied
+            if isinstance(a, dict) and a.get("status") in ("applied", "dry_run_ok", "ok")
+        ]
+        if heads:
+            state["last_integrated_heads"] = heads
+    _history(
+        state,
+        "integrate",
+        "exit",
+        detail=f"status={integ_status}" + (f"; {reason}" if reason else ""),
+    )
+    save_pipeline_state(root_path, run_id, state)
+
+    if integ_status == "failed":
+        state["status"] = "failed"
+        state["stage"] = "failed"
+        save_pipeline_state(root_path, run_id, state)
+        write_status(
+            root_path,
+            run_id,
+            "failed",
+            extra={
+                "stage": "integrate",
+                "integrate_status": "failed",
+                "integrate_error": integ.get("error"),
+            },
+        )
+        print(
+            f"omg pipeline: integrate failed run={run_id}: {integ.get('error')}",
+            file=sys.stderr,
+        )
+        return finish(1)
+
+    if integ_status == "missing":
+        if implement == "ulw" and not dry_run:
+            state["status"] = "failed"
+            state["stage"] = "failed"
+            save_pipeline_state(root_path, run_id, state)
+            write_status(
+                root_path,
+                run_id,
+                "failed",
+                extra={
+                    "stage": "integrate",
+                    "integrate_status": "missing",
+                    "note": "ULW expected envelopes under .omg/artifacts/ulw-results/",
+                },
+            )
+            print(
+                f"omg pipeline: ULW missing envelopes run={run_id}",
+                file=sys.stderr,
+            )
+            return finish(1)
+        _history(
+            state,
+            "integrate",
+            "note",
+            detail="missing envelopes; continuing (ralph or dry_run)",
+        )
+        save_pipeline_state(root_path, run_id, state)
+
+    return None
+
+
 def run_pipeline(
     goal: str,
     *,
@@ -525,87 +630,20 @@ def run_pipeline(
             return _finish(rc_impl)
 
     # --- integrate (ULW mode or envelopes present) ---
-    if _should_run("integrate") and _should_integrate(implement, root_path):
-        state["stage"] = "integrate"
-        _history(state, "integrate", "enter", detail=f"implement={implement}")
-        save_pipeline_state(root_path, run_id, state)
-        write_status(
-            root_path, run_id, "running", extra={"stage": "integrate"}
+    # Also re-run after every re-implement (see dual_review loop below).
+    if _should_run("integrate"):
+        stop = _execute_integrate_stage(
+            root_path=root_path,
+            run_id=run_id,
+            state=state,
+            implement=implement,
+            dry_run=dry_run,
+            do_integrate=do_integrate,
+            finish=_finish,
+            reason="after-implement",
         )
-        if dry_run:
-            print(f"omg pipeline dry-run: stage=integrate")
-
-        try:
-            integ = do_integrate()
-        except (FileNotFoundError, OSError, RuntimeError) as exc:
-            integ = {
-                "status": "failed",
-                "error": str(exc),
-            }
-
-        integ_status = str(integ.get("status") or "failed")
-        state["integrate_status"] = integ_status
-        _history(
-            state,
-            "integrate",
-            "exit",
-            detail=f"status={integ_status}",
-        )
-        save_pipeline_state(root_path, run_id, state)
-
-        # Policy:
-        # - failed → pipeline fails (always; dry_run missing is not failed)
-        # - missing + implement==ulw + not dry_run → fail (expected envelopes)
-        # - missing + ralph → continue
-        # - missing + dry_run → OK (continue)
-        if integ_status == "failed":
-            state["status"] = "failed"
-            state["stage"] = "failed"
-            save_pipeline_state(root_path, run_id, state)
-            write_status(
-                root_path,
-                run_id,
-                "failed",
-                extra={
-                    "stage": "integrate",
-                    "integrate_status": "failed",
-                    "integrate_error": integ.get("error"),
-                },
-            )
-            print(
-                f"omg pipeline: integrate failed run={run_id}: {integ.get('error')}",
-                file=sys.stderr,
-            )
-            return _finish(1)
-
-        if integ_status == "missing":
-            if implement == "ulw" and not dry_run:
-                state["status"] = "failed"
-                state["stage"] = "failed"
-                save_pipeline_state(root_path, run_id, state)
-                write_status(
-                    root_path,
-                    run_id,
-                    "failed",
-                    extra={
-                        "stage": "integrate",
-                        "integrate_status": "missing",
-                        "note": "ULW expected envelopes under .omg/artifacts/ulw-results/",
-                    },
-                )
-                print(
-                    f"omg pipeline: ULW missing envelopes run={run_id}",
-                    file=sys.stderr,
-                )
-                return _finish(1)
-            # ralph or dry_run: continue
-            _history(
-                state,
-                "integrate",
-                "note",
-                detail="missing envelopes; continuing (ralph or dry_run)",
-            )
-            save_pipeline_state(root_path, run_id, state)
+        if stop is not None:
+            return stop
 
     # --- dual_review (optional loop) ---
     if state.get("dual_review") and _should_run("dual_review"):
@@ -665,16 +703,35 @@ def run_pipeline(
                     },
                 )
                 return _finish(1)
-            # re-implement once before next dual_review
-            _history(state, "implement", "enter", detail="re-implement after REQUEST_CHANGES")
+            # re-implement then RE-INTEGRATE before next dual_review (AC4)
+            _history(
+                state,
+                "implement",
+                "enter",
+                detail="re-implement after REQUEST_CHANGES",
+            )
             save_pipeline_state(root_path, run_id, state)
             rc_impl = int(do_implement())
             _history(state, "implement", "exit", detail=f"rc={rc_impl}")
             if rc_impl != 0 and not dry_run:
                 state["status"] = "failed"
                 save_pipeline_state(root_path, run_id, state)
-                write_status(root_path, run_id, "failed", extra={"stage": "implement"})
+                write_status(
+                    root_path, run_id, "failed", extra={"stage": "implement"}
+                )
                 return _finish(rc_impl)
+            stop = _execute_integrate_stage(
+                root_path=root_path,
+                run_id=run_id,
+                state=state,
+                implement=implement,
+                dry_run=dry_run,
+                do_integrate=do_integrate,
+                finish=_finish,
+                reason="after-re-implement",
+            )
+            if stop is not None:
+                return stop
 
     # --- accept ---
     if _should_run("accept"):

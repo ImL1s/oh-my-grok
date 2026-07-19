@@ -288,3 +288,100 @@ def test_pipeline_report_json_on_plan_fail(tmp_path):
     report = json.loads(rpath.read_text(encoding="utf-8"))
     assert report["writer"] == "omg-cli"
     assert report["status"] == "failed"
+
+
+def test_pipeline_reintegrate_after_request_changes(tmp_path):
+    """AC4: after dual_review REQUEST_CHANGES + re-implement, re-run integrate.
+
+    When resealed ULW envelopes change head_sha, integrate must run again
+    before the next dual_review — not leave the new head unintegrated.
+    """
+    env_dir = tmp_path / ".omg" / "artifacts" / "ulw-results"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    env_path = env_dir / "t1.json"
+    heads = {"n": 0}
+    integrated_heads: list[str] = []
+    dual_round = {"n": 0}
+
+    def write_envelope(head: str) -> None:
+        env_path.write_text(
+            json.dumps(
+                {
+                    "task_id": "t1",
+                    "base_sha": "base0001",
+                    "head_sha": head,
+                    "worktree_path": str(tmp_path),
+                    "status": "ok",
+                    "changed_files": ["a.py"],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def impl_fn(**_k):
+        heads["n"] += 1
+        write_envelope(f"head{heads['n']:04d}")
+        return 0
+
+    def integrate_fn(*_a, **kwargs):
+        data = json.loads(env_path.read_text(encoding="utf-8"))
+        head = data["head_sha"]
+        integrated_heads.append(head)
+        return {
+            "status": "ok",
+            "dry_run": bool(kwargs.get("dry_run")),
+            "applied": [
+                {
+                    "task_id": "t1",
+                    "head_sha": head,
+                    "status": "applied",
+                    "pick": head,
+                }
+            ],
+            "writer": "omg-cli",
+        }
+
+    def dual_fn(**_k):
+        dual_round["n"] += 1
+        # First review rejects; second (after re-implement + re-integrate) approves
+        if dual_round["n"] == 1:
+            return "REQUEST_CHANGES"
+        return "APPROVE"
+
+    rc = run_pipeline(
+        "reintegrate loop",
+        root=tmp_path,
+        dry_run=False,
+        skip_plan=True,
+        dual_review=True,
+        max_dual_review_rounds=2,
+        require_acceptance=False,
+        implement="ulw",
+        implement_fn=impl_fn,
+        integrate_fn=integrate_fn,
+        dual_review_fn=dual_fn,
+        max_iter=1,
+    )
+    assert rc == 0
+    # implement twice (initial + re-implement) → two distinct heads
+    assert heads["n"] == 2
+    # integrate must run after EACH implement (not once)
+    assert len(integrated_heads) == 2, (
+        f"expected 2 integrate calls after re-implement; got {integrated_heads!r}"
+    )
+    assert integrated_heads[0] == "head0001"
+    assert integrated_heads[1] == "head0002"
+    # Final integrated head must match final envelope (no stale integrate)
+    final_env = json.loads(env_path.read_text(encoding="utf-8"))
+    assert integrated_heads[-1] == final_env["head_sha"]
+
+    active = load_active_run(tmp_path)
+    state = load_pipeline_state(tmp_path, active["run_id"])
+    integrate_exits = [
+        h
+        for h in state["history"]
+        if h.get("stage") == "integrate" and h.get("event") == "exit"
+    ]
+    assert len(integrate_exits) >= 2
+    assert any("after-re-implement" in (h.get("detail") or "") for h in integrate_exits)
