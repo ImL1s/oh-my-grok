@@ -1,4 +1,5 @@
 # tests/test_cli_router.py
+import json
 import os
 import stat
 import subprocess
@@ -125,9 +126,14 @@ def test_state_and_cancel_via_cli(tmp_path):
 
 
 def test_mode_launchers_dry_run(tmp_path):
-    """Task 6 modes: create run state without execing grok when --dry-run."""
+    """Mode launchers: create run state without execing grok when --dry-run."""
     for mode in ("ulw", "ralph", "ralplan"):
-        r = _run_omg(mode, "do something", "--dry-run", cwd=tmp_path)
+        # ralph defaults require_acceptance → non-zero when not verified;
+        # opt out for this scaffold smoke test.
+        args = [mode, "do something", "--dry-run"]
+        if mode == "ralph":
+            args.append("--no-require-acceptance")
+        r = _run_omg(*args, cwd=tmp_path)
         assert r.returncode == 0, r.stderr + r.stdout
         # active run should exist under project cwd (tmp_path)
         state = _run_omg("state", cwd=tmp_path)
@@ -135,6 +141,38 @@ def test_mode_launchers_dry_run(tmp_path):
         assert "do something" in state.stdout or mode in state.stdout
         # cancel so next mode can create a new active cleanly
         _run_omg("cancel", cwd=tmp_path)
+
+
+def test_accept_cli_freeze_and_run(tmp_path):
+    """omg accept freezes prd commands and stamps CLI acceptance result."""
+    from omg_cli.state import create_run
+
+    run = create_run(tmp_path, mode="ralph", goal="accept cli")
+    rid = run["run_id"]
+    prd_path = tmp_path / ".omg" / "state" / "runs" / rid / "prd.json"
+    prd_path.parent.mkdir(parents=True, exist_ok=True)
+    prd_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "goal": "accept cli",
+                "stories": [
+                    {"id": "s1", "title": "ok", "commands": [["true"]]}
+                ],
+                "global_commands": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    r = _run_omg("accept", "--run", rid, cwd=tmp_path)
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert "verified" in r.stdout.lower() or rid in r.stdout
+    result = tmp_path / ".omg" / "state" / "runs" / rid / "acceptance.result.json"
+    assert result.is_file()
+    data = json.loads(result.read_text(encoding="utf-8"))
+    assert data["writer"] == "omg-cli"
+    assert data["passed"] is True
 
 
 def test_safe_and_yolo_flags_accepted():

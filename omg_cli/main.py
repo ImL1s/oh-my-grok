@@ -73,6 +73,12 @@ def cmd_mode(args: argparse.Namespace) -> int:
     if max_iter is None:
         max_iter = DEFAULT_MAX_ITER.get(mode, 1)
 
+    require_acceptance = getattr(args, "require_acceptance", None)
+    # argparse store_true/store_false with default None via mutually exclusive
+    if require_acceptance is None and hasattr(args, "no_require_acceptance"):
+        if getattr(args, "no_require_acceptance", False):
+            require_acceptance = False
+
     return run_mode(
         mode,
         goal,
@@ -81,7 +87,65 @@ def cmd_mode(args: argparse.Namespace) -> int:
         root=_project_root(),
         max_iter=int(max_iter),
         dry_run=bool(getattr(args, "dry_run", False)),
+        require_acceptance=require_acceptance,
     )
+
+
+def cmd_accept(args: argparse.Namespace) -> int:
+    """Freeze PRD acceptance commands and run them for active (or --run) run."""
+    from omg_cli.acceptance import freeze_and_run, load_prd, result_path
+    from omg_cli.state import load_active_run, load_run, set_verified
+
+    root = _project_root()
+    run_id = getattr(args, "run_id", None)
+    if not run_id:
+        active = load_active_run(root)
+        if active is None:
+            print("accept failed: no active run (pass --run ID)", file=sys.stderr)
+            return 1
+        run_id = active["run_id"]
+
+    if load_run(root, run_id) is None:
+        print(f"accept failed: no run found: {run_id}", file=sys.stderr)
+        return 1
+
+    prd = load_prd(root, run_id)
+    if prd is None:
+        print(
+            f"accept failed: no prd.json under runs/{run_id}/",
+            file=sys.stderr,
+        )
+        return 1
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    try:
+        ok = freeze_and_run(root, run_id, prd, dry_run=dry_run)
+    except (ValueError, FileNotFoundError, OSError) as exc:
+        print(f"accept failed: {exc}", file=sys.stderr)
+        return 1
+
+    rpath = result_path(root, run_id)
+    print(f"acceptance result: {rpath}")
+    if rpath.is_file():
+        print(rpath.read_text(encoding="utf-8"))
+
+    if dry_run:
+        print("dry_run: commands not executed; verified not set")
+        return 0
+
+    if not ok:
+        print("acceptance FAILED", file=sys.stderr)
+        return 1
+
+    try:
+        verified = set_verified(root, run_id, force=False)
+    except PermissionError as exc:
+        print(f"set_verified failed: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"verified run {verified['run_id']}")
+    print(json.dumps(verified, indent=2, ensure_ascii=False))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -140,6 +204,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_cancel.add_argument("--run", dest="run_id", default=None, help="specific run_id")
     p_cancel.set_defaults(func=cmd_cancel)
 
+    p_accept = sub.add_parser(
+        "accept",
+        parents=[common],
+        help="freeze PRD commands and run acceptance for active (or --run) run",
+    )
+    p_accept.add_argument("--run", dest="run_id", default=None, help="specific run_id")
+    p_accept.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="validate/freeze only; do not exec acceptance commands",
+    )
+    p_accept.set_defaults(func=cmd_accept)
+
     for mode, help_text in (
         ("ulw", "ultrawork parallel mode (spawn_subagent fan-out)"),
         ("ralph", "ralph persistence loop (one story per iteration)"),
@@ -159,6 +237,20 @@ def build_parser() -> argparse.ArgumentParser:
             dest="dry_run",
             action="store_true",
             help="create run + argv only; do not exec grok",
+        )
+        p.add_argument(
+            "--require-acceptance",
+            dest="require_acceptance",
+            action="store_true",
+            default=None,
+            help="exit non-zero if not verified (default on for ralph)",
+        )
+        p.add_argument(
+            "--no-require-acceptance",
+            dest="no_require_acceptance",
+            action="store_true",
+            default=False,
+            help="allow completed-without-verified exit 0",
         )
         p.set_defaults(func=cmd_mode)
 

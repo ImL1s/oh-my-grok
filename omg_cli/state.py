@@ -304,25 +304,22 @@ def cancel_run(
 
 
 def _has_acceptance_artifact(root: Path, run_id: str) -> bool:
-    """True if a verifier/acceptance artifact exists for this run."""
-    candidates = [
-        Path(root) / ".omg" / "state" / "runs" / run_id / "acceptance.json",
-        Path(root) / ".omg" / "artifacts" / run_id / "acceptance.json",
-        Path(root) / ".omg" / "artifacts" / f"{run_id}-acceptance.json",
-    ]
-    for p in candidates:
-        data = _read_json(p)
-        if not data:
-            continue
-        if data.get("passed") is True or data.get("accepted") is True:
-            return True
-    return False
+    """True only for CLI-stamped acceptance.result.json with matching manifest sha.
+
+    Agent-forged ``{passed: true}`` (any path, missing writer/sha) is rejected.
+    """
+    from omg_cli.acceptance import is_cli_acceptance_result, result_path
+
+    path = result_path(Path(root), run_id)
+    return is_cli_acceptance_result(path, root=Path(root), run_id=run_id)
 
 
 def set_verified(root: Path, run_id: str, *, force: bool = False) -> dict[str, Any]:
-    """Mark verified only when acceptance artifact exists (unless force=True for tests).
+    """Mark verified only when CLI acceptance result exists (unless force=True).
 
-    force is intentionally not exposed by the CLI router in v1.
+    Requires ``acceptance.result.json`` with ``writer=="omg-cli"``, ``passed``
+    true, and ``manifest_sha256`` matching the frozen manifest. force is
+    intentionally not exposed by the CLI router.
     """
     root = Path(root)
     current = load_run(root, run_id)
@@ -330,7 +327,8 @@ def set_verified(root: Path, run_id: str, *, force: bool = False) -> dict[str, A
         raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
     if not force and not _has_acceptance_artifact(root, run_id):
         raise PermissionError(
-            "refusing to set verified=true without acceptance artifact "
+            "refusing to set verified=true without CLI acceptance result "
+            f"(writer=omg-cli, passed=true, matching manifest sha) "
             f"for run_id={run_id!r}"
         )
     current["verified"] = True

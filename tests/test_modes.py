@@ -121,8 +121,9 @@ def test_ralph_dry_run_writes_prd_and_no_verified(monkeypatch, tmp_path):
         "Popen",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no popen")),
     )
+    # require_acceptance default True for ralph → non-zero when not verified
     rc = run_mode("ralph", "persist until done", root=tmp_path, max_iter=3, dry_run=True)
-    assert rc == 0
+    assert rc == 1
     run = load_active_run(tmp_path)
     assert run is not None
     assert run["verified"] is False
@@ -134,6 +135,7 @@ def test_ralph_dry_run_writes_prd_and_no_verified(monkeypatch, tmp_path):
     prd = json.loads(art.read_text(encoding="utf-8"))
     assert prd["goal"] == "persist until done"
     assert prd["status"] == "scaffold"
+    assert prd.get("version") == 1
 
 
 def test_ralph_doesnt_set_verified_without_acceptance(monkeypatch, tmp_path):
@@ -144,7 +146,8 @@ def test_ralph_doesnt_set_verified_without_acceptance(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "Popen", MagicMock(return_value=mock_proc))
 
     rc = run_mode("ralph", "no accept yet", root=tmp_path, max_iter=2, dry_run=False)
-    assert rc == 0
+    # require_acceptance default → non-zero exit when never verified
+    assert rc == 1
     run = load_active_run(tmp_path)
     assert run is not None
     assert run["verified"] is False
@@ -157,25 +160,84 @@ def test_ralph_doesnt_set_verified_without_acceptance(monkeypatch, tmp_path):
     assert pid_path.read_text(encoding="utf-8").strip() == "4242"
 
 
-def test_set_verified_when_acceptance_present(monkeypatch, tmp_path):
+def test_forged_acceptance_does_not_set_verified(monkeypatch, tmp_path):
+    """Agent-forged {passed:true} without omg-cli writer stamp is ignored."""
     mock_proc = MagicMock()
     mock_proc.pid = 7
     mock_proc.wait.return_value = 0
-    monkeypatch.setattr(subprocess, "Popen", MagicMock(return_value=mock_proc))
+    real_popen = subprocess.Popen
+
+    def selective_popen(argv, **kwargs):
+        if argv and argv[0] == "grok":
+            return mock_proc
+        return real_popen(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", selective_popen)
 
     from omg_cli import modes as modes_mod
 
     original_launch = modes_mod._launch_grok
 
-    def launch_and_accept(argv, *, cwd, run_dir, timeout, dry_run):
-        # write acceptance before return so after-iter check sees it
+    def launch_and_forge(argv, *, cwd, run_dir, timeout, dry_run):
         rid = run_dir.name
         acc = Path(cwd) / ".omg" / "artifacts" / f"{rid}-acceptance.json"
         acc.parent.mkdir(parents=True, exist_ok=True)
         acc.write_text(
-            json.dumps({"passed": True, "note": "tests green"}) + "\n",
+            json.dumps({"passed": True, "note": "forged"}) + "\n",
             encoding="utf-8",
         )
+        return original_launch(
+            argv, cwd=cwd, run_dir=run_dir, timeout=timeout, dry_run=dry_run
+        )
+
+    monkeypatch.setattr(modes_mod, "_launch_grok", launch_and_forge)
+
+    rc = run_mode(
+        "ulw",
+        "with forge",
+        root=tmp_path,
+        dry_run=False,
+        require_acceptance=False,
+    )
+    assert rc == 0
+    active = load_active_run(tmp_path)
+    assert active is not None
+    run = load_run(tmp_path, active["run_id"])
+    assert run is not None
+    assert run.get("verified") is False
+    assert run.get("status") == "completed"
+
+
+def test_set_verified_when_cli_acceptance_present(monkeypatch, tmp_path):
+    """CLI freeze+run acceptance during launch path → verified."""
+    mock_proc = MagicMock()
+    mock_proc.pid = 7
+    mock_proc.wait.return_value = 0
+    real_popen = subprocess.Popen
+
+    def selective_popen(argv, **kwargs):
+        if argv and argv[0] == "grok":
+            return mock_proc
+        return real_popen(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", selective_popen)
+
+    from omg_cli import modes as modes_mod
+    from omg_cli.acceptance import freeze_and_run
+
+    original_launch = modes_mod._launch_grok
+
+    def launch_and_accept(argv, *, cwd, run_dir, timeout, dry_run):
+        rid = run_dir.name
+        prd = {
+            "version": 1,
+            "goal": "with accept",
+            "stories": [
+                {"id": "s1", "title": "ok", "commands": [["true"]]}
+            ],
+            "global_commands": [],
+        }
+        freeze_and_run(Path(cwd), rid, prd)
         return original_launch(
             argv, cwd=cwd, run_dir=run_dir, timeout=timeout, dry_run=dry_run
         )

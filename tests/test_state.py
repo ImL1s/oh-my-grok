@@ -181,16 +181,31 @@ def test_write_status(tmp_path):
     assert hijack_id["run_id"] == rid
     assert hijack_id["created_at"] == created_at
 
-    # set_verified without acceptance artifact raises
+    # set_verified without CLI acceptance result raises
     with pytest.raises(PermissionError, match="acceptance"):
         set_verified(tmp_path, rid)
 
-    # with acceptance artifact, set_verified succeeds
+    # forged {passed:true} without writer stamp is rejected
     accept_path = tmp_path / ".omg" / "state" / "runs" / rid / "acceptance.json"
     accept_path.write_text(
         json.dumps({"passed": True}),
         encoding="utf-8",
     )
+    with pytest.raises(PermissionError, match="acceptance"):
+        set_verified(tmp_path, rid)
+
+    # real CLI freeze+run stamps writer + sha → set_verified ok
+    from omg_cli.acceptance import freeze_and_run
+
+    prd = {
+        "version": 1,
+        "goal": "v",
+        "stories": [
+            {"id": "s1", "title": "ok", "commands": [["true"]]}
+        ],
+        "global_commands": [],
+    }
+    assert freeze_and_run(tmp_path, rid, prd) is True
     verified = set_verified(tmp_path, rid)
     assert verified["verified"] is True
     assert verified["status"] == "verified"

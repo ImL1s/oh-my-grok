@@ -173,13 +173,15 @@ def _write_prd_scaffold(root: Path, run_id: str, goal: str) -> Path:
     """Write ralph PRD scaffold JSON under run dir and artifacts/."""
     root = Path(root)
     payload: dict[str, Any] = {
+        "version": 1,
         "goal": goal,
         "run_id": run_id,
         "stories": [],
+        "global_commands": [],
         "current_story": None,
         "acceptance": [],
         "status": "scaffold",
-        "note": "proposal only — omg CLI owns verified",
+        "note": "proposal only — omg CLI owns verified; fill stories[].commands",
     }
     run_dir = _run_dir(root, run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -198,7 +200,7 @@ def _write_prd_scaffold(root: Path, run_id: str, goal: str) -> Path:
 
 
 def _try_set_verified(root: Path, run_id: str) -> bool:
-    """Set verified only if acceptance artifact exists. Never force."""
+    """Set verified only if CLI acceptance result exists. Never force."""
     try:
         set_verified(root, run_id, force=False)
         return True
@@ -206,6 +208,69 @@ def _try_set_verified(root: Path, run_id: str) -> bool:
         return False
     except FileNotFoundError:
         return False
+
+
+def _try_acceptance_and_verify(
+    root: Path,
+    run_id: str,
+    *,
+    dry_run: bool = False,
+    timeout: float | None = None,
+) -> bool:
+    """If PRD has valid commands: freeze, run_acceptance, then set_verified.
+
+    dry_run validates schema / freezes but does not exec commands and never
+    marks verified. Without valid acceptance commands → never verified.
+    """
+    from omg_cli.acceptance import (
+        DEFAULT_COMMAND_TIMEOUT,
+        freeze_acceptance,
+        load_prd,
+        prd_has_acceptance_commands,
+        run_acceptance,
+        validate_prd,
+    )
+
+    prd = load_prd(root, run_id)
+    if prd is None or not prd_has_acceptance_commands(prd):
+        return False
+
+    try:
+        validate_prd(prd)
+    except ValueError:
+        return False
+
+    try:
+        freeze_acceptance(root, run_id, prd)
+    except (ValueError, FileNotFoundError, OSError):
+        return False
+
+    if dry_run:
+        # Schema OK + frozen; do not exec; cannot verify
+        try:
+            run_acceptance(
+                root,
+                run_id,
+                timeout=timeout if timeout is not None else DEFAULT_COMMAND_TIMEOUT,
+                dry_run=True,
+            )
+        except (ValueError, FileNotFoundError, OSError):
+            pass
+        return False
+
+    try:
+        ok = run_acceptance(
+            root,
+            run_id,
+            timeout=timeout if timeout is not None else DEFAULT_COMMAND_TIMEOUT,
+            dry_run=False,
+        )
+    except (ValueError, FileNotFoundError, OSError):
+        return False
+
+    if not ok:
+        return False
+    return _try_set_verified(root, run_id)
 
 
 def _launch_grok(
@@ -287,13 +352,16 @@ def run_mode(
     dry_run: bool = False,
     timeout: float | None = DEFAULT_TIMEOUT,
     extra: Sequence[str] | None = None,
+    require_acceptance: bool | None = None,
+    acceptance_timeout: float | None = None,
 ) -> int:
     """Create run, launch grok for mode, update status. Returns exit code.
 
     - ulw / ralplan: typically one launch (max_iter default 1)
     - ralph: loop up to max_iter (default 3); one story per iteration
-    - Never sets verified without acceptance artifact
-    - dry_run: build argv / scaffolds, skip subprocess
+    - Never sets verified without CLI-stamped acceptance.result.json
+    - dry_run: build argv / scaffolds, skip grok + acceptance exec (schema ok)
+    - require_acceptance: default True for ralph; when True and not verified → non-zero
     """
     if mode not in MODE_SKILL_REL:
         print(f"unknown mode: {mode}", file=sys.stderr)
@@ -306,12 +374,20 @@ def run_mode(
         max_iter = DEFAULT_MAX_ITER.get(mode, 1)
     max_iter = max(1, int(max_iter))
 
+    if require_acceptance is None:
+        require_acceptance = mode == "ralph"
+
     try:
         run = create_run(
             root_path,
             mode=mode,
             goal=goal,
-            extra={"max_iter": max_iter, "yolo": bool(yolo), "safe": bool(safe)},
+            extra={
+                "max_iter": max_iter,
+                "yolo": bool(yolo),
+                "safe": bool(safe),
+                "require_acceptance": bool(require_acceptance),
+            },
         )
     except RuntimeError as exc:
         # Active-run mutex: refuse concurrent non-terminal runs
@@ -357,7 +433,18 @@ def run_mode(
             dry_run=dry_run,
         )
 
-        # After each iter: may set verified only with acceptance artifact
+        # After each iter: freeze+run acceptance when PRD has commands, then verify
+        write_status(root_path, run_id, "verifying", extra={"iteration": i})
+        if _try_acceptance_and_verify(
+            root_path,
+            run_id,
+            dry_run=dry_run,
+            timeout=acceptance_timeout,
+        ):
+            verified = True
+            break
+
+        # Also honor a pre-existing CLI acceptance result (e.g. `omg accept`)
         if _try_set_verified(root_path, run_id):
             verified = True
             break
@@ -393,7 +480,15 @@ def run_mode(
         "completed",
         extra={
             "exit_code": 0,
-            "note": "completed without acceptance artifact; verified remains false",
+            "note": "completed without CLI acceptance; verified remains false",
+            "require_acceptance": bool(require_acceptance),
         },
     )
+    if require_acceptance:
+        print(
+            f"omg {mode}: not verified (require_acceptance); "
+            "fill prd stories/commands and re-run or use `omg accept`",
+            file=sys.stderr,
+        )
+        return 1
     return 0
