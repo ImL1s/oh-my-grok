@@ -58,6 +58,17 @@ python3 scripts/canary_pretool.py --live
 
 Procedure + host source evidence: [`docs/research/subagent-pretooluse-spike.md`](research/subagent-pretooluse-spike.md).
 
+### Global PreToolUse install (required for soft-gate effectiveness)
+
+Live 2026-07-19 showed plugin-bundled `hooks/hooks.json` may not appear in
+session `hook_execution` runs. Soft-gate effectiveness requires:
+
+1. `scripts/install-plugin.sh` (writes `~/.grok/hooks/omg-pretool-deny.json`)
+2. `omg doctor` hard check `global PreToolUse soft-gate` (fail if missing)
+
+This remains **fail-open** on hook timeout/crash. Primary isolation is still
+`capability_mode` without Execute on implementers.
+
 ## Do not claim
 
 - “Workers cannot run external CLIs because PreToolUse blocks them” **without** stating fail-open residual and capability_mode primary.

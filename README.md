@@ -372,6 +372,18 @@ grok plugin validate .
 - **Dev dependency:** `pytest>=8.0` (`requirements-dev.txt`).
 - Always set **`PYTHONPATH=.`** when running pytest or importing `omg_cli` outside `bin/omg`.
 
+## Testing
+
+| Layer | Command |
+|-------|---------|
+| Unit | `PYTHONPATH=. python3 -m pytest -q -m "not live"` |
+| Hermetic e2e | `OMG_E2E=1 ./scripts/smoke.sh` (default; set `OMG_E2E=0` to skip) |
+| Live quick | `./scripts/live_suite.sh --quick` |
+| Live full | `./scripts/live_suite.sh --full` |
+| Live heavy | `./scripts/live_suite.sh --quota-heavy` |
+
+Do not claim production isolation from unit green alone. See [`docs/research/test-matrix.md`](docs/research/test-matrix.md).
+
 ---
 
 ## Skills & agents

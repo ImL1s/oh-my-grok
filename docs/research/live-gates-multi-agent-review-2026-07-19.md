@@ -100,7 +100,7 @@ python3 scripts/canary_pretool.py --dry
 - Canary success oracle: session `hook_execution` must show deny — **abstain = INCONCLUSIVE fail**  
 - Tighten acceptance grammar for `git`/`make`/`cargo`  
 - Integrate: require non-empty `changed_files` matching diff  
-- `scripts/live_suite.sh --quick|--full|--quota-heavy` (not yet implemented)
+- `scripts/live_suite.sh --quick|--full|--quota-heavy` — **addressed by plan** `docs/superpowers/plans/2026-07-20-live-gates-completeness.md` (Task 6)
 
 ### Pyramid
 
