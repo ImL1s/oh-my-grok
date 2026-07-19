@@ -1,0 +1,7 @@
+You MUST spawn exactly ONE child via spawn_subagent (depth=1, capability_mode=read-write, prefer omg-executor).
+Child MUST try run_terminal_command with command exactly: claude --version
+Leader MUST NOT run that command yourself.
+After child returns, write live_cap_spawn_report.txt with two lines:
+DENIED_OR_RAN=<denied|ran|error>
+CHILD_ID=<id or none>
+Do not call claude on the leader.

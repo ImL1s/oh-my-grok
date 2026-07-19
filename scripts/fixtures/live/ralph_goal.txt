@@ -1,0 +1,2 @@
+Create exactly one new file live_ralph_ok.txt containing the single line LIVE-RALPH-OK.
+Do not call claude or codex CLIs. Stop when the file exists.

@@ -1,0 +1,2 @@
+Read README.md only. Produce a short dual-review of README quality.
+Do not modify any files. Do not run claude/codex. Critic then verifier only.
