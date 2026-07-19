@@ -11,6 +11,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -216,22 +217,25 @@ def pid_matches_recorded(
 ) -> bool:
     """True when it is safe to signal *pid* for this recorded starttime.
 
-    * No recorded starttime (legacy plain ``pid`` file) → always True so
-      cancel remains best-effort (matches pre-starttime behavior).
-    * With starttime: require alive + matching ``ps -o lstart=`` (or proceed
-      if ``ps`` unavailable). Mismatch ⇒ PID reuse ⇒ do not kill.
+    Fail-closed (strictest kill safety):
+    * No recorded starttime (legacy plain ``pid`` file) → **False** — never
+      auto-kill without a starttime identity check.
+    * ``ps`` fails / unavailable → **False** — do not signal on uncertainty.
+    * Process dead (ESRCH) → **False**.
+    * starttime mismatch → **False** (PID reuse).
+    * Alive + matching ``ps -o lstart=`` → **True**.
     """
     if pid <= 0:
         return False
     if not recorded_starttime:
-        return True
+        return False
     alive = _pid_alive(pid)
     if alive is False:
         return False
     current = process_starttime(pid)
     if current is None:
-        # ps failed — proceed with kill (best-effort)
-        return True
+        # ps failed — fail-closed, do not kill
+        return False
     return current == recorded_starttime
 
 
@@ -486,7 +490,11 @@ def _kill_from_pid_meta(
     grace_s: float = 0.0,
     label: str = "leader",
 ) -> list[str]:
-    """Kill process for a pid.json meta dict if starttime still matches."""
+    """Kill process for a pid.json meta dict only when starttime still matches.
+
+    Fail-closed: missing starttime or ``ps`` failure → skip kill (log warning);
+    state cancel still proceeds via ``cancel_run``.
+    """
     actions: list[str] = []
     try:
         pid = int(meta["pid"])
@@ -497,7 +505,31 @@ def _kill_from_pid_meta(
 
     recorded = meta.get("starttime")
     recorded_s = recorded if isinstance(recorded, str) and recorded else None
-    if not pid_matches_recorded(pid, recorded_s):
+    if not recorded_s:
+        actions.append(f"skip:{label}:missing_starttime:{pid}")
+        print(
+            f"omg cancel: warning: skip kill {label} pid={pid} "
+            f"(no recorded starttime; legacy plain pid or incomplete pid.json)",
+            file=sys.stderr,
+        )
+        return actions
+
+    alive = _pid_alive(pid)
+    if alive is False:
+        actions.append(f"skip:{label}:dead:{pid}")
+        return actions
+
+    current = process_starttime(pid)
+    if current is None:
+        actions.append(f"skip:{label}:ps_failed:{pid}")
+        print(
+            f"omg cancel: warning: skip kill {label} pid={pid} "
+            f"(ps starttime unavailable; fail-closed)",
+            file=sys.stderr,
+        )
+        return actions
+
+    if current != recorded_s:
         actions.append(f"skip:{label}:pid_reuse_or_dead:{pid}")
         return actions
 
@@ -525,11 +557,13 @@ def cancel_run(
 ) -> dict[str, Any]:
     """Mark run cancelled and clear active if it matches. Does not delete artifacts.
 
-    Best-effort: if ``pid.json`` (or legacy ``pid``) exists under the run dir,
-    verify starttime still matches (PID reuse guard), then send SIGTERM to the
-    process group (``killpg``) when possible, else the single pid. Also scans
-    ``workers/*.pid.json`` for multi-PID cancel skeleton. Ignore
-    ProcessLookupError / ESRCH / permission errors. Optional grace then SIGKILL.
+    Kill path is **fail-closed**: only signals when ``pid.json`` has a recorded
+    ``starttime`` that still matches ``ps -o lstart=``. Missing starttime
+    (legacy plain ``pid``), ``ps`` failure, or mismatch → **do not kill**
+    (warning on stderr); status is still marked cancelled. When safe, send
+    SIGTERM to the process group (``killpg``) when possible, else the single
+    pid. Also scans ``workers/*.pid.json``. Ignore ProcessLookupError / ESRCH /
+    permission errors. Optional grace then SIGKILL.
     """
     root = Path(root)
     if run_id is None:

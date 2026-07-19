@@ -1,7 +1,11 @@
-"""Process fanout supervisor (no tmux) — opt-in multi-PID ``grok -p`` workers.
+"""Process fanout supervisor (no tmux) — experimental multi-PID ``grok -p`` workers.
 
-Default ULW path remains skill-driven ``spawn_subagent`` (``--fanout skill``).
-This module implements ``omg ulw --fanout process --workers N``:
+Default ULW isolation path remains skill-driven ``spawn_subagent``
+(``--fanout skill``). Process fanout is **not** the default isolation story.
+
+CLI gate: ``omg ulw --fanout process`` requires env
+``OMG_EXPERIMENTAL_PROCESS_FANOUT=1`` (enforced in ``main.cmd_mode``); otherwise
+exit 2. This module implements the supervisor once opted in:
 
 - create run
 - launch N× independent ``grok -p`` (or dry_run argv skeleton)

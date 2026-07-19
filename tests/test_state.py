@@ -59,11 +59,17 @@ def test_create_run_mutex_force_overrides(tmp_path):
 
 
 def test_create_run_force_kills_old_pid(tmp_path, monkeypatch):
-    """force supersede best-effort kills old run process group via pid file."""
+    """force supersede kills old run only when starttime matches (fail-closed)."""
+    from omg_cli import state as state_mod
+
     first = create_run(tmp_path, mode="ralph", goal="a")
     write_status(tmp_path, first["run_id"], "running")
-    pid_path = tmp_path / ".omg" / "state" / "runs" / first["run_id"] / "pid"
-    pid_path.write_text("777001\n", encoding="utf-8")
+    start = "Sun Jul 19 12:00:00 2026"
+    pid_json = tmp_path / ".omg" / "state" / "runs" / first["run_id"] / "pid.json"
+    pid_json.write_text(
+        json.dumps({"pid": 777001, "starttime": start, "pgid": 777001}) + "\n",
+        encoding="utf-8",
+    )
 
     killpgs: list[tuple[int, int]] = []
 
@@ -72,13 +78,12 @@ def test_create_run_force_kills_old_pid(tmp_path, monkeypatch):
         # pretend success
 
     def fake_kill(pid, sig):
-        # signal 0 existence check: report dead so stale path is exercised;
-        # force supersede still cancels and uses killpg for SIGTERM
         if sig == 0:
-            raise ProcessLookupError(f"no process {pid}")
+            return  # alive
 
     monkeypatch.setattr(os, "killpg", fake_killpg)
     monkeypatch.setattr(os, "kill", fake_kill)
+    monkeypatch.setattr(state_mod, "process_starttime", lambda pid: start)
 
     second = create_run(tmp_path, mode="ulw", goal="b", force=True)
     assert second["run_id"] != first["run_id"]
@@ -157,11 +162,17 @@ def test_cancel_active_without_run_id(tmp_path):
 
 
 def test_cancel_run_sigterms_pid_best_effort(tmp_path, monkeypatch):
-    """cancel_run prefers killpg(SIGTERM); ProcessLookupError is ignored."""
+    """cancel_run prefers killpg(SIGTERM) when starttime matches; ESRCH ignored."""
+    from omg_cli import state as state_mod
+
     run = create_run(tmp_path, mode="ulw", goal="kill me")
     rid = run["run_id"]
-    pid_path = tmp_path / ".omg" / "state" / "runs" / rid / "pid"
-    pid_path.write_text("999999\n", encoding="utf-8")
+    start = "Mon Jul 19 10:00:00 2026"
+    pid_json = tmp_path / ".omg" / "state" / "runs" / rid / "pid.json"
+    pid_json.write_text(
+        json.dumps({"pid": 999999, "starttime": start, "pgid": 999999}) + "\n",
+        encoding="utf-8",
+    )
 
     killpgs: list[tuple[int, int]] = []
     kills: list[tuple[int, int]] = []
@@ -171,11 +182,14 @@ def test_cancel_run_sigterms_pid_best_effort(tmp_path, monkeypatch):
         raise ProcessLookupError(f"no process group {pgid}")
 
     def fake_kill(pid, sig):
+        if sig == 0:
+            return  # alive for match check
         kills.append((pid, sig))
         raise ProcessLookupError(f"no process {pid}")
 
     monkeypatch.setattr(os, "killpg", fake_killpg)
     monkeypatch.setattr(os, "kill", fake_kill)
+    monkeypatch.setattr(state_mod, "process_starttime", lambda pid: start)
 
     cancelled = cancel_run(tmp_path, rid)
     assert cancelled["status"] == "cancelled"
@@ -185,10 +199,16 @@ def test_cancel_run_sigterms_pid_best_effort(tmp_path, monkeypatch):
 
 
 def test_cancel_run_killpg_success_skips_single_kill(tmp_path, monkeypatch):
+    from omg_cli import state as state_mod
+
     run = create_run(tmp_path, mode="ulw", goal="pg")
     rid = run["run_id"]
-    pid_path = tmp_path / ".omg" / "state" / "runs" / rid / "pid"
-    pid_path.write_text("424242\n", encoding="utf-8")
+    start = "Mon Jul 19 11:00:00 2026"
+    pid_json = tmp_path / ".omg" / "state" / "runs" / rid / "pid.json"
+    pid_json.write_text(
+        json.dumps({"pid": 424242, "starttime": start, "pgid": 424242}) + "\n",
+        encoding="utf-8",
+    )
 
     killpgs: list[tuple[int, int]] = []
     kills: list[tuple[int, int]] = []
@@ -198,6 +218,35 @@ def test_cancel_run_killpg_success_skips_single_kill(tmp_path, monkeypatch):
         # success — no raise
 
     def fake_kill(pid, sig):
+        if sig == 0:
+            return
+        kills.append((pid, sig))
+
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr(os, "kill", fake_kill)
+    monkeypatch.setattr(state_mod, "process_starttime", lambda pid: start)
+
+    cancelled = cancel_run(tmp_path, rid)
+    assert cancelled["status"] == "cancelled"
+    assert killpgs == [(424242, signal.SIGTERM)]
+    assert kills == []
+    assert cancelled.get("kill_actions") == ["leader:killpg:SIGTERM"]
+
+
+def test_cancel_missing_starttime_does_not_kill(tmp_path, monkeypatch):
+    """Legacy plain pid / missing starttime → fail-closed: mark cancelled, no signal."""
+    run = create_run(tmp_path, mode="ulw", goal="legacy")
+    rid = run["run_id"]
+    pid_path = tmp_path / ".omg" / "state" / "runs" / rid / "pid"
+    pid_path.write_text("888888\n", encoding="utf-8")
+
+    killpgs: list[tuple[int, int]] = []
+    kills: list[tuple[int, int]] = []
+
+    def fake_killpg(pgid, sig):
+        killpgs.append((pgid, sig))
+
+    def fake_kill(pid, sig):
         kills.append((pid, sig))
 
     monkeypatch.setattr(os, "killpg", fake_killpg)
@@ -205,9 +254,47 @@ def test_cancel_run_killpg_success_skips_single_kill(tmp_path, monkeypatch):
 
     cancelled = cancel_run(tmp_path, rid)
     assert cancelled["status"] == "cancelled"
-    assert killpgs == [(424242, signal.SIGTERM)]
+    assert killpgs == []
     assert kills == []
-    assert cancelled.get("kill_actions") == ["leader:killpg:SIGTERM"]
+    assert any("missing_starttime" in a for a in cancelled.get("kill_actions") or [])
+
+
+def test_cancel_ps_failed_does_not_kill(tmp_path, monkeypatch):
+    """ps starttime unavailable → fail-closed: no kill."""
+    from omg_cli import state as state_mod
+
+    run = create_run(tmp_path, mode="ulw", goal="ps-fail")
+    rid = run["run_id"]
+    pid_json = tmp_path / ".omg" / "state" / "runs" / rid / "pid.json"
+    pid_json.write_text(
+        json.dumps(
+            {
+                "pid": 666001,
+                "starttime": "Mon Jan  1 00:00:00 2000",
+                "pgid": 666001,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    killpgs: list[tuple[int, int]] = []
+
+    def fake_killpg(pgid, sig):
+        killpgs.append((pgid, sig))
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            return  # alive
+
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr(os, "kill", fake_kill)
+    monkeypatch.setattr(state_mod, "process_starttime", lambda pid: None)
+
+    cancelled = cancel_run(tmp_path, rid)
+    assert cancelled["status"] == "cancelled"
+    assert killpgs == []
+    assert any("ps_failed" in a for a in cancelled.get("kill_actions") or [])
 
 
 def test_create_run_flock_serializes_concurrent(tmp_path):
@@ -279,13 +366,16 @@ def test_cancel_skips_pid_reuse_when_starttime_mismatches(tmp_path, monkeypatch)
 
 
 def test_cancel_workers_pid_json_skeleton(tmp_path, monkeypatch):
-    """cancel_run also signals workers/*.pid.json (multi-PID skeleton)."""
+    """cancel_run also signals workers/*.pid.json when starttime matches."""
+    from omg_cli import state as state_mod
+
     run = create_run(tmp_path, mode="ulw", goal="workers")
     rid = run["run_id"]
+    start = "Tue Jul 19 13:00:00 2026"
     workers = tmp_path / ".omg" / "state" / "runs" / rid / "workers"
     workers.mkdir(parents=True, exist_ok=True)
     (workers / "w1.pid.json").write_text(
-        json.dumps({"pid": 700001, "starttime": None, "pgid": 700001}) + "\n",
+        json.dumps({"pid": 700001, "starttime": start, "pgid": 700001}) + "\n",
         encoding="utf-8",
     )
 
@@ -296,16 +386,37 @@ def test_cancel_workers_pid_json_skeleton(tmp_path, monkeypatch):
 
     def fake_kill(pid, sig):
         if sig == 0:
-            raise ProcessLookupError("gone")
+            return  # alive
 
     monkeypatch.setattr(os, "killpg", fake_killpg)
     monkeypatch.setattr(os, "kill", fake_kill)
+    monkeypatch.setattr(state_mod, "process_starttime", lambda pid: start)
 
     cancelled = cancel_run(tmp_path, rid)
     assert cancelled["status"] == "cancelled"
     assert any(pg == 700001 for pg, _ in killpgs)
     assert any("worker:w1" in a for a in cancelled.get("kill_actions") or [])
 
+
+def test_cancel_workers_missing_starttime_no_kill(tmp_path, monkeypatch):
+    """workers/*.pid.json without starttime → fail-closed skip."""
+    run = create_run(tmp_path, mode="ulw", goal="workers-legacy")
+    rid = run["run_id"]
+    workers = tmp_path / ".omg" / "state" / "runs" / rid / "workers"
+    workers.mkdir(parents=True, exist_ok=True)
+    (workers / "w1.pid.json").write_text(
+        json.dumps({"pid": 700002, "starttime": None, "pgid": 700002}) + "\n",
+        encoding="utf-8",
+    )
+
+    killpgs: list[tuple[int, int]] = []
+    monkeypatch.setattr(os, "killpg", lambda *a, **k: killpgs.append(a))
+    monkeypatch.setattr(os, "kill", lambda *a, **k: None)
+
+    cancelled = cancel_run(tmp_path, rid)
+    assert cancelled["status"] == "cancelled"
+    assert killpgs == []
+    assert any("missing_starttime" in a for a in cancelled.get("kill_actions") or [])
 
 def test_write_pid_metadata_shape(tmp_path, monkeypatch):
     from omg_cli.state import write_pid_metadata

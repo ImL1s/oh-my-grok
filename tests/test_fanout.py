@@ -136,12 +136,49 @@ def test_process_fanout_launches_n_popen(monkeypatch, tmp_path):
         assert isinstance(meta.get("pid"), int)
 
 
+def test_cli_ulw_fanout_process_requires_env_gate(tmp_path):
+    """Without OMG_EXPERIMENTAL_PROCESS_FANOUT=1 → exit 2; no run created."""
+    import os
+    import sys
+
+    repo = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    env.pop("OMG_EXPERIMENTAL_PROCESS_FANOUT", None)
+    env["PYTHONPATH"] = str(repo) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    r = subprocess.run(
+        [
+            sys.executable,
+            str(repo / "bin" / "omg"),
+            "ulw",
+            "cli fanout blocked",
+            "--fanout",
+            "process",
+            "--workers",
+            "2",
+            "--dry-run",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert r.returncode == 2, r.stderr + r.stdout
+    assert "OMG_EXPERIMENTAL_PROCESS_FANOUT" in r.stderr
+    assert "spawn_subagent" in r.stderr
+    runs_root = tmp_path / ".omg" / "state" / "runs"
+    assert not runs_root.exists() or not list(runs_root.glob("*/workers/fanout.json"))
+
+
 def test_cli_ulw_fanout_process_dry_run(tmp_path):
     import os
     import sys
 
     repo = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
+    env["OMG_EXPERIMENTAL_PROCESS_FANOUT"] = "1"
     env["PYTHONPATH"] = str(repo) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
     )

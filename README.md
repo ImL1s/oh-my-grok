@@ -36,7 +36,7 @@ Workers must not run external agent CLIs as a **hard** property of tool policy �
 | Workers cannot shell external CLIs | `capability_mode: read-write` / `read-only` (**no Execute** → no `run_terminal_command`) | agent `disallowedTools` (executor bans shell+spawn); parent `--disallowed-tools` clamp |
 | Leader shell still soft-guarded | PreToolUse deny (**fail-open** honest) | skill HARD RULES |
 | Acceptance shell only via CLI | `omg accept` + **semantic command policy** (`omg_cli/command_policy.py`); deny `python -c` / `npx` / shells / agent CLIs | strip `OMG_ALLOW_*` from child env |
-| Parallel without tmux | `spawn_subagent` (default) + worktrees | opt-in `omg ulw --fanout process --workers N` multi-PID (`workers/*.pid.json`) |
+| Parallel without tmux | `spawn_subagent` (default isolation story) + worktrees | experimental `omg ulw --fanout process` only with `OMG_EXPERIMENTAL_PROCESS_FANOUT=1` |
 
 **PreToolUse:** grok-build source shows subagents **inherit** parent hooks (still fail-open). Canary: `python3 scripts/canary_pretool.py --dry` (PATH shim, never real claude) — see [`docs/research/subagent-pretooluse-spike.md`](docs/research/subagent-pretooluse-spike.md).
 
@@ -44,7 +44,7 @@ Workers must not run external agent CLIs as a **hard** property of tool policy �
 
 **v0.2.2:** `build_grok_argv(disallow_shell=…)` injects `--disallowed-tools run_terminal_command` for dual-review / ralplan critic+verifier (not ulw/ralph leaders); `OMG_DISALLOW_SHELL=1` opt-in; process fanout skeleton.
 
-**v0.2.3:** semantic acceptance policy (`python -c` denied; `-m pytest|unittest` / project `.py` ok); `omg accept --review` prints manifest sha + cwd + `shlex` argv; TTY y/N; `--no-allowlist` TTY-only break-glass; `scripts/install-plugin.sh` + `canary_pretool.py`; executor disallows shell tools; capability spawn contract injected in prompts.
+**v0.2.3:** semantic acceptance policy (`python -c` denied; `-m pytest|unittest` / project `.py` ok); `omg accept --review` prints manifest sha + cwd + `shlex` argv; TTY y/N; `--no-allowlist` TTY-only break-glass; `scripts/install-plugin.sh` + `canary_pretool.py`; executor disallows shell tools; capability spawn contract injected in prompts; **process fanout is experimental opt-in only** (`OMG_EXPERIMENTAL_PROCESS_FANOUT=1`); cancel kill is **fail-closed** without matching `starttime`.
 
 ---
 
@@ -189,7 +189,7 @@ omg [-h] [--safe] [--yolo] {setup,doctor,state,cancel,accept,integrate,ulw,ralph
 | `omg accept` | Freeze PRD commands + run acceptance (allowlist); set `verified` only with CLI stamp |
 | `omg integrate` | ULW: clean-tree preflight + path-whitelisted worktrees + cherry-pick (`base..head` or single) |
 | `omg ulw "goal"` | Ultrawork — parallel `spawn_subagent` fan-out (records `base_sha` when git available) |
-| `omg ulw "goal" --fanout process --workers N` | Opt-in multi-PID process supervisor (no tmux; default remains skill/spawn) |
+| `omg ulw "goal" --fanout process --workers N` | **Experimental** multi-PID supervisor (requires `OMG_EXPERIMENTAL_PROCESS_FANOUT=1`; not default isolation) |
 | `omg ralph "goal"` | Ralph — persistence loop (one story per iteration; context pack each iter) |
 | `omg ralplan "goal"` | Ralplan — CLI-owned plan consensus FSM only (no implementation) |
 

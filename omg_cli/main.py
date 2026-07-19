@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -90,6 +91,16 @@ def cmd_mode(args: argparse.Namespace) -> int:
         if mode != "ulw":
             print(
                 f"omg {mode}: --fanout process is only supported for ulw",
+                file=sys.stderr,
+            )
+            return 2
+        # Experimental opt-in only — default isolation story is spawn_subagent.
+        if os.environ.get("OMG_EXPERIMENTAL_PROCESS_FANOUT", "").strip() != "1":
+            print(
+                "omg ulw: --fanout process is experimental and disabled by default.\n"
+                "  Set OMG_EXPERIMENTAL_PROCESS_FANOUT=1 to opt in.\n"
+                "  Preferred isolation path: default --fanout skill (spawn_subagent).\n"
+                "  See README / docs/security-model.md.",
                 file=sys.stderr,
             )
             return 2
@@ -626,7 +637,8 @@ def build_parser() -> argparse.ArgumentParser:
                 default="skill",
                 help=(
                     "parallelism path: skill=spawn_subagent in one grok (default); "
-                    "process=N× independent grok -p (no tmux; opt-in)"
+                    "process=N× independent grok -p (experimental; requires "
+                    "OMG_EXPERIMENTAL_PROCESS_FANOUT=1)"
                 ),
             )
             p.add_argument(
@@ -636,7 +648,8 @@ def build_parser() -> argparse.ArgumentParser:
                 default=None,
                 help=(
                     "process fanout worker count (default 2; hard cap 8 / "
-                    "OMG_MAX_WORKERS); ignored for --fanout skill"
+                    "OMG_MAX_WORKERS); ignored for --fanout skill; process path "
+                    "requires OMG_EXPERIMENTAL_PROCESS_FANOUT=1"
                 ),
             )
             p.add_argument(
