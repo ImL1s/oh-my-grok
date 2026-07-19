@@ -10,10 +10,16 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover — non-POSIX
+    fcntl = None  # type: ignore[assignment]
 
 
 OMG_SUBDIRS = (
@@ -44,6 +50,10 @@ def _runs_dir(root: Path) -> Path:
 
 def _active_path(root: Path) -> Path:
     return Path(root) / ".omg" / "state" / "active.json"
+
+
+def _create_lock_path(root: Path) -> Path:
+    return Path(root) / ".omg" / "state" / "create.lock"
 
 
 def _status_path(root: Path, run_id: str) -> Path:
@@ -115,23 +125,136 @@ def _run_pid_path(root: Path, run_id: str) -> Path:
     return _runs_dir(root) / run_id / "pid"
 
 
+def _run_pid_json_path(root: Path, run_id: str) -> Path:
+    return _runs_dir(root) / run_id / "pid.json"
+
+
+def process_starttime(pid: int) -> str | None:
+    """Best-effort process start time string (macOS/Linux ``ps -o lstart=``)."""
+    if pid <= 0:
+        return None
+    try:
+        r = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    text = (r.stdout or "").strip()
+    return text or None
+
+
+def write_pid_metadata(
+    path: Path,
+    *,
+    pid: int,
+    pgid: int | None = None,
+    starttime: str | None = None,
+) -> dict[str, Any]:
+    """Write ``pid.json`` (and legacy plain ``pid`` file when path is run-dir pid.json).
+
+    Shape: ``{pid, starttime, pgid}``. Used by leader launch and workers/*.pid.json.
+    """
+    path = Path(path)
+    if starttime is None:
+        starttime = process_starttime(pid)
+    if pgid is None and os.name == "posix":
+        try:
+            pgid = os.getpgid(pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pgid = pid
+    meta: dict[str, Any] = {
+        "pid": int(pid),
+        "starttime": starttime,
+        "pgid": int(pgid) if pgid is not None else None,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(meta, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    # Legacy plain pid sibling for older cancel readers
+    if path.name == "pid.json":
+        plain = path.with_name("pid")
+        plain.write_text(f"{int(pid)}\n", encoding="utf-8")
+    return meta
+
+
+def read_pid_metadata(root: Path, run_id: str) -> dict[str, Any] | None:
+    """Load pid.json if present; else fall back to plain pid file."""
+    root = Path(root)
+    jpath = _run_pid_json_path(root, run_id)
+    if jpath.is_file():
+        data = _read_json(jpath)
+        if data and isinstance(data.get("pid"), int):
+            return data
+        # tolerate pid as string
+        if data and data.get("pid") is not None:
+            try:
+                data = dict(data)
+                data["pid"] = int(data["pid"])
+                return data
+            except (TypeError, ValueError):
+                pass
+    pid_path = _run_pid_path(root, run_id)
+    if pid_path.is_file():
+        try:
+            pid = int(pid_path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return None
+        return {"pid": pid, "starttime": None, "pgid": None}
+    return None
+
+
+def pid_matches_recorded(
+    pid: int,
+    recorded_starttime: str | None,
+) -> bool:
+    """True when it is safe to signal *pid* for this recorded starttime.
+
+    * No recorded starttime (legacy plain ``pid`` file) → always True so
+      cancel remains best-effort (matches pre-starttime behavior).
+    * With starttime: require alive + matching ``ps -o lstart=`` (or proceed
+      if ``ps`` unavailable). Mismatch ⇒ PID reuse ⇒ do not kill.
+    """
+    if pid <= 0:
+        return False
+    if not recorded_starttime:
+        return True
+    alive = _pid_alive(pid)
+    if alive is False:
+        return False
+    current = process_starttime(pid)
+    if current is None:
+        # ps failed — proceed with kill (best-effort)
+        return True
+    return current == recorded_starttime
+
+
 def is_stale_run(root: Path, run_id: str) -> bool:
     """True when a pid file exists and the process is gone (ESRCH).
 
     No pid file, unreadable pid, or indeterminate liveness → not stale
-    (mutex still applies unless force supersede).
+    (mutex still applies unless force supersede). When starttime is recorded
+    and no longer matches (PID reuse), treat as stale so create can proceed.
     """
-    pid_path = _run_pid_path(Path(root), run_id)
-    if not pid_path.is_file():
+    meta = read_pid_metadata(Path(root), run_id)
+    if meta is None:
         return False
-    try:
-        pid = int(pid_path.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return False
+    pid = int(meta["pid"])
+    recorded = meta.get("starttime")
+    recorded_s = recorded if isinstance(recorded, str) and recorded else None
+    if recorded_s and not pid_matches_recorded(pid, recorded_s):
+        # Dead or PID reused under a recorded starttime → reclaimable
+        return True
     return _pid_alive(pid) is False
 
 
-def create_run(
+def _create_run_unlocked(
     root: Path,
     *,
     mode: str,
@@ -140,21 +263,7 @@ def create_run(
     force: bool = False,
     kill_grace_s: float = 0.0,
 ) -> dict[str, Any]:
-    """Create a new run directory + status.json and point active.json at it.
-
-    Refuses when an active run exists with status in
-    ``{initialized, running, verifying}`` unless:
-
-    * ``force=True`` — **supersede**: cancel/kill the old active run first
-      (best-effort process kill via pid file, then mark cancelled), or
-    * the active run is **stale** (pid file present and process ESRCH) — the
-      dead run is cancelled and create proceeds without force.
-
-    Terminal statuses (cancelled/completed/failed/verified) do not block.
-    """
-    root = Path(root)
-    ensure_omg_dirs(root)
-
+    """Inner create_run body (caller holds create.lock when available)."""
     active = load_active_run(root)
     if active is not None:
         st = str(active.get("status") or "")
@@ -205,6 +314,59 @@ def create_run(
     _atomic_write_json(_status_path(root, run_id), status)
     _atomic_write_json(_active_path(root), {"run_id": run_id, "updated_at": now})
     return status
+
+
+def create_run(
+    root: Path,
+    *,
+    mode: str,
+    goal: str,
+    extra: dict[str, Any] | None = None,
+    force: bool = False,
+    kill_grace_s: float = 0.0,
+) -> dict[str, Any]:
+    """Create a new run directory + status.json and point active.json at it.
+
+    Serializes concurrent creates via ``fcntl.flock`` on
+    ``.omg/state/create.lock`` (POSIX). Refuses when an active run exists with
+    status in ``{initialized, running, verifying}`` unless:
+
+    * ``force=True`` — **supersede**: cancel/kill the old active run first
+      (best-effort process kill via pid file, then mark cancelled), or
+    * the active run is **stale** (pid file present and process ESRCH) — the
+      dead run is cancelled and create proceeds without force.
+
+    Terminal statuses (cancelled/completed/failed/verified) do not block.
+    """
+    root = Path(root)
+    ensure_omg_dirs(root)
+
+    lock_path = _create_lock_path(root)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if fcntl is None:
+        return _create_run_unlocked(
+            root,
+            mode=mode,
+            goal=goal,
+            extra=extra,
+            force=force,
+            kill_grace_s=kill_grace_s,
+        )
+
+    with lock_path.open("a+", encoding="utf-8") as lockf:
+        fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
+        try:
+            return _create_run_unlocked(
+                root,
+                mode=mode,
+                goal=goal,
+                extra=extra,
+                force=force,
+                kill_grace_s=kill_grace_s,
+            )
+        finally:
+            fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
 
 
 # Keys that extra must never override; status param / identity fields win.
@@ -318,6 +480,43 @@ def _kill_run_process_group(pid: int, *, grace_s: float = 0.0) -> list[str]:
     return actions
 
 
+def _kill_from_pid_meta(
+    meta: dict[str, Any],
+    *,
+    grace_s: float = 0.0,
+    label: str = "leader",
+) -> list[str]:
+    """Kill process for a pid.json meta dict if starttime still matches."""
+    actions: list[str] = []
+    try:
+        pid = int(meta["pid"])
+    except (KeyError, TypeError, ValueError):
+        return actions
+    if pid <= 0:
+        return actions
+
+    recorded = meta.get("starttime")
+    recorded_s = recorded if isinstance(recorded, str) and recorded else None
+    if not pid_matches_recorded(pid, recorded_s):
+        actions.append(f"skip:{label}:pid_reuse_or_dead:{pid}")
+        return actions
+
+    # Prefer recorded pgid when present (session leader from start_new_session)
+    kill_target = pid
+    pgid = meta.get("pgid")
+    if isinstance(pgid, int) and pgid > 0:
+        kill_target = pgid
+
+    sub = _kill_run_process_group(kill_target, grace_s=grace_s)
+    if not sub and kill_target != pid:
+        sub = _kill_run_process_group(pid, grace_s=grace_s)
+    for a in sub:
+        actions.append(f"{label}:{a}")
+    if not sub:
+        actions.append(f"{label}:no_signal_delivered:{pid}")
+    return actions
+
+
 def cancel_run(
     root: Path,
     run_id: str | None = None,
@@ -326,8 +525,10 @@ def cancel_run(
 ) -> dict[str, Any]:
     """Mark run cancelled and clear active if it matches. Does not delete artifacts.
 
-    Best-effort: if a pid file exists under the run dir, send SIGTERM to the
-    process group (``killpg``) when possible, else the single pid. Ignore
+    Best-effort: if ``pid.json`` (or legacy ``pid``) exists under the run dir,
+    verify starttime still matches (PID reuse guard), then send SIGTERM to the
+    process group (``killpg``) when possible, else the single pid. Also scans
+    ``workers/*.pid.json`` for multi-PID cancel skeleton. Ignore
     ProcessLookupError / ESRCH / permission errors. Optional grace then SIGKILL.
     """
     root = Path(root)
@@ -340,16 +541,36 @@ def cancel_run(
     if current is None:
         raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
 
-    # Best-effort process-group kill via pid file (never self-matching pkill)
-    pid_path = _runs_dir(root) / run_id / "pid"
     kill_actions: list[str] = []
-    if pid_path.is_file():
-        try:
-            pid = int(pid_path.read_text(encoding="utf-8").strip())
-        except ValueError:
-            pid = -1
-        if pid > 0:
-            kill_actions = _kill_run_process_group(pid, grace_s=kill_grace_s)
+
+    # Leader process (pid.json preferred; plain pid fallback)
+    meta = read_pid_metadata(root, run_id)
+    if meta is not None:
+        kill_actions.extend(
+            _kill_from_pid_meta(meta, grace_s=kill_grace_s, label="leader")
+        )
+
+    # Multi-PID cancel skeleton: workers/*.pid.json
+    workers_dir = _runs_dir(root) / run_id / "workers"
+    if workers_dir.is_dir():
+        for wpath in sorted(workers_dir.glob("*.pid.json")):
+            wmeta = _read_json(wpath)
+            if not wmeta:
+                continue
+            # Normalize pid type
+            if "pid" in wmeta and not isinstance(wmeta["pid"], int):
+                try:
+                    wmeta = dict(wmeta)
+                    wmeta["pid"] = int(wmeta["pid"])
+                except (TypeError, ValueError):
+                    continue
+            kill_actions.extend(
+                _kill_from_pid_meta(
+                    wmeta,
+                    grace_s=kill_grace_s,
+                    label=f"worker:{wpath.stem}",
+                )
+            )
 
     current["status"] = "cancelled"
     current["verified"] = False

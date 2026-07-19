@@ -478,7 +478,24 @@ def _launch_grok(
         (run_dir / "launch_error").write_text(f"{exc}\n", encoding="utf-8")
         return 127
 
-    (run_dir / "pid").write_text(f"{proc.pid}\n", encoding="utf-8")
+    # Record pid + starttime + pgid so cancel can refuse PID-reused kills.
+    try:
+        from omg_cli.state import write_pid_metadata
+
+        pgid: int | None = proc.pid
+        if os.name == "posix":
+            try:
+                pgid = os.getpgid(proc.pid)
+            except (ProcessLookupError, PermissionError, OSError):
+                pgid = proc.pid
+        write_pid_metadata(
+            run_dir / "pid.json",
+            pid=proc.pid,
+            pgid=pgid,
+        )
+    except Exception:
+        # Never fail the launch because metadata write failed; keep legacy pid.
+        (run_dir / "pid").write_text(f"{proc.pid}\n", encoding="utf-8")
     try:
         return int(proc.wait(timeout=timeout))
     except subprocess.TimeoutExpired:
@@ -514,6 +531,8 @@ def run_mode(
     extra: Sequence[str] | None = None,
     require_acceptance: bool | None = None,
     acceptance_timeout: float | None = None,
+    existing_run_id: str | None = None,
+    force: bool = False,
 ) -> int:
     """Create run, launch grok for mode, update status. Returns exit code.
 
@@ -526,6 +545,7 @@ def run_mode(
     - require_acceptance: default True for ralph; when True and not verified → non-zero
     - timeout: seconds for each grok launch; None → DEFAULT_TIMEOUT (3600);
       0 → unlimited. Configurable via CLI ``--timeout``.
+    - existing_run_id: reuse run (pipeline embedding); skips create_run
     """
     if mode not in MODE_SKILL_REL:
         print(f"unknown mode: {mode}", file=sys.stderr)
@@ -553,6 +573,8 @@ def run_mode(
             dry_run=dry_run,
             timeout=launch_timeout,
             extra=extra,
+            force=force,
+            existing_run_id=existing_run_id,
         )
 
     if require_acceptance is None:
@@ -578,22 +600,35 @@ def run_mode(
         except Exception:
             pass
 
-    try:
-        run = create_run(
-            root_path,
-            mode=mode,
-            goal=goal,
-            extra=create_extra,
-        )
-    except RuntimeError as exc:
-        # Active-run mutex: refuse concurrent non-terminal runs
-        print(f"omg {mode}: {exc}", file=sys.stderr)
-        return 1
-    run_id = run["run_id"]
+    if existing_run_id:
+        run_id = existing_run_id
+        if load_run(root_path, run_id) is None:
+            print(
+                f"omg {mode}: no run found for existing_run_id={run_id!r}",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        try:
+            run = create_run(
+                root_path,
+                mode=mode,
+                goal=goal,
+                extra=create_extra,
+                force=force,
+            )
+        except RuntimeError as exc:
+            # Active-run mutex: refuse concurrent non-terminal runs
+            print(f"omg {mode}: {exc}", file=sys.stderr)
+            return 1
+        run_id = run["run_id"]
     run_dir = _run_dir(root_path, run_id)
 
     if mode == "ralph":
-        _write_prd_scaffold(root_path, run_id, goal)
+        # Only scaffold if missing (pipeline may re-enter implement)
+        prd_path = run_dir / "prd.json"
+        if not prd_path.is_file():
+            _write_prd_scaffold(root_path, run_id, goal)
 
     write_status(root_path, run_id, "running", extra={"iteration": 0})
 

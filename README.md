@@ -9,7 +9,7 @@ OMC-style multi-agent orchestration for **Grok Build**.
 | **Grok plugin** (`plugin.json`, `skills/`, `agents/`, `hooks/`) | In-session playbooks, custom agents, event spool + PreToolUse soft-guard |
 | **`omg` CLI** (`bin/omg`, `omg_cli/`) | Hard keywords (`ulw` / `ralph` / `ralplan`), project setup, state single-writer, outer loops, acceptance, integrate, ralplan FSM |
 
-Version: **0.2.0** · License: MIT
+Version: **0.2.1** · License: MIT
 
 ---
 
@@ -22,6 +22,23 @@ Grok Build already ships subagents, worktrees, plugins, and hooks. oh-my-grok ad
 - **ralplan** — plan consensus FSM (draft → critic → revise → verifier; **no implementation**)
 
 Agents may write proposals under `.omg/artifacts/`. Only the **`omg` CLI** is authoritative for `passes` / `verified` under `.omg/state/`.
+
+---
+
+## Isolation stack (honest)
+
+Workers must not run external agent CLIs as a **hard** property of tool policy — not of PreToolUse regex alone.
+
+| Purpose | Primary mechanism | Secondary |
+|---------|-------------------|-----------|
+| Workers cannot shell external CLIs | `capability_mode: read-write` / `read-only` (**no Execute** → no `run_terminal_command`) | agent `disallowedTools`; parent `--disallowed-tools` clamp |
+| Leader shell still soft-guarded | PreToolUse deny (**fail-open** honest) | skill HARD RULES |
+| Acceptance shell only via CLI | `omg accept` + basename **allowlist** (pytest/python/…); always-deny `claude`/`rm`/shells | strip `OMG_ALLOW_*` from child env |
+| Parallel without tmux | `spawn_subagent` + worktrees under project / `.omg/worktrees` | multi-PID cancel skeleton (`workers/*.pid.json`) |
+
+**PreToolUse:** grok-build source shows subagents **inherit** parent hooks (still fail-open). Live canary optional — see [`docs/research/subagent-pretooluse-spike.md`](docs/research/subagent-pretooluse-spike.md). Do **not** claim hard CLI ban from hooks alone.
+
+**v0.2.1 hardening:** acceptance allowlist + `--review`/`--yes`; `create_run` flock; cancel `pid.json` starttime verify; integrate path whitelist + `base..head` cherry-pick; `scripts/smoke.sh`.
 
 ---
 
@@ -107,12 +124,12 @@ These are non-negotiable in skills, agent prompts, and CLI-injected reminders:
 
 ### Soft-guard limits (defense-in-depth, not a hard guarantee)
 
-`PreToolUse` denies external agent CLIs in **command position** on matching tools. Grok hooks can **fail-open** (timeout / crash / malformed → tool may still run), so skills + CLI HARD RULES remain the primary contract.
+`PreToolUse` denies external agent CLIs in **command position** on matching tools. Grok hooks can **fail-open** (timeout / crash / malformed → tool may still run). Source evidence: subagents **inherit** PreToolUse; still not a sandbox. Prefer **capability_mode** as primary (see Isolation stack).
 
 **Known limits:**
 
-- Soft-gate is **not** a sandbox. Interpreter escapes (`python3 -c …`, `node -e`, `npx …`) and some shell constructs may still slip through.
-- **Subagent PreToolUse coverage is not verified as a hard guarantee** in all host versions — treat leader-hook deny as defense-in-depth. Compensation: prefer `capability_mode: read-write` (no shell) for implementers and `read-only` for critic/verifier; run acceptance shell **only** via `omg accept`. See [`docs/research/subagent-pretooluse-spike.md`](docs/research/subagent-pretooluse-spike.md).
+- Soft-gate is **not** a sandbox. Interpreter escapes (`python3 -c …`, `node -e`, `npx …`) matter only when shell tool is available.
+- Host may fail-open. Compensation: `capability_mode: read-write` (no shell) for implementers / `read-only` for critic/verifier; acceptance shell **only** via `omg accept`. See [`docs/research/subagent-pretooluse-spike.md`](docs/research/subagent-pretooluse-spike.md).
 
 Bypass is **process-env only**:
 
@@ -165,8 +182,8 @@ omg [-h] [--safe] [--yolo] {setup,doctor,state,cancel,accept,integrate,ulw,ralph
 | `omg doctor` | Health checks (+ compat scan). `--strict` → FAIL on compat/inspect gaps |
 | `omg state` | Print active run JSON (`--run <id>` for a specific run) |
 | `omg cancel` | Cancel active run; SIGTERM process group then optional SIGKILL |
-| `omg accept` | Freeze PRD commands + run acceptance; set `verified` only with CLI stamp |
-| `omg integrate` | ULW: clean-tree preflight + cherry-pick result envelopes (`--run`, `--dry-run`) |
+| `omg accept` | Freeze PRD commands + run acceptance (allowlist); set `verified` only with CLI stamp |
+| `omg integrate` | ULW: clean-tree preflight + path-whitelisted worktrees + cherry-pick (`base..head` or single) |
 | `omg ulw "goal"` | Ultrawork — parallel `spawn_subagent` fan-out (records `base_sha` when git available) |
 | `omg ralph "goal"` | Ralph — persistence loop (one story per iteration; context pack each iter) |
 | `omg ralplan "goal"` | Ralplan — CLI-owned plan consensus FSM only (no implementation) |
@@ -196,16 +213,19 @@ omg state
 omg state --run 20260719T094708Z-7048b749
 omg cancel
 
-# Acceptance (writer stamp required for verified)
-omg accept
+# Acceptance (writer stamp + allowlist required for verified)
+omg accept --yes                    # non-tty / CI: always pass --yes
+omg accept --review --yes           # print commands, then run
 omg accept --run <id> --dry-run
+omg accept --allow-cmd mytool --yes # extend basename allowlist
+# omg accept --no-allowlist --yes   # DANGEROUS emergency only
 
 # ULW convergence: workers write .omg/artifacts/ulw-results/<task_id>.json
 omg integrate --dry-run
 omg integrate --run <run-id>
 ```
 
-### Acceptance runner (writer stamp)
+### Acceptance runner (writer stamp + allowlist)
 
 PRD / acceptance manifest schema (argv arrays only — no bare shell strings by default):
 
@@ -220,11 +240,18 @@ PRD / acceptance manifest schema (argv arrays only — no bare shell strings by 
 }
 ```
 
+**Allowlist (default basenames):** `pytest`, `python`, `python3`, `true`, `false`, `make`, `npm`, `npx`, `node`, `cargo`, `go`, `dart`, `flutter`, `ruff`, `mypy`, `black`, `git`.
+
+**Always denied:** `claude`, `codex`, `omx`, `agy`, `cursor-agent`, `kimi`, `rm`, `sudo`, shell interpreters (`bash`/`sh`/…). `--no-allowlist` skips only the *positive* allowlist; always-deny still applies.
+
 Flow:
 
 1. `freeze_acceptance` → `acceptance.manifest.json` + `acceptance.sha256`
-2. `run_acceptance` → `acceptance.result.json` with `"writer": "omg-cli"` and per-command exit codes
-3. `set_verified` requires CLI stamp + matching manifest sha — **agent-forged `{passed: true}` is rejected**
+2. Allowlist check on every argv
+3. `run_acceptance` → `acceptance.result.json` with `"writer": "omg-cli"` and per-command exit codes
+4. `set_verified` requires CLI stamp + matching manifest sha + in-process token — **agent-forged `{passed: true}` is rejected**
+
+CLI gates: `--review` prints commands and requires `--yes`; non-tty stdin also requires `--yes`.
 
 Ralph after each iteration: if PRD has valid commands → freeze → run → maybe verify. Without acceptance commands → never verified; ralph defaults to non-zero exit (`require_acceptance`).
 
@@ -232,7 +259,7 @@ Ralph after each iteration: if PRD has valid commands → freeze → run → may
 
 **ULW envelopes** (under `.omg/artifacts/ulw-results/`): `task_id`, `base_sha`, `head_sha`, `worktree_path`, `changed_files`, `status` (`ok`|`failed`).
 
-`omg integrate` sorts by `task_id`, requires clean git tree (no auto-stash), matches run `base_sha`, cherry-picks each `head_sha`, stops on conflict, writes `integrate.result.json`. Does **not** set `verified` alone.
+`omg integrate` sorts by `task_id`, requires clean git tree (no auto-stash), matches run `base_sha`, requires `worktree_path` under **project root or `.omg/worktrees`**, cherry-picks `base_sha..head_sha` when they differ (else single `head_sha`), stops on conflict, writes `integrate.result.json`. Does **not** set `verified` alone.
 
 ### Ralplan FSM (CLI-owned)
 
@@ -321,6 +348,7 @@ grok plugin validate .
 ./bin/omg doctor
 ./bin/omg doctor --strict || true
 ./bin/omg ulw "noop" --dry-run
+./scripts/smoke.sh
 ```
 
 - **Runtime:** Python 3.11+, stdlib only for `omg_cli` and hooks.

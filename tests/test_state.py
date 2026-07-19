@@ -207,7 +207,120 @@ def test_cancel_run_killpg_success_skips_single_kill(tmp_path, monkeypatch):
     assert cancelled["status"] == "cancelled"
     assert killpgs == [(424242, signal.SIGTERM)]
     assert kills == []
-    assert cancelled.get("kill_actions") == ["killpg:SIGTERM"]
+    assert cancelled.get("kill_actions") == ["leader:killpg:SIGTERM"]
+
+
+def test_create_run_flock_serializes_concurrent(tmp_path):
+    """fcntl.flock on create.lock: concurrent create_run → one wins, one RuntimeError."""
+    import threading
+
+    results: list[str] = []
+    errors: list[str] = []
+    barrier = threading.Barrier(2)
+
+    def worker(goal: str) -> None:
+        try:
+            barrier.wait(timeout=5)
+            run = create_run(tmp_path, mode="ralph", goal=goal)
+            results.append(run["run_id"])
+        except RuntimeError as exc:
+            errors.append(str(exc))
+        except Exception as exc:  # pragma: no cover
+            errors.append(f"other:{exc}")
+
+    t1 = threading.Thread(target=worker, args=("a",))
+    t2 = threading.Thread(target=worker, args=("b",))
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+    assert len(results) == 1, (results, errors)
+    assert len(errors) == 1, (results, errors)
+    assert "active run already exists" in errors[0]
+    lock = tmp_path / ".omg" / "state" / "create.lock"
+    assert lock.is_file()
+
+
+def test_cancel_skips_pid_reuse_when_starttime_mismatches(tmp_path, monkeypatch):
+    """pid.json starttime mismatch → do not kill (PID reuse guard)."""
+    from omg_cli import state as state_mod
+
+    run = create_run(tmp_path, mode="ulw", goal="reuse")
+    rid = run["run_id"]
+    pid_json = tmp_path / ".omg" / "state" / "runs" / rid / "pid.json"
+    pid_json.write_text(
+        json.dumps({"pid": 555001, "starttime": "Mon Jan  1 00:00:00 2000", "pgid": 555001})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    killpgs: list[tuple[int, int]] = []
+
+    def fake_killpg(pgid, sig):
+        killpgs.append((pgid, sig))
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            return  # pretend alive
+        raise AssertionError("should not single-kill on reuse")
+
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr(os, "kill", fake_kill)
+    monkeypatch.setattr(
+        state_mod,
+        "process_starttime",
+        lambda pid: "Tue Feb  2 12:00:00 2026",  # different
+    )
+
+    cancelled = cancel_run(tmp_path, rid)
+    assert cancelled["status"] == "cancelled"
+    assert killpgs == []
+    assert any("pid_reuse" in a for a in cancelled.get("kill_actions") or [])
+
+
+def test_cancel_workers_pid_json_skeleton(tmp_path, monkeypatch):
+    """cancel_run also signals workers/*.pid.json (multi-PID skeleton)."""
+    run = create_run(tmp_path, mode="ulw", goal="workers")
+    rid = run["run_id"]
+    workers = tmp_path / ".omg" / "state" / "runs" / rid / "workers"
+    workers.mkdir(parents=True, exist_ok=True)
+    (workers / "w1.pid.json").write_text(
+        json.dumps({"pid": 700001, "starttime": None, "pgid": 700001}) + "\n",
+        encoding="utf-8",
+    )
+
+    killpgs: list[tuple[int, int]] = []
+
+    def fake_killpg(pgid, sig):
+        killpgs.append((pgid, sig))
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            raise ProcessLookupError("gone")
+
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr(os, "kill", fake_kill)
+
+    cancelled = cancel_run(tmp_path, rid)
+    assert cancelled["status"] == "cancelled"
+    assert any(pg == 700001 for pg, _ in killpgs)
+    assert any("worker:w1" in a for a in cancelled.get("kill_actions") or [])
+
+
+def test_write_pid_metadata_shape(tmp_path, monkeypatch):
+    from omg_cli.state import write_pid_metadata
+
+    monkeypatch.setattr(
+        "omg_cli.state.process_starttime",
+        lambda pid: "Sun Jul 19 12:00:00 2026",
+    )
+    path = tmp_path / "pid.json"
+    meta = write_pid_metadata(path, pid=12345, pgid=12345)
+    assert meta["pid"] == 12345
+    assert meta["pgid"] == 12345
+    assert meta["starttime"] == "Sun Jul 19 12:00:00 2026"
+    assert path.is_file()
+    assert (tmp_path / "pid").read_text(encoding="utf-8").strip() == "12345"
 
 
 def test_write_status(tmp_path):

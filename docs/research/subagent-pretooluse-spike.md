@@ -1,14 +1,28 @@
 # Spike: Does PreToolUse fire for `spawn_subagent` children?
 
-**Date:** 2026-07-19  
-**Repo:** oh-my-grok v0.2  
-**Related:** dual-review I2 / Codex Important (subagent soft-gate coverage)
+**Date:** 2026-07-19 (updated same day for v0.2.1 source evidence)  
+**Repo:** oh-my-grok v0.2.1  
+**Related:** dual-review I2; council-v021 isolation research
 
 ## Question
 
 Does Grok Build invoke the plugin `PreToolUse` hook when a **child** agent (spawned via `spawn_subagent`) runs `run_terminal_command`? Or only for the leader session?
 
 If children do **not** inherit PreToolUse, the deny list in `hooks/bin/pre_tool_use_deny.py` / `omg_cli/deny.py` is **leader-only defense-in-depth** and cannot stop a child from shelling out to `claude` / `codex` / etc.
+
+## Source evidence (grok-build) — inheritance designed in
+
+Council research (`.omg/research/council-v021/grok-isolation-research.md`, Grok **0.2.103**) found **host source + unit tests** that subagents **inherit** parent PreToolUse:
+
+| Evidence | Path / note |
+|----------|-------------|
+| File hooks always `dispatch_pre_tool_use` when active | `xai-grok-shell/.../tool_calls.rs` (~918–964); payload includes `subagent_type` |
+| Client hooks snapshot for inheritance | `SessionCommand::SnapshotClientHooks` — “so a subagent inherits the same PreToolUse gate” |
+| Spawn clones hooks into child | `handle_request.rs` ~1157 / ~1176: `client_hooks.clone()` + `hook_registry.clone()` |
+| Unit test | `subagent_inherits_parent_pre_tool_use_client_hook` — child tool denied by parent’s inherited PreToolUse |
+| Fail-open policy unchanged | timeout / crash / missing / malformed → tool may still run (`10-hooks.md`) |
+
+**Revised product stance:** PreToolUse is **intended to run on subagents** (inherited registry/hooks). It remains a **fail-open soft-gate**, not a sandbox. Live canary on this machine is still optional acceptance for gap B.
 
 ## How to re-test (canary)
 
@@ -59,25 +73,28 @@ Record:
 
 | Item | Status |
 |------|--------|
-| Live re-test in CI / this authoring session | **Not verified live** |
+| Host source: subagents inherit PreToolUse | **Supported** (see table above) |
+| Live re-test in CI / this authoring session | **Not verified live** (canary table empty) |
 | Documented re-test procedure | Yes (above) |
 | Assumption recorded | **ASSUMPTION** below |
 
 ### ASSUMPTION (until re-verified live)
 
-> **ASSUMPTION:** Subagent children may **not** reliably inherit plugin `PreToolUse` the same way as the leader, **or** hooks may fail-open. Treat PreToolUse as **defense-in-depth soft-gate on the leader only**, not a sandbox for children.
+> **ASSUMPTION (updated):** Subagent children **should** inherit plugin/client PreToolUse per grok-build source and unit tests. Hooks may still **fail-open**. Treat PreToolUse as **defense-in-depth soft-gate** (leader + children when registry loaded), **not** a hard sandbox.
 
-Do **not** claim “children are hard-blocked from external CLIs” without a dated live canary table above filled with pass/fail evidence.
+Do **not** claim “children are hard-blocked from external CLIs” without a dated live canary table above filled with pass/fail evidence, or without the **capability_mode** primary stack.
 
-## Compensation (product defaults)
+## Compensation (product defaults) — primary isolation stack
 
-Because the spike is not a hard guarantee:
+Because hooks alone are not a hard guarantee:
 
-1. **Write workers** — prefer `capability_mode: read-write` (edit tools, **no shell**) when the host supports capability modes. Avoid giving implementers unrestricted `run_terminal_command` by default.
-2. **Critic / verifier / explore** — prefer `capability_mode: read-only` (or permissionMode `plan` / read-only allow lists).
-3. **Acceptance / tests / shell** — run **only** via the **`omg` CLI** (`omg accept`, frozen `acceptance.manifest.json` + CLI-stamped `acceptance.result.json`). Models must not set `verified`.
-4. **Skills** — `omg-ultrawork`, `omg-ralph`, `omg-ralplan` document these capability defaults; HARD RULES still forbid external agent CLIs as workers regardless of hooks.
-5. **Env bypass** — `OMG_ALLOW_EXTERNAL_CLI=1` is process-env only (never parsed from command text); intended for rare advisor use, not default workers.
+1. **Primary:** `capability_mode: read-write` (implementers, **no shell**) / `read-only` (critic/verifier/explore). Dropping Execute removes `run_terminal_command` entirely.
+2. **Secondary:** agent `disallowedTools` / parent `--disallowed-tools` session clamp.
+3. **Soft-gate:** PreToolUse deny (fail-open honest) + skill HARD RULES.
+4. **Acceptance / tests / shell** — run **only** via the **`omg` CLI** (`omg accept`, frozen manifest + CLI stamp + basename allowlist). Models must not set `verified`.
+5. **Env bypass** — `OMG_ALLOW_EXTERNAL_CLI=1` is process-env only (never parsed from command text); rare advisor use only.
+
+See README **Isolation stack** and `.omg/research/council-v021/grok-isolation-research.md`.
 
 ## Related code
 
@@ -86,15 +103,15 @@ Because the spike is not a hard guarantee:
 | `hooks/hooks.json` | Registers PreToolUse → `pre_tool_use_deny.py` |
 | `hooks/bin/pre_tool_use_deny.py` | stdin JSON → `omg_cli.deny.decide_pre_tool_use` |
 | `omg_cli/deny.py` | Command-position deny list (soft-gate) |
-| `omg_cli/acceptance.py` | Sole writer of stamped acceptance results |
+| `omg_cli/acceptance.py` | Sole writer of stamped acceptance results + allowlist |
 | `skills/omg-*/SKILL.md` | capability_mode defaults + HARD RULES |
 
 ## Soft-gate residual (not solved by this spike)
 
 Even when PreToolUse fires, it may miss:
 
-- Interpreter escapes (`python3 -c '…'`, `node -e`, `npx …`)
+- Interpreter escapes (`python3 -c '…'`, `node -e`, `npx …`) when shell tool is present
 - Some shell wrappers / path tricks
 - Host fail-open on hook timeout / crash / malformed JSON
 
-Primary contract remains **skills + CLI HARD RULES + acceptance ownership**, not the hook alone.
+Primary contract remains **capability_mode (no Execute) + skills + CLI HARD RULES + acceptance ownership**, not the hook alone.

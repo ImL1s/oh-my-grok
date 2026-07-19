@@ -324,6 +324,69 @@ def test_load_prd(tmp_path):
     assert loaded["goal"] == prd["goal"]
 
 
+def test_allowlist_rejects_rm_and_claude():
+    from omg_cli.acceptance import CommandAllowlistError, check_command_allowlist
+
+    with pytest.raises(CommandAllowlistError, match="permanently denied|denied"):
+        check_command_allowlist(["rm", "-rf", "/"])
+    with pytest.raises(CommandAllowlistError, match="permanently denied|denied"):
+        check_command_allowlist(["claude", "--version"])
+    with pytest.raises(CommandAllowlistError, match="shell interpreter"):
+        check_command_allowlist(["bash", "-c", "true"])
+    with pytest.raises(CommandAllowlistError, match="not in acceptance allowlist"):
+        check_command_allowlist(["curl", "https://example.com"])
+
+
+def test_allowlist_allows_pytest_and_true():
+    from omg_cli.acceptance import check_command_allowlist
+
+    check_command_allowlist(["true"])
+    check_command_allowlist(["false"])
+    check_command_allowlist(["pytest", "tests/", "-q"])
+    check_command_allowlist(["python3", "-c", "pass"])
+    check_command_allowlist(["/usr/bin/pytest", "-q"])  # path basename
+
+
+def test_allowlist_extra_allow_and_no_allowlist():
+    from omg_cli.acceptance import (
+        CommandAllowlistError,
+        check_command_allowlist,
+        resolve_allowlist,
+    )
+
+    allowed = resolve_allowlist(["hello"])
+    assert "hello" in allowed
+    assert "pytest" in allowed
+    check_command_allowlist(["hello", "world"], allowlist=allowed)
+    # --no-allowlist still cannot run always-deny
+    with pytest.raises(CommandAllowlistError, match="permanently denied"):
+        check_command_allowlist(["claude"], no_allowlist=True)
+    # but can run non-default bins like curl
+    check_command_allowlist(["curl", "https://x"], no_allowlist=True)
+
+
+def test_run_acceptance_rejects_denied_command(tmp_path):
+    from omg_cli.acceptance import CommandAllowlistError
+
+    run = create_run(tmp_path, mode="ralph", goal="deny")
+    rid = run["run_id"]
+    prd = {
+        "version": 1,
+        "goal": "deny",
+        "stories": [
+            {
+                "id": "s1",
+                "title": "bad",
+                "commands": [["rm", "-rf", "x"]],
+            }
+        ],
+        "global_commands": [],
+    }
+    freeze_acceptance(tmp_path, rid, prd)
+    with pytest.raises(CommandAllowlistError, match="rm"):
+        run_acceptance(tmp_path, rid)
+
+
 def test_modes_ralph_require_acceptance_exit(monkeypatch, tmp_path):
     import subprocess
 

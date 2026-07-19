@@ -259,8 +259,14 @@ def test_ralph_doesnt_set_verified_without_acceptance(monkeypatch, tmp_path):
     assert run is not None
     assert run["verified"] is False
     assert run["status"] == "completed"
-    # loop should have called grok max_iter times
-    assert subprocess.Popen.call_count == 2
+    # loop should have called grok max_iter times (Popen may also be used by
+    # process_starttime via subprocess.run → ignore non-grok argv)
+    grok_calls = [
+        c
+        for c in subprocess.Popen.call_args_list
+        if c.args and c.args[0] and c.args[0][0] == "grok"
+    ]
+    assert len(grok_calls) == 2
     # pid file written
     pid_path = tmp_path / ".omg" / "state" / "runs" / run["run_id"] / "pid"
     assert pid_path.is_file()

@@ -176,14 +176,41 @@ def test_accept_cli_freeze_and_run(tmp_path):
         + "\n",
         encoding="utf-8",
     )
-    r = _run_omg("accept", "--run", rid, cwd=tmp_path)
+    # non-tty subprocess requires --yes; --review prints commands first
+    r = _run_omg("accept", "--run", rid, "--review", "--yes", cwd=tmp_path)
     assert r.returncode == 0, r.stderr + r.stdout
     assert "verified" in r.stdout.lower() or rid in r.stdout
+    assert "acceptance commands" in r.stdout.lower() or "true" in r.stdout
     result = tmp_path / ".omg" / "state" / "runs" / rid / "acceptance.result.json"
     assert result.is_file()
     data = json.loads(result.read_text(encoding="utf-8"))
     assert data["writer"] == "omg-cli"
     assert data["passed"] is True
+
+
+def test_accept_cli_review_requires_yes(tmp_path):
+    from omg_cli.state import create_run
+
+    run = create_run(tmp_path, mode="ralph", goal="review gate")
+    rid = run["run_id"]
+    prd_path = tmp_path / ".omg" / "state" / "runs" / rid / "prd.json"
+    prd_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "goal": "review gate",
+                "stories": [
+                    {"id": "s1", "title": "ok", "commands": [["true"]]}
+                ],
+                "global_commands": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    r = _run_omg("accept", "--run", rid, "--review", cwd=tmp_path)
+    assert r.returncode == 2, r.stderr + r.stdout
+    assert "yes" in (r.stderr + r.stdout).lower()
 
 
 def test_safe_and_yolo_flags_accepted():

@@ -185,8 +185,9 @@ def test_integrate_cherry_pick_ok(tmp_path):
     leader = tmp_path / "leader"
     base = _init_repo(leader)
 
-    # Linked worktree shares object store — common ULW isolation pattern
-    wt = tmp_path / "worker-a"
+    # Worktrees must live under project root or root/.omg/worktrees (path whitelist)
+    wt = leader / ".omg" / "worktrees" / "worker-a"
+    wt.parent.mkdir(parents=True, exist_ok=True)
     _git(leader, "worktree", "add", str(wt), "HEAD")
     # Make a commit only on the worktree branch
     (wt / "feature_a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
@@ -217,6 +218,8 @@ def test_integrate_cherry_pick_ok(tmp_path):
     assert result["status"] == "ok", result
     assert len(result["applied"]) == 1
     assert result["applied"][0]["status"] == "applied"
+    # multi-commit range when base != head
+    assert result["applied"][0].get("pick") == f"{base}..{head_sha}"
     assert (leader / "feature_a.py").is_file()
     assert "def a()" in (leader / "feature_a.py").read_text(encoding="utf-8")
     # HEAD advanced
@@ -228,7 +231,8 @@ def test_integrate_sorts_by_task_id(tmp_path):
     base = _init_repo(leader)
 
     # Two sequential commits on a side branch via one worktree
-    wt = tmp_path / "wt"
+    wt = leader / ".omg" / "worktrees" / "wt"
+    wt.parent.mkdir(parents=True, exist_ok=True)
     _git(leader, "worktree", "add", "-b", "worker", str(wt), "HEAD")
 
     (wt / "b.txt").write_text("b\n", encoding="utf-8")
@@ -281,7 +285,8 @@ def test_integrate_sorts_by_task_id(tmp_path):
 def test_integrate_base_sha_mismatch(tmp_path):
     leader = tmp_path / "leader"
     base = _init_repo(leader)
-    wt = tmp_path / "wt"
+    wt = leader / ".omg" / "worktrees" / "wt"
+    wt.parent.mkdir(parents=True, exist_ok=True)
     _git(leader, "worktree", "add", str(wt), "HEAD")
     (wt / "x.py").write_text("x\n", encoding="utf-8")
     _git(wt, "add", "x.py")
@@ -335,7 +340,8 @@ def test_integrate_conflict_marks_failed(tmp_path):
     leader = tmp_path / "leader"
     base = _init_repo(leader, first_file="shared.txt", content="line1\n")
 
-    wt = tmp_path / "wt"
+    wt = leader / ".omg" / "worktrees" / "wt"
+    wt.parent.mkdir(parents=True, exist_ok=True)
     _git(leader, "worktree", "add", "-b", "conflict-branch", str(wt), "HEAD")
     (wt / "shared.txt").write_text("from-worker\n", encoding="utf-8")
     _git(wt, "add", "shared.txt")
@@ -400,7 +406,8 @@ def test_integrate_partial_reset_on_second_conflict(tmp_path):
     base = _init_repo(leader, first_file="shared.txt", content="base-line\n")
 
     # Worker A: additive file (clean cherry-pick onto leader)
-    wt_a = tmp_path / "wt-a"
+    wt_a = leader / ".omg" / "worktrees" / "wt-a"
+    wt_a.parent.mkdir(parents=True, exist_ok=True)
     _git(leader, "worktree", "add", "-b", "worker-a", str(wt_a), "HEAD")
     (wt_a / "feature_a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
     _git(wt_a, "add", "feature_a.py")
@@ -408,7 +415,7 @@ def test_integrate_partial_reset_on_second_conflict(tmp_path):
     head_a = _git(wt_a, "rev-parse", "HEAD").stdout.strip()
 
     # Worker B: edits shared.txt from base (will conflict after leader also edits)
-    wt_b = tmp_path / "wt-b"
+    wt_b = leader / ".omg" / "worktrees" / "wt-b"
     _git(leader, "worktree", "add", "-b", "worker-b", str(wt_b), "HEAD")
     (wt_b / "shared.txt").write_text("from-worker-b\n", encoding="utf-8")
     _git(wt_b, "add", "shared.txt")
@@ -546,3 +553,74 @@ def test_cli_integrate_help():
     assert r.returncode == 0
     assert "--run" in r.stdout
     assert "--dry-run" in r.stdout
+
+
+def test_integrate_rejects_worktree_outside_allowlist(tmp_path):
+    """worktree_path outside project root / .omg/worktrees → failed."""
+    from omg_cli.integrate import worktree_path_allowed
+
+    leader = tmp_path / "leader"
+    base = _init_repo(leader)
+    outside = tmp_path / "evil-wt"
+    outside.mkdir()
+    assert worktree_path_allowed(leader, outside) is False
+    assert worktree_path_allowed(leader, leader) is True
+    allowed = leader / ".omg" / "worktrees" / "ok"
+    allowed.mkdir(parents=True)
+    assert worktree_path_allowed(leader, allowed) is True
+
+    run = create_run(leader, mode="ulw", goal="deny-path", extra={"base_sha": base})
+    _write_envelope(
+        default_envelopes_dir(leader),
+        {
+            "task_id": "t-evil",
+            "base_sha": base,
+            "head_sha": base,
+            "worktree_path": str(outside),
+            "status": "ok",
+            "changed_files": [],
+        },
+    )
+    result = integrate_results(leader, run["run_id"], dry_run=True)
+    assert result["status"] == "failed"
+    assert result["failed_task"] == "t-evil"
+    assert result["applied"][0]["status"] == "worktree_path_denied"
+    assert "allowlist" in (result.get("error") or "").lower()
+
+
+def test_integrate_multi_commit_range(tmp_path):
+    """When base_sha != head_sha, cherry-pick base..head (multiple commits)."""
+    leader = tmp_path / "leader"
+    base = _init_repo(leader)
+
+    wt = leader / ".omg" / "worktrees" / "multi"
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    _git(leader, "worktree", "add", "-b", "multi-br", str(wt), "HEAD")
+
+    (wt / "c1.txt").write_text("one\n", encoding="utf-8")
+    _git(wt, "add", "c1.txt")
+    _git(wt, "commit", "-m", "commit one")
+    (wt / "c2.txt").write_text("two\n", encoding="utf-8")
+    _git(wt, "add", "c2.txt")
+    _git(wt, "commit", "-m", "commit two")
+    head_sha = _git(wt, "rev-parse", "HEAD").stdout.strip()
+    assert head_sha != base
+
+    run = create_run(leader, mode="ulw", goal="multi", extra={"base_sha": base})
+    _write_envelope(
+        default_envelopes_dir(leader),
+        {
+            "task_id": "t-multi",
+            "base_sha": base,
+            "head_sha": head_sha,
+            "worktree_path": str(wt),
+            "status": "ok",
+            "changed_files": ["c1.txt", "c2.txt"],
+        },
+    )
+    result = integrate_results(leader, run["run_id"])
+    assert result["status"] == "ok", result
+    assert result["applied"][0]["status"] == "applied"
+    assert result["applied"][0]["pick"] == f"{base}..{head_sha}"
+    assert (leader / "c1.txt").read_text(encoding="utf-8") == "one\n"
+    assert (leader / "c2.txt").read_text(encoding="utf-8") == "two\n"

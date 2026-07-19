@@ -399,6 +399,7 @@ def run_ralplan(
     timeout: float | None = DEFAULT_TIMEOUT,
     extra: Sequence[str] | None = None,
     force: bool = False,
+    existing_run_id: str | None = None,
     stage_executor: Callable[..., int] | None = None,
 ) -> int:
     """Run the RALPLAN FSM. Returns 0 on accepted, non-zero on failed/error.
@@ -410,6 +411,9 @@ def run_ralplan(
     dry_run:
         Record prompts/state only; do not exec grok. Acceptance still requires
         a verifier artifact with APPROVE (tests may write it via stage_executor).
+    existing_run_id:
+        Reuse an already-created run (pipeline embedding). Skips create_run;
+        does not change the run's ``mode`` field.
     stage_executor:
         Optional override for ``_execute_stage`` (tests). Signature matches
         ``_execute_stage``.
@@ -423,25 +427,34 @@ def run_ralplan(
 
     executor = stage_executor or _execute_stage
 
-    try:
-        run = create_run(
-            root_path,
-            mode="ralplan",
-            goal=goal,
-            extra={
-                "max_rounds": max_rounds,
-                "yolo": bool(yolo),
-                "safe": bool(safe),
-                "fsm": "ralplan",
-                "note": "RALPLAN FSM — plan consensus only; no product implementation",
-            },
-            force=force,
-        )
-    except RuntimeError as exc:
-        print(f"omg ralplan: {exc}", file=sys.stderr)
-        return 1
+    if existing_run_id:
+        run_id = existing_run_id
+        if load_run(root_path, run_id) is None:
+            print(
+                f"omg ralplan: no run found for existing_run_id={run_id!r}",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        try:
+            run = create_run(
+                root_path,
+                mode="ralplan",
+                goal=goal,
+                extra={
+                    "max_rounds": max_rounds,
+                    "yolo": bool(yolo),
+                    "safe": bool(safe),
+                    "fsm": "ralplan",
+                    "note": "RALPLAN FSM — plan consensus only; no product implementation",
+                },
+                force=force,
+            )
+        except RuntimeError as exc:
+            print(f"omg ralplan: {exc}", file=sys.stderr)
+            return 1
+        run_id = run["run_id"]
 
-    run_id = run["run_id"]
     run_dir = _run_dir(root_path, run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     stages_dir(root_path, run_id).mkdir(parents=True, exist_ok=True)

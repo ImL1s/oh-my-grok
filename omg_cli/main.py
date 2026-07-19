@@ -99,7 +99,15 @@ def cmd_mode(args: argparse.Namespace) -> int:
 
 def cmd_accept(args: argparse.Namespace) -> int:
     """Freeze PRD acceptance commands and run them for active (or --run) run."""
-    from omg_cli.acceptance import freeze_and_run, load_prd, result_path
+    from omg_cli.acceptance import (
+        CommandAllowlistError,
+        freeze_acceptance,
+        freeze_and_run,
+        format_commands_review,
+        load_frozen_commands,
+        load_prd,
+        result_path,
+    )
     from omg_cli.state import load_active_run, load_run, set_verified
 
     root = _project_root()
@@ -124,8 +132,58 @@ def cmd_accept(args: argparse.Namespace) -> int:
         return 1
 
     dry_run = bool(getattr(args, "dry_run", False))
+    review = bool(getattr(args, "review", False))
+    yes = bool(getattr(args, "yes", False))
+    no_allowlist = bool(getattr(args, "no_allowlist", False))
+    extra_allow = list(getattr(args, "allow_cmd", None) or [])
+
+    if no_allowlist:
+        print(
+            "WARNING: --no-allowlist disables the positive acceptance allowlist "
+            "(always-deny bins and shells still blocked). Dangerous; use only in "
+            "controlled emergencies.",
+            file=sys.stderr,
+        )
+
+    # Freeze early so --review can print the exact command list.
     try:
-        ok = freeze_and_run(root, run_id, prd, dry_run=dry_run)
+        freeze_acceptance(root, run_id, prd)
+        commands = load_frozen_commands(root, run_id)
+    except (ValueError, FileNotFoundError, OSError) as exc:
+        print(f"accept failed: {exc}", file=sys.stderr)
+        return 1
+
+    if review or not dry_run:
+        print(format_commands_review(commands))
+
+    # Gate: --review always requires --yes to exec; non-tty requires --yes too.
+    needs_yes = (review or not sys.stdin.isatty()) and not dry_run
+    if needs_yes and not yes:
+        if review:
+            print(
+                "accept --review: pass --yes to execute the commands above",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "accept: non-tty stdin requires --yes to execute acceptance commands "
+                "(or use --dry-run / --review)",
+                file=sys.stderr,
+            )
+        return 2
+
+    try:
+        ok = freeze_and_run(
+            root,
+            run_id,
+            prd,
+            dry_run=dry_run,
+            extra_allow=extra_allow or None,
+            no_allowlist=no_allowlist,
+        )
+    except CommandAllowlistError as exc:
+        print(f"accept allowlist rejected: {exc}", file=sys.stderr)
+        return 1
     except (ValueError, FileNotFoundError, OSError) as exc:
         print(f"accept failed: {exc}", file=sys.stderr)
         return 1
@@ -190,6 +248,128 @@ def cmd_integrate(args: argparse.Namespace) -> int:
         # No envelopes yet — not a hard failure for dry-run document path
         return 0 if dry_run else 1
     return 1
+
+
+def cmd_ask(args: argparse.Namespace) -> int:
+    """User-invoked trusted broker for external advisor CLIs (never product executor)."""
+    from omg_cli.ask import run_ask_cli
+
+    prompt_parts = list(args.prompt or [])
+    prompt = " ".join(prompt_parts).strip()
+    if getattr(args, "prompt_file", None):
+        pfile = Path(args.prompt_file)
+        try:
+            file_text = pfile.read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"omg ask: cannot read --prompt-file: {exc}", file=sys.stderr)
+            return 2
+        prompt = (file_text + ("\n" + prompt if prompt else "")).strip()
+    if not prompt:
+        print("omg ask: prompt text required (args or --prompt-file)", file=sys.stderr)
+        return 2
+
+    timeout = getattr(args, "timeout", None)
+    if timeout is not None:
+        timeout = float(timeout)
+
+    files = list(getattr(args, "files", None) or [])
+    extra = list(getattr(args, "extra", None) or [])
+    out = getattr(args, "out", None)
+    cwd = getattr(args, "cwd", None)
+
+    return run_ask_cli(
+        args.provider,
+        prompt,
+        root=_project_root(),
+        cwd=Path(cwd).resolve() if cwd else None,
+        timeout=timeout,
+        max_bytes=int(getattr(args, "max_bytes", 512 * 1024)),
+        out=Path(out) if out else None,
+        run_id=getattr(args, "run_id", None),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        model=getattr(args, "model", None),
+        extra=extra or None,
+        write_json=bool(getattr(args, "json", True)),
+        files=files or None,
+    )
+
+
+def cmd_pipeline(args: argparse.Namespace) -> int:
+    """AUTO_PILOT-like FSM: ralplan → implement → dual_review → accept."""
+    from omg_cli.pipeline import run_pipeline
+
+    goal = " ".join(args.goal or []).strip()
+    if not goal and not getattr(args, "resume", None):
+        print("omg pipeline: goal text required (unless --resume)", file=sys.stderr)
+        return 2
+
+    timeout = getattr(args, "timeout", None)
+    if timeout is not None:
+        timeout = float(timeout)
+
+    require_acceptance = True
+    if getattr(args, "no_require_acceptance", False):
+        require_acceptance = False
+    if getattr(args, "require_acceptance", False):
+        require_acceptance = True
+
+    dual = True
+    if getattr(args, "no_dual_review", False):
+        dual = False
+    if getattr(args, "dual_review", False):
+        dual = True
+
+    return run_pipeline(
+        goal or "(resume)",
+        root=_project_root(),
+        implement=str(getattr(args, "implement", "ralph") or "ralph"),
+        max_plan_rounds=int(getattr(args, "max_plan_rounds", 3) or 3),
+        max_iter=int(getattr(args, "max_iter", 3) or 3),
+        skip_plan=bool(getattr(args, "skip_plan", False)),
+        plan_only=bool(getattr(args, "plan_only", False)),
+        dual_review=dual,
+        require_acceptance=require_acceptance,
+        yolo=bool(getattr(args, "yolo", False)),
+        safe=bool(getattr(args, "safe", False)),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        timeout=timeout,
+        resume_run_id=getattr(args, "resume", None),
+        force=bool(getattr(args, "force", False)),
+    )
+
+
+def cmd_dual_review(args: argparse.Namespace) -> int:
+    """Grok-native critic→verifier. Does NOT set verified."""
+    from omg_cli.dual_review import run_dual_review_cli
+
+    goal = " ".join(args.goal or []).strip()
+    run_id = getattr(args, "run_id", None)
+    if not goal and not run_id:
+        print(
+            "omg dual-review: goal text required (or pass --run with existing goal)",
+            file=sys.stderr,
+        )
+        return 2
+    if not goal:
+        from omg_cli.state import load_run
+
+        data = load_run(_project_root(), run_id)
+        goal = (data or {}).get("goal") or "(dual-review)"
+
+    timeout = getattr(args, "timeout", None)
+    if timeout is not None:
+        timeout = float(timeout)
+
+    return run_dual_review_cli(
+        goal,
+        root=_project_root(),
+        run_id=run_id,
+        dry_run=bool(getattr(args, "dry_run", False)),
+        timeout=timeout,
+        yolo=bool(getattr(args, "yolo", False)),
+        safe=bool(getattr(args, "safe", False)),
+        force=bool(getattr(args, "force", False)),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -267,6 +447,35 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="validate/freeze only; do not exec acceptance commands",
     )
+    p_accept.add_argument(
+        "--review",
+        dest="review",
+        action="store_true",
+        help="print frozen commands; require --yes to execute",
+    )
+    p_accept.add_argument(
+        "--yes",
+        dest="yes",
+        action="store_true",
+        help="confirm execution (required with --review or non-tty stdin)",
+    )
+    p_accept.add_argument(
+        "--allow-cmd",
+        dest="allow_cmd",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="extend acceptance basename allowlist (repeatable)",
+    )
+    p_accept.add_argument(
+        "--no-allowlist",
+        dest="no_allowlist",
+        action="store_true",
+        help=(
+            "DANGEROUS: skip positive allowlist (shells + always-deny bins "
+            "like claude/rm still blocked)"
+        ),
+    )
     p_accept.set_defaults(func=cmd_accept)
 
     p_integrate = sub.add_parser(
@@ -333,6 +542,208 @@ def build_parser() -> argparse.ArgumentParser:
             ),
         )
         p.set_defaults(func=cmd_mode)
+
+    # --- Phase 2: ask / pipeline / dual-review ---
+    p_ask = sub.add_parser(
+        "ask",
+        parents=[common],
+        help="trusted user broker for external advisors (codex/claude/gemini)",
+    )
+    p_ask.add_argument(
+        "provider",
+        help="provider: codex | claude (fable) | gemini (optional)",
+    )
+    p_ask.add_argument("prompt", nargs="*", help="prompt text")
+    p_ask.add_argument(
+        "--prompt-file",
+        dest="prompt_file",
+        default=None,
+        help="read prompt from file (appended with positional prompt)",
+    )
+    p_ask.add_argument(
+        "--file",
+        dest="files",
+        action="append",
+        default=[],
+        help="extra context file to inline (repeatable)",
+    )
+    p_ask.add_argument("--cwd", dest="cwd", default=None, help="child cwd (default: project root)")
+    p_ask.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=float,
+        default=600.0,
+        help="seconds (default 600; 0 = unlimited)",
+    )
+    p_ask.add_argument(
+        "--max-bytes",
+        dest="max_bytes",
+        type=int,
+        default=512 * 1024,
+        help="truncate captured output (default 512KiB)",
+    )
+    p_ask.add_argument(
+        "--out",
+        dest="out",
+        default=None,
+        help="artifact path (default .omg/artifacts/ask-<ts>-<provider>.md)",
+    )
+    p_ask.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="optional existing run_id to link artifact",
+    )
+    p_ask.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="print argv + env keys; do not exec provider",
+    )
+    p_ask.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        default=True,
+        help="write sidecar meta JSON (default on)",
+    )
+    p_ask.add_argument("--model", dest="model", default=None, help="optional model pin")
+    p_ask.add_argument(
+        "--extra",
+        dest="extra",
+        action="append",
+        default=[],
+        help="passthrough arg after fixed template (deny elevation flags)",
+    )
+    p_ask.set_defaults(func=cmd_ask)
+
+    p_pipe = sub.add_parser(
+        "pipeline",
+        parents=[common],
+        help="plan → implement → dual-review → accept (Grok-native FSM)",
+    )
+    p_pipe.add_argument("goal", nargs="*", help="goal text")
+    p_pipe.add_argument(
+        "--plan-only",
+        dest="plan_only",
+        action="store_true",
+        help="stop after ralplan accepted",
+    )
+    p_pipe.add_argument(
+        "--skip-plan",
+        dest="skip_plan",
+        action="store_true",
+        help="start at implement (user already has a plan)",
+    )
+    p_pipe.add_argument(
+        "--implement",
+        dest="implement",
+        choices=("ralph", "ulw"),
+        default="ralph",
+        help="implement stage mode (default: ralph)",
+    )
+    p_pipe.add_argument(
+        "--max-plan-rounds",
+        dest="max_plan_rounds",
+        type=int,
+        default=3,
+        help="ralplan max_rounds (default 3)",
+    )
+    p_pipe.add_argument(
+        "--max-iter",
+        dest="max_iter",
+        type=int,
+        default=3,
+        help="ralph max_iter / ulw iters (default 3)",
+    )
+    p_pipe.add_argument(
+        "--require-acceptance",
+        dest="require_acceptance",
+        action="store_true",
+        default=False,
+        help="exit non-zero if not verified (default on)",
+    )
+    p_pipe.add_argument(
+        "--no-require-acceptance",
+        dest="no_require_acceptance",
+        action="store_true",
+        default=False,
+        help="allow completed-without-verified exit 0",
+    )
+    p_pipe.add_argument(
+        "--dual-review",
+        dest="dual_review",
+        action="store_true",
+        default=False,
+        help="enable dual-review stage (default on unless --no-dual-review)",
+    )
+    p_pipe.add_argument(
+        "--no-dual-review",
+        dest="no_dual_review",
+        action="store_true",
+        default=False,
+        help="skip Grok-native dual-review stage",
+    )
+    p_pipe.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=float,
+        default=None,
+        help="seconds per grok launch",
+    )
+    p_pipe.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="FSM + argv artifacts only; no live grok",
+    )
+    p_pipe.add_argument(
+        "--resume",
+        dest="resume",
+        default=None,
+        metavar="RUN_ID",
+        help="resume pipeline from pipeline.json stage",
+    )
+    p_pipe.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="supersede active run when creating",
+    )
+    p_pipe.set_defaults(func=cmd_pipeline)
+
+    p_dual = sub.add_parser(
+        "dual-review",
+        parents=[common],
+        help="Grok-native critic→verifier (does not set verified)",
+    )
+    p_dual.add_argument("goal", nargs="*", help="goal / review scope")
+    p_dual.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="attach to existing run_id (or create dual-review run)",
+    )
+    p_dual.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="write stage prompts only; no grok exec",
+    )
+    p_dual.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=float,
+        default=None,
+        help="seconds per grok launch",
+    )
+    p_dual.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="supersede active run when creating",
+    )
+    p_dual.set_defaults(func=cmd_dual_review)
 
     return parser
 

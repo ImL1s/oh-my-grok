@@ -309,13 +309,64 @@ def _commit_exists(root: Path, sha: str) -> bool:
     return r.returncode == 0
 
 
-def _ensure_commit_reachable(root: Path, head_sha: str, worktree_path: Path) -> None:
-    """Make ``head_sha`` available in ``root``'s object store if needed."""
-    if _commit_exists(root, head_sha):
+def worktree_path_allowed(root: Path, worktree: Path) -> bool:
+    """True if *worktree* resolves under project root or ``root/.omg/worktrees``.
+
+    Absolute paths outside these trees are rejected to prevent envelope
+    path-injection (``worktree_path: /etc`` etc.).
+    """
+    root_r = Path(root).resolve()
+    try:
+        wt_r = Path(worktree).resolve()
+    except (OSError, RuntimeError):
+        return False
+    allowed_roots = (root_r, (root_r / ".omg" / "worktrees").resolve())
+    for base in allowed_roots:
+        try:
+            wt_r.relative_to(base)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def assert_worktree_path_allowed(root: Path, worktree: Path) -> Path:
+    """Resolve *worktree* and raise ``IntegrateError`` if outside whitelist."""
+    root = Path(root).resolve()
+    wt = Path(worktree)
+    if not wt.is_absolute():
+        wt = (root / wt).resolve()
+    else:
+        try:
+            wt = wt.resolve()
+        except (OSError, RuntimeError) as exc:
+            raise IntegrateError(f"worktree_path not resolvable: {worktree}: {exc}") from exc
+    if not worktree_path_allowed(root, wt):
+        raise IntegrateError(
+            f"worktree_path outside allowlist (must be under project root or "
+            f".omg/worktrees): {wt}"
+        )
+    return wt
+
+
+def _ensure_commit_reachable(
+    root: Path,
+    head_sha: str,
+    worktree_path: Path,
+    *,
+    base_sha: str | None = None,
+) -> None:
+    """Make ``head_sha`` (and optional ``base_sha``) available in ``root``."""
+    need = [head_sha]
+    if base_sha and base_sha != head_sha:
+        need.append(base_sha)
+    missing = [s for s in need if not _commit_exists(root, s)]
+    if not missing:
         return
     if not worktree_path.is_dir():
         raise IntegrateError(
-            f"worktree_path does not exist and head_sha not in repo: {worktree_path}"
+            f"worktree_path does not exist and commit(s) not in repo: "
+            f"{worktree_path} missing={missing}"
         )
     # Fetch objects from the worker worktree/clone into the leader.
     # Works for linked worktrees (usually already present) and separate clones.
@@ -336,21 +387,49 @@ def _ensure_commit_reachable(root: Path, head_sha: str, worktree_path: Path) -> 
             raise IntegrateError(
                 f"cannot obtain head_sha={head_sha} from worktree {worktree_path}: {err}"
             )
+    if base_sha and base_sha != head_sha and not _commit_exists(root, base_sha):
+        r3 = _run_git(
+            ["fetch", "--no-tags", str(worktree_path), base_sha],
+            cwd=root,
+            timeout=120.0,
+        )
+        if r3.returncode != 0 or not _commit_exists(root, base_sha):
+            err = (r3.stderr or "").strip()
+            raise IntegrateError(
+                f"cannot obtain base_sha={base_sha} from worktree {worktree_path}: {err}"
+            )
 
 
-def _cherry_pick(root: Path, head_sha: str) -> None:
-    """Cherry-pick ``head_sha`` onto leader. Abort and raise on conflict."""
-    r = _run_git(
-        ["cherry-pick", "--allow-empty", head_sha],
-        cwd=root,
-        timeout=120.0,
-    )
+def _cherry_pick(
+    root: Path,
+    head_sha: str,
+    *,
+    base_sha: str | None = None,
+) -> str:
+    """Cherry-pick worker commits onto leader. Abort and raise on conflict.
+
+    When ``base_sha`` is set and differs from ``head_sha``, picks the range
+    ``base_sha..head_sha`` (all commits after base up to head). Otherwise picks
+    the single ``head_sha`` commit.
+
+    Returns a label describing what was picked (for result entries).
+    """
+    if base_sha and base_sha.lower() != head_sha.lower():
+        rev = f"{base_sha}..{head_sha}"
+        label = rev
+        args = ["cherry-pick", "--allow-empty", rev]
+    else:
+        rev = head_sha
+        label = head_sha
+        args = ["cherry-pick", "--allow-empty", head_sha]
+
+    r = _run_git(args, cwd=root, timeout=120.0)
     if r.returncode == 0:
-        return
+        return label
     # Conflict or other failure — leave tree resolvable but abort the pick
     _run_git(["cherry-pick", "--abort"], cwd=root, timeout=30.0)
     err = (r.stderr or r.stdout or "cherry-pick failed").strip()
-    raise IntegrateError(f"cherry-pick conflict or failure for {head_sha}: {err}")
+    raise IntegrateError(f"cherry-pick conflict or failure for {label}: {err}")
 
 
 def _reset_hard(root: Path, sha: str) -> None:
@@ -478,21 +557,47 @@ def integrate_results(
             result["error"] = entry["error"]
             break
 
-        worktree = Path(env["worktree_path"])
-        if not worktree.is_absolute():
-            worktree = (root / worktree).resolve()
+        try:
+            worktree = assert_worktree_path_allowed(root, env["worktree_path"])
+        except IntegrateError as exc:
+            entry["status"] = "worktree_path_denied"
+            entry["error"] = str(exc)
+            result["applied"].append(entry)
+            result["status"] = "failed"
+            result["failed_task"] = task_id
+            result["error"] = str(exc)
+            break
+
+        entry["worktree_path"] = str(worktree)
+        pick_base = env.get("base_sha")
+        if isinstance(pick_base, str) and pick_base.strip():
+            entry["pick"] = (
+                f"{pick_base}..{env['head_sha']}"
+                if pick_base.lower() != env["head_sha"].lower()
+                else env["head_sha"]
+            )
+        else:
+            entry["pick"] = env["head_sha"]
 
         if dry_run:
             entry["status"] = "dry_run_ok"
-            entry["worktree_path"] = str(worktree)
             result["applied"].append(entry)
             continue
 
         try:
-            _ensure_commit_reachable(root, env["head_sha"], worktree)
-            _cherry_pick(root, env["head_sha"])
+            _ensure_commit_reachable(
+                root,
+                env["head_sha"],
+                worktree,
+                base_sha=pick_base if isinstance(pick_base, str) else None,
+            )
+            picked = _cherry_pick(
+                root,
+                env["head_sha"],
+                base_sha=pick_base if isinstance(pick_base, str) else None,
+            )
             entry["status"] = "applied"
-            entry["worktree_path"] = str(worktree)
+            entry["pick"] = picked
             result["applied"].append(entry)
             applied_ok_count += 1
         except IntegrateError as exc:
