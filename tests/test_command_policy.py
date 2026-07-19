@@ -132,3 +132,53 @@ def test_glued_python_c_denied_even_with_no_allowlist():
         check_command_policy(["python3", "-cimport os"], no_allowlist=True, project_root=root)
     with pytest.raises(CommandPolicyError):
         check_command_policy(["python3", "-c", "print(1)"], no_allowlist=True, project_root=root)
+
+
+def test_git_safe_subcommands_allowed():
+    check_command_policy(["git", "status"])
+    check_command_policy(["git", "diff", "--stat"])
+    check_command_policy(["git", "rev-parse", "HEAD"])
+    check_command_policy(["git", "log", "-1", "--oneline"])
+
+
+def test_git_destructive_denied():
+    for cmd in (
+        ["git", "clean", "-fdx"],
+        ["git", "push", "origin", "main"],
+        ["git", "reset", "--hard"],
+        ["git", "checkout", "."],
+        ["git", "restore", "."],
+        ["git", "branch", "-D", "x"],
+        ["git", "tag", "-d", "v1"],
+        ["git", "remote", "add", "x", "y"],
+        ["git", "config", "user.email", "x"],
+        ["git", "rebase", "main"],
+        ["git", "merge", "x"],
+    ):
+        with pytest.raises(CommandPolicyError, match="git"):
+            check_command_policy(cmd)
+
+
+def test_make_target_allowlist():
+    check_command_policy(["make", "test"])
+    check_command_policy(["make", "check"])
+    with pytest.raises(CommandPolicyError, match="make"):
+        check_command_policy(["make", "pwn"])
+    with pytest.raises(CommandPolicyError, match="make"):
+        check_command_policy(["make"])
+
+
+def test_cargo_go_dart_flutter_grammar():
+    check_command_policy(["cargo", "test"])
+    check_command_policy(["cargo", "check"])
+    with pytest.raises(CommandPolicyError, match="cargo"):
+        check_command_policy(["cargo", "run"])
+    check_command_policy(["go", "test", "./..."])
+    with pytest.raises(CommandPolicyError, match="go"):
+        check_command_policy(["go", "run", "."])
+    check_command_policy(["dart", "test"])
+    with pytest.raises(CommandPolicyError, match="dart"):
+        check_command_policy(["dart", "run", "bin/x.dart"])
+    check_command_policy(["flutter", "test"])
+    with pytest.raises(CommandPolicyError, match="flutter"):
+        check_command_policy(["flutter", "run"])

@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 from typing import Iterable, Sequence
 
-POLICY_VERSION = "1"
+POLICY_VERSION = "2"
 
 # Exact: python | python2 | python3 | python2.N | python3.N
 # Rejects python3evil, python3-config, python3foo, etc.
@@ -96,6 +96,66 @@ _PYTHON_M_ALLOWED: frozenset[str] = frozenset({"pytest", "unittest"})
 # npm subcommands allowed without --allow-cmd.
 # Forms: npm test [args], npm run test [args], npm run pytest [args]
 _NPM_RUN_SCRIPTS: frozenset[str] = frozenset({"test", "pytest"})
+
+# git: read-only inspection subcommands; destructive ops denied explicitly.
+_GIT_ALLOWED_SUB: frozenset[str] = frozenset(
+    {
+        "status",
+        "diff",
+        "log",
+        "show",
+        "rev-parse",
+        "rev-list",
+        "describe",
+        "ls-files",
+        "ls-tree",
+        "cat-file",
+        "branch",  # listing only; destructive flags checked below
+        "tag",  # listing; -d denied below
+        "stash",  # list/show only; drop/clear denied
+    }
+)
+_GIT_DENY_SUB: frozenset[str] = frozenset(
+    {
+        "clean",
+        "push",
+        "reset",
+        "checkout",
+        "restore",
+        "rebase",
+        "merge",
+        "pull",
+        "fetch",
+        "remote",
+        "config",
+        "add",
+        "commit",
+        "am",
+        "cherry-pick",
+        "revert",
+        "worktree",
+        "filter-branch",
+        "filter-repo",
+        "gc",
+        "reflog",
+        "update-ref",
+        "symbolic-ref",
+        "init",
+        "clone",
+        "submodule",
+    }
+)
+_MAKE_ALLOWED_TARGETS: frozenset[str] = frozenset(
+    {"test", "check", "lint", "unit", "units", "pytest", "ci", "verify"}
+)
+_CARGO_ALLOWED: frozenset[str] = frozenset({"test", "check", "clippy", "fmt", "build"})
+_CARGO_DENY: frozenset[str] = frozenset({"run", "install", "publish", "bench", "script"})
+_GO_ALLOWED: frozenset[str] = frozenset({"test", "vet", "fmt", "version"})
+_GO_DENY: frozenset[str] = frozenset({"run", "generate", "get", "install", "mod"})
+_DART_ALLOWED: frozenset[str] = frozenset({"test", "analyze", "format"})
+_DART_DENY: frozenset[str] = frozenset({"run", "compile", "pub"})
+# flutter: test|analyze only (no pub/run)
+_FLUTTER_ALLOWED: frozenset[str] = frozenset({"test", "analyze"})
 
 
 class CommandPolicyError(ValueError):
@@ -303,6 +363,94 @@ def _check_npm_argv(cmd: Sequence[str], *, where: str) -> None:
     )
 
 
+def _check_git_argv(cmd: Sequence[str], *, where: str) -> None:
+    """git: read-only status/diff/log/rev-parse family; mutate ops denied."""
+    if len(cmd) < 2:
+        raise CommandPolicyError(f"{where}: git requires a subcommand")
+    sub = cmd[1]
+    if sub in _GIT_DENY_SUB:
+        raise CommandPolicyError(
+            f"{where}: git {sub!r} denied for acceptance "
+            "(read-only git status/diff/log/rev-parse only by default)"
+        )
+    if sub not in _GIT_ALLOWED_SUB:
+        raise CommandPolicyError(
+            f"{where}: git subcommand {sub!r} not in acceptance allowlist"
+        )
+    # Extra flag denials for borderline subs
+    if sub == "branch" and any(x in cmd[2:] for x in ("-D", "-d", "-m", "-M")):
+        raise CommandPolicyError(f"{where}: git branch mutate flags denied")
+    if sub == "tag" and any(x in cmd[2:] for x in ("-d", "-f", "-a", "-s")):
+        raise CommandPolicyError(f"{where}: git tag mutate flags denied")
+    if sub == "stash" and any(
+        x in cmd[2:] for x in ("drop", "clear", "pop", "apply", "push")
+    ):
+        raise CommandPolicyError(f"{where}: git stash mutate denied")
+    # No -c config injection
+    if "-c" in cmd[1:]:
+        raise CommandPolicyError(f"{where}: git -c config injection denied")
+
+
+def _check_make_argv(cmd: Sequence[str], *, where: str) -> None:
+    """make: only known test/lint/ci targets; bare make denied."""
+    if len(cmd) < 2:
+        raise CommandPolicyError(f"{where}: make requires an allowed target")
+    # skip make flags like -j4 -C dir — only allow when a target token is known
+    targets = [t for t in cmd[1:] if not t.startswith("-")]
+    if not targets:
+        raise CommandPolicyError(f"{where}: make requires an allowed target name")
+    for t in targets:
+        if t not in _MAKE_ALLOWED_TARGETS:
+            raise CommandPolicyError(
+                f"{where}: make target {t!r} denied "
+                f"(allowed: {', '.join(sorted(_MAKE_ALLOWED_TARGETS))})"
+            )
+
+
+def _check_cargo_argv(cmd: Sequence[str], *, where: str) -> None:
+    """cargo: test/check/clippy/fmt/build; deny run/install/publish."""
+    if len(cmd) < 2:
+        raise CommandPolicyError(f"{where}: cargo requires a subcommand")
+    sub = cmd[1]
+    if sub in _CARGO_DENY:
+        raise CommandPolicyError(f"{where}: cargo {sub!r} denied for acceptance")
+    if sub not in _CARGO_ALLOWED:
+        raise CommandPolicyError(f"{where}: cargo subcommand {sub!r} not allowed")
+
+
+def _check_go_argv(cmd: Sequence[str], *, where: str) -> None:
+    """go: test/vet/fmt/version; deny run/generate/get/install/mod."""
+    if len(cmd) < 2:
+        raise CommandPolicyError(f"{where}: go requires a subcommand")
+    sub = cmd[1]
+    if sub in _GO_DENY:
+        raise CommandPolicyError(f"{where}: go {sub!r} denied for acceptance")
+    if sub not in _GO_ALLOWED:
+        raise CommandPolicyError(f"{where}: go subcommand {sub!r} not allowed")
+
+
+def _check_dart_argv(cmd: Sequence[str], *, where: str) -> None:
+    """dart: test/analyze/format; deny run/compile/pub."""
+    if len(cmd) < 2:
+        raise CommandPolicyError(f"{where}: dart requires a subcommand")
+    sub = cmd[1]
+    if sub in _DART_DENY:
+        raise CommandPolicyError(f"{where}: dart {sub!r} denied for acceptance")
+    if sub not in _DART_ALLOWED:
+        raise CommandPolicyError(f"{where}: dart subcommand {sub!r} not allowed")
+
+
+def _check_flutter_argv(cmd: Sequence[str], *, where: str) -> None:
+    """flutter: only test|analyze."""
+    if len(cmd) < 2:
+        raise CommandPolicyError(f"{where}: flutter requires a subcommand")
+    sub = cmd[1]
+    if sub not in _FLUTTER_ALLOWED:
+        raise CommandPolicyError(
+            f"{where}: flutter {sub!r} denied (only test|analyze allowed)"
+        )
+
+
 def check_command_policy(
     cmd: Sequence[str],
     *,
@@ -387,6 +535,18 @@ def check_command_policy(
         _check_node_argv(cmd, where=where)
     elif base == "npm":
         _check_npm_argv(cmd, where=where)
+    elif base == "git":
+        _check_git_argv(cmd, where=where)
+    elif base == "make":
+        _check_make_argv(cmd, where=where)
+    elif base == "cargo":
+        _check_cargo_argv(cmd, where=where)
+    elif base == "go":
+        _check_go_argv(cmd, where=where)
+    elif base == "dart":
+        _check_dart_argv(cmd, where=where)
+    elif base == "flutter":
+        _check_flutter_argv(cmd, where=where)
 
 
 def check_commands_policy(
