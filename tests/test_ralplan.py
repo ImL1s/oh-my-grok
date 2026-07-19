@@ -97,6 +97,33 @@ def test_ralplan_ro_stages_disallow_shell_in_argv(monkeypatch, tmp_path):
         assert has is expect_disallow, f"{stage}: disallow={has}"
 
 
+def test_ralplan_ro_stages_ignore_yolo(monkeypatch, tmp_path):
+    """yolo=True must not elevate critic/verifier; draft/revise may elevate."""
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no popen")),
+    )
+    rc = run_ralplan(
+        "plan Y", root=tmp_path, max_rounds=1, dry_run=True, yolo=True
+    )
+    assert rc == 1
+    active = load_active_run(tmp_path)
+    rid = active["run_id"]
+    sdir = tmp_path / ".omg" / "state" / "runs" / rid / "stages"
+    for stage in ("critic", "verifier"):
+        argv = json.loads(
+            (sdir / f"{stage}-01.argv.json").read_text(encoding="utf-8")
+        )
+        joined = " ".join(argv)
+        assert "bypassPermissions" not in joined, stage
+        assert "--always-approve" not in argv, stage
+        assert argv[argv.index("--permission-mode") + 1] == "plan", stage
+    # draft may still carry parent yolo elevation
+    draft = json.loads((sdir / "draft-01.argv.json").read_text(encoding="utf-8"))
+    assert "bypassPermissions" in " ".join(draft)
+
+
 def test_dry_run_without_approve_fails_after_max_rounds(monkeypatch, tmp_path):
     """dry_run records stages; stubs lack APPROVE → failed after max_rounds."""
     monkeypatch.setattr(

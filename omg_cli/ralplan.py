@@ -341,19 +341,20 @@ def _execute_stage(
     (run_dir / "last_stage_prompt.md").write_text(prompt, encoding="utf-8")
     (run_dir / "last_stage").write_text(f"{stage}\n", encoding="utf-8")
 
-    # Critic/verifier: strip shell at argv (defense-in-depth). Draft/revise may
-    # keep shell off by default too for plan-only work, but only RO stages force it.
+    # Critic/verifier: always RO — ignore parent yolo, force safe + no shell.
+    # Draft/revise may still inherit parent yolo/safe.
+    ro = stage in READ_ONLY_STAGES
     argv = build_grok_argv(
         mode="ralplan",
         goal=goal,
-        yolo=yolo,
+        yolo=False if ro else yolo,
         cwd=root,
-        safe=safe,
+        safe=True if ro else safe,
         extra=extra,
         run_id=run_id,
         skill_root=plugin_root(),
         prompt=prompt,
-        disallow_shell=(stage in READ_ONLY_STAGES),
+        disallow_shell=ro,
     )
 
     # Stage-scoped argv record (full last_argv still written by _launch_grok)

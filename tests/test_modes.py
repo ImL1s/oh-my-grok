@@ -70,7 +70,7 @@ def test_safe_without_yolo_not_elevated():
     assert "--always-approve" not in argv
     assert "--permission-mode" in argv
     pm_idx = argv.index("--permission-mode")
-    assert argv[pm_idx + 1] == "default"
+    assert argv[pm_idx + 1] == "plan"
 
 
 def test_yolo_ignored_when_safe_also_set():
@@ -81,7 +81,7 @@ def test_yolo_ignored_when_safe_also_set():
     assert "--always-approve" not in argv
     assert "--permission-mode" in argv
     pm_idx = argv.index("--permission-mode")
-    assert argv[pm_idx + 1] == "default"
+    assert argv[pm_idx + 1] == "plan"
 
 
 def test_unknown_mode_raises():

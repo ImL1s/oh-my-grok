@@ -344,7 +344,34 @@ def test_allowlist_allows_pytest_and_true():
     check_command_allowlist(["false"])
     check_command_allowlist(["pytest", "tests/", "-q"])
     check_command_allowlist(["python3", "-c", "pass"])
+    check_command_allowlist(["python3.12", "-c", "pass"])
     check_command_allowlist(["/usr/bin/pytest", "-q"])  # path basename
+
+
+def test_allowlist_python_versioned_only_not_prefix():
+    """python3.12 ok; python3evil / python3-config rejected (no startswith leak)."""
+    from omg_cli.acceptance import (
+        CommandAllowlistError,
+        _basename_allowed,
+        check_command_allowlist,
+        resolve_allowlist,
+    )
+
+    allowed = resolve_allowlist()
+    assert _basename_allowed("python3.12", allowed) is True
+    assert _basename_allowed("python3", allowed) is True
+    assert _basename_allowed("python", allowed) is True
+    assert _basename_allowed("python2.7", allowed) is True
+    assert _basename_allowed("python3evil", allowed) is False
+    assert _basename_allowed("python3-config", allowed) is False
+    assert _basename_allowed("python3foo", allowed) is False
+    assert _basename_allowed("python3.", allowed) is False
+
+    check_command_allowlist(["python3.12", "-c", "pass"])
+    with pytest.raises(CommandAllowlistError, match="not in acceptance allowlist"):
+        check_command_allowlist(["python3evil", "-c", "pass"])
+    with pytest.raises(CommandAllowlistError, match="not in acceptance allowlist"):
+        check_command_allowlist(["python3-config", "--help"])
 
 
 def test_allowlist_extra_allow_and_no_allowlist():

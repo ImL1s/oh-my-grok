@@ -197,7 +197,7 @@ omg [-h] [--safe] [--yolo] {setup,doctor,state,cancel,accept,integrate,ulw,ralph
 |------|---------|
 | `--dry-run` | Create run state + write `last_argv.json` / prompt; **do not** exec `grok` (mode subcommands) |
 | `--yolo` | Elevated permissions for mode launchers (maps to Grok `--permission-mode bypassPermissions` + `--always-approve`; off by default) |
-| `--safe` | Prefer non-elevated defaults (`--permission-mode default`); if both `--yolo` and `--safe`, **safe wins** (no elevation) |
+| `--safe` | Prefer non-elevated defaults (`--permission-mode plan`); if both `--yolo` and `--safe`, **safe wins** (no elevation). dual-review / ralplan critic+verifier always force safe (ignore parent `--yolo`) |
 | `--max-iter N` | Max iterations (`ralph` default **3**; `ulw` default **1**; `ralplan` = max_rounds default **3**) |
 | `--timeout SEC` | Per-launch grok timeout (default **3600**); `0` = unlimited |
 

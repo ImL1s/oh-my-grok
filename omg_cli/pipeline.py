@@ -451,6 +451,9 @@ def run_pipeline(
 
             if verdict == "APPROVE":
                 break
+            # dry_run stubs omit APPROVE (NEEDS_REVIEW) — continue FSM like plan dry_run.
+            if dry_run:
+                break
             if verdict == "FAILED":
                 state["status"] = "failed"
                 state["stage"] = "failed"

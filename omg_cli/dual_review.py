@@ -252,13 +252,13 @@ def _execute_dual_stage(
     (run_dir / "last_stage").write_text(f"dual-{role}\n", encoding="utf-8")
 
     # Use ralplan mode skill slot only for argv machinery; prompt is fully custom.
-    # Critic/verifier are read-only: strip shell at argv level (defense-in-depth).
+    # Critic/verifier are always read-only: parent yolo/safe args are ignored.
     argv = build_grok_argv(
         mode="ralplan",
         goal=goal,
-        yolo=yolo,
+        yolo=False,
         cwd=root,
-        safe=safe,
+        safe=True,
         extra=extra,
         run_id=run_id,
         skill_root=plugin_root(),
@@ -280,13 +280,14 @@ def _execute_dual_stage(
 
     art = stage_artifact_path(root, run_id, role, round_n)
     if not art.is_file():
-        if dry_run and role == "verifier":
-            # dry_run: allow pipeline FSM to proceed without fake product verify
+        # dry_run / missing output: never emit APPROVE — only real verifier
+        # artifacts may accept. Use NEEDS_REVIEW so parse_verdict → UNKNOWN.
+        if dry_run:
             stub = (
                 f"# dual-review {role} (dry_run stub)\n"
                 f"run_id: {run_id}\nround: {round_n}\n\n"
-                "dry_run: no Grok exec. Verdict placeholder: APPROVE\n"
-                "APPROVE\n"
+                "dry_run: no Grok exec. Verdict placeholder: NEEDS_REVIEW\n"
+                "NEEDS_REVIEW\n"
             )
         else:
             stub = (
@@ -418,8 +419,8 @@ def run_dual_review(
     )
     verifier_art = stage_artifact_path(root_path, run_id, "verifier", round_n)
     verdict = parse_verdict_file(verifier_art)
-    if dry_run and verdict == "UNKNOWN":
-        verdict = "APPROVE"  # dry_run progression
+    # dry_run stubs intentionally omit APPROVE (NEEDS_REVIEW → UNKNOWN).
+    # Callers that need FSM progression (pipeline) handle dry_run themselves.
     history.append(
         {
             "stage": "verifier",

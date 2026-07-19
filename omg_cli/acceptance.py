@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Iterable
@@ -218,19 +219,29 @@ def resolve_allowlist(
     return frozenset(allowed)
 
 
+# Exact: python | python2 | python3 | python2.N | python3.N
+# Rejects python3evil, python3-config, python3foo, etc.
+_PYTHON_BIN_RE = re.compile(r"^python([23](\.\d+)?)?$")
+
+
 def _basename_allowed(base: str, allowed: frozenset[str]) -> bool:
-    """True if *base* is in *allowed* or matches a versioned python/python3 binary."""
+    """True if *base* is in *allowed* or a versioned python binary family match.
+
+    Versioned form is only ``python``, ``python2``, ``python3``, or
+    ``python2.N`` / ``python3.N`` (e.g. python3.12). Prefix tricks like
+    ``python3evil`` are rejected.
+    """
     if base in allowed:
         return True
-    # sys.executable is often python3.12 / python3.14 — treat as python3 family
-    if "python3" in allowed and (
-        base.startswith("python3.") or base.startswith("python3-")
-    ):
-        return True
-    if "python" in allowed and base.startswith("python") and base not in SHELL_BASENAMES:
-        # python3.x already handled; allow python2.x / python only if "python" listed
-        if base == "python" or base.startswith("python2") or base.startswith("python3"):
-            return True
+    if not _PYTHON_BIN_RE.match(base):
+        return False
+    # Family membership: versioned bins map to exact allowlist names.
+    if base == "python":
+        return "python" in allowed
+    if base.startswith("python3"):
+        return "python3" in allowed or "python" in allowed
+    if base.startswith("python2"):
+        return "python2" in allowed or "python" in allowed
     return False
 
 

@@ -302,7 +302,8 @@ def build_grok_argv(
     Grok CLI has no bare ``--yolo`` flag. When ``yolo=True`` (and safe is
     not set) we map to ``--permission-mode bypassPermissions`` plus
     ``--always-approve``. **safe wins**: if ``safe=True``, always pass
-    ``--permission-mode default`` even when yolo is also set.
+    ``--permission-mode plan`` even when yolo is also set (read-only /
+    plan permissions; matches critic/verifier agent frontmatter).
 
     Always passes ``--cwd`` when ``cwd`` is known. Headless default
     ``--output-format plain`` (documented Grok flag).
@@ -344,7 +345,7 @@ def build_grok_argv(
 
     # safe wins over yolo for elevation (safer default when both present)
     if safe:
-        argv.extend(["--permission-mode", "default"])
+        argv.extend(["--permission-mode", "plan"])
     elif yolo:
         # Documented mapping: grok has no --yolo; use permission-mode + always-approve
         argv.extend(["--permission-mode", "bypassPermissions"])
