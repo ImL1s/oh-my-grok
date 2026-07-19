@@ -148,8 +148,10 @@ _GIT_DENY_SUB: frozenset[str] = frozenset(
 _MAKE_ALLOWED_TARGETS: frozenset[str] = frozenset(
     {"test", "check", "lint", "unit", "units", "pytest", "ci", "verify"}
 )
-_CARGO_ALLOWED: frozenset[str] = frozenset({"test", "check", "clippy", "fmt", "build"})
-_CARGO_DENY: frozenset[str] = frozenset({"run", "install", "publish", "bench", "script"})
+_CARGO_ALLOWED: frozenset[str] = frozenset({"test", "check", "clippy", "fmt"})
+_CARGO_DENY: frozenset[str] = frozenset(
+    {"run", "install", "publish", "bench", "script", "build"}
+)
 _GO_ALLOWED: frozenset[str] = frozenset({"test", "vet", "fmt", "version"})
 _GO_DENY: frozenset[str] = frozenset({"run", "generate", "get", "install", "mod"})
 _DART_ALLOWED: frozenset[str] = frozenset({"test", "analyze", "format"})
@@ -363,6 +365,27 @@ def _check_npm_argv(cmd: Sequence[str], *, where: str) -> None:
     )
 
 
+def _git_has_positional(cmd: Sequence[str], start: int = 2) -> bool:
+    """True if any non-flag token appears at/after *start*."""
+    return any(not str(x).startswith("-") for x in cmd[start:])
+
+
+def _flag_denied(cmd: Sequence[str], *flags: str, start: int = 1) -> str | None:
+    """Return matching forbidden flag token, including glued short forms."""
+    flag_set = set(flags)
+    for tok in cmd[start:]:
+        if tok in flag_set:
+            return tok
+        for f in flags:
+            if tok.startswith(f + "="):
+                return tok
+            # glued short: -fFILE, -C/tmp (not --file)
+            if len(f) == 2 and f.startswith("-") and not f.startswith("--"):
+                if tok.startswith(f) and len(tok) > 2 and tok[2:3] != "-":
+                    return tok
+    return None
+
+
 def _check_git_argv(cmd: Sequence[str], *, where: str) -> None:
     """git: read-only status/diff/log/rev-parse family; mutate ops denied."""
     if len(cmd) < 2:
@@ -377,25 +400,60 @@ def _check_git_argv(cmd: Sequence[str], *, where: str) -> None:
         raise CommandPolicyError(
             f"{where}: git subcommand {sub!r} not in acceptance allowlist"
         )
-    # Extra flag denials for borderline subs
-    if sub == "branch" and any(x in cmd[2:] for x in ("-D", "-d", "-m", "-M")):
-        raise CommandPolicyError(f"{where}: git branch mutate flags denied")
-    if sub == "tag" and any(x in cmd[2:] for x in ("-d", "-f", "-a", "-s")):
-        raise CommandPolicyError(f"{where}: git tag mutate flags denied")
-    if sub == "stash" and any(
-        x in cmd[2:] for x in ("drop", "clear", "pop", "apply", "push")
-    ):
-        raise CommandPolicyError(f"{where}: git stash mutate denied")
+    # list-only: branch/tag cannot create refs; stash only list|show
+    if sub == "branch":
+        if any(x in cmd[2:] for x in ("-D", "-d", "-m", "-M", "-c", "-C")):
+            raise CommandPolicyError(f"{where}: git branch mutate flags denied")
+        if _git_has_positional(cmd, 2):
+            raise CommandPolicyError(
+                f"{where}: git branch create denied (list-only; no new branch name)"
+            )
+    if sub == "tag":
+        if any(x in cmd[2:] for x in ("-d", "-f", "-a", "-s", "-u", "-m")):
+            raise CommandPolicyError(f"{where}: git tag mutate flags denied")
+        if _git_has_positional(cmd, 2):
+            raise CommandPolicyError(
+                f"{where}: git tag create denied (list-only; no new tag name)"
+            )
+    if sub == "stash":
+        # bare `git stash` ≡ push — deny unless explicit list|show
+        if len(cmd) < 3 or str(cmd[2]).startswith("-"):
+            raise CommandPolicyError(
+                f"{where}: git stash requires list|show "
+                "(bare stash defaults to push)"
+            )
+        action = cmd[2]
+        if action not in ("list", "show"):
+            raise CommandPolicyError(
+                f"{where}: git stash {action!r} denied (only list|show allowed)"
+            )
     # No -c config injection
-    if "-c" in cmd[1:]:
+    if "-c" in cmd[1:] or _flag_denied(cmd, "-c", start=1):
         raise CommandPolicyError(f"{where}: git -c config injection denied")
 
 
 def _check_make_argv(cmd: Sequence[str], *, where: str) -> None:
-    """make: only known test/lint/ci targets; bare make denied."""
+    """make: only known test/lint/ci targets; bare make denied; no -f/-C."""
     if len(cmd) < 2:
         raise CommandPolicyError(f"{where}: make requires an allowed target")
-    # skip make flags like -j4 -C dir — only allow when a target token is known
+    denied = _flag_denied(
+        cmd,
+        "-f",
+        "--file",
+        "--makefile",
+        "-C",
+        "--directory",
+        "-I",
+        "--include-dir",
+        "--eval",
+        start=1,
+    )
+    if denied:
+        raise CommandPolicyError(
+            f"{where}: make flag {denied!r} denied "
+            "(no -f/-C/--file/--directory/--eval overrides)"
+        )
+    # skip make flags like -j4; only allow when a target token is known
     targets = [t for t in cmd[1:] if not t.startswith("-")]
     if not targets:
         raise CommandPolicyError(f"{where}: make requires an allowed target name")
@@ -408,7 +466,7 @@ def _check_make_argv(cmd: Sequence[str], *, where: str) -> None:
 
 
 def _check_cargo_argv(cmd: Sequence[str], *, where: str) -> None:
-    """cargo: test/check/clippy/fmt/build; deny run/install/publish."""
+    """cargo: test/check/clippy/fmt only; deny run/install/publish/build and path overrides."""
     if len(cmd) < 2:
         raise CommandPolicyError(f"{where}: cargo requires a subcommand")
     sub = cmd[1]
@@ -416,10 +474,20 @@ def _check_cargo_argv(cmd: Sequence[str], *, where: str) -> None:
         raise CommandPolicyError(f"{where}: cargo {sub!r} denied for acceptance")
     if sub not in _CARGO_ALLOWED:
         raise CommandPolicyError(f"{where}: cargo subcommand {sub!r} not allowed")
-
-
+    denied = _flag_denied(
+        cmd,
+        "--manifest-path",
+        "--config",
+        "--target-dir",
+        "-C",
+        start=2,
+    )
+    if denied:
+        raise CommandPolicyError(
+            f"{where}: cargo flag {denied!r} denied for acceptance"
+        )
 def _check_go_argv(cmd: Sequence[str], *, where: str) -> None:
-    """go: test/vet/fmt/version; deny run/generate/get/install/mod."""
+    """go: test/vet/fmt/version; deny run/generate/get/install/mod and -exec."""
     if len(cmd) < 2:
         raise CommandPolicyError(f"{where}: go requires a subcommand")
     sub = cmd[1]
@@ -427,7 +495,11 @@ def _check_go_argv(cmd: Sequence[str], *, where: str) -> None:
         raise CommandPolicyError(f"{where}: go {sub!r} denied for acceptance")
     if sub not in _GO_ALLOWED:
         raise CommandPolicyError(f"{where}: go subcommand {sub!r} not allowed")
-
+    denied = _flag_denied(cmd, "-exec", "-toolexec", start=2)
+    if denied:
+        raise CommandPolicyError(
+            f"{where}: go flag {denied!r} denied for acceptance"
+        )
 
 def _check_dart_argv(cmd: Sequence[str], *, where: str) -> None:
     """dart: test/analyze/format; deny run/compile/pub."""

@@ -2,7 +2,11 @@
 """Unit tests for PreToolUse canary classification (no grok)."""
 from __future__ import annotations
 
-from omg_cli.canary_classify import classify_canary, looks_like_denied
+from omg_cli.canary_classify import (
+    classify_canary,
+    looks_like_denied,
+    looks_like_host_deny_signature,
+)
 
 
 def test_real_cli_status():
@@ -20,7 +24,7 @@ def test_real_cli_status():
     assert r["child_real_cli_detected"] is True
 
 
-def test_both_denied_ok():
+def test_both_host_signature_denied_ok():
     msg = "Hook denied: oh-my-grok: external agent CLI blocked\n"
     r = classify_canary(
         parent_out=msg,
@@ -32,8 +36,40 @@ def test_both_denied_ok():
     )
     assert r["status"] == "DENIED_PARENT_AND_CHILD"
     assert r["exit_code"] == 0
-    assert r["parent_denied"] is True
-    assert r["child_denied"] is True
+    assert r["parent_host_signature"] is True
+    assert r["child_host_signature"] is True
+
+
+def test_prose_only_deny_not_suite_green():
+    """Model theater without host signature must not exit 0."""
+    r = classify_canary(
+        parent_out="**Result: tool was denied**\n",
+        parent_err="",
+        child_out="| **denied-or-ran** | **denied** |\n",
+        child_err="",
+        parent_marker=False,
+        child_marker=False,
+    )
+    assert r["status"] == "DENIED_CLAIMED_NO_HOOK_ORACLE"
+    assert r["exit_code"] == 2
+    assert looks_like_host_deny_signature(
+        "**Result: tool was denied**\n", ""
+    ) is False
+
+
+def test_explicit_hook_oracle_flags_pass():
+    r = classify_canary(
+        parent_out="whatever model said",
+        parent_err="",
+        child_out="whatever",
+        child_err="",
+        parent_marker=False,
+        child_marker=False,
+        parent_hook_denied=True,
+        child_hook_denied=True,
+    )
+    assert r["status"] == "DENIED_PARENT_AND_CHILD"
+    assert r["exit_code"] == 0
 
 
 def test_silent_is_inconclusive():
@@ -51,17 +87,19 @@ def test_silent_is_inconclusive():
     assert r["child_denied"] is False
 
 
-def test_tool_was_denied_phrase():
+def test_tool_was_denied_phrase_is_prose_not_host():
     assert looks_like_denied("**Result: tool was denied**\n", "") is True
+    assert looks_like_host_deny_signature("**Result: tool was denied**\n", "") is False
 
 
-def test_report_table_denied():
+def test_report_table_denied_is_prose():
     blob = (
         "| Item | Value |\n"
         "|------|--------|\n"
         "| **denied-or-ran** | **denied** |\n"
     )
     assert looks_like_denied(blob, "") is True
+    assert looks_like_host_deny_signature(blob, "") is False
 
 
 def test_marker_present_shim_ran():

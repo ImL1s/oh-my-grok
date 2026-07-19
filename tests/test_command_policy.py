@@ -173,12 +173,47 @@ def test_cargo_go_dart_flutter_grammar():
     check_command_policy(["cargo", "check"])
     with pytest.raises(CommandPolicyError, match="cargo"):
         check_command_policy(["cargo", "run"])
+    with pytest.raises(CommandPolicyError, match="cargo"):
+        check_command_policy(["cargo", "build"])
+    with pytest.raises(CommandPolicyError, match="cargo"):
+        check_command_policy(["cargo", "test", "--manifest-path", "/tmp/evil/Cargo.toml"])
     check_command_policy(["go", "test", "./..."])
     with pytest.raises(CommandPolicyError, match="go"):
         check_command_policy(["go", "run", "."])
+    with pytest.raises(CommandPolicyError, match="go"):
+        check_command_policy(["go", "test", "-exec", "/tmp/pwn", "./..."])
+    with pytest.raises(CommandPolicyError, match="go"):
+        check_command_policy(["go", "test", "-toolexec", "/tmp/pwn", "./..."])
     check_command_policy(["dart", "test"])
     with pytest.raises(CommandPolicyError, match="dart"):
         check_command_policy(["dart", "run", "bin/x.dart"])
     check_command_policy(["flutter", "test"])
     with pytest.raises(CommandPolicyError, match="flutter"):
         check_command_policy(["flutter", "run"])
+
+
+def test_git_list_only_no_create_or_bare_stash():
+    with pytest.raises(CommandPolicyError, match="git"):
+        check_command_policy(["git", "stash"])  # bare ≡ push
+    with pytest.raises(CommandPolicyError, match="git"):
+        check_command_policy(["git", "stash", "push"])
+    check_command_policy(["git", "stash", "list"])
+    with pytest.raises(CommandPolicyError, match="git"):
+        check_command_policy(["git", "branch", "new-branch"])
+    with pytest.raises(CommandPolicyError, match="git"):
+        check_command_policy(["git", "tag", "v1.0"])
+    check_command_policy(["git", "branch", "-a"])
+    check_command_policy(["git", "tag", "-l"])
+
+
+def test_make_file_and_directory_overrides_denied():
+    with pytest.raises(CommandPolicyError, match="make"):
+        check_command_policy(["make", "-f/tmp/evil.mk", "test"])
+    with pytest.raises(CommandPolicyError, match="make"):
+        check_command_policy(["make", "-f", "/tmp/evil.mk", "test"])
+    with pytest.raises(CommandPolicyError, match="make"):
+        check_command_policy(["make", "-C/tmp", "test"])
+    with pytest.raises(CommandPolicyError, match="make"):
+        check_command_policy(["make", "--directory=/tmp", "test"])
+    with pytest.raises(CommandPolicyError, match="make"):
+        check_command_policy(["make", "--eval=evil", "test"])

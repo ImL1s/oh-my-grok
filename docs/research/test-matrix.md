@@ -1,6 +1,6 @@
 # Test matrix (oh-my-grok)
 
-Last updated: 2026-07-20 · Product version: **0.2.4** (docs only; no version bump from this file)
+Last updated: 2026-07-20 · Product version: **0.2.5** (docs only; no version bump from this file)
 
 **Sources:** multi-agent review `live-gates-multi-agent-review-2026-07-19.md`, plan `docs/superpowers/plans/2026-07-20-live-gates-completeness.md`.
 
