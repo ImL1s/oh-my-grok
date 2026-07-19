@@ -251,7 +251,8 @@ def _execute_dual_stage(
     (run_dir / "last_stage_prompt.md").write_text(prompt, encoding="utf-8")
     (run_dir / "last_stage").write_text(f"dual-{role}\n", encoding="utf-8")
 
-    # Use ralplan mode skill slot only for argv machinery; prompt is fully custom
+    # Use ralplan mode skill slot only for argv machinery; prompt is fully custom.
+    # Critic/verifier are read-only: strip shell at argv level (defense-in-depth).
     argv = build_grok_argv(
         mode="ralplan",
         goal=goal,
@@ -262,6 +263,7 @@ def _execute_dual_stage(
         run_id=run_id,
         skill_root=plugin_root(),
         prompt=prompt,
+        disallow_shell=True,
     )
     argv_path = sdir / f"dual-{role}-{round_n:02d}.argv.json"
     argv_path.write_text(

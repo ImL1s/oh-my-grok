@@ -251,6 +251,32 @@ def build_prompt(
     return "\n".join(parts)
 
 
+# Built-in tools stripped when disallow_shell is active (Grok --disallowed-tools).
+# Do NOT inject this for ulw/ralph leaders — they may need shell for tests via omg CLI
+# coordination. Prefer critic/verifier (read-only stages) and opt-in env.
+DISALLOW_SHELL_TOOLS = "run_terminal_command"
+
+
+def _env_disallow_shell() -> bool:
+    """True when OMG_DISALLOW_SHELL is set to a truthy value (1/true/yes/on)."""
+    raw = (os.environ.get("OMG_DISALLOW_SHELL") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _argv_has_disallowed_tools_flag(argv: Sequence[str]) -> bool:
+    """True if argv already sets --disallowed-tools / --disallowedTools / --deny."""
+    for a in argv:
+        if a in ("--disallowed-tools", "--disallowedTools", "--deny"):
+            return True
+        if isinstance(a, str) and (
+            a.startswith("--disallowed-tools=")
+            or a.startswith("--disallowedTools=")
+            or a.startswith("--deny=")
+        ):
+            return True
+    return False
+
+
 def build_grok_argv(
     mode: str,
     goal: str,
@@ -269,6 +295,7 @@ def build_grok_argv(
     frozen_commands_summary: str | None = None,
     acceptance_result_path: str | None = None,
     output_format: str | None = "plain",
+    disallow_shell: bool = False,
 ) -> list[str]:
     """Build argv for ``grok -p <prompt>``.
 
@@ -279,6 +306,12 @@ def build_grok_argv(
 
     Always passes ``--cwd`` when ``cwd`` is known. Headless default
     ``--output-format plain`` (documented Grok flag).
+
+    ``disallow_shell`` (or env ``OMG_DISALLOW_SHELL=1``): when True and the
+    flag is not already present, inject
+    ``--disallowed-tools run_terminal_command``. Use for dual-review /
+    ralplan critic+verifier stages only — **not** for ulw/ralph leaders
+    (they may need shell; workers rely on capability_mode).
     """
     if mode not in MODE_SKILL_REL:
         raise ValueError(f"unknown mode {mode!r}")
@@ -316,6 +349,13 @@ def build_grok_argv(
         # Documented mapping: grok has no --yolo; use permission-mode + always-approve
         argv.extend(["--permission-mode", "bypassPermissions"])
         argv.append("--always-approve")
+
+    # Defense-in-depth shell clamp (opt-in / stage-specific; never default for leaders)
+    want_disallow = bool(disallow_shell) or _env_disallow_shell()
+    if want_disallow and not _argv_has_disallowed_tools_flag(
+        list(extra) if extra else []
+    ):
+        argv.extend(["--disallowed-tools", DISALLOW_SHELL_TOOLS])
 
     argv.extend(["-p", prompt])
 

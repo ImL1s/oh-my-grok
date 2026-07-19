@@ -89,6 +89,45 @@ def test_unknown_mode_raises():
         build_grok_argv(mode="not-a-mode", goal="x")
 
 
+def test_disallow_shell_injects_disallowed_tools():
+    argv = build_grok_argv(
+        mode="ralplan", goal="review", cwd="/tmp", disallow_shell=True
+    )
+    assert "--disallowed-tools" in argv
+    idx = argv.index("--disallowed-tools")
+    assert "run_terminal_command" in argv[idx + 1]
+
+
+def test_disallow_shell_false_by_default_for_leaders():
+    """ulw/ralph leaders must keep shell (do not strip by default)."""
+    for mode in ("ulw", "ralph"):
+        argv = build_grok_argv(mode=mode, goal="go", cwd="/tmp", disallow_shell=False)
+        assert "--disallowed-tools" not in argv
+
+
+def test_disallow_shell_via_env(monkeypatch):
+    monkeypatch.setenv("OMG_DISALLOW_SHELL", "1")
+    argv = build_grok_argv(mode="ulw", goal="go", cwd="/tmp", disallow_shell=False)
+    assert "--disallowed-tools" in argv
+    monkeypatch.delenv("OMG_DISALLOW_SHELL", raising=False)
+    argv2 = build_grok_argv(mode="ulw", goal="go", cwd="/tmp", disallow_shell=False)
+    assert "--disallowed-tools" not in argv2
+
+
+def test_disallow_shell_skips_when_already_in_extra():
+    argv = build_grok_argv(
+        mode="ralplan",
+        goal="x",
+        cwd="/tmp",
+        disallow_shell=True,
+        extra=["--disallowed-tools", "run_terminal_command,Bash"],
+    )
+    # only one occurrence (from extra, not double-injected)
+    count = sum(1 for a in argv if a == "--disallowed-tools")
+    assert count == 1
+
+
+
 def test_skill_files_exist():
     root = plugin_root()
     for mode, rel in MODE_SKILL_REL.items():

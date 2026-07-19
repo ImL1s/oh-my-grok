@@ -118,3 +118,25 @@ def test_dry_run_cli_path(monkeypatch, tmp_path):
 
     rc = run_dual_review_cli("x", root=tmp_path, dry_run=True)
     assert rc == 0
+
+
+def test_dual_review_argv_disallows_shell(monkeypatch, tmp_path):
+    """Critic/verifier launches inject --disallowed-tools run_terminal_command."""
+    import json
+
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no popen")),
+    )
+    run_dual_review("shell clamp", root=tmp_path, dry_run=True)
+    active = load_active_run(tmp_path)
+    assert active is not None
+    rid = active["run_id"]
+    stages = tmp_path / ".omg" / "state" / "runs" / rid / "stages"
+    for role in ("critic", "verifier"):
+        argv_path = stages / f"dual-{role}-01.argv.json"
+        assert argv_path.is_file(), role
+        argv = json.loads(argv_path.read_text(encoding="utf-8"))
+        assert "--disallowed-tools" in argv
+        assert "run_terminal_command" in argv[argv.index("--disallowed-tools") + 1]

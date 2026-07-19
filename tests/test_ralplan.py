@@ -70,6 +70,33 @@ def test_critic_and_verifier_prompts_force_read_only():
     assert "goal Y" in draft
 
 
+def test_ralplan_ro_stages_disallow_shell_in_argv(monkeypatch, tmp_path):
+    """critic/verifier argv get --disallowed-tools; draft/revise do not."""
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no popen")),
+    )
+    # max_rounds=1: draft, critic, revise, verifier once
+    rc = run_ralplan("plan X", root=tmp_path, max_rounds=1, dry_run=True)
+    assert rc == 1  # no APPROVE
+    active = load_active_run(tmp_path)
+    assert active is not None
+    rid = active["run_id"]
+    sdir = tmp_path / ".omg" / "state" / "runs" / rid / "stages"
+    for stage, expect_disallow in (
+        ("draft", False),
+        ("critic", True),
+        ("revise", False),
+        ("verifier", True),
+    ):
+        argv_path = sdir / f"{stage}-01.argv.json"
+        assert argv_path.is_file(), stage
+        argv = json.loads(argv_path.read_text(encoding="utf-8"))
+        has = "--disallowed-tools" in argv
+        assert has is expect_disallow, f"{stage}: disallow={has}"
+
+
 def test_dry_run_without_approve_fails_after_max_rounds(monkeypatch, tmp_path):
     """dry_run records stages; stubs lack APPROVE → failed after max_rounds."""
     monkeypatch.setattr(
