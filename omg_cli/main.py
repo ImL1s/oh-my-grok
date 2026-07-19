@@ -84,6 +84,31 @@ def cmd_mode(args: argparse.Namespace) -> int:
     if timeout is not None:
         timeout = float(timeout)
 
+    fanout = getattr(args, "fanout", None) or "skill"
+    workers = getattr(args, "workers", None)
+    if fanout == "process":
+        if mode != "ulw":
+            print(
+                f"omg {mode}: --fanout process is only supported for ulw",
+                file=sys.stderr,
+            )
+            return 2
+        from omg_cli.fanout import run_process_fanout
+
+        # require_acceptance: None → False for process fanout unless explicitly set
+        ra = require_acceptance if require_acceptance is not None else False
+        return run_process_fanout(
+            goal,
+            workers=workers,
+            root=_project_root(),
+            yolo=bool(getattr(args, "yolo", False)),
+            safe=bool(getattr(args, "safe", False)),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            timeout=timeout,
+            require_acceptance=bool(ra),
+            force=bool(getattr(args, "force", False)),
+        )
+
     return run_mode(
         mode,
         goal,
@@ -541,6 +566,33 @@ def build_parser() -> argparse.ArgumentParser:
                 "0 = unlimited; dry-run ignores"
             ),
         )
+        if mode == "ulw":
+            p.add_argument(
+                "--fanout",
+                dest="fanout",
+                choices=("skill", "process"),
+                default="skill",
+                help=(
+                    "parallelism path: skill=spawn_subagent in one grok (default); "
+                    "process=N× independent grok -p (no tmux; opt-in)"
+                ),
+            )
+            p.add_argument(
+                "--workers",
+                dest="workers",
+                type=int,
+                default=None,
+                help=(
+                    "process fanout worker count (default 2; hard cap 8 / "
+                    "OMG_MAX_WORKERS); ignored for --fanout skill"
+                ),
+            )
+            p.add_argument(
+                "--force",
+                dest="force",
+                action="store_true",
+                help="supersede active run when creating (process fanout)",
+            )
         p.set_defaults(func=cmd_mode)
 
     # --- Phase 2: ask / pipeline / dual-review ---
