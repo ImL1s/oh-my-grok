@@ -8,7 +8,9 @@ import pytest
 from omg_cli.state import (
     cancel_run,
     create_run,
+    is_stale_run,
     load_active_run,
+    load_run,
     set_verified,
     write_status,
 )
@@ -44,11 +46,69 @@ def test_create_run_mutex_allows_after_terminal(tmp_path):
 
 
 def test_create_run_mutex_force_overrides(tmp_path):
+    """force=True supersedes: cancel/kill old active run before new create."""
     first = create_run(tmp_path, mode="ralph", goal="a")
     write_status(tmp_path, first["run_id"], "running")
     second = create_run(tmp_path, mode="ulw", goal="b", force=True)
     assert second["run_id"] != first["run_id"]
     assert load_active_run(tmp_path)["run_id"] == second["run_id"]
+    # Old run must be cancelled (superseded), not left as running
+    old = load_run(tmp_path, first["run_id"])
+    assert old is not None
+    assert old["status"] == "cancelled"
+
+
+def test_create_run_force_kills_old_pid(tmp_path, monkeypatch):
+    """force supersede best-effort kills old run process group via pid file."""
+    first = create_run(tmp_path, mode="ralph", goal="a")
+    write_status(tmp_path, first["run_id"], "running")
+    pid_path = tmp_path / ".omg" / "state" / "runs" / first["run_id"] / "pid"
+    pid_path.write_text("777001\n", encoding="utf-8")
+
+    killpgs: list[tuple[int, int]] = []
+
+    def fake_killpg(pgid, sig):
+        killpgs.append((pgid, sig))
+        # pretend success
+
+    def fake_kill(pid, sig):
+        # signal 0 existence check: report dead so stale path is exercised;
+        # force supersede still cancels and uses killpg for SIGTERM
+        if sig == 0:
+            raise ProcessLookupError(f"no process {pid}")
+
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr(os, "kill", fake_kill)
+
+    second = create_run(tmp_path, mode="ulw", goal="b", force=True)
+    assert second["run_id"] != first["run_id"]
+    assert load_run(tmp_path, first["run_id"])["status"] == "cancelled"
+    assert any(pg == 777001 and sig == signal.SIGTERM for pg, sig in killpgs)
+
+
+def test_create_run_allows_when_stale_pid_esrch(tmp_path, monkeypatch):
+    """Active non-terminal run with dead pid (ESRCH) may be superseded without force."""
+    first = create_run(tmp_path, mode="ralph", goal="stale")
+    write_status(tmp_path, first["run_id"], "running")
+    pid_path = tmp_path / ".omg" / "state" / "runs" / first["run_id"] / "pid"
+    pid_path.write_text("888002\n", encoding="utf-8")
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            raise ProcessLookupError(f"no process {pid}")
+        raise ProcessLookupError(f"no process {pid}")
+
+    def fake_killpg(pgid, sig):
+        raise ProcessLookupError(f"no pg {pgid}")
+
+    monkeypatch.setattr(os, "kill", fake_kill)
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+
+    assert is_stale_run(tmp_path, first["run_id"]) is True
+    second = create_run(tmp_path, mode="ulw", goal="next")  # no force
+    assert second["run_id"] != first["run_id"]
+    assert load_active_run(tmp_path)["run_id"] == second["run_id"]
+    assert load_run(tmp_path, first["run_id"])["status"] == "cancelled"
 
 
 def test_create_run_mutex_blocks_verifying(tmp_path):

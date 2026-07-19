@@ -49,14 +49,53 @@ def cmd_cancel(args: argparse.Namespace) -> int:
 
     root = _project_root()
     run_id = getattr(args, "run_id", None)
+    grace = float(getattr(args, "grace", 2.0))
     try:
-        cancelled = cancel_run(root, run_id)
+        cancelled = cancel_run(root, run_id, kill_grace_s=grace)
     except FileNotFoundError as e:
         print(f"cancel failed: {e}", file=sys.stderr)
         return 1
     print(f"cancelled run {cancelled['run_id']}")
     print(json.dumps(cancelled, indent=2, ensure_ascii=False))
     return 0
+
+
+def cmd_integrate(args: argparse.Namespace) -> int:
+    """Apply ULW result envelopes (cherry-pick) for active or --run run."""
+    from omg_cli.integrate import integrate_results, result_path
+    from omg_cli.state import load_active_run, load_run
+
+    root = _project_root()
+    run_id = getattr(args, "run_id", None)
+    if not run_id:
+        active = load_active_run(root)
+        if active is None:
+            print("integrate failed: no active run (pass --run ID)", file=sys.stderr)
+            return 1
+        run_id = active["run_id"]
+
+    if load_run(root, run_id) is None:
+        print(f"integrate failed: no run found: {run_id}", file=sys.stderr)
+        return 1
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    try:
+        result = integrate_results(root, run_id, dry_run=dry_run)
+    except (FileNotFoundError, OSError) as exc:
+        print(f"integrate failed: {exc}", file=sys.stderr)
+        return 1
+
+    rpath = result_path(root, run_id)
+    print(f"integrate result: {rpath}")
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+    status = result.get("status")
+    if status == "ok":
+        return 0
+    if status == "missing":
+        # No envelopes yet — not a hard failure for dry document path
+        return 0 if dry_run else 1
+    return 1
 
 
 def cmd_mode(args: argparse.Namespace) -> int:
@@ -148,6 +187,44 @@ def cmd_accept(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_integrate(args: argparse.Namespace) -> int:
+    """Apply ULW result envelopes (cherry-pick) for active or --run run."""
+    from omg_cli.integrate import IntegrateError, integrate_results, result_path
+    from omg_cli.state import load_active_run, load_run
+
+    root = _project_root()
+    run_id = getattr(args, "run_id", None)
+    if not run_id:
+        active = load_active_run(root)
+        if active is None:
+            print("integrate failed: no active run (pass --run ID)", file=sys.stderr)
+            return 1
+        run_id = active["run_id"]
+
+    if load_run(root, run_id) is None:
+        print(f"integrate failed: no run found: {run_id}", file=sys.stderr)
+        return 1
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    try:
+        result = integrate_results(root, run_id, dry_run=dry_run)
+    except (FileNotFoundError, OSError, IntegrateError) as exc:
+        print(f"integrate failed: {exc}", file=sys.stderr)
+        return 1
+
+    rpath = result_path(root, run_id)
+    print(f"integrate result: {rpath}")
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+    status = result.get("status")
+    if status == "ok":
+        return 0
+    if status == "missing":
+        # No envelopes yet — not a hard failure for dry-run document path
+        return 0 if dry_run else 1
+    return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
@@ -202,6 +279,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="cancel active (or --run) run",
     )
     p_cancel.add_argument("--run", dest="run_id", default=None, help="specific run_id")
+    p_cancel.add_argument(
+        "--grace",
+        dest="grace",
+        type=float,
+        default=2.0,
+        help="seconds after SIGTERM before SIGKILL (default: 2.0; 0=SIGTERM only)",
+    )
     p_cancel.set_defaults(func=cmd_cancel)
 
     p_accept = sub.add_parser(
@@ -217,6 +301,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate/freeze only; do not exec acceptance commands",
     )
     p_accept.set_defaults(func=cmd_accept)
+
+    p_integrate = sub.add_parser(
+        "integrate",
+        parents=[common],
+        help="apply ULW result envelopes via git cherry-pick (active or --run)",
+    )
+    p_integrate.add_argument(
+        "--run", dest="run_id", default=None, help="specific run_id"
+    )
+    p_integrate.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="validate envelopes / base_sha only; do not cherry-pick",
+    )
+    p_integrate.set_defaults(func=cmd_integrate)
 
     for mode, help_text in (
         ("ulw", "ultrawork parallel mode (spawn_subagent fan-out)"),

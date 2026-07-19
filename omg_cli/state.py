@@ -92,6 +92,45 @@ TERMINAL_STATUSES = frozenset(
 )
 
 
+def _pid_alive(pid: int) -> bool | None:
+    """Check whether *pid* exists (signal 0).
+
+    Returns True if alive (or PermissionError — process exists), False if
+    ESRCH / ProcessLookupError (gone), None if other OSError.
+    """
+    if pid <= 0:
+        return None
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return None
+
+
+def _run_pid_path(root: Path, run_id: str) -> Path:
+    return _runs_dir(root) / run_id / "pid"
+
+
+def is_stale_run(root: Path, run_id: str) -> bool:
+    """True when a pid file exists and the process is gone (ESRCH).
+
+    No pid file, unreadable pid, or indeterminate liveness → not stale
+    (mutex still applies unless force supersede).
+    """
+    pid_path = _run_pid_path(Path(root), run_id)
+    if not pid_path.is_file():
+        return False
+    try:
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    return _pid_alive(pid) is False
+
+
 def create_run(
     root: Path,
     *,
@@ -99,26 +138,46 @@ def create_run(
     goal: str,
     extra: dict[str, Any] | None = None,
     force: bool = False,
+    kill_grace_s: float = 0.0,
 ) -> dict[str, Any]:
     """Create a new run directory + status.json and point active.json at it.
 
     Refuses when an active run exists with status in
-    ``{initialized, running, verifying}`` unless ``force=True``. Terminal
-    statuses (cancelled/completed/failed/verified) do not block.
+    ``{initialized, running, verifying}`` unless:
+
+    * ``force=True`` — **supersede**: cancel/kill the old active run first
+      (best-effort process kill via pid file, then mark cancelled), or
+    * the active run is **stale** (pid file present and process ESRCH) — the
+      dead run is cancelled and create proceeds without force.
+
+    Terminal statuses (cancelled/completed/failed/verified) do not block.
     """
     root = Path(root)
     ensure_omg_dirs(root)
 
-    if not force:
-        active = load_active_run(root)
-        if active is not None:
-            st = str(active.get("status") or "")
-            if st in ACTIVE_NON_TERMINAL_STATUSES:
+    active = load_active_run(root)
+    if active is not None:
+        st = str(active.get("status") or "")
+        if st in ACTIVE_NON_TERMINAL_STATUSES:
+            old_id = str(active.get("run_id") or "")
+            stale = bool(old_id) and is_stale_run(root, old_id)
+            if not force and not stale:
                 raise RuntimeError(
                     "active run already exists: "
                     f"run_id={active.get('run_id')!r} status={st!r}; "
                     "cancel it first or pass force=True"
                 )
+            # Supersede (force) or reclaim stale: cancel/kill old active run.
+            if old_id:
+                try:
+                    cancel_run(
+                        root,
+                        old_id,
+                        kill_grace_s=kill_grace_s if force else 0.0,
+                    )
+                except FileNotFoundError:
+                    # Race: status vanished; clear pointer and continue.
+                    clear_active(root, old_id)
 
     run_id = _make_run_id()
     now = _utc_now()

@@ -87,18 +87,21 @@ def test_build_prompt_contains_hard_rules():
 
 
 def test_dry_run_does_not_call_subprocess(monkeypatch, tmp_path):
-    calls: list[object] = []
+    """dry_run must not launch grok (Popen). git rev-parse for ulw base_sha is OK."""
+    real_popen = subprocess.Popen
+    grok_launches: list[object] = []
 
-    def boom(*_a, **_k):
-        calls.append(1)
-        raise AssertionError("subprocess should not be used in dry_run")
+    def selective_popen(argv, *a, **k):
+        if argv and argv[0] == "git":
+            return real_popen(argv, *a, **k)
+        grok_launches.append(argv)
+        raise AssertionError("grok Popen should not be used in dry_run")
 
-    monkeypatch.setattr(subprocess, "Popen", boom)
-    monkeypatch.setattr(subprocess, "run", boom)
+    monkeypatch.setattr(subprocess, "Popen", selective_popen)
 
     rc = run_mode("ulw", "demo dry", root=tmp_path, dry_run=True)
     assert rc == 0
-    assert calls == []
+    assert grok_launches == []
 
     active = load_active_run(tmp_path)
     assert active is not None
@@ -254,11 +257,27 @@ def test_set_verified_when_cli_acceptance_present(monkeypatch, tmp_path):
     assert run.get("status") == "verified"
 
 
+def _selective_popen(real_popen, grok_handler):
+    """Allow real git Popen (ulw base_sha probe); route other argv to handler."""
+
+    def popen(argv, *a, **k):
+        if argv and argv[0] == "git":
+            return real_popen(argv, *a, **k)
+        return grok_handler(argv, *a, **k)
+
+    return popen
+
+
 def test_failed_subprocess_marks_failed(monkeypatch, tmp_path):
     mock_proc = MagicMock()
     mock_proc.pid = 9
     mock_proc.wait.return_value = 1
-    monkeypatch.setattr(subprocess, "Popen", MagicMock(return_value=mock_proc))
+    real = subprocess.Popen
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        _selective_popen(real, lambda *_a, **_k: mock_proc),
+    )
 
     rc = run_mode("ulw", "fail me", root=tmp_path, dry_run=False)
     assert rc == 1
@@ -274,7 +293,10 @@ def test_popen_oserror_marks_failed_not_stuck_running(monkeypatch, tmp_path):
     def raise_not_found(*_a, **_k):
         raise FileNotFoundError("No such file or directory: 'grok'")
 
-    monkeypatch.setattr(subprocess, "Popen", raise_not_found)
+    real = subprocess.Popen
+    monkeypatch.setattr(
+        subprocess, "Popen", _selective_popen(real, raise_not_found)
+    )
 
     rc = run_mode("ulw", "missing binary", root=tmp_path, dry_run=False)
     assert rc != 0
@@ -304,11 +326,12 @@ def test_launch_grok_uses_start_new_session_on_posix(monkeypatch, tmp_path):
     mock_proc.pid = 1111
     mock_proc.wait.return_value = 0
 
-    def fake_popen(argv, **kwargs):
+    def fake_grok(argv, **kwargs):
         captured.update(kwargs)
         return mock_proc
 
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    real = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", _selective_popen(real, fake_grok))
 
     rc = run_mode("ulw", "session leader", root=tmp_path, dry_run=False)
     assert rc == 0
@@ -320,11 +343,12 @@ def test_launch_grok_uses_start_new_session_on_posix(monkeypatch, tmp_path):
 
 def test_run_mode_mutex_blocks_second_active(monkeypatch, tmp_path):
     """Second run_mode while first is non-terminal returns non-zero (mutex)."""
-    monkeypatch.setattr(
-        subprocess,
-        "Popen",
-        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no popen")),
-    )
+    real = subprocess.Popen
+
+    def boom_grok(*_a, **_k):
+        raise AssertionError("no popen")
+
+    monkeypatch.setattr(subprocess, "Popen", _selective_popen(real, boom_grok))
     rc = run_mode("ulw", "first", root=tmp_path, dry_run=True)
     assert rc == 0
     # dry_run ends as completed (terminal) — re-open as running to simulate active

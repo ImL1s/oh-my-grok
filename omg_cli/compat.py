@@ -152,15 +152,26 @@ def scan_claude_settings(home: Path | None = None) -> list[CompatFinding]:
     return findings
 
 
+# Non-plugin bookkeeping dirs under ~/.claude/plugins/ (Claude CLI layout).
+# Never reported as isolation risks even if present as directories.
+_PLUGIN_DIR_DENYLIST = frozenset(
+    {
+        "cache",
+        "marketplaces",
+        "tmp",
+        "temp",
+    }
+)
+
+
 def _is_plugin_like(path: Path) -> bool:
-    """Heuristic: directory looks like a Claude/Grok plugin install."""
+    """Heuristic: directory looks like a Claude/Grok plugin install.
+
+    Requires known plugin markers (plugin.json, hooks, skills, agents, …).
+    Plain directories without markers are not plugin-like.
+    """
     if not path.is_dir():
         return False
-    # skip hidden cache-ish dirs
-    name = path.name
-    if name.startswith(".") and name not in (".", ".."):
-        # still allow inspection of content if it has plugin.json
-        pass
     markers = (
         path / "plugin.json",
         path / ".claude-plugin",
@@ -189,7 +200,11 @@ def scan_claude_plugins(
     home: Path | None = None,
     project_root: Path | None = None,
 ) -> list[CompatFinding]:
-    """Scan ~/.claude/plugins/ and project .claude/plugins/ for plugin-like dirs."""
+    """Scan ~/.claude/plugins/ and project .claude/plugins/ for plugin-like dirs.
+
+    Only directories that pass ``_is_plugin_like`` are reported. Bookkeeping dirs
+    (cache, marketplaces, tmp/temp) are denylisted and ignored.
+    """
     home = Path(home) if home is not None else home_dir()
     findings: list[CompatFinding] = []
     roots: list[Path] = [home / ".claude" / "plugins"]
@@ -221,13 +236,14 @@ def scan_claude_plugins(
             )
             continue
         for child in children:
+            if not child.is_dir():
+                continue
             if child.name.startswith("."):
                 continue
-            if _is_plugin_like(child) or child.is_dir():
-                # any non-hidden subdir under plugins/ is treated as plugin-like risk
-                # (Claude plugin installs are directory trees)
-                if child.is_dir():
-                    plugin_like.append(child.name)
+            if child.name.lower() in _PLUGIN_DIR_DENYLIST:
+                continue
+            if _is_plugin_like(child):
+                plugin_like.append(child.name)
         if plugin_like:
             findings.append(
                 CompatFinding(

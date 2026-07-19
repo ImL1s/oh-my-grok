@@ -396,17 +396,32 @@ def run_mode(
     if require_acceptance is None:
         require_acceptance = mode == "ralph"
 
+    create_extra: dict[str, Any] = {
+        "max_iter": max_iter,
+        "yolo": bool(yolo),
+        "safe": bool(safe),
+        "require_acceptance": bool(require_acceptance),
+    }
+    # ULW convergence: record leader base_sha when git is available so
+    # integrate_results can reject envelopes built on a different base.
+    # Optional metadata: never fail run creation if git is unavailable or
+    # tests have monkeypatched subprocess for grok isolation.
+    if mode == "ulw":
+        try:
+            from omg_cli.integrate import git_rev_parse_head
+
+            base_sha = git_rev_parse_head(root_path)
+            if base_sha:
+                create_extra["base_sha"] = base_sha
+        except Exception:
+            pass
+
     try:
         run = create_run(
             root_path,
             mode=mode,
             goal=goal,
-            extra={
-                "max_iter": max_iter,
-                "yolo": bool(yolo),
-                "safe": bool(safe),
-                "require_acceptance": bool(require_acceptance),
-            },
+            extra=create_extra,
         )
     except RuntimeError as exc:
         # Active-run mutex: refuse concurrent non-terminal runs

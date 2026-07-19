@@ -100,6 +100,47 @@ def test_project_plugins_detected(tmp_path):
     assert risks
 
 
+def test_plugins_scan_ignores_non_plugin_like_and_denylist(tmp_path):
+    """Only _is_plugin_like dirs are risks; cache/marketplaces/tmp are denylisted."""
+    plugins = tmp_path / ".claude" / "plugins"
+    plugins.mkdir(parents=True)
+
+    # Denylist bookkeeping dirs (even if they contain random files)
+    for name in ("cache", "marketplaces", "tmp", "temp"):
+        d = plugins / name
+        d.mkdir()
+        (d / "random.bin").write_bytes(b"x")
+
+    # Plain empty / non-plugin directory must NOT be reported
+    (plugins / "not-a-plugin").mkdir()
+    (plugins / "not-a-plugin" / "readme.txt").write_text("hi", encoding="utf-8")
+
+    # Real plugin-like install must still be reported
+    real = plugins / "real-plugin"
+    real.mkdir()
+    (real / "plugin.json").write_text('{"name":"real-plugin"}', encoding="utf-8")
+
+    findings = scan_claude_plugins(home=tmp_path)
+    risks = [f for f in findings if f.level != "ok" and f.code == "claude.plugins"]
+    assert len(risks) == 1
+    detail = risks[0].detail
+    assert "real-plugin" in detail
+    for name in ("cache", "marketplaces", "tmp", "temp", "not-a-plugin"):
+        assert name not in detail
+
+
+def test_plugins_scan_denylist_only_is_ok(tmp_path):
+    """plugins/ with only cache/marketplaces/tmp → ok, not a risk."""
+    plugins = tmp_path / ".claude" / "plugins"
+    for name in ("cache", "marketplaces", "tmp"):
+        (plugins / name).mkdir(parents=True)
+    findings = scan_claude_plugins(home=tmp_path)
+    assert not any(f.level != "ok" and f.code == "claude.plugins" for f in findings)
+    assert any(
+        f.level == "ok" and "no plugin-like" in f.detail for f in findings
+    )
+
+
 def test_claude_md_omc_markers(tmp_path):
     claude = tmp_path / ".claude"
     claude.mkdir()
