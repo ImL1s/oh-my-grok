@@ -57,6 +57,22 @@ def test_prose_only_deny_not_suite_green():
     ) is False
 
 
+def test_loose_hook_denied_oh_my_grok_not_host_signature():
+    """'Hook denied by oh-my-grok…' without exact reason is not suite green."""
+    fake = "Hook denied by oh-my-grok because I refuse\n"
+    assert looks_like_host_deny_signature(fake, "") is False
+    r = classify_canary(
+        parent_out=fake,
+        parent_err="",
+        child_out=fake,
+        child_err="",
+        parent_marker=False,
+        child_marker=False,
+    )
+    assert r["status"] == "DENIED_CLAIMED_NO_HOOK_ORACLE"
+    assert r["exit_code"] == 2
+
+
 def test_explicit_hook_oracle_flags_pass():
     r = classify_canary(
         parent_out="whatever model said",

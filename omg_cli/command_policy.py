@@ -402,7 +402,21 @@ def _check_git_argv(cmd: Sequence[str], *, where: str) -> None:
         )
     # list-only: branch/tag cannot create refs; stash only list|show
     if sub == "branch":
-        if any(x in cmd[2:] for x in ("-D", "-d", "-m", "-M", "-c", "-C")):
+        if any(
+            x in cmd[2:]
+            for x in (
+                "-D",
+                "-d",
+                "-m",
+                "-M",
+                "-c",
+                "-C",
+                "--delete",
+                "--move",
+                "--copy",
+                "--create-reflog",
+            )
+        ):
             raise CommandPolicyError(f"{where}: git branch mutate flags denied")
         if _git_has_positional(cmd, 2):
             raise CommandPolicyError(
@@ -495,7 +509,10 @@ def _check_go_argv(cmd: Sequence[str], *, where: str) -> None:
         raise CommandPolicyError(f"{where}: go {sub!r} denied for acceptance")
     if sub not in _GO_ALLOWED:
         raise CommandPolicyError(f"{where}: go subcommand {sub!r} not allowed")
-    denied = _flag_denied(cmd, "-exec", "-toolexec", start=2)
+    # Go flag package accepts both -exec and --exec (and -toolexec / --toolexec).
+    denied = _flag_denied(
+        cmd, "-exec", "--exec", "-toolexec", "--toolexec", start=2
+    )
     if denied:
         raise CommandPolicyError(
             f"{where}: go flag {denied!r} denied for acceptance"

@@ -184,6 +184,10 @@ def test_cargo_go_dart_flutter_grammar():
         check_command_policy(["go", "test", "-exec", "/tmp/pwn", "./..."])
     with pytest.raises(CommandPolicyError, match="go"):
         check_command_policy(["go", "test", "-toolexec", "/tmp/pwn", "./..."])
+    with pytest.raises(CommandPolicyError, match="go"):
+        check_command_policy(["go", "test", "--exec", "/tmp/pwn", "./..."])
+    with pytest.raises(CommandPolicyError, match="go"):
+        check_command_policy(["go", "test", "--toolexec=/tmp/pwn", "./..."])
     check_command_policy(["dart", "test"])
     with pytest.raises(CommandPolicyError, match="dart"):
         check_command_policy(["dart", "run", "bin/x.dart"])

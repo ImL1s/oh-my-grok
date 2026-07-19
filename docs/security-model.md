@@ -36,7 +36,9 @@ See `omg_cli/command_policy.py` (`POLICY_VERSION`).
 | `npm` | `test`, `run test`, `run pytest` | other scripts |
 | `git` | read-only: `status`/`diff`/`log`/`show`/`rev-parse`/`rev-list`/`describe`/`ls-files`/`ls-tree`/`cat-file`; `branch`/`tag`/`stash` list-only | `clean`/`push`/`reset`/`checkout`/`restore`/`rebase`/`merge`/`pull`/`fetch`/`remote`/`config`/`add`/`commit`/…; mutate flags (`branch -D`, `tag -d`, `stash drop`); `-c` config injection |
 | `make` | targets: `test`/`check`/`lint`/`unit`/`units`/`pytest`/`ci`/`verify` | bare `make`, other targets |
-| `cargo` | `test`/`check`/`clippy`/`fmt`/`build` | `run`/`install`/`publish`/`bench`/`script` |
+| `cargo` | `test`/`check`/`clippy`/`fmt` | `run`/`install`/`publish`/`bench`/`script`/`build`; also `--manifest-path`/`--config`/`--target-dir`/`-C` |
+| `make` | allowlisted targets only (`test`/`check`/`lint`/`ci`/…) | bare `make`; unknown targets; `-f`/`--file`/`-C`/`--directory`/`--eval` (incl. glued forms) |
+| `go` | `test`/`vet`/`fmt`/`version` | `run`/`generate`/`get`/`install`/`mod`; `-exec`/`--exec`/`-toolexec`/`--toolexec` |
 | `go` | `test`/`vet`/`fmt`/`version` | `run`/`generate`/`get`/`install`/`mod` |
 | `dart` | `test`/`analyze`/`format` | `run`/`compile`/`pub` |
 | `flutter` | `test`/`analyze` | `run`/`pub`/other |
@@ -44,7 +46,9 @@ See `omg_cli/command_policy.py` (`POLICY_VERSION`).
 | `--allow-cmd NAME` | extends basename set | floors still apply |
 | `--no-allowlist` | TTY-only break-glass | floors still apply; non-TTY refused |
 
-Beyond basename allowlisting, acceptance applies **argv grammar** per family (`POLICY_VERSION` ≥ 2): git is inspection-only, make requires an allowlisted target, and cargo/go/dart/flutter admit only test/analysis-style subcommands so a frozen runner cannot become an install, publish, or long-running process launcher.
+Beyond basename allowlisting, acceptance applies **argv grammar** per family (`POLICY_VERSION` ≥ 2): git is inspection-only (no bare `stash`, no branch/tag create), make requires an allowlisted target with no makefile/dir overrides, and cargo/go/dart/flutter admit only test/analysis-style subcommands so a frozen runner cannot become an install, publish, or long-running process launcher.
+
+**Canary pass criteria:** `scripts/canary_pretool.py --live` exits 0 only when **both** parent and child output contain the exact PreToolUse reason `oh-my-grok: external agent CLI blocked` (host signature). Free-form model “denied” prose is `DENIED_CLAIMED_NO_HOOK_ORACLE` (exit 2), not a soft-gate pass.
 
 `--yes` skips confirmation UX only — **never** policy.
 

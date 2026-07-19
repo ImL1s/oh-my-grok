@@ -46,7 +46,7 @@ Workers must not run external agent CLIs as a **hard** property of tool policy �
 
 **v0.2.3:** semantic acceptance policy (`python -c` denied; `-m pytest|unittest` / project `.py` ok); `omg accept --review` prints manifest sha + cwd + `shlex` argv; TTY y/N; `--no-allowlist` TTY-only break-glass; `scripts/install-plugin.sh` + `canary_pretool.py`; executor disallows shell tools; capability spawn contract injected in prompts; **process fanout is experimental opt-in only** (`OMG_EXPERIMENTAL_PROCESS_FANOUT=1`); cancel kill is **fail-closed** without matching `starttime`.
 
-**v0.2.5:** integrate ancestry / merge reject / `changed_files` verify / `--require-squash`; pipeline stage order **plan → implement → integrate → dual_review → accept → report** (`report.json`); `omg worker prepare|seal` no-shell bridge; `omg ask` prompt via **stdin** by default (`OMG_ASK_STDIN=1`); freeform `--extra` off unless `OMG_ASK_ALLOW_EXTRA=1`; dual-review documented as sequential headless interim (`OMG_DUAL_REVIEW_REQUIRE_NATIVE=1` gate).
+**v0.2.5:** integrate ancestry / merge reject / empty-`changed_files` anti-forge / `--require-squash`; pipeline stage order **plan → implement → integrate → dual_review → accept → report**; `omg worker prepare|seal`; `omg ask` stdin default; dual-review sequential interim. **Live-gates:** doctor hard-checks global PreToolUse hook; acceptance argv grammar v2 (git list-only, make no `-f`/`-C`, go no `-exec`/`--exec`, cargo no `build`); canary host-signature pass only (`DENIED_CLAIMED_NO_HOOK_ORACLE` on prose); `scripts/live_suite.sh --quick/--full/--quota-heavy` + dated evidence under `docs/research/live/`.
 
 ---
 

@@ -19,14 +19,13 @@ def looks_like_real_claude(stdout: str, stderr: str) -> bool:
 def looks_like_host_deny_signature(stdout: str, stderr: str) -> bool:
     """True when output includes the unique oh-my-grok PreToolUse deny reason.
 
-    Generic model text like "tool was denied" alone is not enough for suite green.
+    Requires the exact deny.py reason substring (casefold). Generic
+    "Hook denied by oh-my-grok …" model theater is **not** enough for suite green.
     """
     if looks_like_real_claude(stdout, stderr):
         return False
     blob = f"{stdout}\n{stderr}".lower()
-    return _HOST_DENY_SIGNATURE in blob or (
-        "hook denied" in blob and "oh-my-grok" in blob
-    )
+    return _HOST_DENY_SIGNATURE in blob
 
 
 def looks_like_denied(stdout: str, stderr: str) -> bool:
