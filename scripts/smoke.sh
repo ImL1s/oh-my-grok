@@ -83,3 +83,9 @@ python3 "${ROOT}/scripts/canary_pretool.py" --dry >/dev/null \
   || fail "canary_pretool --dry failed"
 
 echo "smoke OK"
+
+# Optional full real-path e2e (temp git project; no external LLM)
+if [[ "${OMG_E2E:-}" == "1" ]]; then
+  echo "== e2e_realpath.py =="
+  python3 "$ROOT/scripts/e2e_realpath.py"
+fi
