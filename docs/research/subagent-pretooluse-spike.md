@@ -1,8 +1,8 @@
 # Spike: Does PreToolUse fire for `spawn_subagent` children?
 
-**Date:** 2026-07-19 (updated same day for v0.2.1 source evidence)  
-**Repo:** oh-my-grok v0.2.1  
-**Related:** dual-review I2; council-v021 isolation research
+**Date:** 2026-07-19 (updated for v0.2.3 canary script + command policy)  
+**Repo:** oh-my-grok  
+**Related:** dual-review I2; council-v021 isolation research; [`docs/security-model.md`](../security-model.md)
 
 ## Question
 
@@ -19,30 +19,45 @@ Council research (`.omg/research/council-v021/grok-isolation-research.md`, Grok 
 | File hooks always `dispatch_pre_tool_use` when active | `xai-grok-shell/.../tool_calls.rs` (~918–964); payload includes `subagent_type` |
 | Client hooks snapshot for inheritance | `SessionCommand::SnapshotClientHooks` — “so a subagent inherits the same PreToolUse gate” |
 | Spawn clones hooks into child | `handle_request.rs` ~1157 / ~1176: `client_hooks.clone()` + `hook_registry.clone()` |
+| Subagent module | `xai-grok-shell/.../subagent/mod.rs` ~147–151, ~294: parent hooks / `hook_registry` passed into child |
 | Unit test | `subagent_inherits_parent_pre_tool_use_client_hook` — child tool denied by parent’s inherited PreToolUse |
-| Fail-open policy unchanged | timeout / crash / missing / malformed → tool may still run (`10-hooks.md`) |
+| Fail-open policy unchanged | timeout / crash / missing / malformed → tool may still run (`10-hooks.md`; `xai-grok-hooks` dispatcher) |
 
-**Revised product stance:** PreToolUse is **intended to run on subagents** (inherited registry/hooks). It remains a **fail-open soft-gate**, not a sandbox. Live canary on this machine is still optional acceptance for gap B.
+**Revised product stance:** PreToolUse is **intended to run on subagents** (inherited registry/hooks). It remains a **fail-open soft-gate**, not a sandbox. Primary isolation is **`capability_mode`** (see security-model).
 
-## How to re-test (canary)
+## Canary script (PATH shim — never real claude)
 
-Requires a live `grok` session with the plugin installed and trusted (`grok plugin install . --trust`).
+**Code:** [`scripts/canary_pretool.py`](../../scripts/canary_pretool.py)
 
-### 1. Canary command (leader)
+Design:
+
+1. Create a temp dir and a **PATH shim** named `claude` that **only appends a marker file** if executed, then exits 99.
+2. **Never** invoke a real `claude` / `codex` binary.
+3. **`--dry` (default):** write plan JSON with parent/child `grok -p` argv + shim paths; no process launch of grok required.
+4. **`--live` (optional):** if `grok` is on PATH, run the parent canary with `PATH=<shim-bin>:$PATH`. If PreToolUse + host deny works, the shim never runs → **marker absent**. If fail-open or deny missed, marker appears → exit 1.
 
 ```bash
-cd /path/to/oh-my-grok   # or a project with omg setup + plugin active
-# Ensure PreToolUse is registered (omg doctor)
-omg doctor
+# Dry: argv + shim layout only
+python3 scripts/canary_pretool.py --dry
+python3 scripts/canary_pretool.py --dry -o /tmp/canary-plan.json
 
-# Leader canary: should DENY (or soft-fail-open — note which)
-# In an interactive session, or:
+# Live: optional; skips cleanly when grok missing
+python3 scripts/canary_pretool.py --live
+# evidence default: docs/research/canary-pretool-latest.json
+```
+
+### Manual live prompts (if not using the script’s argv)
+
+Requires plugin installed/trusted (`scripts/install-plugin.sh` or `grok plugin install . --trust`).
+
+**Leader:**
+
+```bash
+export PATH="/path/to/shim-bin:$PATH"   # from dry plan path_prefix
 grok -p 'Run exactly this tool: run_terminal_command with command "claude --version". Report whether the tool was denied or ran.' --cwd "$(pwd)"
 ```
 
-Expected if hooks fire: deny decision from `pre_tool_use_deny.py` (exit 2 → tool blocked when host honors deny).
-
-### 2. Child canary via `spawn_subagent`
+**Child via `spawn_subagent`:**
 
 ```bash
 grok -p '
@@ -53,29 +68,21 @@ After the child returns, report: (1) whether the child tool call was denied, (2)
 ' --cwd "$(pwd)" --output-format plain
 ```
 
-### 3. Optional: event spool evidence
+### Live results table (fill when run)
 
-After the canary, inspect:
-
-```text
-.omg/artifacts/   # agent notes
-~/.grok/          # host logs if enabled (--debug / --debug-file)
-```
-
-Record:
-
-| Probe | PreToolUse fired? | Decision | Host honored deny? |
-|-------|-------------------|----------|--------------------|
-| Leader `run_terminal_command claude` | ? | ? | ? |
-| Child `run_terminal_command claude` | ? | ? | ? |
+| Probe | Date | Grok ver | PreToolUse fired? | Decision | Host honored deny? | Marker present? |
+|-------|------|----------|-------------------|----------|--------------------|-----------------|
+| Leader `run_terminal_command claude` | — | — | ? | ? | ? | ? |
+| Child `run_terminal_command claude` | — | — | ? | ? | ? | ? |
 
 ## Spike status (this environment)
 
 | Item | Status |
 |------|--------|
 | Host source: subagents inherit PreToolUse | **Supported** (see table above) |
-| Live re-test in CI / this authoring session | **Not verified live** (canary table empty) |
-| Documented re-test procedure | Yes (above) |
+| Dry canary script | **`scripts/canary_pretool.py --dry`** |
+| Live re-test in CI / this authoring session | **Not verified live** (table empty; `--live` skips without grok) |
+| Documented re-test procedure | Yes |
 | Assumption recorded | **ASSUMPTION** below |
 
 ### ASSUMPTION (until re-verified live)
@@ -89,28 +96,31 @@ Do **not** claim “children are hard-blocked from external CLIs” without a da
 Because hooks alone are not a hard guarantee:
 
 1. **Primary:** `capability_mode: read-write` (implementers, **no shell**) / `read-only` (critic/verifier/explore). Dropping Execute removes `run_terminal_command` entirely.
-2. **Secondary:** agent `disallowedTools` / parent `--disallowed-tools` session clamp.
+2. **Secondary:** agent `disallowedTools` (executor: `spawn_subagent` + `run_terminal_command` + `run_terminal_cmd`) / parent `--disallowed-tools` session clamp.
 3. **Soft-gate:** PreToolUse deny (fail-open honest) + skill HARD RULES.
-4. **Acceptance / tests / shell** — run **only** via the **`omg` CLI** (`omg accept`, frozen manifest + CLI stamp + basename allowlist). Models must not set `verified`.
-5. **Env bypass** — `OMG_ALLOW_EXTERNAL_CLI=1` is process-env only (never parsed from command text); rare advisor use only.
+4. **Acceptance / tests / shell** — run **only** via the **`omg` CLI** (`omg accept`, frozen manifest + CLI stamp + **semantic command policy** in `omg_cli/command_policy.py`). Models must not set `verified`.
+5. **Env bypass** — `OMG_ALLOW_EXTERNAL_CLI=1` is process-env only (never parsed from command text); rare advisor use only (`omg ask`).
 
-See README **Isolation stack** and `.omg/research/council-v021/grok-isolation-research.md`.
+See [`docs/security-model.md`](../security-model.md) and README **Isolation stack**.
 
 ## Related code
 
 | Path | Role |
 |------|------|
+| `scripts/canary_pretool.py` | PATH shim canary (dry/live) |
 | `hooks/hooks.json` | Registers PreToolUse → `pre_tool_use_deny.py` |
 | `hooks/bin/pre_tool_use_deny.py` | stdin JSON → `omg_cli.deny.decide_pre_tool_use` |
 | `omg_cli/deny.py` | Command-position deny list (soft-gate) |
-| `omg_cli/acceptance.py` | Sole writer of stamped acceptance results + allowlist |
-| `skills/omg-*/SKILL.md` | capability_mode defaults + HARD RULES |
+| `omg_cli/command_policy.py` | Semantic acceptance policy |
+| `omg_cli/acceptance.py` | Sole writer of stamped acceptance results |
+| `agents/omg-executor.md` | `disallowedTools`: shell + spawn |
+| `skills/omg-*/SKILL.md` | capability_mode **MUST** defaults + HARD RULES |
 
 ## Soft-gate residual (not solved by this spike)
 
 Even when PreToolUse fires, it may miss:
 
-- Interpreter escapes (`python3 -c '…'`, `node -e`, `npx …`) when shell tool is present
+- Interpreter escapes (`python3 -c '…'`, `node -e`, `npx …`) when shell tool is present (workers should not have shell)
 - Some shell wrappers / path tricks
 - Host fail-open on hook timeout / crash / malformed JSON
 
