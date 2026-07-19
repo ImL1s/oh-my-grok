@@ -209,7 +209,7 @@ def test_check_global_pretool_hook_ok(tmp_path, monkeypatch):
                 "hooks": {
                     "PreToolUse": [
                         {
-                            "matcher": "run_terminal_command|Bash|Shell",
+                            "matcher": "run_terminal_command|Bash|Shell|spawn_subagent|Task",
                             "hooks": [
                                 {
                                     "type": "command",

@@ -17,7 +17,10 @@ grok plugin validate "$ROOT"
 
 echo "== grok plugin install . --trust =="
 # SOURCE is this repo root; --trust for non-interactive hook/skill activation.
-grok plugin install "$ROOT" --trust
+# "already installed" is OK — still refresh global hooks below.
+if ! grok plugin install "$ROOT" --trust; then
+  echo "WARN: plugin install returned non-zero (may already be installed); continuing global hook write" >&2
+fi
 
 echo "== global PreToolUse soft-gate (~/.grok/hooks) =="
 # Live 2026-07-19: plugin-bundled hooks/hooks.json did not appear in session
@@ -31,7 +34,7 @@ cat > "${HOOKS_DIR}/omg-pretool-deny.json" <<EOF
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "run_terminal_command|Bash|Shell",
+        "matcher": "run_terminal_command|Bash|Shell|spawn_subagent|Task",
         "hooks": [
           {
             "type": "command",

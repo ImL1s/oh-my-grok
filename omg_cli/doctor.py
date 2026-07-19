@@ -95,6 +95,17 @@ def check_hooks_scripts() -> tuple[str, bool, str]:
     return _check("hooks scripts", True, f"{len(HOOK_SCRIPTS)} present and executable")
 
 
+def _matchers_cover_spawn(entries: list[Any]) -> bool:
+    """True if any PreToolUse matcher string includes spawn_subagent or Task."""
+    for group in entries:
+        if not isinstance(group, dict):
+            continue
+        m = str(group.get("matcher") or "")
+        if "spawn_subagent" in m or "Task" in m:
+            return True
+    return False
+
+
 def check_pre_tool_use() -> tuple[str, bool, str]:
     path = plugin_root() / "hooks" / "hooks.json"
     if not path.is_file():
@@ -109,7 +120,17 @@ def check_pre_tool_use() -> tuple[str, bool, str]:
     entries = hooks["PreToolUse"]
     if not entries:
         return _check("PreToolUse hook", False, "PreToolUse empty")
-    return _check("PreToolUse hook", True, f"{len(entries)} matcher group(s)")
+    if not _matchers_cover_spawn(list(entries) if isinstance(entries, list) else []):
+        return _check(
+            "PreToolUse hook",
+            False,
+            "matcher missing spawn_subagent|Task (spawn fail-closed gate)",
+        )
+    return _check(
+        "PreToolUse hook",
+        True,
+        f"{len(entries)} matcher group(s); includes spawn_subagent|Task",
+    )
 
 
 def check_skills_omg_prefix() -> tuple[str, bool, str]:
@@ -186,10 +207,13 @@ def check_global_pretool_hook() -> tuple[str, bool, str]:
         return _check("global PreToolUse soft-gate", False, f"invalid JSON: {e}")
     # Extract first command string under hooks.PreToolUse[*].hooks[*].command
     commands: list[str] = []
+    matchers: list[str] = []
     hooks_root = (data.get("hooks") or {}) if isinstance(data, dict) else {}
     for group in hooks_root.get("PreToolUse") or []:
         if not isinstance(group, dict):
             continue
+        if group.get("matcher") is not None:
+            matchers.append(str(group.get("matcher") or ""))
         for h in group.get("hooks") or []:
             if isinstance(h, dict) and isinstance(h.get("command"), str):
                 commands.append(h["command"])
@@ -198,6 +222,13 @@ def check_global_pretool_hook() -> tuple[str, bool, str]:
             "global PreToolUse soft-gate",
             False,
             f"{path} has no PreToolUse command entries",
+        )
+    if not any("spawn_subagent" in m or "Task" in m for m in matchers):
+        return _check(
+            "global PreToolUse soft-gate",
+            False,
+            f"{path} matcher missing spawn_subagent|Task "
+            "(re-run scripts/install-plugin.sh)",
         )
     # Prefer a path that looks like pre_tool_use_deny.py
     ok_path: str | None = None
