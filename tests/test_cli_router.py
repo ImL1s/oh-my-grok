@@ -97,6 +97,10 @@ def test_doctor_strict_flag_accepted():
     assert r.returncode in (0, 1)
     out = r.stdout + r.stderr
     assert "compat.claude" in out or "plugin.json" in out.lower()
+    # soft-gate honesty footer always present
+    assert "fail-open" in out.lower() or "soft-gate" in out.lower()
+    # best-effort trust section present
+    assert "trust" in out.lower() or "inventory" in out.lower()
 
 
 def test_state_no_active(tmp_path):

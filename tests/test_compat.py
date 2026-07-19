@@ -195,7 +195,7 @@ def test_doctor_compat_warn_default_and_strict_fail(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    # Keep hard checks green so only compat risks matter for exit code
+    # Keep hard + soft checks green so only compat risks matter for exit code
     monkeypatch.setattr(
         doctor,
         "run_checks",
@@ -208,6 +208,11 @@ def test_doctor_compat_warn_default_and_strict_fail(monkeypatch, tmp_path):
             ("agents", True, "ok"),
             ("deny module", True, "ok"),
         ],
+    )
+    monkeypatch.setattr(
+        doctor,
+        "run_soft_checks",
+        lambda: [("plugin trust/inventory", "ok", "trusted=True (test)")],
     )
 
     rc_default = doctor.run_doctor(strict=False, project_root=tmp_path)
