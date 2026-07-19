@@ -122,3 +122,13 @@ def test_node_eval_denied_even_if_allowed():
     allowed = resolve_allowlist(["node"])
     with pytest.raises(CommandPolicyError, match="-e"):
         check_command_policy(["node", "-e", "console.log(1)"], allowlist=allowed)
+
+def test_glued_python_c_denied_even_with_no_allowlist():
+    from omg_cli.command_policy import check_command_policy, CommandPolicyError
+    from pathlib import Path
+    import pytest
+    root = Path(__file__).resolve().parents[1]
+    with pytest.raises(CommandPolicyError):
+        check_command_policy(["python3", "-cimport os"], no_allowlist=True, project_root=root)
+    with pytest.raises(CommandPolicyError):
+        check_command_policy(["python3", "-c", "print(1)"], no_allowlist=True, project_root=root)

@@ -150,7 +150,11 @@ def _basename_allowed(base: str, allowed: frozenset[str]) -> bool:
 
 
 def _has_flag(argv: Sequence[str], *flags: str) -> bool:
-    """True if any argv token is exactly a flag or ``flag=value`` form."""
+    """True if any argv token is a flag, ``flag=value``, or glued short form.
+
+    Glued forms like ``-cimport os`` / ``-cprint(1)`` must match floor denials
+    for ``-c`` / ``-e`` (break-glass path included).
+    """
     flag_set = set(flags)
     for tok in argv[1:]:
         if tok in flag_set:
@@ -158,6 +162,10 @@ def _has_flag(argv: Sequence[str], *flags: str) -> bool:
         for f in flags:
             if tok.startswith(f + "="):
                 return True
+            # Glued short options: -cCODE, -eCODE (not longer names like -cache)
+            if len(f) == 2 and f.startswith("-") and not f.startswith("--"):
+                if tok.startswith(f) and (len(tok) == 2 or tok[2:3] != "-"):
+                    return True
     return False
 
 
