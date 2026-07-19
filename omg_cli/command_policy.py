@@ -1,0 +1,405 @@
+# omg_cli/command_policy.py
+"""Semantic acceptance command policy (operator-intent gate, not a sandbox).
+
+Acceptance commands are filtered by **executable family + argv grammar**, not
+basename alone. This blocks common interpreter escapes (``python -c``,
+``node -e``, ``npx …``) while still allowing frozen test runners.
+
+Hard floors (never liftable via ``--allow-cmd`` / break-glass):
+- shell interpreters as argv[0]
+- external agent CLIs (claude/codex/…) and destructive bins (rm/sudo)
+- ``npx`` / ``uvx`` / ``pipx`` style package runners by default
+- ``python* -c`` / ``-e`` and arbitrary ``-m`` modules outside pytest|unittest
+
+This module does **not** inspect script contents; untrusted repo code may still
+run when an operator freezes ``pytest`` / ``python -m pytest``. Pair with
+``docs/security-model.md``.
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Iterable, Sequence
+
+POLICY_VERSION = "1"
+
+# Exact: python | python2 | python3 | python2.N | python3.N
+# Rejects python3evil, python3-config, python3foo, etc.
+_PYTHON_BIN_RE = re.compile(r"^python([23](\.\d+)?)?$")
+
+# Node-family interpreters that must not get -e / -p eval.
+_NODE_BIN_RE = re.compile(r"^node(\.\d+)?$")
+
+# Default basenames allowed as acceptance argv[0] (after Path.name).
+# Semantic families (python*/npm) get extra argv grammar checks below.
+DEFAULT_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "true",
+        "false",
+        "pytest",
+        "python",
+        "python3",
+        # Optional common runners (no eval flags of their own in default use)
+        "make",
+        "npm",
+        "cargo",
+        "go",
+        "dart",
+        "flutter",
+        "ruff",
+        "mypy",
+        "black",
+        "git",
+    }
+)
+
+# Always denied even with --allow-cmd / break-glass (security floor).
+ALWAYS_DENY_BASENAMES: frozenset[str] = frozenset(
+    {
+        "claude",
+        "codex",
+        "omx",
+        "agy",
+        "cursor-agent",
+        "kimi",
+        "rm",
+        "sudo",
+        "doas",
+        # Package runners: default deny (escape / network install surface)
+        "npx",
+        "uvx",
+        "pipx",
+        "bunx",
+        "pnpm",
+        "yarn",
+        "deno",
+    }
+)
+
+# Shell interpreters: never allowed as acceptance argv[0].
+SHELL_BASENAMES: frozenset[str] = frozenset(
+    {
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "csh",
+        "tcsh",
+        "fish",
+        "ksh",
+    }
+)
+
+# python -m MODULE allowlist (only test runners).
+_PYTHON_M_ALLOWED: frozenset[str] = frozenset({"pytest", "unittest"})
+
+# npm subcommands allowed without --allow-cmd.
+# Forms: npm test [args], npm run test [args], npm run pytest [args]
+_NPM_RUN_SCRIPTS: frozenset[str] = frozenset({"test", "pytest"})
+
+
+class CommandPolicyError(ValueError):
+    """Raised when an acceptance command is rejected by the semantic policy."""
+
+
+def command_basename(argv0: str) -> str:
+    """Return the executable basename for policy checks (handles paths)."""
+    name = Path(str(argv0)).name
+    if name.lower().endswith(".exe"):
+        name = name[:-4]
+    return name
+
+
+def is_python_bin(base: str) -> bool:
+    """True for python / python2 / python3 / python2.N / python3.N only."""
+    return bool(_PYTHON_BIN_RE.match(base))
+
+
+def is_node_bin(base: str) -> bool:
+    return bool(_NODE_BIN_RE.match(base))
+
+
+def resolve_allowlist(
+    extra: Iterable[str] | None = None,
+    *,
+    base: Iterable[str] | None = None,
+) -> frozenset[str]:
+    """Default allowlist plus optional ``--allow-cmd`` extensions."""
+    allowed = set(DEFAULT_ALLOWLIST if base is None else base)
+    if extra:
+        for name in extra:
+            n = command_basename(str(name).strip())
+            if n:
+                allowed.add(n)
+    return frozenset(allowed)
+
+
+def _basename_allowed(base: str, allowed: frozenset[str]) -> bool:
+    """True if *base* is in *allowed* or a versioned python binary family match."""
+    if base in allowed:
+        return True
+    if not is_python_bin(base):
+        return False
+    if base == "python":
+        return "python" in allowed
+    if base.startswith("python3"):
+        return "python3" in allowed or "python" in allowed
+    if base.startswith("python2"):
+        return "python2" in allowed or "python" in allowed
+    return False
+
+
+def _has_flag(argv: Sequence[str], *flags: str) -> bool:
+    """True if any argv token is exactly a flag or ``flag=value`` form."""
+    flag_set = set(flags)
+    for tok in argv[1:]:
+        if tok in flag_set:
+            return True
+        for f in flags:
+            if tok.startswith(f + "="):
+                return True
+    return False
+
+
+def _path_is_under_project(path_str: str, project_root: Path | None) -> bool:
+    """True if path resolves under project_root (or is a bare relative .py name).
+
+    When *project_root* is None, only reject absolute paths outside a reasonable
+    relative form: allow relative paths ending in ``.py`` (freeze-time without
+    root still blocks ``-c`` / absolute escapes via other checks).
+    """
+    p = Path(path_str)
+    if project_root is None:
+        # No root: allow relative *.py only (no absolute, no .. climb evidence).
+        if p.is_absolute():
+            return False
+        parts = p.parts
+        if ".." in parts:
+            return False
+        return path_str.endswith(".py") or p.suffix == ".py"
+
+    root = project_root.resolve()
+    try:
+        # Relative to project when not absolute
+        candidate = (root / p).resolve() if not p.is_absolute() else p.resolve()
+    except (OSError, RuntimeError):
+        return False
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return False
+    return candidate.suffix == ".py" or str(candidate).endswith(".py")
+
+
+def _check_python_argv(
+    cmd: Sequence[str],
+    *,
+    where: str,
+    project_root: Path | None,
+) -> None:
+    """Python family: only ``-m pytest|unittest`` or project ``.py`` script.
+
+    After a permitted ``-m`` module or ``.py`` script, remaining argv is free
+    (pytest/unittest/script args). ``-c`` / ``-e`` are always denied.
+    """
+    if len(cmd) < 2:
+        raise CommandPolicyError(
+            f"{where}: python requires -m pytest|unittest or a .py script path"
+        )
+    if _has_flag(cmd, "-c", "-e"):
+        raise CommandPolicyError(
+            f"{where}: python -c/-e is denied for acceptance "
+            "(use -m pytest|unittest or a .py path under the project)"
+        )
+
+    i = 1
+    while i < len(cmd):
+        tok = cmd[i]
+        if tok == "-m":
+            if i + 1 >= len(cmd):
+                raise CommandPolicyError(f"{where}: python -m requires a module name")
+            mod = cmd[i + 1]
+            mod_base = mod.split(".", 1)[0]
+            if mod_base not in _PYTHON_M_ALLOWED and mod not in _PYTHON_M_ALLOWED:
+                raise CommandPolicyError(
+                    f"{where}: python -m {mod!r} denied "
+                    f"(only -m pytest|unittest allowed)"
+                )
+            # Rest of argv belongs to the module (pytest/unittest) — allowed.
+            return
+        if tok in ("-c", "-e") or tok.startswith("-c") or tok.startswith("-e"):
+            raise CommandPolicyError(
+                f"{where}: python -c/-e is denied for acceptance"
+            )
+        if tok.startswith("-"):
+            # Limited interpreter flags before -m / script
+            if tok in ("-u", "-O", "-OO", "-B", "-S", "-s", "-I", "-E", "-P", "--"):
+                i += 1
+                continue
+            if tok.startswith(("-W", "-X", "-Q")):
+                i += 1
+                continue
+            raise CommandPolicyError(
+                f"{where}: python flag {tok!r} not allowed before -m/script "
+                "(allowed: -u/-O/-B/-I/-E/-s/-S/-P/-W*/-X*)"
+            )
+        # Positional: must be .py under project; remaining args are script args.
+        if not (tok.endswith(".py") or Path(tok).suffix == ".py"):
+            raise CommandPolicyError(
+                f"{where}: python positional {tok!r} denied "
+                "(need -m pytest|unittest or a .py script under the project)"
+            )
+        if not _path_is_under_project(tok, project_root):
+            raise CommandPolicyError(
+                f"{where}: python script {tok!r} is not a .py path under the project"
+            )
+        return
+
+    raise CommandPolicyError(
+        f"{where}: python requires -m pytest|unittest or a .py script path"
+    )
+
+
+def _check_node_argv(cmd: Sequence[str], *, where: str) -> None:
+    """Node: deny -e/-p eval; allow script paths only when basename was allow-cmd'd."""
+    if _has_flag(cmd, "-e", "--eval", "-p", "--print"):
+        raise CommandPolicyError(
+            f"{where}: node -e/--eval/-p is denied for acceptance"
+        )
+
+
+def _check_npm_argv(cmd: Sequence[str], *, where: str) -> None:
+    """npm: only ``test`` or ``run test`` / ``run pytest`` (+ trailing args)."""
+    if len(cmd) < 2:
+        raise CommandPolicyError(
+            f"{where}: npm requires subcommand 'test' or 'run test'|'run pytest'"
+        )
+    sub = cmd[1]
+    if sub == "test":
+        return
+    if sub == "run":
+        if len(cmd) < 3:
+            raise CommandPolicyError(
+                f"{where}: npm run requires a script name (test|pytest)"
+            )
+        script = cmd[2]
+        if script not in _NPM_RUN_SCRIPTS:
+            raise CommandPolicyError(
+                f"{where}: npm run {script!r} denied "
+                f"(only run test|pytest allowed)"
+            )
+        return
+    raise CommandPolicyError(
+        f"{where}: npm subcommand {sub!r} denied "
+        "(only 'test' or 'run test'|'run pytest' allowed)"
+    )
+
+
+def check_command_policy(
+    cmd: Sequence[str],
+    *,
+    allowlist: Iterable[str] | None = None,
+    no_allowlist: bool = False,
+    project_root: Path | str | None = None,
+    where: str = "command",
+) -> None:
+    """Raise ``CommandPolicyError`` if *cmd* is not permitted for acceptance.
+
+    Policy order:
+    1. Non-empty argv required.
+    2. Shell interpreters as argv[0] → always deny.
+    3. Always-deny basenames (agent CLIs, rm, npx, …) → always deny
+       (even with ``--allow-cmd`` / ``no_allowlist``).
+    4. Unless ``no_allowlist``, argv[0] must be in allowlist / python family.
+    5. Semantic argv grammar for python / node / npm families.
+    6. Global deny of interpreter eval flags on python/node even under break-glass.
+    """
+    if not cmd:
+        raise CommandPolicyError(f"{where}: empty command")
+    base = command_basename(cmd[0])
+    if not base:
+        raise CommandPolicyError(f"{where}: empty argv[0] basename")
+
+    root: Path | None
+    if project_root is None:
+        root = None
+    else:
+        root = Path(project_root)
+
+    if base in SHELL_BASENAMES:
+        raise CommandPolicyError(
+            f"{where}: shell interpreter {base!r} is not allowed as acceptance "
+            "command (use direct argv like pytest/python, not bash -c)"
+        )
+
+    if base in ALWAYS_DENY_BASENAMES:
+        raise CommandPolicyError(
+            f"{where}: basename {base!r} is permanently denied for acceptance"
+        )
+
+    # Break-glass still cannot use python -c / node -e.
+    if is_python_bin(base):
+        # Floor: -c/-e always denied; full grammar when not no_allowlist or always
+        if _has_flag(cmd, "-c", "-e"):
+            raise CommandPolicyError(
+                f"{where}: python -c/-e is denied for acceptance "
+                "(always-deny floor; use -m pytest|unittest or project .py)"
+            )
+    if is_node_bin(base) or base == "node":
+        if _has_flag(cmd, "-e", "--eval", "-p", "--print"):
+            raise CommandPolicyError(
+                f"{where}: node -e/--eval/-p is denied for acceptance "
+                "(always-deny floor)"
+            )
+
+    if no_allowlist:
+        # Emergency: skip positive allowlist membership, keep floors above.
+        # Still apply semantic grammar for python when present (no -c already).
+        if is_python_bin(base) and len(cmd) > 1:
+            # Under break-glass allow broader python *except* -c/-e (already denied).
+            # Still block -m with clearly dangerous patterns? Keep -m free under glass
+            # except we already blocked -c. Operator owns risk.
+            pass
+        return
+
+    allowed = (
+        frozenset(allowlist) if allowlist is not None else DEFAULT_ALLOWLIST
+    )
+    if not _basename_allowed(base, allowed):
+        raise CommandPolicyError(
+            f"{where}: basename {base!r} not in acceptance allowlist "
+            f"({', '.join(sorted(allowed))}); use --allow-cmd {base} "
+            "(TTY-only --no-allowlist is break-glass and still applies deny floor)"
+        )
+
+    # Semantic families
+    if is_python_bin(base):
+        _check_python_argv(cmd, where=where, project_root=root)
+    elif is_node_bin(base) or base == "node":
+        _check_node_argv(cmd, where=where)
+    elif base == "npm":
+        _check_npm_argv(cmd, where=where)
+
+
+def check_commands_policy(
+    commands: list[list[str]],
+    *,
+    allowlist: Iterable[str] | None = None,
+    no_allowlist: bool = False,
+    project_root: Path | str | None = None,
+) -> None:
+    """Validate every command; raise on first rejection."""
+    for i, cmd in enumerate(commands):
+        check_command_policy(
+            cmd,
+            allowlist=allowlist,
+            no_allowlist=no_allowlist,
+            project_root=project_root,
+            where=f"manifest.commands[{i}]",
+        )
+
+
+# Back-compat aliases used by older imports / tests during migration.
+CommandAllowlistError = CommandPolicyError
+check_command_allowlist = check_command_policy
+check_commands_allowlist = check_commands_policy

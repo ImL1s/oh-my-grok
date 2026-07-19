@@ -237,17 +237,24 @@ def test_same_process_token_required_for_set_verified(tmp_path):
     assert load_run(tmp_path, rid)["verified"] is True
 
 
-def test_run_acceptance_python_c_pass(tmp_path):
+def test_run_acceptance_python_m_pytest_pass(tmp_path):
+    """python -m pytest is the allowed python family form (not -c)."""
     run = create_run(tmp_path, mode="ulw", goal="py")
     rid = run["run_id"]
+    # Write a tiny test file under project so pytest has something to collect
+    tdir = tmp_path / "tests"
+    tdir.mkdir()
+    (tdir / "test_trivial.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
     prd = {
         "version": 1,
         "goal": "py",
         "stories": [
             {
                 "id": "s1",
-                "title": "python pass",
-                "commands": [[sys.executable, "-c", "pass"]],
+                "title": "python m pytest",
+                "commands": [[sys.executable, "-m", "pytest", "tests/test_trivial.py", "-q"]],
             }
         ],
         "global_commands": [],
@@ -256,6 +263,27 @@ def test_run_acceptance_python_c_pass(tmp_path):
     assert run_acceptance(tmp_path, rid) is True
     set_verified(tmp_path, rid)
     assert load_run(tmp_path, rid)["verified"] is True
+
+
+def test_run_acceptance_python_c_denied(tmp_path):
+    from omg_cli.acceptance import CommandPolicyError
+
+    run = create_run(tmp_path, mode="ulw", goal="py-c")
+    rid = run["run_id"]
+    prd = {
+        "version": 1,
+        "goal": "py-c",
+        "stories": [
+            {
+                "id": "s1",
+                "title": "python -c denied",
+                "commands": [[sys.executable, "-c", "pass"]],
+            }
+        ],
+        "global_commands": [],
+    }
+    with pytest.raises(CommandPolicyError, match="-c"):
+        freeze_acceptance(tmp_path, rid, prd)
 
 
 def test_run_acceptance_false_not_verified(tmp_path):
@@ -343,9 +371,11 @@ def test_allowlist_allows_pytest_and_true():
     check_command_allowlist(["true"])
     check_command_allowlist(["false"])
     check_command_allowlist(["pytest", "tests/", "-q"])
-    check_command_allowlist(["python3", "-c", "pass"])
-    check_command_allowlist(["python3.12", "-c", "pass"])
+    check_command_allowlist(["python3", "-m", "pytest", "-q"])
+    check_command_allowlist(["python3.12", "-m", "unittest"])
     check_command_allowlist(["/usr/bin/pytest", "-q"])  # path basename
+    with pytest.raises(Exception, match="-c"):
+        check_command_allowlist(["python3", "-c", "pass"])
 
 
 def test_allowlist_python_versioned_only_not_prefix():
@@ -367,9 +397,9 @@ def test_allowlist_python_versioned_only_not_prefix():
     assert _basename_allowed("python3foo", allowed) is False
     assert _basename_allowed("python3.", allowed) is False
 
-    check_command_allowlist(["python3.12", "-c", "pass"])
+    check_command_allowlist(["python3.12", "-m", "pytest"])
     with pytest.raises(CommandAllowlistError, match="not in acceptance allowlist"):
-        check_command_allowlist(["python3evil", "-c", "pass"])
+        check_command_allowlist(["python3evil", "-m", "pytest"])
     with pytest.raises(CommandAllowlistError, match="not in acceptance allowlist"):
         check_command_allowlist(["python3-config", "--help"])
 
@@ -390,6 +420,9 @@ def test_allowlist_extra_allow_and_no_allowlist():
         check_command_allowlist(["claude"], no_allowlist=True)
     # but can run non-default bins like curl
     check_command_allowlist(["curl", "https://x"], no_allowlist=True)
+    # floors still block python -c under break-glass
+    with pytest.raises(CommandAllowlistError, match="-c"):
+        check_command_allowlist(["python3", "-c", "pass"], no_allowlist=True)
 
 
 def test_run_acceptance_rejects_denied_command(tmp_path):
@@ -409,9 +442,9 @@ def test_run_acceptance_rejects_denied_command(tmp_path):
         ],
         "global_commands": [],
     }
-    freeze_acceptance(tmp_path, rid, prd)
+    # Policy runs at freeze time now
     with pytest.raises(CommandAllowlistError, match="rm"):
-        run_acceptance(tmp_path, rid)
+        freeze_acceptance(tmp_path, rid, prd)
 
 
 def test_modes_ralph_require_acceptance_exit(monkeypatch, tmp_path):

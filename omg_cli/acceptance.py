@@ -6,20 +6,39 @@ Only this module (via the omg CLI) may write ``acceptance.result.json`` with
 sha **and** a process-local token registered by ``run_acceptance`` — a full
 disk forge (writer + passed + correct sha) without the token is rejected.
 
-Acceptance commands are filtered by a **basename allowlist** (default safe test
-runners / language tools). External agent CLIs and destructive bins are denied.
-``--no-allowlist`` is an emergency escape hatch and must not be used by models.
+Acceptance commands are filtered by the semantic policy in
+``omg_cli.command_policy`` (executable family + argv grammar). External agent
+CLIs, shells, ``python -c``, and ``npx`` are denied. ``--no-allowlist`` is a
+TTY-only break-glass that still applies the always-deny floor.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any, Iterable
 
+from omg_cli.command_policy import (
+    ALWAYS_DENY_BASENAMES,
+    DEFAULT_ALLOWLIST,
+    POLICY_VERSION,
+    SHELL_BASENAMES,
+    CommandPolicyError,
+    check_command_policy,
+    check_commands_policy,
+    command_basename,
+    is_python_bin,
+    resolve_allowlist,
+    _basename_allowed,
+)
+
+# Back-compat name used by tests / callers.
+CommandAllowlistError = CommandPolicyError
+check_command_allowlist = check_command_policy
+check_commands_allowlist = check_commands_policy
 
 CLI_WRITER = "omg-cli"
 MANIFEST_NAME = "acceptance.manifest.json"
@@ -36,61 +55,49 @@ _STRIP_ENV_KEYS = frozenset(
 
 DEFAULT_COMMAND_TIMEOUT: float | None = 300.0
 
-# Default basename allowlist for acceptance argv[0] (after Path.name / basename).
-DEFAULT_ALLOWLIST: frozenset[str] = frozenset(
-    {
-        "pytest",
-        "python",
-        "python3",
-        "true",
-        "false",
-        "make",
-        "npm",
-        "npx",
-        "node",
-        "cargo",
-        "go",
-        "dart",
-        "flutter",
-        "ruff",
-        "mypy",
-        "black",
-        "git",
-    }
-)
+# Re-export policy sets for callers that imported from acceptance.
+__all__ = [
+    "ALWAYS_DENY_BASENAMES",
+    "CLI_WRITER",
+    "CommandAllowlistError",
+    "CommandPolicyError",
+    "DEFAULT_ALLOWLIST",
+    "DEFAULT_COMMAND_TIMEOUT",
+    "POLICY_VERSION",
+    "SHELL_BASENAMES",
+    "check_command_allowlist",
+    "check_command_policy",
+    "check_commands_allowlist",
+    "check_commands_policy",
+    "clear_cli_acceptance_tokens",
+    "collect_commands",
+    "command_basename",
+    "compute_manifest_sha256",
+    "format_commands_review",
+    "freeze_acceptance",
+    "freeze_and_run",
+    "has_cli_acceptance_token",
+    "is_cli_acceptance_result",
+    "is_python_bin",
+    "is_trusted_acceptance",
+    "load_frozen_commands",
+    "load_prd",
+    "manifest_path",
+    "prd_has_acceptance_commands",
+    "prd_path",
+    "read_manifest_sha256",
+    "register_cli_acceptance_token",
+    "resolve_allowlist",
+    "result_path",
+    "run_acceptance",
+    "run_dir",
+    "sanitized_env",
+    "sha_path",
+    "sha256_hex",
+    "validate_prd",
+    "_basename_allowed",
+]
 
-# Always denied even when listed via --allow-cmd (security floor).
-ALWAYS_DENY_BASENAMES: frozenset[str] = frozenset(
-    {
-        "claude",
-        "codex",
-        "omx",
-        "agy",
-        "cursor-agent",
-        "kimi",
-        "rm",
-        "sudo",
-        "doas",
-    }
-)
-
-# Shell interpreters: never allowed as acceptance argv[0] (curl|sh, -c escapes).
-SHELL_BASENAMES: frozenset[str] = frozenset(
-    {
-        "sh",
-        "bash",
-        "zsh",
-        "dash",
-        "csh",
-        "tcsh",
-        "fish",
-        "ksh",
-    }
-)
-
-
-class CommandAllowlistError(ValueError):
-    """Raised when an acceptance command is rejected by the allowlist / denylist."""
 
 # Process-local trust: only ``run_acceptance`` may register tokens after it
 # writes acceptance.result.json. Agent-forged disk stamps (even with writer /
@@ -195,124 +202,6 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def command_basename(argv0: str) -> str:
-    """Return the executable basename for allowlist checks (handles paths)."""
-    name = Path(str(argv0)).name
-    # Windows-style trailing .exe is uncommon here; strip for robustness.
-    if name.lower().endswith(".exe"):
-        name = name[:-4]
-    return name
-
-
-def resolve_allowlist(
-    extra: Iterable[str] | None = None,
-    *,
-    base: Iterable[str] | None = None,
-) -> frozenset[str]:
-    """Default allowlist plus optional ``--allow-cmd`` extensions."""
-    allowed = set(DEFAULT_ALLOWLIST if base is None else base)
-    if extra:
-        for name in extra:
-            n = command_basename(str(name).strip())
-            if n:
-                allowed.add(n)
-    return frozenset(allowed)
-
-
-# Exact: python | python2 | python3 | python2.N | python3.N
-# Rejects python3evil, python3-config, python3foo, etc.
-_PYTHON_BIN_RE = re.compile(r"^python([23](\.\d+)?)?$")
-
-
-def _basename_allowed(base: str, allowed: frozenset[str]) -> bool:
-    """True if *base* is in *allowed* or a versioned python binary family match.
-
-    Versioned form is only ``python``, ``python2``, ``python3``, or
-    ``python2.N`` / ``python3.N`` (e.g. python3.12). Prefix tricks like
-    ``python3evil`` are rejected.
-    """
-    if base in allowed:
-        return True
-    if not _PYTHON_BIN_RE.match(base):
-        return False
-    # Family membership: versioned bins map to exact allowlist names.
-    if base == "python":
-        return "python" in allowed
-    if base.startswith("python3"):
-        return "python3" in allowed or "python" in allowed
-    if base.startswith("python2"):
-        return "python2" in allowed or "python" in allowed
-    return False
-
-
-def check_command_allowlist(
-    cmd: list[str],
-    *,
-    allowlist: Iterable[str] | None = None,
-    no_allowlist: bool = False,
-    where: str = "command",
-) -> None:
-    """Raise ``CommandAllowlistError`` if *cmd* is not permitted for acceptance.
-
-    Policy (in order):
-    1. Shell interpreters as argv[0] → always deny (blocks ``bash -c``, ``curl|sh``).
-    2. Always-deny basenames (``claude``, ``rm``, …) → always deny, even with
-       ``--allow-cmd`` / ``--no-allowlist`` (``--no-allowlist`` still cannot run
-       agent CLIs or ``rm``; it only skips the *positive* allowlist).
-    3. Unless ``no_allowlist``, argv[0] basename must be in the allowlist
-       (``python3.N`` matches when ``python3`` is allowed).
-    """
-    if not cmd:
-        raise CommandAllowlistError(f"{where}: empty command")
-    base = command_basename(cmd[0])
-    if not base:
-        raise CommandAllowlistError(f"{where}: empty argv[0] basename")
-
-    if base in SHELL_BASENAMES:
-        raise CommandAllowlistError(
-            f"{where}: shell interpreter {base!r} is not allowed as acceptance "
-            "command (use direct argv like pytest/python, not bash -c)"
-        )
-
-    # Always-deny floor: agent CLIs + destructive bins. --no-allowlist does NOT
-    # lift these (emergency only extends past the positive allowlist).
-    if base in ALWAYS_DENY_BASENAMES:
-        raise CommandAllowlistError(
-            f"{where}: basename {base!r} is permanently denied for acceptance"
-        )
-
-    if no_allowlist:
-        return
-
-    allowed = (
-        frozenset(allowlist)
-        if allowlist is not None
-        else DEFAULT_ALLOWLIST
-    )
-    if not _basename_allowed(base, allowed):
-        raise CommandAllowlistError(
-            f"{where}: basename {base!r} not in acceptance allowlist "
-            f"({', '.join(sorted(allowed))}); use --allow-cmd {base} or "
-            "--no-allowlist (dangerous)"
-        )
-
-
-def check_commands_allowlist(
-    commands: list[list[str]],
-    *,
-    allowlist: Iterable[str] | None = None,
-    no_allowlist: bool = False,
-) -> None:
-    """Validate every command in a frozen list; raise on first rejection."""
-    for i, cmd in enumerate(commands):
-        check_command_allowlist(
-            cmd,
-            allowlist=allowlist,
-            no_allowlist=no_allowlist,
-            where=f"manifest.commands[{i}]",
-        )
-
-
 def _validate_argv_command(cmd: Any, *, where: str) -> list[str]:
     if not isinstance(cmd, list) or not cmd:
         raise ValueError(f"{where}: command must be a non-empty argv array, got {cmd!r}")
@@ -322,9 +211,6 @@ def _validate_argv_command(cmd: Any, *, where: str) -> list[str]:
             raise ValueError(
                 f"{where}: argv[{i}] must be a non-empty string, got {part!r}"
             )
-        # Reject bare shell strings that look like multi-token one-liners
-        # when the whole command is a single string with spaces — already
-        # handled by requiring list; still reject nested lists.
         if any(ch in part for ch in ("\n", "\r", "\0")):
             raise ValueError(f"{where}: argv[{i}] contains illegal control chars")
         out.append(part)
@@ -437,10 +323,16 @@ def freeze_acceptance(
     root: Path,
     run_id: str,
     prd: dict[str, Any] | None = None,
+    *,
+    allowlist: Iterable[str] | None = None,
+    extra_allow: Iterable[str] | None = None,
+    no_allowlist: bool = False,
+    skip_policy: bool = False,
 ) -> dict[str, Any]:
-    """Validate PRD, write frozen manifest + sha256 under the run dir.
+    """Validate PRD, apply command policy, write frozen manifest + sha256.
 
     Returns the manifest dict (includes ``commands`` flat list + ``sha256``).
+    Policy failures raise ``CommandPolicyError`` so bad PRDs never freeze.
     """
     root = Path(root)
     if prd is None:
@@ -450,6 +342,19 @@ def freeze_acceptance(
 
     normalized = validate_prd(prd)
     commands = collect_commands(normalized)
+
+    effective_allow = resolve_allowlist(extra_allow, base=allowlist)
+    extra_list = sorted({command_basename(str(x)) for x in (extra_allow or []) if str(x).strip()})
+
+    if not skip_policy:
+        check_commands_policy(
+            commands,
+            allowlist=effective_allow,
+            no_allowlist=no_allowlist,
+            project_root=root,
+        )
+
+    # Hashed body includes policy identity so overrides change the digest.
     manifest: dict[str, Any] = {
         "version": 1,
         "run_id": run_id,
@@ -457,6 +362,9 @@ def freeze_acceptance(
         "stories": normalized["stories"],
         "global_commands": normalized["global_commands"],
         "commands": commands,
+        "policy_version": POLICY_VERSION,
+        "allow_cmd": extra_list,
+        "no_allowlist": bool(no_allowlist),
     }
     body = _canonical_json_bytes(manifest)
     digest = sha256_hex(body)
@@ -464,7 +372,6 @@ def freeze_acceptance(
 
     mpath = manifest_path(root, run_id)
     # Write without embedding sha in the hashed body — store sha alongside.
-    # Manifest file content = canonical body (no sha256 field) for stable hash.
     _atomic_write_text(mpath, body.decode("utf-8"))
     _atomic_write_text(sha_path(root, run_id), digest + "\n")
     return manifest
@@ -522,11 +429,25 @@ def load_frozen_commands(root: Path, run_id: str) -> list[list[str]]:
     return argv_list
 
 
-def format_commands_review(commands: list[list[str]]) -> str:
-    """Human-readable listing of acceptance commands for ``--review``."""
-    lines = [f"acceptance commands ({len(commands)}):"]
+def format_commands_review(
+    commands: list[list[str]],
+    *,
+    root: Path | str | None = None,
+    run_id: str | None = None,
+    manifest_sha: str | None = None,
+) -> str:
+    """Human-readable listing for ``--review`` (sha, cwd, numbered shlex)."""
+    lines: list[str] = []
+    if run_id is not None:
+        lines.append(f"run_id: {run_id}")
+    if root is not None:
+        lines.append(f"cwd: {Path(root).resolve()}")
+    if manifest_sha:
+        lines.append(f"manifest_sha256: {manifest_sha}")
+    lines.append(f"policy_version: {POLICY_VERSION}")
+    lines.append(f"acceptance commands ({len(commands)}):")
     for i, cmd in enumerate(commands):
-        lines.append(f"  [{i}] {' '.join(cmd)}")
+        lines.append(f"  [{i}] {shlex.join(list(cmd))}")
     return "\n".join(lines)
 
 
@@ -545,9 +466,8 @@ def run_acceptance(
     Returns True iff all commands exit 0. Always stamps ``writer: omg-cli``.
     Does not set verified — caller must invoke ``set_verified``.
 
-    Commands are checked against the acceptance allowlist unless
-    ``no_allowlist=True`` (emergency only; still cannot run always-deny bins
-    or shell interpreters).
+    Commands are always checked against the semantic policy (floors apply even
+    when ``no_allowlist=True``).
     """
     root = Path(root)
     mpath = manifest_path(root, run_id)
@@ -572,11 +492,12 @@ def run_acceptance(
     argv_list = load_frozen_commands(root, run_id)
 
     effective_allow = resolve_allowlist(extra_allow, base=allowlist)
-    # Validate allowlist before any exec (also on dry_run so review fails closed).
-    check_commands_allowlist(
+    # Validate policy before any exec (also on dry_run so review fails closed).
+    check_commands_policy(
         argv_list,
         allowlist=effective_allow,
         no_allowlist=no_allowlist,
+        project_root=root,
     )
 
     results: list[dict[str, Any]] = []
@@ -759,7 +680,14 @@ def freeze_and_run(
     if prd is None and not manifest_path(root, run_id).is_file():
         raise FileNotFoundError(f"no prd or frozen manifest for run_id={run_id!r}")
     if prd is not None:
-        freeze_acceptance(root, run_id, prd)
+        freeze_acceptance(
+            root,
+            run_id,
+            prd,
+            allowlist=allowlist,
+            extra_allow=extra_allow,
+            no_allowlist=no_allowlist,
+        )
     elif not manifest_path(root, run_id).is_file():
         raise FileNotFoundError(f"no frozen manifest for run_id={run_id!r}")
     return run_acceptance(
