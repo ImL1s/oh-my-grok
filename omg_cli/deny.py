@@ -9,11 +9,12 @@ from typing import Any
 _DENY_BINS = r"(?:claude|codex|omx|agy|cursor-agent|kimi)"
 
 # Command-position only: start of string or after shell operators (not bare whitespace).
-# Allows optional ENV=val prefixes, env/command/xargs wrappers, and path prefixes.
+# Allows optional ENV=val prefixes, wrappers, and path prefixes.
 # Bare "echo claude is a word" must NOT match (claude is an argument, not a command head).
 _CMD_POS = r"(?:^|[;&|(`]|\|\||&&)"
 _ENV_ASSIGNS = r"(?:(?:[A-Za-z_][\w]*=\S*\s+)*)"
-_WRAPPERS = r"(?:(?:env|command|xargs)\s+)*"
+# Wrappers that still leave the denied bin in command position after them
+_WRAPPERS = r"(?:(?:env|command|xargs|nice|nohup|sudo|time)\s+(?:--\s+)*)*"
 _PATH_PREFIX = r"(?:\S*/)?"
 
 _DENY_AT_CMD_POS = re.compile(
@@ -21,8 +22,26 @@ _DENY_AT_CMD_POS = re.compile(
     re.IGNORECASE,
 )
 _OMC_TEAM = re.compile(rf"{_CMD_POS}\s*omc\s+team\b", re.IGNORECASE)
+
+# sh/bash/zsh -c / -lc (login+command) with quoted OR unquoted body containing a deny bin.
+# Requires short-flag cluster that includes `c` (so bare `bash -l` is not a hit).
+# Examples:
+#   sh -c 'claude -p x'
+#   bash -lc "claude ..."
+#   zsh -c claude
+#   bash -c claude -p x
 _SH_C = re.compile(
-    r"(?:^|[;&|(`\s]|\|\||&&)(?:(?:[A-Za-z_][\w]*=\S*\s+)*)(?:(?:env|command)\s+)*(?:sh|bash|zsh)\s+-c\s+['\"].*\b(?:claude|codex|omx|agy|cursor-agent|kimi)\b",
+    rf"{_CMD_POS}\s*"
+    rf"{_ENV_ASSIGNS}"
+    rf"(?:(?:env|command|nice|nohup|sudo|time)\s+(?:--\s+)*)*"
+    rf"(?:sh|bash|zsh)\s+-"
+    rf"[A-Za-z]*c[A-Za-z]*"  # -c, -lc, -cl, any short-flag soup that includes c
+    rf"\s+"
+    rf"(?:"
+    rf"['\"].*\b{_DENY_BINS}\b"  # quoted body
+    rf"|"
+    rf"{_PATH_PREFIX}{_DENY_BINS}\b"  # unquoted: sh -c claude ...
+    rf")",
     re.IGNORECASE,
 )
 
@@ -35,7 +54,7 @@ def should_deny_command(command: str) -> bool:
         return True
     if _OMC_TEAM.search(command):
         return True
-    # sh/bash/zsh -c '...claude...' and similar wrappers
+    # sh/bash/zsh -c/-lc '...claude...' (quoted or unquoted) and similar wrappers
     if _SH_C.search(command):
         return True
     return False

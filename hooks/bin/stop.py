@@ -8,13 +8,17 @@ from _common import append_event, ensure_omg_dirs, read_hook_event
 
 
 def main() -> None:
-    root = ensure_omg_dirs()
-    ev = read_hook_event()
-    # CRITICAL: never set verified / acceptance status here — omg CLI is sole writer.
-    append_event(
-        root,
-        {"event": "Stop", "status": "ok", "raw_keys": list(ev.keys())[:20]},
-    )
+    try:
+        root = ensure_omg_dirs()
+        ev = read_hook_event()
+        # CRITICAL: never set verified / acceptance status here — omg CLI is sole writer.
+        append_event(
+            root,
+            {"event": "Stop", "status": "ok", "raw_keys": list(ev.keys())[:20]},
+        )
+    except Exception:
+        # Fail-open: never crash Stop on I/O or unexpected errors
+        sys.exit(0)
 
 
 if __name__ == "__main__":
