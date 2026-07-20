@@ -789,6 +789,11 @@ def run_mode(
     current = load_run(root_path, run_id) or {}
     if verified or current.get("verified") is True:
         # set_verified already set status=verified
+        # Still auto-integrate ULW envelopes when present (closed loop).
+        if mode == "ulw" and not dry_run:
+            int_rc = _ulw_auto_integrate(root_path, run_id)
+            if int_rc != 0:
+                return int_rc
         return 0
 
     if last_rc != 0 and not dry_run:
@@ -799,6 +804,12 @@ def run_mode(
             extra={"exit_code": last_rc, "passes": current.get("passes", 0)},
         )
         return last_rc
+
+    # ULW: auto-integrate envelopes if any; fail when envelopes exist but apply fails
+    if mode == "ulw" and not dry_run:
+        int_rc = _ulw_auto_integrate(root_path, run_id)
+        if int_rc != 0:
+            return int_rc
 
     # Completed iterations without acceptance — not verified
     # (write_status never sets verified=true; only set_verified can)
@@ -820,3 +831,45 @@ def run_mode(
         )
         return 1
     return 0
+
+
+def _ulw_auto_integrate(root: Path, run_id: str) -> int:
+    """After ULW launch: integrate envelopes if present.
+
+    - status missing → OK (solo smoke / no envelopes yet); print next step
+    - status ok → OK
+    - status failed → non-zero (dirty envelopes must not silently complete)
+    """
+    try:
+        from omg_cli.integrate import IntegrateError, integrate_results
+    except Exception as exc:  # pragma: no cover
+        print(f"omg ulw: integrate import failed: {exc}", file=sys.stderr)
+        return 1
+    try:
+        result = integrate_results(root, run_id)
+    except FileNotFoundError as exc:
+        print(f"omg ulw: integrate skipped: {exc}", file=sys.stderr)
+        return 0
+    except IntegrateError as exc:
+        print(f"omg ulw: integrate failed: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"omg ulw: integrate error: {exc}", file=sys.stderr)
+        return 1
+
+    status = (result or {}).get("status") or "unknown"
+    if status == "missing":
+        print(
+            "omg ulw: no ULW envelopes under .omg/artifacts/ulw-results/ "
+            "(workers should seal with `omg worker seal` then re-run "
+            "`omg integrate` if needed)",
+            file=sys.stderr,
+        )
+        return 0
+    if status == "ok":
+        print(f"omg ulw: integrated envelopes for run {run_id}", file=sys.stderr)
+        return 0
+    # failed / other
+    err = (result or {}).get("error") or (result or {}).get("note") or status
+    print(f"omg ulw: integrate status={status!r}: {err}", file=sys.stderr)
+    return 1

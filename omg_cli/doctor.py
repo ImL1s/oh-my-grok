@@ -377,6 +377,68 @@ def _summarize_plugin_payload(data: Any, *, source: str) -> SoftResult | None:
     return ("plugin trust/inventory", level, "; ".join(bits))
 
 
+# Foreign orchestration that can pollute OMG-only live attribution (Codex P0-5)
+_FOREIGN_ORCH_MARKERS: tuple[str, ...] = (
+    "oh-my-claudecode",
+    "oh-my-codex",
+    "ralph-loop",
+    "oh-my-opencode",
+)
+
+
+def check_effective_discovery_foreign() -> SoftResult:
+    """Soft: snapshot ``grok inspect --json`` for foreign orchestration markers.
+
+    Does not hard-fail by default (WARN). Use ``omg doctor --strict`` to promote.
+    """
+    if not shutil.which("grok"):
+        return (
+            "effective discovery (foreign orch)",
+            "warn",
+            "grok not on PATH; cannot snapshot discovery graph",
+        )
+    data = _run_grok_json(("grok", "inspect", "--json"))
+    if data is None:
+        return (
+            "effective discovery (foreign orch)",
+            "warn",
+            "grok inspect --json unavailable or non-JSON",
+        )
+
+    blob_parts: list[str] = []
+
+    def _walk(obj: Any, depth: int = 0) -> None:
+        if depth > 6:
+            return
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k in ("name", "id", "plugin", "skill", "path", "source"):
+                    blob_parts.append(str(v))
+                _walk(v, depth + 1)
+        elif isinstance(obj, list):
+            for x in obj[:200]:
+                _walk(x, depth + 1)
+        elif isinstance(obj, str) and len(obj) < 400:
+            blob_parts.append(obj)
+
+    _walk(data)
+    blob = "\n".join(blob_parts).lower()
+    hits = sorted({m for m in _FOREIGN_ORCH_MARKERS if m in blob})
+    if hits:
+        return (
+            "effective discovery (foreign orch)",
+            "warn",
+            "foreign orchestration in grok inspect: "
+            + ", ".join(hits)
+            + " — live evidence may not be OMG-only; save inspect JSON with suite evidence",
+        )
+    return (
+        "effective discovery (foreign orch)",
+        "ok",
+        "no high-signal foreign orch markers in inspect snapshot",
+    )
+
+
 def check_plugin_trust() -> SoftResult:
     """Best-effort grok plugin details/list/inspect for trust inventory.
 
@@ -422,7 +484,7 @@ def run_checks() -> list[tuple[str, bool, str]]:
 
 def run_soft_checks() -> list[SoftResult]:
     """Soft/best-effort checks (WARN by default; FAIL under --strict)."""
-    return [check_plugin_trust()]
+    return [check_plugin_trust(), check_effective_discovery_foreign()]
 
 
 def _format_soft_tag(level: str, *, strict: bool) -> str:

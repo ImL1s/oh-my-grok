@@ -18,15 +18,22 @@ Ship everything from the multi-council thread:
 | P0-2 | Fail-closed: stage rc≠0 cannot return APPROVE | `dual_review.py` |
 | P0-3 | Tests: Do not APPROVE; stub; rc≠0 | `test_dual_review.py`, `test_ralplan.py`, `test_verdict.py` |
 
-## Out of scope this run (P0-4+ backlog)
+## Completed in autopilot continuation
 
-- Full live suite semantic rewrite
-- grok inspect doctor oracle
-- Session-aware ralph native resume
-- ULW auto-integrate
+- [x] Live suite L-DUAL-1 semantic verdict/rc gate
+- [x] Doctor effective discovery foreign orch soft check
+- [x] ULW auto-integrate-or-fail (`_ulw_auto_integrate`)
+- [x] `omg state --human` lightweight next-hint summary
+- [x] Unit tests (300+ non-live)
+
+## Still later (host-heavy / multi-day)
+
+- Full live suite matrix (ralplan/pipeline/ask/multi-worker ULW) on clean host
+- Native sessionId / `grok --resume` continuity for ralph
+- Live spawn-deny host oracle canary
 
 ## Success
 
 - `pytest -q -m 'not live'` green
 - Negation / stub / rc fail-closed unit-proven
-- Commits on main (or ready to commit)
+- Commits on main

@@ -441,6 +441,48 @@ def test_failed_subprocess_marks_failed(monkeypatch, tmp_path):
     assert run["verified"] is False
 
 
+def test_ulw_auto_integrate_missing_ok(monkeypatch, tmp_path):
+    """ULW completes with no envelopes → still exit 0 (solo smoke)."""
+    mock_proc = MagicMock()
+    mock_proc.pid = 11
+    mock_proc.wait.return_value = 0
+    real = subprocess.Popen
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        _selective_popen(real, lambda *_a, **_k: mock_proc),
+    )
+    rc = run_mode("ulw", "solo smoke", root=tmp_path, dry_run=False)
+    assert rc == 0
+
+
+def test_ulw_auto_integrate_helper_statuses(monkeypatch, tmp_path):
+    """_ulw_auto_integrate: missing→0, ok→0, failed→1."""
+    from omg_cli.modes import _ulw_auto_integrate
+    from omg_cli.state import create_run
+
+    run = create_run(tmp_path, mode="ulw", goal="x", force=True)
+    rid = run["run_id"]
+
+    monkeypatch.setattr(
+        "omg_cli.integrate.integrate_results",
+        lambda *a, **k: {"status": "missing"},
+    )
+    assert _ulw_auto_integrate(tmp_path, rid) == 0
+
+    monkeypatch.setattr(
+        "omg_cli.integrate.integrate_results",
+        lambda *a, **k: {"status": "ok"},
+    )
+    assert _ulw_auto_integrate(tmp_path, rid) == 0
+
+    monkeypatch.setattr(
+        "omg_cli.integrate.integrate_results",
+        lambda *a, **k: {"status": "failed", "error": "base_sha_mismatch"},
+    )
+    assert _ulw_auto_integrate(tmp_path, rid) == 1
+
+
 def test_popen_oserror_marks_failed_not_stuck_running(monkeypatch, tmp_path):
     """FileNotFoundError/OSError from Popen → failed status, non-zero rc, launch_error."""
 

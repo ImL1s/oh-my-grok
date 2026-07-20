@@ -25,23 +25,62 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return run_doctor(strict=bool(getattr(args, "strict", False)))
 
 
+def _print_state_human(data: dict) -> None:
+    """One-screen human summary (Codex P1-5 lightweight HUD substitute)."""
+    rid = data.get("run_id") or "?"
+    mode = data.get("mode") or "?"
+    status = data.get("status") or "?"
+    verified = data.get("verified")
+    goal = (data.get("goal") or "").strip()
+    if len(goal) > 120:
+        goal = goal[:117] + "..."
+    print(f"run:      {rid}")
+    print(f"mode:     {mode}")
+    print(f"status:   {status}")
+    print(f"verified: {verified}")
+    if goal:
+        print(f"goal:     {goal}")
+    for key in ("stage", "iteration", "passes", "exit_code", "note", "integrate_status"):
+        if key in data and data[key] is not None:
+            print(f"{key + ':':<10}{data[key]}")
+    next_hint = "none"
+    if verified is True:
+        next_hint = "done (verified)"
+    elif status in ("failed",):
+        next_hint = "inspect logs / omg cancel / fix and re-run"
+    elif mode == "ulw":
+        next_hint = "omg integrate (if envelopes) → omg accept"
+    elif mode == "ralph":
+        next_hint = "omg ralph --resume / fill prd + omg accept"
+    elif mode == "pipeline":
+        next_hint = "omg pipeline --resume <run>"
+    print(f"next:     {next_hint}")
+
+
 def cmd_state(args: argparse.Namespace) -> int:
     from omg_cli.state import load_active_run, load_run
 
     root = _project_root()
+    human = bool(getattr(args, "human", False))
     if getattr(args, "run_id", None):
         data = load_run(root, args.run_id)
         if data is None:
             print(f"no run found: {args.run_id}", file=sys.stderr)
             return 1
-        print(json.dumps(data, indent=2, ensure_ascii=False))
+        if human:
+            _print_state_human(data)
+        else:
+            print(json.dumps(data, indent=2, ensure_ascii=False))
         return 0
 
     active = load_active_run(root)
     if active is None:
         print("no active run")
         return 0
-    print(json.dumps(active, indent=2, ensure_ascii=False))
+    if human:
+        _print_state_human(active)
+    else:
+        print(json.dumps(active, indent=2, ensure_ascii=False))
     return 0
 
 
@@ -559,6 +598,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="show active run (or --run <id>)",
     )
     p_state.add_argument("--run", dest="run_id", default=None, help="specific run_id")
+    p_state.add_argument(
+        "--human",
+        action="store_true",
+        help="one-screen human summary (mode/status/verified/next)",
+    )
     p_state.set_defaults(func=cmd_state)
 
     p_cancel = sub.add_parser(

@@ -155,15 +155,59 @@ if [[ "$MODE" == "full" || "$MODE" == "quota-heavy" ]]; then
   DUAL="$(mkproj dual)"; cleanup_list+=("$DUAL")
   echo "== L-DUAL-1 $DUAL =="
   GOAL="$(cat "$ROOT/scripts/fixtures/live/dual_goal.txt")"
+  set +e
   (
     cd "$DUAL"
-    "${OMG[@]}" dual-review "$GOAL" --timeout "${OMG_LIVE_TIMEOUT_DUAL:-600}" --yolo || true
+    "${OMG[@]}" dual-review "$GOAL" --timeout "${OMG_LIVE_TIMEOUT_DUAL:-600}" --yolo
   )
+  dual_rc=$?
+  set -e
   # verified must remain false on any run state (grep for portability; rg may be absent)
   if grep -Rsn '"verified": true' "$DUAL/.omg" 2>/dev/null; then
     fail "L-DUAL-1 must not set verified true"
   fi
-  # artifact existence best-effort
+  # Semantic gate (Codex P0): dual_review.json must exist; verdict must never be
+  # APPROVE when stage exit_code != 0; stub/NEEDS_REVIEW must not be APPROVE.
+  python3 - "$DUAL" "$dual_rc" <<'PY' || fail "L-DUAL-1 semantic verdict gate failed"
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+dual_rc = int(sys.argv[2])
+states = list(root.glob(".omg/state/runs/*/dual_review.json"))
+if not states:
+    # dry/missing state is a hard fail for full/quota-heavy suite
+    print("L-DUAL-1 FAIL: missing dual_review.json", file=sys.stderr)
+    sys.exit(1)
+data = json.loads(states[0].read_text(encoding="utf-8"))
+verdict = (data.get("verdict") or "UNKNOWN").upper()
+history = data.get("history") or []
+print(f"L-DUAL-1 dual_rc={dual_rc} verdict={verdict} history_n={len(history)}")
+# Never stamp APPROVE if any stage reported non-zero exit
+for h in history:
+    ec = h.get("exit_code")
+    if ec not in (None, 0) and verdict == "APPROVE":
+        print(f"L-DUAL-1 FAIL: stage exit {ec} but verdict=APPROVE", file=sys.stderr)
+        sys.exit(1)
+# dual CLI exit 0 must match APPROVE only
+if dual_rc == 0 and verdict != "APPROVE":
+    print(f"L-DUAL-1 FAIL: dual-review exit 0 but verdict={verdict}", file=sys.stderr)
+    sys.exit(1)
+if dual_rc != 0 and verdict == "APPROVE":
+    print("L-DUAL-1 FAIL: dual-review non-zero exit but verdict=APPROVE", file=sys.stderr)
+    sys.exit(1)
+# verifier artifact must not be a dry_run stub while claiming APPROVE
+for p in root.glob(".omg/state/runs/*/stages/dual-verifier-*.md"):
+    text = p.read_text(encoding="utf-8", errors="replace")
+    low = text.lower()
+    if ("dry_run stub" in low or "needs_review" in low) and "APPROVE" in text:
+        # free-floating APPROVE in instructions OK; terminal APPROVE line is bad with stub
+        for line in text.splitlines():
+            if line.strip() in ("APPROVE", "## Verdict") or line.strip().endswith("APPROVE"):
+                if line.strip() == "APPROVE" or line.strip().endswith(": APPROVE"):
+                    print(f"L-DUAL-1 FAIL: stub-like artifact with terminal APPROVE: {p}", file=sys.stderr)
+                    sys.exit(1)
+print("L-DUAL-1 semantic OK")
+PY
   find "$DUAL/.omg" -name '*dual*' 2>/dev/null | head -5 || true
 fi
 

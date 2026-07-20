@@ -24,6 +24,35 @@ def test_check_plugin_trust_unavailable_when_no_grok(monkeypatch):
     assert "inspect unavailable" in detail.lower()
 
 
+def test_effective_discovery_foreign_warns(monkeypatch):
+    monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/grok")
+    monkeypatch.setattr(
+        doctor,
+        "_run_grok_json",
+        lambda *_a, **_k: {
+            "plugins": [
+                {"name": "oh-my-grok"},
+                {"name": "oh-my-claudecode", "path": "/x/omc"},
+            ]
+        },
+    )
+    name, level, detail = doctor.check_effective_discovery_foreign()
+    assert "foreign" in name
+    assert level == "warn"
+    assert "oh-my-claudecode" in detail
+
+
+def test_effective_discovery_clean_ok(monkeypatch):
+    monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/grok")
+    monkeypatch.setattr(
+        doctor,
+        "_run_grok_json",
+        lambda *_a, **_k: {"plugins": [{"name": "oh-my-grok"}]},
+    )
+    name, level, detail = doctor.check_effective_discovery_foreign()
+    assert level == "ok"
+
+
 def test_check_plugin_trust_probe_failure_warns(monkeypatch):
     monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/grok")
     monkeypatch.setattr(doctor, "_run_grok_json", lambda *_a, **_k: None)
