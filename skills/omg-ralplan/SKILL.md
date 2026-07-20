@@ -9,6 +9,7 @@ Finite-state planning loop that produces a **consensus plan** before any code ex
 
 ## HARD RULES (non-negotiable)
 - Fan-out ONLY via Grok `spawn_subagent` (depth=1; children must NOT spawn).
+- Critic/verifier: **MUST** spawn with `capability_mode=read-only`. If spawn DENIED for capability_mode: **RETRY IMMEDIATELY** same turn — do not abandon multi-agent.
 - NEVER invoke claude/codex/omc team/agy/cursor-agent as default workers.
 - Use Grok tool names: read_file, search_replace, run_terminal_command, spawn_subagent, grep, list_dir.
 - Write-heavy work: isolation worktree + background true; wait with wait_commands_or_subagents / get_command_or_subagent_output.

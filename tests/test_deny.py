@@ -88,7 +88,28 @@ def test_spawn_missing_capability_mode_denied():
         }
     )
     assert d["decision"] == "deny"
-    assert "capability_mode" in d.get("reason", "")
+    reason = d.get("reason", "")
+    assert "capability_mode" in reason
+    # Model must be told to retry, not abandon multi-agent
+    assert "RETRY IMMEDIATELY" in reason
+    assert "read-write" in reason
+    assert "Do NOT abandon multi-agent" in reason
+
+
+def test_spawn_missing_mode_explore_suggests_read_only():
+    d = decide_pre_tool_use(
+        {
+            "toolName": "spawn_subagent",
+            "toolInput": {
+                "subagent_type": "explore",
+                "prompt": "map repo",
+            },
+        }
+    )
+    assert d["decision"] == "deny"
+    reason = d.get("reason", "")
+    assert "RETRY IMMEDIATELY" in reason
+    assert "capability_mode='read-only'" in reason or 'capability_mode="read-only"' in reason
 
 
 def test_spawn_executor_read_write_allowed():
@@ -117,7 +138,9 @@ def test_spawn_general_purpose_requires_read_write():
         }
     )
     assert d["decision"] == "deny"
-    assert "read-write" in d.get("reason", "")
+    reason = d.get("reason", "")
+    assert "read-write" in reason
+    assert "RETRY IMMEDIATELY" in reason
 
 
 def test_spawn_explore_requires_read_only():
@@ -132,6 +155,7 @@ def test_spawn_explore_requires_read_only():
         }
     )
     assert d["decision"] == "deny"
+    assert "RETRY IMMEDIATELY" in d.get("reason", "")
     d2 = decide_pre_tool_use(
         {
             "toolName": "spawn_subagent",
@@ -171,6 +195,68 @@ def test_spawn_execute_mode_denied():
         }
     )
     assert d["decision"] == "deny"
+    reason = d.get("reason", "")
+    assert "RETRY IMMEDIATELY" in reason
+    assert "read-write" in reason
+
+
+def test_spawn_all_mode_denied_with_retry():
+    d = decide_pre_tool_use(
+        {
+            "toolName": "spawn_subagent",
+            "toolInput": {
+                "subagent_type": "explore",
+                "capability_mode": "all",
+                "prompt": "x",
+            },
+        }
+    )
+    assert d["decision"] == "deny"
+    reason = d.get("reason", "")
+    assert "RETRY IMMEDIATELY" in reason
+    assert "read-only" in reason
+
+
+def test_spawn_empty_type_missing_mode_denied():
+    d = decide_pre_tool_use(
+        {
+            "toolName": "spawn_subagent",
+            "toolInput": {"prompt": "x"},
+        }
+    )
+    assert d["decision"] == "deny"
+    assert "RETRY IMMEDIATELY" in d.get("reason", "")
+
+
+def test_spawn_invalid_mode_denied():
+    d = decide_pre_tool_use(
+        {
+            "toolName": "spawn_subagent",
+            "toolInput": {
+                "subagent_type": "explore",
+                "capability_mode": "write-only",
+                "prompt": "x",
+            },
+        }
+    )
+    assert d["decision"] == "deny"
+    assert "RETRY IMMEDIATELY" in d.get("reason", "")
+    assert "read-only" in d.get("reason", "")
+
+
+def test_spawn_unsafe_env_allows_missing_mode(monkeypatch):
+    monkeypatch.setenv("OMG_ALLOW_UNSAFE_SPAWN", "1")
+    d = decide_pre_tool_use(
+        {
+            "toolName": "spawn_subagent",
+            "toolInput": {
+                "subagent_type": "explore",
+                "prompt": "x",
+            },
+        }
+    )
+    assert d["decision"] == "allow"
+    assert "OMG_ALLOW_UNSAFE_SPAWN" in d.get("reason", "")
 
 
 def _run_pre_tool(event: dict, env: dict | None = None) -> subprocess.CompletedProcess:

@@ -128,11 +128,66 @@ def required_capability_mode(subagent_type: str) -> str | None:
     return None
 
 
+def suggested_capability_mode(subagent_type: str) -> str:
+    """Best-effort mode for retry messaging when mode is missing or wrong."""
+    req = required_capability_mode(subagent_type)
+    if req:
+        return req
+    # Unknown type: default implementer-ish unless name looks read-only
+    st = (subagent_type or "").strip().lower()
+    if any(k in st for k in ("critic", "verif", "explore", "plan", "review", "architect")):
+        return "read-only"
+    return "read-write"
+
+
+def spawn_deny_reason(*, st: str, cm: str, kind: str) -> str:
+    """Human+model-facing deny text that **forces retry**, not abandon multi-agent.
+
+    Models often stop spawning after a bare deny. The reason must say RETRY NOW
+    with the exact field to set, and forbid solo-fallback as the default response.
+    """
+    suggested = suggested_capability_mode(st)
+    type_label = st or "(missing subagent_type)"
+    if kind == "missing":
+        head = (
+            f"oh-my-grok: spawn_subagent DENIED — missing capability_mode "
+            f"(subagent_type={type_label!r})."
+        )
+    elif kind == "invalid":
+        head = (
+            f"oh-my-grok: spawn_subagent DENIED — invalid capability_mode={cm!r} "
+            f"(subagent_type={type_label!r})."
+        )
+    elif kind == "execute_all":
+        head = (
+            f"oh-my-grok: spawn_subagent DENIED — capability_mode execute/all not allowed "
+            f"(subagent_type={type_label!r})."
+        )
+    elif kind == "mismatch":
+        head = (
+            f"oh-my-grok: spawn_subagent DENIED — subagent_type={type_label!r} "
+            f"requires capability_mode={suggested!r} (got {cm!r})."
+        )
+    else:
+        head = "oh-my-grok: spawn_subagent DENIED."
+
+    return (
+        f"{head} "
+        "RETRY IMMEDIATELY in this same turn: call spawn_subagent again with the SAME prompt "
+        f"and capability_mode={suggested!r} "
+        "(read-only for explore/plan/critic/verifier; read-write for general-purpose/"
+        "omg-executor). "
+        "Do NOT abandon multi-agent work. Do NOT switch to solo-only just because spawn was "
+        "denied. Do NOT use capability_mode=execute or all. "
+        f"Minimal fix: add parameter capability_mode={suggested!r}."
+    )
+
+
 def decide_spawn_subagent(tin: dict[str, Any]) -> dict[str, str]:
     """Fail-closed spawn policy when PreToolUse runs for spawn_subagent.
 
-    - Missing capability_mode → deny
-    - Mode incompatible with role table → deny
+    - Missing capability_mode → deny (reason mandates immediate retry)
+    - Mode incompatible with role table → deny (reason mandates retry with required mode)
     - Unknown type with explicit mode → allow (host still applies the mode)
     """
     if os.environ.get("OMG_ALLOW_UNSAFE_SPAWN") == "1":
@@ -141,15 +196,12 @@ def decide_spawn_subagent(tin: dict[str, Any]) -> dict[str, str]:
     if not cm:
         return {
             "decision": "deny",
-            "reason": (
-                "oh-my-grok: spawn_subagent requires capability_mode "
-                "(read-write for implementers; read-only for critic/verifier/explore)"
-            ),
+            "reason": spawn_deny_reason(st=st, cm=cm, kind="missing"),
         }
     if cm not in ("read-write", "read-only", "read_write", "read_only", "execute", "all"):
         return {
             "decision": "deny",
-            "reason": f"oh-my-grok: invalid capability_mode {cm!r}",
+            "reason": spawn_deny_reason(st=st, cm=cm, kind="invalid"),
         }
     # Normalize underscores
     if cm == "read_write":
@@ -160,10 +212,7 @@ def decide_spawn_subagent(tin: dict[str, Any]) -> dict[str, str]:
     if cm in ("execute", "all"):
         return {
             "decision": "deny",
-            "reason": (
-                "oh-my-grok: capability_mode execute/all denied for spawn "
-                "(use read-write or read-only)"
-            ),
+            "reason": spawn_deny_reason(st=st, cm=cm, kind="execute_all"),
         }
     required = required_capability_mode(st)
     if required is None:
@@ -172,10 +221,7 @@ def decide_spawn_subagent(tin: dict[str, Any]) -> dict[str, str]:
     if cm != required:
         return {
             "decision": "deny",
-            "reason": (
-                f"oh-my-grok: subagent_type {st!r} requires capability_mode={required!r} "
-                f"(got {cm!r})"
-            ),
+            "reason": spawn_deny_reason(st=st, cm=cm, kind="mismatch"),
         }
     return {"decision": "allow"}
 

@@ -48,6 +48,8 @@ HARD_RULES_REMINDER = """
 - Do NOT set verified yourself. Cancel with `omg cancel` — never self-matching `pkill -f`.
 - MUST spawn implementers with capability_mode=read-write (no shell / no Execute).
 - MUST spawn critic/verifier/explore with capability_mode=read-only.
+- If spawn_subagent is DENIED for missing/wrong capability_mode: RETRY IMMEDIATELY same turn
+  with the required capability_mode. Do NOT abandon multi-agent; do NOT switch to solo-only.
 - Shell/tests/acceptance only via `omg accept` (semantic command policy); never forge verified.
 """.strip()
 
@@ -250,6 +252,9 @@ def build_prompt(
             "**MUST** spawn with `capability_mode=read-write` (edit tools; **no Execute/shell**).",
             "- Critic / verifier / explore / plan: **MUST** spawn with `capability_mode=read-only`.",
             "- Do **not** give workers `execute` or `all`. Shell/tests only via outer `omg accept`.",
+            "- If PreToolUse **denies** spawn for capability_mode: **RETRY IMMEDIATELY** same turn "
+            "with the mode named in the deny reason. Do **not** abandon multi-agent; do **not** "
+            "fall back to solo-only just because spawn was denied once.",
             "- Children must not call `spawn_subagent` (depth=1); executor also disallows "
             "`run_terminal_command` + `spawn_subagent` in frontmatter.",
             "",

@@ -66,6 +66,8 @@ Outer CLI re-invokes this skill (or a fresh Grok session) until acceptance passe
 - **Capability defaults (HARD REQUIRE when host supports `capability_mode`):**
   - **Implementers** (`omg-executor`, write `general-purpose`): **MUST** use `capability_mode: read-write` (edit tools; **no Execute/shell**).
   - **Critic / verifier / explore**: **MUST** use `capability_mode: read-only`.
+  - **If spawn DENIED** for capability_mode: **RETRY IMMEDIATELY** same turn with the required mode.
+    Do **not** abandon multi-agent; do **not** solo-fallback after one deny.
   - **Acceptance / test shell**: only via outer **`omg` CLI** (`omg accept`, semantic policy + frozen commands) — never mark `verified` yourself.
   - PreToolUse on children is **not** a hard guarantee; primary isolation is capability_mode — see `docs/security-model.md` and `docs/research/subagent-pretooluse-spike.md`.
 

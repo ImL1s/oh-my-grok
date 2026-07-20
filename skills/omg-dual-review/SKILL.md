@@ -20,6 +20,7 @@ Set `OMG_DUAL_REVIEW_REQUIRE_NATIVE=1` to refuse the sequential CLI path (exit 2
 
 - Fan-out ONLY via Grok `spawn_subagent` (depth=1).
 - Critic and verifier: **MUST** spawn with `capability_mode=read-only` / plan permissions (no shell).
+- If spawn DENIED for capability_mode: **RETRY IMMEDIATELY** same turn — do not abandon multi-agent / dual review.
 - NEVER mark omg `verified` yourself.
 - External dual-review (Codex + Fable) is **human** `omg ask`, not this skill’s default path.
 

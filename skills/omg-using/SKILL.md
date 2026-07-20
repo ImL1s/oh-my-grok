@@ -9,6 +9,9 @@ Route users and sessions into the correct oh-my-grok workflow. This skill does *
 
 ## HARD RULES (non-negotiable)
 - Fan-out ONLY via Grok `spawn_subagent` (depth=1; children must NOT spawn).
+- **Always set `capability_mode` on spawn** (`read-only` for explore/plan/critic/verifier; `read-write` for implementers).
+- **If spawn is DENIED for capability_mode: RETRY IMMEDIATELY** same turn with the required mode.
+  Do **not** abandon multi-agent; do **not** fall back to solo-only after one deny.
 - NEVER invoke claude/codex/omc team/agy/cursor-agent as default workers.
 - Use Grok tool names: read_file, search_replace, run_terminal_command, spawn_subagent, grep, list_dir.
 - Write-heavy work: isolation worktree + background true; wait with wait_commands_or_subagents / get_command_or_subagent_output.

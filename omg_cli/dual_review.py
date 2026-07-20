@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,16 +27,11 @@ from omg_cli.modes import (
     plugin_root,
 )
 from omg_cli.state import create_run, load_run, write_status
-
-# Verdict tokens
-_REQUEST_CHANGES_RE = re.compile(
-    r"(?<![A-Za-z0-9_])REQUEST[_\s-]?CHANGES(?![A-Za-z0-9_])",
-    re.IGNORECASE,
+from omg_cli.verdict import (
+    apply_stage_exit_codes,
+    parse_verdict,
+    parse_verdict_file,
 )
-_FAILED_RE = re.compile(
-    r"(?<![A-Za-z0-9_])FAILED(?![A-Za-z0-9_])",
-)
-_APPROVE_WORD_RE = re.compile(r"(?<![A-Za-z0-9_])APPROVE(?![A-Za-z0-9_])")
 
 
 def _utc_now() -> str:
@@ -80,57 +74,6 @@ def load_agent_body(name: str, *, root: Path | None = None) -> str:
         if len(parts) >= 3:
             return parts[2].strip()
     return text.strip()
-
-
-def parse_verdict(text: str) -> str:
-    """Return APPROVE | REQUEST_CHANGES | FAILED | UNKNOWN.
-
-    Prefer JSON fields when content is a JSON object. Whole-word APPROVE
-    only counts when REQUEST CHANGES / FAILED are not also terminal winners.
-    Order: FAILED > REQUEST_CHANGES > APPROVE when multiple present in prose.
-    """
-    if not text or not text.strip():
-        return "UNKNOWN"
-    stripped = text.lstrip()
-    if stripped.startswith("{") or stripped.startswith("["):
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            data = None
-        if isinstance(data, dict):
-            for key in ("verdict", "decision", "status"):
-                val = data.get(key)
-                if isinstance(val, str):
-                    v = val.strip().upper().replace(" ", "_").replace("-", "_")
-                    if v in ("APPROVE", "REQUEST_CHANGES", "FAILED"):
-                        return v
-                    if v == "REQUESTCHANGES":
-                        return "REQUEST_CHANGES"
-            if data.get("approve") is True:
-                return "APPROVE"
-
-    # Prose: priority FAILED > REQUEST_CHANGES > APPROVE when co-present.
-    # "do not APPROVE lightly" still matches APPROVE whole-word — document edge case.
-    has_failed = bool(_FAILED_RE.search(text))
-    has_rc = bool(_REQUEST_CHANGES_RE.search(text))
-    has_approve = bool(_APPROVE_WORD_RE.search(text))
-
-    if has_failed:
-        return "FAILED"
-    if has_rc:
-        return "REQUEST_CHANGES"
-    if has_approve:
-        return "APPROVE"
-    return "UNKNOWN"
-
-
-def parse_verdict_file(path: Path) -> str:
-    if not path.is_file():
-        return "UNKNOWN"
-    try:
-        return parse_verdict(path.read_text(encoding="utf-8"))
-    except OSError:
-        return "UNKNOWN"
 
 
 def build_dual_prompt(
@@ -453,6 +396,10 @@ def run_dual_review(
     )
     verifier_art = stage_artifact_path(root_path, run_id, "verifier", round_n)
     verdict = parse_verdict_file(verifier_art)
+    # Fail-closed: non-zero stage rc must never leave APPROVE (Codex P0).
+    verdict = apply_stage_exit_codes(
+        verdict, critic_rc=rc_c, verifier_rc=rc_v
+    )
     # dry_run stubs intentionally omit APPROVE (NEEDS_REVIEW → UNKNOWN).
     # Callers that need FSM progression (pipeline) handle dry_run themselves.
     history.append(

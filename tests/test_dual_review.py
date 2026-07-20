@@ -17,6 +17,9 @@ def test_parse_approve_whole_word():
     assert parse_verdict("## Verdict\nAPPROVE\n") == "APPROVE"
     assert parse_verdict('{"verdict": "APPROVE"}') == "APPROVE"
     assert parse_verdict("we approve this") == "UNKNOWN"  # case-sensitive word
+    # free-floating body mention is not terminal APPROVE
+    assert parse_verdict("mention APPROVE in prose only\n") == "UNKNOWN"
+    assert parse_verdict("Do not APPROVE this yet.\n") == "UNKNOWN"
 
 
 def test_parse_request_changes():
@@ -29,6 +32,38 @@ def test_parse_request_changes():
 def test_parse_failed():
     assert parse_verdict("FAILED: cannot proceed") == "FAILED"
     assert parse_verdict("APPROVE\nFAILED") == "FAILED"  # safer priority
+
+
+def test_rc_fail_closed_blocks_approve(monkeypatch, tmp_path):
+    """Non-zero verifier exit must not leave APPROVE (Codex P0)."""
+    import subprocess
+
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no popen")),
+    )
+
+    def exec_stage(role, **kwargs):
+        root = kwargs["root"]
+        rid = kwargs["run_id"]
+        rn = kwargs["round_n"]
+        path = stage_artifact_path(root, rid, role, rn)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if role == "verifier":
+            path.write_text("## Verdict\nAPPROVE\n", encoding="utf-8")
+            return 127  # missing binary / launch failure
+        path.write_text("findings: none\n", encoding="utf-8")
+        return 0
+
+    verdict = run_dual_review(
+        "review",
+        root=tmp_path,
+        dry_run=True,
+        stage_executor=exec_stage,
+    )
+    assert verdict != "APPROVE"
+    assert verdict == "FAILED"
 
 
 def test_stage_order_critic_before_verifier(monkeypatch, tmp_path):

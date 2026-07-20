@@ -60,6 +60,8 @@ Children must **not** call `spawn_subagent` again (depth=1 hard cap).
 - **Capability defaults (HARD REQUIRE when host supports `capability_mode`):**
   - **Implementers / write workers** (`general-purpose`, `omg-executor`): **MUST** spawn with `capability_mode: read-write` — file edit tools OK; **no Execute/shell**. `omg-executor` also lists `run_terminal_command` / `spawn_subagent` in `disallowedTools`. Do not rely on PreToolUse alone (see `docs/research/subagent-pretooluse-spike.md` and `docs/security-model.md`).
   - **Explore / plan / critic / verifier**: **MUST** spawn with `capability_mode: read-only` (or permissionMode `plan`).
+  - **If spawn DENIED** for capability_mode: **RETRY IMMEDIATELY** same turn with the required mode.
+    Do **not** abandon multi-agent; do **not** solo-fallback after one deny.
   - **Shell / tests / acceptance**: execute via **`omg accept`** / frozen acceptance only (CLI stamps results + semantic command policy). Leader may run checks; children must not self-verify the run.
 - Prompt each child with: goal slice, allowed paths, acceptance criteria, "do NOT spawn children", tool name list, **explicit capability_mode**.
 

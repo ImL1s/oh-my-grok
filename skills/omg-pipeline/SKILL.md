@@ -17,6 +17,7 @@ omg pipeline "goal" --dry-run
 ## HARD RULES (non-negotiable)
 
 - Fan-out ONLY via Grok `spawn_subagent` (depth=1).
+- Always set `capability_mode` on spawn (`read-only` explore/critic/verifier; `read-write` implementers). If DENIED: **RETRY IMMEDIATELY** same turn — do not abandon multi-agent.
 - NEVER invoke external agent CLIs as workers.
 - External second opinion: human runs `omg ask` separately — pipeline never auto-shells providers.
 - State / verified: omg CLI only.

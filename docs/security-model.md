@@ -60,6 +60,8 @@ PreToolUse matcher includes `spawn_subagent|Task`. When the hook runs, `omg_cli.
 
 This is still a **soft-gate** (host fail-open on hook crash/timeout). Primary isolation remains host `capability_mode` when correctly set. Escape hatch: process env `OMG_ALLOW_UNSAFE_SPAWN=1` only.
 
+**Deny UX (2026-07-20):** missing/wrong mode must **not** cause the leader to abandon multi-agent work. Deny `reason` strings include `RETRY IMMEDIATELY` plus the suggested `capability_mode` so the model re-spawns in the same turn instead of falling back to solo-only. Skills/AGENTS/orchestrator also hard-code that retry protocol.
+
 `--yes` skips confirmation UX only — **never** policy.
 
 ## Canary

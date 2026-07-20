@@ -40,6 +40,18 @@ def test_artifact_approve_detection(tmp_path):
     md.write_text("DISAPPROVE\n", encoding="utf-8")
     assert artifact_contains_approve(md) is False
 
+    # Codex P0: negation must not accept
+    md.write_text("Do not APPROVE this plan yet.\n", encoding="utf-8")
+    assert artifact_contains_approve(md) is False
+
+    # free-floating APPROVE in body (prompt echo) is not terminal
+    md.write_text(
+        "Verdict must be explicit: **APPROVE** | **REQUEST CHANGES**.\n"
+        "Still deciding.\n",
+        encoding="utf-8",
+    )
+    assert artifact_contains_approve(md) is False
+
     js = tmp_path / "v.json"
     js.write_text(json.dumps({"verdict": "APPROVE"}), encoding="utf-8")
     assert artifact_contains_approve(js) is True

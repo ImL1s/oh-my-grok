@@ -8,16 +8,15 @@ State is persisted under ``runs/<id>/ralplan.json``. Each stage writes a
 prompt pack under the run dir and may launch Grok via ``modes.build_grok_argv``
 / ``modes._launch_grok``. With ``dry_run=True`` only artifacts are recorded.
 
-Terminal ``accepted`` requires a verifier stage artifact containing the word
-``APPROVE`` (case-sensitive whole word) or a JSON field with that verdict.
-After ``max_rounds`` verifier attempts without accept → ``failed``.
+Terminal ``accepted`` requires a verifier stage artifact with **strict**
+terminal ``APPROVE`` (see ``omg_cli.verdict`` — negation and free-floating
+mentions do not count). After ``max_rounds`` without accept → ``failed``.
 
 This module **never** implements product code and never sets ``verified``.
 """
 from __future__ import annotations
 
 import json
-import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +29,7 @@ from omg_cli.modes import (
     plugin_root,
 )
 from omg_cli.state import create_run, load_run, write_status
+from omg_cli.verdict import artifact_contains_approve
 
 DEFAULT_MAX_ROUNDS = 3
 
@@ -37,9 +37,6 @@ DEFAULT_MAX_ROUNDS = 3
 READ_ONLY_STAGES = frozenset({"critic", "verifier"})
 
 STAGE_ORDER_NOTE = "draft → critic → revise → verifier → (accept | revise)*"
-
-# Whole-word APPROVE (case-sensitive)
-_APPROVE_WORD_RE = re.compile(r"(?<![A-Za-z0-9_])APPROVE(?![A-Za-z0-9_])")
 
 
 def _utc_now() -> str:
@@ -251,49 +248,6 @@ def build_stage_prompt(
         ]
     )
     return "\n".join(lines)
-
-
-def artifact_contains_approve(path: Path) -> bool:
-    """True if path is a text/JSON artifact with terminal APPROVE.
-
-    - Markdown/text: whole-word case-sensitive ``APPROVE``.
-    - JSON object: field ``verdict`` / ``decision`` / ``status`` equals
-      ``APPROVE``, or ``approve`` is boolean true.
-    """
-    if not path.is_file():
-        return False
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    if not text.strip():
-        return False
-
-    # Try JSON first when content looks like object/array
-    stripped = text.lstrip()
-    if stripped.startswith("{") or stripped.startswith("["):
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            data = None
-        if isinstance(data, dict):
-            for key in ("verdict", "decision", "status"):
-                val = data.get(key)
-                if isinstance(val, str) and val.strip() == "APPROVE":
-                    return True
-            if data.get("approve") is True:
-                return True
-            # nested common shapes
-            nested = data.get("result") or data.get("output")
-            if isinstance(nested, dict):
-                for key in ("verdict", "decision", "status"):
-                    val = nested.get(key)
-                    if isinstance(val, str) and val.strip() == "APPROVE":
-                        return True
-                if nested.get("approve") is True:
-                    return True
-
-    return bool(_APPROVE_WORD_RE.search(text))
 
 
 def verifier_has_approve(root: Path, run_id: str, round_n: int) -> bool:
@@ -552,7 +506,11 @@ def run_ralplan(
         )
 
         if stage == "verifier":
-            approved = verifier_has_approve(root_path, run_id, round_n)
+            # Fail-closed: non-zero stage exit cannot accept (Codex P0)
+            approved = (
+                last_rc == 0
+                and verifier_has_approve(root_path, run_id, round_n)
+            )
             _record(stage, round_n, last_rc, approved=approved)
             if approved:
                 accepted = True

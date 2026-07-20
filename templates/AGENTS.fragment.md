@@ -5,6 +5,13 @@ This project uses **oh-my-grok** for multi-agent workflows on Grok Build.
 
 ## Hard rules
 - Fan-out **only** via Grok `spawn_subagent` (depth=1; children must NOT spawn).
+- **Always** set `capability_mode` on every spawn:
+  - `read-only` — explore / plan / critic / verifier
+  - `read-write` — implementers (`general-purpose`, `omg-executor`)
+  - never `execute` / `all`
+- **If spawn is DENIED** (oh-my-grok PreToolUse / missing capability_mode):
+  **RETRY IMMEDIATELY** in the same turn with the required `capability_mode`.
+  Do **not** abandon multi-agent work. Do **not** switch to solo-only because of one deny.
 - **Never** invoke claude/codex/omc team/agy/cursor-agent as default workers.
 - State: only the **`omg` CLI** is authoritative for `passes` / `verified` under `.omg/state/`.
 - Agents may write proposals under `.omg/artifacts/` only.
