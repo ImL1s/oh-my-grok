@@ -34,8 +34,12 @@ _NEGATED_APPROVE_RE = re.compile(
     r")\s+APPROVE"
     r"|APPROVE\s+(?:yet|lightly|blindly|to\s+be\s+helpful)"
 )
-# Fenced code blocks must not contribute terminal APPROVE (stubs / examples)
-_FENCE_RE = re.compile(r"```[\w+-]*\n.*?```", re.DOTALL)
+# Fenced code blocks must not contribute terminal APPROVE (stubs / examples).
+# Closed fences first; any remaining open fence treats rest of text as fenced
+# (LLMs often omit closers — research R3 residual).
+_CLOSED_BACKTICK_FENCE_RE = re.compile(r"```[\w+-]*\n.*?```", re.DOTALL)
+_CLOSED_TILDE_FENCE_RE = re.compile(r"~~~[\w+-]*\n.*?~~~", re.DOTALL)
+_OPEN_FENCE_TO_EOF_RE = re.compile(r"(?:```|~~~).*\Z", re.DOTALL)
 # Terminal line only — markdown heading optional, bold optional
 _TERMINAL_APPROVE_LINE_RE = re.compile(
     r"(?im)^(?:\s*#{1,6}\s*)?(?:\*\*)?(?:verdict\s*[:：]\s*)?APPROVE(?:\*\*)?\s*$"
@@ -43,8 +47,23 @@ _TERMINAL_APPROVE_LINE_RE = re.compile(
 _APPROVE_WORD_RE = re.compile(r"(?<![A-Za-z0-9_])APPROVE(?![A-Za-z0-9_])")
 
 
+def _normalize_prose(text: str) -> str:
+    """Normalize smart quotes so can't/won't/don't still match ASCII patterns."""
+    return (
+        (text or "")
+        .replace("\u2019", "'")
+        .replace("\u2018", "'")
+        .replace("\u201c", '"')
+        .replace("\u201d", '"')
+    )
+
+
 def _strip_fenced_blocks(text: str) -> str:
-    return _FENCE_RE.sub("\n", text or "")
+    body = text or ""
+    body = _CLOSED_BACKTICK_FENCE_RE.sub("\n", body)
+    body = _CLOSED_TILDE_FENCE_RE.sub("\n", body)
+    body = _OPEN_FENCE_TO_EOF_RE.sub("\n", body)
+    return body
 
 _STUB_MARKERS = (
     "dry_run stub",
@@ -93,12 +112,11 @@ def prose_has_terminal_approve(text: str) -> bool:
         return False
     if is_stub_artifact_text(text):
         return False
-    body = _strip_fenced_blocks(text)
+    body = _strip_fenced_blocks(_normalize_prose(text))
     # Any negation of APPROVE in unfenced body → fail-closed for prose path
     if _NEGATED_APPROVE_RE.search(body):
         return False
-    cleaned = _NEGATED_APPROVE_RE.sub(" ", body)
-    if not _TERMINAL_APPROVE_LINE_RE.search(cleaned):
+    if not _TERMINAL_APPROVE_LINE_RE.search(body):
         return False
     return True
 

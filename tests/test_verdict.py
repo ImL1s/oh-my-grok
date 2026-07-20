@@ -60,28 +60,45 @@ def test_apply_stage_exit_codes_fail_closed():
 def test_cant_cannot_unable_negation_blocks_terminal_approve():
     # Negated language in body must neutralize a later terminal APPROVE line
     # (research R3: can't / unable / cannot)
-    assert (
-        parse_verdict("I can't APPROVE this plan.\n\nAPPROVE\n") != "APPROVE"
-    )
-    assert parse_verdict("Cannot APPROVE.\n\nVerdict: APPROVE\n") != "APPROVE"
-    assert parse_verdict("Unable to APPROVE this.\n\nAPPROVE\n") != "APPROVE"
+    assert parse_verdict("I can't APPROVE this plan.\n\nAPPROVE\n") == "UNKNOWN"
+    assert parse_verdict("Cannot APPROVE.\n\nVerdict: APPROVE\n") == "UNKNOWN"
+    assert parse_verdict("Unable to APPROVE this.\n\nAPPROVE\n") == "UNKNOWN"
     assert (
         parse_verdict("We refuse to APPROVE.\n\n## Verdict\nAPPROVE\n")
-        != "APPROVE"
+        == "UNKNOWN"
+    )
+    assert parse_verdict("I decline to APPROVE.\n\nAPPROVE\n") == "UNKNOWN"
+    assert parse_verdict("I won't APPROVE this.\n\nAPPROVE\n") == "UNKNOWN"
+    # Smart apostrophe (U+2019) must still fail-closed
+    assert (
+        parse_verdict("I can\u2019t APPROVE this plan.\n\nAPPROVE\n") == "UNKNOWN"
     )
 
 
 def test_fenced_approve_alone_is_not_acceptance():
-    assert parse_verdict("```\nAPPROVE\n```\n") != "APPROVE"
+    assert parse_verdict("```\nAPPROVE\n```\n") == "UNKNOWN"
     assert (
         parse_verdict(
             "Example stub:\n```md\n## Verdict\nAPPROVE\n```\nNeeds work.\n"
         )
-        != "APPROVE"
+        == "UNKNOWN"
     )
+    # Unclosed fence (LLM often omits closer) must not false-green
+    assert parse_verdict("```\nAPPROVE\n") == "UNKNOWN"
+    assert parse_verdict("~~~\nAPPROVE\n~~~\n") == "UNKNOWN"
     # Real terminal outside fence still works
     assert (
         parse_verdict("See example:\n```\nAPPROVE\n```\n\nVerdict: APPROVE\n")
+        == "APPROVE"
+    )
+
+
+def test_json_approve_survives_negation_notes():
+    # JSON path is preferred escape hatch when notes mention negation
+    assert (
+        parse_verdict(
+            '{"verdict": "APPROVE", "notes": "I can\'t APPROVE lightly"}'
+        )
         == "APPROVE"
     )
 
