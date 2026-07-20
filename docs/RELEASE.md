@@ -8,7 +8,8 @@
 | Tag | [`v0.3.2`](https://github.com/ImL1s/oh-my-grok/releases/tag/v0.3.2) |
 | Notes | QA freeze allowlist UX, pytest marker coalesce, auto PRD from UltraQA, autopilot complete short-circuit, `autopilot_phase` sync |
 
-Source of truth: [`plugin.json`](../plugin.json) · history: [`CHANGELOG.md`](../CHANGELOG.md)
+Source of truth: [`plugin.json`](../plugin.json) · history: [`CHANGELOG.md`](../CHANGELOG.md)  
+User guide: [`docs/autopilot.md`](./autopilot.md) · skill: [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md)
 
 ## Version source of truth
 

@@ -218,6 +218,7 @@ Still finish run acceptance via `omg accept` / `omg autopilot complete` before
 
 ## Related skills
 
+- Human-facing usage guide: `docs/autopilot.md` (README section “Autopilot skill”)
 - `omg-using` — router
 - `omg-deep-interview`, `omg-ralplan`, `omg-ultrawork`, `omg-ralph`
 - `omg-ultragoal` — durable multi-story goal ledger (no host `/goal`)
