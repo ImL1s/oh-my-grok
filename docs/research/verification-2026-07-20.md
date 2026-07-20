@@ -37,4 +37,4 @@ Council STATUS: [`omc-parity-council/STATUS.md`](./omc-parity-council/STATUS.md)
 
 ## Open-source note
 
-Absolute home paths and suite JSON/logs were removed from the public tree in the packaging hygiene commit. History may still contain older live artifacts; working tree + default clone do not ship them.
+Absolute home paths and suite JSON/logs were removed from the public tree. **Git history was rewritten** (filter-repo) to drop `docs/research/live/**` machine evidence and scrub `/Users/…` paths from past commits. Fresh clones only see the cleaned history.
