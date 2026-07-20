@@ -7,8 +7,10 @@ Research pack from the multi-Grok + external advisor audit of **oh-my-grok vs OM
 | Doc | Purpose |
 |-----|---------|
 | **[STATUS.md](./STATUS.md)** | **Done / not-done matrix** (Grok · Codex · Claude/Fable · product · live) |
+| **[OPEN-ITEMS.md](./OPEN-ITEMS.md)** | Remaining backlog (Fable re-run, P0 leftovers, P1+) |
 | **[SYNTHESIS.md](./SYNTHESIS.md)** | Council merge + Codex strictest-wins roadmap |
 | **[verification](../live/verification-2026-07-20.md)** | Unit + live gate evidence after shipping P0 |
+| **[external-advisors.md](../external-advisors.md)** | Codex + Fable CLI contracts (repo copy of global skills) |
 
 ## Advisor reports
 

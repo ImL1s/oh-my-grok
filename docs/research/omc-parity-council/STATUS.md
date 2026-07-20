@@ -123,7 +123,10 @@ Canonical table: [`../live/verification-2026-07-20.md`](../live/verification-202
 
 ## 7. Next actions (if “全部” means external seats too)
 
-1. Re-run **Fable free audit** with fixed `claude -p` argv → replace `09-fable.md`.
+Full expanded list: **[`OPEN-ITEMS.md`](./OPEN-ITEMS.md)**.
+
+1. Re-run **Fable free audit** with fixed `claude -p` argv → replace `09-fable.md`  
+   (ops: [`../external-advisors.md`](../external-advisors.md)).
 2. Optional: **dual-review** (Codex + Fable) on current `main` product commits only.
 3. Run **quota-heavy** live on demand.
 4. Clean-host live (disable foreign OMC plugins) for attributable evidence.

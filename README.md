@@ -59,7 +59,11 @@ Workers must not run external agent CLIs as a **hard** property of tool policy â
 | Path | Contents |
 |------|----------|
 | [`docs/security-model.md`](docs/security-model.md) | Isolation layers (capability primary; PreToolUse soft) |
+| [`docs/research/README.md`](docs/research/README.md) | Research index |
 | [`docs/research/omc-parity-council/`](docs/research/omc-parity-council/) | Multi-Grok + Codex/Fable parity council |
+| [`docs/research/omc-parity-council/STATUS.md`](docs/research/omc-parity-council/STATUS.md) | Done / not-done (incl. Fable BLOCKED) |
+| [`docs/research/omc-parity-council/OPEN-ITEMS.md`](docs/research/omc-parity-council/OPEN-ITEMS.md) | Remaining backlog |
+| [`docs/research/external-advisors.md`](docs/research/external-advisors.md) | Codex + Claude Fable CLI ops (argv, sanitize, PID) |
 | [`docs/research/stop-continuation/`](docs/research/stop-continuation/) | Stop pin **DO NOT BUILD** (host non-blocking) |
 | [`docs/research/live/`](docs/research/live/) | Dated live suite + canary evidence |
 
