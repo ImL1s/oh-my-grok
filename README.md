@@ -4,6 +4,8 @@
   <img src="assets/omg-character.png" alt="oh-my-grok character" width="300">
   <br>
   <em>Start Grok stronger — then let OMG own the workflow, evidence, and verified completion.</em>
+  <br>
+  <sub>Hero art: original AI-assisted mascot for oh-my-grok (ImL1s, 2026) · MIT with the repo · not affiliated with OMC/OMX/OmO</sub>
 </p>
 
 <p align="center">
@@ -287,7 +289,7 @@ cd /path/to/oh-my-grok
 python3 -m venv .venv && source .venv/bin/activate
 python3 -m pip install -r requirements-dev.txt
 
-PYTHONPATH=. python3 -m pytest tests/ -q
+PYTHONPATH=. python3 -m pytest -q -m "not live"
 grok plugin validate .
 ./bin/omg doctor
 ./scripts/smoke.sh
@@ -295,9 +297,9 @@ grok plugin validate .
 
 | Layer | Command |
 |-------|---------|
-| Unit | `PYTHONPATH=. python3 -m pytest -q -m "not live"` |
+| Unit (default gate) | `PYTHONPATH=. python3 -m pytest -q -m "not live"` |
 | Hermetic e2e | `OMG_E2E=1 ./scripts/smoke.sh` |
-| Live | `./scripts/live_suite.sh --quick` / `--full` |
+| Live (local evidence) | `./scripts/live_suite.sh --quick` / `--full` → `docs/research/live/` (gitignored) |
 
 Do not claim production isolation from unit green alone. See [`docs/research/test-matrix.md`](docs/research/test-matrix.md).
 

@@ -34,11 +34,11 @@ Executed via `scripts/live_suite.sh` after Tasks 1–8 hermetic landings.
 | **L-CAP-SPAWN** | **`DENIED_OR_RAN=denied`** — child `omg-executor` / `capability_mode=read-write` reported **no** `run_terminal_command` in toolset; CHILD_ID `019f7bc8-cd5d-75c2-b474-576dff5a1725` |
 | **L-CANCEL** | `status=cancelled`, `kill_actions: ["leader:killpg:SIGTERM"]` |
 
-Evidence dir: `docs/research/live/` (`canary-*.json`, `suite-*-*.summary.json`, `cap-spawn-*.txt`).
+Evidence dir (local only, gitignored): `docs/research/live/` — see [`live/README.md`](./live/README.md).
 
 ## Re-verify after P0 ship (same calendar day, afternoon)
 
-Canonical write-up: [`live/verification-2026-07-20.md`](./live/verification-2026-07-20.md) · advisor honesty: [`omc-parity-council/STATUS.md`](./omc-parity-council/STATUS.md).
+Canonical write-up: [`verification-2026-07-20.md`](./verification-2026-07-20.md) · advisor honesty: [`omc-parity-council/STATUS.md`](./omc-parity-council/STATUS.md).
 
 | Gate | Result |
 |------|--------|

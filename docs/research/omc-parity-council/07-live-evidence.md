@@ -7,18 +7,16 @@
 **scope:** Evidence-only — do core modes *actually* work under real `grok`?  
 **not in scope:** product edits, marketing rewrite, new live runs in this pass  
 
-**Primary sources (fresh on tree, not re-run this pass):**
+**Primary sources (narrative on tree; raw JSON/logs local/gitignored after open-source hygiene):**
 
 | Artifact | Path |
 |----------|------|
+| Public verification summary | `docs/research/verification-2026-07-20.md` |
 | Suite write-up | `docs/research/live-gates-2026-07-20-suite.md` |
 | Earlier live smoke | `docs/research/live-gates-2026-07-19.md` |
-| Latest canary snapshot | `docs/research/canary-pretool-latest.json` |
-| Suite summaries | `docs/research/live/suite-*-*.summary.json` (3) |
-| Canary per-suite | `docs/research/live/canary-20260719T{185729,190043,190456}Z.json` |
-| Cap-spawn report | `docs/research/live/cap-spawn-20260719T190456Z.txt` |
-| Suite logs | `docs/research/live/suite-*-{quick,full,quota-heavy}.log` |
-| ULW run state | `docs/research/live/ulw-runs-*/**/status.json` |
+| Live evidence how-to | `docs/research/live/README.md` |
+| Latest canary snapshot | `docs/research/canary-pretool-latest.json` (**gitignored** — regenerate) |
+| Suite summaries / canaries / logs | `docs/research/live/*` (**gitignored** — regenerate via `scripts/live_suite.sh`) |
 | Live suite script | `scripts/live_suite.sh` |
 | Test matrix | `docs/research/test-matrix.md` |
 | Pre-suite multi-agent gap list | `docs/research/live-gates-multi-agent-review-2026-07-19.md` |

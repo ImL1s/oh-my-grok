@@ -28,3 +28,6 @@ htmlcov/
 docs/research/live/**
 !docs/research/live/README.md
 docs/research/canary-pretool-latest.json
+
+# Local alternate art drafts (ship only assets referenced by README)
+assets/*-alt.*

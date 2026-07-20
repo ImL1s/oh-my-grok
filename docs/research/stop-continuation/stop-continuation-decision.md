@@ -3,7 +3,7 @@
 **Date:** 2026-07-20  
 **Status:** **DECIDED — DO NOT BUILD** (0.3.x; revisit only if Grok host adds blocking Stop)  
 **Product baseline:** oh-my-grok **Option B** (plugin + `omg` CLI; Grok-native `spawn_subagent`; outer loops CLI-owned)  
-**Audience:** solo maintainer · private repo · generous Grok quota  
+**Audience:** maintainers · research notes (not a product surface) · generous Grok quota  
 **Related:**  
 - `docs/research/autopilot-0.3/autopilot-architect-options.md` (Option B recommendation)  
 - `hooks/bin/stop.py` (record-only Stop today)  

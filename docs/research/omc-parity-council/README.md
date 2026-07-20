@@ -9,7 +9,7 @@ Research pack from the multi-Grok + external advisor audit of **oh-my-grok vs OM
 | **[STATUS.md](./STATUS.md)** | **Done / not-done matrix** (Grok · Codex · Claude/Fable · product · live) |
 | **[OPEN-ITEMS.md](./OPEN-ITEMS.md)** | Remaining backlog (Fable re-run, P0 leftovers, P1+) |
 | **[SYNTHESIS.md](./SYNTHESIS.md)** | Council merge + Codex strictest-wins roadmap |
-| **[verification](../live/verification-2026-07-20.md)** | Unit + live gate evidence after shipping P0 |
+| **[verification](../verification-2026-07-20.md)** | Unit + live gate summary after shipping P0 |
 | **[external-advisors.md](../external-advisors.md)** | Codex + Fable CLI contracts (repo copy of global skills) |
 
 ## Advisor reports
@@ -32,7 +32,8 @@ Research pack from the multi-Grok + external advisor audit of **oh-my-grok vs OM
 
 - Stop continuation DO_NOT_BUILD: [`../stop-continuation/CONSENSUS.md`](../stop-continuation/CONSENSUS.md)
 - Security model: [`../../security-model.md`](../../security-model.md)
-- Live suite evidence: [`../live/`](../live/)
+- Live suite (how to regenerate): [`../live/README.md`](../live/README.md)
+- Live suite narrative: [`../live-gates-2026-07-20-suite.md`](../live-gates-2026-07-20-suite.md)
 - Autopilot plan: [`../../superpowers/plans/2026-07-20-autopilot-all.md`](../../superpowers/plans/2026-07-20-autopilot-all.md)
 
 ## Honest claim language
@@ -40,4 +41,4 @@ Research pack from the multi-Grok + external advisor audit of **oh-my-grok vs OM
 - **Do not** say “OMC 功能基本都有了.”
 - **Do not** say Claude/Fable free audit completed this round.
 - **Do** say Codex free audit completed and drove P0 verdict fail-closed work.
-- **Do** cite live evidence under `docs/research/live/` for unit+quick+full gates after ship.
+- **Do** cite [`../verification-2026-07-20.md`](../verification-2026-07-20.md) for unit+quick+full gates; raw machine logs are local/gitignored.

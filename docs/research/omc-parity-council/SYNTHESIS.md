@@ -4,7 +4,7 @@
 **roster:** 7 Grok-native subagents + **Codex free audit** + Fable BLOCKED + spawn-retry code review  
 **repo:** oh-my-grok 0.2.5+ (post-council P0 shipped on `main`; see [`STATUS.md`](./STATUS.md))  
 **detail reports:** `01`–`07`, `08-codex.md`, `09-fable.md` (BLOCKED), `code-review-spawn-retry.md`  
-**Index:** [`README.md`](./README.md) · **Done/not-done:** [`STATUS.md`](./STATUS.md) · **Live verify:** [`../live/verification-2026-07-20.md`](../live/verification-2026-07-20.md)
+**Index:** [`README.md`](./README.md) · **Done/not-done:** [`STATUS.md`](./STATUS.md) · **Live verify:** [`../verification-2026-07-20.md`](../verification-2026-07-20.md)
 
 ### Post-ship note (same day)
 

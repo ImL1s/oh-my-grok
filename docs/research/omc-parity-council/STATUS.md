@@ -70,7 +70,7 @@ Repeated headless launches failed or hung:
 
 ## 4. Verification (ran on author machine 2026-07-20)
 
-Canonical table: [`../live/verification-2026-07-20.md`](../live/verification-2026-07-20.md).
+Canonical table: [`../verification-2026-07-20.md`](../verification-2026-07-20.md).
 
 | Gate | Result |
 |------|--------|

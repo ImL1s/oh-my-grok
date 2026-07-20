@@ -1,7 +1,7 @@
 # Open items after 2026-07-20 council + P0 ship
 
 **Status companion:** [`STATUS.md`](./STATUS.md)  
-**Verification done:** [`../live/verification-2026-07-20.md`](../live/verification-2026-07-20.md)  
+**Verification done:** [`../verification-2026-07-20.md`](../verification-2026-07-20.md)  
 **Advisor ops:** [`../external-advisors.md`](../external-advisors.md)
 
 This file expands **what is still open** (not “docs missing” — **work not done**).

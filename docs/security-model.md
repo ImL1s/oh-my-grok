@@ -35,11 +35,9 @@ See `omg_cli/command_policy.py` (`POLICY_VERSION`).
 | `python` / `python3` / `python3.N` | `-m pytest`, `-m unittest`, or `.py` under project | `-c`, `-e`, other `-m` modules, `python3evil` |
 | `npm` | `test`, `run test`, `run pytest` | other scripts |
 | `git` | read-only: `status`/`diff`/`log`/`show`/`rev-parse`/`rev-list`/`describe`/`ls-files`/`ls-tree`/`cat-file`; `branch`/`tag`/`stash` list-only | `clean`/`push`/`reset`/`checkout`/`restore`/`rebase`/`merge`/`pull`/`fetch`/`remote`/`config`/`add`/`commit`/…; mutate flags (`branch -D`, `tag -d`, `stash drop`); `-c` config injection |
-| `make` | targets: `test`/`check`/`lint`/`unit`/`units`/`pytest`/`ci`/`verify` | bare `make`, other targets |
+| `make` | allowlisted targets only (`test`/`check`/`lint`/`unit`/`units`/`pytest`/`ci`/`verify`) | bare `make`; unknown targets; `-f`/`--file`/`-C`/`--directory`/`--eval` (incl. glued forms) |
 | `cargo` | `test`/`check`/`clippy`/`fmt` | `run`/`install`/`publish`/`bench`/`script`/`build`; also `--manifest-path`/`--config`/`--target-dir`/`-C` |
-| `make` | allowlisted targets only (`test`/`check`/`lint`/`ci`/…) | bare `make`; unknown targets; `-f`/`--file`/`-C`/`--directory`/`--eval` (incl. glued forms) |
 | `go` | `test`/`vet`/`fmt`/`version` | `run`/`generate`/`get`/`install`/`mod`; `-exec`/`--exec`/`-toolexec`/`--toolexec` |
-| `go` | `test`/`vet`/`fmt`/`version` | `run`/`generate`/`get`/`install`/`mod` |
 | `dart` | `test`/`analyze`/`format` | `run`/`compile`/`pub` |
 | `flutter` | `test`/`analyze` | `run`/`pub`/other |
 | `npx` / shells / `claude` / `codex` / `rm` / `sudo` | — | **always** |
