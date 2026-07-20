@@ -849,6 +849,8 @@ def verify_goal(root: Path | str, goal_id: str, *, run_id: str | None = None) ->
         if not linked:
             raise GoalError("goal cannot verify without a linked run")
         candidates = [run_id] if run_id else linked
+        from omg_cli.acceptance import is_trusted_acceptance
+
         verified_run = None
         for rid in candidates:
             if rid not in linked:
@@ -856,9 +858,24 @@ def verify_goal(root: Path | str, goal_id: str, *, run_id: str | None = None) ->
             run = load_run(root, rid)
             if run is None:
                 continue
-            if run.get("verified") is True or run.get("status") == "verified":
+            # Disk status alone is insufficient — require same-process trusted
+            # acceptance (or refuse if only a forged status.json is present).
+            disk_verified = (
+                run.get("verified") is True or run.get("status") == "verified"
+            )
+            trusted = False
+            try:
+                trusted = bool(is_trusted_acceptance(root, rid))
+            except Exception:
+                trusted = False
+            if disk_verified and trusted:
                 verified_run = rid
                 break
+            if disk_verified and not trusted:
+                raise GoalError(
+                    "linked run shows verified on disk but lacks same-process "
+                    "trusted acceptance; re-run omg accept in this process"
+                )
         if verified_run is None:
             raise GoalError(
                 "goal cannot verify before a linked run is CLI-verified"

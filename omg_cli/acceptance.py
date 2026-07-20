@@ -142,7 +142,16 @@ def _runs_dir(root: Path) -> Path:
 
 
 def run_dir(root: Path, run_id: str) -> Path:
-    return _runs_dir(root) / run_id
+    rid = (run_id or "").strip()
+    if (
+        not rid
+        or rid in {".", ".."}
+        or "/" in rid
+        or "\\" in rid
+        or ".." in rid
+    ):
+        raise ValueError(f"invalid run_id {run_id!r}")
+    return _runs_dir(root) / rid
 
 
 def manifest_path(root: Path, run_id: str) -> Path:

@@ -262,6 +262,42 @@ def test_join_rejects_untrusted_writer(tmp_path):
     assert "only" in joined["failed"]
 
 
+def test_join_rejects_ownership_violation(tmp_path):
+    from omg_cli.workers import (
+        build_ownership_manifest,
+        envelope_path,
+        join_worker_results,
+    )
+
+    base = _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="own-v", extra={"base_sha": base})
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [{"task_id": "only", "owned_files": ["z.py"]}],
+    )
+    epath = envelope_path(tmp_path, "only", run_id=rid)
+    epath.parent.mkdir(parents=True, exist_ok=True)
+    epath.write_text(
+        json.dumps(
+            {
+                "task_id": "only",
+                "status": "ok",
+                "writer": "omg-cli",
+                "base_sha": base,
+                "head_sha": "c" * 40,
+                "changed_files": ["z.py", "other/secret.py"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    joined = join_worker_results(tmp_path, rid)
+    assert joined["complete"] is False
+    assert "only" in joined["failed"]
+    assert any(r.get("status") == "ownership_violation" for r in joined["results"])
+
+
 def test_ownership_seal_join_integrate_closed_path(tmp_path):
     """I-06-style: own → seal both → join → integrate; missing blocks integrate."""
     from omg_cli.integrate import integrate_results, result_path

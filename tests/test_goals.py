@@ -223,7 +223,6 @@ def test_verify_requires_cli_verified_linked_run(tmp_path: Path) -> None:
     with pytest.raises(GoalError, match="without a linked run"):
         verify_goal(tmp_path, "g3")
 
-    # legacy run path: force=True may set verified without an execution lease
     run = create_run(
         tmp_path,
         mode="pipeline",
@@ -234,8 +233,23 @@ def test_verify_requires_cli_verified_linked_run(tmp_path: Path) -> None:
     with pytest.raises(GoalError, match="before a linked run is CLI-verified"):
         verify_goal(tmp_path, "g3")
 
-    # force verified path (unit test: simulate CLI acceptance authority)
+    # Disk-only verified status must not promote the goal
     set_verified(tmp_path, run["run_id"], force=True)
+    with pytest.raises(GoalError, match="trusted acceptance"):
+        verify_goal(tmp_path, "g3")
+
+    # Same-process freeze_and_run + set_verified is required
+    from omg_cli.acceptance import clear_cli_acceptance_tokens, freeze_and_run
+
+    clear_cli_acceptance_tokens()
+    prd = {
+        "version": 1,
+        "goal": "g3",
+        "stories": [{"id": "s1", "title": "ok", "commands": [["true"]]}],
+        "global_commands": [],
+    }
+    assert freeze_and_run(tmp_path, run["run_id"], prd) is True
+    set_verified(tmp_path, run["run_id"])
     st = verify_goal(tmp_path, "g3")
     assert st["verified"] is True
     assert st["status"] == "verified"

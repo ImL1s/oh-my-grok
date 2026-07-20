@@ -35,6 +35,7 @@ def _stamp_qa_clean(root: Path, run_id: str) -> None:
         root,
         run_id,
         [{"id": "s1", "check": "always_pass"}],
+        allow_always_pass=True,
     )
     out = run_qa_cycle(root, run_id)
     assert out["clean"] is True
@@ -144,6 +145,26 @@ def test_complete_happy_path_same_process_acceptance(tmp_path: Path) -> None:
     assert run is not None
     assert run.get("verified") is True
     assert run.get("status") == "verified"
+
+
+def test_rework_invalidates_review_stamp(tmp_path: Path) -> None:
+    """After rework, a previous clean structured_review must not open QA."""
+    from omg_cli.autopilot import stage_review_is_clean
+
+    st = start_autopilot(tmp_path, "rework stamp", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "review")
+    _stamp_review_clean(tmp_path, rid)
+    assert stage_review_is_clean(tmp_path, rid) is True
+    transition(tmp_path, rid, "rework", reason="findings")
+    assert stage_review_is_clean(tmp_path, rid) is False
+    transition(tmp_path, rid, "review")
+    with pytest.raises(AutopilotError, match="structured_review"):
+        transition(tmp_path, rid, "qa")
+    # Fresh stamp required
+    _stamp_review_clean(tmp_path, rid, diff="new-diff-after-rework")
+    transition(tmp_path, rid, "qa")
 
 
 def test_legacy_v1_refused(tmp_path: Path) -> None:

@@ -519,6 +519,29 @@ def join_worker_results(
                 }
             )
             continue
+        owned = {
+            str(f).strip().lstrip("./")
+            for f in (task.get("owned_files") or [])
+            if str(f).strip()
+        }
+        changed = env.get("changed_files") or []
+        if not isinstance(changed, list):
+            changed = []
+        changed_norm = {str(f).strip().lstrip("./") for f in changed if str(f).strip()}
+        foreign = sorted(changed_norm - owned) if owned else []
+        if foreign and st == "ok":
+            failed.append(tid)
+            results.append(
+                {
+                    "task_id": tid,
+                    "present": True,
+                    "status": "ownership_violation",
+                    "capability_mode": task.get("capability_mode"),
+                    "foreign_files": foreign,
+                    "writer": writer,
+                }
+            )
+            continue
         if st != "ok":
             failed.append(tid)
         results.append(

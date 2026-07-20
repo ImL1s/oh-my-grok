@@ -67,6 +67,8 @@ def stage_review_is_clean(root: Path | str, run_id: str) -> bool:
         return False
     if data.get("run_id") != run_id:
         return False
+    if data.get("invalidated") is True:
+        return False
     return data.get("clean") is True
 
 
@@ -81,7 +83,33 @@ def stage_qa_is_clean(root: Path | str, run_id: str) -> bool:
         return False
     if data.get("run_id") != run_id:
         return False
+    if data.get("invalidated") is True:
+        return False
     return data.get("clean") is True and data.get("status") == "clean"
+
+
+def invalidate_quality_stages(root: Path | str, run_id: str, *, reason: str) -> None:
+    """Mark review/QA stage stamps stale after rework or replan (CLI write)."""
+    from omg_cli.qa import qa_state_path
+    from omg_cli.review import review_state_path
+
+    root = Path(root).resolve()
+    for path in (review_state_path(root, run_id), qa_state_path(root, run_id)):
+        data = _read_stage_json(path)
+        if not data:
+            continue
+        data["clean"] = False
+        data["invalidated"] = True
+        data["invalidated_reason"] = reason
+        data["invalidated_at"] = _utc_now()
+        data["writer"] = CLI_WRITER
+        if "status" in data and data.get("status") == "clean":
+            data["status"] = "invalidated"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
 
 def autopilot_state_path(root: Path | str, run_id: str) -> Path:
@@ -242,8 +270,20 @@ def transition(
 
         if next_phase == "ralplan" and src in {"review", "qa"}:
             state["cycles"]["ralplan"] = int(state["cycles"].get("ralplan") or 0) + 1
+            # Stale clean stamps must not open QA/acceptance after replan
+            invalidate_quality_stages(
+                root, run_id, reason=f"replan from {src}"
+            )
         if next_phase == "rework":
             state["cycles"]["review"] = int(state["cycles"].get("review") or 0) + 1
+            invalidate_quality_stages(
+                root, run_id, reason="rework invalidates review/qa stamps"
+            )
+        if next_phase == "review" and src in {"rework", "implement"}:
+            # Re-entering review requires a fresh structured_review stamp
+            invalidate_quality_stages(
+                root, run_id, reason=f"re-enter review from {src}"
+            )
         if next_phase == "qa" and src == "review":
             pass
         if src == "qa" and next_phase == "ralplan":
@@ -401,6 +441,7 @@ __all__ = [
     "assert_legal_transition",
     "autopilot_state_path",
     "complete_with_acceptance",
+    "invalidate_quality_stages",
     "load_autopilot",
     "stage_qa_is_clean",
     "stage_review_is_clean",

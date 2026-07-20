@@ -16,6 +16,7 @@ def test_freeze_and_clean_never_verified(tmp_path: Path) -> None:
         tmp_path,
         rid,
         [{"id": "s1", "check": "always_pass"}],
+        allow_always_pass=True,
     )
     assert state["writer"] == "omg-cli"
     assert state["verified"] is False

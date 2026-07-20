@@ -121,6 +121,13 @@ def evaluate_lane(
             "reason": "wrong_role",
             "verdict": None,
         }
+    if stamped.get("invalidated") is True:
+        return {
+            "role": role,
+            "clean": False,
+            "reason": "invalidated_stamp",
+            "verdict": None,
+        }
     if stamped.get("diff_hash") != expected_diff_hash:
         return {
             "role": role,

@@ -83,6 +83,7 @@ def freeze_scenarios(
     *,
     plan_hash: str | None = None,
     spec_hash: str | None = None,
+    allow_always_pass: bool = False,
 ) -> dict[str, Any]:
     root = Path(root).resolve()
     run_id = validate_identifier(run_id, label="run_id")
@@ -91,7 +92,13 @@ def freeze_scenarios(
     for s in scenarios:
         if not isinstance(s, Mapping) or not str(s.get("id") or "").strip():
             raise QAError("each scenario needs id")
-        if not str(s.get("command") or "").strip() and "check" not in s:
+        check = s.get("check")
+        if check == "always_pass" and not allow_always_pass:
+            raise QAError(
+                f"scenario {s.get('id')!r}: always_pass is test-only "
+                "(pass allow_always_pass=True for hermetic unit tests)"
+            )
+        if not str(s.get("command") or "").strip() and check is None:
             raise QAError(f"scenario {s.get('id')!r} needs command or check")
     state = {
         "writer": CLI_WRITER,
@@ -145,15 +152,37 @@ def load_qa(root: Path | str, run_id: str) -> dict[str, Any]:
     return data
 
 
-def _run_command(root: Path, command: str) -> tuple[int, str]:
+def _run_command(root: Path, command: str | list[str]) -> tuple[int, str]:
+    """Run a QA command as argv only (no shell); enforce acceptance command policy."""
+    import shlex
+
+    from omg_cli.command_policy import CommandPolicyError, check_command_policy
+
+    if isinstance(command, list):
+        argv = [str(x) for x in command]
+    else:
+        text = (command or "").strip()
+        if not text:
+            return 2, "empty command"
+        try:
+            argv = shlex.split(text)
+        except ValueError as exc:
+            return 2, f"command parse error: {exc}"
+    if not argv:
+        return 2, "empty command"
+    try:
+        check_command_policy(argv, project_root=root)
+    except CommandPolicyError as exc:
+        return 2, f"command_policy: {exc}"
+
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
     )
     try:
         proc = subprocess.run(
-            command,
-            shell=True,
+            argv,
+            shell=False,
             cwd=str(root),
             env=env,
             capture_output=True,
