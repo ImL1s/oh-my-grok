@@ -137,6 +137,55 @@ def test_process_fanout_launches_n_popen(monkeypatch, tmp_path):
         assert isinstance(meta.get("pid"), int)
 
 
+def test_process_fanout_child_env_strips_omg_allow(monkeypatch, tmp_path):
+    """Parent OMG_ALLOW_* must not leak into process-fanout worker env."""
+    monkeypatch.setenv("OMG_ALLOW_EXTERNAL_CLI", "1")
+    monkeypatch.setenv("OMG_ALLOW_UNSAFE_SPAWN", "1")
+    monkeypatch.setenv("OMG_ALLOW_FUTURE_ESCAPE", "yes")
+
+    captured_envs: list[dict[str, str]] = []
+
+    def fake_popen(argv, **kwargs):
+        env = kwargs.get("env")
+        assert env is not None, "fanout must pass explicit env"
+        captured_envs.append(dict(env))
+        mock = MagicMock()
+        mock.pid = 2000 + len(captured_envs)
+        mock.wait.return_value = 0
+        return mock
+
+    real = subprocess.Popen
+
+    def selective(argv, *a, **k):
+        if argv and argv[0] in ("git", "ps"):
+            return real(argv, *a, **k)
+        return fake_popen(argv, **k)
+
+    monkeypatch.setattr(subprocess, "Popen", selective)
+    monkeypatch.setattr(
+        "omg_cli.state.process_starttime", lambda _pid: "fake-start"
+    )
+
+    rc = run_process_fanout(
+        "sanitize child env",
+        workers=2,
+        root=tmp_path,
+        dry_run=False,
+    )
+    assert rc == 0
+    assert len(captured_envs) == 2
+    for env in captured_envs:
+        assert "OMG_ALLOW_EXTERNAL_CLI" not in env
+        assert "OMG_ALLOW_UNSAFE_SPAWN" not in env
+        assert "OMG_ALLOW_FUTURE_ESCAPE" not in env
+        assert not any(k.startswith("OMG_ALLOW_") for k in env)
+    # Parent process env remains unchanged (sanitize is child-only copy)
+    import os
+
+    assert os.environ.get("OMG_ALLOW_EXTERNAL_CLI") == "1"
+    assert os.environ.get("OMG_ALLOW_UNSAFE_SPAWN") == "1"
+
+
 def test_cli_ulw_fanout_process_requires_env_gate(tmp_path):
     """Without OMG_EXPERIMENTAL_PROCESS_FANOUT=1 → exit 2; no run created."""
     import os

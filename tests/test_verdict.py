@@ -143,3 +143,27 @@ def test_schema_v2_in_fenced_json():
         "```\n"
     )
     assert parse_verdict(text, expected_run_id="r1") == "REQUEST_CHANGES"
+
+
+def test_failed_case_insensitive_blocks_terminal_approve():
+    """Prose Failed/failed/FAILED must beat terminal APPROVE (fail-closed)."""
+    assert parse_verdict("Failed\n\nAPPROVE\n") == "FAILED"
+    assert parse_verdict("failed\n\nAPPROVE\n") == "FAILED"
+    assert parse_verdict("FAILED\n\nAPPROVE\n") == "FAILED"
+    assert parse_verdict("Verdict: Failed\n\n## Verdict\nAPPROVE\n") == "FAILED"
+
+
+def test_schema_v2_present_no_prose_approve_fallback():
+    """schema_version=2 docs must not fall through to prose APPROVE."""
+    # ITERATE is not an acceptance signal; trailing terminal APPROVE ignored
+    iterate = '{"schema_version": 2, "verdict": "ITERATE"}\n\nAPPROVE\n'
+    assert parse_verdict(iterate) != "APPROVE"
+    assert parse_verdict(iterate) == "UNKNOWN"
+    # Missing usable verdict field → UNKNOWN, not prose APPROVE
+    missing = '{"schema_version": 2, "run_id": "r1"}\n\nVerdict: APPROVE\n'
+    assert parse_verdict(missing) != "APPROVE"
+    # schema_v2 APPROVE still works
+    approve = '{"schema_version": 2, "verdict": "APPROVE"}'
+    assert parse_verdict(approve) == "APPROVE"
+    # prose-only terminal APPROVE (no schema_v2) still works
+    assert parse_verdict("## Verdict\nAPPROVE\n") == "APPROVE"

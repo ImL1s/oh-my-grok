@@ -32,9 +32,22 @@ Finite-state planning loop that produces a **consensus plan** before any code ex
 CLI-owned state machine (``omg_cli/ralplan.py``). Artifacts + transitions live
 under ``.omg/state/runs/<id>/ralplan.json`` and ``stages/``.
 
+### v1 (default new CLI run without schema_version)
+
 ```text
 draft → critic → revise → verifier → (accept | revise)* → accepted | failed
 max_rounds default 3
+```
+
+### strict-v2 (lifecycle kernel; identity-bound proposals)
+
+When the run is schema_version=2 / lifecycle_version=2 (or an existing strict
+run is resumed), the CLI uses a **planner → architect → critic** path with
+structured stamps (`invocation_id`, `session_id`, `input_sha256`, stage
+verdicts). Still never sets product `verified` — only plan consensus.
+
+```text
+planner → architect → critic → (revise loop)* → accepted | failed
 ```
 
 | State | Actor | Writes? | Notes |
@@ -91,5 +104,7 @@ State file: `.omg/state/runs/<id>/ralplan.json`. Stage prompts/artifacts under `
 - Implementing "just a small fix" during ralplan.
 - Critic/verifier with write permissions editing source.
 - Nested spawn from children.
-- External claude/codex workers for critique (use Grok spawn only; advisors via future `omg ask` if present).
+- External claude/codex workers for critique (use Grok spawn only). Second
+  opinion: human runs **`omg ask`** / skill `omg-ask` separately — never
+  auto-shell advisors from ralplan.
 - Marking plan "verified" in CLI state yourself — report readiness; CLI owns status.

@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+from omg_cli.evidence import safe_supervised_child_env
 from omg_cli.modes import (
     HARD_RULES_REMINDER,
     _materialize_prompt_file,
@@ -68,7 +69,9 @@ def resolve_worker_count(n: int | None) -> int:
 
 
 def _run_dir(root: Path, run_id: str) -> Path:
-    return Path(root) / ".omg" / "state" / "runs" / run_id
+    from omg_cli.state import _safe_run_id
+
+    return Path(root) / ".omg" / "state" / "runs" / _safe_run_id(run_id)
 
 
 def workers_dir(root: Path, run_id: str) -> Path:
@@ -162,7 +165,7 @@ def _spawn_worker_process(
 
     popen_kwargs: dict[str, Any] = {
         "cwd": str(cwd),
-        "env": os.environ.copy(),
+        "env": safe_supervised_child_env(os.environ),
     }
     if os.name == "posix":
         popen_kwargs["start_new_session"] = True
@@ -191,9 +194,33 @@ def _spawn_worker_process(
     return proc, None
 
 
-def _wait_proc(proc: subprocess.Popen[Any], timeout: float | None) -> int:
+def _wait_proc(
+    proc: subprocess.Popen[Any],
+    timeout: float | None,
+    *,
+    deadline: float | None = None,
+) -> int:
+    """Wait for *proc*.
+
+    When *deadline* is a ``time.monotonic()`` absolute, the wait budget is
+    ``max(0, deadline - now)`` so N parallel workers share one wall-clock cap
+    instead of N×timeout sequential budgets.
+    """
+    import time
+
+    wait_timeout = timeout
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            wait_timeout = 0
+        elif timeout is None:
+            wait_timeout = remaining
+        else:
+            wait_timeout = min(float(timeout), remaining)
     try:
-        return int(proc.wait(timeout=timeout))
+        if wait_timeout is not None and wait_timeout <= 0:
+            raise subprocess.TimeoutExpired(proc.args, 0)
+        return int(proc.wait(timeout=wait_timeout))
     except subprocess.TimeoutExpired:
         try:
             if os.name == "posix":
@@ -349,9 +376,14 @@ def run_process_fanout(
             rec["pid"] = proc.pid
         worker_records.append(rec)
 
-    # Wait remaining live processes
+    # Wait remaining live processes under a shared deadline (not N×timeout).
+    import time
+
+    deadline: float | None = None
+    if launch_timeout is not None:
+        deadline = time.monotonic() + float(launch_timeout)
     for wid, proc in procs:
-        rc = _wait_proc(proc, launch_timeout)
+        rc = _wait_proc(proc, launch_timeout, deadline=deadline)
         exit_codes[wid] = rc
         for rec in worker_records:
             if rec["worker_id"] == wid:

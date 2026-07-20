@@ -960,3 +960,46 @@ def test_cli_integrate_require_squash_flag():
     r = _run_omg("integrate", "--help")
     assert r.returncode == 0
     assert "--require-squash" in r.stdout
+
+
+def test_integrate_strict_v2_failure_maps_run_status_to_blocked(tmp_path):
+    """Strict-v2 run status must be legal (blocked), not ValueError on 'failed'.
+
+    integrate.result.json may still record status=failed for humans/tools.
+    """
+    leader = tmp_path / "leader"
+    base = _init_repo(leader)
+    # Non-ulw mode skips ownership-manifest gate; missing base_sha triggers
+    # the strict failure write path without cherry-pick.
+    run = create_run(
+        leader,
+        mode="ralph",
+        goal="strict-fail-status",
+        extra={"schema_version": 2, "lifecycle_version": 2},
+    )
+    rid = run["run_id"]
+    _write_envelope(
+        default_envelopes_dir(leader, rid),
+        {
+            "task_id": "t-strict-fail",
+            "base_sha": base,
+            "head_sha": base,
+            "worktree_path": str(leader),
+            "status": "ok",
+            "changed_files": [],
+        },
+    )
+
+    result = integrate_results(leader, rid)
+    assert result["status"] == "failed"
+    assert "base_sha" in (result.get("error") or "")
+
+    disk = json.loads(result_path(leader, rid).read_text(encoding="utf-8"))
+    assert disk["status"] == "failed"
+    assert "base_sha" in (disk.get("error") or "")
+
+    st = load_run(leader, rid)
+    assert st is not None
+    assert st["status"] == "blocked"
+    assert st.get("integrate_status") == "failed"
+    assert "base_sha" in str(st.get("integrate_error") or "")

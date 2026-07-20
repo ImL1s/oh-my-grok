@@ -19,6 +19,7 @@ _REQUEST_CHANGES_RE = re.compile(
 )
 _FAILED_RE = re.compile(
     r"(?<![A-Za-z0-9_])FAILED(?![A-Za-z0-9_])",
+    re.IGNORECASE,
 )
 # Negation that cancels an APPROVE token (research R3: can't/unable/cannot/refuse)
 _NEGATED_APPROVE_RE = re.compile(
@@ -156,9 +157,11 @@ def _extract_json_objects(text: str) -> list[dict]:
     # fenced json blocks
     for m in re.finditer(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE):
         candidates.append(m.group(1).strip())
-    # first balanced-looking object (simple scan)
+    # first balanced-looking object — always try when prose trails JSON
+    # (e.g. schema-v2 blob + terminal APPROVE line). Previously skipped when
+    # the whole strip was already a candidate, which fails json.loads.
     start = text.find("{")
-    if start >= 0 and stripped not in candidates:
+    if start >= 0:
         depth = 0
         for i, ch in enumerate(text[start:], start):
             if ch == "{":
@@ -166,15 +169,22 @@ def _extract_json_objects(text: str) -> list[dict]:
             elif ch == "}":
                 depth -= 1
                 if depth == 0:
-                    candidates.append(text[start : i + 1])
+                    bal = text[start : i + 1]
+                    if bal not in candidates:
+                        candidates.append(bal)
                     break
     out: list[dict] = []
+    seen: set[int] = set()
     for c in candidates:
         try:
             data = json.loads(c)
         except json.JSONDecodeError:
             continue
         if isinstance(data, dict):
+            sig = hash(json.dumps(data, sort_keys=True, ensure_ascii=False))
+            if sig in seen:
+                continue
+            seen.add(sig)
             out.append(data)
         elif isinstance(data, list):
             out.extend(x for x in data if isinstance(x, dict))
@@ -231,9 +241,10 @@ def parse_verdict(
     if not text or not text.strip():
         return "UNKNOWN"
 
-    # 1) Strict schema v2 documents first when present
+    # 1) Strict schema v2 documents first when present — no prose fallback
+    # even when the structured doc only resolves to UNKNOWN (fail-closed).
     sv2 = parse_schema_v2_verdict(text, expected_run_id=expected_run_id)
-    if sv2 is not None and sv2 != "UNKNOWN":
+    if sv2 is not None:
         return sv2
 
     # 2) Any JSON object (full file or embedded)
@@ -253,8 +264,6 @@ def parse_verdict(
         return "REQUEST_CHANGES"
     if has_approve:
         return "APPROVE"
-    if sv2 == "UNKNOWN":
-        return "UNKNOWN"
     return "UNKNOWN"
 
 
@@ -294,7 +303,11 @@ def parse_structured_verdict(value: object) -> str:
     return "UNKNOWN"
 
 
-def artifact_contains_approve(path: Path) -> bool:
+def artifact_contains_approve(
+    path: Path,
+    *,
+    expected_run_id: str | None = None,
+) -> bool:
     """True if path is a text/JSON artifact with terminal APPROVE (strict)."""
     if not path.is_file():
         return False
@@ -304,7 +317,7 @@ def artifact_contains_approve(path: Path) -> bool:
         return False
     if not text.strip():
         return False
-    return parse_verdict(text) == "APPROVE"
+    return parse_verdict(text, expected_run_id=expected_run_id) == "APPROVE"
 
 
 def apply_stage_exit_codes(

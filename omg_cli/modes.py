@@ -414,7 +414,9 @@ def build_grok_argv(
 
 
 def _run_dir(root: Path, run_id: str) -> Path:
-    return Path(root) / ".omg" / "state" / "runs" / run_id
+    from omg_cli.state import _safe_run_id
+
+    return Path(root) / ".omg" / "state" / "runs" / _safe_run_id(run_id)
 
 
 def _write_prd_scaffold(root: Path, run_id: str, goal: str) -> Path:

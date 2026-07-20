@@ -175,10 +175,11 @@ def _run_command(root: Path, command: str | list[str]) -> tuple[int, str]:
     except CommandPolicyError as exc:
         return 2, f"command_policy: {exc}"
 
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root) + (
-        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
-    )
+    from omg_cli.acceptance import sanitized_env
+
+    env = sanitized_env(os.environ)
+    # Controlled project path only — after hijack scrub.
+    env["PYTHONPATH"] = str(root)
     try:
         proc = subprocess.run(
             argv,

@@ -29,10 +29,20 @@ This file expands **what is still open** (not “docs missing” — **work not 
 
 | ID | Item |
 |----|------|
-| P1-1 | Session-aware ralph / native `grok --resume` continuity |
+| P1-1 | Session-aware ralph / native `grok --resume` continuity (CLI `omg resume` shipped 0.3.0 — deepen multi-mode binding) |
 | P1-2 | Multi-worker ULW live closed path (prepare/seal/integrate count) |
 | P1-3 | Full L2 matrix + host fingerprint in every summary |
-| P2 | deep-interview playbook, UltraQA-like loop, durable goal ledger |
+
+### Shipped (do not re-plan as missing)
+
+| Item | Evidence |
+|------|----------|
+| Deep interview CLI + skill | `omg_cli/interview.py`, `skills/omg-deep-interview`, CHANGELOG 0.2.5+ |
+| UltraQA loop | `omg_cli/qa.py`, `skills/omg-ultraqa` |
+| Durable goal ledger | `omg_cli/goals.py`, `skills/omg-ultragoal` |
+| Resume / wiki / hud / lsp CLI | v0.3.0 `omg resume|wiki|hud|lsp` |
+
+Remaining work on those surfaces is **depth / live evidence**, not greenfield.
 
 ## D. Live not re-run
 

@@ -28,6 +28,10 @@ OMG_E2E=1 OMG_SMOKE_STRICT=0 ./scripts/smoke.sh
 # ./scripts/live_suite.sh --quick
 ```
 
+Do not commit absolute home paths (`/Users/...`) or private report validators that depend on machine-local files under `tests/`. Hermetic mocks only; optional research report checks go via CLI arg / `OMG_RESEARCH_REPORT_PATH`, not default pytest collection.
+
+Optional lint (if ruff installed): `ruff check omg_cli hooks/bin` — project may not yet pin ruff in CI.
+
 ## Rules of the road
 
 1. Fan-out only via Grok `spawn_subagent` (depth 1). No external agent CLIs as default workers.

@@ -202,6 +202,51 @@ def test_accept_cli_freeze_and_run(tmp_path):
     assert data["passed"] is True
 
 
+def test_accept_cli_strict_v2_sets_verified(tmp_path):
+    """strict-v2 accept must auto-lease and set verified (default ralph path)."""
+    from omg_cli.state import create_run, load_run
+
+    run = create_run(
+        tmp_path,
+        mode="ralph",
+        goal="strict accept",
+        force=True,
+        extra={"schema_version": 2, "lifecycle_version": 2},
+    )
+    rid = run["run_id"]
+    assert run.get("schema_version") == 2
+    prd_path = tmp_path / ".omg" / "state" / "runs" / rid / "prd.json"
+    prd_path.parent.mkdir(parents=True, exist_ok=True)
+    prd_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "goal": "strict accept",
+                "stories": [
+                    {"id": "s1", "title": "ok", "commands": [["true"]]}
+                ],
+                "global_commands": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    r = _run_omg("accept", "--run", rid, "--yes", cwd=tmp_path)
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert "verified" in r.stdout.lower() or rid in r.stdout
+    assert "set_verified failed" not in (r.stderr + r.stdout).lower()
+    assert "fencing" not in (r.stderr + r.stdout).lower()
+    status = load_run(tmp_path, rid)
+    assert status is not None
+    assert status["verified"] is True
+    assert status["status"] == "verified"
+    result = tmp_path / ".omg" / "state" / "runs" / rid / "acceptance.result.json"
+    assert result.is_file()
+    data = json.loads(result.read_text(encoding="utf-8"))
+    assert data["writer"] == "omg-cli"
+    assert data["passed"] is True
+
+
 def test_accept_cli_review_requires_yes(tmp_path):
     from omg_cli.state import create_run
 

@@ -318,6 +318,27 @@ def test_sanitized_env_strips_allow_external(monkeypatch):
     assert "PATH" in env
 
 
+def test_sanitized_env_strips_hijack_keys(monkeypatch):
+    monkeypatch.setenv("PYTHONSTARTUP", "/tmp/evil.py")
+    monkeypatch.setenv("PYTHONPATH", "/tmp/evilpath")
+    monkeypatch.setenv("GIT_DIR", "/tmp/evilgit")
+    monkeypatch.setenv("LD_PRELOAD", "/tmp/evil.so")
+    monkeypatch.setenv("NODE_OPTIONS", "--require /tmp/x")
+    monkeypatch.setenv("npm_config_script_shell", "/bin/sh")
+    monkeypatch.setenv("PATH", os.environ.get("PATH", "/usr/bin"))
+    env = sanitized_env()
+    for k in (
+        "PYTHONSTARTUP",
+        "PYTHONPATH",
+        "GIT_DIR",
+        "LD_PRELOAD",
+        "NODE_OPTIONS",
+        "npm_config_script_shell",
+    ):
+        assert k not in env, k
+    assert "PATH" in env
+
+
 def test_freeze_and_run_helper(tmp_path):
     run = create_run(tmp_path, mode="ralph", goal="helper")
     rid = run["run_id"]

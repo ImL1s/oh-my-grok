@@ -1,6 +1,7 @@
 # tests/test_hooks_common.py
 import io
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -72,6 +73,48 @@ def test_payload_cannot_hijack_ts_or_session_id(tmp_path, monkeypatch):
     assert row["ts"] != "1999-01-01T00:00:00+00:00"
     assert row["event"] == "hijack"
     assert row["status"] == "ok"
+
+
+def test_hook_scripts_never_import_set_verified():
+    """Product contract: only omg CLI sets verified — hooks must not import it."""
+    hooks = Path(__file__).resolve().parents[1] / "hooks" / "bin"
+    forbidden = ("set_verified", "run_acceptance", "freeze_and_run")
+    for path in hooks.glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        # allow the word only in comments that say NEVER
+        code_lines = [
+            ln
+            for ln in text.splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")
+        ]
+        body = "\n".join(code_lines)
+        for token in forbidden:
+            assert token not in body, f"{path.name} must not reference {token}"
+
+
+def test_stop_hook_does_not_set_verified(tmp_path, monkeypatch):
+    """Behavioral: Stop hook leaves run verified=false."""
+    import subprocess
+
+    monkeypatch.setenv("GROK_WORKSPACE_ROOT", str(tmp_path))
+    from omg_cli.state import create_run, ensure_omg_dirs, load_run
+
+    ensure_omg_dirs(tmp_path)
+    run = create_run(tmp_path, mode="ralph", goal="hook contract", force=True)
+    rid = run["run_id"]
+    stop = Path(__file__).resolve().parents[1] / "hooks" / "bin" / "stop.py"
+    env = {**os.environ, "GROK_WORKSPACE_ROOT": str(tmp_path), "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    proc = subprocess.run(
+        [sys.executable, str(stop)],
+        input="{}",
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=10,
+        cwd=str(tmp_path),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert load_run(tmp_path, rid)["verified"] is False
 
 
 def test_read_hook_event_valid_json(monkeypatch):

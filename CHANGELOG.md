@@ -9,6 +9,23 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Fixed
+- **strict-v2 `omg accept` / `set_verified`:** auto-acquire execution lease when caller omits lease (default ralph completion gate).
+- **Verdict false-green residuals:** case-insensitive prose `FAILED`; schema_version=2 documents no longer fall through to terminal prose APPROVE; balanced JSON extract when prose trails a JSON blob.
+- **Integrate strict status:** failure paths write run status `blocked` (not illegal `failed`) on schema v2.
+- **Process fanout:** child env uses `safe_supervised_child_env`; shared wait deadline (not N×timeout).
+- **Acceptance/QA env:** scrub runner-hijack keys (PYTHONSTARTUP/PATH-like, GIT_*, LD_PRELOAD/DYLD_*, NODE_*, npm_config_*).
+- **run_id path safety:** `_safe_run_id` on fanout/modes/ask/dual_review/ralplan/interview/integrate path joiners.
+- **Dual-review product wording:** sequential path marked permanent PARTIAL (not open-ended interim).
+- **Skill routing:** pipeline no longer claims bare `autopilot` primary; ralplan documents v2 + `omg ask`.
+- **Hooks contract tests:** stop path must not set verified.
+- **CI:** Python 3.13 matrix; ignore `.ruff_cache`/`.mypy_cache`; research residue gitignored.
+
+### Docs
+- security-model: acceptance env scrub + goal-verify disk-trust residual; spawn soft fail-closed retitled as shipped.
+- OPEN-ITEMS: mark interview/QA/goal ledger shipped; residual is depth/live evidence.
+- `plans/`: improve-deep advisor plans + execution artifacts.
+
 ### Planned
 - Optional PyPI/`pipx` CLI track (deferred).
 - Optional PR to xAI plugin-marketplace (sha-pinned).

@@ -554,6 +554,61 @@ def test_write_status(tmp_path):
     assert verified["status"] == "verified"
 
 
+def test_set_verified_strict_v2_auto_acquires_lease(tmp_path):
+    """After run_acceptance, set_verified without caller lease succeeds on strict-v2."""
+    from omg_cli.acceptance import freeze_and_run
+
+    run = create_run(
+        tmp_path,
+        mode="ralph",
+        goal="strict verified",
+        force=True,
+        extra={"schema_version": 2, "lifecycle_version": 2},
+    )
+    rid = run["run_id"]
+    prd = {
+        "version": 1,
+        "goal": "strict verified",
+        "stories": [
+            {"id": "s1", "title": "ok", "commands": [["true"]]}
+        ],
+        "global_commands": [],
+    }
+    assert freeze_and_run(tmp_path, rid, prd) is True
+    # No lease= arg — Option A auto-acquire inside set_verified.
+    verified = set_verified(tmp_path, rid, force=False)
+    assert verified["verified"] is True
+    assert verified["status"] == "verified"
+    assert verified["run_id"] == rid
+
+
+def test_set_verified_strict_v2_uses_provided_lease(tmp_path):
+    """When caller already holds a lease, set_verified must use it (no re-acquire)."""
+    from omg_cli.acceptance import freeze_and_run
+
+    run = create_run(
+        tmp_path,
+        mode="ralph",
+        goal="strict lease pass",
+        force=True,
+        extra={"schema_version": 2, "lifecycle_version": 2},
+    )
+    rid = run["run_id"]
+    prd = {
+        "version": 1,
+        "goal": "strict lease pass",
+        "stories": [
+            {"id": "s1", "title": "ok", "commands": [["true"]]}
+        ],
+        "global_commands": [],
+    }
+    assert freeze_and_run(tmp_path, rid, prd) is True
+    with execution_lease(tmp_path, rid, intent="caller") as lease:
+        verified = set_verified(tmp_path, rid, force=False, lease=lease)
+    assert verified["verified"] is True
+    assert verified["status"] == "verified"
+
+
 def test_status_path_rejects_traversal_run_id(tmp_path):
     from omg_cli.state import load_run
 

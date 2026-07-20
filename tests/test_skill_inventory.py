@@ -67,6 +67,24 @@ def test_omg_using_routes_autopilot():
     )
 
 
+def test_omg_pipeline_does_not_claim_autopilot_primary():
+    text = _skill("omg-pipeline")
+    assert "omg-autopilot" in text or "autopilot" in text.lower()
+    # Primary use-when should prefer pipeline keywords over bare autopilot
+    assert "pipeline" in text.lower()
+    assert "omg-autopilot" in text  # handoff pointer
+
+
+def test_omg_ralplan_mentions_capability_and_ask():
+    text = _skill("omg-ralplan")
+    assert "capability_mode" in text
+    assert "omg ask" in text or "omg-ask" in text
+    assert "verified" in text.lower()
+    # v1 and v2 surfaces
+    assert "draft" in text.lower() or "planner" in text.lower()
+    assert "schema" in text.lower() or "v2" in text.lower() or "strict" in text.lower()
+
+
 def test_omg_ultragoal_is_session_playbook_not_stub():
     text = _skill("omg-ultragoal")
     assert "name: omg-ultragoal" in text

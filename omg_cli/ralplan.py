@@ -52,7 +52,9 @@ def _utc_now() -> str:
 
 
 def _run_dir(root: Path, run_id: str) -> Path:
-    return Path(root) / ".omg" / "state" / "runs" / run_id
+    from omg_cli.state import _safe_run_id
+
+    return Path(root) / ".omg" / "state" / "runs" / _safe_run_id(run_id)
 
 
 def ralplan_state_path(root: Path, run_id: str) -> Path:
@@ -295,7 +297,9 @@ def verifier_has_approve(root: Path, run_id: str, round_n: int) -> bool:
     """Check verifier artifacts for this round (md then json)."""
     md = stage_artifact_path(root, run_id, "verifier", round_n)
     js = stage_artifact_json_path(root, run_id, "verifier", round_n)
-    return artifact_contains_approve(md) or artifact_contains_approve(js)
+    return artifact_contains_approve(
+        md, expected_run_id=run_id
+    ) or artifact_contains_approve(js, expected_run_id=run_id)
 
 
 def _execute_stage(

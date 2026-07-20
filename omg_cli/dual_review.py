@@ -39,7 +39,9 @@ def _utc_now() -> str:
 
 
 def _run_dir(root: Path, run_id: str) -> Path:
-    return Path(root) / ".omg" / "state" / "runs" / run_id
+    from omg_cli.state import _safe_run_id
+
+    return Path(root) / ".omg" / "state" / "runs" / _safe_run_id(run_id)
 
 
 def _stages_dir(root: Path, run_id: str) -> Path:
@@ -276,11 +278,11 @@ def run_dual_review(
     stage_executor: Callable[..., int] | None = None,
     extra: Sequence[str] | None = None,
 ) -> str:
-    """Run critic then verifier sequentially (headless interim mode).
+    """Run critic then verifier sequentially (headless PARTIAL mode).
 
     Returns APPROVE|REQUEST_CHANGES|FAILED|UNKNOWN.
 
-    This is **explicit interim** dual-review: two sequential headless launches,
+    This is **explicit PARTIAL** dual-review: two sequential headless launches,
     not native spawn_subagent dual-review. Never sets verified.
 
     When ``run_id`` is None and create_if_missing, creates a mode=dual-review run.
@@ -290,7 +292,7 @@ def run_dual_review(
         raise RuntimeError(
             "OMG_DUAL_REVIEW_REQUIRE_NATIVE=1: sequential headless dual-review "
             "is disabled. Native spawn_subagent dual-review is not yet shipped; "
-            "unset the env var to use the interim CLI path, or run the "
+            "unset the env var to use the sequential CLI path, or run the "
             "omg-dual-review skill in a TUI session with spawn_subagent."
         )
 
@@ -333,9 +335,9 @@ def run_dual_review(
         "goal": goal,
         "round": round_n,
         "history": history,
-        "mode": "sequential_headless_interim",
+        "mode": "sequential_headless_partial",
         "note": (
-            "Grok-native dual-review (sequential headless interim; "
+            "Grok-native dual-review (sequential headless PARTIAL; "
             "not native spawn_subagent); never sets verified"
         ),
         "created_at": _utc_now(),
@@ -468,7 +470,7 @@ def run_dual_review_cli(
 ) -> int:
     """CLI exit: 0 on APPROVE, 1 otherwise, 2 if native-only gate set.
 
-    Never sets verified. Sequential headless path is interim (see module doc).
+    Never sets verified. Sequential headless path is PARTIAL (see module doc).
     """
     try:
         verdict = run_dual_review(

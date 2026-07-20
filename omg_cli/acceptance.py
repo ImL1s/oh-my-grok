@@ -46,12 +46,28 @@ SHA_NAME = "acceptance.sha256"
 RESULT_NAME = "acceptance.result.json"
 PRD_NAME = "prd.json"
 
-# Env keys stripped from child processes so models cannot inject allow-lists.
+# Env keys stripped from child processes so models cannot inject allow-lists
+# or hijack allowed runners (PYTHONSTARTUP, GIT_DIR, LD_PRELOAD, …).
 _STRIP_ENV_KEYS = frozenset(
     {
         "OMG_ALLOW_EXTERNAL_CLI",
+        "PYTHONSTARTUP",
+        "PYTHONPATH",
+        "PERL5OPT",
+        "RUBYOPT",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "NODE_OPTIONS",
+        "NODE_PATH",
     }
 )
+# Prefixes: any key matching is stripped (in addition to OMG_ALLOW_*).
+_STRIP_ENV_PREFIXES = ("npm_config_",)
 
 DEFAULT_COMMAND_TIMEOUT: float | None = 300.0
 
@@ -407,11 +423,27 @@ def compute_manifest_sha256(root: Path, run_id: str) -> str | None:
 
 
 def sanitized_env(base: dict[str, str] | None = None) -> dict[str, str]:
-    """Copy env with OMG_ALLOW_EXTERNAL_CLI and related inject keys stripped."""
-    env = dict(base if base is not None else os.environ)
+    """Copy env with lifecycle allows and known runner-hijack keys stripped.
+
+    Still inherits PATH/HOME/VIRTUAL_ENV so venv pytest works. Not an OS
+    sandbox — see docs/security-model.md. Opt-out: OMG_ACCEPT_KEEP_PYTHONPATH=1
+    re-adds PYTHONPATH after scrub (operator weaken).
+    """
+    keep_pp = False
+    raw = base if base is not None else os.environ
+    if str(raw.get("OMG_ACCEPT_KEEP_PYTHONPATH", "")).strip() == "1":
+        keep_pp = True
+        saved_pp = raw.get("PYTHONPATH")
+    env = dict(raw)
     for key in list(env.keys()):
-        if key in _STRIP_ENV_KEYS or key.startswith("OMG_ALLOW_"):
+        if (
+            key in _STRIP_ENV_KEYS
+            or key.startswith("OMG_ALLOW_")
+            or any(key.startswith(p) for p in _STRIP_ENV_PREFIXES)
+        ):
             env.pop(key, None)
+    if keep_pp and saved_pp:
+        env["PYTHONPATH"] = saved_pp
     return env
 
 

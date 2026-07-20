@@ -1402,6 +1402,11 @@ def set_verified(
     true, matching frozen manifest sha, **and** a process-local token from
     ``run_acceptance`` in this process. Disk-only forgeries are rejected.
     force is intentionally not exposed by the CLI router.
+
+    Strict-v2 commits require an execution lease. Callers that already hold one
+    should pass ``lease=...``. When ``lease is None``, a short-lived lease with
+    intent ``"accept"`` is acquired for the duration of the commit (same pattern
+    as integrate auto-lease). Nesting: never re-acquire when a lease is provided.
     """
     root = Path(root)
     current = load_run(root, run_id)
@@ -1418,16 +1423,23 @@ def set_verified(
         # Acceptance ran before this short guard.  The process-local token is
         # checked above and never serialized; the guarded replacement rechecks
         # request and fencing so request-first cannot be overwritten.
-        with transition_guard(root, run_id):
-            updated = _commit_strict_status_locked(
-                root,
-                run_id,
-                "verified",
-                extra={"verified_at": _utc_now()},
-                lease=lease,
-                verified_authorized=True,
-            )
-            return updated
+        # Lease must be acquired *before* transition_guard (lock order:
+        # execution → transition). Prefer caller lease; else auto-acquire.
+        def _commit_verified(active_lease: ExecutionLease) -> dict[str, Any]:
+            with transition_guard(root, run_id):
+                return _commit_strict_status_locked(
+                    root,
+                    run_id,
+                    "verified",
+                    extra={"verified_at": _utc_now()},
+                    lease=active_lease,
+                    verified_authorized=True,
+                )
+
+        if lease is not None:
+            return _commit_verified(lease)
+        with execution_lease(root, run_id, intent="accept") as owned_lease:
+            return _commit_verified(owned_lease)
 
     current["verified"] = True
     current["status"] = "verified"

@@ -172,7 +172,13 @@ def _link_into_run(
     root: Path, run_id: str, artifact: Path, meta: Path | None
 ) -> None:
     """Copy/link ask artifact under runs/<id>/artifacts/ when run exists."""
-    run_dir = Path(root) / ".omg" / "state" / "runs" / run_id
+    from omg_cli.state import _safe_run_id
+
+    try:
+        rid = _safe_run_id(run_id)
+    except ValueError:
+        return
+    run_dir = Path(root) / ".omg" / "state" / "runs" / rid
     if not run_dir.is_dir():
         return
     dest_dir = run_dir / "artifacts"

@@ -99,7 +99,9 @@ class InterviewIncomplete(InterviewError):
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 def _run_dir(root: Path, run_id: str) -> Path:
-    return root / ".omg" / "state" / "runs" / run_id
+    from omg_cli.state import _safe_run_id
+
+    return root / ".omg" / "state" / "runs" / _safe_run_id(run_id)
 def interview_state_path(root: Path | str, run_id: str) -> Path:
     run_id = validate_identifier(run_id, label="run_id")
     return _run_dir(Path(root), run_id) / "interview.json"

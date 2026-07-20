@@ -62,7 +62,9 @@ def _runs_dir(root: Path) -> Path:
 
 
 def run_dir(root: Path, run_id: str) -> Path:
-    return _runs_dir(root) / run_id
+    from omg_cli.state import _safe_run_id
+
+    return _runs_dir(root) / _safe_run_id(run_id)
 
 
 def result_path(root: Path, run_id: str) -> Path:
@@ -961,6 +963,12 @@ def integrate_results(
             extra=extra,
             lease=active_lease,
         )
+
+    def _run_status_for_failure() -> str:
+        # Strict-v2 forbids run status "failed"; map to legal "blocked".
+        # integrate.result.json may still record result["status"] = "failed".
+        return "blocked" if schema is RunSchema.STRICT_V2 else "failed"
+
     expected_env_dir = default_envelopes_dir(root, run_id)
     env_dir = Path(envelopes_dir) if envelopes_dir is not None else expected_env_dir
     try:
@@ -1041,7 +1049,7 @@ def integrate_results(
             _atomic_write_json(result_path(root, run_id), result)
             if not dry_run:
                 _write_status(
-                    "failed",
+                    _run_status_for_failure(),
                     extra={"integrate_status": "failed", "integrate_error": str(exc)},
                 )
             return result
@@ -1074,7 +1082,7 @@ def integrate_results(
             _atomic_write_json(result_path(root, run_id), result)
             if not dry_run:
                 _write_status(
-                    "failed",
+                    _run_status_for_failure(),
                     extra={
                         "integrate_status": "failed",
                         "integrate_error": result["error"],
@@ -1271,7 +1279,7 @@ def integrate_results(
                 )
             elif result["status"] == "failed":
                 _write_status(
-                    "failed",
+                    _run_status_for_failure(),
                     extra={
                         "integrate_status": "failed",
                         "integrate_error": result.get("error"),

@@ -12,7 +12,7 @@ Implementer must not self-approve. Use **omg-critic** then **omg-verifier** (rea
 | Path | What it is |
 |------|------------|
 | **TUI skill (preferred)** | Native `spawn_subagent` critic then verifier (depth=1, read-only) |
-| **`omg dual-review` CLI** | **Explicit interim**: sequential headless Grok launches — **not** native spawn dual-review |
+| **`omg dual-review` CLI** | **Permanent PARTIAL**: sequential headless Grok launches — **not** native parallel spawn dual-review (ADR plan 018) |
 
 Set `OMG_DUAL_REVIEW_REQUIRE_NATIVE=1` to refuse the sequential CLI path (exit 2) until native spawn dual-review ships.
 
@@ -24,7 +24,7 @@ Set `OMG_DUAL_REVIEW_REQUIRE_NATIVE=1` to refuse the sequential CLI path (exit 2
 - NEVER mark omg `verified` yourself.
 - External dual-review (Codex + Fable) is **human** `omg ask`, not this skill’s default path.
 
-## Launch via CLI (interim sequential headless)
+## Launch via CLI (sequential headless — PARTIAL independence)
 
 ```bash
 omg dual-review "review scope"

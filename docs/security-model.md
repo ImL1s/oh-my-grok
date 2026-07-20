@@ -26,6 +26,19 @@ Last updated: 2026-07-21 · Plugin version: **0.3.0**
 
 ## Acceptance policy (summary)
 
+Acceptance child env (`omg_cli.acceptance.sanitized_env`) strips `OMG_ALLOW_*`
+plus common hijack keys (`PYTHONSTARTUP`, `PYTHONPATH`, `GIT_DIR` /
+`GIT_WORK_TREE`, `LD_PRELOAD` / `DYLD_*`, `NODE_OPTIONS` / `NODE_PATH`,
+`npm_config_*`). PATH / HOME / VIRTUAL_ENV remain so venv runners work.
+**Residual:** approved runners still execute repo code; not an OS sandbox.
+Operator weaken: `OMG_ACCEPT_KEEP_PYTHONPATH=1` re-adds PYTHONPATH after scrub.
+
+**Goal verify multi-process residual:** `omg goal verify` may accept a disk
+CLI acceptance stamp (`require_token=False`) when the linked run is already
+disk-`verified`. That is weaker than same-process `set_verified` tokens —
+treat goal promotion as multi-process disk-trust, not process-token grade.
+See `omg_cli/goals.py` verify path.
+
 See `omg_cli/command_policy.py` (`POLICY_VERSION`).
 
 | Family | Allowed | Denied |
@@ -57,7 +70,7 @@ Beyond basename allowlisting, acceptance applies **argv grammar** per family (`P
 
 Free-form model theater without host or capability evidence must not green the suite.
 
-### Spawn fail-closed (0.3.0 Option A)
+### Spawn soft fail-closed (Option A, shipped)
 
 PreToolUse matcher includes `spawn_subagent|Task`. When the hook runs, `omg_cli.deny.decide_spawn_subagent` **denies** spawns that:
 

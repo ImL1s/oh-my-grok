@@ -4,6 +4,8 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 .venv/
 venv/
 node_modules/
@@ -31,3 +33,9 @@ docs/research/canary-pretool-latest.json
 
 # Local alternate art drafts (ship only assets referenced by README)
 assets/*-alt.*
+
+# Machine-local research scaffolding / residue (do not commit)
+PROJECT.md
+TEST_READY.md
+progress.md
+

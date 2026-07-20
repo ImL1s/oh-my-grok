@@ -455,7 +455,13 @@ def cmd_accept(args: argparse.Namespace) -> int:
         read_manifest_sha256,
         result_path,
     )
-    from omg_cli.state import load_active_run, load_run, set_verified
+    from omg_cli.state import (
+        FencingError,
+        LifecycleLockError,
+        load_active_run,
+        load_run,
+        set_verified,
+    )
 
     root = _project_root()
     run_id = getattr(args, "run_id", None)
@@ -598,9 +604,12 @@ def cmd_accept(args: argparse.Namespace) -> int:
         print("acceptance FAILED", file=sys.stderr)
         return 1
 
+    # set_verified auto-acquires a strict-v2 lease when none is passed.
+    # FencingError is a PermissionError subclass; LifecycleLockError covers
+    # busy/order failures — never dump a traceback for operator CLI.
     try:
         verified = set_verified(root, run_id, force=False)
-    except PermissionError as exc:
+    except (PermissionError, FencingError, LifecycleLockError) as exc:
         print(f"set_verified failed: {exc}", file=sys.stderr)
         return 1
 

@@ -40,10 +40,14 @@ plan → implement → integrate → dual_review → accept → report
 
 ## Use when
 
-- User says autopilot, full pipeline, plan then implement then verify, e2e mode.
+- User says **pipeline**, plan-then-implement-then-accept, or `omg pipeline`.
+- Composition of ralplan → implement → dual_review → accept without the full
+  in-session autopilot interview/QA destination gates.
 
 ## Do not use when
 
+- User says **autopilot** / full auto / build me → use skill **`omg-autopilot`**
+  (and CLI `omg autopilot *`), not this playbook.
 - Single-story loop already clear → `omg ralph`.
 - Plan-only → `omg ralplan` or `omg pipeline --plan-only`.
 
