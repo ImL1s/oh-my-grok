@@ -10,11 +10,25 @@ import os
 import signal
 import subprocess
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Sequence
 
+from omg_cli.host_session import (
+    HostSessionError,
+    allocate_host_session,
+    load_host_session,
+    session_flag_argv,
+)
 from omg_cli.state import (
+    LifecycleLockError,
+    RunSchema,
+    cancel_run,
+    classify_run_schema,
     create_run,
+    execution_lease,
+    load_active_run,
+    load_cancellation_request,
     load_run,
     set_verified,
     write_status,
@@ -313,6 +327,8 @@ def build_grok_argv(
     acceptance_result_path: str | None = None,
     output_format: str | None = "plain",
     disallow_shell: bool = False,
+    new_session_id: str | None = None,
+    resume_session_id: str | None = None,
 ) -> list[str]:
     """Build argv for ``grok -p <prompt>``.
 
@@ -359,6 +375,16 @@ def build_grok_argv(
 
     if output_format:
         argv.extend(["--output-format", str(output_format)])
+
+    # A resumable launch has exactly one continuity flag.  UUID validation is
+    # centralized in host_session.py so malformed persisted state cannot reach
+    # the host process.
+    argv.extend(
+        session_flag_argv(
+            new_session_id=new_session_id,
+            resume_session_id=resume_session_id,
+        )
+    )
 
     # safe wins over yolo for elevation (safer default when both present)
     if safe:
@@ -421,10 +447,10 @@ def _write_prd_scaffold(root: Path, run_id: str, goal: str) -> Path:
     return prd_run
 
 
-def _try_set_verified(root: Path, run_id: str) -> bool:
+def _try_set_verified(root: Path, run_id: str, *, lease: Any = None) -> bool:
     """Set verified only if CLI acceptance result exists. Never force."""
     try:
-        set_verified(root, run_id, force=False)
+        set_verified(root, run_id, force=False, lease=lease)
         return True
     except PermissionError:
         return False
@@ -438,6 +464,7 @@ def _try_acceptance_and_verify(
     *,
     dry_run: bool = False,
     timeout: float | None = None,
+    lease: Any = None,
 ) -> bool:
     """If PRD has valid commands: freeze, run_acceptance, then set_verified.
 
@@ -493,7 +520,7 @@ def _try_acceptance_and_verify(
 
     if not ok:
         return False
-    return _try_set_verified(root, run_id)
+    return _try_set_verified(root, run_id, lease=lease)
 
 
 def _materialize_prompt_file(argv: list[str], run_dir: Path) -> list[str]:
@@ -556,9 +583,11 @@ def _launch_grok(
     # when grok is missing) must not leave status stuck at "running".
     # start_new_session=True on POSIX makes the child a session leader so
     # cancel_run can killpg the whole process group.
+    from omg_cli.evidence import safe_supervised_child_env
+
     popen_kwargs: dict[str, Any] = {
         "cwd": str(cwd),
-        "env": os.environ.copy(),
+        "env": safe_supervised_child_env(os.environ),
     }
     if os.name == "posix":
         popen_kwargs["start_new_session"] = True
@@ -623,6 +652,8 @@ def run_mode(
     require_acceptance: bool | None = None,
     acceptance_timeout: float | None = None,
     existing_run_id: str | None = None,
+    resume_run_id: str | None = None,
+    lease_timeout: float = 5.0,
     force: bool = False,
 ) -> int:
     """Create run, launch grok for mode, update status. Returns exit code.
@@ -637,22 +668,30 @@ def run_mode(
     - timeout: seconds for each grok launch; None → DEFAULT_TIMEOUT (3600);
       0 → unlimited. Configurable via CLI ``--timeout``.
     - existing_run_id: reuse run (pipeline embedding); skips create_run
+    - resume_run_id: Ralph CLI process-level resume (``__active__`` resolves
+      the active run); frozen goal/config and cumulative ceiling are enforced
     """
     if mode not in MODE_SKILL_REL:
         print(f"unknown mode: {mode}", file=sys.stderr)
         return 2
+    if resume_run_id is not None and mode != "ralph":
+        print("--resume is only supported for ralph", file=sys.stderr)
+        return 2
+    if resume_run_id is not None and existing_run_id is not None:
+        print("cannot combine resume_run_id with existing_run_id", file=sys.stderr)
+        return 2
 
     root_path = Path(root) if root is not None else Path.cwd().resolve()
-    goal = (goal or "").strip() or "(no goal)"
-    launch_timeout = resolve_launch_timeout(timeout, dry_run=dry_run)
-
-    if max_iter is None:
-        max_iter = DEFAULT_MAX_ITER.get(mode, 1)
-    max_iter = max(1, int(max_iter))
+    requested_goal = (goal or "").strip()
 
     # RALPLAN is owned by the CLI FSM (artifacts + max rounds), not the
     # generic single/loop launcher below.
     if mode == "ralplan":
+        goal = requested_goal or "(no goal)"
+        if max_iter is None:
+            max_iter = DEFAULT_MAX_ITER["ralplan"]
+        max_iter = max(1, int(max_iter))
+        launch_timeout = resolve_launch_timeout(timeout, dry_run=dry_run)
         from omg_cli.ralplan import run_ralplan
 
         return run_ralplan(
@@ -668,15 +707,83 @@ def run_mode(
             existing_run_id=existing_run_id,
         )
 
-    if require_acceptance is None:
-        require_acceptance = mode == "ralph"
+    explicit_resume = resume_run_id is not None
+    run: dict[str, Any] | None = None
 
+    if explicit_resume:
+        if resume_run_id == "__active__":
+            run = load_active_run(root_path)
+            if run is None:
+                print("omg ralph: no active run to resume", file=sys.stderr)
+                return 1
+            resume_run_id = str(run["run_id"])
+        else:
+            run = load_run(root_path, str(resume_run_id))
+        if run is None:
+            print(f"omg ralph: no run found: {resume_run_id!r}", file=sys.stderr)
+            return 1
+        try:
+            schema = classify_run_schema(run)
+        except (TypeError, ValueError) as exc:
+            print(f"omg ralph: refusing malformed run schema: {exc}", file=sys.stderr)
+            return 1
+        if str(run.get("mode") or "") != "ralph":
+            print(
+                f"omg ralph: run {resume_run_id!r} belongs to "
+                f"mode={run.get('mode')!r}",
+                file=sys.stderr,
+            )
+            return 1
+        frozen_goal = str(run.get("goal") or "").strip()
+        if requested_goal and requested_goal != frozen_goal:
+            print(
+                "omg ralph: conflicting goal on resume; omit goal text or use "
+                "the frozen goal exactly",
+                file=sys.stderr,
+            )
+            return 2
+        goal = frozen_goal
+        run_id = str(run["run_id"])
+        stored_max = int(run.get("max_iter") or DEFAULT_MAX_ITER["ralph"])
+        completed = int(run.get("iterations_completed") or 0)
+        if max_iter is None:
+            max_iter = stored_max
+        max_iter = int(max_iter)
+        if max_iter < completed or max_iter < stored_max:
+            print(
+                f"omg ralph: --max-iter is a cumulative ceiling; requested "
+                f"{max_iter}, stored={stored_max}, completed={completed}",
+                file=sys.stderr,
+            )
+            return 2
+        yolo = bool(run.get("yolo", False))
+        safe = bool(run.get("safe", False))
+        if require_acceptance is None:
+            require_acceptance = bool(run.get("require_acceptance", True))
+        stored_timeout = run.get("timeout")
+        if timeout is None and isinstance(stored_timeout, (int, float)):
+            timeout = float(stored_timeout)
+    else:
+        goal = requested_goal or "(no goal)"
+        if max_iter is None:
+            max_iter = DEFAULT_MAX_ITER.get(mode, 1)
+        max_iter = max(1, int(max_iter))
+        if require_acceptance is None:
+            require_acceptance = mode == "ralph"
+        schema = RunSchema.LEGACY_V1
+
+    launch_timeout = resolve_launch_timeout(timeout, dry_run=dry_run)
     create_extra: dict[str, Any] = {
-        "max_iter": max_iter,
+        "max_iter": int(max_iter),
         "yolo": bool(yolo),
         "safe": bool(safe),
         "require_acceptance": bool(require_acceptance),
+        "timeout": timeout,
     }
+    # New standalone Ralph runs use the strict lifecycle kernel.  Existing v1
+    # pipeline runs remain v1 and are never rewritten in place.
+    if mode == "ralph" and not explicit_resume and existing_run_id is None:
+        create_extra.update({"schema_version": 2, "lifecycle_version": 2})
     # ULW convergence: record leader base_sha when git is available so
     # integrate_results can reject envelopes built on a different base.
     # Optional metadata: never fail run creation if git is unavailable or
@@ -691,13 +798,21 @@ def run_mode(
         except Exception:
             pass
 
-    if existing_run_id:
+    if explicit_resume:
+        assert run is not None
+    elif existing_run_id:
         run_id = existing_run_id
-        if load_run(root_path, run_id) is None:
+        run = load_run(root_path, run_id)
+        if run is None:
             print(
                 f"omg {mode}: no run found for existing_run_id={run_id!r}",
                 file=sys.stderr,
             )
+            return 1
+        try:
+            schema = classify_run_schema(run)
+        except (TypeError, ValueError) as exc:
+            print(f"omg {mode}: refusing malformed run schema: {exc}", file=sys.stderr)
             return 1
     else:
         try:
@@ -713,6 +828,7 @@ def run_mode(
             print(f"omg {mode}: {exc}", file=sys.stderr)
             return 1
         run_id = run["run_id"]
+        schema = classify_run_schema(run)
     run_dir = _run_dir(root_path, run_id)
 
     if mode == "ralph":
@@ -721,116 +837,288 @@ def run_mode(
         if not prd_path.is_file():
             _write_prd_scaffold(root_path, run_id, goal)
 
-    write_status(root_path, run_id, "running", extra={"iteration": 0})
-
-    last_rc = 0
-    verified = False
-
-    for i in range(1, max_iter + 1):
-        argv = build_grok_argv(
-            mode=mode,
-            goal=goal,
-            yolo=yolo,
-            cwd=root_path,
-            safe=safe,
-            extra=extra,
-            iteration=i if mode == "ralph" else None,
-            max_iter=max_iter if mode == "ralph" else None,
-            run_id=run_id,
-            skill_root=plugin_root(),
-            project_root=root_path,
-        )
-
-        write_status(
+    strict = schema is RunSchema.STRICT_V2
+    lease_cm = (
+        execution_lease(
             root_path,
             run_id,
-            "running",
-            extra={"iteration": i, "passes": i - 1},
+            intent="ralph-resume" if explicit_resume else f"{mode}-run",
+            timeout_s=float(lease_timeout),
         )
-
-        last_rc = _launch_grok(
-            argv,
-            cwd=root_path,
-            run_dir=run_dir,
-            timeout=launch_timeout,
-            dry_run=dry_run,
-        )
-
-        # After each iter: freeze+run acceptance when PRD has commands, then verify.
-        # Never honor disk-only acceptance.result.json forgeries: set_verified
-        # requires an in-process token from run_acceptance. Empty PRD / no
-        # runnable commands → _try_acceptance_and_verify returns False.
-        write_status(root_path, run_id, "verifying", extra={"iteration": i})
-        if _try_acceptance_and_verify(
-            root_path,
-            run_id,
-            dry_run=dry_run,
-            timeout=acceptance_timeout,
-        ):
-            verified = True
-            break
-
-        # Same-process only: token from run_acceptance earlier in this process
-        # (e.g. worker path that called freeze_and_run). Disk forge without
-        # token → PermissionError inside set_verified → False.
-        if _try_set_verified(root_path, run_id):
-            verified = True
-            break
-
-        if last_rc != 0 and not dry_run:
-            # Failed launch — stop loop
-            break
-
-        # ulw/ralplan: single launch even if max_iter overridden higher without need
-        if mode != "ralph":
-            break
-
-    # Final status
-    current = load_run(root_path, run_id) or {}
-    if verified or current.get("verified") is True:
-        # set_verified already set status=verified
-        # Still auto-integrate ULW envelopes when present (closed loop).
-        if mode == "ulw" and not dry_run:
-            int_rc = _ulw_auto_integrate(root_path, run_id)
-            if int_rc != 0:
-                return int_rc
-        return 0
-
-    if last_rc != 0 and not dry_run:
-        write_status(
-            root_path,
-            run_id,
-            "failed",
-            extra={"exit_code": last_rc, "passes": current.get("passes", 0)},
-        )
-        return last_rc
-
-    # ULW: auto-integrate envelopes if any; fail when envelopes exist but apply fails
-    if mode == "ulw" and not dry_run:
-        int_rc = _ulw_auto_integrate(root_path, run_id)
-        if int_rc != 0:
-            return int_rc
-
-    # Completed iterations without acceptance — not verified
-    # (write_status never sets verified=true; only set_verified can)
-    write_status(
-        root_path,
-        run_id,
-        "completed",
-        extra={
-            "exit_code": 0,
-            "note": "completed without CLI acceptance; verified remains false",
-            "require_acceptance": bool(require_acceptance),
-        },
+        if strict
+        else nullcontext(None)
     )
-    if require_acceptance:
-        print(
-            f"omg {mode}: not verified (require_acceptance); "
-            "fill prd stories/commands and re-run or use `omg accept`",
-            file=sys.stderr,
-        )
+
+    try:
+        with lease_cm as lease:
+            # A committed cancellation request preempts all ordinary resume and
+            # host launch.  cancel_run uses transition only and finalizes it.
+            if strict and load_cancellation_request(root_path, run_id) is not None:
+                cancelled = cancel_run(
+                    root_path,
+                    run_id,
+                    kill_grace_s=0.0,
+                    lease=lease,
+                )
+                print(
+                    f"omg {mode}: cancellation {cancelled.get('cancel_outcome', 'cancelled')}",
+                    file=sys.stderr,
+                )
+                return 1
+
+            def status_write(status: str, *, extra_fields: dict[str, Any]) -> dict[str, Any]:
+                return write_status(
+                    root_path,
+                    run_id,
+                    status,
+                    extra=extra_fields,
+                    lease=lease,
+                )
+
+            current = load_run(root_path, run_id) or {}
+            if explicit_resume and current.get("status") in ("verified", "cancelled"):
+                print(
+                    f"omg ralph: run is already {current.get('status')}",
+                    file=sys.stderr,
+                )
+                return 0 if current.get("status") == "verified" else 1
+
+            if explicit_resume and int(max_iter) > int(current.get("max_iter") or 0):
+                status_write(
+                    "running",
+                    extra_fields={"max_iter": int(max_iter), "next_action": None},
+                )
+                current = load_run(root_path, run_id) or current
+
+            binding = None
+            if mode == "ralph":
+                try:
+                    binding = load_host_session(current, required=explicit_resume)
+                except HostSessionError as exc:
+                    status_write(
+                        "blocked" if strict else "failed",
+                        extra_fields={
+                            "blocker": {
+                                "code": "missing_or_invalid_session_binding",
+                                "message": str(exc),
+                            },
+                            "next_action": (
+                                f"inspect .omg/state/runs/{run_id}/status.json; "
+                                "do not start a replacement session implicitly"
+                            ),
+                        },
+                    )
+                    print(f"omg ralph: {exc}", file=sys.stderr)
+                    return 1
+                if binding is None:
+                    binding = allocate_host_session()
+                    status_write(
+                        "running",
+                        extra_fields={
+                            **binding.status_fields(),
+                            "iteration": int(current.get("iteration") or 0),
+                            "iterations_completed": int(
+                                current.get("iterations_completed") or 0
+                            ),
+                        },
+                    )
+                    current = load_run(root_path, run_id) or current
+
+            completed = int(current.get("iterations_completed") or 0)
+            start_iteration = completed + 1
+            if mode == "ralph" and start_iteration > int(max_iter):
+                next_ceiling = start_iteration
+                status_write(
+                    "blocked" if strict else "completed",
+                    extra_fields={
+                        "blocker": {
+                            "code": "iteration_ceiling_reached",
+                            "message": (
+                                f"completed={completed}, cumulative ceiling={max_iter}"
+                            ),
+                        },
+                        "next_action": (
+                            f"omg ralph --resume {run_id} --max-iter {next_ceiling}"
+                        ),
+                    },
+                )
+                print(
+                    f"omg ralph: cumulative ceiling reached; resume with "
+                    f"--max-iter {next_ceiling}",
+                    file=sys.stderr,
+                )
+                return 1
+
+            status_write(
+                "running",
+                extra_fields={
+                    "iteration": completed,
+                    "iterations_completed": completed,
+                    "max_iter": int(max_iter),
+                    "blocker": None,
+                    "next_action": f"omg cancel --run {run_id}",
+                },
+            )
+
+            last_rc = 0
+            verified = False
+            iterations = (
+                range(start_iteration, int(max_iter) + 1)
+                if mode == "ralph"
+                else range(1, int(max_iter) + 1)
+            )
+            for i in iterations:
+                new_session_id: str | None = None
+                resume_session_id: str | None = None
+                if binding is not None:
+                    if binding.is_first_launch:
+                        new_session_id = binding.session_id
+                    else:
+                        resume_session_id = binding.session_id
+                    # Persist attempted state before Popen.  A crash or rc!=0
+                    # therefore resumes this UUID; it can never allocate anew.
+                    binding = binding.attempted()
+
+                status_write(
+                    "running",
+                    extra_fields={
+                        "iteration": i,
+                        "passes": completed,
+                        **(binding.status_fields() if binding is not None else {}),
+                    },
+                )
+                argv = build_grok_argv(
+                    mode=mode,
+                    goal=goal,
+                    yolo=yolo,
+                    cwd=root_path,
+                    safe=safe,
+                    extra=extra,
+                    iteration=i if mode == "ralph" else None,
+                    max_iter=int(max_iter) if mode == "ralph" else None,
+                    run_id=run_id,
+                    skill_root=plugin_root(),
+                    project_root=root_path,
+                    new_session_id=new_session_id,
+                    resume_session_id=resume_session_id,
+                )
+                last_rc = _launch_grok(
+                    argv,
+                    cwd=root_path,
+                    run_dir=run_dir,
+                    timeout=launch_timeout,
+                    dry_run=dry_run,
+                )
+
+                if last_rc != 0 and not dry_run:
+                    if binding is not None:
+                        binding = type(binding)(
+                            binding.session_id, binding.attempts, "blocked"
+                        )
+                    retry = f"omg ralph --resume {run_id} --max-iter {max_iter}"
+                    status_write(
+                        "blocked" if strict else "failed",
+                        extra_fields={
+                            "exit_code": last_rc,
+                            "passes": completed,
+                            **(binding.status_fields() if binding is not None else {}),
+                            "blocker": {
+                                "code": "grok_resume_failed",
+                                "session_id": (
+                                    binding.session_id if binding is not None else None
+                                ),
+                                "rc": last_rc,
+                            },
+                            "next_action": retry,
+                        },
+                    )
+                    print(
+                        f"omg {mode}: Grok launch/resume failed rc={last_rc}; "
+                        f"session preserved; retry: {retry}",
+                        file=sys.stderr,
+                    )
+                    return last_rc
+
+                completed = i
+                if binding is not None:
+                    binding = type(binding)(
+                        binding.session_id, binding.attempts, "resumable"
+                    )
+                status_write(
+                    "running",
+                    extra_fields={
+                        "iteration": i,
+                        "iterations_completed": completed,
+                        "passes": completed,
+                        **(binding.status_fields() if binding is not None else {}),
+                    },
+                )
+
+                if _try_acceptance_and_verify(
+                    root_path,
+                    run_id,
+                    dry_run=dry_run,
+                    timeout=acceptance_timeout,
+                    lease=lease,
+                ):
+                    verified = True
+                    break
+                if _try_set_verified(root_path, run_id, lease=lease):
+                    verified = True
+                    break
+                if mode != "ralph":
+                    break
+
+            current = load_run(root_path, run_id) or {}
+            if verified or current.get("verified") is True:
+                if mode == "ulw" and not dry_run:
+                    int_rc = _ulw_auto_integrate(root_path, run_id)
+                    if int_rc != 0:
+                        return int_rc
+                return 0
+
+            if mode == "ulw" and not dry_run:
+                int_rc = _ulw_auto_integrate(root_path, run_id)
+                if int_rc != 0:
+                    return int_rc
+
+            if strict:
+                next_ceiling = int(max_iter) + 1
+                status_write(
+                    "blocked",
+                    extra_fields={
+                        "exit_code": 0,
+                        "note": "iteration ceiling reached without CLI acceptance",
+                        "require_acceptance": bool(require_acceptance),
+                        "blocker": {
+                            "code": "not_verified",
+                            "message": "CLI acceptance has not verified this run",
+                        },
+                        "next_action": (
+                            f"omg ralph --resume {run_id} --max-iter {next_ceiling}"
+                        ),
+                    },
+                )
+            else:
+                status_write(
+                    "completed",
+                    extra_fields={
+                        "exit_code": 0,
+                        "note": "completed without CLI acceptance; verified remains false",
+                        "require_acceptance": bool(require_acceptance),
+                    },
+                )
+            if require_acceptance:
+                print(
+                    f"omg {mode}: not verified (require_acceptance); "
+                    "fill prd stories/commands and re-run or use `omg accept`",
+                    file=sys.stderr,
+                )
+                return 1
+            return 0
+    except (LifecycleLockError, HostSessionError, PermissionError) as exc:
+        print(f"omg {mode}: {exc}", file=sys.stderr)
         return 1
-    return 0
 
 
 def _ulw_auto_integrate(root: Path, run_id: str) -> int:
@@ -860,7 +1148,8 @@ def _ulw_auto_integrate(root: Path, run_id: str) -> int:
     status = (result or {}).get("status") or "unknown"
     if status == "missing":
         print(
-            "omg ulw: no ULW envelopes under .omg/artifacts/ulw-results/ "
+            f"omg ulw: no ULW envelopes under "
+            f".omg/artifacts/ulw-results/{run_id}/ "
             "(workers should seal with `omg worker seal` then re-run "
             "`omg integrate` if needed)",
             file=sys.stderr,

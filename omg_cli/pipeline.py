@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from omg_cli.evidence import assert_safe_supervised_parent
+from omg_cli.integrate import default_envelopes_dir
 from omg_cli.modes import DEFAULT_TIMEOUT, resolve_launch_timeout
 from omg_cli.state import create_run, load_run, write_status
 
@@ -174,29 +176,26 @@ def _history(
 
 def _assert_no_allow_env() -> None:
     """Hard guard: pipeline path must never export OMG_ALLOW_EXTERNAL_CLI."""
-    if os.environ.get("OMG_ALLOW_EXTERNAL_CLI") == "1":
-        # Do not clear silently if user exported it globally — but never set it.
-        # Document residual: parent may have it; pipeline itself never sets.
-        pass
+    assert_safe_supervised_parent(os.environ)
 
 
-def _envelopes_exist(root: Path) -> bool:
-    env_dir = Path(root) / ".omg" / "artifacts" / "ulw-results"
+def _envelopes_exist(root: Path, run_id: str) -> bool:
+    env_dir = default_envelopes_dir(Path(root), run_id)
     if not env_dir.is_dir():
         return False
     return any(env_dir.glob("*.json"))
 
 
-def _should_integrate(implement: str, root: Path) -> bool:
+def _should_integrate(implement: str, root: Path, run_id: str) -> bool:
     """Integrate after implement when ULW mode or ULW envelopes are present."""
     if (implement or "").strip().lower() == "ulw":
         return True
-    return _envelopes_exist(root)
+    return _envelopes_exist(root, run_id)
 
 
-def _envelope_heads(root: Path) -> list[str]:
+def _envelope_heads(root: Path, run_id: str) -> list[str]:
     """Return head_sha values from current ULW envelope JSON files."""
-    env_dir = Path(root) / ".omg" / "artifacts" / "ulw-results"
+    env_dir = default_envelopes_dir(Path(root), run_id)
     if not env_dir.is_dir():
         return []
     heads: list[str] = []
@@ -213,12 +212,12 @@ def _envelope_heads(root: Path) -> list[str]:
     return heads
 
 
-def _integrate_stale(state: dict[str, Any], root: Path) -> bool:
+def _integrate_stale(state: dict[str, Any], root: Path, run_id: str) -> bool:
     """True when envelopes exist and their heads are not all in last_integrated_heads.
 
     Used on resume so we never skip integrate after re-implement/reseal (AC4).
     """
-    current = _envelope_heads(root)
+    current = _envelope_heads(root, run_id)
     if not current:
         return False
     last = state.get("last_integrated_heads") or []
@@ -244,7 +243,7 @@ def _execute_integrate_stage(
     Call after every implement (including re-implement after dual_review
     REQUEST_CHANGES) so resealed ULW envelopes are never skipped (AC4).
     """
-    if not _should_integrate(implement, root_path):
+    if not _should_integrate(implement, root_path, run_id):
         return None
 
     detail = f"implement={implement}"
@@ -314,7 +313,10 @@ def _execute_integrate_stage(
                 extra={
                     "stage": "integrate",
                     "integrate_status": "missing",
-                    "note": "ULW expected envelopes under .omg/artifacts/ulw-results/",
+                    "note": (
+                        "ULW expected envelopes under "
+                        f".omg/artifacts/ulw-results/{run_id}/"
+                    ),
                 },
             )
             print(
@@ -548,7 +550,7 @@ def run_pipeline(
             return True
         # AC4: if ULW envelopes changed after last integrate, force re-integrate
         # even when history already has an integrate exit (resume after re-implement).
-        if stage_name == "integrate" and _integrate_stale(state, root_path):
+        if stage_name == "integrate" and _integrate_stale(state, root_path, run_id):
             return True
         # Resume: skip stages already exited successfully
         if stage_name in stages_done and start_stage not in (stage_name, "initialized"):

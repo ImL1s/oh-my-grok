@@ -183,16 +183,44 @@ def spawn_deny_reason(*, st: str, cm: str, kind: str) -> str:
     )
 
 
+def _depth_or_nested_spawn_denied(tin: dict[str, Any], st: str) -> str | None:
+    """Executor/implementer children must not re-spawn (depth=1)."""
+    depth = tin.get("depth") or tin.get("child_depth") or tin.get("spawn_depth")
+    try:
+        if depth is not None and int(depth) > 1:
+            return (
+                "oh-my-grok: spawn_subagent DENIED — child depth>1 forbidden "
+                f"(subagent_type={st or '?'}). Workers must not re-spawn."
+            )
+    except (TypeError, ValueError):
+        pass
+    # Nested tool lists that include spawn are denied for executors
+    tools = tin.get("tools") or tin.get("allowed_tools") or tin.get("allowedTools")
+    if isinstance(tools, (list, tuple)):
+        lowered = {str(t).strip().lower() for t in tools}
+        if "spawn_subagent" in lowered or "task" in lowered:
+            if st in _READ_WRITE_TYPES or "executor" in (st or ""):
+                return (
+                    "oh-my-grok: spawn_subagent DENIED — executor role may not "
+                    "include spawn_subagent/Task in tools (depth=1)."
+                )
+    return None
+
+
 def decide_spawn_subagent(tin: dict[str, Any]) -> dict[str, str]:
     """Fail-closed spawn policy when PreToolUse runs for spawn_subagent.
 
     - Missing capability_mode → deny (reason mandates immediate retry)
     - Mode incompatible with role table → deny (reason mandates retry with required mode)
+    - execute/all denied; executor nested spawn denied
     - Unknown type with explicit mode → allow (host still applies the mode)
     """
     if os.environ.get("OMG_ALLOW_UNSAFE_SPAWN") == "1":
         return {"decision": "allow", "reason": "OMG_ALLOW_UNSAFE_SPAWN=1"}
     st, cm = _spawn_fields(tin)
+    depth_deny = _depth_or_nested_spawn_denied(tin, st)
+    if depth_deny:
+        return {"decision": "deny", "reason": depth_deny}
     if not cm:
         return {
             "decision": "deny",

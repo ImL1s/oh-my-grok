@@ -1,0 +1,12 @@
+{
+  "writer": "omg-cli",
+  "schema_version": 2,
+  "run_id": "run-v2",
+  "stage": "architect",
+  "role": "architect",
+  "round": 1,
+  "invocation_id": "inv-1",
+  "session_id": "019f7e08-417a-7080-853e-29aef82bd168",
+  "verdict": "APPROVE",
+  "note": "This file was placed directly in an authoritative directory and has no matching invocation stamp."
+}

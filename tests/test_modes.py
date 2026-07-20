@@ -278,7 +278,8 @@ def test_ralph_dry_run_writes_prd_and_no_verified(monkeypatch, tmp_path):
     run = load_active_run(tmp_path)
     assert run is not None
     assert run["verified"] is False
-    assert run["status"] == "completed"
+    assert run["status"] == "blocked"
+    assert run["next_action"].startswith(f"omg ralph --resume {run['run_id']}")
     rid = run["run_id"]
     assert (tmp_path / ".omg" / "state" / "runs" / rid / "prd.json").is_file()
     art = tmp_path / ".omg" / "artifacts" / f"prd-{rid}.json"
@@ -302,7 +303,8 @@ def test_ralph_doesnt_set_verified_without_acceptance(monkeypatch, tmp_path):
     run = load_active_run(tmp_path)
     assert run is not None
     assert run["verified"] is False
-    assert run["status"] == "completed"
+    assert run["status"] == "blocked"
+    assert run["blocker"]["code"] == "not_verified"
     # loop should have called grok max_iter times (Popen may also be used by
     # process_starttime via subprocess.run → ignore non-grok argv)
     grok_calls = [
@@ -315,6 +317,37 @@ def test_ralph_doesnt_set_verified_without_acceptance(monkeypatch, tmp_path):
     pid_path = tmp_path / ".omg" / "state" / "runs" / run["run_id"] / "pid"
     assert pid_path.is_file()
     assert pid_path.read_text(encoding="utf-8").strip() == "4242"
+
+
+def test_existing_v1_ralph_keeps_legacy_completed_terminal_semantics(
+    monkeypatch, tmp_path
+):
+    """Strict-v2 blocked semantics must not rewrite an existing v1 run."""
+    from omg_cli.state import create_run
+
+    run = create_run(tmp_path, mode="ralph", goal="legacy existing run")
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no popen")),
+    )
+
+    rc = run_mode(
+        "ralph",
+        "legacy existing run",
+        root=tmp_path,
+        existing_run_id=run["run_id"],
+        max_iter=1,
+        dry_run=True,
+        require_acceptance=False,
+    )
+
+    assert rc == 0
+    final = load_run(tmp_path, run["run_id"])
+    assert final is not None
+    assert "schema_version" not in final
+    assert final["status"] == "completed"
+    assert final["verified"] is False
 
 
 def test_forged_acceptance_does_not_set_verified(monkeypatch, tmp_path):

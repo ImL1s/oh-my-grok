@@ -1,19 +1,78 @@
 # tests/test_state.py
 import json
+import multiprocessing
 import os
 import signal
+import threading
 
 import pytest
 
 from omg_cli.state import (
+    ExecutionLeaseBusy,
+    FencingError,
+    LifecycleLockError,
+    LockUnavailableError,
+    RunSchema,
     cancel_run,
+    classify_run_schema,
     create_run,
+    execution_lease,
     is_stale_run,
     load_active_run,
     load_run,
     set_verified,
+    transition_guard,
+    transition_guard_held,
     write_status,
 )
+
+
+def _transition_crash_worker(
+    root: str, run_id: str, conn, *, replace_before_pause: bool
+) -> None:
+    """Fork target for deterministic guard-owner-death coverage."""
+    from pathlib import Path
+
+    import omg_cli.state as state_mod
+
+    root_path = Path(root)
+    with state_mod.transition_guard(root_path, run_id):
+        if replace_before_pause:
+            status = state_mod.load_run(root_path, run_id)
+            assert status is not None
+            status["crash_probe"] = "committed"
+            state_mod._atomic_write_json(
+                state_mod._status_path(root_path, run_id), status
+            )
+        conn.send("guard-held")
+        conn.recv()
+
+
+def test_schema_classifier_exact_dispatch() -> None:
+    assert classify_run_schema({}) is RunSchema.LEGACY_V1
+    assert classify_run_schema({"schema_version": 1}) is RunSchema.LEGACY_V1
+    assert classify_run_schema(
+        {"schema_version": 2, "lifecycle_version": 2}
+    ) is RunSchema.STRICT_V2
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        {"schema_version": True},
+        {"schema_version": None},
+        {"schema_version": []},
+        {"schema_version": {}},
+        {"schema_version": -1},
+        {"schema_version": 3},
+        {"schema_version": 2},
+        {"schema_version": 2, "lifecycle_version": True},
+        {"schema_version": 1, "lifecycle_version": 2},
+    ],
+)
+def test_schema_classifier_rejects_malformed_and_future(run: dict) -> None:
+    with pytest.raises((TypeError, ValueError), match="schema|version|lifecycle"):
+        classify_run_schema(run)
 
 
 def test_create_run_atomic(tmp_path):
@@ -493,3 +552,165 @@ def test_write_status(tmp_path):
     verified = set_verified(tmp_path, rid)
     assert verified["verified"] is True
     assert verified["status"] == "verified"
+
+
+def _strict_run(tmp_path, *, goal="strict locks"):
+    return create_run(
+        tmp_path,
+        mode="ralph",
+        goal=goal,
+        extra={"schema_version": 2, "lifecycle_version": 2},
+    )
+
+
+def test_execution_lease_is_bounded_and_contender_mutates_no_status(tmp_path):
+    run = _strict_run(tmp_path)
+    rid = run["run_id"]
+    status_path = tmp_path / ".omg" / "state" / "runs" / rid / "status.json"
+
+    with execution_lease(tmp_path, rid, intent="winner") as winner:
+        before = status_path.read_bytes()
+        barrier = threading.Barrier(2)
+        errors: list[BaseException] = []
+
+        def contend() -> None:
+            barrier.wait(timeout=5)
+            try:
+                with execution_lease(
+                    tmp_path, rid, intent="loser", timeout_s=0.05
+                ):
+                    raise AssertionError("contender unexpectedly acquired execution lease")
+            except ExecutionLeaseBusy as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=contend)
+        thread.start()
+        barrier.wait(timeout=5)
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert errors and "owner=" in str(errors[0])
+        assert status_path.read_bytes() == before
+        assert winner.generation == 1
+
+
+def test_execution_generation_increments_and_old_token_is_fenced(tmp_path):
+    run = _strict_run(tmp_path)
+    rid = run["run_id"]
+    with execution_lease(tmp_path, rid, intent="first") as old:
+        write_status(tmp_path, rid, "running", lease=old)
+        first_generation = old.generation
+
+    with execution_lease(tmp_path, rid, intent="second") as current:
+        assert current.generation == first_generation + 1
+        with pytest.raises(FencingError, match="not held|stale"):
+            write_status(
+                tmp_path,
+                rid,
+                "running",
+                lease=old,
+                extra={"iteration": 99},
+            )
+        updated = write_status(
+            tmp_path, rid, "running", lease=current, extra={"iteration": 1}
+        )
+        assert updated["execution_generation"] == current.generation
+
+
+def test_stale_pid_starttime_recovery_records_and_increments_generation(tmp_path):
+    run = _strict_run(tmp_path)
+    rid = run["run_id"]
+    lease_path = tmp_path / ".omg" / "state" / "runs" / rid / "execution.lease.json"
+    lease_path.write_text(
+        json.dumps(
+            {
+                "generation": 7,
+                "invocation_id": "dead-owner",
+                "pid": 99999999,
+                "process_starttime": "Mon Jan  1 00:00:00 2000",
+                "state": "held",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with execution_lease(tmp_path, rid, intent="recover") as recovered:
+        assert recovered.generation == 8
+        assert recovered.stale_owner_recovered is True
+
+
+def test_transition_then_execution_order_is_rejected(tmp_path):
+    run = _strict_run(tmp_path)
+    rid = run["run_id"]
+    with transition_guard(tmp_path, rid):
+        assert transition_guard_held() is True
+        with pytest.raises(LifecycleLockError, match="lock-order"):
+            with execution_lease(tmp_path, rid, intent="wrong-order", timeout_s=0):
+                pass
+
+
+def test_strict_locking_unavailable_fails_before_lock_path_mutation(
+    tmp_path, monkeypatch
+):
+    import omg_cli.state as state_mod
+
+    run = _strict_run(tmp_path)
+    rid = run["run_id"]
+    lock_path = tmp_path / ".omg" / "state" / "runs" / rid / "execution.lock"
+    monkeypatch.setattr(state_mod, "fcntl", None)
+    with pytest.raises(LockUnavailableError, match="POSIX"):
+        with execution_lease(tmp_path, rid, intent="unsupported"):
+            pass
+    assert not lock_path.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process/flock semantics")
+@pytest.mark.parametrize("replace_before_pause", [False, True])
+def test_transition_guard_owner_death_releases_lock_and_preserves_replace(
+    tmp_path, replace_before_pause
+):
+    run = _strict_run(tmp_path)
+    rid = run["run_id"]
+    before = load_run(tmp_path, rid)
+    assert before is not None
+
+    ctx = multiprocessing.get_context("fork")
+    parent, child = ctx.Pipe()
+    proc = ctx.Process(
+        target=_transition_crash_worker,
+        args=(str(tmp_path), rid, child),
+        kwargs={"replace_before_pause": replace_before_pause},
+    )
+    proc.start()
+    assert parent.poll(5), "child did not reach deterministic transition barrier"
+    assert parent.recv() == "guard-held"
+    proc.terminate()
+    proc.join(timeout=5)
+    assert not proc.is_alive()
+
+    # OS owner death, not pathname cleanup, releases the advisory guard.
+    with transition_guard(tmp_path, rid, timeout_s=1):
+        observed = load_run(tmp_path, rid)
+    assert observed is not None
+    if replace_before_pause:
+        assert observed["crash_probe"] == "committed"
+    else:
+        assert observed == before
+
+
+def test_acceptance_capability_names_are_never_serialized_in_strict_status(tmp_path):
+    run = _strict_run(tmp_path)
+    rid = run["run_id"]
+    with execution_lease(tmp_path, rid, intent="no-token-on-disk") as lease:
+        updated = write_status(
+            tmp_path,
+            rid,
+            "running",
+            lease=lease,
+            extra={
+                "acceptance_capability": "forged",
+                "acceptance_token": "forged",
+            },
+        )
+    assert "acceptance_capability" not in updated
+    assert "acceptance_token" not in updated

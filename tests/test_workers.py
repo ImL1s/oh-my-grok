@@ -79,7 +79,7 @@ def test_prepare_and_seal_writes_envelope(tmp_path):
     assert "feature.py" in env["changed_files"]
     assert env["writer"] == "omg-cli"
 
-    epath = envelope_path(tmp_path, "task-a")
+    epath = envelope_path(tmp_path, "task-a", run_id=rid)
     assert epath.is_file()
     disk = json.loads(epath.read_text(encoding="utf-8"))
     assert disk["task_id"] == "task-a"
@@ -158,10 +158,162 @@ def test_cli_worker_prepare_seal(tmp_path):
         cwd=tmp_path,
     )
     assert r2.returncode == 0, r2.stderr + r2.stdout
-    assert envelope_path(tmp_path, "w1").is_file()
+    assert envelope_path(tmp_path, "w1", run_id=rid).is_file()
 
 
 def test_cli_worker_help():
     r = _run_omg("worker", "--help")
     assert r.returncode == 0
     assert "prepare" in r.stdout or "seal" in r.stdout
+
+
+def test_ownership_manifest_collision_and_join(tmp_path):
+    from omg_cli.workers import (
+        WorkerError,
+        build_ownership_manifest,
+        join_worker_results,
+        prepare_task,
+        seal_task,
+    )
+
+    base = _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="own", extra={"base_sha": base})
+    rid = run["run_id"]
+
+    with pytest.raises(WorkerError, match="collision"):
+        build_ownership_manifest(
+            tmp_path,
+            rid,
+            [
+                {"task_id": "a", "owned_files": ["x.py"]},
+                {"task_id": "b", "owned_files": ["x.py"]},
+            ],
+        )
+
+    manifest = build_ownership_manifest(
+        tmp_path,
+        rid,
+        [
+            {
+                "task_id": "t1",
+                "owned_files": ["a.py"],
+                "capability_mode": "read-write",
+            },
+            {
+                "task_id": "t2",
+                "owned_files": ["b.py"],
+                "capability_mode": "read-write",
+            },
+        ],
+    )
+    assert manifest["writer"] == "omg-cli"
+    assert len(manifest["tasks"]) == 2
+
+    # missing envelopes block join
+    joined = join_worker_results(tmp_path, rid)
+    assert joined["complete"] is False
+    assert set(joined["missing"]) == {"t1", "t2"}
+
+    # seal both tasks on disjoint files
+    for tid, fname in (("t1", "a.py"), ("t2", "b.py")):
+        wt = prepare_task(tmp_path, rid, tid)
+        (wt / fname).write_text(f"{tid}\n", encoding="utf-8")
+        env = seal_task(tmp_path, rid, tid, message=f"add {fname}")
+        assert env["status"] == "ok", env
+
+    joined2 = join_worker_results(tmp_path, rid)
+    assert joined2["complete"] is True
+    assert joined2["missing"] == []
+    assert joined2["failed"] == []
+    assert joined2["task_count"] == 2
+
+
+def test_join_rejects_untrusted_writer(tmp_path):
+    from omg_cli.workers import (
+        build_ownership_manifest,
+        envelope_path,
+        join_worker_results,
+    )
+
+    base = _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="forge", extra={"base_sha": base})
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [{"task_id": "only", "owned_files": ["z.py"]}],
+    )
+    epath = envelope_path(tmp_path, "only", run_id=rid)
+    epath.parent.mkdir(parents=True, exist_ok=True)
+    epath.write_text(
+        json.dumps(
+            {
+                "task_id": "only",
+                "status": "ok",
+                "writer": "agent",
+                "base_sha": base,
+                "head_sha": "deadbeef",
+            }
+        ),
+        encoding="utf-8",
+    )
+    joined = join_worker_results(tmp_path, rid)
+    assert joined["complete"] is False
+    assert "only" in joined["failed"]
+
+
+def test_ownership_seal_join_integrate_closed_path(tmp_path):
+    """I-06-style: own → seal both → join → integrate; missing blocks integrate."""
+    from omg_cli.integrate import integrate_results, result_path
+    from omg_cli.workers import (
+        build_ownership_manifest,
+        join_worker_results,
+        prepare_task,
+        seal_task,
+    )
+
+    base = _init_repo(tmp_path)
+    run = create_run(
+        tmp_path,
+        mode="ulw",
+        goal="integrate-path",
+        extra={
+            "base_sha": base,
+            "schema_version": 2,
+            "lifecycle_version": 2,
+        },
+    )
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [
+            {"task_id": "t1", "owned_files": ["a.py"]},
+            {"task_id": "t2", "owned_files": ["b.py"]},
+        ],
+    )
+
+    # Missing envelopes: join incomplete AND integrate not complete
+    j0 = join_worker_results(tmp_path, rid)
+    assert j0["complete"] is False
+    integ_missing = integrate_results(tmp_path, rid, dry_run=True)
+    assert integ_missing["status"] in {"missing", "failed"}
+    assert integ_missing["status"] != "ok"
+
+    for tid, fname in (("t1", "a.py"), ("t2", "b.py")):
+        wt = prepare_task(tmp_path, rid, tid)
+        (wt / fname).write_text(f"{tid} body\n", encoding="utf-8")
+        env = seal_task(tmp_path, rid, tid, message=f"add {fname}")
+        assert env["status"] == "ok", env
+
+    j1 = join_worker_results(tmp_path, rid)
+    assert j1["complete"] is True
+    assert j1["task_count"] == 2
+
+    # integrate_results acquires a short execution lease for strict-v2 status writes
+    result = integrate_results(tmp_path, rid)
+    assert result["status"] == "ok", result
+    assert len(result.get("applied") or []) == 2
+    disk = json.loads(result_path(tmp_path, rid).read_text(encoding="utf-8"))
+    assert disk["status"] == "ok"
+    assert disk["writer"] == "omg-cli"

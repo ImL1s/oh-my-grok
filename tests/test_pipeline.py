@@ -6,6 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from omg_cli.integrate import default_envelopes_dir
 from omg_cli.pipeline import load_pipeline_state, report_path, run_pipeline
 from omg_cli.state import create_run, load_active_run, load_run
 
@@ -190,11 +191,15 @@ def test_pipeline_integrate_with_envelope_mock(monkeypatch, tmp_path):
     integrate_calls: list[dict] = []
 
     def impl_write_envelope(**_k):
-        env_dir = tmp_path / ".omg" / "artifacts" / "ulw-results"
+        active = load_active_run(tmp_path)
+        assert active is not None
+        env_dir = default_envelopes_dir(tmp_path, active["run_id"])
         env_dir.mkdir(parents=True, exist_ok=True)
         (env_dir / "t1.json").write_text(
             json.dumps(
                 {
+                    "writer": "omg-cli",
+                    "run_id": active["run_id"],
                     "task_id": "t1",
                     "base_sha": "abc1234",
                     "head_sha": "def5678",
@@ -296,17 +301,25 @@ def test_pipeline_reintegrate_after_request_changes(tmp_path):
     When resealed ULW envelopes change head_sha, integrate must run again
     before the next dual_review — not leave the new head unintegrated.
     """
-    env_dir = tmp_path / ".omg" / "artifacts" / "ulw-results"
-    env_dir.mkdir(parents=True, exist_ok=True)
-    env_path = env_dir / "t1.json"
     heads = {"n": 0}
     integrated_heads: list[str] = []
     dual_round = {"n": 0}
 
+    def current_env_path() -> Path:
+        active = load_active_run(tmp_path)
+        assert active is not None
+        return default_envelopes_dir(tmp_path, active["run_id"]) / "t1.json"
+
     def write_envelope(head: str) -> None:
+        active = load_active_run(tmp_path)
+        assert active is not None
+        env_path = current_env_path()
+        env_path.parent.mkdir(parents=True, exist_ok=True)
         env_path.write_text(
             json.dumps(
                 {
+                    "writer": "omg-cli",
+                    "run_id": active["run_id"],
                     "task_id": "t1",
                     "base_sha": "base0001",
                     "head_sha": head,
@@ -325,6 +338,7 @@ def test_pipeline_reintegrate_after_request_changes(tmp_path):
         return 0
 
     def integrate_fn(*_a, **kwargs):
+        env_path = current_env_path()
         data = json.loads(env_path.read_text(encoding="utf-8"))
         head = data["head_sha"]
         integrated_heads.append(head)
@@ -373,7 +387,7 @@ def test_pipeline_reintegrate_after_request_changes(tmp_path):
     assert integrated_heads[0] == "head0001"
     assert integrated_heads[1] == "head0002"
     # Final integrated head must match final envelope (no stale integrate)
-    final_env = json.loads(env_path.read_text(encoding="utf-8"))
+    final_env = json.loads(current_env_path().read_text(encoding="utf-8"))
     assert integrated_heads[-1] == final_env["head_sha"]
 
     active = load_active_run(tmp_path)
@@ -393,7 +407,9 @@ def test_pipeline_resume_reintegrates_stale_envelopes(tmp_path):
     Simulates crash between re-implement and integrate: history has integrate
     exit + implement exit, stage still dual_review, but envelope head changed.
     """
-    env_dir = tmp_path / ".omg" / "artifacts" / "ulw-results"
+    run = create_run(tmp_path, mode="pipeline", goal="resume reint")
+    rid = run["run_id"]
+    env_dir = default_envelopes_dir(tmp_path, rid)
     env_dir.mkdir(parents=True, exist_ok=True)
     env_path = env_dir / "t1.json"
     integrated_heads: list[str] = []
@@ -402,6 +418,8 @@ def test_pipeline_resume_reintegrates_stale_envelopes(tmp_path):
         env_path.write_text(
             json.dumps(
                 {
+                    "writer": "omg-cli",
+                    "run_id": rid,
                     "task_id": "t1",
                     "base_sha": "base0001",
                     "head_sha": head,
@@ -444,8 +462,6 @@ def test_pipeline_resume_reintegrates_stale_envelopes(tmp_path):
     # We need crash simulation: run until after re-implement without second integrate.
     # Instead craft state:
     write_envelope("headOLD1")
-    run = create_run(tmp_path, mode="pipeline", goal="resume reint")
-    rid = run["run_id"]
     from omg_cli.pipeline import initial_pipeline_state, save_pipeline_state
 
     state = initial_pipeline_state(

@@ -1,0 +1,5 @@
+{
+  "text": "{\"schema_version\":2,\"verdict\":\"APPROVE\"}",
+  "stopReason": "EndTurn",
+  "requestId": "req-missing-session"
+}

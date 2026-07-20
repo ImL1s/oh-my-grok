@@ -40,30 +40,61 @@ def _print_state_human(data: dict) -> None:
     print(f"verified: {verified}")
     if goal:
         print(f"goal:     {goal}")
-    for key in ("stage", "iteration", "passes", "exit_code", "note", "integrate_status"):
+    for key in (
+        "schema_classification",
+        "stage",
+        "iteration",
+        "iterations_completed",
+        "passes",
+        "exit_code",
+        "grok_session_id",
+        "grok_session_state",
+        "note",
+        "integrate_status",
+    ):
         if key in data and data[key] is not None:
             print(f"{key + ':':<10}{data[key]}")
+    lease = data.get("execution_lease")
+    if isinstance(lease, dict):
+        print(
+            "lease:    "
+            f"{lease.get('state', '?')} owner={lease.get('invocation_id', '?')} "
+            f"generation={lease.get('generation', '?')} pid={lease.get('pid', '?')}"
+        )
+    request = data.get("cancellation_request")
+    if isinstance(request, dict):
+        print(
+            "cancel:   requested "
+            f"id={request.get('request_id', '?')} "
+            f"generation={request.get('observed_generation', '?')}"
+        )
+    if data.get("blocker"):
+        print(f"blocker:  {json.dumps(data['blocker'], ensure_ascii=False)}")
     next_hint = "none"
     if verified is True:
         next_hint = "done (verified)"
+    elif status == "cancelled":
+        next_hint = "none (cancelled)"
+    elif isinstance(data.get("next_action"), str) and data["next_action"].strip():
+        next_hint = data["next_action"].strip()
     elif status in ("failed",):
         next_hint = "inspect logs / omg cancel / fix and re-run"
     elif mode == "ulw":
         next_hint = "omg integrate (if envelopes) → omg accept"
     elif mode == "ralph":
-        next_hint = "omg ralph --resume / fill prd + omg accept"
+        next_hint = f"omg ralph --resume {rid}"
     elif mode == "pipeline":
         next_hint = "omg pipeline --resume <run>"
     print(f"next:     {next_hint}")
 
 
 def cmd_state(args: argparse.Namespace) -> int:
-    from omg_cli.state import load_active_run, load_run
+    from omg_cli.state import load_active_run, load_run_view
 
     root = _project_root()
     human = bool(getattr(args, "human", False))
     if getattr(args, "run_id", None):
-        data = load_run(root, args.run_id)
+        data = load_run_view(root, args.run_id)
         if data is None:
             print(f"no run found: {args.run_id}", file=sys.stderr)
             return 1
@@ -78,7 +109,7 @@ def cmd_state(args: argparse.Namespace) -> int:
         print("no active run")
         return 0
     if human:
-        _print_state_human(active)
+        _print_state_human(load_run_view(root, str(active["run_id"])) or active)
     else:
         print(json.dumps(active, indent=2, ensure_ascii=False))
     return 0
@@ -95,8 +126,152 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     except FileNotFoundError as e:
         print(f"cancel failed: {e}", file=sys.stderr)
         return 1
-    print(f"cancelled run {cancelled['run_id']}")
+    outcome = str(cancelled.get("cancel_outcome") or "cancelled")
+    if outcome == "already complete":
+        print(f"run {cancelled['run_id']} already complete; no cancellation requested")
+    elif outcome == "cancellation requested":
+        print(f"cancellation requested for run {cancelled['run_id']}")
+    else:
+        print(f"cancelled run {cancelled['run_id']}")
     print(json.dumps(cancelled, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_interview(args: argparse.Namespace) -> int:
+    """Run the deterministic resumable requirements interview primitive."""
+    from omg_cli.interview import (
+        InterviewError,
+        InterviewIncomplete,
+        answer_interview,
+        close_interview,
+        interview_status,
+        pressure_pass_interview,
+        start_interview,
+    )
+
+    root = _project_root()
+    action = getattr(args, "interview_action", None)
+    try:
+        if action == "start":
+            result = start_interview(
+                root,
+                " ".join(args.task or []).strip(),
+                profile=args.profile,
+                force=bool(getattr(args, "force", False)),
+            )
+        elif action == "answer":
+            result = answer_interview(
+                root,
+                args.run_id,
+                args.text,
+                question_id=getattr(args, "question_id", None),
+            )
+        elif action == "pressure-pass":
+            result = pressure_pass_interview(root, args.run_id, args.text)
+        elif action == "close":
+            result = close_interview(root, args.run_id)
+        elif action == "status":
+            result = interview_status(root, getattr(args, "run_id", None))
+        else:
+            print("omg interview: action required", file=sys.stderr)
+            return 2
+    except InterviewIncomplete as exc:
+        print(json.dumps(exc.result, indent=2, ensure_ascii=False))
+        return 1
+    except (InterviewError, RuntimeError) as exc:
+        print(f"omg interview: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_goal(args: argparse.Namespace) -> int:
+    """Durable hash-chained goal ledger (ultragoal primitive)."""
+    from omg_cli.goals import (
+        GoalError,
+        GoalRepairRefused,
+        block_story,
+        checkpoint,
+        complete_story,
+        init_goal,
+        link_run,
+        list_goals,
+        repair_goal,
+        resume_story,
+        start_story,
+        goal_status,
+        verify_goal,
+    )
+
+    root = _project_root()
+    action = getattr(args, "goal_action", None)
+    try:
+        if action == "init":
+            stories_raw = json.loads(args.stories_json)
+            if not isinstance(stories_raw, list):
+                raise GoalError("--stories-json must be a JSON array")
+            result = init_goal(
+                root,
+                args.goal_id,
+                stories_raw,
+                title=getattr(args, "title", None),
+                objective=getattr(args, "objective", None),
+                source_spec_hash=getattr(args, "source_spec_hash", None),
+                source_plan_hash=getattr(args, "source_plan_hash", None),
+            )
+        elif action == "status":
+            if getattr(args, "goal_id", None):
+                result = goal_status(root, args.goal_id)
+            else:
+                result = {"goals": list_goals(root)}
+        elif action == "link-run":
+            result = link_run(root, args.goal_id, args.run_id)
+        elif action == "start-story":
+            result = start_story(root, args.goal_id, args.story_id)
+        elif action == "checkpoint":
+            result = checkpoint(
+                root,
+                args.goal_id,
+                args.story_id,
+                evidence_path=args.evidence,
+                message=args.message,
+            )
+        elif action == "block-story":
+            result = block_story(
+                root,
+                args.goal_id,
+                args.story_id,
+                reason=args.reason,
+                next_action=getattr(args, "next_action", None),
+            )
+        elif action == "resume-story":
+            result = resume_story(root, args.goal_id, args.story_id)
+        elif action == "complete-story":
+            result = complete_story(root, args.goal_id, args.story_id)
+        elif action == "verify":
+            result = verify_goal(
+                root,
+                args.goal_id,
+                run_id=getattr(args, "run_id", None),
+            )
+        elif action == "repair":
+            result = repair_goal(
+                root,
+                args.goal_id,
+                dry_run=bool(getattr(args, "dry_run", False))
+                or not bool(getattr(args, "yes", False)),
+                yes=bool(getattr(args, "yes", False)),
+            )
+        else:
+            print("omg goal: action required", file=sys.stderr)
+            return 2
+    except GoalRepairRefused as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, indent=2, ensure_ascii=False))
+        return 1
+    except (GoalError, RuntimeError, json.JSONDecodeError) as exc:
+        print(f"omg goal: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
 
 
@@ -106,12 +281,13 @@ def cmd_mode(args: argparse.Namespace) -> int:
 
     mode = args.command
     goal = " ".join(args.goal or []).strip()
-    if not goal:
+    resume = getattr(args, "resume", None)
+    if not goal and not (mode == "ralph" and resume is not None):
         print(f"omg {mode}: goal text required", file=sys.stderr)
         return 2
 
     max_iter = getattr(args, "max_iter", None)
-    if max_iter is None:
+    if max_iter is None and resume is None:
         max_iter = DEFAULT_MAX_ITER.get(mode, 1)
 
     require_acceptance = getattr(args, "require_acceptance", None)
@@ -165,10 +341,11 @@ def cmd_mode(args: argparse.Namespace) -> int:
         yolo=bool(getattr(args, "yolo", False)),
         safe=bool(getattr(args, "safe", False)),
         root=_project_root(),
-        max_iter=int(max_iter),
+        max_iter=int(max_iter) if max_iter is not None else None,
         dry_run=bool(getattr(args, "dry_run", False)),
         timeout=timeout,
         require_acceptance=require_acceptance,
+        resume_run_id=resume,
     )
 
 
@@ -382,14 +559,19 @@ def cmd_integrate(args: argparse.Namespace) -> int:
 def cmd_worker(args: argparse.Namespace) -> int:
     """prepare/seal worktrees and ULW result envelopes (no-shell bridge)."""
     from omg_cli.state import load_active_run, load_run
-    from omg_cli.workers import WorkerError, prepare_task, seal_task
+    from omg_cli.workers import (
+        WorkerError,
+        build_ownership_manifest,
+        join_worker_results,
+        load_ownership_manifest,
+        prepare_owned_tasks,
+        prepare_task,
+        seal_task,
+    )
 
     root = _project_root()
     action = getattr(args, "worker_action", None)
     task_id = getattr(args, "task_id", None)
-    if not task_id:
-        print("omg worker: --task ID required", file=sys.stderr)
-        return 2
 
     run_id = getattr(args, "run_id", None)
     if not run_id:
@@ -407,6 +589,39 @@ def cmd_worker(args: argparse.Namespace) -> int:
         return 1
 
     try:
+        if action == "own":
+            tasks = json.loads(args.tasks_json)
+            if not isinstance(tasks, list):
+                raise WorkerError("--tasks-json must be a JSON array")
+            manifest = build_ownership_manifest(root, run_id, tasks)
+            print(json.dumps(manifest, indent=2, ensure_ascii=False))
+            return 0
+        if action == "prepare-owned":
+            paths = prepare_owned_tasks(root, run_id)
+            print(
+                json.dumps(
+                    {"run_id": run_id, "worktrees": [str(p) for p in paths]},
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+        if action == "join":
+            result = join_worker_results(root, run_id)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if result.get("complete") else 1
+        if action == "manifest":
+            print(
+                json.dumps(
+                    load_ownership_manifest(root, run_id),
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+        if not task_id:
+            print("omg worker: --task ID required", file=sys.stderr)
+            return 2
         if action == "prepare":
             wt = prepare_task(root, run_id, task_id)
             print(f"omg worker prepare: task={task_id} worktree={wt}")
@@ -425,9 +640,113 @@ def cmd_worker(args: argparse.Namespace) -> int:
             return 0 if env.get("status") == "ok" else 1
         print(f"omg worker: unknown action {action!r}", file=sys.stderr)
         return 2
-    except WorkerError as exc:
+    except (WorkerError, json.JSONDecodeError) as exc:
         print(f"omg worker: {exc}", file=sys.stderr)
         return 1
+
+
+def cmd_review(args: argparse.Namespace) -> int:
+    """Hash-bound structured review gate (code-reviewer + architect)."""
+    from omg_cli.review import ReviewError, run_structured_review
+
+    root = _project_root()
+    try:
+        cr = json.loads(args.code_reviewer_json)
+        ar = json.loads(args.architect_json)
+        result = run_structured_review(
+            root,
+            args.run_id,
+            diff_text=args.diff_text or "",
+            code_reviewer_payload=cr,
+            architect_payload=ar,
+        )
+    except (ReviewError, json.JSONDecodeError, RuntimeError) as exc:
+        print(f"omg review: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result.get("clean") else 1
+
+
+def cmd_qa(args: argparse.Namespace) -> int:
+    """Bounded UltraQA freeze / cycle / status."""
+    from omg_cli.qa import QAError, freeze_scenarios, qa_status, run_qa_cycle
+
+    root = _project_root()
+    action = getattr(args, "qa_action", None)
+    try:
+        if action == "freeze":
+            scenarios = json.loads(args.scenarios_json)
+            result = freeze_scenarios(
+                root,
+                args.run_id,
+                scenarios,
+                plan_hash=getattr(args, "plan_hash", None),
+                spec_hash=getattr(args, "spec_hash", None),
+            )
+        elif action == "run":
+            result = run_qa_cycle(
+                root,
+                args.run_id,
+                repair_classification=getattr(args, "repair_classification", None),
+            )
+        elif action == "status":
+            result = qa_status(root, args.run_id)
+        else:
+            print("omg qa: action required", file=sys.stderr)
+            return 2
+    except (QAError, json.JSONDecodeError, RuntimeError) as exc:
+        print(f"omg qa: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if action == "run":
+        return 0 if result.get("clean") else 1
+    return 0
+
+
+def cmd_autopilot(args: argparse.Namespace) -> int:
+    """Strict Autopilot v2 coordinator."""
+    from omg_cli.autopilot import (
+        AutopilotError,
+        complete_with_acceptance,
+        start_autopilot,
+        status_autopilot,
+        transition,
+    )
+
+    root = _project_root()
+    action = getattr(args, "autopilot_action", None)
+    try:
+        if action == "start":
+            goal = " ".join(args.goal or []).strip()
+            result = start_autopilot(
+                root,
+                goal,
+                force=bool(getattr(args, "force", False)),
+                skip_interview=bool(getattr(args, "skip_interview", False)),
+            )
+        elif action == "transition":
+            evidence = None
+            if getattr(args, "evidence_json", None):
+                evidence = json.loads(args.evidence_json)
+            result = transition(
+                root,
+                args.run_id,
+                args.phase,
+                reason=getattr(args, "reason", None),
+                evidence=evidence,
+            )
+        elif action == "status":
+            result = status_autopilot(root, args.run_id)
+        elif action == "complete":
+            result = complete_with_acceptance(root, args.run_id)
+        else:
+            print("omg autopilot: action required", file=sys.stderr)
+            return 2
+    except (AutopilotError, json.JSONDecodeError, RuntimeError) as exc:
+        print(f"omg autopilot: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
 
 
 def cmd_ask(args: argparse.Namespace) -> int:
@@ -620,6 +939,189 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_cancel.set_defaults(func=cmd_cancel)
 
+    p_interview = sub.add_parser(
+        "interview",
+        parents=[common],
+        help="deterministic resumable deep-interview requirements gate",
+    )
+    interview_sub = p_interview.add_subparsers(dest="interview_action")
+    p_i_start = interview_sub.add_parser(
+        "start",
+        parents=[common],
+        help="start one-question-at-a-time requirements convergence",
+    )
+    p_i_start.add_argument("task", nargs="+", help="task or labeled requirements")
+    p_i_start.add_argument(
+        "--profile",
+        choices=("quick", "standard", "deep"),
+        default="standard",
+        help="ambiguity profile (quick=.30, standard=.20, deep=.15)",
+    )
+    p_i_start.add_argument(
+        "--force",
+        action="store_true",
+        help="supersede an existing active run",
+    )
+    p_i_start.set_defaults(func=cmd_interview, interview_action="start")
+
+    p_i_answer = interview_sub.add_parser(
+        "answer",
+        parents=[common],
+        help="answer the single pending question and persist transcript state",
+    )
+    p_i_answer.add_argument("--run", dest="run_id", required=True, help="interview run_id")
+    p_i_answer.add_argument("--text", required=True, help="answer text")
+    p_i_answer.add_argument(
+        "--question-id",
+        default=None,
+        help="optional freshness token from the exact resume command",
+    )
+    p_i_answer.set_defaults(func=cmd_interview, interview_action="answer")
+
+    p_i_status = interview_sub.add_parser(
+        "status",
+        parents=[common],
+        help="show active or explicit interview state and exact resume command",
+    )
+    p_i_status.add_argument("--run", dest="run_id", default=None, help="interview run_id")
+    p_i_status.set_defaults(func=cmd_interview, interview_action="status")
+
+    p_i_pressure = interview_sub.add_parser(
+        "pressure-pass",
+        parents=[common],
+        help="record the required assumption/trade-off pressure pass",
+    )
+    p_i_pressure.add_argument("--run", dest="run_id", required=True, help="interview run_id")
+    p_i_pressure.add_argument("--text", required=True, help="pressure-pass rationale")
+    p_i_pressure.set_defaults(func=cmd_interview, interview_action="pressure-pass")
+
+    p_i_close = interview_sub.add_parser(
+        "close",
+        parents=[common],
+        help="validate readiness and write the authoritative transcript/spec",
+    )
+    p_i_close.add_argument("--run", dest="run_id", required=True, help="interview run_id")
+    p_i_close.set_defaults(func=cmd_interview, interview_action="close")
+    p_interview.set_defaults(func=cmd_interview)
+
+    p_goal = sub.add_parser(
+        "goal",
+        parents=[common],
+        help="durable hash-chained ultragoal ledger",
+    )
+    goal_sub = p_goal.add_subparsers(dest="goal_action")
+
+    p_g_init = goal_sub.add_parser(
+        "init",
+        parents=[common],
+        help="create dependency-valid goal with hash-chained ledger",
+    )
+    p_g_init.add_argument("--goal", dest="goal_id", required=True, help="goal id")
+    p_g_init.add_argument("--title", default=None, help="goal title")
+    p_g_init.add_argument("--objective", default=None, help="goal objective")
+    p_g_init.add_argument(
+        "--stories-json",
+        required=True,
+        help='JSON array of stories: [{"id","depends_on","acceptance","title"?}]',
+    )
+    p_g_init.add_argument("--source-spec-hash", default=None)
+    p_g_init.add_argument("--source-plan-hash", default=None)
+    p_g_init.set_defaults(func=cmd_goal, goal_action="init")
+
+    p_g_status = goal_sub.add_parser(
+        "status",
+        parents=[common],
+        help="show one goal or list all goals",
+    )
+    p_g_status.add_argument("--goal", dest="goal_id", default=None, help="goal id")
+    p_g_status.set_defaults(func=cmd_goal, goal_action="status")
+
+    p_g_link = goal_sub.add_parser(
+        "link-run",
+        parents=[common],
+        help="link a run to a goal for verification coupling",
+    )
+    p_g_link.add_argument("--goal", dest="goal_id", required=True)
+    p_g_link.add_argument("--run", dest="run_id", required=True)
+    p_g_link.set_defaults(func=cmd_goal, goal_action="link-run")
+
+    p_g_start = goal_sub.add_parser(
+        "start-story",
+        parents=[common],
+        help="move a ready story to in_progress",
+    )
+    p_g_start.add_argument("--goal", dest="goal_id", required=True)
+    p_g_start.add_argument("--story", dest="story_id", required=True)
+    p_g_start.set_defaults(func=cmd_goal, goal_action="start-story")
+
+    p_g_cp = goal_sub.add_parser(
+        "checkpoint",
+        parents=[common],
+        help="append evidence-backed checkpoint for in_progress story",
+    )
+    p_g_cp.add_argument("--goal", dest="goal_id", required=True)
+    p_g_cp.add_argument("--story", dest="story_id", required=True)
+    p_g_cp.add_argument("--evidence", required=True, help="path to evidence file")
+    p_g_cp.add_argument("--message", required=True, help="checkpoint message")
+    p_g_cp.set_defaults(func=cmd_goal, goal_action="checkpoint")
+
+    p_g_block = goal_sub.add_parser(
+        "block-story",
+        parents=[common],
+        help="block a story with reason and optional next action",
+    )
+    p_g_block.add_argument("--goal", dest="goal_id", required=True)
+    p_g_block.add_argument("--story", dest="story_id", required=True)
+    p_g_block.add_argument("--reason", required=True)
+    p_g_block.add_argument("--next-action", dest="next_action", default=None)
+    p_g_block.set_defaults(func=cmd_goal, goal_action="block-story")
+
+    p_g_resume = goal_sub.add_parser(
+        "resume-story",
+        parents=[common],
+        help="resume a blocked story",
+    )
+    p_g_resume.add_argument("--goal", dest="goal_id", required=True)
+    p_g_resume.add_argument("--story", dest="story_id", required=True)
+    p_g_resume.set_defaults(func=cmd_goal, goal_action="resume-story")
+
+    p_g_complete = goal_sub.add_parser(
+        "complete-story",
+        parents=[common],
+        help="complete an in_progress story that has checkpoints",
+    )
+    p_g_complete.add_argument("--goal", dest="goal_id", required=True)
+    p_g_complete.add_argument("--story", dest="story_id", required=True)
+    p_g_complete.set_defaults(func=cmd_goal, goal_action="complete-story")
+
+    p_g_verify = goal_sub.add_parser(
+        "verify",
+        parents=[common],
+        help="verify goal only when a linked run is CLI-verified",
+    )
+    p_g_verify.add_argument("--goal", dest="goal_id", required=True)
+    p_g_verify.add_argument("--run", dest="run_id", default=None)
+    p_g_verify.set_defaults(func=cmd_goal, goal_action="verify")
+
+    p_g_repair = goal_sub.add_parser(
+        "repair",
+        parents=[common],
+        help="diagnose or repair eligible final-tail ledger damage",
+    )
+    p_g_repair.add_argument("--goal", dest="goal_id", required=True)
+    p_g_repair.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report valid-prefix boundary without mutation (default without --yes)",
+    )
+    p_g_repair.add_argument(
+        "--yes",
+        action="store_true",
+        help="confirm repair after byte-for-byte hash-named backup",
+    )
+    p_g_repair.set_defaults(func=cmd_goal, goal_action="repair")
+    p_goal.set_defaults(func=cmd_goal)
+
     p_accept = sub.add_parser(
         "accept",
         parents=[common],
@@ -735,7 +1237,140 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional evidence string on envelope",
     )
     p_w_seal.set_defaults(func=cmd_worker, worker_action="seal")
+
+    p_w_own = worker_sub.add_parser(
+        "own",
+        parents=[common],
+        help="write CLI ownership manifest for ULW tasks",
+    )
+    p_w_own.add_argument("--run", dest="run_id", default=None)
+    p_w_own.add_argument(
+        "--tasks-json",
+        required=True,
+        help='JSON array: [{"task_id","owned_files":[...],"capability_mode"?}]',
+    )
+    p_w_own.set_defaults(func=cmd_worker, worker_action="own", task_id="__own__")
+
+    p_w_po = worker_sub.add_parser(
+        "prepare-owned",
+        parents=[common],
+        help="prepare worktrees for every ownership-manifest task",
+    )
+    p_w_po.add_argument("--run", dest="run_id", default=None)
+    p_w_po.set_defaults(
+        func=cmd_worker, worker_action="prepare-owned", task_id="__prepare_owned__"
+    )
+
+    p_w_join = worker_sub.add_parser(
+        "join",
+        parents=[common],
+        help="join sealed envelopes against ownership manifest (block if missing)",
+    )
+    p_w_join.add_argument("--run", dest="run_id", default=None)
+    p_w_join.set_defaults(func=cmd_worker, worker_action="join", task_id="__join__")
+
+    p_w_man = worker_sub.add_parser(
+        "manifest",
+        parents=[common],
+        help="show ownership manifest for a run",
+    )
+    p_w_man.add_argument("--run", dest="run_id", default=None)
+    p_w_man.set_defaults(
+        func=cmd_worker, worker_action="manifest", task_id="__manifest__"
+    )
     p_worker.set_defaults(func=cmd_worker)
+
+    p_review = sub.add_parser(
+        "review",
+        parents=[common],
+        help="hash-bound structured review gate (code-reviewer + architect)",
+    )
+    p_review.add_argument("--run", dest="run_id", required=True)
+    p_review.add_argument(
+        "--diff-text",
+        dest="diff_text",
+        default="",
+        help="current diff text whose hash binds both lanes",
+    )
+    p_review.add_argument(
+        "--code-reviewer-json",
+        required=True,
+        help='JSON payload e.g. {"verdict":"APPROVE","findings":[]}',
+    )
+    p_review.add_argument(
+        "--architect-json",
+        required=True,
+        help='JSON payload e.g. {"verdict":"CLEAR","findings":[]}',
+    )
+    p_review.set_defaults(func=cmd_review)
+
+    p_qa = sub.add_parser(
+        "qa",
+        parents=[common],
+        help="bounded UltraQA freeze/run/status (never sets verified)",
+    )
+    qa_sub = p_qa.add_subparsers(dest="qa_action")
+    p_qa_f = qa_sub.add_parser("freeze", parents=[common], help="freeze scenarios")
+    p_qa_f.add_argument("--run", dest="run_id", required=True)
+    p_qa_f.add_argument(
+        "--scenarios-json",
+        required=True,
+        help='[{"id","command"}] or {"id","check":"always_pass"}',
+    )
+    p_qa_f.add_argument("--plan-hash", default=None)
+    p_qa_f.add_argument("--spec-hash", default=None)
+    p_qa_f.set_defaults(func=cmd_qa, qa_action="freeze")
+    p_qa_r = qa_sub.add_parser("run", parents=[common], help="run one QA cycle")
+    p_qa_r.add_argument("--run", dest="run_id", required=True)
+    p_qa_r.add_argument(
+        "--repair-classification",
+        choices=("product_change", "test_harness_correction"),
+        default=None,
+    )
+    p_qa_r.set_defaults(func=cmd_qa, qa_action="run")
+    p_qa_s = qa_sub.add_parser("status", parents=[common], help="QA status")
+    p_qa_s.add_argument("--run", dest="run_id", required=True)
+    p_qa_s.set_defaults(func=cmd_qa, qa_action="status")
+    p_qa.set_defaults(func=cmd_qa)
+
+    p_ap = sub.add_parser(
+        "autopilot",
+        parents=[common],
+        help="strict Autopilot v2 phase coordinator",
+    )
+    ap_sub = p_ap.add_subparsers(dest="autopilot_action")
+    p_ap_start = ap_sub.add_parser("start", parents=[common], help="start autopilot run")
+    p_ap_start.add_argument("goal", nargs="+", help="goal text")
+    p_ap_start.add_argument("--force", action="store_true")
+    p_ap_start.add_argument(
+        "--skip-interview",
+        action="store_true",
+        help="start at ralplan only when interview already complete (evidence later)",
+    )
+    p_ap_start.set_defaults(func=cmd_autopilot, autopilot_action="start")
+    p_ap_tr = ap_sub.add_parser(
+        "transition", parents=[common], help="legal phase transition"
+    )
+    p_ap_tr.add_argument("--run", dest="run_id", required=True)
+    p_ap_tr.add_argument("--phase", required=True, help="next phase")
+    p_ap_tr.add_argument("--reason", default=None)
+    p_ap_tr.add_argument(
+        "--evidence-json",
+        default=None,
+        help='gate evidence e.g. {"interview_complete":true}',
+    )
+    p_ap_tr.set_defaults(func=cmd_autopilot, autopilot_action="transition")
+    p_ap_st = ap_sub.add_parser("status", parents=[common], help="autopilot status")
+    p_ap_st.add_argument("--run", dest="run_id", required=True)
+    p_ap_st.set_defaults(func=cmd_autopilot, autopilot_action="status")
+    p_ap_c = ap_sub.add_parser(
+        "complete",
+        parents=[common],
+        help="same-process acceptance → verified only",
+    )
+    p_ap_c.add_argument("--run", dest="run_id", required=True)
+    p_ap_c.set_defaults(func=cmd_autopilot, autopilot_action="complete")
+    p_ap.set_defaults(func=cmd_autopilot)
 
     for mode, help_text in (
         ("ulw", "ultrawork parallel mode (spawn_subagent fan-out)"),
@@ -784,6 +1419,19 @@ def build_parser() -> argparse.ArgumentParser:
                 "0 = unlimited; dry-run ignores"
             ),
         )
+        if mode == "ralph":
+            p.add_argument(
+                "--resume",
+                dest="resume",
+                nargs="?",
+                const="__active__",
+                default=None,
+                metavar="RUN",
+                help=(
+                    "resume active Ralph run, or explicit RUN, with its "
+                    "persisted Grok session and cumulative ceiling"
+                ),
+            )
         if mode == "ulw":
             p.add_argument(
                 "--fanout",

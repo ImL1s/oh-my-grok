@@ -1,0 +1,7 @@
+{
+  "run_id": "fixture-malformed-object",
+  "schema_version": {
+    "major": 2
+  },
+  "lifecycle_version": 2
+}

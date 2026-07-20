@@ -1,0 +1,8 @@
+{
+  "run_id": "fixture-v2",
+  "mode": "autopilot",
+  "status": "initialized",
+  "verified": false,
+  "schema_version": 2,
+  "lifecycle_version": 2
+}

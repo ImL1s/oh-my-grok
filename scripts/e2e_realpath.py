@@ -99,15 +99,13 @@ def main() -> int:
         for ln in git(wt2, "diff", "--name-only", base2, head2).stdout.splitlines()
         if ln.strip()
     ]
-    env_dir = default_envelopes_dir(root)
-    # Clear prior envelopes so integrate only sees this multi task
-    if env_dir.is_dir():
-        for old in env_dir.glob("*.json"):
-            old.unlink()
+    env_dir = default_envelopes_dir(root, rid2)
     env_dir.mkdir(parents=True, exist_ok=True)
     (env_dir / "multi.json").write_text(
         json.dumps(
             {
+                "writer": "omg-cli",
+                "run_id": rid2,
                 "task_id": "multi",
                 "base_sha": base2,
                 "head_sha": head2,

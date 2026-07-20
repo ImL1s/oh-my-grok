@@ -40,6 +40,10 @@ _STUB_MARKERS = (
     "needs_review\n",  # dry-run stub line token, not free prose
 )
 
+_STRUCTURED_V2_VERDICTS = frozenset(
+    {"READY", "APPROVE", "ITERATE", "REQUEST_CHANGES", "FAILED"}
+)
+
 
 def is_stub_artifact_text(text: str) -> bool:
     low = (text or "").lower()
@@ -116,6 +120,26 @@ def parse_verdict_file(path: Path) -> str:
         return "UNKNOWN"
 
 
+def parse_structured_verdict(value: object) -> str:
+    """Parse a strict-v2 verdict field without any prose fallback.
+
+    Strict lifecycle gates consume one dedicated JSON field.  Case folding,
+    substring matching, booleans and arbitrary status prose are rejected.  A
+    single human-readable spelling (``REQUEST CHANGES``) is normalized to the
+    canonical underscore form; every other accepted token must already be an
+    exact terminal token.
+    """
+
+    if not isinstance(value, str):
+        return "UNKNOWN"
+    token = value.strip()
+    if token == "REQUEST CHANGES":
+        token = "REQUEST_CHANGES"
+    if token in _STRUCTURED_V2_VERDICTS:
+        return token
+    return "UNKNOWN"
+
+
 def artifact_contains_approve(path: Path) -> bool:
     """True if path is a text/JSON artifact with terminal APPROVE (strict)."""
     if not path.is_file():
@@ -150,5 +174,6 @@ __all__ = [
     "is_stub_artifact_text",
     "parse_verdict",
     "parse_verdict_file",
+    "parse_structured_verdict",
     "prose_has_terminal_approve",
 ]

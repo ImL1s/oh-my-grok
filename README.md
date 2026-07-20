@@ -198,7 +198,7 @@ Plan: [`docs/superpowers/plans/2026-07-19-oh-my-grok-v0.2-dual-review-complete.m
 ## Commands
 
 ```text
-omg [-h] [--safe] [--yolo] {setup,doctor,state,cancel,accept,integrate,ulw,ralph,ralplan} ...
+omg [-h] [--safe] [--yolo] {setup,doctor,state,cancel,interview,goal,accept,integrate,worker,review,qa,autopilot,ulw,ralph,ralplan,ask,pipeline,dual-review} ...
 ```
 
 | Command | Purpose |
@@ -207,10 +207,17 @@ omg [-h] [--safe] [--yolo] {setup,doctor,state,cancel,accept,integrate,ulw,ralph
 | `omg doctor` | Health checks (+ compat scan). `--strict` → FAIL on compat/inspect gaps |
 | `omg state` | Print active run JSON (`--run <id>` for a specific run) |
 | `omg cancel` | Cancel active run; SIGTERM process group then optional SIGKILL |
+| `omg interview …` | Deterministic deep-interview requirements gate (CLI-stamped) |
+| `omg goal …` | Durable hash-chained ultragoal ledger + tail repair |
 | `omg accept` | Freeze PRD commands + run acceptance (allowlist); set `verified` only with CLI stamp |
 | `omg integrate` | ULW: clean-tree + ancestry/merge/`changed_files` checks + cherry-pick (`base..head`); `--require-squash` |
 | `omg worker prepare --task ID` | Create `.omg/worktrees/<run>/<task>` (`git worktree add` or clone path) |
-| `omg worker seal --task ID` | Commit worktree + write `.omg/artifacts/ulw-results/<task>.json` |
+| `omg worker seal --task ID` | Commit worktree + write `.omg/artifacts/ulw-results/<run>/<task>.json` |
+| `omg worker own --tasks-json …` | CLI ownership manifest (capability + owned_files; join later) |
+| `omg worker join` | Join seals vs ownership; missing/failed tasks block complete |
+| `omg review` | Hash-bound code-reviewer + architect gate (never self-APPROVE) |
+| `omg qa freeze/run/status` | Bounded UltraQA; **QA clean ≠ verified** |
+| `omg autopilot start/transition/complete` | Strict v2 phase coordinator; verified only same-process accept |
 | `omg pipeline "goal"` | plan → implement → integrate → dual_review → accept → `report.json` |
 | `omg dual-review "…"` | Sequential headless critic→verifier (**interim**; not native spawn) |
 | `omg ask <provider> "…"` | Trusted advisor broker (stdin prompt; child-only allow env) |
@@ -218,6 +225,8 @@ omg [-h] [--safe] [--yolo] {setup,doctor,state,cancel,accept,integrate,ulw,ralph
 | `omg ulw "goal" --fanout process --workers N` | **Experimental** multi-PID supervisor (requires `OMG_EXPERIMENTAL_PROCESS_FANOUT=1`; not default isolation) |
 | `omg ralph "goal"` | Ralph — persistence loop (one story per iteration; context pack each iter) |
 | `omg ralplan "goal"` | Ralplan — CLI-owned plan consensus FSM only (no implementation) |
+
+**Honest scope:** core Grok-native purpose parity (lifecycle, evidence, lease, ralplan, interview, goal ledger, ULW ownership, review, UltraQA, autopilot). **Not** full OMC surface (HUD/wiki/tmux team/Stop hard-pin). Matrix: [`docs/research/core-parity-matrix-2026-07-20.md`](docs/research/core-parity-matrix-2026-07-20.md).
 
 ### Shared flags
 

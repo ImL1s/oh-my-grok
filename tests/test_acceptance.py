@@ -463,7 +463,7 @@ def test_modes_ralph_require_acceptance_exit(monkeypatch, tmp_path):
     active = load_active_run(tmp_path)
     assert active is not None
     assert active.get("verified") is False
-    assert active["status"] == "completed"
+    assert active["status"] == "blocked"
 
 
 def test_modes_ralph_with_passing_prd_verifies(monkeypatch, tmp_path):

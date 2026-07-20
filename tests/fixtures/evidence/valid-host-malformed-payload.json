@@ -1,0 +1,6 @@
+{
+  "text": "this is not structured JSON",
+  "stopReason": "EndTurn",
+  "sessionId": "019f7e08-417a-7080-853e-29aef82bd168",
+  "requestId": "req-malformed-payload"
+}

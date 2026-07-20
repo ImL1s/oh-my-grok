@@ -15,7 +15,9 @@ from omg_cli.integrate import (
     assert_ancestor,
     default_envelopes_dir,
     git_rev_parse_head,
+    import_legacy_envelopes,
     integrate_results,
+    legacy_import_command,
     list_range_commits,
     load_envelopes,
     preflight_clean_tree,
@@ -64,6 +66,9 @@ def _init_repo(path: Path, *, first_file: str = "README.md", content: str = "bas
 
 
 def _write_envelope(dir_path: Path, envelope: dict) -> Path:
+    envelope = dict(envelope)
+    envelope.setdefault("writer", "omg-cli")
+    envelope.setdefault("run_id", dir_path.name)
     dir_path.mkdir(parents=True, exist_ok=True)
     task_id = envelope["task_id"]
     path = dir_path / f"{task_id}.json"
@@ -183,6 +188,105 @@ def test_integrate_missing_envelopes(tmp_path):
     assert result["writer"] == "omg-cli"
     assert result_path(tmp_path, run["run_id"]).is_file()
     assert "ulw-results" in (result.get("note") or "")
+    assert legacy_import_command(tmp_path, run["run_id"]) in result["note"]
+
+
+def test_explicit_legacy_import_backs_up_and_preserves_v1_state(tmp_path):
+    base = _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="legacy", extra={"base_sha": base})
+    run_id = run["run_id"]
+    source = default_envelopes_dir(tmp_path)
+    _write_envelope(
+        source,
+        {
+            "writer": "omg-cli",
+            "run_id": run_id,
+            "task_id": "legacy-task",
+            "base_sha": base,
+            "head_sha": base,
+            "worktree_path": str(tmp_path),
+            "status": "failed",
+            "changed_files": [],
+        },
+    )
+    status_path = tmp_path / ".omg" / "state" / "runs" / run_id / "status.json"
+    before = status_path.read_bytes()
+
+    imported = import_legacy_envelopes(
+        tmp_path,
+        run_id,
+        source,
+        review=True,
+        yes=True,
+        invocation_id="import-1",
+    )
+
+    destination = default_envelopes_dir(tmp_path, run_id)
+    assert imported["status"] == "imported"
+    assert destination.joinpath("legacy-task.json").is_file()
+    assert Path(imported["manifest_path"]).is_file()
+    assert Path(imported["backup_dir"], "files", "legacy-task.json").is_file()
+    assert status_path.read_bytes() == before
+    assert "schema_version" not in load_run(tmp_path, run_id)
+
+    with pytest.raises(IntegrateError, match="collision"):
+        import_legacy_envelopes(
+            tmp_path,
+            run_id,
+            source,
+            review=True,
+            yes=True,
+            invocation_id="import-2",
+        )
+
+
+def test_legacy_import_flags_schema_and_mixed_set_fail_closed(tmp_path):
+    legacy_root = tmp_path / "legacy"
+    legacy = create_run(legacy_root, mode="ulw", goal="legacy")
+    legacy_id = legacy["run_id"]
+    source = legacy_root / "source"
+    _write_envelope(
+        source,
+        {
+            "writer": "omg-cli",
+            "run_id": legacy_id,
+            "task_id": "good",
+            "base_sha": "a" * 40,
+            "head_sha": "b" * 40,
+            "worktree_path": str(legacy_root),
+            "status": "ok",
+            "changed_files": ["good.py"],
+        },
+    )
+    source.joinpath("bad.json").write_text("{not-json\n", encoding="utf-8")
+
+    with pytest.raises(IntegrateError, match="--review.*--yes"):
+        import_legacy_envelopes(legacy_root, legacy_id, source)
+    with pytest.raises(IntegrateError, match="bad.json"):
+        import_legacy_envelopes(
+            legacy_root,
+            legacy_id,
+            source,
+            review=True,
+            yes=True,
+        )
+    assert not default_envelopes_dir(legacy_root, legacy_id).exists()
+
+    strict_root = tmp_path / "strict"
+    strict = create_run(
+        strict_root,
+        mode="ulw",
+        goal="strict",
+        extra={"schema_version": 2, "lifecycle_version": 2},
+    )
+    with pytest.raises(IntegrateError, match="strict-v2"):
+        import_legacy_envelopes(
+            strict_root,
+            strict["run_id"],
+            strict_root / "does-not-exist",
+            review=True,
+            yes=True,
+        )
 
 
 def test_integrate_cherry_pick_ok(tmp_path):
@@ -205,7 +309,7 @@ def test_integrate_cherry_pick_ok(tmp_path):
     preflight_clean_tree(leader)
 
     run = create_run(leader, mode="ulw", goal="pick", extra={"base_sha": base})
-    env_dir = default_envelopes_dir(leader)
+    env_dir = default_envelopes_dir(leader, run["run_id"])
     _write_envelope(
         env_dir,
         {
@@ -251,7 +355,7 @@ def test_integrate_sorts_by_task_id(tmp_path):
     head_a = _git(wt, "rev-parse", "HEAD").stdout.strip()
 
     run = create_run(leader, mode="ulw", goal="order", extra={"base_sha": base})
-    env_dir = default_envelopes_dir(leader)
+    env_dir = default_envelopes_dir(leader, run["run_id"])
     # Write out of order on disk; integrate sorts by task_id.
     # claimed paths must match git diff (empty claim + non-empty range is refused).
     _write_envelope(
@@ -303,7 +407,7 @@ def test_integrate_base_sha_mismatch(tmp_path):
         leader, mode="ulw", goal="mismatch", extra={"base_sha": base}
     )
     _write_envelope(
-        default_envelopes_dir(leader),
+        default_envelopes_dir(leader, run["run_id"]),
         {
             "task_id": "t1",
             "base_sha": "0" * 40,  # wrong base
@@ -324,7 +428,7 @@ def test_integrate_failed_envelope_stops(tmp_path):
     base = _init_repo(leader)
     run = create_run(leader, mode="ulw", goal="fail-env", extra={"base_sha": base})
     _write_envelope(
-        default_envelopes_dir(leader),
+        default_envelopes_dir(leader, run["run_id"]),
         {
             "task_id": "t-fail",
             "base_sha": base,
@@ -374,7 +478,7 @@ def test_integrate_conflict_marks_failed(tmp_path):
     # For conflict: run.base_sha = original base, envelope.base_sha = original.
     # Leader has extra commit; cherry-pick worker commit should conflict.
     _write_envelope(
-        default_envelopes_dir(leader),
+        default_envelopes_dir(leader, run["run_id"]),
         {
             "task_id": "t-conflict",
             "base_sha": base,
@@ -439,7 +543,7 @@ def test_integrate_partial_reset_on_second_conflict(tmp_path):
     run = create_run(
         leader, mode="ulw", goal="partial", extra={"base_sha": base}
     )
-    env_dir = default_envelopes_dir(leader)
+    env_dir = default_envelopes_dir(leader, run["run_id"])
     # task-a sorts before task-b → first applies, second conflicts
     _write_envelope(
         env_dir,
@@ -491,7 +595,7 @@ def test_integrate_dirty_tree_refuses(tmp_path):
     run = create_run(leader, mode="ulw", goal="dirty", extra={"base_sha": base})
     # Envelope present so preflight runs (missing envelopes skip clean-tree)
     _write_envelope(
-        default_envelopes_dir(leader),
+        default_envelopes_dir(leader, run["run_id"]),
         {
             "task_id": "t-dirty",
             "base_sha": base,
@@ -511,7 +615,7 @@ def test_integrate_dry_run_skips_preflight_and_pick(tmp_path):
     (leader / "dirt").write_text("z\n", encoding="utf-8")  # dirty ok for dry_run
     run = create_run(leader, mode="ulw", goal="dry", extra={"base_sha": base})
     _write_envelope(
-        default_envelopes_dir(leader),
+        default_envelopes_dir(leader, run["run_id"]),
         {
             "task_id": "t1",
             "base_sha": base,
@@ -548,7 +652,7 @@ def test_cli_integrate_dry_run(tmp_path):
     run = create_run(tmp_path, mode="ulw", goal="cli", extra={"base_sha": base})
     rid = run["run_id"]
     _write_envelope(
-        default_envelopes_dir(tmp_path),
+        default_envelopes_dir(tmp_path, rid),
         {
             "task_id": "cli-t",
             "base_sha": base,
@@ -589,7 +693,7 @@ def test_integrate_rejects_worktree_outside_allowlist(tmp_path):
 
     run = create_run(leader, mode="ulw", goal="deny-path", extra={"base_sha": base})
     _write_envelope(
-        default_envelopes_dir(leader),
+        default_envelopes_dir(leader, run["run_id"]),
         {
             "task_id": "t-evil",
             "base_sha": base,
@@ -626,7 +730,7 @@ def test_integrate_multi_commit_range(tmp_path):
 
     run = create_run(leader, mode="ulw", goal="multi", extra={"base_sha": base})
     _write_envelope(
-        default_envelopes_dir(leader),
+        default_envelopes_dir(leader, run["run_id"]),
         {
             "task_id": "t-multi",
             "base_sha": base,
@@ -710,7 +814,7 @@ def test_merge_commit_in_range_fails(tmp_path):
     # Use leader itself as worktree (allowed: under project root)
     run = create_run(leader, mode="ulw", goal="merge", extra={"base_sha": base})
     _write_envelope(
-        default_envelopes_dir(leader),
+        default_envelopes_dir(leader, run["run_id"]),
         {
             "task_id": "t-merge",
             "base_sha": base,
@@ -741,7 +845,7 @@ def test_changed_files_lie_fails(tmp_path):
 
     run = create_run(leader, mode="ulw", goal="lie", extra={"base_sha": base})
     _write_envelope(
-        default_envelopes_dir(leader),
+        default_envelopes_dir(leader, run["run_id"]),
         {
             "task_id": "t-lie",
             "base_sha": base,
@@ -790,7 +894,7 @@ def test_ok_envelope_empty_changed_files_fails(tmp_path):
 
     run = create_run(leader, mode="ulw", goal="empty-claim", extra={"base_sha": base})
     _write_envelope(
-        default_envelopes_dir(leader),
+        default_envelopes_dir(leader, run["run_id"]),
         {
             "task_id": "t-empty",
             "base_sha": base,
@@ -830,7 +934,7 @@ def test_require_squash_with_2_commits_fails(tmp_path):
 
     run = create_run(leader, mode="ulw", goal="sq", extra={"base_sha": base})
     _write_envelope(
-        default_envelopes_dir(leader),
+        default_envelopes_dir(leader, run["run_id"]),
         {
             "task_id": "t-sq",
             "base_sha": base,

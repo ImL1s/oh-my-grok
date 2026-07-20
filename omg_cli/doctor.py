@@ -166,11 +166,17 @@ def check_agents_present() -> tuple[str, bool, str]:
         "omg-executor.md",
         "omg-critic.md",
         "omg-verifier.md",
+        "omg-analyst.md",
+        "omg-code-reviewer.md",
+        "omg-architect.md",
+        "omg-qa-tester.md",
     ]
     missing = [n for n in expected if not (agents_dir / n).is_file()]
     if missing:
         return _check("agents", False, f"missing: {', '.join(missing)}")
-    return _check("agents", True, f"{len(expected)} present")
+    # Count all agent markdown files for honesty (core + optional)
+    total = len([p for p in agents_dir.glob("*.md") if p.is_file()])
+    return _check("agents", True, f"{len(expected)} required present ({total} total)")
 
 
 def check_deny_importable() -> tuple[str, bool, str]:

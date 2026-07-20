@@ -5,7 +5,11 @@ import sys
 from pathlib import Path
 
 import pytest
-from omg_cli.deny import should_deny_command, decide_pre_tool_use
+from omg_cli.deny import (
+    decide_pre_tool_use,
+    decide_spawn_subagent,
+    should_deny_command,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 PRE_TOOL = ROOT / "hooks" / "bin" / "pre_tool_use_deny.py"
@@ -298,3 +302,26 @@ def test_pre_tool_use_allow_exit_zero():
     assert proc.returncode == 0, proc.stdout + proc.stderr
     out = json.loads(proc.stdout.strip())
     assert out["decision"] == "allow"
+
+
+def test_executor_nested_spawn_tools_denied():
+    d = decide_spawn_subagent(
+        {
+            "subagent_type": "omg-executor",
+            "capability_mode": "read-write",
+            "tools": ["read_file", "spawn_subagent"],
+        }
+    )
+    assert d["decision"] == "deny"
+    assert "depth" in d["reason"].lower() or "spawn" in d["reason"].lower()
+
+
+def test_depth_gt_1_denied():
+    d = decide_spawn_subagent(
+        {
+            "subagent_type": "explore",
+            "capability_mode": "read-only",
+            "depth": 2,
+        }
+    )
+    assert d["decision"] == "deny"

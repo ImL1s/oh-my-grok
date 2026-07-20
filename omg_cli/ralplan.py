@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import json
 import sys
+import uuid
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -29,14 +31,20 @@ from omg_cli.modes import (
     plugin_root,
 )
 from omg_cli.state import create_run, load_run, write_status
-from omg_cli.verdict import artifact_contains_approve
+from omg_cli.verdict import artifact_contains_approve, parse_structured_verdict
 
 DEFAULT_MAX_ROUNDS = 3
+V2_MAX_ROUNDS = 5
 
 # Stages that must run read-only (no product edits)
 READ_ONLY_STAGES = frozenset({"critic", "verifier"})
+V2_READ_ONLY_STAGES = frozenset({"planner", "architect", "critic"})
 
 STAGE_ORDER_NOTE = "draft → critic → revise → verifier → (accept | revise)*"
+V2_STAGE_ORDER_NOTE = (
+    "planner → architect → critic → "
+    "(consensus | planner revision → architect → critic)*"
+)
 
 
 def _utc_now() -> str:
@@ -143,19 +151,22 @@ def build_stage_prompt(
     round_n: int,
     max_rounds: int,
     run_dir: Path | None = None,
+    invocation_id: str | None = None,
+    session_id: str | None = None,
+    input_sha256: str | None = None,
 ) -> str:
     """Compose stage-specific prompt. Critic/verifier force read-only."""
     from omg_cli.modes import HARD_RULES_REMINDER, load_skill_body
 
     skill = load_skill_body("ralplan", root=plugin_root())
-    read_only = stage in READ_ONLY_STAGES
+    read_only = stage in READ_ONLY_STAGES or stage in V2_READ_ONLY_STAGES
 
     lines = [
         skill,
         "",
         HARD_RULES_REMINDER,
         "",
-        f"## Active mode: ralplan",
+        "## Active mode: ralplan",
         f"## Run id: {run_id}",
         f"## FSM stage: {stage}",
         f"## Round: {round_n}/{max_rounds}",
@@ -224,6 +235,36 @@ def build_stage_prompt(
                 "APPROVE is a recommendation for the CLI FSM — not a state write.",
             ]
         )
+    elif stage in V2_READ_ONLY_STAGES:
+        required = {
+            "planner": (
+                'verdict "READY" plus non-empty plan, principles, drivers, '
+                "options, and acceptance fields"
+            ),
+            "architect": (
+                'terminal verdict "APPROVE" | "ITERATE" | '
+                '"REQUEST_CHANGES" | "FAILED"; APPROVE also requires '
+                "steelman, tradeoff, and synthesis"
+            ),
+            "critic": (
+                'terminal verdict "APPROVE" | "ITERATE" | '
+                '"REQUEST_CHANGES" | "FAILED" and evidence-backed critique'
+            ),
+        }[stage]
+        lines.extend(
+            [
+                "",
+                f"## Strict-v2 {stage} contract",
+                f"- Ordered loop: {V2_STAGE_ORDER_NOTE}",
+                f"- Return one JSON object in `stages/{stage}-{round_n:02d}.json`.",
+                "- Markdown/prose verdicts and legacy verifier artifacts are invalid.",
+                f"- Required content: {required}.",
+                f'- schema_version: 2; run_id: "{run_id}"; stage/role: "{stage}";',
+                f"  round: {round_n}; invocation_id: {invocation_id};",
+                f"  session_id: {session_id}; input_sha256: {input_sha256}.",
+                "- Do not set writer/authority fields; the CLI stamps valid proposals.",
+            ]
+        )
 
     lines.extend(
         [
@@ -270,6 +311,10 @@ def _execute_stage(
     dry_run: bool,
     timeout: float | None,
     extra: Sequence[str] | None = None,
+    invocation_id: str | None = None,
+    session_id: str | None = None,
+    session_attempt: int = 0,
+    input_sha256: str | None = None,
 ) -> int:
     """Write stage prompt pack, optionally launch grok, ensure artifact stub.
 
@@ -287,6 +332,9 @@ def _execute_stage(
         round_n=round_n,
         max_rounds=max_rounds,
         run_dir=run_dir,
+        invocation_id=invocation_id,
+        session_id=session_id,
+        input_sha256=input_sha256,
     )
     prompt_path = stage_prompt_path(root, run_id, stage, round_n)
     prompt_path.write_text(prompt, encoding="utf-8")
@@ -297,7 +345,7 @@ def _execute_stage(
 
     # Critic/verifier: always RO — ignore parent yolo, force safe + no shell.
     # Draft/revise may still inherit parent yolo/safe.
-    ro = stage in READ_ONLY_STAGES
+    ro = stage in READ_ONLY_STAGES or stage in V2_READ_ONLY_STAGES
     argv = build_grok_argv(
         mode="ralplan",
         goal=goal,
@@ -309,6 +357,12 @@ def _execute_stage(
         skill_root=plugin_root(),
         prompt=prompt,
         disallow_shell=ro,
+        new_session_id=(
+            session_id if session_id is not None and session_attempt == 0 else None
+        ),
+        resume_session_id=(
+            session_id if session_id is not None and session_attempt > 0 else None
+        ),
     )
 
     # Stage-scoped argv record (full last_argv still written by _launch_grok)
@@ -346,7 +400,7 @@ def _execute_stage(
     return int(rc)
 
 
-def run_ralplan(
+def _run_ralplan_v1(
     goal: str,
     *,
     root: Path | str | None = None,
@@ -360,7 +414,7 @@ def run_ralplan(
     existing_run_id: str | None = None,
     stage_executor: Callable[..., int] | None = None,
 ) -> int:
-    """Run the RALPLAN FSM. Returns 0 on accepted, non-zero on failed/error.
+    """Run the frozen legacy-v1 RALPLAN FSM.
 
     Parameters
     ----------
@@ -530,7 +584,6 @@ def run_ralplan(
             break
 
     # Terminal status
-    current = load_run(root_path, run_id) or {}
     if accepted:
         state["status"] = "accepted"
         state["accepted"] = True
@@ -576,6 +629,458 @@ def run_ralplan(
     )
     print(f"omg ralplan: failed run {run_id}: {fail_note}", file=sys.stderr)
     return 1 if last_rc == 0 else int(last_rc)
+
+
+def _v2_stamp_path(root: Path, run_id: str, stage: str, round_n: int) -> Path:
+    return stages_dir(root, run_id) / f"{stage}-{round_n:02d}.stamp.json"
+
+
+def _sha_json(value: Any) -> str:
+    raw = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return sha256(raw).hexdigest()
+
+
+def _v2_entry(
+    state: dict[str, Any], stage: str, round_n: int
+) -> dict[str, Any] | None:
+    for entry in reversed(state.get("history", [])):
+        if entry.get("stage") == stage and entry.get("round") == round_n:
+            return entry
+    return None
+
+
+def _v2_input_hash(state: dict[str, Any], stage: str, round_n: int) -> str:
+    if stage == "planner":
+        prior = [
+            {
+                "stage": role,
+                "proposal_sha256": (
+                    (_v2_entry(state, role, round_n - 1) or {}).get(
+                        "proposal_sha256"
+                    )
+                ),
+                "verdict": (
+                    (_v2_entry(state, role, round_n - 1) or {}).get("verdict")
+                ),
+            }
+            for role in ("planner", "architect", "critic")
+        ]
+        return _sha_json(
+            {
+                "run_id": state["run_id"],
+                "goal": state["goal"],
+                "stage": stage,
+                "round": round_n,
+                "prior": prior if round_n > 1 else [],
+            }
+        )
+    roles = ("planner",) if stage == "architect" else ("planner", "architect")
+    return _sha_json(
+        {
+            "run_id": state["run_id"],
+            "stage": stage,
+            "round": round_n,
+            "inputs": [
+                {
+                    "stage": role,
+                    "proposal_sha256": (
+                        (_v2_entry(state, role, round_n) or {}).get(
+                            "proposal_sha256"
+                        )
+                    ),
+                    "valid": bool(
+                        (_v2_entry(state, role, round_n) or {}).get("valid")
+                    ),
+                }
+                for role in roles
+            ],
+        }
+    )
+
+
+def _has_value(value: Any) -> bool:
+    return bool(value.strip()) if isinstance(value, str) else bool(value)
+
+
+def _validate_v2_proposal(
+    root: Path,
+    run_id: str,
+    stage: str,
+    round_n: int,
+    *,
+    invocation_id: str,
+    session_id: str,
+    input_sha256: str,
+    started_at: datetime,
+) -> dict[str, Any]:
+    """Validate one current JSON proposal and add a distinct CLI stamp."""
+
+    proposal_path = stage_artifact_json_path(root, run_id, stage, round_n)
+    if not proposal_path.is_file():
+        raise ValueError(f"missing structured {stage} proposal")
+    if proposal_path.stat().st_mtime < started_at.timestamp():
+        raise ValueError(f"stale {stage} proposal predates current invocation")
+    try:
+        payload = json.loads(proposal_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid structured {stage} proposal") from exc
+    if not isinstance(payload, dict) or "writer" in payload:
+        raise ValueError(f"{stage} proposal is not untrusted structured output")
+    expected = {
+        "schema_version": 2,
+        "run_id": run_id,
+        "stage": stage,
+        "role": stage,
+        "round": round_n,
+        "invocation_id": invocation_id,
+        "session_id": session_id,
+        "input_sha256": input_sha256,
+    }
+    for key, value in expected.items():
+        if payload.get(key) != value:
+            raise ValueError(f"{stage} proposal identity mismatch for {key}")
+    verdict = parse_structured_verdict(payload.get("verdict"))
+    allowed = (
+        {"READY"}
+        if stage == "planner"
+        else {"APPROVE", "ITERATE", "REQUEST_CHANGES", "FAILED"}
+    )
+    if verdict not in allowed:
+        raise ValueError(f"invalid terminal {stage} verdict")
+    if payload.get("stub") is True or payload.get("is_stub") is True:
+        raise ValueError(f"stub {stage} proposal cannot satisfy consensus")
+    if stage == "planner":
+        required = ("plan", "principles", "drivers", "options", "acceptance")
+        if any(not _has_value(payload.get(key)) for key in required):
+            raise ValueError("planner proposal lacks structured plan fields")
+    elif stage == "architect" and verdict == "APPROVE":
+        if any(
+            not _has_value(payload.get(key))
+            for key in ("steelman", "tradeoff", "synthesis")
+        ):
+            raise ValueError("architect approval lacks steelman/tradeoff/synthesis")
+    elif stage == "critic" and verdict == "APPROVE":
+        checks = (
+            ("options_assessment", "options"),
+            ("premortem", "pre_mortem"),
+            ("acceptance_assessment", "acceptance"),
+            ("test_plan", "tests"),
+            ("synthesis",),
+        )
+        if any(
+            not any(_has_value(payload.get(key)) for key in aliases)
+            for aliases in checks
+        ):
+            raise ValueError("critic approval lacks options/risk/acceptance/test proof")
+    proposal_sha256 = sha256(proposal_path.read_bytes()).hexdigest()
+    stamp = {
+        "writer": "omg-cli",
+        "schema_version": 2,
+        "run_id": run_id,
+        "stage": stage,
+        "role": stage,
+        "round": round_n,
+        "invocation_id": invocation_id,
+        "session_id": session_id,
+        "input_sha256": input_sha256,
+        "proposal": str(proposal_path.relative_to(_run_dir(root, run_id))),
+        "proposal_sha256": proposal_sha256,
+        "verdict": verdict,
+        "stamped_at": _utc_now(),
+    }
+    _atomic_write_json(_v2_stamp_path(root, run_id, stage, round_n), stamp)
+    return stamp
+
+
+def _initial_v2_state(
+    run_id: str, goal: str, max_rounds: int
+) -> dict[str, Any]:
+    now = _utc_now()
+    return {
+        "schema_version": 2,
+        "lifecycle_version": 2,
+        "run_id": run_id,
+        "goal": goal,
+        "status": "planner",
+        "stage": "planner",
+        "round": 0,
+        "max_rounds": max_rounds,
+        "history": [],
+        "sessions": {
+            role: {"session_id": str(uuid.uuid4()), "attempts": 0}
+            for role in ("planner", "architect", "critic")
+        },
+        "accepted": False,
+        "fsm": V2_STAGE_ORDER_NOTE,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def _run_ralplan_v2(
+    goal: str,
+    *,
+    root: Path,
+    run_id: str,
+    max_rounds: int | None,
+    yolo: bool,
+    safe: bool,
+    dry_run: bool,
+    timeout: float | None,
+    extra: Sequence[str] | None,
+    stage_executor: Callable[..., int] | None,
+) -> int:
+    from omg_cli.state import LifecycleLockError, execution_lease
+
+    ceiling = min(
+        V2_MAX_ROUNDS,
+        max(1, V2_MAX_ROUNDS if max_rounds is None else int(max_rounds)),
+    )
+    executor = stage_executor or _execute_stage
+    try:
+        with execution_lease(
+            root, run_id, intent="ralplan-v2-consensus", timeout_s=5.0
+        ) as lease:
+            stages_dir(root, run_id).mkdir(parents=True, exist_ok=True)
+            state = load_ralplan_state(root, run_id)
+            if state is None:
+                state = _initial_v2_state(run_id, goal, ceiling)
+            elif (
+                state.get("schema_version") != 2
+                or state.get("lifecycle_version") != 2
+                or state.get("goal") != goal
+            ):
+                print("omg ralplan: invalid strict-v2 resume state", file=sys.stderr)
+                return 1
+            if state.get("accepted") is True:
+                return 0
+            state["max_rounds"] = ceiling
+            save_ralplan_state(root, run_id, state)
+
+            prior_rounds = [
+                item.get("round", 0)
+                for item in state.get("history", [])
+                if item.get("stage") in {"architect", "critic"}
+            ]
+            first_round = max(prior_rounds, default=0) + 1
+            for round_n in range(first_round, ceiling + 1):
+                for stage in ("planner", "architect", "critic"):
+                    if stage == "critic":
+                        planner = _v2_entry(state, "planner", round_n) or {}
+                        architect = _v2_entry(state, "architect", round_n) or {}
+                        if not (
+                            planner.get("valid") is True
+                            and architect.get("valid") is True
+                            and architect.get("verdict") == "APPROVE"
+                            and architect.get("exit_code") == 0
+                        ):
+                            break
+                    binding = state["sessions"][stage]
+                    session_id = str(binding["session_id"])
+                    session_attempt = int(binding["attempts"])
+                    binding["attempts"] = session_attempt + 1
+                    invocation_id = str(uuid.uuid4())
+                    input_sha256 = _v2_input_hash(state, stage, round_n)
+                    state.update({"status": stage, "stage": stage, "round": round_n})
+                    save_ralplan_state(root, run_id, state)
+                    write_status(
+                        root,
+                        run_id,
+                        "running",
+                        extra={
+                            "stage": stage,
+                            "round": round_n,
+                            "ralplan_status": stage,
+                            "max_rounds": ceiling,
+                        },
+                        lease=lease,
+                    )
+                    started_at = datetime.now(timezone.utc)
+                    rc = int(
+                        executor(
+                            stage,
+                            root=root,
+                            run_id=run_id,
+                            goal=goal,
+                            round_n=round_n,
+                            max_rounds=ceiling,
+                            yolo=yolo,
+                            safe=safe,
+                            dry_run=dry_run,
+                            timeout=timeout,
+                            extra=extra,
+                            invocation_id=invocation_id,
+                            session_id=session_id,
+                            session_attempt=session_attempt,
+                            input_sha256=input_sha256,
+                        )
+                    )
+                    stamp: dict[str, Any] | None = None
+                    error: str | None = None
+                    if rc == 0:
+                        try:
+                            stamp = _validate_v2_proposal(
+                                root,
+                                run_id,
+                                stage,
+                                round_n,
+                                invocation_id=invocation_id,
+                                session_id=session_id,
+                                input_sha256=input_sha256,
+                                started_at=started_at,
+                            )
+                        except (OSError, TypeError, ValueError) as exc:
+                            error = str(exc)
+                    entry = {
+                        "stage": stage,
+                        "role": stage,
+                        "round": round_n,
+                        "invocation_id": invocation_id,
+                        "session_id": session_id,
+                        "input_sha256": input_sha256,
+                        "proposal_sha256": (
+                            stamp.get("proposal_sha256") if stamp else None
+                        ),
+                        "verdict": stamp.get("verdict") if stamp else "INVALID",
+                        "exit_code": rc,
+                        "valid": stamp is not None and rc == 0,
+                        "error": error,
+                        "at": _utc_now(),
+                    }
+                    state["history"].append(entry)
+                    save_ralplan_state(root, run_id, state)
+                    if rc != 0:
+                        break
+                    if stage == "architect" and not (
+                        entry["valid"] and entry["verdict"] == "APPROVE"
+                    ):
+                        break
+                    if stage == "critic":
+                        if entry["valid"] and entry["verdict"] == "APPROVE":
+                            state.update(
+                                {"status": "accepted", "stage": "accepted", "accepted": True}
+                            )
+                            save_ralplan_state(root, run_id, state)
+                            write_status(
+                                root,
+                                run_id,
+                                "running",
+                                extra={
+                                    "stage": "accepted",
+                                    "ralplan_status": "accepted",
+                                    "ralplan_consensus": True,
+                                    "round": round_n,
+                                },
+                                lease=lease,
+                            )
+                            print(
+                                f"omg ralplan: accepted strict-v2 run {run_id} "
+                                f"(Architect then Critic)"
+                            )
+                            return 0
+                        break
+
+            state.update(
+                {
+                    "status": "blocked",
+                    "stage": "blocked",
+                    "accepted": False,
+                    "blocker": {
+                        "code": "ralplan_consensus_not_reached",
+                        "resumable": True,
+                        "message": f"no consensus within max_rounds={ceiling}",
+                    },
+                }
+            )
+            save_ralplan_state(root, run_id, state)
+            write_status(
+                root,
+                run_id,
+                "blocked",
+                extra={
+                    "stage": "blocked",
+                    "ralplan_status": "blocked",
+                    "ralplan_consensus": False,
+                    "blocker": state["blocker"],
+                },
+                lease=lease,
+            )
+            return 1
+    except LifecycleLockError as exc:
+        print(f"omg ralplan: strict lifecycle lease failed: {exc}", file=sys.stderr)
+        return 1
+
+
+def run_ralplan(
+    goal: str,
+    *,
+    root: Path | str | None = None,
+    max_rounds: int | None = None,
+    yolo: bool = False,
+    safe: bool = False,
+    dry_run: bool = False,
+    timeout: float | None = DEFAULT_TIMEOUT,
+    extra: Sequence[str] | None = None,
+    force: bool = False,
+    existing_run_id: str | None = None,
+    stage_executor: Callable[..., int] | None = None,
+) -> int:
+    """Dispatch deterministically to frozen v1 or ordered strict-v2 RALPLAN."""
+
+    from omg_cli.state import RunSchema, classify_run_schema
+
+    root_path = Path(root) if root is not None else Path.cwd().resolve()
+    goal = (goal or "").strip() or "(no goal)"
+    if existing_run_id is None:
+        return _run_ralplan_v1(
+            goal,
+            root=root_path,
+            max_rounds=max_rounds,
+            yolo=yolo,
+            safe=safe,
+            dry_run=dry_run,
+            timeout=timeout,
+            extra=extra,
+            force=force,
+            stage_executor=stage_executor,
+        )
+    run = load_run(root_path, existing_run_id)
+    if run is None:
+        print(f"omg ralplan: no run found: {existing_run_id!r}", file=sys.stderr)
+        return 1
+    try:
+        schema = classify_run_schema(run)
+    except (TypeError, ValueError) as exc:
+        print(f"omg ralplan: refusing malformed run schema: {exc}", file=sys.stderr)
+        return 1
+    if schema is RunSchema.LEGACY_V1:
+        return _run_ralplan_v1(
+            goal,
+            root=root_path,
+            max_rounds=max_rounds,
+            yolo=yolo,
+            safe=safe,
+            dry_run=dry_run,
+            timeout=timeout,
+            extra=extra,
+            force=force,
+            existing_run_id=existing_run_id,
+            stage_executor=stage_executor,
+        )
+    return _run_ralplan_v2(
+        goal,
+        root=root_path,
+        run_id=existing_run_id,
+        max_rounds=max_rounds,
+        yolo=yolo,
+        safe=safe,
+        dry_run=dry_run,
+        timeout=timeout,
+        extra=extra,
+        stage_executor=stage_executor,
+    )
 
 
 __all__ = [

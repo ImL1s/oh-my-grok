@@ -71,12 +71,28 @@ Children must **not** call `spawn_subagent` again (depth=1 hard cap).
 - Read summaries / notes under `.omg/artifacts/` if children wrote them.
 - Do not dump entire raw child logs into leader context — integrate deltas.
 
+### 3b. Ownership manifest (CLI)
+
+Before sealing, record file ownership so join can fail closed:
+
+```bash
+omg worker own --run RUN --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]'
+omg worker prepare-owned --run RUN
+# workers edit worktrees → leader seals
+omg worker seal --run RUN --task t1
+omg worker seal --run RUN --task t2
+omg worker join --run RUN   # blocks if missing/failed/untrusted writer
+```
+
+Two envelope files alone are **not** proof of two native workers; join requires
+CLI ownership + CLI seals. Live spawn fingerprints are host-session evidence.
+
 ### 4. Integrate (result envelopes + CLI)
 
 Write-heavy children must leave a **result envelope** before exit:
 
 ```text
-.omg/artifacts/ulw-results/<task_id>.json
+.omg/artifacts/ulw-results/<run_id>/<task_id>.json
 ```
 
 ```json
