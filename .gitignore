@@ -1,9 +1,11 @@
 .omg/
 .omc/
+.omx/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+venv/
 node_modules/
 .DS_Store
 *.log
@@ -11,6 +13,9 @@ dist/
 build/
 .coverage
 htmlcov/
+.env
+.env.*
+!.env.example
 
 # oh-my-grok
 .omg/state/
@@ -18,3 +23,8 @@ htmlcov/
 .omg/handoffs/
 .omg/ultragoal/
 *.pid
+
+# Machine-local live suite residue (regenerate with scripts/live_suite.sh)
+docs/research/live/**
+!docs/research/live/README.md
+docs/research/canary-pretool-latest.json

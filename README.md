@@ -13,8 +13,10 @@
   <img src="https://img.shields.io/badge/scope-core%20purpose%20parity-lightgrey" alt="core purpose parity">
 </p>
 
-**Multi-agent orchestration for [Grok Build](https://github.com/xai-org/grok-cli).**  
+**Multi-agent orchestration for [Grok Build](https://github.com/xai-org/grok-build).**  
 Sibling of [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) (OMC), [oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex) (OMX), and [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) (OmO) — same *orchestration idea*, **Grok-native** runtime.
+
+_Unofficial community plugin — not affiliated with xAI or the OMC/OMX/OmO maintainers._
 
 _Don't learn every Grok flag. Use `omg` + skills: clarify → plan → execute → verify._
 
@@ -45,15 +47,20 @@ Version: **0.2.5** · License: MIT
 
 ## Quick start
 
-**Requirements:** [Grok Build CLI](https://github.com/xai-org/grok-cli) (`grok` on `PATH`) · Python **3.11+**
+**Requirements:** [Grok Build CLI](https://github.com/xai-org/grok-build) (`grok` on `PATH`) · Python **3.11+**
 
 ```bash
-# 1) Install plugin (from a clone of this repo)
-cd /path/to/oh-my-grok
+# 0) Install Grok Build (host)
+curl -fsSL https://x.ai/cli/install.sh | bash
+# docs: https://github.com/xai-org/grok-build · https://x.ai/cli
+
+# 1) Clone + install this plugin
+git clone https://github.com/ImL1s/oh-my-grok.git
+cd oh-my-grok
 ./scripts/install-plugin.sh
 # or: grok plugin validate . && grok plugin install . --trust
 
-# 2) Put omg on PATH
+# 2) Put omg on PATH (not on PyPI yet — symlink the repo binary)
 ln -sf "$(pwd)/bin/omg" ~/.local/bin/omg   # ensure ~/.local/bin is on PATH
 omg --help
 
@@ -71,6 +78,8 @@ omg ulw "noop" --dry-run
 ```
 
 That’s enough to start. Everything below is the default spine and reference.
+
+> **Note:** `install-plugin.sh` registers a global PreToolUse soft-hook with an **absolute path** into this checkout. If you move the clone, re-run the install script.
 
 ---
 
@@ -142,6 +151,9 @@ PreToolUse deny is **fail-open soft-guard** — not a sandbox. Details: [`docs/s
 | Parallel without tmux | `spawn_subagent` + worktrees | process fanout only with `OMG_EXPERIMENTAL_PROCESS_FANOUT=1` |
 
 ```bash
+# Escape hatch (default OFF). Set only for trusted local experiments.
+# Prefer: omg ask …  (sets allow only in the advisor child env)
+# Never put this in your shell profile / project .env for day-to-day use.
 export OMG_ALLOW_EXTERNAL_CLI=1   # process-env only; never parse from command text
 ```
 
@@ -298,7 +310,7 @@ Do not claim production isolation from unit green alone. See [`docs/research/tes
 | [`docs/security-model.md`](docs/security-model.md) | Isolation layers |
 | [`docs/research/core-parity-matrix-2026-07-20.md`](docs/research/core-parity-matrix-2026-07-20.md) | HAVE / NEVER scope |
 | [`docs/research/omc-parity-council/`](docs/research/omc-parity-council/) | Parity council + STATUS |
-| [`docs/research/live/`](docs/research/live/) | Live suite evidence |
+| [`docs/research/live/`](docs/research/live/) | How to regenerate live suite evidence (logs gitignored) |
 | [`docs/superpowers/plans/`](docs/superpowers/plans/) | Implementation plans |
 
 ---
@@ -316,11 +328,13 @@ Details live in git history and `docs/research/`.
 
 ## License
 
-MIT
+[MIT](LICENSE) · Copyright (c) 2026 ImL1s
+
+See also: [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md)
 
 ---
 
 <p align="center">
-  <em>Inspired by OMC · OMX · OmO — built for Grok.</em><br>
+  <em>Inspired by OMC · OMX · OmO — built for Grok. Unofficial; not affiliated.</em><br>
   <strong>Core purpose first. No fake parity.</strong>
 </p>
