@@ -1005,6 +1005,18 @@ def integrate_results(
     }
 
     try:
+        # When a CLI ownership manifest exists, require join complete first.
+        from omg_cli.workers import join_worker_results, ownership_manifest_path
+
+        own_path = ownership_manifest_path(root, run_id)
+        if own_path.is_file() and not dry_run:
+            joined = join_worker_results(root, run_id)
+            if not joined.get("complete"):
+                raise IntegrateError(
+                    "ownership join incomplete; refuse integrate: "
+                    f"missing={joined.get('missing')} failed={joined.get('failed')}"
+                )
+
         try:
             envelopes = load_envelopes(
                 env_dir,

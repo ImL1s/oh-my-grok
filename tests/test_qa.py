@@ -26,13 +26,29 @@ def test_freeze_and_clean_never_verified(tmp_path: Path) -> None:
     assert out["status"] == "clean"
 
 
+def test_command_policy_denies_python_c(tmp_path: Path) -> None:
+    run = create_run(tmp_path, mode="qa", goal="policy")
+    rid = run["run_id"]
+    freeze_scenarios(
+        tmp_path,
+        rid,
+        [{"id": "bad", "command": "python3 -c 'import sys; sys.exit(1)'"}],
+    )
+    out = run_qa_cycle(tmp_path, rid)
+    assert out["clean"] is False
+    failures = out["cycles"][-1]["failures"]
+    assert failures
+    blob = out["cycles"][-1]["results"][0]["output"]
+    assert "command_policy" in blob
+
+
 def test_failure_then_unchanged_hash_blocks(tmp_path: Path) -> None:
     run = create_run(tmp_path, mode="qa", goal="fail")
     rid = run["run_id"]
     freeze_scenarios(
         tmp_path,
         rid,
-        [{"id": "bad", "command": "python3 -c 'import sys; sys.exit(1)'"}],
+        [{"id": "bad", "command": "false"}],
     )
     failed = run_qa_cycle(tmp_path, rid)
     assert failed["clean"] is False
@@ -51,7 +67,7 @@ def test_test_harness_correction_skips_hash_gate(tmp_path: Path) -> None:
     freeze_scenarios(
         tmp_path,
         rid,
-        [{"id": "x", "command": "python3 -c 'import sys; sys.exit(1)'"}],
+        [{"id": "x", "command": "false"}],
     )
     run_qa_cycle(tmp_path, rid)
     again = run_qa_cycle(
@@ -67,7 +83,7 @@ def test_max_cycles_block(tmp_path: Path) -> None:
     freeze_scenarios(
         tmp_path,
         rid,
-        [{"id": "x", "command": "python3 -c 'import sys; sys.exit(1)'"}],
+        [{"id": "x", "command": "false"}],
     )
     state = load_qa(tmp_path, rid)
     state["cycle_count"] = 5

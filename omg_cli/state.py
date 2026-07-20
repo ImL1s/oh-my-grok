@@ -66,10 +66,6 @@ def _create_lock_path(root: Path) -> Path:
     return Path(root) / ".omg" / "state" / "create.lock"
 
 
-def _status_path(root: Path, run_id: str) -> Path:
-    return _runs_dir(root) / run_id / "status.json"
-
-
 def _safe_run_id(run_id: str) -> str:
     """Reject path traversal in run_id (defense-in-depth for status paths)."""
     rid = (run_id or "").strip()
@@ -82,6 +78,10 @@ def _safe_run_id(run_id: str) -> str:
     ):
         raise ValueError(f"invalid run_id {run_id!r}")
     return rid
+
+
+def _status_path(root: Path, run_id: str) -> Path:
+    return _runs_dir(root) / _safe_run_id(run_id) / "status.json"
 
 
 def _run_dir(root: Path, run_id: str) -> Path:

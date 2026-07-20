@@ -246,7 +246,7 @@ def run_qa_cycle(
                 }
             )
             continue
-        rc, out = _run_command(root, str(cmd))
+        rc, out = _run_command(root, cmd)
         ok = rc == 0
         results.append({"id": sid, "rc": rc, "ok": ok, "output": out[-4000:]})
         if not ok and sc.get("required", True):

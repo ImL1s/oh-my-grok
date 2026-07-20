@@ -849,7 +849,10 @@ def verify_goal(root: Path | str, goal_id: str, *, run_id: str | None = None) ->
         if not linked:
             raise GoalError("goal cannot verify without a linked run")
         candidates = [run_id] if run_id else linked
-        from omg_cli.acceptance import is_trusted_acceptance
+        from omg_cli.acceptance import (
+            is_cli_acceptance_result,
+            is_trusted_acceptance,
+        )
 
         verified_run = None
         for rid in candidates:
@@ -858,24 +861,36 @@ def verify_goal(root: Path | str, goal_id: str, *, run_id: str | None = None) ->
             run = load_run(root, rid)
             if run is None:
                 continue
-            # Disk status alone is insufficient — require same-process trusted
-            # acceptance (or refuse if only a forged status.json is present).
+            # Disk status alone is insufficient. Prefer same-process token;
+            # allow multi-process CLI path when acceptance.result is a valid
+            # CLI stamp matching frozen manifest (require_token=False).
             disk_verified = (
                 run.get("verified") is True or run.get("status") == "verified"
             )
+            if not disk_verified:
+                continue
             trusted = False
+            cli_stamped = False
             try:
                 trusted = bool(is_trusted_acceptance(root, rid))
             except Exception:
                 trusted = False
-            if disk_verified and trusted:
+            try:
+                cli_stamped = bool(
+                    is_cli_acceptance_result(
+                        None, root=root, run_id=rid, require_token=False
+                    )
+                )
+            except Exception:
+                cli_stamped = False
+            if trusted or cli_stamped:
                 verified_run = rid
                 break
-            if disk_verified and not trusted:
-                raise GoalError(
-                    "linked run shows verified on disk but lacks same-process "
-                    "trusted acceptance; re-run omg accept in this process"
-                )
+            raise GoalError(
+                "linked run shows verified on disk but lacks CLI acceptance "
+                "stamp (re-run omg accept, or ensure acceptance.result.json "
+                "is CLI-written with matching manifest sha)"
+            )
         if verified_run is None:
             raise GoalError(
                 "goal cannot verify before a linked run is CLI-verified"

@@ -233,12 +233,13 @@ def test_verify_requires_cli_verified_linked_run(tmp_path: Path) -> None:
     with pytest.raises(GoalError, match="before a linked run is CLI-verified"):
         verify_goal(tmp_path, "g3")
 
-    # Disk-only verified status must not promote the goal
+    # Disk-only verified without acceptance.result must not promote the goal
     set_verified(tmp_path, run["run_id"], force=True)
-    with pytest.raises(GoalError, match="trusted acceptance"):
+    with pytest.raises(GoalError, match="CLI acceptance"):
         verify_goal(tmp_path, "g3")
 
-    # Same-process freeze_and_run + set_verified is required
+    # freeze_and_run + set_verified leaves CLI acceptance stamp; goal verify OK
+    # even after process token is cleared (multi-process CLI path)
     from omg_cli.acceptance import clear_cli_acceptance_tokens, freeze_and_run
 
     clear_cli_acceptance_tokens()
@@ -250,6 +251,7 @@ def test_verify_requires_cli_verified_linked_run(tmp_path: Path) -> None:
     }
     assert freeze_and_run(tmp_path, run["run_id"], prd) is True
     set_verified(tmp_path, run["run_id"])
+    clear_cli_acceptance_tokens()  # simulate new process
     st = verify_goal(tmp_path, "g3")
     assert st["verified"] is True
     assert st["status"] == "verified"

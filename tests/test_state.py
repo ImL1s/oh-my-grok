@@ -554,6 +554,15 @@ def test_write_status(tmp_path):
     assert verified["status"] == "verified"
 
 
+def test_status_path_rejects_traversal_run_id(tmp_path):
+    from omg_cli.state import load_run
+
+    with pytest.raises(ValueError, match="invalid run_id"):
+        load_run(tmp_path, "../evil")
+    with pytest.raises(ValueError, match="invalid run_id"):
+        load_run(tmp_path, "a/b")
+
+
 def _strict_run(tmp_path, *, goal="strict locks"):
     return create_run(
         tmp_path,
