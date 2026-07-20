@@ -35,8 +35,9 @@ _STUB_MARKERS = (
     "dry_run stub",
     "dry_run: no grok",
     "stub artifact",
-    "needs_review",
+    "verdict placeholder: needs_review",
     "verdict placeholder",
+    "needs_review\n",  # dry-run stub line token, not free prose
 )
 
 
