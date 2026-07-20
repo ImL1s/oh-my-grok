@@ -1,7 +1,7 @@
 {
   "name": "oh-my-grok",
-  "version": "0.2.6",
-  "description": "OMC-style multi-agent orchestration for Grok Build: skills, agents, ledger hooks. Pair with the omg CLI for hard keywords (ulw/ralph/ralplan), setup, and outer persistence loops.",
+  "version": "0.3.0",
+  "description": "OMC-style multi-agent orchestration for Grok Build: skills, agents, ledger hooks, resume/wiki/hud. Pair with the omg CLI for hard keywords (ulw/ralph/ralplan/resume), setup, and outer persistence loops.",
   "author": {
     "name": "ImL1s",
     "url": "https://github.com/ImL1s/oh-my-grok"
@@ -12,6 +12,7 @@
   "keywords": [
     "omg-ultrawork",
     "omg-ralph",
+    "omg-resume",
     "orchestration",
     "multi-agent",
     "grok-build"

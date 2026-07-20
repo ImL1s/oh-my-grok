@@ -2,7 +2,7 @@
 
 ## Version source of truth
 
-1. Bump **`plugin.json` `"version"`** first (e.g. `0.2.6`).
+1. Bump **`plugin.json` `"version"`** first (e.g. `0.3.0`).
 2. Confirm `omg --version` prints the same string.
 3. Update README `Version: **X.Y.Z**` and `docs/security-model.md` header if present.
 4. Add a CHANGELOG section for the release.

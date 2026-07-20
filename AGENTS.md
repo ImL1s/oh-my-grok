@@ -32,6 +32,6 @@ omg ralplan "goal" # plan consensus
 ```text
 .omg/
   state/runs/<run-id>/   # CLI single-writer status
-  plans/ research/ handoffs/ artifacts/ ultragoal/
+  plans/ research/ handoffs/ artifacts/ ultragoal/ wiki/
 ```
 <!-- OMG:END -->
