@@ -1,7 +1,6 @@
 """Tests for omg --madmax host launcher (Fable contract; no interactive attach)."""
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
