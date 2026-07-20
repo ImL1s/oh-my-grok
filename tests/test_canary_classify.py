@@ -144,3 +144,28 @@ def test_partial_denied():
     )
     assert r["status"] == "DENIED_PARTIAL"
     assert r["exit_code"] == 1
+
+
+def test_parent_host_child_capability_isolation_pass():
+    """Parent PreToolUse host deny + child no-shell capability = suite green."""
+    from omg_cli.canary_classify import looks_like_capability_isolation
+
+    parent = "Hook denied: oh-my-grok: external agent CLI blocked\n"
+    child = (
+        "spawn capability_mode=read-write\n"
+        "run_terminal_command is not in the tool list for this worker. "
+        "Available tools are limited to file ops. status: denied/blocked.\n"
+    )
+    assert looks_like_capability_isolation(child, "") is True
+    r = classify_canary(
+        parent_out=parent,
+        parent_err="",
+        child_out=child,
+        child_err="",
+        parent_marker=False,
+        child_marker=False,
+    )
+    assert r["status"] == "DENIED_PARENT_HOST_CHILD_CAPABILITY"
+    assert r["exit_code"] == 0
+    assert r["parent_host_signature"] is True
+    assert r["child_capability_isolation"] is True
