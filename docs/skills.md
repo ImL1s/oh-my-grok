@@ -1,5 +1,7 @@
 # Skills catalog (oh-my-grok)
 
+English | [繁體中文](./skills.zh-Hant.md)
+
 **15 in-session skills** under [`skills/omg-*/SKILL.md`](../skills/).  
 Same *idea* as OMC’s skill zoo, **Grok-native** runtime: playbooks + `omg` CLI stamps.
 

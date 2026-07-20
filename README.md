@@ -16,6 +16,8 @@
   <img src="https://img.shields.io/badge/scope-core%20purpose%20parity-lightgrey" alt="core purpose parity">
 </p>
 
+English | [繁體中文](README.zh-TW.md)
+
 **Multi-agent orchestration for [Grok Build](https://github.com/xai-org/grok-build).**  
 Sibling of [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) (OMC), [oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex) (OMX), and [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) (OmO) — same *orchestration idea*, **Grok-native** runtime.
 
@@ -23,7 +25,8 @@ _Unofficial community plugin — not affiliated with xAI or the OMC/OMX/OmO main
 
 _Don't learn every Grok flag. Use `omg` + skills: clarify → plan → execute → verify._
 
-**Docs:** [Skills catalog](docs/skills.md) · [Autopilot](docs/autopilot.md) · [Security model](docs/security-model.md) · [Docs index](docs/README.md) · [Changelog](CHANGELOG.md)
+**Docs (EN):** [Skills catalog](docs/skills.md) · [Autopilot](docs/autopilot.md) · [Security model](docs/security-model.md) · [Docs index](docs/README.md) · [Changelog](CHANGELOG.md)  
+**文件（繁中）:** [Skills 目錄](docs/skills.zh-Hant.md) · [Autopilot](docs/autopilot.zh-Hant.md) · [文件索引](docs/README.zh-Hant.md) · [README 繁中](README.zh-TW.md)
 
 ---
 

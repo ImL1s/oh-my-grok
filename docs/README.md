@@ -1,5 +1,7 @@
 # oh-my-grok documentation
 
+English | [繁體中文](./README.zh-Hant.md)
+
 User-facing docs for the Grok Build plugin + `omg` CLI.  
 **Version:** see [`plugin.json`](../plugin.json) · **Changelog:** [`CHANGELOG.md`](../CHANGELOG.md)
 
@@ -7,9 +9,9 @@ User-facing docs for the Grok Build plugin + `omg` CLI.
 
 | Doc | What |
 |-----|------|
-| [../README.md](../README.md) | Install, mental model, default flow, CLI reference |
-| [skills.md](./skills.md) | **All skills** — triggers, invoke, CLI twin, examples (OMC-style catalog) |
-| [autopilot.md](./autopilot.md) | Deep dive: autopilot skill + phase machine |
+| [../README.md](../README.md) · [../README.zh-TW.md](../README.zh-TW.md) | Install, mental model, default flow, CLI reference |
+| [skills.md](./skills.md) · [skills.zh-Hant.md](./skills.zh-Hant.md) | **All skills** — triggers, invoke, CLI twin, examples |
+| [autopilot.md](./autopilot.md) · [autopilot.zh-Hant.md](./autopilot.zh-Hant.md) | Deep dive: autopilot skill + phase machine |
 | [security-model.md](./security-model.md) | Isolation honesty (capability_mode, allowlist, fail-open hooks) |
 | [RELEASE.md](./RELEASE.md) | Maintainer release protocol |
 

@@ -10,7 +10,8 @@ description: >
 
 Route users and sessions into the correct oh-my-grok workflow. This skill does **not** implement features; it loads the right playbook and points at install/health tools.
 
-**Human catalog (all 15 skills):** `docs/skills.md` · **Docs index:** `docs/README.md`
+**Human catalog (all 15 skills):** `docs/skills.md` · `docs/skills.zh-Hant.md`  
+**Docs index:** `docs/README.md` · `docs/README.zh-Hant.md` · user README: `README.zh-TW.md`
 
 ## HARD RULES (non-negotiable)
 - Fan-out ONLY via Grok `spawn_subagent` (depth=1; children must NOT spawn).
