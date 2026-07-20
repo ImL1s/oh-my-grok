@@ -55,3 +55,38 @@ def test_apply_stage_exit_codes_fail_closed():
         apply_stage_exit_codes("REQUEST_CHANGES", critic_rc=0, verifier_rc=1)
         == "REQUEST_CHANGES"
     )
+
+
+def test_cant_cannot_unable_negation_blocks_terminal_approve():
+    # Negated language in body must neutralize a later terminal APPROVE line
+    # (research R3: can't / unable / cannot)
+    assert (
+        parse_verdict("I can't APPROVE this plan.\n\nAPPROVE\n") != "APPROVE"
+    )
+    assert parse_verdict("Cannot APPROVE.\n\nVerdict: APPROVE\n") != "APPROVE"
+    assert parse_verdict("Unable to APPROVE this.\n\nAPPROVE\n") != "APPROVE"
+    assert (
+        parse_verdict("We refuse to APPROVE.\n\n## Verdict\nAPPROVE\n")
+        != "APPROVE"
+    )
+
+
+def test_fenced_approve_alone_is_not_acceptance():
+    assert parse_verdict("```\nAPPROVE\n```\n") != "APPROVE"
+    assert (
+        parse_verdict(
+            "Example stub:\n```md\n## Verdict\nAPPROVE\n```\nNeeds work.\n"
+        )
+        != "APPROVE"
+    )
+    # Real terminal outside fence still works
+    assert (
+        parse_verdict("See example:\n```\nAPPROVE\n```\n\nVerdict: APPROVE\n")
+        == "APPROVE"
+    )
+
+
+def test_exit_code_override_law_documented():
+    # Regression lock for dual_review apply path (research Exit Code Override Law)
+    assert apply_stage_exit_codes("APPROVE", critic_rc=0, verifier_rc=1) == "FAILED"
+    assert apply_stage_exit_codes("APPROVE", critic_rc=2, verifier_rc=0) == "FAILED"

@@ -20,16 +20,31 @@ _REQUEST_CHANGES_RE = re.compile(
 _FAILED_RE = re.compile(
     r"(?<![A-Za-z0-9_])FAILED(?![A-Za-z0-9_])",
 )
-# Negation that cancels an APPROVE token in nearby context
+# Negation that cancels an APPROVE token (research R3: can't/unable/cannot/refuse)
 _NEGATED_APPROVE_RE = re.compile(
-    r"(?i)(?:do\s+not|don'?t|does\s+not|never|not)\s+APPROVE"
-    r"|APPROVE\s+(?:yet|lightly|blindly|to\s+be\s+helpful)",
+    r"(?i)"
+    r"(?:"
+    r"do\s+not|don'?t|does\s+not|did\s+not|"
+    r"never|not|"
+    r"can'?t|cannot|could\s+not|couldn'?t|"
+    r"will\s+not|won'?t|would\s+not|wouldn'?t|"
+    r"should\s+not|shouldn'?t|"
+    r"unable\s+to|refuse\s+to|declin(?:e|es|ed|ing)\s+to|"
+    r"not\s+(?:going\s+to|able\s+to)"
+    r")\s+APPROVE"
+    r"|APPROVE\s+(?:yet|lightly|blindly|to\s+be\s+helpful)"
 )
+# Fenced code blocks must not contribute terminal APPROVE (stubs / examples)
+_FENCE_RE = re.compile(r"```[\w+-]*\n.*?```", re.DOTALL)
 # Terminal line only — markdown heading optional, bold optional
 _TERMINAL_APPROVE_LINE_RE = re.compile(
     r"(?im)^(?:\s*#{1,6}\s*)?(?:\*\*)?(?:verdict\s*[:：]\s*)?APPROVE(?:\*\*)?\s*$"
 )
 _APPROVE_WORD_RE = re.compile(r"(?<![A-Za-z0-9_])APPROVE(?![A-Za-z0-9_])")
+
+
+def _strip_fenced_blocks(text: str) -> str:
+    return _FENCE_RE.sub("\n", text or "")
 
 _STUB_MARKERS = (
     "dry_run stub",
@@ -68,17 +83,23 @@ def _json_verdict(data: dict) -> str | None:
 
 
 def prose_has_terminal_approve(text: str) -> bool:
-    """True only if APPROVE appears as a terminal line and is not negated away."""
+    """True only if APPROVE appears as a terminal line and is not negated away.
+
+    Fail-closed (research R3): strip fenced examples first; if the unfenced
+    body ever negates APPROVE (can't/unable/refuse/…), refuse prose APPROVE.
+    Prefer JSON ``{"verdict":"APPROVE"}`` for clean acceptance.
+    """
     if not text or not text.strip():
         return False
     if is_stub_artifact_text(text):
         return False
-    # Strip negated APPROVE phrases, then require a terminal-line APPROVE
-    cleaned = _NEGATED_APPROVE_RE.sub(" ", text)
+    body = _strip_fenced_blocks(text)
+    # Any negation of APPROVE in unfenced body → fail-closed for prose path
+    if _NEGATED_APPROVE_RE.search(body):
+        return False
+    cleaned = _NEGATED_APPROVE_RE.sub(" ", body)
     if not _TERMINAL_APPROVE_LINE_RE.search(cleaned):
         return False
-    # If any remaining whole-word APPROVE is only inside remaining negation
-    # (defensive): require at least one terminal line match on cleaned text
     return True
 
 
