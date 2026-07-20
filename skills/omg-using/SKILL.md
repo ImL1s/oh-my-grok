@@ -1,6 +1,8 @@
 ---
 name: omg-using
-description: Bootstrap router for oh-my-grok. Use when user says omg, setup omg, how to use oh-my-grok, which skill, ulw vs ralph vs ralplan, or first-time install.
+description: >
+  Bootstrap router for oh-my-grok. Use when user says omg, setup omg, how to use
+  oh-my-grok, which skill, ulw vs ralph vs ralplan vs autopilot, or first-time install.
 ---
 
 # omg-using — Bootstrap
@@ -21,13 +23,14 @@ Route users and sessions into the correct oh-my-grok workflow. This skill does *
 
 | Trigger keywords | Load skill | Mode |
 |---|---|---|
+| `autopilot`, `auto pilot`, `full auto`, `autonomous`, `build me`, `create me`, `make me`, `handle it all`, end-to-end lifecycle | `omg-autopilot` | Session playbook driving CLI phases interview→…→verified |
 | `ulw`, `ultrawork`, `parallel`, `fan-out` | `omg-ultrawork` | Parallel decompose → spawn → integrate → verify |
 | `ralph`, `don't stop`, `keep going until done`, `persist until verified` | `omg-ralph` | One-story persistence iteration; outer CLI owns loop |
 | `ralplan`, `plan consensus`, `critic plan`, `steelman plan` | `omg-ralplan` | Plan → critic → revise → verifier (no implementation) |
 | `cancel`, `stop omg`, `abort run`, `kill workers` | `omg-cancel` | Cancel via `omg cancel` + PID files |
 | `omg`, `setup omg`, `how to use`, first session | **this skill** | Bootstrap + doctor |
 
-If multiple keywords appear, prefer: **cancel** > **ralplan** (planning not done) > **ralph** (durable) > **ulw** (parallel one-shot).
+If multiple keywords appear, prefer: **cancel** > **ralplan** (planning not done) > **autopilot** (full lifecycle) > **ralph** (durable) > **ulw** (parallel one-shot).
 
 ## Persistence model (not OMC Stop continuation)
 
@@ -37,11 +40,12 @@ On Grok Build, **only `PreToolUse` can block**; `Stop` is passive (observe/log o
 | Want | Do this |
 |------|---------|
 | Don’t stop until verified | **`omg ralph "goal"`** (CLI outer loop owns max-iter) |
-| Full plan→implement→accept | **`omg pipeline "goal"`** |
+| Full phase coordinator **in-session** | **`omg-autopilot` skill** + `omg autopilot *` CLI (re-invoke / “continue” if turn ends) |
+| Full plan→implement→accept (CLI FSM) | **`omg pipeline "goal"`** |
 | Parallel fan-out | **`omg ulw "goal"`** (or pipeline `--implement ulw`) |
 | Stop supervised run | **`omg cancel`** |
 
-In-session skills (ralph/ulw) intentionally stop after **one unit of work**; the **CLI** re-launches. Do not invent infinite self-loops inside one TUI turn.
+In-session skills (ralph/ulw) intentionally stop after **one unit of work**; the **CLI** re-launches. Autopilot is multi-phase **within** the session playbook but still cannot Stop-pin the chat — re-load `omg-autopilot` or say “continue” and read `omg autopilot status`. Do not invent infinite self-loops without CLI stamps.
 
 ## Install + health
 
@@ -71,7 +75,7 @@ Never invent pass/verified status in chat — read `omg state` or `.omg/state/`.
 
 ## Bootstrap steps
 
-1. Confirm plugin skills exist: `skills/omg-ultrawork`, `skills/omg-ralph`, `skills/omg-ralplan`, `skills/omg-cancel`.
+1. Confirm plugin skills exist: `skills/omg-autopilot`, `skills/omg-ultrawork`, `skills/omg-ralph`, `skills/omg-ralplan`, `skills/omg-cancel`.
 2. Run `omg doctor` if `.omg/` missing or user is first-time.
 3. Map user intent → skill table above.
 4. Load the matching skill body and follow it.
@@ -79,7 +83,7 @@ Never invent pass/verified status in chat — read `omg state` or `.omg/state/`.
 
 ## Do not
 
-- Start implementing under this skill alone — hand off to ulw/ralph/ralplan.
+- Start implementing under this skill alone — hand off to autopilot/ulw/ralph/ralplan.
 - Call claude/codex/omc team/agy/cursor-agent as workers.
 - Mark runs verified yourself; only `omg` CLI owns that.
 - Use self-matching `pkill -f` to stop runs — use `omg cancel` (see `omg-cancel`).

@@ -145,9 +145,11 @@ When the task is non-trivial, prefer this spine (OMX-style, Grok-native):
 | Surface | Where | Examples |
 |---------|--------|----------|
 | **Terminal CLI** | shell | `omg setup`, `omg ulw`, `omg accept`, `omg doctor` |
-| **In-session skills** | Grok plugin session | `omg-ultrawork`, `omg-ralph`, `omg-ralplan`, `omg-using` |
+| **In-session skills** | Grok plugin session | `omg-autopilot`, `omg-ultrawork`, `omg-ralph`, `omg-ralplan`, `omg-using` |
 
 Both share HARD RULES: spawn only via Grok; CLI owns `verified`; no external agent CLIs as default workers.
+
+**In-session autopilot:** load skill `omg-autopilot` (triggers: autopilot / build me / full auto / handle it all). Drives CLI phases interview→…→verified via tools. Host **cannot** Stop-pin the chat — re-invoke the skill or say “continue” and run `omg autopilot status`.
 
 ---
 
@@ -315,7 +317,7 @@ User / Grok session  →  skills + agents
 | `omg-deep-interview` | Requirements gate |
 | `omg-ultragoal` | Durable multi-story ledger |
 | `omg-ultraqa` | Bounded QA loop |
-| `omg-autopilot` | Strict phase coordinator |
+| `omg-autopilot` | **In-session** end-to-end playbook (CLI phase machine + spawn) |
 | `omg-pipeline` / `omg-dual-review` / `omg-ask` / `omg-cancel` | Pipeline, review, advisors, abort |
 
 | Agent | Role |
