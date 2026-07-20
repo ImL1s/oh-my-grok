@@ -18,6 +18,7 @@ def test_required_skills_exist():
         "omg-ralph",
         "omg-ultrawork",
         "omg-ralplan",
+        "omg-ultragoal",
     ):
         assert (SKILLS / name / "SKILL.md").is_file(), name
 
@@ -59,3 +60,29 @@ def test_omg_using_routes_autopilot():
     assert any(
         t in low for t in ("build me", "full auto", "autonomous", "handle it all")
     )
+
+
+def test_omg_ultragoal_is_session_playbook_not_stub():
+    text = _skill("omg-ultragoal")
+    assert "name: omg-ultragoal" in text
+    assert text.count("\n") >= 100
+    for needle in (
+        "HARD RULES",
+        "Use when",
+        "Do not use when",
+        "omg goal init",
+        "checkpoint",
+        "link-run",
+        "verify",
+        "spawn_subagent",
+        "no host",
+        "/goal",
+    ):
+        assert needle.lower() in text.lower() or needle in text, f"missing {needle!r}"
+
+
+def test_omg_using_routes_ultragoal():
+    text = _skill("omg-using")
+    assert "omg-ultragoal" in text
+    low = text.lower()
+    assert "ultragoal" in low or "omg goal" in low

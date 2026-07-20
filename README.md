@@ -206,7 +206,7 @@ omg {setup,doctor,state,cancel,interview,goal,accept,integrate,worker,
 | `omg setup` / `omg doctor` | Scaffold `.omg/` · health (+ `--strict`) |
 | `omg state` / `omg cancel` | Active run · process-group cancel |
 | `omg interview …` | Deep-interview requirements gate |
-| `omg goal …` | Hash-chained ultragoal ledger + tail repair |
+| `omg goal …` | Hash-chained ultragoal ledger + tail repair (**no host `/goal`** on Grok — repo ledger only) |
 | `omg ulw` / `ralph` / `ralplan` | Parallel / persist / plan-only modes |
 | `omg worker own\|prepare\|seal\|join` | ULW ownership + worktree + envelopes |
 | `omg integrate` | Cherry-pick ULW envelopes (does **not** set verified alone) |
@@ -315,7 +315,7 @@ User / Grok session  →  skills + agents
 | `omg-ralph` | Persist until verified |
 | `omg-ralplan` | Plan consensus |
 | `omg-deep-interview` | Requirements gate |
-| `omg-ultragoal` | Durable multi-story ledger |
+| `omg-ultragoal` | **In-session** multi-story goal ledger (`omg goal *`; no host `/goal`) |
 | `omg-ultraqa` | Bounded QA loop |
 | `omg-autopilot` | **In-session** end-to-end playbook (CLI phase machine + spawn) |
 | `omg-pipeline` / `omg-dual-review` / `omg-ask` / `omg-cancel` | Pipeline, review, advisors, abort |

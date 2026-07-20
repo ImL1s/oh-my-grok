@@ -203,10 +203,20 @@ omg cancel
 - External agent CLIs as workers
 - Claiming Stop hooks keep the session alive
 
+## Optional durable multi-story
+
+When implement/QA spans **more than one story** that must survive process or run
+boundaries (depends_on, checkpoints, cross-session resume), load **`omg-ultragoal`**
+and drive `omg goal *` ledger in parallel with (or after) autopilot phases.
+Grok has **no host `/goal`** — only the repo ledger under `.omg/ultragoal/`.
+Still finish run acceptance via `omg accept` / `omg autopilot complete` before
+`omg goal link-run` + `omg goal verify`.
+
 ## Related skills
 
 - `omg-using` — router
 - `omg-deep-interview`, `omg-ralplan`, `omg-ultrawork`, `omg-ralph`
+- `omg-ultragoal` — durable multi-story goal ledger (no host `/goal`)
 - `omg-dual-review`, `omg-ultraqa`, `omg-cancel`
 - Security: `docs/security-model.md`
 
