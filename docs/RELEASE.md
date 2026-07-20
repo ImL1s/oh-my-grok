@@ -9,7 +9,7 @@
 | Notes | QA freeze allowlist UX, pytest marker coalesce, auto PRD from UltraQA, autopilot complete short-circuit, `autopilot_phase` sync |
 
 Source of truth: [`plugin.json`](../plugin.json) · history: [`CHANGELOG.md`](../CHANGELOG.md)  
-User guide: [`docs/autopilot.md`](./autopilot.md) · skill: [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md)
+User guides: [`docs/skills.md`](./skills.md) (all skills) · [`docs/autopilot.md`](./autopilot.md) · skill: [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md)
 
 ## Version source of truth
 

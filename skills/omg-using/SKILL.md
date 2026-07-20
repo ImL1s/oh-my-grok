@@ -10,6 +10,8 @@ description: >
 
 Route users and sessions into the correct oh-my-grok workflow. This skill does **not** implement features; it loads the right playbook and points at install/health tools.
 
+**Human catalog (all 15 skills):** `docs/skills.md` · **Docs index:** `docs/README.md`
+
 ## HARD RULES (non-negotiable)
 - Fan-out ONLY via Grok `spawn_subagent` (depth=1; children must NOT spawn).
 - **Always set `capability_mode` on spawn** (`read-only` for explore/plan/critic/verifier; `read-write` for implementers).

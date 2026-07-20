@@ -23,6 +23,8 @@ _Unofficial community plugin — not affiliated with xAI or the OMC/OMX/OmO main
 
 _Don't learn every Grok flag. Use `omg` + skills: clarify → plan → execute → verify._
 
+**Docs:** [Skills catalog](docs/skills.md) · [Autopilot](docs/autopilot.md) · [Security model](docs/security-model.md) · [Docs index](docs/README.md) · [Changelog](CHANGELOG.md)
+
 ---
 
 ## Mental model
@@ -148,97 +150,79 @@ When the task is non-trivial, prefer this spine (OMX-style, Grok-native):
 
 ---
 
-## CLI vs skills
+## Skills (in-session) — like OMC `/skill`
 
-| Surface | Where | Examples |
-|---------|--------|----------|
-| **Terminal CLI** | shell | `omg setup`, `omg ulw`, `omg accept`, `omg doctor` |
-| **In-session skills** | Grok plugin session | `omg-autopilot`, `omg-ultrawork`, `omg-ralph`, `omg-ralplan`, `omg-using` |
+OMG has **15 skills**. Full catalog with triggers, examples, and CLI twins:  
+**→ [`docs/skills.md`](docs/skills.md)** · index: [`docs/README.md`](docs/README.md)
 
-Both share HARD RULES: spawn only via Grok; CLI owns `verified`; no external agent CLIs as default workers.
+### CLI vs skills
 
-**In-session autopilot:** see [Autopilot skill](#autopilot-skill-in-session) below · full guide: [`docs/autopilot.md`](docs/autopilot.md).
+| Surface | Where | How you call it |
+|---------|--------|-----------------|
+| **Terminal CLI** | shell | `omg setup` · `omg ulw "…"` · `omg accept --yes` |
+| **In-session skill** | Grok Build chat | Natural language (`autopilot …`, `ulw …`) or `/oh-my-grok:omg-autopilot` |
 
----
+Many flows have **both** a skill playbook and a CLI subcommand (unlike OMC, where autopilot/ralph/ulw are skill-only).  
+Shared HARD RULES: spawn only via Grok; **only CLI** may set `verified`.
 
-## Autopilot skill (in-session)
+### In-session shortcuts
 
-End-to-end work inside a **Grok Build chat**: the model loads skill **`omg-autopilot`**, drives the CLI phase machine, and spawns Grok-native workers.  
-This is **not** OMC Stop hard-pin — if the turn ends, say **「繼續」 / `continue`** or re-invoke the skill and run `omg autopilot status`.
+| You say… | Skill | Terminal CLI |
+|----------|--------|--------------|
+| how to use omg / which mode | `omg-using` | `omg doctor` · `omg resume` |
+| autopilot / full auto / build me | `omg-autopilot` | `omg autopilot *` |
+| ulw / ultrawork / parallel | `omg-ultrawork` | `omg ulw` + worker + integrate |
+| ralph / don’t stop / keep going | `omg-ralph` | `omg ralph "…"` |
+| ralplan / plan consensus | `omg-ralplan` | `omg ralplan "…"` |
+| deep interview / clarify | `omg-deep-interview` | `omg interview *` |
+| ultragoal / multi-story goals | `omg-ultragoal` | `omg goal *` |
+| ultraqa / fix tests / retest | `omg-ultraqa` | `omg qa *` |
+| dual-review / don’t self-approve | `omg-dual-review` | `omg dual-review` · `omg review` |
+| pipeline | `omg-pipeline` | `omg pipeline "…"` |
+| ask codex / second opinion | `omg-ask` | `omg ask …` |
+| cancel / abort | `omg-cancel` | `omg cancel` |
+| wiki / hud / lsp | `omg-wiki` · `omg-hud` · `omg-lsp` | `omg wiki` · `hud` · `lsp` |
 
-### How to invoke
+**Priority if several match:** cancel → ralplan → autopilot → ultragoal → ralph → ulw.
 
-| Way | Example |
-|-----|---------|
-| Natural language | 「autopilot 幫我做完 X」「full auto」「build me …」「handle it all」 |
-| Slash / skill | `/oh-my-grok:omg-autopilot` + goal text（Grok plugin skill name） |
-| CLI only (no skill) | Terminal `omg autopilot start "…"` then you (or the agent) run transitions by hand |
+### Skill chains (common)
 
-Skill playbook lives at [`skills/omg-autopilot/SKILL.md`](skills/omg-autopilot/SKILL.md).
+```text
+Vague idea     → deep-interview → ralplan → autopilot (or ralph / ulw)
+Parallel fix   → ultrawork → integrate → accept
+Must finish    → ralph
+Full chat E2E  → autopilot   (+ "continue" if turn ends)
+Multi-day stories → ultragoal + per-story ralph/ulw
+After code     → dual-review → ultraqa → accept / autopilot complete
+```
 
-### Skill vs CLI
+### Autopilot (skill + CLI) — short
 
-| Layer | Role |
+```text
+You:  autopilot 實作功能 X（含測試）
+      # or: /oh-my-grok:omg-autopilot …
+Grok: omg autopilot start "…" → … phases … → omg autopilot complete
+You:  （中斷時）continue · omg autopilot status --run RUN
+```
+
+```text
+interview → ralplan → implement → review → qa → acceptance → verified
+```
+
+Deep guide: [`docs/autopilot.md`](docs/autopilot.md) · skill: [`skills/omg-autopilot/SKILL.md`](skills/omg-autopilot/SKILL.md)
+
+### Agents
+
+| Agent | Role |
 |-------|------|
-| **Skill `omg-autopilot`** | In-session playbook: interview → plan → implement → review → QA → accept; uses `spawn_subagent` |
-| **`omg autopilot *` CLI** | Legal phases, destination gates, stamps; **only** path that can end in `verified` via `complete` / `accept` |
-
-Agents **must not** hand-write `verified` under `.omg/state/`.
-
-### Phase machine
-
-```text
-interview → ralplan → implement → review → (rework) → qa → acceptance → verified
-```
-
-| Enter | Gate (CLI-enforced) |
-|-------|---------------------|
-| `ralplan` | interview closed (`interview_complete`) or `--skip-interview` |
-| `implement` | plan consensus (`consensus: true` / ralplan APPROVE) |
-| `qa` | structured review clean |
-| `acceptance` | UltraQA clean |
-| `verified` | `omg autopilot complete` (or prior `omg accept` + complete short-circuit) |
-
-### Minimal user flow (skill session)
-
-```text
-You:  /oh-my-grok:omg-autopilot 實作功能 X（含測試與验收）
-Grok: omg doctor → omg autopilot start "…"
-      … interview / ralplan / implement / review / qa …
-      omg autopilot complete --run RUN
-You:  （若中斷）continue
-      omg autopilot status --run RUN
-```
-
-### CLI cheat sheet
-
-```bash
-omg autopilot start "GOAL TEXT"
-omg autopilot start "GOAL" --skip-interview   # requirements already closed
-omg autopilot status --run RUN
-omg autopilot transition --run RUN --phase PHASE \
-  --evidence-json '{…}' --reason "…"
-omg autopilot complete --run RUN              # terminal: accept+verify (or short-circuit)
-omg cancel                                    # abort active run
-```
-
-### Companion skills (same run)
-
-| Skill | Phase |
-|-------|--------|
-| `omg-deep-interview` | interview |
-| `omg-ralplan` | plan consensus |
-| `omg-ultrawork` / `omg-ralph` | implement (parallel / persist) |
-| `omg-dual-review` | review |
-| `omg-ultraqa` | qa |
-| `omg-ultragoal` | multi-story ledger (optional) |
-| `omg-cancel` | abort |
-
-Full detail, anti-patterns, and resume rules: **[`docs/autopilot.md`](docs/autopilot.md)**.
+| `omg-orchestrator` | Decompose + coordinate |
+| `omg-executor` | Implement (`read-write`, no shell) |
+| `omg-critic` / `omg-verifier` | Challenge / evidence (`read-only`) |
+| `omg-code-reviewer` / `omg-architect` / `omg-qa-tester` / `omg-analyst` | Review · QA · interview |
 
 ---
 
-## Orchestration modes
+## Orchestration modes (CLI)
 
 | Mode | What it is | Use for |
 |------|------------|---------|
@@ -299,7 +283,7 @@ omg {setup,doctor,state,cancel,resume,wiki,hud,lsp,interview,goal,accept,
 | `omg worker own\|prepare\|seal\|join` | ULW ownership + worktree + envelopes |
 | `omg integrate` | Cherry-pick ULW envelopes (does **not** set verified alone) |
 | `omg review` / `omg qa` | Hash-bound review · UltraQA (**QA clean ≠ verified**) |
-| `omg autopilot …` | Strict phases; `start` / `transition` / `status` / `complete` — see [Autopilot skill](#autopilot-skill-in-session) |
+| `omg autopilot …` | Strict phases; `start` / `transition` / `status` / `complete` — [skills](docs/skills.md#omg-autopilot--full-lifecycle-in-session) · [guide](docs/autopilot.md) |
 | `omg accept` | Freeze PRD + run; only path that may `verified` (or materialize PRD from clean UltraQA) |
 | `omg ask` | Trusted external advisor broker (not a worker) |
 | `omg pipeline` / `dual-review` | Scripted pipeline · interim critic→verifier |
@@ -402,27 +386,27 @@ User / Grok session  →  skills + agents
 
 ---
 
-## Skills & agents
+## Skills & agents (index)
 
-| Skill | Use when |
-|-------|----------|
-| `omg-using` | Bootstrap / which mode (+ **read RESUME.md** first) |
-| **`omg-autopilot`** | **In-session end-to-end** — [usage](#autopilot-skill-in-session) · [full guide](docs/autopilot.md) · [SKILL.md](skills/omg-autopilot/SKILL.md) |
+Full usage for every skill (triggers · CLI · examples): **[`docs/skills.md`](docs/skills.md)**.
+
+| Skill | One-liner |
+|-------|-----------|
+| `omg-using` | Router / first session / RESUME.md |
+| `omg-autopilot` | In-session end-to-end → verified |
 | `omg-ultrawork` | Parallel fan-out |
-| `omg-ralph` | Persist until verified |
-| `omg-ralplan` | Plan consensus |
-| `omg-deep-interview` | Requirements gate (Socratic CLI) |
-| `omg-ultragoal` | **In-session** multi-story goal ledger (`omg goal *`; no host `/goal`) |
-| `omg-ultraqa` | Bounded QA repair loop (**QA ≠ verified**) |
-| `omg-wiki` / `omg-hud` / `omg-lsp` | Knowledge · statusline · honest LSP probes |
-| `omg-pipeline` / `omg-dual-review` / `omg-ask` / `omg-cancel` | Pipeline, review, advisors, abort |
+| `omg-ralph` | Persist one story until verified |
+| `omg-ralplan` | Plan consensus (no code) |
+| `omg-deep-interview` | Requirements gate |
+| `omg-ultragoal` | Multi-story goal ledger |
+| `omg-ultraqa` | QA loop (**≠ verified**) |
+| `omg-dual-review` | Critic → verifier |
+| `omg-pipeline` | CLI plan→accept composition |
+| `omg-ask` | External advisors (human only) |
+| `omg-cancel` | Abort run |
+| `omg-wiki` / `omg-hud` / `omg-lsp` | Wiki · statusline · local LSP probe |
 
-| Agent | Role |
-|-------|------|
-| `omg-orchestrator` | Decompose + coordinate |
-| `omg-executor` | Implement (`read-write`, no shell) |
-| `omg-critic` / `omg-verifier` | Challenge / check evidence (read-only) |
-| `omg-code-reviewer` / `omg-architect` / `omg-qa-tester` / `omg-analyst` | Structured review · QA · interview |
+Agents: `omg-orchestrator`, `omg-executor`, `omg-critic`, `omg-verifier`, `omg-code-reviewer`, `omg-architect`, `omg-qa-tester`, `omg-analyst` — see [docs/skills.md § Agents](docs/skills.md#agents-roles-used-by-skills).
 
 ---
 

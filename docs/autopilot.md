@@ -2,7 +2,8 @@
 
 **Audience:** humans driving Grok Build + maintainers writing skills.  
 **Plugin version:** matches [`plugin.json`](../plugin.json) (currently **0.3.2+**).  
-**Skill source:** [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md)
+**Skill source:** [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md)  
+**All skills catalog:** [`skills.md`](./skills.md) · [docs index](./README.md)
 
 ---
 
