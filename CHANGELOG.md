@@ -15,6 +15,21 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Host Stop veto (not feasible on Grok today).
 - Full OMC LSP/AST MCP bridge (local pyright probe only in 0.3.0).
 
+## [0.3.2] - 2026-07-21
+
+### Fixed
+- **QA freeze allowlist UX:** reject illegal scenarios at freeze (not only at run) with operator tips (`grep`/`test`/`omg`/`python -c`); prefer project `.py` or `python3 -m pytest`.
+- **pytest marker coalesce:** unquoted `-m not live` → `-m 'not live'` on QA and accept paths so marker expr is not split into a fake path.
+- **Autopilot complete short-circuit:** if the run is already verified (e.g. prior `omg accept`), sync autopilot phase without re-running freeze_and_run / full acceptance.
+- **`status.autopilot_phase`:** set to `verified` on `set_verified` and complete so status no longer lingers at `acceptance`.
+
+### Added
+- **Auto PRD from clean UltraQA:** `materialize_prd_from_ultraqa` for missing `prd.json` (CLI-stamped clean only; never overwrites operator PRD); wired into `omg accept` and `omg autopilot complete`.
+- **`merge_status_fields`:** non-authority status metadata merge (cannot set `verified`/`status`).
+
+### Changed
+- Skills `omg-ultraqa` / `omg-autopilot`: correct freeze examples (quoted markers; no illegal basenames); document complete short-circuit + optional prd.
+
 ## [0.3.1] - 2026-07-21
 
 ### Fixed

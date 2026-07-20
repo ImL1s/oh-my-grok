@@ -43,12 +43,25 @@ omg qa status --run RUN   # if resuming
 
 ### 1. Freeze scenarios
 
+Commands must pass the **acceptance command policy** at freeze time (same floor
+as `omg accept`). Prefer:
+
+- `python3 -m pytest -q -m 'not live'` — **quote** the marker expression
+- `python3 path/to/project_check.py` — project `.py` under the repo
+- `true` / `false` for trivial harness checks
+
+**Do not** freeze: `grep`, `test`, `omg`, `python3 -c '…'`, or
+`python3 -m omg_cli.main` (only `-m pytest|unittest` allowed).
+
 ```bash
 omg qa freeze --run RUN --scenarios-json '[
-  {"id":"unit","command":"python3 -m pytest -q -m not live"},
-  {"id":"cli","command":"python3 -m omg_cli.main --help"}
+  {"id":"unit","command":"python3 -m pytest -q -m '"'"'not live'"'"'"},
+  {"id":"check","command":"python3 scripts/check_smoke.py"}
 ]'
 ```
+
+Unquoted ` -m not live ` is auto-coalesced to `not live` when possible, but
+always quote markers in playbooks.
 
 ### 2. Cycle: run → diagnose → repair → re-run
 
@@ -76,8 +89,10 @@ omg qa run --run RUN --repair-classification product_change
 omg qa status --run RUN
 # if clean:
 omg autopilot transition --run RUN --phase acceptance --reason "ultraqa clean"
-# or:
+# prd.json optional: accept/complete materialize from clean ultraqa when missing
 omg accept --run RUN --yes
+# or (idempotent if already verified):
+omg autopilot complete --run RUN
 ```
 
 ## Contract

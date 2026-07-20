@@ -323,6 +323,43 @@ def transition(
     return status_autopilot(root, run_id)
 
 
+def _sync_autopilot_verified(
+    root: Path,
+    run_id: str,
+    *,
+    lease: Any,
+    event: str,
+) -> dict[str, Any]:
+    """Mark autopilot phase verified + align status.autopilot_phase (lease held).
+
+    Does not re-commit verified status (use set_verified first when needed).
+    """
+    from omg_cli.state import merge_status_fields
+
+    state = load_autopilot(root, run_id)
+    state["phase"] = "verified"
+    state["verified"] = True
+    state["history"] = list(state.get("history") or []) + [
+        {
+            "phase": "verified",
+            "at": _utc_now(),
+            "event": event,
+        }
+    ]
+    _save(root, run_id, state, lease)
+    merge_status_fields(
+        root,
+        run_id,
+        {
+            "stage": "autopilot",
+            "autopilot_phase": "verified",
+            "blocker": None,
+        },
+        lease=lease,
+    )
+    return status_autopilot(root, run_id)
+
+
 def complete_with_acceptance(
     root: Path | str,
     run_id: str,
@@ -334,25 +371,56 @@ def complete_with_acceptance(
     Acceptance runs under the execution lease owner (no transition guard during
     freeze/run). ``set_verified`` then linearizes the terminal status. Disk-only
     stamps from other processes cannot promote.
+
+    Short-circuit: if the run is already ``verified`` (e.g. prior ``omg accept``)
+    and autopilot is in ``acceptance`` or ``verified``, sync phase without
+    re-running freeze_and_run.
     """
     root = Path(root).resolve()
     assert_safe_supervised_parent()
     run_id = validate_identifier(run_id, label="run_id")
-    from omg_cli.acceptance import freeze_and_run, is_trusted_acceptance
+    from omg_cli.acceptance import (
+        freeze_and_run,
+        is_trusted_acceptance,
+        materialize_prd_from_ultraqa,
+    )
     from omg_cli.state import set_verified
 
-    # Phase check before host acceptance work
     pre = load_autopilot(root, run_id)
-    if pre.get("phase") != "acceptance":
+    phase = str(pre.get("phase") or "")
+    run_pre = load_run(root, run_id) or {}
+    already_verified = run_pre.get("verified") is True or run_pre.get("status") == "verified"
+
+    # Terminal short-circuit: already verified (idempotent complete).
+    if phase == "verified" and already_verified:
+        return status_autopilot(root, run_id)
+
+    if phase not in ("acceptance", "verified"):
         raise AutopilotError(
-            f"acceptance only from acceptance phase (got {pre.get('phase')!r})"
+            f"acceptance only from acceptance phase (got {phase!r})"
         )
 
     with execution_lease(root, run_id, intent="autopilot-accept") as lease:
         state = load_autopilot(root, run_id)
-        if state.get("phase") != "acceptance":
+        phase2 = str(state.get("phase") or "")
+        run_now = load_run(root, run_id) or {}
+        already = run_now.get("verified") is True or run_now.get("status") == "verified"
+
+        if phase2 == "verified" and already:
+            return status_autopilot(root, run_id)
+
+        if already and phase2 in ("acceptance", "verified"):
+            # omg accept already verified; do not re-run freeze_and_run.
+            return _sync_autopilot_verified(
+                root,
+                run_id,
+                lease=lease,
+                event="short_circuit_already_verified",
+            )
+
+        if phase2 != "acceptance":
             raise AutopilotError(
-                f"acceptance only from acceptance phase (got {state.get('phase')!r})"
+                f"acceptance only from acceptance phase (got {phase2!r})"
             )
 
         prd_obj: dict[str, Any] | None = dict(prd) if prd is not None else None
@@ -373,10 +441,19 @@ def complete_with_acceptance(
                 except (OSError, json.JSONDecodeError) as exc:
                     raise AutopilotError(f"prd.json unreadable: {exc}") from exc
         if prd_obj is None:
-            raise AutopilotError(
-                "complete_with_acceptance requires prd.json or prd= "
-                "so freeze_and_run can execute in this process"
-            )
+            # Auto-build from clean UltraQA scenarios when present.
+            try:
+                prd_obj = materialize_prd_from_ultraqa(
+                    root,
+                    run_id,
+                    goal=str(state.get("goal") or "") or None,
+                    overwrite=False,
+                )
+            except ValueError as exc:
+                raise AutopilotError(
+                    "complete_with_acceptance requires prd.json or prd= "
+                    f"(or clean ultraqa to materialize): {exc}"
+                ) from exc
 
         # Same-process freeze + run (registers process-local acceptance token)
         try:
@@ -409,17 +486,12 @@ def complete_with_acceptance(
             raise AutopilotError(
                 "set_verified refused; re-run freeze/run acceptance in this process"
             )
-        state["phase"] = "verified"
-        state["verified"] = True
-        state["history"] = list(state.get("history") or []) + [
-            {
-                "phase": "verified",
-                "at": _utc_now(),
-                "event": "same_process_acceptance",
-            }
-        ]
-        _save(root, run_id, state, lease)
-    return status_autopilot(root, run_id)
+        return _sync_autopilot_verified(
+            root,
+            run_id,
+            lease=lease,
+            event="same_process_acceptance",
+        )
 
 
 def status_autopilot(root: Path | str, run_id: str) -> dict[str, Any]:

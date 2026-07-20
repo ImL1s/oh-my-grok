@@ -10,6 +10,7 @@ import pytest
 from omg_cli.command_policy import (
     CommandPolicyError,
     check_command_policy,
+    coalesce_pytest_marker_expr,
     is_python_bin,
     resolve_allowlist,
     _basename_allowed,
@@ -21,6 +22,22 @@ def test_true_false_pytest_allowed():
     check_command_policy(["false"])
     check_command_policy(["pytest", "tests/", "-q"])
     check_command_policy(["/usr/bin/pytest", "-q"])
+
+
+def test_coalesce_pytest_not_marker():
+    raw = ["python3", "-m", "pytest", "-q", "-m", "not", "live"]
+    fixed = coalesce_pytest_marker_expr(raw)
+    assert fixed == ["python3", "-m", "pytest", "-q", "-m", "not live"]
+    check_command_policy(fixed)
+    # already quoted stays stable
+    assert coalesce_pytest_marker_expr(
+        ["python3", "-m", "pytest", "-m", "not live"]
+    ) == ["python3", "-m", "pytest", "-m", "not live"]
+
+
+def test_grep_deny_includes_tip():
+    with pytest.raises(CommandPolicyError, match="project .py|grep"):
+        check_command_policy(["grep", "-q", "x", "f"])
 
 
 def test_python_c_denied():

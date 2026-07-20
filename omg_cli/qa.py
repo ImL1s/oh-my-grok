@@ -76,6 +76,52 @@ def fingerprint_failure(scenario_id: str, output: str) -> str:
     return sha256_bytes(body)
 
 
+def _parse_scenario_command(
+    command: str | list[str] | None,
+    *,
+    scenario_id: str,
+    project_root: Path,
+) -> list[str] | None:
+    """Parse scenario command to argv; apply pytest marker coalesce; policy-check.
+
+    Returns None when there is no command (check-only scenarios).
+    Raises QAError with operator-facing policy tips on reject.
+    """
+    import shlex
+
+    from omg_cli.command_policy import (
+        CommandPolicyError,
+        check_command_policy,
+        coalesce_pytest_marker_expr,
+    )
+
+    if command is None:
+        return None
+    if isinstance(command, list):
+        argv = [str(x) for x in command]
+    else:
+        text = str(command).strip()
+        if not text:
+            return None
+        try:
+            argv = shlex.split(text)
+        except ValueError as exc:
+            raise QAError(
+                f"scenario {scenario_id!r}: command parse error: {exc}"
+            ) from exc
+    if not argv:
+        return None
+    argv = coalesce_pytest_marker_expr(argv)
+    try:
+        check_command_policy(argv, project_root=project_root)
+    except CommandPolicyError as exc:
+        raise QAError(
+            f"scenario {scenario_id!r}: command rejected at freeze "
+            f"(fix before run): {exc}"
+        ) from exc
+    return argv
+
+
 def freeze_scenarios(
     root: Path | str,
     run_id: str,
@@ -89,17 +135,40 @@ def freeze_scenarios(
     run_id = validate_identifier(run_id, label="run_id")
     if not scenarios:
         raise QAError("at least one scenario is required")
+    normalized: list[dict[str, Any]] = []
     for s in scenarios:
         if not isinstance(s, Mapping) or not str(s.get("id") or "").strip():
             raise QAError("each scenario needs id")
+        sid = str(s["id"]).strip()
         check = s.get("check")
         if check == "always_pass" and not allow_always_pass:
             raise QAError(
-                f"scenario {s.get('id')!r}: always_pass is test-only "
+                f"scenario {sid!r}: always_pass is test-only "
                 "(pass allow_always_pass=True for hermetic unit tests)"
             )
-        if not str(s.get("command") or "").strip() and check is None:
-            raise QAError(f"scenario {s.get('id')!r} needs command or check")
+        raw_cmd = s.get("command")
+        if not str(raw_cmd or "").strip() and check is None:
+            raise QAError(f"scenario {sid!r} needs command or check")
+        # Freeze-time policy gate (fail closed with tip); store original string
+        # but normalize list form via coalesce when command is a list.
+        stored_cmd: str | list[str] | None = raw_cmd if raw_cmd else None
+        if check != "always_pass" and raw_cmd:
+            argv = _parse_scenario_command(
+                raw_cmd, scenario_id=sid, project_root=root
+            )
+            if argv is not None and isinstance(raw_cmd, list):
+                stored_cmd = argv
+            elif argv is not None and isinstance(raw_cmd, str):
+                # Keep string form for display; run path re-parses + coalesces.
+                stored_cmd = raw_cmd
+        normalized.append(
+            {
+                "id": sid,
+                "command": stored_cmd,
+                "check": check,
+                "required": bool(s.get("required", True)),
+            }
+        )
     state = {
         "writer": CLI_WRITER,
         "schema_version": 2,
@@ -108,15 +177,7 @@ def freeze_scenarios(
         "plan_hash": plan_hash,
         "spec_hash": spec_hash,
         "product_hash_at_freeze": product_hash(root),
-        "scenarios": [
-            {
-                "id": str(s["id"]),
-                "command": s.get("command"),
-                "check": s.get("check"),
-                "required": bool(s.get("required", True)),
-            }
-            for s in scenarios
-        ],
+        "scenarios": normalized,
         "cycles": [],
         "cycle_count": 0,
         "max_cycles": MAX_CYCLES,
@@ -156,7 +217,11 @@ def _run_command(root: Path, command: str | list[str]) -> tuple[int, str]:
     """Run a QA command as argv only (no shell); enforce acceptance command policy."""
     import shlex
 
-    from omg_cli.command_policy import CommandPolicyError, check_command_policy
+    from omg_cli.command_policy import (
+        CommandPolicyError,
+        check_command_policy,
+        coalesce_pytest_marker_expr,
+    )
 
     if isinstance(command, list):
         argv = [str(x) for x in command]
@@ -170,6 +235,7 @@ def _run_command(root: Path, command: str | list[str]) -> tuple[int, str]:
             return 2, f"command parse error: {exc}"
     if not argv:
         return 2, "empty command"
+    argv = coalesce_pytest_marker_expr(argv)
     try:
         check_command_policy(argv, project_root=root)
     except CommandPolicyError as exc:

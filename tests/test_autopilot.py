@@ -114,12 +114,40 @@ def test_start_and_gated_transitions(tmp_path: Path) -> None:
     assert st2["verified"] is False
 
 
-def test_complete_without_prd_refuses(tmp_path: Path) -> None:
+def test_complete_without_prd_materializes_from_ultraqa(tmp_path: Path) -> None:
+    """Clean ultraqa always_pass scenarios materialize to prd (true) then verify."""
     clear_cli_acceptance_tokens()
     st = start_autopilot(tmp_path, "verify path", skip_interview=True)
     rid = st["run_id"]
     _walk_to_acceptance(tmp_path, rid)
-    with pytest.raises(AutopilotError, match="prd"):
+    out = complete_with_acceptance(tmp_path, rid)
+    assert out["phase"] == "verified"
+    assert out["verified"] is True
+    run = load_run(tmp_path, rid)
+    assert run is not None
+    assert run.get("verified") is True
+    assert run.get("autopilot_phase") == "verified"
+    assert (tmp_path / ".omg" / "state" / "runs" / rid / "prd.json").is_file()
+
+
+def test_complete_without_prd_or_ultraqa_refuses(tmp_path: Path) -> None:
+    """No prd and no materializable ultraqa → AutopilotError."""
+    clear_cli_acceptance_tokens()
+    st = start_autopilot(tmp_path, "no prd no qa", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "review")
+    _stamp_review_clean(tmp_path, rid)
+    transition(tmp_path, rid, "qa")
+    # Frozen but never run → not clean; transition to acceptance requires clean
+    # so stamp clean then wipe ultraqa file after entering acceptance.
+    _stamp_qa_clean(tmp_path, rid)
+    transition(tmp_path, rid, "acceptance")
+    qa_path = (
+        tmp_path / ".omg" / "state" / "runs" / rid / "stages" / "ultraqa.json"
+    )
+    qa_path.unlink()
+    with pytest.raises(AutopilotError, match="prd|ultraqa"):
         complete_with_acceptance(tmp_path, rid)
 
 
@@ -145,6 +173,41 @@ def test_complete_happy_path_same_process_acceptance(tmp_path: Path) -> None:
     assert run is not None
     assert run.get("verified") is True
     assert run.get("status") == "verified"
+    assert run.get("autopilot_phase") == "verified"
+
+
+def test_complete_short_circuit_when_already_verified(tmp_path: Path) -> None:
+    """If omg accept already verified, complete syncs phase without re-accept."""
+    clear_cli_acceptance_tokens()
+    from omg_cli.acceptance import freeze_and_run
+    from omg_cli.state import set_verified
+
+    st = start_autopilot(tmp_path, "short circuit", skip_interview=True)
+    rid = st["run_id"]
+    _walk_to_acceptance(tmp_path, rid)
+    prd = {
+        "version": 1,
+        "goal": "short circuit",
+        "stories": [{"id": "s1", "title": "ok", "commands": [["true"]]}],
+        "global_commands": [],
+    }
+    assert freeze_and_run(tmp_path, rid, prd) is True
+    set_verified(tmp_path, rid, force=False)
+    run = load_run(tmp_path, rid)
+    assert run is not None
+    assert run.get("verified") is True
+    # Autopilot still on acceptance until complete
+    assert status_autopilot(tmp_path, rid)["phase"] == "acceptance"
+
+    out = complete_with_acceptance(tmp_path, rid, prd=prd)
+    assert out["phase"] == "verified"
+    assert out["verified"] is True
+    run2 = load_run(tmp_path, rid)
+    assert run2 is not None
+    assert run2.get("autopilot_phase") == "verified"
+    # Second complete is idempotent
+    out2 = complete_with_acceptance(tmp_path, rid)
+    assert out2["phase"] == "verified"
 
 
 def test_blocked_to_qa_still_requires_review(tmp_path: Path) -> None:

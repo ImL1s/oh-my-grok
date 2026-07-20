@@ -478,11 +478,22 @@ def cmd_accept(args: argparse.Namespace) -> int:
 
     prd = load_prd(root, run_id)
     if prd is None:
-        print(
-            f"accept failed: no prd.json under runs/{run_id}/",
-            file=sys.stderr,
-        )
-        return 1
+        # Prefer materializing from clean UltraQA (autopilot QA → accept path).
+        try:
+            from omg_cli.acceptance import materialize_prd_from_ultraqa
+
+            prd = materialize_prd_from_ultraqa(root, run_id, overwrite=False)
+            print(
+                f"accept: materialized prd.json from clean ultraqa for {run_id}",
+                file=sys.stderr,
+            )
+        except ValueError as exc:
+            print(
+                f"accept failed: no prd.json under runs/{run_id}/ "
+                f"(and could not materialize from ultraqa: {exc})",
+                file=sys.stderr,
+            )
+            return 1
 
     dry_run = bool(getattr(args, "dry_run", False))
     review = bool(getattr(args, "review", False))

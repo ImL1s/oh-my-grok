@@ -2,7 +2,7 @@
 
 **Canonical truth table** for isolation claims. README, skills, and doctor footers should link here rather than invent stronger wording.
 
-Last updated: 2026-07-21 · Plugin version: **0.3.1**
+Last updated: 2026-07-21 · Plugin version: **0.3.2**
 
 ## Layer table (strongest → weakest)
 

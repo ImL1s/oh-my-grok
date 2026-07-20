@@ -46,20 +46,27 @@ def test_successful_retest_clears_invalidation(tmp_path: Path) -> None:
     assert stage_qa_is_clean(tmp_path, rid) is True
 
 
-def test_command_policy_denies_python_c(tmp_path: Path) -> None:
+def test_command_policy_denies_python_c_at_freeze(tmp_path: Path) -> None:
+    """Policy is fail-closed at freeze (not deferred until run)."""
     run = create_run(tmp_path, mode="qa", goal="policy")
     rid = run["run_id"]
-    freeze_scenarios(
-        tmp_path,
-        rid,
-        [{"id": "bad", "command": "python3 -c 'import sys; sys.exit(1)'"}],
-    )
-    out = run_qa_cycle(tmp_path, rid)
-    assert out["clean"] is False
-    failures = out["cycles"][-1]["failures"]
-    assert failures
-    blob = out["cycles"][-1]["results"][0]["output"]
-    assert "command_policy" in blob
+    with pytest.raises(QAError, match="rejected at freeze|-c"):
+        freeze_scenarios(
+            tmp_path,
+            rid,
+            [{"id": "bad", "command": "python3 -c 'import sys; sys.exit(1)'"}],
+        )
+
+
+def test_freeze_rejects_grep_with_tip(tmp_path: Path) -> None:
+    run = create_run(tmp_path, mode="qa", goal="grep")
+    rid = run["run_id"]
+    with pytest.raises(QAError, match="grep|project .py"):
+        freeze_scenarios(
+            tmp_path,
+            rid,
+            [{"id": "bad", "command": "grep -q PARTIAL out.md"}],
+        )
 
 
 def test_failure_then_unchanged_hash_blocks(tmp_path: Path) -> None:

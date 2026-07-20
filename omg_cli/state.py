@@ -1008,6 +1008,75 @@ def _commit_strict_status_locked(
     return updated
 
 
+def merge_status_fields(
+    root: Path,
+    run_id: str,
+    fields: dict[str, Any],
+    *,
+    lease: ExecutionLease | None = None,
+) -> dict[str, Any]:
+    """Merge non-authority fields into status.json (CLI path).
+
+    Refuses to set ``verified`` / change terminal identity via this helper.
+    Used to sync ``autopilot_phase`` after accept/complete without re-committing
+    verified.
+    """
+    root = Path(root)
+    forbidden = frozenset(
+        {
+            "verified",
+            "status",
+            "run_id",
+            "schema_version",
+            "lifecycle_version",
+            "mode",
+            "goal",
+            "created_at",
+            "passes",
+        }
+    )
+    safe = {k: v for k, v in fields.items() if k not in forbidden}
+    if not safe:
+        current = load_run(root, run_id)
+        if current is None:
+            raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
+        return current
+
+    path = _status_path(root, run_id)
+    current = _read_json(path)
+    if current is None:
+        raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
+    schema = classify_run_schema(current)
+    if schema is RunSchema.STRICT_V2:
+        with transition_guard(root, run_id):
+            cur = _read_json(path)
+            if cur is None:
+                raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
+            if lease is not None:
+                _require_current_lease(root, run_id, lease)
+            updated = dict(cur)
+            updated.update(safe)
+            updated["updated_at"] = _utc_now()
+            # Never smuggle verified through merge
+            if cur.get("verified") is True:
+                updated["verified"] = True
+                updated["status"] = cur.get("status") or "verified"
+            elif "verified" in updated:
+                updated.pop("verified", None)
+            _atomic_write_json(path, updated)
+            return updated
+
+    updated = dict(current)
+    updated.update(safe)
+    updated["updated_at"] = _utc_now()
+    if current.get("verified") is True:
+        updated["verified"] = True
+    elif "verified" in updated:
+        updated.pop("verified", None)
+    _atomic_write_json(path, updated)
+    return updated
+
+
 def write_status(
     root: Path,
     run_id: str,
@@ -1426,12 +1495,19 @@ def set_verified(
         # Lease must be acquired *before* transition_guard (lock order:
         # execution → transition). Prefer caller lease; else auto-acquire.
         def _commit_verified(active_lease: ExecutionLease) -> dict[str, Any]:
+            # Align autopilot_phase when this run used the autopilot coordinator
+            # so status.json does not linger at autopilot_phase=acceptance.
+            extra: dict[str, Any] = {"verified_at": _utc_now()}
+            cur = load_run(root, run_id) or {}
+            if cur.get("mode") == "autopilot" or cur.get("autopilot_phase"):
+                extra["autopilot_phase"] = "verified"
+                extra.setdefault("stage", "autopilot")
             with transition_guard(root, run_id):
                 return _commit_strict_status_locked(
                     root,
                     run_id,
                     "verified",
-                    extra={"verified_at": _utc_now()},
+                    extra=extra,
                     lease=active_lease,
                     verified_authorized=True,
                 )

@@ -29,6 +29,7 @@ from omg_cli.command_policy import (
     CommandPolicyError,
     check_command_policy,
     check_commands_policy,
+    coalesce_pytest_marker_expr,
     command_basename,
     is_python_bin,
     resolve_allowlist,
@@ -97,8 +98,10 @@ __all__ = [
     "is_python_bin",
     "is_trusted_acceptance",
     "load_frozen_commands",
+    "build_prd_from_ultraqa",
     "load_prd",
     "manifest_path",
+    "materialize_prd_from_ultraqa",
     "prd_has_acceptance_commands",
     "prd_path",
     "read_manifest_sha256",
@@ -186,6 +189,134 @@ def prd_path(root: Path, run_id: str) -> Path:
     return run_dir(root, run_id) / PRD_NAME
 
 
+def build_prd_from_ultraqa(
+    root: Path | str,
+    run_id: str,
+    *,
+    goal: str | None = None,
+) -> dict[str, Any]:
+    """Build a PRD dict from CLI-stamped clean UltraQA scenarios.
+
+    Scenarios with a ``command`` become stories (argv after coalesce + policy).
+    ``always_pass``-only scenarios (hermetic test freeze) map to ``[["true"]]``.
+    Raises ``ValueError`` when ultraqa is missing, not clean, or has no
+    runnable scenarios after policy/coalesce.
+    """
+    import shlex
+
+    from omg_cli.command_policy import (
+        coalesce_pytest_marker_expr,
+        check_command_policy,
+    )
+    from omg_cli.qa import load_qa
+
+    root = Path(root).resolve()
+    rid = str(run_id)
+    try:
+        qa = load_qa(root, rid)
+    except Exception as exc:  # QAError / missing
+        raise ValueError(f"cannot load ultraqa for prd: {exc}") from exc
+    if qa.get("writer") != CLI_WRITER:
+        raise ValueError("ultraqa lacks CLI writer; refuse prd materialize")
+    if qa.get("clean") is not True or qa.get("status") != "clean":
+        raise ValueError(
+            "ultraqa must be clean (status=clean) before materializing prd "
+            f"(got status={qa.get('status')!r} clean={qa.get('clean')!r})"
+        )
+    if qa.get("invalidated") is True:
+        raise ValueError("ultraqa stamp invalidated; re-run QA before prd")
+
+    stories: list[dict[str, Any]] = []
+    for sc in qa.get("scenarios") or []:
+        if not isinstance(sc, dict):
+            continue
+        sid = str(sc.get("id") or "").strip()
+        if not sid:
+            continue
+        if sc.get("check") == "always_pass" and not sc.get("command"):
+            # Hermetic-only always_pass: map to true so accept still has work
+            stories.append(
+                {
+                    "id": sid,
+                    "title": f"ultraqa:{sid}",
+                    "commands": [["true"]],
+                }
+            )
+            continue
+        cmd = sc.get("command")
+        if not cmd:
+            continue
+        if isinstance(cmd, list):
+            argv = [str(x) for x in cmd]
+        else:
+            try:
+                argv = shlex.split(str(cmd).strip())
+            except ValueError as exc:
+                raise ValueError(
+                    f"ultraqa scenario {sid!r}: bad command: {exc}"
+                ) from exc
+        argv = coalesce_pytest_marker_expr(argv)
+        if not argv:
+            continue
+        try:
+            check_command_policy(argv, project_root=root)
+        except CommandPolicyError as exc:
+            raise ValueError(
+                f"ultraqa scenario {sid!r} command not accept-safe: {exc}"
+            ) from exc
+        stories.append(
+            {
+                "id": sid,
+                "title": f"ultraqa:{sid}",
+                "commands": [argv],
+            }
+        )
+
+    if not stories:
+        raise ValueError(
+            "ultraqa clean but has no materializable scenarios "
+            "(need command or always_pass)"
+        )
+
+    goal_text = (goal or "").strip() or f"acceptance from ultraqa for {rid}"
+    return validate_prd(
+        {
+            "version": 1,
+            "goal": goal_text,
+            "stories": stories,
+            "global_commands": [],
+            "run_id": rid,
+            "note": "materialized_from_ultraqa",
+        }
+    )
+
+
+def materialize_prd_from_ultraqa(
+    root: Path | str,
+    run_id: str,
+    *,
+    goal: str | None = None,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Write ``prd.json`` from clean ultraqa when missing (or overwrite=True).
+
+    Returns the validated PRD. Does not run acceptance.
+    """
+    root = Path(root).resolve()
+    path = prd_path(root, run_id)
+    if path.is_file() and not overwrite:
+        existing = load_prd(root, run_id)
+        if existing is not None:
+            return existing
+        # Corrupt file — fall through to rewrite
+    prd = build_prd_from_ultraqa(root, run_id, goal=goal)
+    _atomic_write_text(
+        path,
+        json.dumps(prd, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+    )
+    return prd
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     if not path.is_file():
         return None
@@ -253,16 +384,24 @@ def _validate_command_list(cmds: Any, *, where: str) -> list[list[str]]:
 
 
 def collect_commands(prd: dict[str, Any]) -> list[list[str]]:
-    """Flatten story + global commands (already validated or raw)."""
+    """Flatten story + global commands (already validated or raw).
+
+    Applies ``coalesce_pytest_marker_expr`` so unquoted ``-m not live`` matches
+    freeze and run digests.
+    """
     commands: list[list[str]] = []
     for story in prd.get("stories") or []:
         if isinstance(story, dict):
             for cmd in story.get("commands") or []:
                 if isinstance(cmd, list):
-                    commands.append([str(x) for x in cmd])
+                    commands.append(
+                        coalesce_pytest_marker_expr([str(x) for x in cmd])
+                    )
     for cmd in prd.get("global_commands") or []:
         if isinstance(cmd, list):
-            commands.append([str(x) for x in cmd])
+            commands.append(
+                coalesce_pytest_marker_expr([str(x) for x in cmd])
+            )
     return commands
 
 
@@ -366,6 +505,22 @@ def freeze_acceptance(
         raise FileNotFoundError(f"no prd.json for run_id={run_id!r}")
 
     normalized = validate_prd(prd)
+    # Coalesce marker expr into stories so frozen manifest matches exec argv.
+    for story in normalized.get("stories") or []:
+        if isinstance(story, dict) and isinstance(story.get("commands"), list):
+            story["commands"] = [
+                coalesce_pytest_marker_expr([str(x) for x in cmd])
+                if isinstance(cmd, list)
+                else cmd
+                for cmd in story["commands"]
+            ]
+    if isinstance(normalized.get("global_commands"), list):
+        normalized["global_commands"] = [
+            coalesce_pytest_marker_expr([str(x) for x in cmd])
+            if isinstance(cmd, list)
+            else cmd
+            for cmd in normalized["global_commands"]
+        ]
     commands = collect_commands(normalized)
 
     effective_allow = resolve_allowlist(extra_allow, base=allowlist)

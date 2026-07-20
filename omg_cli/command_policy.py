@@ -164,6 +164,23 @@ class CommandPolicyError(ValueError):
     """Raised when an acceptance command is rejected by the semantic policy."""
 
 
+# Operator tips for common freezes that fail allowlist (QA / accept).
+_DENY_TIPS: dict[str, str] = {
+    "grep": "use a project .py helper (python3 path/to/check.py) instead of grep",
+    "egrep": "use a project .py helper instead of egrep",
+    "fgrep": "use a project .py helper instead of fgrep",
+    "rg": "use a project .py helper instead of rg",
+    "test": "use a project .py helper or true/false instead of test(1)",
+    "[": "use a project .py helper or true/false instead of [",
+    "omg": "omg is not on the acceptance allowlist; use python3 -m pytest or a project .py",
+    "cat": "use a project .py helper that reads the file instead of cat",
+    "sed": "use a project .py helper instead of sed",
+    "awk": "use a project .py helper instead of awk",
+    "head": "use a project .py helper instead of head",
+    "tail": "use a project .py helper instead of tail",
+}
+
+
 def command_basename(argv0: str) -> str:
     """Return the executable basename for policy checks (handles paths)."""
     name = Path(str(argv0)).name
@@ -179,6 +196,54 @@ def is_python_bin(base: str) -> bool:
 
 def is_node_bin(base: str) -> bool:
     return bool(_NODE_BIN_RE.match(base))
+
+
+def coalesce_pytest_marker_expr(argv: Sequence[str]) -> list[str]:
+    """Coalesce common freeze mistake: ``-m not live`` → ``-m 'not live'``.
+
+    After ``pytest`` (or ``python -m pytest``), an unquoted shell marker
+    expression is split by shlex into separate tokens. Pytest then treats
+    ``not`` as the marker and ``live`` as a file path. When we see
+    ``-m`` / ``--markers`` followed by ``not`` and a non-flag token, join them.
+    """
+    argv = [str(x) for x in argv]
+    if not argv:
+        return []
+    # Locate pytest entry: bare pytest, or python* -m pytest
+    start = 0
+    base0 = command_basename(argv[0])
+    if is_python_bin(base0):
+        for i in range(1, len(argv) - 1):
+            if argv[i] == "-m" and argv[i + 1].split(".", 1)[0] == "pytest":
+                start = i + 2
+                break
+        else:
+            return list(argv)
+    elif base0 == "pytest":
+        start = 1
+    else:
+        return list(argv)
+
+    out = list(argv[:start])
+    i = start
+    while i < len(argv):
+        tok = argv[i]
+        # Only -m (mark expression). Do not treat pytest --markers (list markers).
+        if tok == "-m" and i + 2 < len(argv):
+            a, b = argv[i + 1], argv[i + 2]
+            if a == "not" and b and not b.startswith("-"):
+                out.append(tok)
+                out.append(f"not {b}")
+                i += 3
+                continue
+        out.append(tok)
+        i += 1
+    return out
+
+
+def policy_hint_for_basename(base: str) -> str | None:
+    """Optional one-line operator tip for a denied basename."""
+    return _DENY_TIPS.get(base)
 
 
 def resolve_allowlist(
@@ -588,7 +653,8 @@ def check_command_policy(
         if _has_flag(cmd, "-c", "-e"):
             raise CommandPolicyError(
                 f"{where}: python -c/-e is denied for acceptance "
-                "(always-deny floor; use -m pytest|unittest or project .py)"
+                "(always-deny floor; use -m pytest|unittest or project .py "
+                "under the repo — e.g. python3 scripts/check.py)"
             )
     if is_node_bin(base) or base == "node":
         if _has_flag(cmd, "-e", "--eval", "-p", "--print"):
@@ -611,10 +677,14 @@ def check_command_policy(
         frozenset(allowlist) if allowlist is not None else DEFAULT_ALLOWLIST
     )
     if not _basename_allowed(base, allowed):
+        tip = policy_hint_for_basename(base)
+        tip_s = f" tip: {tip}." if tip else ""
         raise CommandPolicyError(
             f"{where}: basename {base!r} not in acceptance allowlist "
             f"({', '.join(sorted(allowed))}); use --allow-cmd {base} "
-            "(TTY-only --no-allowlist is break-glass and still applies deny floor)"
+            "(TTY-only --no-allowlist is break-glass and still applies deny floor)."
+            f"{tip_s} Prefer: python3 -m pytest -q -m 'not live' or "
+            "python3 path/to/project_check.py"
         )
 
     # Semantic families

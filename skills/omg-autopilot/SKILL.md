@@ -156,7 +156,9 @@ omg autopilot transition --run RUN --phase qa --reason "structured review clean"
 - Follow **omg-ultraqa**:
 
 ```bash
-omg qa freeze --run RUN --scenarios-json '[{"id":"t1","command":"python3 -m pytest -q -m not live"}]'
+# Quote pytest markers. Freeze rejects grep/test/omg/python -c with tips.
+omg qa freeze --run RUN --scenarios-json \
+  '[{"id":"t1","command":"python3 -m pytest -q -m '"'"'not live'"'"'"}]'
 omg qa run --run RUN
 omg qa status --run RUN
 ```
@@ -170,10 +172,12 @@ omg autopilot transition --run RUN --phase acceptance --reason "ultraqa clean"
 ### 6. Phase `acceptance` → `verified`
 
 ```bash
+# prd.json optional when ultraqa is clean — CLI materializes from scenarios
 omg accept --run RUN --yes
-# same process / same shell turn chain when possible:
+# Prefer complete as the single terminal step (same-process accept+verify).
+# If accept already verified the run, complete short-circuits (no double pytest).
 omg autopilot complete --run RUN
-omg autopilot status --run RUN
+omg autopilot status --run RUN   # autopilot_phase should be "verified"
 ```
 
 Only then report success with evidence (commands + outputs).
