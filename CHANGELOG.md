@@ -9,6 +9,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Planned
+- Optional PyPI/`pipx` CLI track (deferred).
+- Optional PR to xAI plugin-marketplace (sha-pinned).
+- Host Stop veto (not feasible on Grok today).
+- Full OMC LSP/AST MCP bridge (local pyright probe only in 0.3.0).
+
+## [0.3.1] - 2026-07-21
+
 ### Fixed
 - **strict-v2 `omg accept` / `set_verified`:** auto-acquire execution lease when caller omits lease (default ralph completion gate).
 - **Verdict false-green residuals:** case-insensitive prose `FAILED`; schema_version=2 documents no longer fall through to terminal prose APPROVE; balanced JSON extract when prose trails a JSON blob.
@@ -25,12 +33,6 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - security-model: acceptance env scrub + goal-verify disk-trust residual; spawn soft fail-closed retitled as shipped.
 - OPEN-ITEMS: mark interview/QA/goal ledger shipped; residual is depth/live evidence.
 - `plans/`: improve-deep advisor plans + execution artifacts.
-
-### Planned
-- Optional PyPI/`pipx` CLI track (deferred).
-- Optional PR to xAI plugin-marketplace (sha-pinned).
-- Host Stop veto (not feasible on Grok today).
-- Full OMC LSP/AST MCP bridge (local pyright probe only in 0.3.0).
 
 ## [0.3.0] - 2026-07-21
 
