@@ -1,15 +1,30 @@
-# oh-my-grok
+# oh-my-grok (OMG)
 
-OMC-style multi-agent orchestration for **Grok Build**.
+<p align="center">
+  <img src="assets/omg-character.png" alt="oh-my-grok character" width="320">
+  <br>
+  <em>Start Grok stronger — then let OMG own the workflow, evidence, and verified completion.</em>
+</p>
 
-**Option B architecture:** a Grok plugin (skills, agents, hooks) paired with the **`omg` CLI**. Workers fan out only via Grok-native **`spawn_subagent`**. No Rust fork of grok-build. **No tmux in v1/v0.2.**
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/python-%3E%3D3.11-blue" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/host-Grok%20Build-black" alt="Grok Build">
+  <img src="https://img.shields.io/badge/scope-core%20purpose%20parity-lightgrey" alt="core purpose parity">
+</p>
+
+**Multi-agent orchestration for Grok Build.** Sibling of [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) (OMC), [oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex) (OMX), and [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) (OmO) — same orchestration *idea*, **Grok-native** runtime.
+
+_Don't learn every Grok flag. Use `omg` + skills for the path that matters: clarify → plan → execute → verify._
+
+**Option B architecture:** a Grok plugin (skills, agents, hooks) paired with the **`omg` CLI**. Workers fan out only via Grok-native **`spawn_subagent`**. No Rust fork of grok-build. **No tmux in v1** (honest scope: not a full OMC surface clone).
 
 | Component | Role |
 |-----------|------|
 | **Grok plugin** (`plugin.json`, `skills/`, `agents/`, `hooks/`) | In-session playbooks, custom agents, event spool + PreToolUse soft-guard |
-| **`omg` CLI** (`bin/omg`, `omg_cli/`) | Hard keywords (`ulw` / `ralph` / `ralplan`), project setup, state single-writer, outer loops, acceptance, integrate, ralplan FSM |
+| **`omg` CLI** (`bin/omg`, `omg_cli/`) | Hard keywords (`ulw` / `ralph` / `ralplan` / `goal` / `interview` / `autopilot`…), project setup, state single-writer, acceptance, integrate |
 
-Version: **0.2.5** · License: MIT
+Version: **0.2.5** · License: MIT · Parity matrix: [`docs/research/core-parity-matrix-2026-07-20.md`](docs/research/core-parity-matrix-2026-07-20.md)
 
 ---
 
@@ -17,9 +32,10 @@ Version: **0.2.5** · License: MIT
 
 Grok Build already ships subagents, worktrees, plugins, and hooks. oh-my-grok adds the **workflow layer**:
 
-- **ulw (ultrawork)** — parallel decompose → `spawn_subagent` → integrate → verify
+- **ulw (ultrawork)** — parallel decompose → `spawn_subagent` → ownership join → integrate → verify
 - **ralph** — persistence loop (one story per iteration; outer CLI owns the loop)
-- **ralplan** — plan consensus FSM (draft → critic → revise → verifier; **no implementation**)
+- **ralplan** — plan consensus FSM (planner → architect → critic; **no implementation**)
+- **interview / goal / autopilot / qa** — requirements gate, hash-chained ledger, strict phase coordinator, UltraQA (QA clean ≠ verified)
 
 Agents may write proposals under `.omg/artifacts/`. Only the **`omg` CLI** is authoritative for `passes` / `verified` under `.omg/state/`.
 
