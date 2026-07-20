@@ -102,7 +102,7 @@ This remains **fail-open** on hook timeout/crash. Primary isolation is still
 - Does **not** write `.omg/state`, does **not** touch `verified` / acceptance / ask deny lists.
 - Root `--yolo` remains **mode-subcommand elevation only** — not a madmax alias.
 - Detached full-open sessions keep running under tmux until you `tmux kill-session -t omg-…`.
-- **Env forward visibility:** madmax injects allowlisted `GROK_*` / `XAI_*` / a few shell vars into the tmux pane start command as `export KEY='…'` before `exec grok`. Until the shell is replaced (brief window; longer if `sleep` runs), those values can appear in **process argv** (`ps`) on multi-user hosts. Prefer secrets in login profile / agent identity store rather than exporting them only for madmax. (Follow-up: `tmux new-session -e` or a 0600 env file.)
+- **Env forward:** madmax passes allowlisted `GROK_*` / `XAI_*` / a few shell vars into the session via `tmux new-session -e KEY=value` (not embedded in the pane start-command string). Values may still appear in the **tmux server process** environment for the session lifetime — prefer host identity / profile secrets over one-off env dumps on multi-user machines.
 
 This is intentional break-glass, not a sandbox. Document and name-prefix (`omg-`) are the mitigations — not PreToolUse.
 

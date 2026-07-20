@@ -3,17 +3,19 @@
 Maps to Grok permission bypass flags and **requires** a dedicated **tmux**
 session when interactive and outside tmux (all platforms).
 
-Product contract (Fable 5 2026-07-20):
+Product contract (Fable 5 2026-07-20 + residual cleanup):
 - Not a mode FSM; does not touch state/verified/acceptance.
 - Root ``--yolo`` remains mode elevation only (not a madmax alias).
 - Conflicting ``--permission-mode`` / ``--safe`` → hard error (exit 2).
-- New tmux session every launch (timestamped); continuity via grok --continue.
+- New tmux session every launch (timestamp + nonce); continuity via grok --continue.
+- Env for tmux panes via ``new-session -e`` (not shell-export in pane argv).
 - Workers remain Grok ``spawn_subagent``; no multi-CLI tmux team control plane.
 """
 from __future__ import annotations
 
 import hashlib
 import os
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -29,7 +31,7 @@ GROK_OPEN_FLAGS: tuple[str, ...] = (
     "bypassPermissions",
 )
 
-# Env keys/prefixes forwarded into tmux panes (quoted).
+# Env keys/prefixes forwarded into tmux panes via ``-e`` (not pane command text).
 _ENV_PREFIXES = ("GROK_", "XAI_")
 _ENV_EXACT = frozenset(
     {
@@ -56,7 +58,16 @@ def has_madmax_flag(argv: list[str]) -> bool:
 def is_print_mode(argv: list[str]) -> bool:
     """Headless / stdout modes must not wrap tmux (preserve piping)."""
     for a in argv:
-        if a in ("-p", "--single", "--prompt-file", "--prompt-json", "-h", "--help", "-V", "--version"):
+        if a in (
+            "-p",
+            "--single",
+            "--prompt-file",
+            "--prompt-json",
+            "-h",
+            "--help",
+            "-V",
+            "--version",
+        ):
             return True
         if a.startswith("--single=") or a.startswith("--prompt-file=") or a.startswith(
             "--prompt-json="
@@ -97,13 +108,11 @@ def normalize_grok_args(argv: list[str]) -> list[str]:
 
     out: list[str] = []
     i = 0
-    has_always = False
     user_permission_mode: str | None = None
     while i < len(stripped):
         a = stripped[i]
+        # Drop user --always-approve copies; we inject exactly one in prefix.
         if a == "--always-approve":
-            has_always = True
-            out.append(a)
             i += 1
             continue
         if a == "--permission-mode":
@@ -137,27 +146,25 @@ def normalize_grok_args(argv: list[str]) -> list[str]:
             f"(got {user_permission_mode!r}); omit the flag to use full-open defaults"
         )
 
-    # Inject open flags once at front (after validation).
-    prefix: list[str] = []
-    if not has_always:
-        prefix.append("--always-approve")
-    # Always emit exactly one bypassPermissions (user may have provided it).
-    prefix.extend(["--permission-mode", "bypassPermissions"])
-    return prefix + out
+    # Exactly one open-flag pair at front.
+    return ["--always-approve", "--permission-mode", "bypassPermissions", *out]
 
 
 def session_name_for_cwd(
     cwd: Path | str,
     *,
     now: datetime | None = None,
+    nonce: str | None = None,
 ) -> str:
-    """Unique per launch: omg-<base>-<digest8>-<UTC timestamp>."""
+    """Unique per launch: omg-<base>-<digest8>-<UTC ts>-<nonce4>."""
     resolved = str(Path(cwd).resolve())
     digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:8]
     base = Path(resolved).name or "root"
     safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in base)[:20]
     ts = (now or datetime.now(timezone.utc)).strftime("%Y%m%d%H%M%S")
-    return f"omg-{safe}-{digest}-{ts}"
+    # Nonce avoids same-second collision (P3).
+    token = (nonce if nonce is not None else secrets.token_hex(2)).lower()
+    return f"omg-{safe}-{digest}-{ts}-{token}"
 
 
 def cwd_digest(cwd: Path | str) -> str:
@@ -178,7 +185,7 @@ def _inside_tmux() -> bool:
 
 
 def forwarded_env() -> list[tuple[str, str]]:
-    """Allowlisted env pairs to inject into tmux pane (after login shell)."""
+    """Allowlisted env pairs for tmux ``-e`` injection."""
     pairs: list[tuple[str, str]] = []
     for key, val in os.environ.items():
         if key in _ENV_EXACT or any(key.startswith(p) for p in _ENV_PREFIXES):
@@ -190,24 +197,36 @@ def forwarded_env() -> list[tuple[str, str]]:
 def build_pane_command(
     grok_args: list[str],
     *,
-    env_pairs: list[tuple[str, str]] | None = None,
     shell: str | None = None,
+    da1_drain: bool = True,
 ) -> str:
-    """Login-shell wrapped pane command: source profile-ish, export env, exec grok."""
+    """Login-shell wrapped pane command (no secret exports in command text).
+
+    Env is passed via ``tmux new-session -e`` so values are not embedded in the
+    pane start-command string visible to ``ps``.
+    """
     shell = shell or os.environ.get("SHELL") or "/bin/zsh"
-    exports = env_pairs if env_pairs is not None else forwarded_env()
-    export_parts = [
-        f"export {k}={shlex.quote(v)}" for k, v in exports
-    ]
-    export_prefix = ("; ".join(export_parts) + "; ") if export_parts else ""
-    # Best-effort rc; then forced exports (override stale tmux-server env).
-    inner_body = (
-        f"{export_prefix}"
-        "sleep 0.2; "
-        f"exec {shlex.join(['grok', *grok_args])}"
+    # Optional DA1 drain (OMC parity): terminal Device Attributes reply can
+    # land in the pty before Grok TUI reads input.
+    drain = (
+        "perl -e 'use POSIX; tcflush(0, TCIFLUSH)' 2>/dev/null; "
+        if da1_drain
+        else ""
     )
-    # $SHELL -lc runs as login+command so PATH/nvm from profile apply.
+    inner_body = f"sleep 0.2; {drain}exec {shlex.join(['grok', *grok_args])}"
     return f"exec {shlex.quote(shell)} -lc {shlex.quote(inner_body)}"
+
+
+def tmux_env_args(env_pairs: list[tuple[str, str]] | None = None) -> list[str]:
+    """Build repeated ``-e KEY=value`` args for ``tmux new-session``."""
+    pairs = env_pairs if env_pairs is not None else forwarded_env()
+    out: list[str] = []
+    for key, val in pairs:
+        # tmux -e takes VARIABLE=value; reject keys that would break parsing.
+        if not key or "=" in key or "\x00" in key or "\x00" in val:
+            continue
+        out.extend(["-e", f"{key}={val}"])
+    return out
 
 
 def _list_previous_sessions(digest: str) -> list[str]:
@@ -266,6 +285,7 @@ def _run_grok_in_tmux(cwd: Path, grok_args: list[str]) -> int:
 
     name = session_name_for_cwd(cwd)
     pane = build_pane_command(grok_args)
+    env_args = tmux_env_args()
     create = subprocess.run(
         [
             "tmux",
@@ -275,6 +295,7 @@ def _run_grok_in_tmux(cwd: Path, grok_args: list[str]) -> int:
             name,
             "-c",
             str(cwd),
+            *env_args,
             pane,
         ],
         check=False,

@@ -1,4 +1,4 @@
-"""Tests for omg --madmax host launcher (Fable contract; no interactive attach)."""
+"""Tests for omg --madmax host launcher (Fable contract + residual cleanup)."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -18,6 +18,7 @@ from omg_cli.madmax import (
     run_madmax,
     session_name_for_cwd,
     strip_madmax_flags,
+    tmux_env_args,
 )
 from omg_cli.main import KNOWN_SUBCOMMANDS, main
 
@@ -48,6 +49,14 @@ def test_normalize_idempotent_if_already_open():
     assert out.count("bypassPermissions") == 1
 
 
+def test_normalize_dedupes_repeated_always_approve():
+    out = normalize_grok_args(
+        ["--madmax", "--always-approve", "--always-approve", "x"]
+    )
+    assert out.count("--always-approve") == 1
+    assert "x" in out
+
+
 def test_normalize_rejects_conflicting_permission_mode():
     with pytest.raises(MadmaxUsageError, match="bypassPermissions"):
         normalize_grok_args(["--madmax", "--permission-mode", "plan"])
@@ -68,31 +77,47 @@ def test_normalize_strips_yolo():
 
 def test_session_name_unique_across_launches(tmp_path: Path):
     t1 = datetime(2026, 7, 20, 12, 0, 0, tzinfo=timezone.utc)
-    t2 = datetime(2026, 7, 20, 12, 0, 1, tzinfo=timezone.utc)
-    a = session_name_for_cwd(tmp_path, now=t1)
-    b = session_name_for_cwd(tmp_path, now=t2)
-    assert a != b
+    a = session_name_for_cwd(tmp_path, now=t1, nonce="aaaa")
+    b = session_name_for_cwd(tmp_path, now=t1, nonce="bbbb")
+    assert a != b  # same second, different nonce
     assert a.startswith("omg-")
     assert cwd_digest(tmp_path) in a
+    assert a.endswith("-aaaa")
 
 
-def test_build_pane_command_login_shell_and_env_quoting():
+def test_build_pane_command_login_shell_no_secret_export():
     cmd = build_pane_command(
         ["--always-approve", "hi"],
-        env_pairs=[("XAI_API_KEY", "a;b$(evil)"), ("GROK_SANDBOX", "off")],
         shell="/bin/zsh",
+        da1_drain=True,
     )
     assert "zsh" in cmd
     assert "-lc" in cmd
-    assert "XAI_API_KEY=" in cmd
-    assert "a;b$(evil)" not in cmd or "'a;b$(evil)'" in cmd or "a\\;b" in cmd
     assert "exec" in cmd
     assert "grok" in cmd
+    assert "tcflush" in cmd
+    # Secrets must NOT be in pane start command text.
+    assert "XAI_API_KEY" not in cmd
+    assert "export " not in cmd
+
+
+def test_tmux_env_args_for_secrets():
+    args = tmux_env_args([("XAI_API_KEY", "sekrit"), ("GROK_SANDBOX", "off")])
+    assert args == [
+        "-e",
+        "XAI_API_KEY=sekrit",
+        "-e",
+        "GROK_SANDBOX=off",
+    ]
+
+
+def test_tmux_env_args_skips_bad_keys():
+    assert tmux_env_args([("BAD=KEY", "v"), ("OK", "v")]) == ["-e", "OK=v"]
 
 
 def test_is_print_mode_prompt_json_eq_variant():
     assert is_print_mode(["--prompt-json={}", "x"])
-    assert is_print_mode(["--prompt-json={\"a\":1}"])
+    assert is_print_mode(['--prompt-json={"a":1}'])
     assert is_print_mode(["--version"])
     assert not is_print_mode(["interactive prompt"])
 
@@ -119,8 +144,12 @@ def test_dispatch_print_uses_direct(monkeypatch, tmp_path: Path):
 
 def test_dispatch_inside_tmux_uses_direct(monkeypatch, tmp_path: Path):
     calls: list[str] = []
-    monkeypatch.setattr(madmax, "_run_grok_direct", lambda c, a: calls.append("direct") or 0)
-    monkeypatch.setattr(madmax, "_run_grok_in_tmux", lambda c, a: calls.append("tmux") or 0)
+    monkeypatch.setattr(
+        madmax, "_run_grok_direct", lambda c, a: calls.append("direct") or 0
+    )
+    monkeypatch.setattr(
+        madmax, "_run_grok_in_tmux", lambda c, a: calls.append("tmux") or 0
+    )
     monkeypatch.setattr(madmax, "grok_available", lambda: True)
     monkeypatch.setenv("TMUX", "/tmp/tmux-1")
     rc = run_madmax(tmp_path, ["--madmax"])
@@ -130,8 +159,12 @@ def test_dispatch_inside_tmux_uses_direct(monkeypatch, tmp_path: Path):
 
 def test_dispatch_outside_uses_tmux(monkeypatch, tmp_path: Path):
     calls: list[str] = []
-    monkeypatch.setattr(madmax, "_run_grok_direct", lambda c, a: calls.append("direct") or 0)
-    monkeypatch.setattr(madmax, "_run_grok_in_tmux", lambda c, a: calls.append("tmux") or 0)
+    monkeypatch.setattr(
+        madmax, "_run_grok_direct", lambda c, a: calls.append("direct") or 0
+    )
+    monkeypatch.setattr(
+        madmax, "_run_grok_in_tmux", lambda c, a: calls.append("tmux") or 0
+    )
     monkeypatch.setattr(madmax, "grok_available", lambda: True)
     monkeypatch.delenv("TMUX", raising=False)
     rc = run_madmax(tmp_path, ["--madmax"])
@@ -154,16 +187,13 @@ def test_dispatch_usage_error(monkeypatch, tmp_path: Path):
 def test_madmax_module_never_imports_state_or_acceptance():
     import omg_cli.madmax as m
 
-    # Only stdlib + local pure helpers — no state/acceptance authority path.
     src = Path(m.__file__).read_text(encoding="utf-8")
     assert "omg_cli.state" not in src
     assert "omg_cli.acceptance" not in src
     assert "write_status" not in src
-    assert "verified" not in src.lower() or "verified" in m.__doc__.lower()
 
 
 def test_known_subcommands_cover_router_set():
-    # Sanity: madmax policy set is non-empty and includes core modes
     assert "ulw" in KNOWN_SUBCOMMANDS
     assert "ask" in KNOWN_SUBCOMMANDS
     assert "ralph" in KNOWN_SUBCOMMANDS
@@ -211,3 +241,36 @@ def test_madmax_before_prompt_token_intercepts(monkeypatch, tmp_path: Path):
     rc = main(["--madmax", "ralph"])
     assert rc == 0
     assert seen
+
+
+def test_run_grok_in_tmux_passes_e_flags(monkeypatch, tmp_path: Path):
+    """Integration: new-session argv includes -e and no secret in pane string."""
+    captured: list[list[str]] = []
+
+    def fake_run(cmd, check=False, capture_output=False, text=False):
+        captured.append(list(cmd))
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(madmax, "tmux_available", lambda: True)
+    monkeypatch.setattr(madmax, "_list_previous_sessions", lambda d: [])
+    monkeypatch.setattr(madmax, "session_name_for_cwd", lambda c: "omg-test-sess")
+    monkeypatch.setattr(
+        madmax,
+        "forwarded_env",
+        lambda: [("XAI_API_KEY", "sekrit"), ("PATH", "/bin")],
+    )
+    monkeypatch.setattr(madmax.subprocess, "run", fake_run)
+
+    rc = madmax._run_grok_in_tmux(tmp_path, ["--always-approve", "hi"])
+    assert rc == 0
+    create = next(c for c in captured if c[:2] == ["tmux", "new-session"])
+    assert "-e" in create
+    assert "XAI_API_KEY=sekrit" in create
+    # pane command is last arg and must not contain secret
+    assert "sekrit" not in create[-1]
