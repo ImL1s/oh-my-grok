@@ -48,7 +48,16 @@ See `omg_cli/command_policy.py` (`POLICY_VERSION`).
 
 Beyond basename allowlisting, acceptance applies **argv grammar** per family (`POLICY_VERSION` ≥ 2): git is inspection-only (no bare `stash`, no branch/tag create), make requires an allowlisted target with no makefile/dir overrides, and cargo/go/dart/flutter admit only test/analysis-style subcommands so a frozen runner cannot become an install, publish, or long-running process launcher.
 
-**Canary pass criteria:** `scripts/canary_pretool.py --live` exits 0 only when **both** parent and child output contain the exact PreToolUse reason `oh-my-grok: external agent CLI blocked` (host signature). Free-form model “denied” prose is `DENIED_CLAIMED_NO_HOOK_ORACLE` (exit 2), not a soft-gate pass.
+**Canary pass criteria** (`scripts/canary_pretool.py --live` / `omg_cli/canary_classify.py`):
+
+| Status | Exit | Meaning |
+|--------|------|---------|
+| `DENIED_PARENT_AND_CHILD` | 0 | Parent **and** child show host signature `oh-my-grok: external agent CLI blocked` |
+| `DENIED_PARENT_HOST_CHILD_CAPABILITY` | 0 | Parent host signature **and** child has **no shell tool** (capability isolation) + no marker |
+| `DENIED_CLAIMED_NO_HOOK_ORACLE` | 2 | Model “denied” prose only — **not** suite green |
+| `REAL_CLI_RAN_*` / marker present | 1 | Soft-gate failed |
+
+Free-form model theater without host or capability evidence must not green the suite.
 
 ### Spawn fail-closed (0.3.0 Option A)
 

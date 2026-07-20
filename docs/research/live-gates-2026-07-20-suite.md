@@ -36,6 +36,18 @@ Executed via `scripts/live_suite.sh` after Tasks 1–8 hermetic landings.
 
 Evidence dir: `docs/research/live/` (`canary-*.json`, `suite-*-*.summary.json`, `cap-spawn-*.txt`).
 
+## Re-verify after P0 ship (same calendar day, afternoon)
+
+Canonical write-up: [`live/verification-2026-07-20.md`](./live/verification-2026-07-20.md) · advisor honesty: [`omc-parity-council/STATUS.md`](./omc-parity-council/STATUS.md).
+
+| Gate | Result |
+|------|--------|
+| pytest -m 'not live' | **301 passed** |
+| canary --live | **DENIED_PARENT_HOST_CHILD_CAPABILITY** exit 0 (parent host signature + child no-shell capability) |
+| live_suite --quick | **OK** (`suite-20260720T050557Z-quick`) |
+| live_suite --full | **OK** + L-DUAL-1 semantic (`dual_rc=1`, `verdict=UNKNOWN`, not false APPROVE) (`suite-20260720T050859Z-full`) |
+| quota-heavy | not re-run |
+
 ## Claim language (post this run)
 
 | Allowed | Forbidden |

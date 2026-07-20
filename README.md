@@ -48,6 +48,21 @@ Workers must not run external agent CLIs as a **hard** property of tool policy �
 
 **v0.2.5:** integrate ancestry / merge reject / empty-`changed_files` anti-forge / `--require-squash`; pipeline stage order **plan → implement → integrate → dual_review → accept → report**; `omg worker prepare|seal`; `omg ask` stdin default; dual-review sequential interim. **Live-gates:** doctor hard-checks global PreToolUse hook; acceptance argv grammar v2 (git list-only, make no `-f`/`-C`, go no `-exec`/`--exec`, cargo no `build`); canary host-signature pass only (`DENIED_CLAIMED_NO_HOOK_ORACLE` on prose); `scripts/live_suite.sh --quick/--full/--quota-heavy` + dated evidence under `docs/research/live/`.
 
+**Post-0.2.5 (2026-07-20, same release line):** multi-advisor OMC-parity council docs; **strict verdict** (`omg_cli/verdict.py`) so dual/ralplan cannot false-green on `Do not APPROVE` / stubs / non-zero stage rc; spawn PreToolUse deny **RETRY IMMEDIATELY** messaging; ULW **auto-integrate** when envelopes present; live **L-DUAL-1** semantic gate; doctor soft **foreign orch** discovery via `grok inspect`; canary pass = parent host deny **+** child capability isolation (no shell); `omg state --human`. Research index: [`docs/research/omc-parity-council/`](docs/research/omc-parity-council/) · status: [`STATUS.md`](docs/research/omc-parity-council/STATUS.md) · verify: [`docs/research/live/verification-2026-07-20.md`](docs/research/live/verification-2026-07-20.md).
+
+**Honest external seats:** Codex free audit **done** (`docs/research/omc-parity-council/08-codex.md`). Claude Fable free audit **BLOCKED** this round (`09-fable.md`) — do not claim dual-external consensus.
+
+---
+
+## Docs map (research)
+
+| Path | Contents |
+|------|----------|
+| [`docs/security-model.md`](docs/security-model.md) | Isolation layers (capability primary; PreToolUse soft) |
+| [`docs/research/omc-parity-council/`](docs/research/omc-parity-council/) | Multi-Grok + Codex/Fable parity council |
+| [`docs/research/stop-continuation/`](docs/research/stop-continuation/) | Stop pin **DO NOT BUILD** (host non-blocking) |
+| [`docs/research/live/`](docs/research/live/) | Dated live suite + canary evidence |
+
 ---
 
 ## Install

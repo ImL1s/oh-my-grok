@@ -1,20 +1,66 @@
-# External free audit — Fable
+# External free audit — Fable (Claude Code)
 
 ## Status: BLOCKED
 
 **date_utc:** 2026-07-20  
-**reason:** Claude Fable CLI headless launches failed or hung repeatedly during free-exploration dispatch.
+**role:** Independent free-exploration product audit (same brief as Codex `08-codex.md`)  
+**outcome:** **No independent long-form report this round.**
 
-### Attempts
-1. Restricted brief launch → hung (permission-rule spam only)
-2. Free launch with prompt before flags → `Error: Input must be provided either through stdin or as a prompt argument when using --print`
-3. Correct flag order + argv prompt + `</dev/null` → same Input must be provided
-4. stdin-only prompt file → process alive ~3+ min, log stuck ~1496 bytes (permission rules only), 0 tool activity
+---
 
-### Process notes
-- PID files + empty MCP + OMC_SKIP_HOOKS=1 used
-- dual-review / multi-llm-council skills updated with 2026-07-20 argv contract after this failure
-- Re-run when Fable CLI is responsive: short path-only prompt, options before any empty redirect, stdin prompt file preferred
+## Why blocked
 
-### Vote
-**ABSTAIN / BLOCKED** — do not count Fable toward consensus. Use Codex free audit (`08-codex.md`) + multi-Grok council as primary external evidence this round.
+Claude Code headless (`claude -p --model claude-fable-5 --effort xhigh`) failed or hung across multiple launches:
+
+| Attempt | Symptom |
+|---------|---------|
+| Restricted brief, short launcher | Log stuck on `Permission allow rule Write(/**)` noise; no report file |
+| Free prompt **before** flags (`claude -p "$PROMPT" --model …`) | `Error: Input must be provided either through stdin or as a prompt argument when using --print` |
+| Flags before prompt + `</dev/null` | Same Input must be provided (stdin emptied, prompt lost in some wrappers) |
+| Stdin-only prompt file | Process alive minutes, log ~1.5KB permission rules only, 0 tool activity |
+
+**Root cause (ops):** `claude -p` argv contract — **all options before the prompt string**, or feed prompt via **stdin** only. See global skills:
+
+- `~/.agents/skills/dual-review/SKILL.md` § Fable argv contract (2026-07-20)
+- `~/.agents/skills/multi-llm-council/SKILL.md` §4c
+
+Also used: empty MCP (`--strict-mcp-config` + empty servers), `OMC_SKIP_HOOKS=1` / `DISABLE_OMC=1` to reduce hijack risk.
+
+---
+
+## Vote for synthesis
+
+**ABSTAIN / BLOCKED** — do **not** count Fable toward multi-advisor consensus this round.
+
+Primary external evidence: **[`08-codex.md`](./08-codex.md)** + multi-Grok `01`–`07` + [`STATUS.md`](./STATUS.md).
+
+---
+
+## How to complete this seat later
+
+```bash
+# Correct pattern (options first; prompt last OR stdin)
+SAFE=docs/research/omc-parity-council/external-brief-safe.md
+OUT=docs/research/omc-parity-council/09-fable.md
+echo '{"mcpServers":{}}' > /tmp/empty-mcp.json
+
+claude -p \
+  --model claude-fable-5 \
+  --effort xhigh \
+  --dangerously-skip-permissions \
+  --strict-mcp-config \
+  --mcp-config /tmp/empty-mcp.json \
+  --no-session-persistence \
+  --add-dir "$PWD" \
+  --add-dir ~/.claude/plugins/cache/omc \
+  --add-dir ~/.grok/docs \
+  "FREE free-exploration product audit. No workflow modes. Read $SAFE then freely explore the oh-my-grok repo, OMC install, Grok docs, live evidence. Challenge SYNTHESIS with evidence. Write COMPLETE Traditional Chinese report to $OUT using Write/Edit. Do not edit product source except that path."
+```
+
+Replace this BLOCKED stub with the real report when the run succeeds.
+
+---
+
+## Related shipped work (not Fable’s report)
+
+Product P0 from Codex + Grok council still shipped without Fable’s vote — see [`STATUS.md`](./STATUS.md) §3–4.

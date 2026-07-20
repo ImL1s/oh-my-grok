@@ -30,10 +30,13 @@ Ship everything from the multi-council thread:
 
 - Full live suite matrix (ralplan/pipeline/ask/multi-worker ULW) on clean host
 - Native sessionId / `grok --resume` continuity for ralph
-- Live spawn-deny host oracle canary
+- Claude/Fable free audit re-run (seat BLOCKED 2026-07-20 — see `docs/research/omc-parity-council/STATUS.md`)
+- Optional dual-review (Codex+Fable) of post-P0 product commits
 
-## Success
+## Success (achieved same day)
 
-- `pytest -q -m 'not live'` green
+- `pytest -q -m 'not live'` green (301+)
 - Negation / stub / rc fail-closed unit-proven
+- live canary + live_suite --quick/--full OK (evidence under `docs/research/live/`)
 - Commits on main
+- Docs status pack: `docs/research/omc-parity-council/{README,STATUS}.md`

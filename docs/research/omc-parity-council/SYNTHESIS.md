@@ -2,8 +2,14 @@
 
 **date_utc:** 2026-07-20  
 **roster:** 7 Grok-native subagents + **Codex free audit** + Fable BLOCKED + spawn-retry code review  
-**repo:** oh-my-grok 0.2.5 · HEAD ~`60d0882` + spawn fail-closed `8f3bef4` + uncommitted spawn-retry UX  
-**detail reports:** `01`–`07`, `08-codex.md`, `09-fable.md` (BLOCKED), `code-review-spawn-retry.md`
+**repo:** oh-my-grok 0.2.5+ (post-council P0 shipped on `main`; see [`STATUS.md`](./STATUS.md))  
+**detail reports:** `01`–`07`, `08-codex.md`, `09-fable.md` (BLOCKED), `code-review-spawn-retry.md`  
+**Index:** [`README.md`](./README.md) · **Done/not-done:** [`STATUS.md`](./STATUS.md) · **Live verify:** [`../live/verification-2026-07-20.md`](../live/verification-2026-07-20.md)
+
+### Post-ship note (same day)
+
+Codex P0 **false-green** items for dual/ralplan + spawn RETRY + ULW auto-integrate + L-DUAL semantic + canary capability path were **implemented and live-verified** after this synthesis was first written.  
+**Claude/Fable free audit is still BLOCKED** — do not claim multi-external consensus.
 
 ---
 
@@ -68,7 +74,7 @@
 | Persistence (ralph) | CLI max_iter + pack | **HAVE** | ≠ chat Stop pin |
 | Plan consensus (ralplan) | CLI FSM | **HAVE** / live **MISSING** | 無 L-RALPLAN |
 | Full auto (autopilot) | pipeline composition | **PARTIAL** | 無 L-PIPELINE |
-| Dual review | sequential interim | **PARTIAL → P0 broken gate (Codex)** | 可假綠 APPROVE；不 stamp verified 仍毒害 pipeline |
+| Dual review | sequential interim | **PARTIAL → P0 patched (strict verdict)** | 修後：否定/非 terminal/rc≠0 不可 APPROVE；仍 interim sequential |
 | Ask advisors | `omg ask` | **HAVE** | human broker only |
 | Team / tmux | — | **OUT_OF_SCOPE** | Option B |
 | Stop pin | passive stop.py | **NEVER** | host only PreToolUse blocks |
