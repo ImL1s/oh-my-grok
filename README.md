@@ -125,6 +125,7 @@ When the task is non-trivial, prefer this spine (OMX-style, Grok-native):
 2. omg ralplan "…"             # plan consensus only — no implementation
 3. omg ulw / omg ralph / omg autopilot …   # execute
 4. omg accept --yes            # only path that may set verified (CLI stamp + process token)
+   # or: omg autopilot complete --run RUN  (same-process accept+verify)
 ```
 
 | If you need… | Use |
@@ -137,6 +138,13 @@ When the task is non-trivial, prefer this spine (OMX-style, Grok-native):
 | Abort | `omg cancel` |
 
 **QA clean ≠ verified.** UltraQA (`omg qa`) can go green without promoting the run.
+
+**UltraQA / accept tips (v0.3.2+):**
+
+- Freeze only **allowlisted** commands (`python3 -m pytest …`, project `.py`, `true`/`false`). Illegal basenames (`grep`, `test`, `omg`, `python -c`) fail **at freeze** with a tip — not only at run.
+- Quote pytest markers: `python3 -m pytest -q -m 'not live'` (unquoted `-m not live` is auto-coalesced when possible).
+- After clean UltraQA, **`prd.json` is optional** — `omg accept` / `omg autopilot complete` materialize it from clean scenarios (never overwrites an existing operator PRD).
+- If `omg accept` already set `verified`, `omg autopilot complete` **short-circuits** (syncs `autopilot_phase`, no second full acceptance).
 
 ---
 

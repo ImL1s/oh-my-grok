@@ -33,6 +33,18 @@ plus common hijack keys (`PYTHONSTARTUP`, `PYTHONPATH`, `GIT_DIR` /
 **Residual:** approved runners still execute repo code; not an OS sandbox.
 Operator weaken: `OMG_ACCEPT_KEEP_PYTHONPATH=1` re-adds PYTHONPATH after scrub.
 
+**UltraQA freeze (v0.3.2+):** `omg qa freeze` applies the **same** command
+policy as acceptance (fail-closed at freeze). Tips point operators at
+`python3 -m pytest` / project `.py` — this does **not** expand the allowlist.
+Unquoted pytest marker tokens (`-m not live`) may be coalesced to a single
+markexpr for UX; coalescing is not a policy bypass.
+
+**Auto PRD / complete short-circuit (v0.3.2+):** missing `prd.json` may be
+materialized from **CLI-stamped clean** UltraQA only (never overwrites an
+existing operator PRD). `omg autopilot complete` may short-circuit when the
+run is already disk-`verified` (phase sync only) — it does **not** create
+`verified` without a prior CLI accept path.
+
 **Goal verify multi-process residual:** `omg goal verify` may accept a disk
 CLI acceptance stamp (`require_token=False`) when the linked run is already
 disk-`verified`. That is weaker than same-process `set_verified` tokens —
