@@ -20,12 +20,12 @@ ln -sf "$(pwd)/bin/omg" ~/.local/bin/omg
 ## Tests
 
 ```bash
-# Hermetic unit/integration (default gate)
+# Hermetic (default gate + local parity with CI)
 python -m pytest -q -m "not live"
+OMG_E2E=1 OMG_SMOKE_STRICT=0 ./scripts/smoke.sh
 
 # Optional live gates (needs grok auth + quota)
-./scripts/smoke.sh
-# ./scripts/live_suite.sh   # heavy
+# ./scripts/live_suite.sh --quick
 ```
 
 ## Rules of the road
