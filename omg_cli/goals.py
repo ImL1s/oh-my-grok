@@ -886,14 +886,12 @@ def verify_goal(root: Path | str, goal_id: str, *, run_id: str | None = None) ->
             if trusted or cli_stamped:
                 verified_run = rid
                 break
-            raise GoalError(
-                "linked run shows verified on disk but lacks CLI acceptance "
-                "stamp (re-run omg accept, or ensure acceptance.result.json "
-                "is CLI-written with matching manifest sha)"
-            )
+            # Disk-verified without stamp: try next linked run (do not abort list)
+            continue
         if verified_run is None:
             raise GoalError(
-                "goal cannot verify before a linked run is CLI-verified"
+                "goal cannot verify before a linked run is CLI-verified "
+                "(need disk verified + CLI acceptance stamp or same-process token)"
             )
         prev = events[-1]["event_hash"]
         seq = events[-1]["sequence"] + 1

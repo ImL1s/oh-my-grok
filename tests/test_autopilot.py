@@ -147,6 +147,25 @@ def test_complete_happy_path_same_process_acceptance(tmp_path: Path) -> None:
     assert run.get("status") == "verified"
 
 
+def test_blocked_to_qa_still_requires_review(tmp_path: Path) -> None:
+    """Destination gates apply even when recovering from blocked."""
+    st = start_autopilot(tmp_path, "blocked qa", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "blocked", reason="ops")
+    with pytest.raises(AutopilotError, match="structured_review"):
+        transition(tmp_path, rid, "qa")
+
+
+def test_blocked_to_implement_requires_consensus(tmp_path: Path) -> None:
+    st = start_autopilot(tmp_path, "blocked impl", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "blocked", reason="wait")
+    with pytest.raises(AutopilotError, match="consensus"):
+        transition(tmp_path, rid, "implement")
+
+
 def test_rework_invalidates_review_stamp(tmp_path: Path) -> None:
     """After rework, a previous clean structured_review must not open QA."""
     from omg_cli.autopilot import stage_review_is_clean

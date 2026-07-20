@@ -329,12 +329,16 @@ def test_ownership_seal_join_integrate_closed_path(tmp_path):
         ],
     )
 
-    # Missing envelopes: join incomplete AND integrate not complete
+    # Missing envelopes: join incomplete; non-dry integrate must raise
     j0 = join_worker_results(tmp_path, rid)
     assert j0["complete"] is False
     integ_missing = integrate_results(tmp_path, rid, dry_run=True)
     assert integ_missing["status"] in {"missing", "failed"}
     assert integ_missing["status"] != "ok"
+    from omg_cli.integrate import IntegrateError
+
+    with pytest.raises(IntegrateError, match="ownership join incomplete"):
+        integrate_results(tmp_path, rid)
 
     for tid, fname in (("t1", "a.py"), ("t2", "b.py")):
         wt = prepare_task(tmp_path, rid, tid)

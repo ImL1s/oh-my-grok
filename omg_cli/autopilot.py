@@ -243,21 +243,23 @@ def transition(
         src = str(state.get("phase") or "init")
         assert_legal_transition(src, next_phase)
 
-        # Gate predicates — compose completed stage primitives (CLI stamps)
-        if next_phase == "ralplan" and src == "interview":
-            if not (evidence or {}).get("interview_complete"):
+        # Gate by DESTINATION phase (not only specific src) so blocked→qa
+        # / blocked→implement cannot skip quality or consensus gates.
+        if next_phase == "ralplan":
+            # First entry from interview needs evidence; recovery from later
+            # phases may re-enter ralplan with replan reason.
+            if src == "interview" and not (evidence or {}).get("interview_complete"):
                 raise AutopilotError("no interview gate → no ralplan handoff")
-        if next_phase == "implement" and src == "ralplan":
+        if next_phase == "implement":
             if not (evidence or {}).get("consensus"):
                 raise AutopilotError("no consensus → no implementation")
-        if next_phase == "qa" and src == "review":
-            # Prefer staged structured_review; bare evidence_json cannot satisfy.
+        if next_phase == "qa":
             if not stage_review_is_clean(root, run_id):
                 raise AutopilotError(
                     "no clean review → no QA "
                     "(requires CLI-stamped stages/structured_review.json clean=true)"
                 )
-        if next_phase == "acceptance" and src == "qa":
+        if next_phase == "acceptance":
             if not stage_qa_is_clean(root, run_id):
                 raise AutopilotError(
                     "no clean QA → no acceptance "

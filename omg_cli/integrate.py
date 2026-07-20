@@ -1009,6 +1009,17 @@ def integrate_results(
         from omg_cli.workers import join_worker_results, ownership_manifest_path
 
         own_path = ownership_manifest_path(root, run_id)
+        # Strict-v2 ULW requires ownership manifest + complete join (not dry-run only).
+        if (
+            schema is RunSchema.STRICT_V2
+            and str(run.get("mode") or "") == "ulw"
+            and not dry_run
+            and not own_path.is_file()
+        ):
+            raise IntegrateError(
+                "strict-v2 ulw integrate requires ownership manifest "
+                f"at {own_path}; run omg worker own first"
+            )
         if own_path.is_file() and not dry_run:
             joined = join_worker_results(root, run_id)
             if not joined.get("complete"):

@@ -279,6 +279,11 @@ def run_qa_cycle(
         state["clean"] = True
         state["verified"] = False
         state["blocker"] = None
+        # Successful retest clears rework/replan invalidation so stage_qa_is_clean
+        # can re-open acceptance without a full re-freeze.
+        state.pop("invalidated", None)
+        state.pop("invalidated_reason", None)
+        state.pop("invalidated_at", None)
         _save(root, run_id, state)
         return state
 
