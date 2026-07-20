@@ -36,8 +36,9 @@ OMG does **not** replace Grok Build.
 | **`omg` CLI** | Run state, evidence stamps, acceptance, integrate, verified |
 | **`.omg/`** | Plans, artifacts, run state (CLI is single-writer for `passes` / `verified`) |
 
-Workers fan out only via Grok **`spawn_subagent`** (depth 1). No Rust fork of grok-build. **No tmux in v1.**  
-**Scope honesty:** [core purpose parity](docs/research/core-parity-matrix-2026-07-20.md) — not a full OMC surface (HUD / wiki / Stop hard-pin / tmux team).
+Workers fan out only via Grok **`spawn_subagent`** (depth 1). No Rust fork of grok-build.  
+**tmux:** only as a **host session shell** for `omg --madmax` (OMC-style full-open launch) — **not** an OMC multi-CLI team control plane.  
+**Scope honesty:** [core purpose parity](docs/research/core-parity-matrix-2026-07-20.md) — not a full OMC surface (HUD / wiki / Stop hard-pin / tmux team workers).
 
 | Component | Role |
 |-----------|------|
@@ -212,6 +213,20 @@ omg {setup,doctor,state,cancel,interview,goal,accept,integrate,worker,
 | `omg accept` | Freeze PRD + run; only path that may `verified` |
 | `omg ask` | Trusted external advisor broker (not a worker) |
 | `omg pipeline` / `dual-review` | Scripted pipeline · interim critic→verifier |
+| `omg --madmax` | **Host launcher** (not a mode FSM): full-open Grok in a **new tmux session** each launch |
+
+### Host launcher: `omg --madmax`
+
+Break-glass interactive Grok with `--always-approve` + `--permission-mode bypassPermissions`.  
+Requires `grok` + **tmux** (hard fail if missing outside tmux). Continuity: `grok --continue` / `--resume`, not attach-old-session.
+
+```bash
+omg --madmax                         # new tmux session + attach
+omg --madmax "fix the failing tests"
+# already inside $TMUX → grok in current pane
+# headless (-p / --single / --prompt-file) → no tmux (stdout preserved)
+# Root --yolo is mode elevation only — not a madmax alias
+```
 
 ### Shared flags
 

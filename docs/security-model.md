@@ -92,12 +92,26 @@ session `hook_execution` runs. Soft-gate effectiveness requires:
 This remains **fail-open** on hook timeout/crash. Primary isolation is still
 `capability_mode` without Execute on implementers.
 
+## Host launcher: `omg --madmax` (break-glass)
+
+**Operator-triggered** interactive Grok with full-open host permissions:
+
+- Injects `--always-approve` + `--permission-mode bypassPermissions` (exactly once).
+- Interactive + outside `$TMUX`: **requires tmux** — creates a **new** session each launch (`omg-<dir>-<digest>-<timestamp>`), then attaches. Missing tmux → exit 1 (no silent direct demotion).
+- Inside tmux / headless (`-p`, `--single`, …): runs `grok` in-process (no nested session).
+- Does **not** write `.omg/state`, does **not** touch `verified` / acceptance / ask deny lists.
+- Root `--yolo` remains **mode-subcommand elevation only** — not a madmax alias.
+- Detached full-open sessions keep running under tmux until you `tmux kill-session -t omg-…`.
+
+This is intentional break-glass, not a sandbox. Document and name-prefix (`omg-`) are the mitigations — not PreToolUse.
+
 ## Do not claim
 
 - “Workers cannot run external CLIs because PreToolUse blocks them” **without** stating fail-open residual and capability_mode primary.
 - “Acceptance allowlist is a sandbox.”
 - “`--permission-mode plan` is a hard read-only lock for all sessions.”
 - “Live canary pass proves hard isolation forever” (re-run after Grok upgrades).
+- “`omg --madmax` is sandboxed” or “madmax is a mode FSM / sets verified.”
 
 ## Related
 

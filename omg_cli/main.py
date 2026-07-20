@@ -888,8 +888,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="omg",
-        description="oh-my-grok CLI — setup, doctor, state, and mode launchers",
+        description=(
+            "oh-my-grok CLI — setup, doctor, state, and mode launchers. "
+            "Host launch: omg --madmax (full-open Grok in tmux)."
+        ),
         parents=[common],
+        epilog="Also: omg --madmax [grok args…]  — full-open host launch in tmux",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--version",
@@ -1678,9 +1683,51 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Keep in sync with build_parser() subcommands (madmax intercept policy).
+KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
+    {
+        "setup",
+        "doctor",
+        "state",
+        "cancel",
+        "interview",
+        "goal",
+        "accept",
+        "integrate",
+        "worker",
+        "review",
+        "qa",
+        "autopilot",
+        "ulw",
+        "ralph",
+        "ralplan",
+        "ask",
+        "pipeline",
+        "dual-review",
+    }
+)
+
+
 def main(argv: list[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    # Host launcher: only when --madmax present AND no known subcommand before it.
+    from omg_cli.madmax import has_madmax_flag, run_madmax
+
+    if has_madmax_flag(raw):
+        madmax_idx = raw.index("--madmax")
+        prior = raw[:madmax_idx]
+        for tok in prior:
+            if tok in KNOWN_SUBCOMMANDS:
+                print(
+                    f"omg: --madmax is a host launcher and cannot be combined "
+                    f"with subcommand {tok!r}",
+                    file=sys.stderr,
+                )
+                return 2
+        return int(run_madmax(_project_root(), raw))
+
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw)
     if not getattr(args, "command", None):
         parser.print_help()
         return 0
