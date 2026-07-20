@@ -45,7 +45,7 @@ Workers fan out only via Grok **`spawn_subagent`** (depth 1). No Rust fork of gr
 | **Grok plugin** | `skills/omg-*`, `agents/omg-*`, hooks (event spool + PreToolUse soft-guard) |
 | **`omg` CLI** | `setup` / `doctor` / modes / `accept` / `integrate` / `goal` / `interview` / `autopilot`… |
 
-Version: **0.2.5** · License: MIT
+Version: **0.2.6** · License: MIT
 
 ---
 
@@ -68,7 +68,7 @@ curl -fsSL https://x.ai/cli/install.sh | bash
 git clone https://github.com/ImL1s/oh-my-grok.git ~/.local/share/oh-my-grok
 cd ~/.local/share/oh-my-grok
 ./scripts/install-plugin.sh
-# optional pin: git checkout v0.2.5
+# optional pin: git checkout v0.2.6
 
 # 2) omg on PATH (not on PyPI yet; install script also tries this)
 ln -sf "$(pwd)/bin/omg" ~/.local/bin/omg   # ensure ~/.local/bin is on PATH
@@ -88,7 +88,7 @@ omg doctor
 
 ```bash
 grok plugin install ImL1s/oh-my-grok --trust
-# better pin: grok plugin install ImL1s/oh-my-grok@v0.2.5 --trust
+# better pin: grok plugin install ImL1s/oh-my-grok@v0.2.6 --trust
 ```
 
 This installs skills/agents from GitHub. It does **not** put `omg` on PATH and does **not** guarantee the global soft-gate. Prefer **Full install** unless you only need in-session skills.
@@ -368,6 +368,7 @@ Full dual-review ship bar (C1–C9) is complete. Recent lines:
 
 - **v0.2.x:** acceptance policy, run mutex, ULW integrate, ralplan FSM, worker prepare/seal, pipeline order, live suite.
 - **2026-07-20 core-purpose parity:** evidence stamps, session lease, interview, goal ledger + repair, ULW ownership/join, hash-bound review, UltraQA, strict autopilot; destination gates; CLI acceptance authority for `verified`.
+- **v0.2.6:** `omg --madmax` full-open host launch in tmux; OSS install dual-track + release protocol; CI smoke.
 
 Details live in git history and `docs/research/`.
 

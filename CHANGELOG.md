@@ -13,6 +13,22 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Optional PyPI/`pipx` CLI track (deferred).
 - Optional PR to xAI plugin-marketplace (sha-pinned).
 
+## [0.2.6] - 2026-07-20
+
+### Added
+- **`omg --madmax`**: OMC-style break-glass host launcher — full-open Grok (`--always-approve` + `--permission-mode bypassPermissions`) in a **new tmux session** each launch (timestamp + nonce).
+- Guardrails: subcommand before `--madmax` → exit 2; `--safe` / non-bypass `--permission-mode` → exit 2; root `--yolo` is not a madmax alias (stripped with note).
+- Login-shell pane command + `tmux new-session -e` env forward (no secrets in pane start-command text); best-effort DA1 drain.
+- Docs: dual-track install, security-model Host launcher section, `docs/RELEASE.md`, CI smoke/e2e.
+
+### Changed
+- Hermetic CI runs `scripts/smoke.sh` in addition to pytest.
+- Session naming / attach policy: never reattach old madmax sessions (continuity via `grok --continue` / `--resume`).
+
+### Security
+- Documented madmax as operator break-glass (not a sandbox); detached sessions remain until `tmux kill-session`.
+- Env forward via tmux `-e` (not shell `export` in pane argv).
+
 ## [0.2.5] - 2026-07-20
 
 ### Added
