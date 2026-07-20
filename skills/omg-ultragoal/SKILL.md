@@ -28,10 +28,10 @@ Session continuity:
 3. Optional outer “don’t stop until verified” on a **linked run**: `omg ralph "…"`.
 
 **R2 three pillars (research):** OMC uses Stop veto + boulder state. OMG cannot
-Stop-block the chat. Use (a) re-invoke + `omg goal status`, (b) louder status in
-session context, (c) later `omg resume` / RESUME.md — **deferred** (see
-`docs/research/omc-omx-mechanism-research-pointer.md`). Do **not** invent host
-`/goal` or claim Stop pins the session.
+Stop-block the chat. Use (a) **`omg resume`** smart routing, (b) SessionStart
+**`.omg/state/RESUME.md`** inject, (c) louder pack in resume/hud output. For
+goals specifically also re-invoke this skill + `omg goal status`. Do **not**
+invent host `/goal` or claim Stop pins the session.
 
 **Authority split**
 

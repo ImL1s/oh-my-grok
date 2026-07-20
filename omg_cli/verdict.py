@@ -84,20 +84,117 @@ def is_stub_artifact_text(text: str) -> bool:
     return any(m in low for m in _STUB_MARKERS)
 
 
-def _json_verdict(data: dict) -> str | None:
+def _normalize_verdict_token(val: str) -> str | None:
+    v = val.strip().upper().replace(" ", "_").replace("-", "_")
+    if v in ("APPROVE", "APPROVED"):
+        return "APPROVE"
+    if v in ("REQUEST_CHANGES", "REQUESTCHANGES"):
+        return "REQUEST_CHANGES"
+    if v == "FAILED":
+        return "FAILED"
+    if v in ("ITERATE", "READY"):
+        return v
+    return None
+
+
+def _json_verdict(
+    data: dict,
+    *,
+    expected_run_id: str | None = None,
+) -> str | None:
+    """Extract verdict from a JSON object.
+
+    Research R3 structured schema: when ``schema_version`` is 2 (or ``run_id``
+    is present with schema intent), require ``run_id`` match if
+    ``expected_run_id`` is provided. Mismatch → not an acceptance signal
+    (returns None so caller can fall through fail-closed).
+    """
+    schema_ver = data.get("schema_version")
+    strict = schema_ver in (2, "2", 2.0) or (
+        "run_id" in data and "verdict" in data and schema_ver is not None
+    )
+    if expected_run_id is not None and (strict or "run_id" in data):
+        rid = data.get("run_id")
+        if not isinstance(rid, str) or rid.strip() != expected_run_id.strip():
+            # Wrong run — never APPROVE from this document
+            if strict or data.get("run_id") is not None:
+                # Explicit mismatch: treat as FAILED for strict docs only when
+                # verdict claimed APPROVE; otherwise None → UNKNOWN path.
+                claimed = data.get("verdict")
+                if isinstance(claimed, str) and _normalize_verdict_token(claimed) == "APPROVE":
+                    return "FAILED"
+                return None
+
+    if data.get("is_stub") is True:
+        return None
+
     for key in ("verdict", "decision", "status"):
         val = data.get(key)
         if isinstance(val, str):
-            v = val.strip().upper().replace(" ", "_").replace("-", "_")
+            v = _normalize_verdict_token(val)
             if v in ("APPROVE", "REQUEST_CHANGES", "FAILED"):
                 return v
-            if v == "REQUESTCHANGES":
-                return "REQUEST_CHANGES"
     if data.get("approve") is True:
+        # Strict schema forbids boolean approve alone when schema_version=2
+        if schema_ver in (2, "2", 2.0):
+            return None
         return "APPROVE"
     nested = data.get("result") or data.get("output")
     if isinstance(nested, dict):
-        return _json_verdict(nested)
+        return _json_verdict(nested, expected_run_id=expected_run_id)
+    return None
+
+
+def _extract_json_objects(text: str) -> list[dict]:
+    """Best-effort: top-level JSON object(s) from raw or fenced text."""
+    if not text or not text.strip():
+        return []
+    candidates: list[str] = []
+    stripped = text.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        candidates.append(stripped)
+    # fenced json blocks
+    for m in re.finditer(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE):
+        candidates.append(m.group(1).strip())
+    # first balanced-looking object (simple scan)
+    start = text.find("{")
+    if start >= 0 and stripped not in candidates:
+        depth = 0
+        for i, ch in enumerate(text[start:], start):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(text[start : i + 1])
+                    break
+    out: list[dict] = []
+    for c in candidates:
+        try:
+            data = json.loads(c)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            out.append(data)
+        elif isinstance(data, list):
+            out.extend(x for x in data if isinstance(x, dict))
+    return out
+
+
+def parse_schema_v2_verdict(
+    text: str,
+    *,
+    expected_run_id: str | None = None,
+) -> str | None:
+    """Parse research structured verdict documents; None if not schema-v2 shaped."""
+    for data in _extract_json_objects(text):
+        if data.get("schema_version") not in (2, "2", 2.0):
+            continue
+        jv = _json_verdict(data, expected_run_id=expected_run_id)
+        if jv is not None:
+            return jv
+        # schema v2 present but unusable → fail closed for this doc
+        return "UNKNOWN"
     return None
 
 
@@ -121,22 +218,31 @@ def prose_has_terminal_approve(text: str) -> bool:
     return True
 
 
-def parse_verdict(text: str) -> str:
-    """Return APPROVE | REQUEST_CHANGES | FAILED | UNKNOWN."""
+def parse_verdict(
+    text: str,
+    *,
+    expected_run_id: str | None = None,
+) -> str:
+    """Return APPROVE | REQUEST_CHANGES | FAILED | UNKNOWN.
+
+    Prefer structured JSON (including schema_version=2 + run_id). Prose is
+    legacy fallback with fence/negation hardening.
+    """
     if not text or not text.strip():
         return "UNKNOWN"
 
-    stripped = text.lstrip()
-    if stripped.startswith("{") or stripped.startswith("["):
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            data = None
-        if isinstance(data, dict):
-            jv = _json_verdict(data)
-            if jv is not None:
-                return jv
+    # 1) Strict schema v2 documents first when present
+    sv2 = parse_schema_v2_verdict(text, expected_run_id=expected_run_id)
+    if sv2 is not None and sv2 != "UNKNOWN":
+        return sv2
 
+    # 2) Any JSON object (full file or embedded)
+    for data in _extract_json_objects(text):
+        jv = _json_verdict(data, expected_run_id=expected_run_id)
+        if jv is not None:
+            return jv
+
+    # 3) Prose fail-closed path (ignore fenced examples / negations)
     has_failed = bool(_FAILED_RE.search(text))
     has_rc = bool(_REQUEST_CHANGES_RE.search(text))
     has_approve = prose_has_terminal_approve(text)
@@ -147,14 +253,23 @@ def parse_verdict(text: str) -> str:
         return "REQUEST_CHANGES"
     if has_approve:
         return "APPROVE"
+    if sv2 == "UNKNOWN":
+        return "UNKNOWN"
     return "UNKNOWN"
 
 
-def parse_verdict_file(path: Path) -> str:
+def parse_verdict_file(
+    path: Path,
+    *,
+    expected_run_id: str | None = None,
+) -> str:
     if not path.is_file():
         return "UNKNOWN"
     try:
-        return parse_verdict(path.read_text(encoding="utf-8"))
+        return parse_verdict(
+            path.read_text(encoding="utf-8"),
+            expected_run_id=expected_run_id,
+        )
     except OSError:
         return "UNKNOWN"
 
@@ -213,6 +328,7 @@ __all__ = [
     "is_stub_artifact_text",
     "parse_verdict",
     "parse_verdict_file",
+    "parse_schema_v2_verdict",
     "parse_structured_verdict",
     "prose_has_terminal_approve",
 ]

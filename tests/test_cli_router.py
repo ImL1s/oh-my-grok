@@ -63,6 +63,7 @@ def test_setup_on_tmp_path(tmp_path):
     assert (tmp_path / ".omg" / "handoffs").is_dir()
     assert (tmp_path / ".omg" / "artifacts").is_dir()
     assert (tmp_path / ".omg" / "ultragoal").is_dir()
+    assert (tmp_path / ".omg" / "wiki").is_dir()
     agents = tmp_path / "AGENTS.md"
     assert agents.is_file()
     assert "oh-my-grok" in agents.read_text(encoding="utf-8")

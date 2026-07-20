@@ -197,14 +197,17 @@ export OMG_ALLOW_EXTERNAL_CLI=1   # process-env only; never parse from command t
 ## Commands
 
 ```text
-omg {setup,doctor,state,cancel,interview,goal,accept,integrate,worker,
-     review,qa,autopilot,ulw,ralph,ralplan,ask,pipeline,dual-review} ...
+omg {setup,doctor,state,cancel,resume,wiki,hud,lsp,interview,goal,accept,
+     integrate,worker,review,qa,autopilot,ulw,ralph,ralplan,ask,pipeline,
+     dual-review} ...
 ```
 
 | Command | Purpose |
 |---------|---------|
 | `omg setup` / `omg doctor` | Scaffold `.omg/` · health (+ `--strict`) |
 | `omg state` / `omg cancel` | Active run · process-group cancel |
+| `omg resume` | Smart resume routing + `.omg/state/RESUME.md` (SessionStart inject) |
+| `omg wiki` / `hud` / `lsp` | Local markdown wiki · statusline pack · optional language-tool probe |
 | `omg interview …` | Deep-interview requirements gate |
 | `omg goal …` | Hash-chained ultragoal ledger + tail repair (**no host `/goal`** on Grok — repo ledger only) |
 | `omg ulw` / `ralph` / `ralplan` | Parallel / persist / plan-only modes |
@@ -302,6 +305,8 @@ User / Grok session  →  skills + agents
 .omg/state/runs/<run-id>/     CLI authority
 .omg/artifacts/               proposals + ULW envelopes
 .omg/ultragoal/               goal ledger (when used)
+.omg/wiki/                    project markdown wiki
+.omg/state/RESUME.md          one-shot continuity pack (SessionStart / omg resume)
 ```
 
 ---
@@ -310,13 +315,14 @@ User / Grok session  →  skills + agents
 
 | Skill | Use when |
 |-------|----------|
-| `omg-using` | Bootstrap / which mode |
+| `omg-using` | Bootstrap / which mode (+ **read RESUME.md** first) |
 | `omg-ultrawork` | Parallel fan-out |
 | `omg-ralph` | Persist until verified |
 | `omg-ralplan` | Plan consensus |
-| `omg-deep-interview` | Requirements gate |
+| `omg-deep-interview` | Requirements gate (Socratic CLI) |
 | `omg-ultragoal` | **In-session** multi-story goal ledger (`omg goal *`; no host `/goal`) |
-| `omg-ultraqa` | Bounded QA loop |
+| `omg-ultraqa` | Bounded QA repair loop (**QA ≠ verified**) |
+| `omg-wiki` / `omg-hud` / `omg-lsp` | Knowledge · statusline · honest LSP probes |
 | `omg-autopilot` | **In-session** end-to-end playbook (CLI phase machine + spawn) |
 | `omg-pipeline` / `omg-dual-review` / `omg-ask` / `omg-cancel` | Pipeline, review, advisors, abort |
 

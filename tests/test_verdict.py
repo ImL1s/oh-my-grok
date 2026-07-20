@@ -107,3 +107,39 @@ def test_exit_code_override_law_documented():
     # Regression lock for dual_review apply path (research Exit Code Override Law)
     assert apply_stage_exit_codes("APPROVE", critic_rc=0, verifier_rc=1) == "FAILED"
     assert apply_stage_exit_codes("APPROVE", critic_rc=2, verifier_rc=0) == "FAILED"
+
+
+def test_schema_v2_run_id_match_and_mismatch():
+    good = (
+        '{"schema_version": 2, "run_id": "run-abc", "stage": "verifier", '
+        '"verdict": "APPROVE", "is_stub": false, "evidence": "tests green"}'
+    )
+    assert parse_verdict(good, expected_run_id="run-abc") == "APPROVE"
+    # Research spelling APPROVED normalizes
+    approved = (
+        '{"schema_version": 2, "run_id": "run-abc", "verdict": "APPROVED", '
+        '"is_stub": false}'
+    )
+    assert parse_verdict(approved, expected_run_id="run-abc") == "APPROVE"
+    # Mismatch must not false-green
+    bad = (
+        '{"schema_version": 2, "run_id": "other", "verdict": "APPROVE", '
+        '"is_stub": false}'
+    )
+    assert parse_verdict(bad, expected_run_id="run-abc") != "APPROVE"
+    # is_stub blocks
+    stub = (
+        '{"schema_version": 2, "run_id": "run-abc", "verdict": "APPROVE", '
+        '"is_stub": true}'
+    )
+    assert parse_verdict(stub, expected_run_id="run-abc") != "APPROVE"
+
+
+def test_schema_v2_in_fenced_json():
+    text = (
+        "Here is my decision:\n"
+        "```json\n"
+        '{"schema_version": 2, "run_id": "r1", "verdict": "REQUEST_CHANGES"}\n'
+        "```\n"
+    )
+    assert parse_verdict(text, expected_run_id="r1") == "REQUEST_CHANGES"

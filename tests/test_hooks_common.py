@@ -24,7 +24,16 @@ def test_ensure_and_append(tmp_path, monkeypatch):
 def test_ensure_omg_dirs_creates_subdirs(tmp_path, monkeypatch):
     monkeypatch.setenv("GROK_WORKSPACE_ROOT", str(tmp_path))
     root = ensure_omg_dirs()
-    for sub in ("state", "state/runs", "plans", "research", "handoffs", "artifacts", "ultragoal"):
+    for sub in (
+        "state",
+        "state/runs",
+        "plans",
+        "research",
+        "handoffs",
+        "artifacts",
+        "ultragoal",
+        "wiki",
+    ):
         assert (root / ".omg" / sub).is_dir(), sub
 
 

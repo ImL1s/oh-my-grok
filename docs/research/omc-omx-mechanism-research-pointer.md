@@ -8,18 +8,22 @@ Summary themes: R1 feature inventory (skills/agents/hooks), R2 “don’t stop u
 done” + three continuity pillars, R3 false-APPROVE (negation/fences) + exit-code
 override, R4 0.3.x roadmap (P0 safety/continuity → P1 interview/QA → P2 LSP/wiki).
 
-## OMG actions derived from R3/R4 P0
+## OMG actions (implemented)
 
 | Research | OMG action |
 |----------|------------|
-| R3 fence + expanded negation false-green | `omg_cli/verdict.py` prose harden + `tests/test_verdict.py` |
-| R3 Exit Code Override Law | Already in `apply_stage_exit_codes`; regression locked in tests |
-| R1/R4 session ultragoal | `skills/omg-ultragoal` playbook + `omg-using` route |
-| R2 resume / SessionStart / RESUME.md | **Deferred** to 0.3.x (design only here) |
-| P2 wiki / HUD / LSP | Out of scope for this plan |
+| R3 fence + expanded negation false-green | `omg_cli/verdict.py` prose harden + tests |
+| R3 Exit Code Override Law | `apply_stage_exit_codes` + dual_review |
+| R3 structured verdict schema + run_id | `schema_version: 2` + `expected_run_id` in `parse_verdict` |
+| R1/R4 session ultragoal | `skills/omg-ultragoal` |
+| R2 `omg resume` + RESUME.md + SessionStart | `omg_cli/resume.py`, `hooks/bin/session_start.py`, `omg resume` |
+| R2 louder pack | resume MD + `omg hud` |
+| P1 deep interview / ultraqa session | thick `omg-deep-interview` / `omg-ultraqa` skills (CLI already present) |
+| P2 wiki | `omg wiki` + `skills/omg-wiki` → `.omg/wiki/` |
+| P2 HUD | `omg hud` + `skills/omg-hud` |
+| P2 LSP | `omg lsp status/check` + `skills/omg-lsp` (honest: no host MCP LSP) |
 
-## Deferred (honest)
+## Still not host-feasible
 
-- `omg resume` smart routing + RESUME.md workspace inject
-- Host-equivalent of OMC Stop veto (not feasible on Grok Stop today)
-- Structured run_id JSON verdict schema beyond prose harden + existing JSON field
+- OMC-style Stop hook **veto** (`decision: block`) on Grok — Stop remains passive.
+- Full OMC MCP LSP/AST bridge (54 tools) — use Grok grep/read + optional local pyright.

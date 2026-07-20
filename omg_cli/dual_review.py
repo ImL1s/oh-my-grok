@@ -395,7 +395,8 @@ def run_dual_review(
         extra=extra,
     )
     verifier_art = stage_artifact_path(root_path, run_id, "verifier", round_n)
-    verdict = parse_verdict_file(verifier_art)
+    # Structured schema v2 can bind run_id; mismatch fails closed (research R3).
+    verdict = parse_verdict_file(verifier_art, expected_run_id=run_id)
     # Fail-closed: non-zero stage rc must never leave APPROVE (Codex P0).
     verdict = apply_stage_exit_codes(
         verdict, critic_rc=rc_c, verifier_rc=rc_v

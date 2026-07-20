@@ -19,6 +19,11 @@ def test_required_skills_exist():
         "omg-ultrawork",
         "omg-ralplan",
         "omg-ultragoal",
+        "omg-deep-interview",
+        "omg-ultraqa",
+        "omg-wiki",
+        "omg-hud",
+        "omg-lsp",
     ):
         assert (SKILLS / name / "SKILL.md").is_file(), name
 
@@ -86,3 +91,22 @@ def test_omg_using_routes_ultragoal():
     assert "omg-ultragoal" in text
     low = text.lower()
     assert "ultragoal" in low or "omg goal" in low
+
+
+def test_omg_using_routes_resume_and_lifestyle():
+    text = _skill("omg-using")
+    low = text.lower()
+    assert "resume.md" in low
+    assert "omg resume" in low
+    assert "omg-wiki" in text or "omg wiki" in low
+    assert "omg-ultraqa" in text or "ultraqa" in low
+    assert "omg-deep-interview" in text or "deep interview" in low
+
+
+def test_omg_ultraqa_and_interview_not_stubs():
+    uq = _skill("omg-ultraqa")
+    di = _skill("omg-deep-interview")
+    assert uq.count("\n") >= 80
+    assert di.count("\n") >= 80
+    assert "QA clean" in uq or "verified" in uq.lower()
+    assert "pressure-pass" in di or "pressure pass" in di.lower()

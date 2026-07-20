@@ -19,13 +19,20 @@ Route users and sessions into the correct oh-my-grok workflow. This skill does *
 - Use Grok tool names: read_file, search_replace, run_terminal_command, spawn_subagent, grep, list_dir.
 - Write-heavy work: isolation worktree + background true; wait with wait_commands_or_subagents / get_command_or_subagent_output.
 - State: only omg CLI is authoritative for passes/verified; you may write proposals under .omg/artifacts/.
+- **RESUME.md first:** After session start / user says continue, `read_file` `.omg/state/RESUME.md` if present. If `resumable: true`, do **not** invent a new run — follow printed commands or run `omg resume`, then `omg resume --clear` after successfully continuing.
 
 ## When to load which skill
 
 | Trigger keywords | Load skill | Mode |
 |---|---|---|
 | `autopilot`, `auto pilot`, `full auto`, `autonomous`, `build me`, `create me`, `make me`, `handle it all`, end-to-end lifecycle | `omg-autopilot` | Session playbook driving CLI phases interview→…→verified |
+| `resume`, `continue run`, `RESUME.md`, mid-session continuity | `omg-using` + **`omg resume`** | Read RESUME.md; CLI smart route |
 | `ultragoal`, `goal ledger`, `multi-story durable`, `resume goal`, `omg goal` (multi-story) | `omg-ultragoal` | Durable multi-story ledger; CLI `omg goal *`; no host `/goal` |
+| `deep interview`, `clarify requirements`, `ambiguity` | `omg-deep-interview` | Socratic CLI interview gate |
+| `ultraqa`, `QA loop`, `fix failing tests`, retest | `omg-ultraqa` | Bounded QA freeze→run→repair |
+| `wiki`, project memory, capture decision | `omg-wiki` | `.omg/wiki` markdown knowledge |
+| `hud`, statusline | `omg-hud` | One-line `omg hud` |
+| `lsp`, go-to-definition, symbols | `omg-lsp` | Honest probes; prefer grep/read_file |
 | `ulw`, `ultrawork`, `parallel`, `fan-out` | `omg-ultrawork` | Parallel decompose → spawn → integrate → verify |
 | `ralph`, `don't stop`, `keep going until done`, `persist until verified` | `omg-ralph` | One-story persistence iteration; outer CLI owns loop |
 | `ralplan`, `plan consensus`, `critic plan`, `steelman plan` | `omg-ralplan` | Plan → critic → revise → verifier (no implementation) |
@@ -42,10 +49,14 @@ On Grok Build, **only `PreToolUse` can block**; `Stop` is passive (observe/log o
 | Want | Do this |
 |------|---------|
 | Don’t stop until verified | **`omg ralph "goal"`** (CLI outer loop owns max-iter) |
+| Continue after chat ended | **`omg resume`** (+ read `.omg/state/RESUME.md`) then mode CLI |
 | Full phase coordinator **in-session** | **`omg-autopilot` skill** + `omg autopilot *` CLI (re-invoke / “continue” if turn ends) |
 | Durable multi-story ledger (no host `/goal`) | **`omg-ultragoal` skill** + `omg goal *` (status → next story → link-run → verify) |
+| Clarify vague requirements | **`omg-deep-interview`** / `omg interview *` |
+| Bounded test-fix loop | **`omg-ultraqa`** / `omg qa *` |
 | Full plan→implement→accept (CLI FSM) | **`omg pipeline "goal"`** |
 | Parallel fan-out | **`omg ulw "goal"`** (or pipeline `--implement ulw`) |
+| Project wiki / HUD / LSP probe | **`omg wiki` / `omg hud` / `omg lsp`** |
 | Stop supervised run | **`omg cancel`** |
 
 In-session skills (ralph/ulw) intentionally stop after **one unit of work**; the **CLI** re-launches. Autopilot is multi-phase **within** the session playbook but still cannot Stop-pin the chat — re-load `omg-autopilot` or say “continue” and read `omg autopilot status`. Do not invent infinite self-loops without CLI stamps.

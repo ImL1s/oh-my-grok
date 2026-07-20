@@ -137,6 +137,100 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_resume(args: argparse.Namespace) -> int:
+    """Smart resume routing + RESUME.md (research R2 three pillars)."""
+    from omg_cli.resume import (
+        clear_resume_md,
+        format_pack_human,
+        format_pack_json,
+        route_resume,
+    )
+
+    root = _project_root()
+    if getattr(args, "clear", False):
+        removed = clear_resume_md(root)
+        print("cleared RESUME.md" if removed else "no RESUME.md to clear")
+        return 0
+    code, pack = route_resume(
+        root,
+        run_id=getattr(args, "run_id", None),
+        write_md=not getattr(args, "no_write", False),
+    )
+    if getattr(args, "json", False):
+        sys.stdout.write(format_pack_json(pack))
+    else:
+        sys.stdout.write(format_pack_human(pack))
+    return int(code)
+
+
+def cmd_wiki(args: argparse.Namespace) -> int:
+    from omg_cli.wiki import WikiError, ingest, list_pages, query
+
+    root = _project_root()
+    action = getattr(args, "wiki_action", None)
+    try:
+        if action == "ingest":
+            tags = []
+            raw_tags = getattr(args, "tags", None)
+            if raw_tags:
+                tags = [t.strip() for t in str(raw_tags).split(",") if t.strip()]
+            body = getattr(args, "text", None) or ""
+            if getattr(args, "file", None):
+                body = Path(args.file).read_text(encoding="utf-8")
+            result = ingest(
+                root,
+                title=str(args.title),
+                body=body,
+                tags=tags,
+                source=getattr(args, "source", None),
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
+        if action == "list":
+            print(json.dumps(list_pages(root), indent=2, ensure_ascii=False))
+            return 0
+        if action == "query":
+            hits = query(root, str(args.q), limit=int(getattr(args, "limit", 20)))
+            print(json.dumps(hits, indent=2, ensure_ascii=False))
+            return 0
+    except WikiError as e:
+        print(f"wiki failed: {e}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f"wiki failed: {e}", file=sys.stderr)
+        return 1
+    print("usage: omg wiki {ingest,list,query} …", file=sys.stderr)
+    return 2
+
+
+def cmd_hud(args: argparse.Namespace) -> int:
+    from omg_cli.hud import hud_line, hud_pack
+
+    root = _project_root()
+    rid = getattr(args, "run_id", None)
+    if getattr(args, "json", False):
+        print(json.dumps(hud_pack(root, rid), indent=2, ensure_ascii=False))
+    else:
+        print(hud_line(root, rid))
+    return 0
+
+
+def cmd_lsp(args: argparse.Namespace) -> int:
+    from omg_cli.lsp_tools import probe_tools, symbols_pyright
+
+    action = getattr(args, "lsp_action", None)
+    if action == "status" or action is None:
+        print(json.dumps(probe_tools(), indent=2, ensure_ascii=False))
+        return 0
+    if action == "check":
+        path = Path(args.path)
+        result = symbols_pyright(path, cwd=_project_root())
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result.get("ok") else 1
+    print("usage: omg lsp {status,check} …", file=sys.stderr)
+    return 2
+
+
 def cmd_interview(args: argparse.Namespace) -> int:
     """Run the deterministic resumable requirements interview primitive."""
     from omg_cli.interview import (
@@ -951,6 +1045,74 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_cancel.set_defaults(func=cmd_cancel)
 
+    p_resume = sub.add_parser(
+        "resume",
+        parents=[common],
+        help="smart resume routing + write/clear .omg/state/RESUME.md",
+    )
+    p_resume.add_argument("--run", dest="run_id", default=None, help="specific run_id")
+    p_resume.add_argument(
+        "--clear",
+        action="store_true",
+        help="delete RESUME.md after successful continuation",
+    )
+    p_resume.add_argument(
+        "--no-write",
+        action="store_true",
+        help="print pack only; do not write RESUME.md",
+    )
+    p_resume.add_argument(
+        "--json",
+        action="store_true",
+        help="machine-readable pack",
+    )
+    p_resume.set_defaults(func=cmd_resume)
+
+    p_wiki = sub.add_parser(
+        "wiki",
+        parents=[common],
+        help="local markdown wiki under .omg/wiki",
+    )
+    wiki_sub = p_wiki.add_subparsers(dest="wiki_action")
+    p_w_ing = wiki_sub.add_parser("ingest", parents=[common], help="append/create page")
+    p_w_ing.add_argument("--title", required=True)
+    p_w_ing.add_argument("--text", default=None, help="page body text")
+    p_w_ing.add_argument("--file", default=None, help="read body from file")
+    p_w_ing.add_argument("--tags", default=None, help="comma-separated tags")
+    p_w_ing.add_argument("--source", default=None, help="optional source note")
+    p_w_ing.set_defaults(func=cmd_wiki)
+    p_w_list = wiki_sub.add_parser("list", parents=[common], help="list wiki pages")
+    p_w_list.set_defaults(func=cmd_wiki)
+    p_w_q = wiki_sub.add_parser("query", parents=[common], help="keyword search")
+    p_w_q.add_argument("q", help="search string")
+    p_w_q.add_argument("--limit", type=int, default=20)
+    p_w_q.set_defaults(func=cmd_wiki)
+    p_wiki.set_defaults(func=cmd_wiki)
+
+    p_hud = sub.add_parser(
+        "hud",
+        parents=[common],
+        help="one-line HUD for active (or --run) status",
+    )
+    p_hud.add_argument("--run", dest="run_id", default=None)
+    p_hud.add_argument("--json", action="store_true")
+    p_hud.set_defaults(func=cmd_hud)
+
+    p_lsp = sub.add_parser(
+        "lsp",
+        parents=[common],
+        help="optional local language-tool probe (no host LSP MCP)",
+    )
+    lsp_sub = p_lsp.add_subparsers(dest="lsp_action")
+    p_lsp_st = lsp_sub.add_parser("status", parents=[common], help="list local tools")
+    p_lsp_st.set_defaults(func=cmd_lsp)
+    p_lsp_ck = lsp_sub.add_parser(
+        "check", parents=[common], help="pyright check one file if available"
+    )
+    p_lsp_ck.add_argument("path", help="file path")
+    p_lsp_ck.set_defaults(func=cmd_lsp)
+    p_lsp.set_defaults(func=cmd_lsp)
+
     p_interview = sub.add_parser(
         "interview",
         parents=[common],
@@ -1690,6 +1852,10 @@ KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
         "doctor",
         "state",
         "cancel",
+        "resume",
+        "wiki",
+        "hud",
+        "lsp",
         "interview",
         "goal",
         "accept",

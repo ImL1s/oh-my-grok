@@ -18,7 +18,16 @@ def workspace_root() -> Path:
 
 def ensure_omg_dirs(root: Path | None = None) -> Path:
     root = root or workspace_root()
-    for sub in ("state", "state/runs", "plans", "research", "handoffs", "artifacts", "ultragoal"):
+    for sub in (
+        "state",
+        "state/runs",
+        "plans",
+        "research",
+        "handoffs",
+        "artifacts",
+        "ultragoal",
+        "wiki",
+    ):
         (root / ".omg" / sub).mkdir(parents=True, exist_ok=True)
     return root
 

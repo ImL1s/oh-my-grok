@@ -40,6 +40,7 @@ OMG_SUBDIRS = (
     "handoffs",
     "artifacts",
     "ultragoal",
+    "wiki",
 )
 
 
