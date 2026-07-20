@@ -26,6 +26,20 @@ Route users and sessions into the correct oh-my-grok workflow. This skill does *
 
 If multiple keywords appear, prefer: **cancel** > **ralplan** (planning not done) > **ralph** (durable) > **ulw** (parallel one-shot).
 
+## Persistence model (not OMC Stop continuation)
+
+**oh-my-grok does not force the chat to keep going via Stop hooks.**  
+On Grok Build, **only `PreToolUse` can block**; `Stop` is passive (observe/log only). OMC-style `{decision:"block", reason:…}` on Stop **is not host-feasible** today (see `docs/research/stop-continuation/`).
+
+| Want | Do this |
+|------|---------|
+| Don’t stop until verified | **`omg ralph "goal"`** (CLI outer loop owns max-iter) |
+| Full plan→implement→accept | **`omg pipeline "goal"`** |
+| Parallel fan-out | **`omg ulw "goal"`** (or pipeline `--implement ulw`) |
+| Stop supervised run | **`omg cancel`** |
+
+In-session skills (ralph/ulw) intentionally stop after **one unit of work**; the **CLI** re-launches. Do not invent infinite self-loops inside one TUI turn.
+
 ## Install + health
 
 1. **Plugin install** (Grok Build): ensure this repo/`oh-my-grok` plugin is installed so `skills/omg-*` and `agents/omg-*` are visible.
