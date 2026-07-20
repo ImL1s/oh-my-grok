@@ -39,6 +39,16 @@ def test_help_exits_zero():
     assert "state" in out
 
 
+def test_version_flag_matches_plugin_json():
+    plugin = json.loads((REPO_ROOT / "plugin.json").read_text(encoding="utf-8"))
+    expected = plugin["version"]
+    r = _run_omg("--version")
+    assert r.returncode == 0, r.stderr
+    out = (r.stdout + r.stderr).strip()
+    assert expected in out
+    assert "omg" in out.lower() or expected in out
+
+
 def test_unknown_command_fails():
     r = _run_omg("not-a-real-command")
     assert r.returncode != 0

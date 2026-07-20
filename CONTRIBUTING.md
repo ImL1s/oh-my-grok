@@ -40,3 +40,7 @@ python -m pytest -q -m "not live"
 - Run `pytest -m "not live"` before opening a PR.
 - Describe user-visible behavior and any security surface changes.
 - Do not commit secrets, absolute home paths, or raw machine live logs under `docs/research/live/`.
+
+## Releases
+
+See [`docs/RELEASE.md`](docs/RELEASE.md). Version SoT is `plugin.json`. Users should prefer git tags (`vX.Y.Z`) over floating `main` when possible.

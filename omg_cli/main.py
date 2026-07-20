@@ -884,10 +884,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="allow elevated permissions for mode launchers (off by default)",
     )
 
+    from omg_cli import __version__
+
     parser = argparse.ArgumentParser(
         prog="omg",
         description="oh-my-grok CLI — setup, doctor, state, and mode launchers",
         parents=[common],
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"omg {__version__}",
     )
 
     sub = parser.add_subparsers(dest="command")

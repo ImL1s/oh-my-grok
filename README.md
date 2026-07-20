@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
+  <a href="https://github.com/ImL1s/oh-my-grok/actions/workflows/ci.yml"><img src="https://github.com/ImL1s/oh-my-grok/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/python-%3E%3D3.11-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/host-Grok%20Build-black" alt="Grok Build">
   <img src="https://img.shields.io/badge/scope-core%20purpose%20parity-lightgrey" alt="core purpose parity">
@@ -51,20 +52,26 @@ Version: **0.2.5** · License: MIT
 
 **Requirements:** [Grok Build CLI](https://github.com/xai-org/grok-build) (`grok` on `PATH`) · Python **3.11+**
 
+OMG has **two surfaces**: Grok **plugin** (skills/agents/hooks) + **`omg` CLI** (state, accept, verified). You need both for the full product.
+
+### Full install (recommended)
+
+Use a **stable path** so the global soft-gate does not break when you tidy folders:
+
 ```bash
-# 0) Install Grok Build (host)
+# 0) Host
 curl -fsSL https://x.ai/cli/install.sh | bash
 # docs: https://github.com/xai-org/grok-build · https://x.ai/cli
 
-# 1) Clone + install this plugin
-git clone https://github.com/ImL1s/oh-my-grok.git
-cd oh-my-grok
+# 1) Clone to a stable home
+git clone https://github.com/ImL1s/oh-my-grok.git ~/.local/share/oh-my-grok
+cd ~/.local/share/oh-my-grok
 ./scripts/install-plugin.sh
-# or: grok plugin validate . && grok plugin install . --trust
+# optional pin: git checkout v0.2.5
 
-# 2) Put omg on PATH (not on PyPI yet — symlink the repo binary)
+# 2) omg on PATH (not on PyPI yet; install script also tries this)
 ln -sf "$(pwd)/bin/omg" ~/.local/bin/omg   # ensure ~/.local/bin is on PATH
-omg --help
+omg --version
 
 # 3) Wire a project
 cd /path/to/your-project
@@ -72,7 +79,32 @@ omg setup
 omg doctor
 ```
 
-Smoke:
+`install-plugin.sh` runs `grok plugin install . --trust` **and** writes  
+`~/.grok/hooks/omg-pretool-deny.json` with an **absolute path** into this checkout  
+(plugin-bundled PreToolUse alone has been insufficient in live sessions).
+
+### Plugin-only (half surface — not enough alone)
+
+```bash
+grok plugin install ImL1s/oh-my-grok --trust
+# better pin: grok plugin install ImL1s/oh-my-grok@v0.2.5 --trust
+```
+
+This installs skills/agents from GitHub. It does **not** put `omg` on PATH and does **not** guarantee the global soft-gate. Prefer **Full install** unless you only need in-session skills.
+
+### Upgrade / relocate / uninstall
+
+| Action | Commands |
+|--------|----------|
+| Upgrade | `cd ~/.local/share/oh-my-grok && git pull && ./scripts/install-plugin.sh` |
+| Relocate clone | Re-run `./scripts/install-plugin.sh` + refresh `ln -sf …/bin/omg ~/.local/bin/omg` |
+| Uninstall plugin | `grok plugin uninstall oh-my-grok` (name from `grok plugin list`) |
+| Remove soft-gate | `rm -f ~/.grok/hooks/omg-pretool-deny.json` |
+| Remove CLI link | `rm -f ~/.local/bin/omg` |
+
+`omg setup` only scaffolds **project** files (`.omg/`, AGENTS fragment). It does **not** install the plugin.
+
+Smoke after install:
 
 ```bash
 omg doctor
@@ -80,8 +112,6 @@ omg ulw "noop" --dry-run
 ```
 
 That’s enough to start. Everything below is the default spine and reference.
-
-> **Note:** `install-plugin.sh` registers a global PreToolUse soft-hook with an **absolute path** into this checkout. If you move the clone, re-run the install script.
 
 ---
 

@@ -57,10 +57,27 @@ else
   grok plugin list 2>/dev/null || true
 fi
 
+echo "== omg CLI symlink (best-effort) =="
+LOCAL_BIN="${HOME}/.local/bin"
+OMG_BIN="${ROOT}/bin/omg"
+if [[ -x "$OMG_BIN" ]]; then
+  mkdir -p "$LOCAL_BIN" 2>/dev/null || true
+  if [[ -d "$LOCAL_BIN" && -w "$LOCAL_BIN" ]]; then
+    ln -sfn "$OMG_BIN" "${LOCAL_BIN}/omg"
+    echo "linked ${LOCAL_BIN}/omg -> ${OMG_BIN}"
+    if ! command -v omg >/dev/null 2>&1; then
+      echo "NOTE: add ${LOCAL_BIN} to PATH if 'omg' is not found" >&2
+    fi
+  else
+    echo "WARN: cannot write ${LOCAL_BIN}; symlink manually:" >&2
+    echo "  ln -sf \"${OMG_BIN}\" \"\${HOME}/.local/bin/omg\"" >&2
+  fi
+fi
+
 echo
 echo "Next steps:"
-echo "  1. Put omg on PATH (symlink recommended):"
-echo "       ln -sf \"$ROOT/bin/omg\" \"\${HOME}/.local/bin/omg\""
+echo "  1. Confirm omg on PATH (install tried ~/.local/bin/omg):"
+echo "       omg --version"
 echo "  2. In your project:"
 echo "       omg setup && omg doctor && omg doctor --strict"
 echo "  3. Dry smoke from this repo:"
@@ -68,5 +85,6 @@ echo "       \"$ROOT/scripts/smoke.sh\""
 echo "  4. Optional PreToolUse canary (never runs real claude/codex):"
 echo "       python3 \"$ROOT/scripts/canary_pretool.py\" --dry"
 echo "       python3 \"$ROOT/scripts/canary_pretool.py\" --live   # needs grok + global hook"
+echo "  5. After relocate/upgrade: re-run this script (global hook uses absolute path)"
 echo
 echo "install-plugin OK"
