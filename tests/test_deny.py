@@ -325,3 +325,26 @@ def test_depth_gt_1_denied():
         }
     )
     assert d["decision"] == "deny"
+
+
+def test_multiline_command_deny_not_bypassed_by_newline():
+    """A denied bin on its own line (newline, not ';') must still be denied.
+
+    Multi-line shell scripts (heredocs, setup + run) are the common shape of
+    real Bash/run_terminal_command payloads; the deny must not require a shell
+    operator on the same line as the binary.
+    """
+    assert should_deny_command("echo start\nclaude -p 'hi'") is True
+    assert should_deny_command("cd /tmp\ncodex exec foo") is True
+    assert should_deny_command("set -e\n\n  agy -p go") is True
+    assert should_deny_command("echo a\r\ncursor-agent --print x") is True
+    # sanity: a plain multi-line script with no denied bin is still allowed
+    assert should_deny_command("echo start\necho done") is False
+    # the denied word as a mere argument mid-line stays allowed
+    assert should_deny_command("echo run claude later\ntrue") is False
+    # end-to-end through the PreToolUse decision
+    ev = {
+        "toolName": "run_terminal_command",
+        "toolInput": {"command": "echo x\nagy -p go"},
+    }
+    assert decide_pre_tool_use(ev)["decision"] == "deny"

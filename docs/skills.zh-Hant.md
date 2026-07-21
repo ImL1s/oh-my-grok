@@ -207,7 +207,7 @@ omg interview close --run RUN
 |--|--|
 | **何時** | 多個持久 story、depends_on、跨 session |
 | **呼叫** | `ultragoal` · `goal ledger` · `/oh-my-grok:omg-ultragoal` |
-| **CLI** | `omg goal init\|status\|start\|checkpoint\|complete\|link-run\|verify\|repair` |
+| **CLI** | `omg goal init\|status\|link-run\|start-story\|checkpoint\|block-story\|resume-story\|complete-story\|verify\|repair` |
 | **SKILL** | [`skills/omg-ultragoal/SKILL.md`](../skills/omg-ultragoal/SKILL.md) |
 
 Grok **沒有** host `/goal` — ledger 只在 `.omg/ultragoal/`。  

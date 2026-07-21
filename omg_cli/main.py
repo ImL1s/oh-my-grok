@@ -16,13 +16,38 @@ def _project_root() -> Path:
 def cmd_setup(args: argparse.Namespace) -> int:
     from omg_cli.setup_cmd import run_setup
 
-    return run_setup(_project_root())
+    return run_setup(
+        _project_root(),
+        install_rules=not getattr(args, "no_global_rules", False),
+    )
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     from omg_cli.doctor import run_doctor
 
     return run_doctor(strict=bool(getattr(args, "strict", False)))
+
+
+def cmd_note(args: argparse.Namespace) -> int:
+    from omg_cli.note import run_note
+
+    return run_note(
+        " ".join(args.text),
+        priority=bool(getattr(args, "priority", False)),
+        show=bool(getattr(args, "show", False)),
+    )
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    from omg_cli.update_cmd import run_update
+
+    return run_update()
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    from omg_cli.uninstall_cmd import run_uninstall
+
+    return run_uninstall(yes=bool(getattr(args, "yes", False)))
 
 
 def _print_state_human(data: dict) -> None:
@@ -1023,6 +1048,11 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="ensure .omg dirs, merge AGENTS + gitignore",
     )
+    p_setup.add_argument(
+        "--no-global-rules",
+        action="store_true",
+        help="do not install ~/.grok/rules/omg.md global guidance",
+    )
     p_setup.set_defaults(func=cmd_setup)
 
     p_doctor = sub.add_parser(
@@ -1036,6 +1066,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="treat compat.claude isolation risks as FAIL (exit 1)",
     )
     p_doctor.set_defaults(func=cmd_doctor)
+
+    p_note = sub.add_parser(
+        "note",
+        parents=[common],
+        help="append a durable project note (.omg/notepad.md)",
+    )
+    p_note.add_argument(
+        "text",
+        nargs="*",
+        help="note text (omit to show the notepad)",
+    )
+    p_note.add_argument(
+        "--priority",
+        action="store_true",
+        help="permanent (else 7d TTL tag)",
+    )
+    p_note.add_argument(
+        "--show",
+        action="store_true",
+        help="print the notepad and exit",
+    )
+    p_note.set_defaults(func=cmd_note)
+
+    p_update = sub.add_parser(
+        "update",
+        parents=[common],
+        help="git pull + refresh installed plugin",
+    )
+    p_update.set_defaults(func=cmd_update)
+
+    p_uninstall = sub.add_parser(
+        "uninstall",
+        parents=[common],
+        help="remove plugin, global hook, and OMG rules block",
+    )
+    p_uninstall.add_argument(
+        "--yes",
+        action="store_true",
+        help="actually perform removal",
+    )
+    p_uninstall.set_defaults(func=cmd_uninstall)
 
     p_state = sub.add_parser(
         "state",
@@ -1870,6 +1941,8 @@ KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
     {
         "setup",
         "doctor",
+        "update",
+        "uninstall",
         "state",
         "cancel",
         "resume",

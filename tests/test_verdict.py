@@ -167,3 +167,155 @@ def test_schema_v2_present_no_prose_approve_fallback():
     assert parse_verdict(approve) == "APPROVE"
     # prose-only terminal APPROVE (no schema_v2) still works
     assert parse_verdict("## Verdict\nAPPROVE\n") == "APPROVE"
+
+
+def test_run_id_binding_poisons_stale_document():
+    """A present-but-mismatched run_id makes the whole artifact stale/wrong-run:
+    a stray unbound `{"verdict":"APPROVE"}` snippet elsewhere must NOT win."""
+    # Real, correctly-bound verdict is a mismatch (stale run); a stray example
+    # APPROVE snippet with no run_id must NOT override the mismatched binding.
+    text = (
+        '{"run_id": "WRONG-STALE-RUN", "verdict": "FAILED"}\n\n'
+        "The expected format looks like:\n"
+        "```json\n"
+        '{"verdict": "APPROVE"}\n'
+        "```\n"
+    )
+    assert parse_verdict(text, expected_run_id="REAL-RUN-123") != "APPROVE"
+
+    # A wrong-run schema-v2 document cannot approve even with an APPROVE verdict.
+    wrong = '{"schema_version": 2, "run_id": "WRONG", "verdict": "APPROVE"}'
+    assert parse_verdict(wrong, expected_run_id="REAL-RUN-123") != "APPROVE"
+
+
+def test_run_id_binding_preserves_unbound_artifacts():
+    """ralplan/dual-review write path-bound verifier artifacts that legitimately
+    carry NO run_id — those must still be accepted under a run_id-bound gate."""
+    # bare unbound JSON approve (the real dual-review/ralplan shape)
+    assert (
+        parse_verdict('{"verdict": "APPROVE", "notes": "ok"}', expected_run_id="REAL-RUN-123")
+        == "APPROVE"
+    )
+    # prose terminal approve (the other real shape)
+    assert parse_verdict("## Verdict\nAPPROVE\n", expected_run_id="REAL-RUN-123") == "APPROVE"
+    # with NO run_id requirement the legacy behavior is unchanged
+    assert parse_verdict('{"verdict": "APPROVE"}') == "APPROVE"
+    # a correctly bound run_id still approves, including nested result objects
+    assert (
+        parse_verdict(
+            '{"run_id": "REAL-RUN-123", "verdict": "APPROVE"}',
+            expected_run_id="REAL-RUN-123",
+        )
+        == "APPROVE"
+    )
+    nested = '{"run_id": "REAL-RUN-123", "result": {"verdict": "APPROVE"}}'
+    assert parse_verdict(nested, expected_run_id="REAL-RUN-123") == "APPROVE"
+
+
+def test_poison_flipped_order_two_raw_objects():
+    """Stray APPROVE first + stale-run FAILED second must be FAILED (not APPROVE)."""
+    text = '{"verdict": "APPROVE"}\n{"run_id": "WRONG", "verdict": "FAILED"}'
+    assert parse_verdict(text, expected_run_id="REAL") == "FAILED"
+
+
+def test_poison_fenced_stray_before_stale():
+    """Fenced stray APPROVE before a stale-run FAILED object must be FAILED."""
+    text = (
+        "The expected format:\n"
+        "```json\n"
+        '{"verdict": "APPROVE"}\n'
+        "```\n\n"
+        '{"run_id": "WRONG-STALE-RUN", "verdict": "FAILED"}\n'
+    )
+    assert parse_verdict(text, expected_run_id="REAL-RUN-123") == "FAILED"
+
+
+def test_bound_rc_beats_earlier_fenced_stray_approve():
+    """Matching-run REQUEST_CHANGES after fenced stray APPROVE must win."""
+    text = (
+        "Format e.g.:\n"
+        "```json\n"
+        '{"verdict":"APPROVE"}\n'
+        "```\n\n"
+        '{"run_id":"REAL-RUN-123","verdict":"REQUEST_CHANGES"}\n'
+    )
+    assert parse_verdict(text, expected_run_id="REAL-RUN-123") == "REQUEST_CHANGES"
+
+
+def test_bound_schema_v2_failed_beats_earlier_fenced_stray_approve():
+    """Bound schema_version=2 FAILED after fenced stray APPROVE must be FAILED."""
+    text = (
+        "Example:\n"
+        "```json\n"
+        '{"verdict": "APPROVE"}\n'
+        "```\n\n"
+        '{"schema_version": 2, "run_id": "REAL-RUN-123", "verdict": "FAILED", '
+        '"is_stub": false}\n'
+    )
+    assert parse_verdict(text, expected_run_id="REAL-RUN-123") == "FAILED"
+
+
+def test_legit_unbound_approve_regression():
+    """Unbound artifacts must still APPROVE under a run_id-bound gate."""
+    assert (
+        parse_verdict('{"verdict":"APPROVE","notes":"ok"}', expected_run_id="R")
+        == "APPROVE"
+    )
+    assert parse_verdict("## Verdict\nAPPROVE\n", expected_run_id="R") == "APPROVE"
+    assert parse_verdict('{"verdict":"APPROVE"}') == "APPROVE"
+
+
+def test_scanner_ignores_unbalanced_brace_in_string():
+    """Lone `}` inside a JSON string must not truncate the stale-run object.
+
+    Pre-fix brace scanner treated the `}` in `"note": "} closer"` as a
+    structural closer, truncated the first object to invalid JSON, dropped it,
+    and let the stray APPROVE win. Must stay FAILED under run_id binding.
+    """
+    b2 = (
+        '{"run_id": "WRONG", "verdict": "FAILED", "note": "} closer"}\n'
+        '{"verdict": "APPROVE"}'
+    )
+    assert parse_verdict(b2, expected_run_id="REAL-RUN-123") == "FAILED"
+
+
+def test_scanner_lone_open_brace_in_string_stays_failed():
+    """Regression pin: lone `{` inside a string must not hide the stale FAILED."""
+    text = (
+        '{"verdict": "APPROVE", "note": "open { brace"}\n'
+        '{"run_id": "WRONG", "verdict": "FAILED"}'
+    )
+    assert parse_verdict(text, expected_run_id="REAL-RUN-123") == "FAILED"
+
+
+def test_scanner_balanced_braces_in_string_still_extracts_stale():
+    """Balanced braces inside a string must still extract the stale FAILED object."""
+    text = (
+        '{"run_id":"WRONG","verdict":"FAILED","note":"cfg {\\"debug\\": true}"}\n'
+        '{"verdict":"APPROVE"}'
+    )
+    assert parse_verdict(text, expected_run_id="REAL-RUN-123") == "FAILED"
+
+
+def test_scanner_union_prose_odd_quote_before_stale():
+    """Odd prose double-quote must not hide a following raw JSON stale object.
+
+    Quote-aware-only scan stays in_string=True after the unmatched prose quote,
+    skips every following brace, misses the WRONG-run FAILED object, and lets
+    fenced APPROVE win. Union with quote-agnostic brace scan must yield FAILED.
+    """
+    t = (
+        'He said "beware of stale runs\n'
+        '{"run_id": "WRONG", "verdict": "FAILED"}\n'
+        "Example:\n"
+        "```json\n"
+        '{"verdict": "APPROVE"}\n'
+        "```\n"
+    )
+    assert parse_verdict(t, expected_run_id="REAL-RUN-123") == "FAILED"
+
+
+def test_scanner_union_prose_odd_quote_legit_unbound_approve():
+    """Odd prose quote + real unbound APPROVE (no stale object) still approves."""
+    t = 'He said "ok"\n{"verdict":"APPROVE"}'
+    assert parse_verdict(t, expected_run_id="R") == "APPROVE"

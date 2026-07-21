@@ -146,8 +146,35 @@ def _json_verdict(
     return None
 
 
+_SEVERITY_RANK = {
+    "FAILED": 3,
+    "REQUEST_CHANGES": 2,
+    "APPROVE": 1,
+}
+
+
+def _most_severe_verdict(verdicts: list[str]) -> str | None:
+    """Pick FAILED > REQUEST_CHANGES > APPROVE; ignore other tokens / None."""
+    best: str | None = None
+    best_rank = 0
+    for v in verdicts:
+        if not v:
+            continue
+        rank = _SEVERITY_RANK.get(v, 0)
+        if rank > best_rank:
+            best = v
+            best_rank = rank
+    return best
+
+
 def _extract_json_objects(text: str) -> list[dict]:
-    """Best-effort: top-level JSON object(s) from raw or fenced text."""
+    """Best-effort: top-level JSON object(s) from raw or fenced text.
+
+    Collects (1) whole-doc if it looks like JSON, (2) fenced ```json blocks,
+    (3) EVERY top-level balanced ``{...}`` from BOTH a quote-aware brace scan
+    and a quote-agnostic brace scan.  Objects may be double-counted across
+    sources; content-signature dedup handles that.
+    """
     if not text or not text.strip():
         return []
     candidates: list[str] = []
@@ -157,22 +184,49 @@ def _extract_json_objects(text: str) -> list[dict]:
     # fenced json blocks
     for m in re.finditer(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE):
         candidates.append(m.group(1).strip())
-    # first balanced-looking object — always try when prose trails JSON
-    # (e.g. schema-v2 blob + terminal APPROVE line). Previously skipped when
-    # the whole strip was already a candidate, which fails json.loads.
-    start = text.find("{")
-    if start >= 0:
-        depth = 0
-        for i, ch in enumerate(text[start:], start):
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
+    # Pass 1: quote-AWARE — ignore braces inside double-quoted strings
+    # (keeps objects whose string values contain unbalanced braces).
+    depth = 0
+    start = -1
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
                 depth -= 1
-                if depth == 0:
-                    bal = text[start : i + 1]
-                    if bal not in candidates:
-                        candidates.append(bal)
-                    break
+                if depth == 0 and start >= 0:
+                    candidates.append(text[start : i + 1])
+                    start = -1
+    # Pass 2: quote-AGNOSTIC — count every brace regardless of strings
+    # (recovers objects after an unmatched prose quote that blinds pass 1).
+    depth = 0
+    start = -1
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    candidates.append(text[start : i + 1])
+                    start = -1
     out: list[dict] = []
     seen: set[int] = set()
     for c in candidates:
@@ -187,7 +241,14 @@ def _extract_json_objects(text: str) -> list[dict]:
             seen.add(sig)
             out.append(data)
         elif isinstance(data, list):
-            out.extend(x for x in data if isinstance(x, dict))
+            for x in data:
+                if not isinstance(x, dict):
+                    continue
+                sig = hash(json.dumps(x, sort_keys=True, ensure_ascii=False))
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                out.append(x)
     return out
 
 
@@ -196,16 +257,28 @@ def parse_schema_v2_verdict(
     *,
     expected_run_id: str | None = None,
 ) -> str | None:
-    """Parse research structured verdict documents; None if not schema-v2 shaped."""
+    """Parse research structured verdict documents; None if not schema-v2 shaped.
+
+    When multiple schema_version=2 objects exist, return the most severe usable
+    verdict (FAILED > REQUEST_CHANGES > APPROVE).  Schema-v2 present but no
+    usable verdict from any such object → UNKNOWN (fail-closed).
+    """
+    found_schema_v2 = False
+    collected: list[str] = []
     for data in _extract_json_objects(text):
         if data.get("schema_version") not in (2, "2", 2.0):
             continue
+        found_schema_v2 = True
         jv = _json_verdict(data, expected_run_id=expected_run_id)
         if jv is not None:
-            return jv
-        # schema v2 present but unusable → fail closed for this doc
-        return "UNKNOWN"
-    return None
+            collected.append(jv)
+    if not found_schema_v2:
+        return None
+    severe = _most_severe_verdict(collected)
+    if severe is not None:
+        return severe
+    # schema v2 present but unusable → fail closed for this doc
+    return "UNKNOWN"
 
 
 def prose_has_terminal_approve(text: str) -> bool:
@@ -241,17 +314,42 @@ def parse_verdict(
     if not text or not text.strip():
         return "UNKNOWN"
 
+    # 0) Document-level run_id poison guard (Codex P0 / 2026-07-20 council).
+    # If a run_id binding is required and EVERY run_id present in the document is
+    # for a different run (none match), the artifact is stale / wrong-run — fail
+    # closed so a stray unbound ``{"verdict":"APPROVE"}`` snippet elsewhere in the
+    # same text cannot override a present-but-mismatched binding. Artifacts with
+    # NO run_id at all keep legacy behavior: ralplan/dual-review write path-bound
+    # verifier artifacts (``## Verdict\nAPPROVE`` / ``{"verdict":"APPROVE"}``) that
+    # legitimately carry no run_id, and those must still be accepted.
+    if expected_run_id is not None:
+        present_run_ids = [
+            obj["run_id"]
+            for obj in _extract_json_objects(text)
+            if isinstance(obj.get("run_id"), str) and obj.get("run_id").strip()
+        ]
+        if present_run_ids and not any(
+            r.strip() == expected_run_id.strip() for r in present_run_ids
+        ):
+            return "FAILED"
+
     # 1) Strict schema v2 documents first when present — no prose fallback
     # even when the structured doc only resolves to UNKNOWN (fail-closed).
     sv2 = parse_schema_v2_verdict(text, expected_run_id=expected_run_id)
     if sv2 is not None:
         return sv2
 
-    # 2) Any JSON object (full file or embedded)
+    # 2) Any JSON object (full file or embedded) — severity aggregate, not
+    # first-match-wins. A stray earlier APPROVE must never override a real
+    # FAILED / REQUEST_CHANGES present anywhere in the document.
+    json_verdicts: list[str] = []
     for data in _extract_json_objects(text):
         jv = _json_verdict(data, expected_run_id=expected_run_id)
         if jv is not None:
-            return jv
+            json_verdicts.append(jv)
+    severe = _most_severe_verdict(json_verdicts)
+    if severe is not None:
+        return severe
 
     # 3) Prose fail-closed path (ignore fenced examples / negations)
     has_failed = bool(_FAILED_RE.search(text))

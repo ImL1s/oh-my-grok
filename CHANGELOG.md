@@ -15,6 +15,59 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Host Stop veto (not feasible on Grok today).
 - Full OMC LSP/AST MCP bridge (local pyright probe only in 0.3.0).
 
+## [0.4.0] - 2026-07-21
+
+OMC/OMX parity upgrade — global guidance injection, install lifecycle, and a
+verdict-gate hardening pass. All work was executor-written under orchestrator
+briefs and gated by an independent model-diverse standing reviewer (Fable 5,
+full-branch GO). 468 → 528 unit tests; live-verified on the real Grok host.
+
+### Added
+- **Global guidance injection (`~/.grok/rules/omg.md`):** the Grok-native OMC
+  `CLAUDE.md` / OMX `AGENTS.md` equivalent. `omg setup` writes an always-loaded
+  operating contract (tuned to Grok 4.5) via a non-destructive marker reconcile
+  (`OMG:START/END`), preserving any `USER:OMG:POLICY` block, with a source-hash
+  handshake and rolling backup (`omg_cli/guidance.py`, `templates/omg-rules.md`).
+  `omg setup --no-global-rules` opts out. Live-proven: `grok inspect` loads it and
+  a fresh `grok -p` quotes the contract.
+- **`omg update`:** git pull + `grok plugin update` (force-refresh the frozen
+  snapshot) + doctor.
+- **`omg uninstall`:** `--yes`-gated removal of plugin, global hook, OMG rules
+  block (preserves `USER:OMG:POLICY`), and CLI symlink; never touches project `.omg/`.
+- **`omg note`:** compaction-resistant project notepad (`.omg/notepad.md`, 7d /
+  `--priority` permanent TTL, `--show`).
+- **Kill switches:** `DISABLE_OMG` (all hooks off; deny fails open) and
+  `OMG_SKIP_HOOKS` (per-hook logical names).
+- **Doctor drift checks:** global-rules status, plugin version-drift + duplicate
+  detection, `[plugins].enabled`, and a local-checkout capabilities lock
+  (`omg_capabilities.lock.json` + `scripts/generate_capabilities_lock.py`).
+- **Self-healing installer:** `install-plugin.sh` warns on duplicate entries and
+  runs `grok plugin update` + `grok plugin enable`.
+- **Anti-drift docs guard:** `tests/test_docs_cli_drift.py` diffs documented `omg`
+  subcommands against the real argparse choices.
+
+### Fixed (security / correctness, each with a RED-proven regression test)
+- **deny.py:** external-CLI block bypassed by multi-line commands (a denied bin on
+  its own line) — `\n\r` added to the command-position class.
+- **verdict.py:** run_id false-accept hardened in three layers — document-level
+  poison guard, extract-ALL top-level objects, severity aggregation
+  (FAILED > REQUEST_CHANGES > APPROVE), and a UNION of quote-aware + quote-agnostic
+  brace scans (closes stale-object hiding via unbalanced braces in strings and odd
+  prose quotes). Path-bound unbound artifacts still accepted.
+- **command_policy.py:** break-glass floor now denies `python -c` via combined
+  short clusters (`-ic`).
+- **autopilot.py:** invalidate review/QA stamps on every (re)entry into `implement`
+  (closes the `qa→blocked→implement→blocked→qa` false-green round-trip).
+- **workers.py:** empty `owned_files` fails closed in join.
+- **docs/skills.md(+zh):** `omg goal start`/`complete` → real `start-story`/`complete-story`.
+
+### Notes
+- Keyword triggers live in the rules file's `<workflow_routing>` section, not a
+  hook — Grok's non-`PreToolUse` hooks are passive (stdout ignored).
+- Known backlog: ULW worker envelope `head_sha` requires `omg worker seal`
+  (leader-side / omg on the worker's PATH); installed-snapshot content-drift lock;
+  duplicate same-named plugin entries need manual `grok plugin uninstall` by key.
+
 ## [0.3.2] - 2026-07-21
 
 ### Fixed

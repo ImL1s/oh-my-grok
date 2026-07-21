@@ -217,6 +217,29 @@ def test_summarize_plugin_payload_from_list():
     assert "0.1.0" in detail
 
 
+def test_check_global_rules_missing_warns(tmp_path, monkeypatch):
+    """No rules file under GROK_HOME → soft warn suggesting omg setup."""
+    grok_home = tmp_path / ".grokhome"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    name, level, detail = doctor.check_global_rules()
+    assert "global rules" in name
+    assert level == "warn"
+    assert "omg setup" in detail.lower()
+
+
+def test_check_global_rules_ok_after_install(tmp_path, monkeypatch):
+    """After install_global_rules under GROK_HOME → soft ok."""
+    from omg_cli.guidance import install_global_rules
+
+    grok_home = tmp_path / ".grokhome"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    install_global_rules()
+    name, level, detail = doctor.check_global_rules()
+    assert "global rules" in name
+    assert level == "ok"
+    assert "present" in detail.lower() or "v" in detail
+
+
 def test_check_global_pretool_hook_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     name, ok, detail = doctor.check_global_pretool_hook()
@@ -283,3 +306,113 @@ def test_check_global_pretool_hook_broken_path(tmp_path, monkeypatch):
     )
     name, ok, detail = doctor.check_global_pretool_hook()
     assert ok is False
+
+
+# --- plugin version drift + enabled soft checks (Batch 3) ---
+
+
+def _local_plugin_version() -> str:
+    data = json.loads(
+        (Path(doctor.plugin_root()) / "plugin.json").read_text(encoding="utf-8")
+    )
+    return str(data["version"])
+
+
+def test_check_plugin_version_drift_ok_when_match(monkeypatch):
+    local = _local_plugin_version()
+    monkeypatch.setattr(
+        doctor,
+        "_run_grok_json",
+        lambda *_a, **_k: [
+            {
+                "name": "oh-my-grok",
+                "version": local,
+                "source": "/tmp/oh-my-grok",
+            }
+        ],
+    )
+    name, level, detail = doctor.check_plugin_version_drift()
+    assert name == "plugin version drift"
+    assert level == "ok"
+    assert local in detail
+    assert "installed == local" in detail
+
+
+def test_check_plugin_version_drift_warn_on_mismatch(monkeypatch):
+    local = _local_plugin_version()
+    monkeypatch.setattr(
+        doctor,
+        "_run_grok_json",
+        lambda *_a, **_k: [
+            {
+                "name": "oh-my-grok",
+                "version": "0.0.1",
+                "source": "/tmp/oh-my-grok",
+            }
+        ],
+    )
+    name, level, detail = doctor.check_plugin_version_drift()
+    assert name == "plugin version drift"
+    assert level == "warn"
+    assert "0.0.1" in detail
+    assert local in detail
+    assert "!=" in detail or "mismatch" in detail.lower()
+
+
+def test_check_plugin_version_drift_warn_on_duplicate_sources(monkeypatch):
+    local = _local_plugin_version()
+    monkeypatch.setattr(
+        doctor,
+        "_run_grok_json",
+        lambda *_a, **_k: [
+            {
+                "name": "oh-my-grok",
+                "id": "abc/oh-my-grok",
+                "version": local,
+                "source": "/path/a/oh-my-grok",
+            },
+            {
+                "name": "oh-my-grok",
+                "id": "def/oh-my-grok",
+                "version": local,
+                "source": "/path/b/oh-my-grok",
+            },
+        ],
+    )
+    name, level, detail = doctor.check_plugin_version_drift()
+    assert name == "plugin version drift"
+    assert level == "warn"
+    assert "duplicate" in detail.lower() or "uninstall" in detail.lower()
+
+
+def test_check_plugin_enabled_ok(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROK_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[plugins]\nenabled = ["oh-my-grok"]\n',
+        encoding="utf-8",
+    )
+    name, level, detail = doctor.check_plugin_enabled()
+    assert name == "plugin enabled ([plugins].enabled)"
+    assert level == "ok"
+    assert "oh-my-grok" in detail
+
+
+def test_check_plugin_enabled_warn_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROK_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[plugins]\nenabled = ["other"]\n',
+        encoding="utf-8",
+    )
+    name, level, detail = doctor.check_plugin_enabled()
+    assert name == "plugin enabled ([plugins].enabled)"
+    assert level == "warn"
+    assert "NOT in" in detail or "enable" in detail.lower()
+
+
+def test_check_plugin_enabled_warn_no_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROK_HOME", str(tmp_path))
+    # no config.toml
+    name, level, detail = doctor.check_plugin_enabled()
+    assert name == "plugin enabled ([plugins].enabled)"
+    assert level == "warn"
+    assert "config.toml" in detail.lower() or "cannot confirm" in detail.lower()

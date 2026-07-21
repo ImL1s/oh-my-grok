@@ -528,7 +528,11 @@ def join_worker_results(
         if not isinstance(changed, list):
             changed = []
         changed_norm = {str(f).strip().lstrip("./") for f in changed if str(f).strip()}
-        foreign = sorted(changed_norm - owned) if owned else []
+        # Fail closed on empty ownership: a task that owns nothing may change
+        # nothing. An empty owned_files set (malformed / hand-edited manifest that
+        # bypassed build_ownership_manifest's non-empty guard) must NOT silently
+        # disable the cross-task ownership check — treat every change as foreign.
+        foreign = sorted(changed_norm - owned) if owned else sorted(changed_norm)
         if foreign and st == "ok":
             failed.append(tid)
             results.append(

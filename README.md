@@ -50,7 +50,7 @@ Workers fan out only via Grok **`spawn_subagent`** (depth 1). No Rust fork of gr
 | **Grok plugin** | `skills/omg-*`, `agents/omg-*`, hooks (event spool + PreToolUse soft-guard + SessionStart RESUME.md) |
 | **`omg` CLI** | `setup` / `doctor` / `resume` / modes / `accept` / `integrate` / `goal` / `interview` / `wiki` / `hud` / `lsp` / `autopilot`… |
 
-Version: **0.3.2** · License: MIT
+Version: **0.4.0** · License: MIT
 
 ---
 
@@ -73,7 +73,7 @@ curl -fsSL https://x.ai/cli/install.sh | bash
 git clone https://github.com/ImL1s/oh-my-grok.git ~/.local/share/oh-my-grok
 cd ~/.local/share/oh-my-grok
 ./scripts/install-plugin.sh
-# optional pin: git checkout v0.3.2
+# optional pin: git checkout v0.4.0
 
 # 2) omg on PATH (not on PyPI yet; install script also tries this)
 ln -sf "$(pwd)/bin/omg" ~/.local/bin/omg   # ensure ~/.local/bin is on PATH
@@ -93,22 +93,23 @@ omg doctor
 
 ```bash
 grok plugin install ImL1s/oh-my-grok --trust
-# better pin: grok plugin install ImL1s/oh-my-grok@v0.3.2 --trust
+# better pin: grok plugin install ImL1s/oh-my-grok@v0.4.0 --trust
 ```
 
-This installs skills/agents from GitHub. It does **not** put `omg` on PATH and does **not** guarantee the global soft-gate. Prefer **Full install** unless you only need in-session skills.
+This installs skills/agents from GitHub. It does **not** put `omg` on PATH and does **not** guarantee the global soft-gate. **Every `omg …` command in this README (including `omg setup` / `omg doctor` in the smoke steps below) requires the Full install** — plugin-only gives you in-session skills only. Prefer **Full install** unless that is all you need.
 
 ### Upgrade / relocate / uninstall
 
 | Action | Commands |
 |--------|----------|
-| Upgrade | `cd ~/.local/share/oh-my-grok && git pull && ./scripts/install-plugin.sh` |
-| Relocate clone | Re-run `./scripts/install-plugin.sh` + refresh `ln -sf …/bin/omg ~/.local/bin/omg` |
-| Uninstall plugin | `grok plugin uninstall oh-my-grok` (name from `grok plugin list`) |
-| Remove soft-gate | `rm -f ~/.grok/hooks/omg-pretool-deny.json` |
-| Remove CLI link | `rm -f ~/.local/bin/omg` |
+| Upgrade | `omg update` (git pull + `grok plugin update` to force-refresh the frozen snapshot + doctor) |
+| Relocate clone | Re-run `./scripts/install-plugin.sh` (it warns on stale duplicate entries) + refresh `ln -sf …/bin/omg ~/.local/bin/omg` |
+| Uninstall | `omg uninstall --yes` (plugin + global hook + OMG rules block + CLI link; **never** touches project `.omg/`) |
+| Uninstall (manual) | `grok plugin uninstall oh-my-grok` · `rm -f ~/.grok/hooks/omg-pretool-deny.json` · `rm -f ~/.local/bin/omg` |
 
-`omg setup` only scaffolds **project** files (`.omg/`, AGENTS fragment). It does **not** install the plugin.
+> **Why `omg update`, not `git pull` alone:** `grok plugin install` copies a **frozen snapshot** into `~/.grok/installed-plugins/`; a bare `git pull` leaves the loaded plugin stale. `omg update` (and re-running `install-plugin.sh`) runs `grok plugin update` to refresh it, and `omg doctor` now flags version/enabled/content drift so you can't silently run an old copy.
+
+`omg setup` scaffolds **project** files (`.omg/`, AGENTS fragment) **and** installs the global guidance contract `~/.grok/rules/omg.md` (skip with `--no-global-rules`). It does **not** install the plugin itself.
 
 Smoke after install:
 
@@ -118,6 +119,19 @@ omg ulw "noop" --dry-run
 ```
 
 That’s enough to start. Everything below is the default spine and reference.
+
+### Global guidance injection (`~/.grok/rules/omg.md`)
+
+This is the Grok-native equivalent of OMC's `~/.claude/CLAUDE.md` / OMX's `~/.codex/AGENTS.md`. `omg setup` writes an **always-loaded operating contract** to `~/.grok/rules/omg.md` (Grok scans `$GROK_HOME/rules/*.md` every session). It is injected non-destructively: a bounded `<!-- OMG:START -->…<!-- OMG:END -->` block that re-`setup` reconciles in place, preserving any `USER:OMG:POLICY` block you add and a source-hash for drift detection. `omg doctor` reports its status (missing / version / hand-edit / corrupt).
+
+Verify it loaded: `grok inspect` lists `~/.grok/rules/omg.md (global, …tokens)`. Because Grok's non-`PreToolUse` hooks are passive (their stdout is ignored — no `additionalContext` injection), keyword routing lives in this rules file's `<workflow_routing>` section, **not** in a hook.
+
+### Kill switches
+
+| Env var | Effect |
+|---------|--------|
+| `DISABLE_OMG=1` | Turn **all** OMG hooks off (the PreToolUse deny fails open — allows). |
+| `OMG_SKIP_HOOKS="stop,pre_tool_use"` | Skip specific hooks by logical name (`session_start`/`subagent_stop`/`stop`/`pre_tool_use`). |
 
 ---
 
@@ -269,14 +283,16 @@ export OMG_ALLOW_EXTERNAL_CLI=1   # process-env only; never parse from command t
 ## Commands
 
 ```text
-omg {setup,doctor,state,cancel,resume,wiki,hud,lsp,interview,goal,accept,
-     integrate,worker,review,qa,autopilot,ulw,ralph,ralplan,ask,pipeline,
-     dual-review} ...
+omg {setup,doctor,update,uninstall,note,state,cancel,resume,wiki,hud,lsp,
+     interview,goal,accept,integrate,worker,review,qa,autopilot,ulw,ralph,
+     ralplan,ask,pipeline,dual-review} ...
 ```
 
 | Command | Purpose |
 |---------|---------|
-| `omg setup` / `omg doctor` | Scaffold `.omg/` · health (+ `--strict`) |
+| `omg setup` / `omg doctor` | Scaffold `.omg/` + install `~/.grok/rules/omg.md` · health (+ `--strict`) |
+| `omg update` / `omg uninstall` | git pull + refresh plugin snapshot · remove plugin/hook/rules block (`--yes`; never `.omg/`) |
+| `omg note "…"` | Durable project note in `.omg/notepad.md` (`--priority` = permanent, `--show` prints) |
 | `omg state` / `omg cancel` | Active run · process-group cancel |
 | `omg resume` | Smart resume routing + `.omg/state/RESUME.md` (SessionStart inject) |
 | `omg wiki` / `hud` / `lsp` | Local markdown wiki · statusline pack · optional language-tool probe |
@@ -455,6 +471,7 @@ Full dual-review ship bar (C1–C9) is complete. Recent lines:
 - **v0.2.x:** acceptance policy, run mutex, ULW integrate, ralplan FSM, worker prepare/seal, pipeline order, live suite.
 - **2026-07-20 core-purpose parity:** evidence stamps, session lease, interview, goal ledger + repair, ULW ownership/join, hash-bound review, UltraQA, strict autopilot; destination gates; CLI acceptance authority for `verified`.
 - **v0.2.6:** `omg --madmax` full-open host launch in tmux; OSS install dual-track + release protocol; CI smoke.
+- **v0.4.0:** OMC/OMX parity — global guidance injection (`~/.grok/rules/omg.md`); `omg update`/`uninstall`/`note`; self-healing installer + doctor drift checks; kill switches; capabilities lock; verdict-gate hardening + 6 audited security fixes (Fable 5 full-branch GO).
 - **v0.3.2:** QA freeze allowlist UX + pytest marker coalesce; auto PRD from clean UltraQA; autopilot complete short-circuit; `autopilot_phase` sync on verified.
 - **v0.3.1:** strict-v2 accept lease; residual verdict false-green; integrate/fanout/env isolation hygiene (improve-deep).
 - **v0.3.0:** `omg resume` + RESUME.md; verdict fence/negation/schema-v2; ultragoal/autopilot/interview/ultraqa skills; `omg wiki` / `hud` / `lsp`.

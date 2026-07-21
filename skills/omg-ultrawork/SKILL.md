@@ -107,6 +107,7 @@ Write-heavy children must leave a **result envelope** before exit:
 }
 ```
 
+- **Prefer `omg worker seal` over hand-writing this envelope.** `omg worker seal --run RUN --task <id>` (run by the **leader**, which has `omg` on PATH) computes `head_sha` from the worktree's real `git rev-parse HEAD` and writes a valid envelope. If you DO hand-write it, `head_sha` **must** be a real git object id (7–64 hex) from an actual commit in the worktree — a placeholder or empty value makes `omg integrate` fail closed (`envelope.head_sha must be a git object id`). A spawned worker that lacks `omg` on PATH must still commit its work in the worktree so the leader can seal it; do not fabricate a head_sha.
 - `status` is `ok` or `failed`. Leader base is recorded by `omg ulw` as `base_sha` on the run.
 - Prefer clean leader tree (no auto-stash). Apply with:
 

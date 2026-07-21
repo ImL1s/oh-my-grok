@@ -7,7 +7,13 @@ from pathlib import Path
 
 # hooks/bin is not a package; put it on path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks" / "bin"))
-from _common import append_event, ensure_omg_dirs, read_hook_event, workspace_root  # noqa: E402
+from _common import (  # noqa: E402
+    append_event,
+    ensure_omg_dirs,
+    hook_disabled,
+    read_hook_event,
+    workspace_root,
+)
 
 
 def test_ensure_and_append(tmp_path, monkeypatch):
@@ -130,3 +136,93 @@ def test_read_hook_event_empty_and_invalid(monkeypatch):
     assert read_hook_event() == {}
     monkeypatch.setattr(sys, "stdin", io.StringIO("not-json{"))
     assert read_hook_event() == {}
+
+
+# --- kill switches: DISABLE_OMG / OMG_SKIP_HOOKS ---
+
+
+def test_hook_disabled_disable_omg_truthy():
+    for val in ("1", "true", "TRUE", "yes", "on", "On", " Yes "):
+        assert hook_disabled("stop", {"DISABLE_OMG": val}) is True, val
+    for val in ("0", "", "false", "no", "off"):
+        assert hook_disabled("stop", {"DISABLE_OMG": val}) is False, val
+
+
+def test_hook_disabled_omg_skip_hooks_list():
+    env = {"OMG_SKIP_HOOKS": "stop, pre_tool_use"}
+    assert hook_disabled("stop", env) is True
+    assert hook_disabled("session_start", env) is False
+    assert hook_disabled("pre_tool_use", env) is True
+    # case-insensitive + space-separated
+    env2 = {"OMG_SKIP_HOOKS": "Stop Pre_Tool_Use"}
+    assert hook_disabled("stop", env2) is True
+    assert hook_disabled("pre_tool_use", env2) is True
+
+
+def test_hook_disabled_empty_env():
+    assert hook_disabled("stop", {}) is False
+    assert hook_disabled("session_start", {}) is False
+    assert hook_disabled("subagent_stop", {}) is False
+    assert hook_disabled("pre_tool_use", {}) is False
+
+
+def test_pre_tool_use_deny_disabled_allows(monkeypatch):
+    """With DISABLE_OMG=1, deny hook must allow (fail-open kill switch)."""
+    import subprocess
+
+    root = Path(__file__).resolve().parents[1]
+    pre = root / "hooks" / "bin" / "pre_tool_use_deny.py"
+    payload = json.dumps(
+        {
+            "toolName": "run_terminal_command",
+            "toolInput": {"command": "claude -p x"},
+        }
+    )
+    env = {
+        **os.environ,
+        "DISABLE_OMG": "1",
+        "PYTHONPATH": str(root),
+    }
+    env.pop("OMG_ALLOW_EXTERNAL_CLI", None)
+    proc = subprocess.run(
+        [sys.executable, str(pre)],
+        input=payload,
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=10,
+        cwd=str(root),
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout.strip())
+    assert out["decision"] == "allow"
+
+
+def test_pre_tool_use_deny_still_denies_without_kill_switch(monkeypatch):
+    """Regression: kill switch must not leak into normal deny path."""
+    import subprocess
+
+    root = Path(__file__).resolve().parents[1]
+    pre = root / "hooks" / "bin" / "pre_tool_use_deny.py"
+    payload = json.dumps(
+        {
+            "toolName": "run_terminal_command",
+            "toolInput": {"command": "claude -p x"},
+        }
+    )
+    env = {**os.environ, "PYTHONPATH": str(root)}
+    env.pop("DISABLE_OMG", None)
+    env.pop("OMG_SKIP_HOOKS", None)
+    env.pop("OMG_ALLOW_EXTERNAL_CLI", None)
+    proc = subprocess.run(
+        [sys.executable, str(pre)],
+        input=payload,
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=10,
+        cwd=str(root),
+    )
+    assert proc.returncode == 2, (proc.returncode, proc.stdout, proc.stderr)
+    out = json.loads(proc.stdout.strip())
+    assert out["decision"] == "deny"

@@ -357,3 +357,49 @@ def test_ownership_seal_join_integrate_closed_path(tmp_path):
     disk = json.loads(result_path(tmp_path, rid).read_text(encoding="utf-8"))
     assert disk["status"] == "ok"
     assert disk["writer"] == "omg-cli"
+
+
+def test_join_empty_owned_files_fails_closed(tmp_path):
+    """A manifest task with empty owned_files must fail closed: any changed
+    file counts as foreign, so the ownership guard cannot be silently disabled
+    by a malformed/hand-edited on-disk manifest."""
+    from omg_cli.workers import (
+        build_ownership_manifest,
+        envelope_path,
+        join_worker_results,
+        ownership_manifest_path,
+    )
+
+    base = _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="empty-own", extra={"base_sha": base})
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [{"task_id": "only", "owned_files": ["z.py"]}],
+    )
+    # Tamper on disk: blank out owned_files (build_ownership_manifest would
+    # reject this, but load_ownership_manifest does not re-validate it).
+    mpath = ownership_manifest_path(tmp_path, rid)
+    data = json.loads(mpath.read_text(encoding="utf-8"))
+    data["tasks"][0]["owned_files"] = []
+    mpath.write_text(json.dumps(data), encoding="utf-8")
+
+    epath = envelope_path(tmp_path, "only", run_id=rid)
+    epath.parent.mkdir(parents=True, exist_ok=True)
+    epath.write_text(
+        json.dumps(
+            {
+                "task_id": "only",
+                "status": "ok",
+                "writer": "omg-cli",
+                "base_sha": base,
+                "head_sha": "c" * 40,
+                "changed_files": ["anything.py"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    joined = join_worker_results(tmp_path, rid)
+    assert joined["complete"] is False
+    assert any(r.get("status") == "ownership_violation" for r in joined["results"])

@@ -6,10 +6,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import append_event, ensure_omg_dirs, read_hook_event, workspace_root
+from _common import append_event, ensure_omg_dirs, hook_disabled, read_hook_event, workspace_root
 
 
 def main() -> None:
+    if hook_disabled("session_start"):
+        return
     try:
         root = ensure_omg_dirs()
         ev = read_hook_event()
