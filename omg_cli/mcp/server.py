@@ -1,8 +1,9 @@
 """Stdio MCP JSON-RPC server (stdlib only) for the focused omg tool surface.
 
-Handles ``initialize``, ``tools/list``, ``tools/call``. Framing: prefer
-Content-Length headers (MCP stdio); also accept newline-delimited JSON for
-hermetic tests and simple pipes.
+Handles ``initialize``, ``tools/list``, ``tools/call``. Framing: auto-detect
+the client's framing on the first message (Content-Length headers **or**
+newline-delimited JSON) and respond in the **same** framing for the whole
+connection. Grok Build CLI sends NDJSON and cannot parse Content-Length replies.
 
 Never registers accept/verified tools. Sets no verified stamp — that is refused
 structurally when ``OMG_MCP_SERVER=1`` (see acceptance.refuse_if_mcp_server).
@@ -19,6 +20,10 @@ from omg_cli.mcp.tools import TOOL_SPECS, dispatch_tool
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "omg"
+
+# Wire framing. First inbound message locks the connection framing.
+FRAMING_CONTENT_LENGTH = "content-length"
+FRAMING_NDJSON = "ndjson"
 
 
 def server_info() -> dict[str, str]:
@@ -117,33 +122,63 @@ def _error_response(msg_id: Any, code: int, message: str) -> dict[str, Any]:
     }
 
 
-def encode_message(message: dict[str, Any]) -> bytes:
-    """MCP Content-Length framing."""
+def encode_message(
+    message: dict[str, Any],
+    framing: str = FRAMING_CONTENT_LENGTH,
+) -> bytes:
+    """Encode a JSON-RPC message with the given wire framing.
+
+    Default ``content-length`` preserves back-compat for existing callers/tests.
+    ``ndjson`` emits a single JSON line with a trailing newline (no headers) —
+    the shape Grok Build CLI expects.
+    """
     body = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode(
         "utf-8"
     )
+    if framing == FRAMING_NDJSON:
+        return body + b"\n"
     header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
     return header + body
 
 
-def read_message(stream: BinaryIO) -> dict[str, Any] | None:
-    """Read one framed or newline-delimited JSON-RPC message. None on EOF."""
+def _record_framing(holder: list[str] | None, framing: str) -> None:
+    """Record framing on first detection (connection-level lock)."""
+    if holder is not None and not holder:
+        holder.append(framing)
+
+
+def read_message(
+    stream: BinaryIO,
+    *,
+    framing_out: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Read one framed or newline-delimited JSON-RPC message. None on EOF.
+
+    Auto-detects framing from the first byte:
+    - ``{`` / whitespace → NDJSON line
+    - else → Content-Length header framing
+
+    When ``framing_out`` is provided, the detected framing is appended once
+    (empty list → first detection wins). Callers should lock responses to that
+    framing for the rest of the connection.
+    """
     # Peek: if first bytes look like Content-Length, use framing; else NDJSON line.
-    # We need unbuffered-ish binary reads.
-    # Strategy: read until we can decide.
     first = stream.read(1)
     if not first:
         return None
     # Content-Length starts with 'C'; NDJSON typically with '{'
     if first in (b"{", b" ", b"\t", b"\n", b"\r"):
-        # NDJSON path — finish the line
+        # NDJSON path — finish the line (record framing before parse so parse
+        # errors still let the server reply in NDJSON).
+        _record_framing(framing_out, FRAMING_NDJSON)
         rest = stream.readline()
         line = (first + rest).decode("utf-8", errors="replace").strip()
         if not line:
-            return read_message(stream)
+            return read_message(stream, framing_out=framing_out)
         return json.loads(line)
 
     # Header path
+    _record_framing(framing_out, FRAMING_CONTENT_LENGTH)
     header_buf = first
     while b"\r\n\r\n" not in header_buf and b"\n\n" not in header_buf:
         chunk = stream.read(1)
@@ -175,8 +210,12 @@ def read_message(stream: BinaryIO) -> dict[str, Any] | None:
     return json.loads(body.decode("utf-8"))
 
 
-def write_message(stream: BinaryIO, message: dict[str, Any]) -> None:
-    stream.write(encode_message(message))
+def write_message(
+    stream: BinaryIO,
+    message: dict[str, Any],
+    framing: str = FRAMING_CONTENT_LENGTH,
+) -> None:
+    stream.write(encode_message(message, framing=framing))
     stream.flush()
 
 
@@ -186,7 +225,10 @@ def run_stdio_server(
     stdin: BinaryIO | None = None,
     stdout: BinaryIO | None = None,
 ) -> int:
-    """Serve until stdin EOF. Returns process exit code."""
+    """Serve until stdin EOF. Returns process exit code.
+
+    Response framing matches the client's framing (first message locks it).
+    """
     # Ensure marker is set even if caller forgot (main sets it too).
     import os
 
@@ -198,12 +240,19 @@ def run_stdio_server(
     out_stream = stdout if stdout is not None else sys.stdout.buffer
     project = Path(root).resolve() if root is not None else Path.cwd().resolve()
 
+    # First successful framing detection locks the connection framing.
+    # Default only used if a parse error somehow precedes any detection.
+    framing_holder: list[str] = []
+
+    def _conn_framing() -> str:
+        return framing_holder[0] if framing_holder else FRAMING_CONTENT_LENGTH
+
     while True:
         try:
-            msg = read_message(in_stream)
+            msg = read_message(in_stream, framing_out=framing_holder)
         except (ValueError, json.JSONDecodeError) as exc:
             err = _error_response(None, -32700, f"Parse error: {exc}")
-            write_message(out_stream, err)
+            write_message(out_stream, err, framing=_conn_framing())
             continue
         if msg is None:
             break
@@ -216,7 +265,7 @@ def run_stdio_server(
                 f"Internal error: {exc}",
             )
         if response is not None:
-            write_message(out_stream, response)
+            write_message(out_stream, response, framing=_conn_framing())
     return 0
 
 
@@ -230,6 +279,8 @@ def run_ndjson_roundtrip(
 
 
 __all__ = [
+    "FRAMING_CONTENT_LENGTH",
+    "FRAMING_NDJSON",
     "PROTOCOL_VERSION",
     "SERVER_NAME",
     "encode_message",
