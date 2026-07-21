@@ -50,7 +50,7 @@ Workers fan out only via Grok **`spawn_subagent`** (depth 1). No Rust fork of gr
 | **Grok plugin** | `skills/omg-*`, `agents/omg-*`, hooks (event spool + PreToolUse soft-guard + SessionStart RESUME.md) |
 | **`omg` CLI** | `setup` / `doctor` / `resume` / modes / `accept` / `integrate` / `goal` / `interview` / `wiki` / `hud` / `lsp` / `autopilot`… |
 
-Version: **0.3.2** · License: MIT
+Version: **0.4.0** · License: MIT
 
 ---
 
@@ -73,7 +73,7 @@ curl -fsSL https://x.ai/cli/install.sh | bash
 git clone https://github.com/ImL1s/oh-my-grok.git ~/.local/share/oh-my-grok
 cd ~/.local/share/oh-my-grok
 ./scripts/install-plugin.sh
-# optional pin: git checkout v0.3.2
+# optional pin: git checkout v0.4.0
 
 # 2) omg on PATH (not on PyPI yet; install script also tries this)
 ln -sf "$(pwd)/bin/omg" ~/.local/bin/omg   # ensure ~/.local/bin is on PATH
@@ -93,7 +93,7 @@ omg doctor
 
 ```bash
 grok plugin install ImL1s/oh-my-grok --trust
-# better pin: grok plugin install ImL1s/oh-my-grok@v0.3.2 --trust
+# better pin: grok plugin install ImL1s/oh-my-grok@v0.4.0 --trust
 ```
 
 This installs skills/agents from GitHub. It does **not** put `omg` on PATH and does **not** guarantee the global soft-gate. **Every `omg …` command in this README (including `omg setup` / `omg doctor` in the smoke steps below) requires the Full install** — plugin-only gives you in-session skills only. Prefer **Full install** unless that is all you need.
@@ -471,6 +471,7 @@ Full dual-review ship bar (C1–C9) is complete. Recent lines:
 - **v0.2.x:** acceptance policy, run mutex, ULW integrate, ralplan FSM, worker prepare/seal, pipeline order, live suite.
 - **2026-07-20 core-purpose parity:** evidence stamps, session lease, interview, goal ledger + repair, ULW ownership/join, hash-bound review, UltraQA, strict autopilot; destination gates; CLI acceptance authority for `verified`.
 - **v0.2.6:** `omg --madmax` full-open host launch in tmux; OSS install dual-track + release protocol; CI smoke.
+- **v0.4.0:** OMC/OMX parity — global guidance injection (`~/.grok/rules/omg.md`); `omg update`/`uninstall`/`note`; self-healing installer + doctor drift checks; kill switches; capabilities lock; verdict-gate hardening + 6 audited security fixes (Fable 5 full-branch GO).
 - **v0.3.2:** QA freeze allowlist UX + pytest marker coalesce; auto PRD from clean UltraQA; autopilot complete short-circuit; `autopilot_phase` sync on verified.
 - **v0.3.1:** strict-v2 accept lease; residual verdict false-green; integrate/fanout/env isolation hygiene (improve-deep).
 - **v0.3.0:** `omg resume` + RESUME.md; verdict fence/negation/schema-v2; ultragoal/autopilot/interview/ultraqa skills; `omg wiki` / `hud` / `lsp`.
