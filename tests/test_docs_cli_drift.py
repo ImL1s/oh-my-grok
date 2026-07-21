@@ -3,6 +3,9 @@
 Root cause of the v0.3.x `omg goal start`/`omg goal complete` doc drift: no CI
 check cross-validated documented subcommands against the actual parser. This
 test closes that permanently by introspecting build_parser().
+
+Coverage: every top-level command that registers a subparser (sub-actions), not
+only `goal`. Flag-only commands (ralph, ulw, ask, …) are skipped.
 """
 from __future__ import annotations
 
@@ -26,6 +29,23 @@ def _subparser_choices(parser: argparse.ArgumentParser, dest_cmd: str) -> set[st
                     if isinstance(a2, argparse._SubParsersAction):
                         return set(a2.choices.keys())
     return set()
+
+
+def _commands_with_subactions(
+    parser: argparse.ArgumentParser,
+) -> dict[str, set[str]]:
+    """Map every top-level command that has a nested subparser to its choices.
+
+    Flag-only commands (no nested subparser) are omitted.
+    """
+    out: dict[str, set[str]] = {}
+    for act in parser._actions:
+        if isinstance(act, argparse._SubParsersAction):
+            for cmd in act.choices:
+                choices = _subparser_choices(parser, cmd)
+                if choices:
+                    out[cmd] = choices
+    return out
 
 
 def test_goal_subcommands_exist() -> None:
@@ -59,3 +79,38 @@ def test_docs_goal_actions_are_real() -> None:
             f"{doc.name} documents non-existent `omg goal` subcommands: "
             f"{sorted(unknown)} (real choices: {sorted(choices)})"
         )
+
+
+def test_docs_all_subcommands_are_real() -> None:
+    """Every documented `omg <cmd> a|b|c` token must be a real sub-action.
+
+    Applies to all top-level commands that expose a nested subparser via
+    build_parser() (interview, goal, worker, wiki, lsp, autopilot, qa, …).
+    Commands without sub-actions are skipped.
+    """
+    parser = build_parser()
+    cmds = _commands_with_subactions(parser)
+    assert cmds, "expected at least one top-level command with sub-actions"
+    # sanity: the known nested-subparser commands from build_parser()
+    for expected in (
+        "interview",
+        "goal",
+        "worker",
+        "wiki",
+        "lsp",
+        "autopilot",
+        "qa",
+    ):
+        assert expected in cmds, f"missing expected sub-actioned command: {expected}"
+
+    for doc in DOCS:
+        text = doc.read_text(encoding="utf-8")
+        for cmd, choices in sorted(cmds.items()):
+            documented = _documented_actions(text, cmd)
+            if not documented:
+                continue
+            unknown = documented - choices
+            assert not unknown, (
+                f"{doc.name} documents non-existent `omg {cmd}` subcommands: "
+                f"{sorted(unknown)} (real choices: {sorted(choices)})"
+            )

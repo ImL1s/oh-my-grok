@@ -43,6 +43,19 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _norm_relpath(f: str) -> str:
+    """Normalize a repo-relative path without collapsing leading dotfiles.
+
+    Strips only repeated leading ``./`` prefixes and absolute-looking leading
+    slashes. Does **not** use ``str.lstrip("./")``, which would map ``.config``
+    to ``config``.
+    """
+    s = str(f).strip()
+    while s.startswith("./"):
+        s = s[2:]
+    return s.lstrip("/")  # absolute-looking -> repo-relative; keep dotfiles intact
+
+
 def validate_task_id(task_id: str) -> str:
     tid = (task_id or "").strip()
     if not tid or not _TASK_ID_RE.match(tid):
@@ -379,7 +392,7 @@ def build_ownership_manifest(
         owned = raw.get("owned_files") or raw.get("files") or []
         if not isinstance(owned, list) or not all(isinstance(f, str) for f in owned):
             raise WorkerError(f"task {tid}: owned_files must be a string list")
-        owned_norm = [f.strip().lstrip("./") for f in owned if f.strip()]
+        owned_norm = [_norm_relpath(f) for f in owned if f.strip()]
         if not owned_norm:
             raise WorkerError(f"task {tid}: owned_files must be non-empty")
         coord = str(raw.get("coordination") or "").strip()
@@ -520,14 +533,14 @@ def join_worker_results(
             )
             continue
         owned = {
-            str(f).strip().lstrip("./")
+            _norm_relpath(f)
             for f in (task.get("owned_files") or [])
             if str(f).strip()
         }
         changed = env.get("changed_files") or []
         if not isinstance(changed, list):
             changed = []
-        changed_norm = {str(f).strip().lstrip("./") for f in changed if str(f).strip()}
+        changed_norm = {_norm_relpath(f) for f in changed if str(f).strip()}
         # Fail closed on empty ownership: a task that owns nothing may change
         # nothing. An empty owned_files set (malformed / hand-edited manifest that
         # bypassed build_ownership_manifest's non-empty guard) must NOT silently

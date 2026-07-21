@@ -325,6 +325,114 @@ def _has_flag(argv: Sequence[str], *flags: str) -> bool:
     return False
 
 
+# Known interpreter options whose value is a SEPARATE next argv token (not glued).
+# Fail-closed bare-token scanning already treats non-``.py`` positionals as
+# option values; this set covers the residual case pure fail-closed cannot:
+# a ``.py`` token that is the *value* of a known option (e.g. ``-W x.py -c``),
+# not the script boundary. Glued forms (``-Wignore``, ``--require=x``) are one
+# token and need no skip.
+_INTERPRETER_SEPARATE_ARG_OPTIONS: frozenset[str] = frozenset(
+    {
+        # Python
+        "-W",
+        "-X",
+        "-Q",
+        # Node
+        "-r",
+        "--require",
+        "--loader",
+        "--experimental-loader",
+        "--import",
+        "--conditions",
+        "-C",
+    }
+)
+
+
+def _interpreter_flag_region(argv: Sequence[str]) -> list[str]:
+    """Return argv[0] plus only INTERPRETER option tokens (not script/module args).
+
+    Floor ``-c``/``-e`` (python) and ``-e``/``--eval``/``-p``/``--print`` (node)
+    must scan this region only. Boundary (first token that ends the region; the
+    boundary token itself is excluded except when it *is* an eval flag that the
+    floor must still see — those flags are included then scanning stops):
+
+    - bare token ending in ``.py`` (unambiguous script path)
+    - ``-m`` (module; rest are module args)
+    - ``-c`` / glued ``-cCODE`` / cluster activating ``c`` (python code exec)
+    - ``-e`` / ``-p`` / ``--eval`` / ``--print`` (node eval; same idea)
+    - ``--`` (end of options)
+
+    Bare non-``.py`` tokens do **not** end the region: treat them as the value of
+    a (possibly unknown) arg-consuming option and keep scanning, so a following
+    eval flag still lands in the region. Known options in
+    ``_INTERPRETER_SEPARATE_ARG_OPTIONS`` also consume the next token even when it
+    ends in ``.py`` (``-W x.py -c`` must still see ``-c``).
+
+    TRADE-OFF (intentional fail-closed): a bare NON-``.py`` positional now fails
+    closed, so ``python3 extensionless_script -c foo`` DENIES under break-glass.
+    Normal mode already requires a ``.py`` script; legit break-glass is
+    ``-m pytest`` or a ``.py`` path. Floors must over-deny, never under-deny.
+
+    Because interpreter eval flags appear *in* this region (python/node consume
+    them before any script), they remain floor hits. A ``-c`` / ``-e`` after a
+    ``.py`` script path or after ``-m`` is a *script/module* arg and is not in
+    the region.
+    """
+    if not argv:
+        return []
+    out: list[str] = [str(argv[0])]
+    i = 1
+    n = len(argv)
+    while i < n:
+        tok = str(argv[i])
+        # Explicit option-list terminators (excluded from out).
+        if tok == "--" or tok == "-m":
+            break
+
+        # Bare (non-option) token: end ONLY for an unambiguous .py script path.
+        # Any other bare token is treated as an option value — keep scanning
+        # (fail closed) so a later -c/-e/-p still hits the floor.
+        if not tok.startswith("-"):
+            if tok.endswith(".py"):
+                break
+            i += 1
+            continue
+
+        # Include this interpreter option token.
+        out.append(tok)
+
+        # Eval / code-exec flags (and glued/cluster forms): included above so the
+        # floor still sees them; stop so CODE / following args are not scanned.
+        if tok in ("-c", "-e", "-p", "--eval", "--print"):
+            break
+        if tok.startswith("--eval=") or tok.startswith("--print="):
+            break
+        if not tok.startswith("--") and len(tok) >= 2:
+            # Glued short value: -cCODE, -eCODE, -pCODE
+            if (
+                tok.startswith("-c")
+                or tok.startswith("-e")
+                or tok.startswith("-p")
+            ) and len(tok) > 2:
+                break
+            # Combined clusters that activate c or e: -ic, -pe, …
+            if _short_cluster_activates(tok, "c") or _short_cluster_activates(
+                tok, "e"
+            ):
+                break
+
+        # Known arg-consuming options take the NEXT token as value even if it
+        # ends in .py (only residual the pure fail-closed bare rule cannot cover).
+        # Glued forms are one token.
+        if tok in _INTERPRETER_SEPARATE_ARG_OPTIONS and i + 1 < n:
+            i += 2
+            continue
+
+        i += 1
+    return out
+
+
 def _path_is_under_project(path_str: str, project_root: Path | None) -> bool:
     """True if path resolves under project_root (or is a bare relative .py name).
 
@@ -370,7 +478,8 @@ def _check_python_argv(
         raise CommandPolicyError(
             f"{where}: python requires -m pytest|unittest or a .py script path"
         )
-    if _has_flag(cmd, "-c", "-e"):
+    # Same region restriction as the global floor: only interpreter-owned flags.
+    if _has_flag(_interpreter_flag_region(cmd), "-c", "-e"):
         raise CommandPolicyError(
             f"{where}: python -c/-e is denied for acceptance "
             "(use -m pytest|unittest or a .py path under the project)"
@@ -426,7 +535,10 @@ def _check_python_argv(
 
 def _check_node_argv(cmd: Sequence[str], *, where: str) -> None:
     """Node: deny -e/-p eval; allow script paths only when basename was allow-cmd'd."""
-    if _has_flag(cmd, "-e", "--eval", "-p", "--print"):
+    # Only flags before the script file (interpreter region) count.
+    if _has_flag(
+        _interpreter_flag_region(cmd), "-e", "--eval", "-p", "--print"
+    ):
         raise CommandPolicyError(
             f"{where}: node -e/--eval/-p is denied for acceptance"
         )
@@ -677,16 +789,20 @@ def check_command_policy(
         )
 
     # Break-glass still cannot use python -c / node -e.
+    # Scan only the interpreter-flag region (before script / -m / --), so
+    # script or module args like ``-vc`` / pytest ``-c`` are not false denials.
     if is_python_bin(base):
-        # Floor: -c/-e always denied; full grammar when not no_allowlist or always
-        if _has_flag(cmd, "-c", "-e"):
+        # Floor: -c/-e always denied when they are python's own flags.
+        if _has_flag(_interpreter_flag_region(cmd), "-c", "-e"):
             raise CommandPolicyError(
                 f"{where}: python -c/-e is denied for acceptance "
                 "(always-deny floor; use -m pytest|unittest or project .py "
                 "under the repo — e.g. python3 scripts/check.py)"
             )
     if is_node_bin(base) or base == "node":
-        if _has_flag(cmd, "-e", "--eval", "-p", "--print"):
+        if _has_flag(
+            _interpreter_flag_region(cmd), "-e", "--eval", "-p", "--print"
+        ):
             raise CommandPolicyError(
                 f"{where}: node -e/--eval/-p is denied for acceptance "
                 "(always-deny floor)"

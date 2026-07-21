@@ -27,6 +27,7 @@ def _load_gen_module():
 
 
 def _fake_repo(tmp_path: Path) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "plugin.json").write_text(
         json.dumps({"name": "oh-my-grok", "version": "9.9.9"}),
         encoding="utf-8",
@@ -56,6 +57,22 @@ def test_compute_lock_files_and_aggregate(tmp_path: Path) -> None:
     assert isinstance(lock["aggregate"], str) and len(lock["aggregate"]) == 64
     # deterministic
     assert gen.compute_lock(root)["aggregate"] == lock["aggregate"]
+    # compute_lock_for is the generalized form; compute_lock delegates to it
+    assert gen.compute_lock_for(root) == lock
+    assert gen.compute_lock_for(root)["aggregate"] == lock["aggregate"]
+
+
+def test_compute_lock_for_deterministic_on_tmp_root(tmp_path: Path) -> None:
+    gen = _load_gen_module()
+    root = _fake_repo(tmp_path)
+    a = gen.compute_lock_for(root)
+    b = gen.compute_lock_for(root)
+    assert a == b
+    assert a["aggregate"] == b["aggregate"]
+    assert set(a["files"]) == {
+        "skills/omg-x/SKILL.md",
+        "agents/omg-y.md",
+    }
 
 
 def test_editing_file_changes_aggregate(tmp_path: Path) -> None:
@@ -170,6 +187,128 @@ def test_run_soft_checks_includes_capabilities_lock(
             "local checkout: n files match lock",
         ),
     )
+    monkeypatch.setattr(
+        doctor,
+        "check_installed_capabilities_lock",
+        lambda: (
+            "installed capabilities lock",
+            "ok",
+            "installed skills/agents match committed lock",
+        ),
+    )
     soft = doctor.run_soft_checks()
     names = [n for n, _, _ in soft]
     assert "capabilities lock (local checkout)" in names
+    assert "installed capabilities lock" in names
+    # installed check runs after local-checkout check
+    assert names.index("installed capabilities lock") > names.index(
+        "capabilities lock (local checkout)"
+    )
+
+
+def _populate_installed_like_checkout(installed: Path, *, skill_body: str = "# skill x\nbody\n") -> None:
+    """Minimal skills/agents tree matching _fake_repo lock inputs."""
+    skill = installed / "skills" / "omg-x" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(skill_body, encoding="utf-8")
+    agent = installed / "agents" / "omg-y.md"
+    agent.parent.mkdir(parents=True)
+    agent.write_text("# agent y\n", encoding="utf-8")
+    (installed / "plugin.json").write_text(
+        json.dumps({"name": "oh-my-grok", "version": "9.9.9"}),
+        encoding="utf-8",
+    )
+
+
+def test_doctor_check_installed_capabilities_lock_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Installed snapshot content identical to checkout lock inputs → ok."""
+    gen = _load_gen_module()
+    checkout = _fake_repo(tmp_path / "checkout")
+    gen.write_lock(checkout)
+    installed = tmp_path / "installed"
+    _populate_installed_like_checkout(installed)
+
+    monkeypatch.setattr(doctor, "plugin_root", lambda: checkout)
+    monkeypatch.setattr(
+        doctor,
+        "_run_grok_json",
+        lambda *_a, **_k: [
+            {
+                "name": "oh-my-grok",
+                "source": str(checkout),
+                "path": str(installed),
+            }
+        ],
+    )
+    name, level, detail = doctor.check_installed_capabilities_lock()
+    assert name == "installed capabilities lock"
+    assert level == "ok"
+    assert "match committed lock" in detail
+
+
+def test_doctor_check_installed_capabilities_lock_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Installed SKILL.md differs → aggregate mismatch → warn."""
+    gen = _load_gen_module()
+    checkout = _fake_repo(tmp_path / "checkout")
+    gen.write_lock(checkout)
+    installed = tmp_path / "installed"
+    _populate_installed_like_checkout(
+        installed, skill_body="# skill x\nDRIFTED installed body\n"
+    )
+
+    monkeypatch.setattr(doctor, "plugin_root", lambda: checkout)
+    monkeypatch.setattr(
+        doctor,
+        "_run_grok_json",
+        lambda *_a, **_k: [
+            {
+                "name": "oh-my-grok",
+                "source": str(checkout),
+                "path": str(installed),
+            }
+        ],
+    )
+    name, level, detail = doctor.check_installed_capabilities_lock()
+    assert name == "installed capabilities lock"
+    assert level == "warn"
+    assert "INSTALLED skills/agents differ" in detail
+    assert "install-plugin" in detail or "plugin update" in detail
+
+
+def test_doctor_check_installed_capabilities_lock_probe_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Probe returns None → warn, never crash."""
+    monkeypatch.setattr(doctor, "_run_grok_json", lambda *_a, **_k: None)
+    name, level, detail = doctor.check_installed_capabilities_lock()
+    assert name == "installed capabilities lock"
+    assert level == "warn"
+    assert "cannot locate installed snapshot" in detail
+
+
+def test_doctor_check_installed_capabilities_lock_missing_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plugin list points at a non-existent installed dir → warn."""
+    checkout = _fake_repo(tmp_path / "checkout")
+    missing = tmp_path / "no-such-installed"
+    monkeypatch.setattr(doctor, "plugin_root", lambda: checkout)
+    monkeypatch.setattr(
+        doctor,
+        "_run_grok_json",
+        lambda *_a, **_k: [
+            {
+                "name": "oh-my-grok",
+                "source": str(checkout),
+                "path": str(missing),
+            }
+        ],
+    )
+    name, level, detail = doctor.check_installed_capabilities_lock()
+    assert name == "installed capabilities lock"
+    assert level == "warn"
+    assert "cannot locate installed snapshot" in detail

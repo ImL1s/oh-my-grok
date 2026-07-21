@@ -35,6 +35,7 @@ def cmd_note(args: argparse.Namespace) -> int:
         " ".join(args.text),
         priority=bool(getattr(args, "priority", False)),
         show=bool(getattr(args, "show", False)),
+        prune=bool(getattr(args, "prune", False)),
     )
 
 
@@ -1086,6 +1087,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--show",
         action="store_true",
         help="print the notepad and exit",
+    )
+    p_note.add_argument(
+        "--prune",
+        action="store_true",
+        help="remove [7d] notes older than 7 days (permanent kept)",
     )
     p_note.set_defaults(func=cmd_note)
 

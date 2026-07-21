@@ -693,6 +693,96 @@ def check_capabilities_lock() -> SoftResult:
     return (name, "ok", f"local checkout: {n} files match lock")
 
 
+def _entry_install_path(item: dict[str, Any]) -> str:
+    """Installed frozen snapshot path (prefer installPath / path over source)."""
+    for key in ("installPath", "install_path", "path"):
+        val = item.get(key)
+        if val is not None and str(val).strip():
+            return str(val)
+    return ""
+
+
+def _paths_match_resolved(a: str | Path, b: str | Path) -> bool:
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except (OSError, RuntimeError):
+        return str(a).rstrip("/") == str(b).rstrip("/")
+
+
+def check_installed_capabilities_lock() -> SoftResult:
+    """Soft: INSTALLED frozen snapshot skills/agents match the committed lock.
+
+    OMX-parity installed-drift detector. Distinct from
+    ``check_capabilities_lock`` (local-checkout commit hygiene).
+    """
+    name = "installed capabilities lock"
+    try:
+        data = _run_grok_json(("grok", "plugin", "list", "--json"))
+        if data is None:
+            return (name, "warn", "cannot locate installed snapshot")
+
+        checkout = plugin_root().resolve()
+        matches = [
+            item
+            for item in _plugin_list_entries(data)
+            if PLUGIN_NAME in _entry_name(item)
+        ]
+        installed_dir: Path | None = None
+        for item in matches:
+            # Entry whose source/path resolves to this checkout.
+            candidates: list[str] = []
+            src = _entry_source_path(item)
+            if src:
+                candidates.append(src)
+            for key in ("source", "path"):
+                val = item.get(key)
+                if val is not None and str(val).strip():
+                    s = str(val)
+                    if s not in candidates:
+                        candidates.append(s)
+            if not any(_paths_match_resolved(c, checkout) for c in candidates):
+                continue
+            inst = _entry_install_path(item)
+            if not inst:
+                # source matched but no distinct install path field — skip
+                continue
+            installed_dir = Path(inst)
+            break
+
+        if installed_dir is None:
+            return (name, "warn", "cannot locate installed snapshot")
+        if not installed_dir.is_dir():
+            return (name, "warn", "cannot locate installed snapshot")
+
+        mod = _import_capabilities_lock_mod()
+        installed_lock = mod.compute_lock_for(installed_dir)
+        stored = mod.read_lock(plugin_root())
+        if stored is None:
+            return (
+                name,
+                "warn",
+                "no omg_capabilities.lock.json in checkout — cannot verify installed",
+            )
+        if stored.get("aggregate") != installed_lock.get("aggregate"):
+            return (
+                name,
+                "warn",
+                "INSTALLED skills/agents differ from committed lock — re-run "
+                "scripts/install-plugin.sh (grok plugin update)",
+            )
+        return (
+            name,
+            "ok",
+            "installed skills/agents match committed lock",
+        )
+    except Exception as e:
+        return (
+            name,
+            "warn",
+            f"cannot locate installed snapshot ({type(e).__name__}: {e})",
+        )
+
+
 def run_checks() -> list[tuple[str, bool, str]]:
     return [
         check_grok_on_path(),
@@ -715,6 +805,7 @@ def run_soft_checks() -> list[SoftResult]:
         check_plugin_version_drift(),
         check_plugin_enabled(),
         check_capabilities_lock(),
+        check_installed_capabilities_lock(),
     ]
 
 

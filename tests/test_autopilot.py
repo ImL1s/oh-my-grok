@@ -273,3 +273,28 @@ def test_blocked_implement_roundtrip_invalidates_stale_stamps(tmp_path: Path) ->
     # The qa gate must now reject: the review stamp was invalidated on implement.
     with pytest.raises(AutopilotError, match="review"):
         transition(tmp_path, rid, "qa")
+
+
+def test_qa_blocked_review_roundtrip_invalidates_review_stamp(tmp_path: Path) -> None:
+    """qa→blocked→review must invalidate the prior clean review stamp so a
+    later qa entry cannot reuse it without a fresh structured_review."""
+    from omg_cli.autopilot import stage_review_is_clean
+
+    st = start_autopilot(tmp_path, "qa-blocked-review", skip_interview=True)
+    rid = st["run_id"]
+    # Reach a clean qa the legitimate way.
+    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "review")
+    _stamp_review_clean(tmp_path, rid)
+    assert stage_review_is_clean(tmp_path, rid) is True
+    transition(tmp_path, rid, "qa")
+    # Detour that re-enters review without new product code, but still must
+    # not reopen qa on a pre-block stamp.
+    transition(tmp_path, rid, "blocked", reason="ops hiccup")
+    transition(tmp_path, rid, "review")
+    assert stage_review_is_clean(tmp_path, rid) is False
+    with pytest.raises(AutopilotError, match="review"):
+        transition(tmp_path, rid, "qa")
+    # Fresh stamp required after invalidation.
+    _stamp_review_clean(tmp_path, rid, diff="new-diff-after-blocked-review")
+    transition(tmp_path, rid, "qa")

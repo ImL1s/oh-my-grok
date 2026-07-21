@@ -416,3 +416,121 @@ def test_check_plugin_enabled_warn_no_config(tmp_path, monkeypatch):
     assert name == "plugin enabled ([plugins].enabled)"
     assert level == "warn"
     assert "config.toml" in detail.lower() or "cannot confirm" in detail.lower()
+
+
+# --- installed capabilities lock (OMX-parity installed drift) ---
+
+
+def test_check_installed_capabilities_lock_ok(tmp_path, monkeypatch):
+    """Fake installed dir matching checkout lock → ok (no real grok)."""
+    import importlib.util
+    import sys
+
+    gen_script = Path(doctor.plugin_root()) / "scripts" / "generate_capabilities_lock.py"
+    spec = importlib.util.spec_from_file_location("generate_capabilities_lock", gen_script)
+    assert spec is not None and spec.loader is not None
+    gen = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = gen
+    spec.loader.exec_module(gen)
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir(parents=True)
+    (checkout / "plugin.json").write_text(
+        json.dumps({"name": "oh-my-grok", "version": "1.0.0"}),
+        encoding="utf-8",
+    )
+    skill = checkout / "skills" / "omg-a" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("skill-a\n", encoding="utf-8")
+    agent = checkout / "agents" / "omg-b.md"
+    agent.parent.mkdir(parents=True)
+    agent.write_text("agent-b\n", encoding="utf-8")
+    gen.write_lock(checkout)
+
+    installed = tmp_path / "installed-plugins" / "oh-my-grok-key"
+    (installed / "skills" / "omg-a").mkdir(parents=True)
+    (installed / "skills" / "omg-a" / "SKILL.md").write_text("skill-a\n", encoding="utf-8")
+    (installed / "agents").mkdir(parents=True)
+    (installed / "agents" / "omg-b.md").write_text("agent-b\n", encoding="utf-8")
+    (installed / "plugin.json").write_text(
+        json.dumps({"name": "oh-my-grok", "version": "1.0.0"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor, "plugin_root", lambda: checkout)
+    monkeypatch.setattr(
+        doctor,
+        "_run_grok_json",
+        lambda *_a, **_k: [
+            {
+                "name": "oh-my-grok",
+                "source": str(checkout),
+                "path": str(installed),
+            }
+        ],
+    )
+    name, level, detail = doctor.check_installed_capabilities_lock()
+    assert name == "installed capabilities lock"
+    assert level == "ok"
+    assert "match committed lock" in detail
+
+
+def test_check_installed_capabilities_lock_mismatch(tmp_path, monkeypatch):
+    """Installed skill content differs from committed lock → warn."""
+    import importlib.util
+    import sys
+
+    gen_script = Path(doctor.plugin_root()) / "scripts" / "generate_capabilities_lock.py"
+    spec = importlib.util.spec_from_file_location("generate_capabilities_lock", gen_script)
+    assert spec is not None and spec.loader is not None
+    gen = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = gen
+    spec.loader.exec_module(gen)
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir(parents=True)
+    (checkout / "plugin.json").write_text(
+        json.dumps({"name": "oh-my-grok", "version": "1.0.0"}),
+        encoding="utf-8",
+    )
+    skill = checkout / "skills" / "omg-a" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("skill-a\n", encoding="utf-8")
+    agent = checkout / "agents" / "omg-b.md"
+    agent.parent.mkdir(parents=True)
+    agent.write_text("agent-b\n", encoding="utf-8")
+    gen.write_lock(checkout)
+
+    installed = tmp_path / "installed-plugins" / "oh-my-grok-key"
+    (installed / "skills" / "omg-a").mkdir(parents=True)
+    (installed / "skills" / "omg-a" / "SKILL.md").write_text(
+        "skill-a-MODIFIED\n", encoding="utf-8"
+    )
+    (installed / "agents").mkdir(parents=True)
+    (installed / "agents" / "omg-b.md").write_text("agent-b\n", encoding="utf-8")
+
+    monkeypatch.setattr(doctor, "plugin_root", lambda: checkout)
+    monkeypatch.setattr(
+        doctor,
+        "_run_grok_json",
+        lambda *_a, **_k: [
+            {
+                "name": "oh-my-grok",
+                "source": str(checkout),
+                "path": str(installed),
+            }
+        ],
+    )
+    name, level, detail = doctor.check_installed_capabilities_lock()
+    assert name == "installed capabilities lock"
+    assert level == "warn"
+    assert "INSTALLED skills/agents differ" in detail
+
+
+def test_check_installed_capabilities_lock_unavailable(monkeypatch):
+    """Probe None → warn without crash."""
+    monkeypatch.setattr(doctor, "_run_grok_json", lambda *_a, **_k: None)
+    name, level, detail = doctor.check_installed_capabilities_lock()
+    assert name == "installed capabilities lock"
+    assert level == "warn"
+    assert "cannot locate installed snapshot" in detail
