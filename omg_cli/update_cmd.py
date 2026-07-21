@@ -62,6 +62,14 @@ def run_update(*, root: Path | None = None, runner=subprocess.run) -> int:
                 text=True,
             )
             if getattr(result, "returncode", 1) != 0:
+                # Forward captured script output so recovery instructions
+                # (e.g. reinstall after failed refresh) reach the user.
+                out = getattr(result, "stdout", None) or ""
+                err = getattr(result, "stderr", None) or ""
+                if out:
+                    print(out, end="" if out.endswith("\n") else "\n")
+                if err:
+                    print(err, end="" if err.endswith("\n") else "\n", file=sys.stderr)
                 print(
                     "omg update: install-plugin.sh exited "
                     f"rc={getattr(result, 'returncode', '?')}",

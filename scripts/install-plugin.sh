@@ -104,7 +104,7 @@ INSTALLED_OK=0
 REFRESHED=0
 if [[ "$SAME_PATH_INSTALLED" -eq 1 ]]; then
   # Reinstall = refresh: uninstall FIRST, then install immediately.
-  echo "refresh: uninstalled stale local snapshot before reinstall"
+  echo "refreshing (uninstall+reinstall)…"
   if grok plugin uninstall oh-my-grok --confirm; then
     echo "uninstall: ok (preparing fresh install)"
   else

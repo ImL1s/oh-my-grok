@@ -130,3 +130,42 @@ def test_run_update_calls_git_pull_and_install_script(tmp_path: Path):
         c for c in fake.calls if any("install-plugin.sh" in str(x) for x in c)
     ]
     assert script_calls, f"expected install-plugin.sh in {fake.calls}"
+
+
+def test_run_update_surfaces_install_plugin_output_on_nonzero(tmp_path: Path, capsys):
+    """install-plugin.sh recovery stderr must reach the user via omg update."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir(parents=True)
+    install_sh = scripts / "install-plugin.sh"
+    install_sh.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+    install_sh.chmod(install_sh.stat().st_mode | stat.S_IXUSR)
+
+    loud_stderr = (
+        "LOUD: your plugin may be REMOVED — re-run: "
+        "grok plugin install /path --trust"
+    )
+    loud_stdout = "refreshing…"
+
+    calls: list[list[str]] = []
+
+    def runner(argv, *args, **kwargs):
+        calls.append(list(argv))
+        # install-plugin.sh is the only non-git invocation
+        if any("install-plugin.sh" in str(x) for x in argv):
+            return SimpleNamespace(
+                returncode=1,
+                stdout=loud_stdout,
+                stderr=loud_stderr,
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    code = run_update(root=tmp_path, runner=runner)
+    assert code == 0  # update continues; surfaces script failure
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "your plugin may be REMOVED" in combined
+    assert "grok plugin install" in combined
+    assert "install-plugin.sh exited" in combined
+    assert "rc=1" in combined
+    assert loud_stdout in captured.out or loud_stdout in combined
