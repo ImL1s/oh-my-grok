@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -479,3 +480,349 @@ def test_join_empty_owned_files_fails_closed(tmp_path):
     joined = join_worker_results(tmp_path, rid)
     assert joined["complete"] is False
     assert any(r.get("status") == "ownership_violation" for r in joined["results"])
+
+
+def test_seal_all_tasks_seals_both_and_join_succeeds(tmp_path):
+    """seal_all_tasks seals every prepared worktree; join then succeeds."""
+    from omg_cli.workers import (
+        build_ownership_manifest,
+        envelope_path,
+        join_worker_results,
+        prepare_task,
+        seal_all_tasks,
+    )
+
+    base = _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="seal-all", extra={"base_sha": base})
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [
+            {"task_id": "a", "owned_files": ["a.py"]},
+            {"task_id": "b", "owned_files": ["b.py"]},
+        ],
+    )
+    for tid, fname in (("a", "a.py"), ("b", "b.py")):
+        wt = prepare_task(tmp_path, rid, tid)
+        (wt / fname).write_text(f"{tid} body\n", encoding="utf-8")
+        # Real commit in worktree (leader seal_all reuses seal_task which
+        # also commits dirty trees; pre-commit keeps head_sha real either way).
+        _git(wt, "add", fname)
+        _git(wt, "commit", "-m", f"add {fname}")
+
+    results = seal_all_tasks(tmp_path, rid)
+    assert [r["task_id"] for r in results] == ["a", "b"]
+    assert all(r["status"] == "sealed" for r in results), results
+    for r in results:
+        assert re.fullmatch(r"[0-9a-f]{40}", r["head_sha"]), r
+        assert r["changed_files_count"] >= 1
+        assert envelope_path(tmp_path, r["task_id"], run_id=rid).is_file()
+
+    joined = join_worker_results(tmp_path, rid)
+    assert joined["complete"] is True
+    assert joined["missing"] == []
+    assert joined["failed"] == []
+
+
+def test_seal_all_skipped_no_worktree_and_already_sealed(tmp_path):
+    """Missing worktree is skipped (not fabricated); existing envelope is already-sealed."""
+    from omg_cli.workers import (
+        build_ownership_manifest,
+        envelope_path,
+        prepare_task,
+        seal_all_tasks,
+        seal_task,
+        worktree_dir,
+    )
+
+    base = _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="seal-skip", extra={"base_sha": base})
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [
+            {"task_id": "a", "owned_files": ["a.py"]},
+            {"task_id": "b", "owned_files": ["b.py"]},
+        ],
+    )
+    # Prepare + seal only task a
+    wt_a = prepare_task(tmp_path, rid, "a")
+    (wt_a / "a.py").write_text("a\n", encoding="utf-8")
+    env = seal_task(tmp_path, rid, "a", message="add a")
+    assert env["status"] == "ok"
+    assert envelope_path(tmp_path, "a", run_id=rid).is_file()
+    # Task b has no worktree
+    assert not worktree_dir(tmp_path, rid, "b").is_dir()
+
+    results = seal_all_tasks(tmp_path, rid)
+    by_id = {r["task_id"]: r for r in results}
+    assert by_id["a"]["status"] == "already-sealed"
+    assert by_id["b"]["status"] == "skipped-no-worktree"
+    # Must not fabricate envelope for absent worktree
+    assert not envelope_path(tmp_path, "b", run_id=rid).is_file()
+
+
+def test_seal_all_only_touches_run_worktrees(tmp_path):
+    """seal_all only seals worktrees under .omg/worktrees/<run_id>/."""
+    from omg_cli.workers import (
+        build_ownership_manifest,
+        envelope_path,
+        prepare_task,
+        seal_all_tasks,
+        worktree_dir,
+    )
+
+    base = _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="seal-scope", extra={"base_sha": base})
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [
+            {"task_id": "present", "owned_files": ["p.py"]},
+            {"task_id": "absent", "owned_files": ["q.py"]},
+        ],
+    )
+    wt = prepare_task(tmp_path, rid, "present")
+    (wt / "p.py").write_text("p\n", encoding="utf-8")
+    _git(wt, "add", "p.py")
+    _git(wt, "commit", "-m", "add p")
+
+    # External path that must not be treated as this run's worktree
+    foreign = tmp_path / "foreign-wt" / "absent"
+    foreign.mkdir(parents=True)
+    (foreign / "q.py").write_text("foreign\n", encoding="utf-8")
+    assert not worktree_dir(tmp_path, rid, "absent").is_dir()
+
+    results = seal_all_tasks(tmp_path, rid)
+    by_id = {r["task_id"]: r for r in results}
+    assert by_id["present"]["status"] == "sealed"
+    assert by_id["absent"]["status"] == "skipped-no-worktree"
+    assert envelope_path(tmp_path, "present", run_id=rid).is_file()
+    assert not envelope_path(tmp_path, "absent", run_id=rid).is_file()
+
+
+def test_cli_worker_seal_all(tmp_path):
+    """omg worker seal --all returns 0 and prints a per-task table."""
+    from omg_cli.workers import build_ownership_manifest, prepare_task
+
+    base = _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="cli-seal-all", extra={"base_sha": base})
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [
+            {"task_id": "a", "owned_files": ["a.py"]},
+            {"task_id": "b", "owned_files": ["b.py"]},
+        ],
+    )
+    for tid, fname in (("a", "a.py"), ("b", "b.py")):
+        wt = prepare_task(tmp_path, rid, tid)
+        (wt / fname).write_text(f"{tid}\n", encoding="utf-8")
+        _git(wt, "add", fname)
+        _git(wt, "commit", "-m", f"add {fname}")
+
+    r = _run_omg("worker", "seal", "--all", "--run", rid, cwd=tmp_path)
+    assert r.returncode == 0, r.stderr + r.stdout
+    out = r.stdout
+    assert "a" in out and "b" in out
+    assert "sealed" in out
+    assert "sealed 2" in out or "sealed 2," in out
+    assert "failed 0" in out
+    assert "error 0" in out
+
+
+def test_seal_all_head_eq_base_reports_failed_not_sealed(tmp_path):
+    """Prepared worktree with no commit (head==base) must be failed, not sealed.
+
+    seal_task returns status=='failed' envelope without raising; seal_all must
+    surface that as result status 'failed' (not mask as 'sealed').
+    """
+    from omg_cli.workers import (
+        build_ownership_manifest,
+        envelope_path,
+        prepare_task,
+        seal_all_tasks,
+    )
+
+    base = _init_repo(tmp_path)
+    run = create_run(
+        tmp_path, mode="ulw", goal="seal-head-base", extra={"base_sha": base}
+    )
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [{"task_id": "clean", "owned_files": ["clean.py"]}],
+    )
+    prepare_task(tmp_path, rid, "clean")
+    # No edits / no commit → head == base
+
+    results = seal_all_tasks(tmp_path, rid)
+    assert len(results) == 1
+    row = results[0]
+    assert row["task_id"] == "clean"
+    assert row["status"] == "failed", (
+        f"expected failed for head==base, got {row!r} "
+        "(masking envelope failed as sealed is the bug)"
+    )
+    assert row.get("envelope_status") == "failed"
+    # Envelope is still written (failed seal is an envelope, not a skip)
+    assert envelope_path(tmp_path, "clean", run_id=rid).is_file()
+
+
+def test_cli_worker_seal_all_head_eq_base_nonzero(tmp_path):
+    """omg worker seal --all must return nonzero when any task seal failed."""
+    from omg_cli.workers import build_ownership_manifest, prepare_task
+
+    base = _init_repo(tmp_path)
+    run = create_run(
+        tmp_path, mode="ulw", goal="cli-seal-fail", extra={"base_sha": base}
+    )
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [{"task_id": "clean", "owned_files": ["clean.py"]}],
+    )
+    prepare_task(tmp_path, rid, "clean")
+
+    r = _run_omg("worker", "seal", "--all", "--run", rid, cwd=tmp_path)
+    assert r.returncode != 0, (
+        f"expected nonzero when head==base failed seal; got 0\n"
+        f"stdout={r.stdout!r}\nstderr={r.stderr!r}"
+    )
+    assert "failed" in r.stdout
+    assert "failed 1" in r.stdout or "failed 1," in r.stdout
+
+
+def test_cli_worker_seal_all_missing_only_returns_zero(tmp_path):
+    """Missing-worktree-only batch is benign: CLI returns 0."""
+    from omg_cli.workers import build_ownership_manifest
+
+    base = _init_repo(tmp_path)
+    run = create_run(
+        tmp_path, mode="ulw", goal="cli-seal-skip", extra={"base_sha": base}
+    )
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [
+            {"task_id": "a", "owned_files": ["a.py"]},
+            {"task_id": "b", "owned_files": ["b.py"]},
+        ],
+    )
+    # No prepare → both skipped-no-worktree
+
+    r = _run_omg("worker", "seal", "--all", "--run", rid, cwd=tmp_path)
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert "skipped" in r.stdout
+    assert "failed 0" in r.stdout
+    assert "error 0" in r.stdout
+
+
+def test_seal_all_non_worktree_missing_worker_error_is_error(tmp_path):
+    """WorkerError that is not 'worktree missing' must be status=error, not skip.
+
+    Delete run status.json after prepare so seal_task raises a non-missing error.
+    """
+    from omg_cli.workers import (
+        build_ownership_manifest,
+        prepare_task,
+        seal_all_tasks,
+    )
+
+    base = _init_repo(tmp_path)
+    run = create_run(
+        tmp_path, mode="ulw", goal="seal-err", extra={"base_sha": base}
+    )
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [{"task_id": "a", "owned_files": ["a.py"]}],
+    )
+    wt = prepare_task(tmp_path, rid, "a")
+    (wt / "a.py").write_text("a\n", encoding="utf-8")
+    _git(wt, "add", "a.py")
+    _git(wt, "commit", "-m", "add a")
+
+    status_path = tmp_path / ".omg" / "state" / "runs" / rid / "status.json"
+    assert status_path.is_file()
+    status_path.unlink()
+
+    results = seal_all_tasks(tmp_path, rid)
+    assert len(results) == 1
+    row = results[0]
+    assert row["status"] == "error", row
+    assert "worktree missing" not in str(row.get("error") or "").lower()
+    assert row["status"] != "skipped-no-worktree"
+
+
+def test_seal_all_force_reseals_advanced_worktree(tmp_path):
+    """Without --force, existing envelope is already-sealed; with force, re-seal."""
+    from omg_cli.workers import (
+        build_ownership_manifest,
+        envelope_path,
+        prepare_task,
+        seal_all_tasks,
+        seal_task,
+    )
+
+    base = _init_repo(tmp_path)
+    run = create_run(
+        tmp_path, mode="ulw", goal="seal-force", extra={"base_sha": base}
+    )
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [{"task_id": "a", "owned_files": ["a.py"]}],
+    )
+    wt = prepare_task(tmp_path, rid, "a")
+    (wt / "a.py").write_text("v1\n", encoding="utf-8")
+    env1 = seal_task(tmp_path, rid, "a", message="v1")
+    assert env1["status"] == "ok"
+    head1 = env1["head_sha"]
+    assert envelope_path(tmp_path, "a", run_id=rid).is_file()
+
+    # Post-seal commit advances worktree head
+    (wt / "a.py").write_text("v2\n", encoding="utf-8")
+    _git(wt, "add", "a.py")
+    _git(wt, "commit", "-m", "v2")
+    head2 = _git(wt, "rev-parse", "HEAD").stdout.strip().lower()
+    assert head2 != head1
+
+    # Default: already-sealed (does not pick up post-seal commits)
+    results = seal_all_tasks(tmp_path, rid)
+    assert results[0]["status"] == "already-sealed"
+    env_on_disk = json.loads(
+        envelope_path(tmp_path, "a", run_id=rid).read_text(encoding="utf-8")
+    )
+    assert env_on_disk["head_sha"] == head1
+
+    # force=True: re-seal picks up advanced head
+    results_f = seal_all_tasks(tmp_path, rid, force=True)
+    assert results_f[0]["status"] == "sealed", results_f
+    assert results_f[0]["head_sha"] == head2
+    env_on_disk2 = json.loads(
+        envelope_path(tmp_path, "a", run_id=rid).read_text(encoding="utf-8")
+    )
+    assert env_on_disk2["head_sha"] == head2
+    assert env_on_disk2["status"] == "ok"
+
+    # CLI --force also re-seals (third advance)
+    (wt / "a.py").write_text("v3\n", encoding="utf-8")
+    _git(wt, "add", "a.py")
+    _git(wt, "commit", "-m", "v3")
+    head3 = _git(wt, "rev-parse", "HEAD").stdout.strip().lower()
+    r = _run_omg("worker", "seal", "--all", "--force", "--run", rid, cwd=tmp_path)
+    assert r.returncode == 0, r.stderr + r.stdout
+    env_on_disk3 = json.loads(
+        envelope_path(tmp_path, "a", run_id=rid).read_text(encoding="utf-8")
+    )
+    assert env_on_disk3["head_sha"] == head3

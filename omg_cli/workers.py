@@ -633,6 +633,112 @@ def prepare_owned_tasks(root: Path | str, run_id: str) -> list[Path]:
     return paths
 
 
+def seal_all_tasks(
+    root: Path | str,
+    run_id: str,
+    *,
+    base_sha: str | None = None,
+    force: bool = False,
+) -> list[dict[str, Any]]:
+    """Seal every ownership-manifest task that has a local worktree.
+
+    Seals only ``.omg/worktrees/<run_id>/<validated task_id>`` for task_ids
+    listed in the CLI-written ownership manifest. Provenance of who created
+    each worktree is **not** verified — :func:`seal_task` seals whatever
+    checkout sits at that path (same trust boundary as writing an envelope or
+    manifest under ``.omg/``). Join's ownership gate still constrains a planted
+    worktree's changes. Never fabricates envelopes for missing worktrees.
+
+    After ``seal_task`` returns without raising, branch on the returned
+    envelope's own ``status``:
+
+    - ``status == "ok"`` → result ``sealed``
+    - otherwise → result ``failed`` (do **not** mask a failed envelope as sealed)
+
+    Without ``force``, an existing envelope is ``already-sealed`` (post-seal
+    commits are not picked up). With ``force=True``, re-seal overwrites.
+
+    Benign outcomes: ``sealed``, ``already-sealed``, ``skipped-no-worktree``.
+    Non-benign: ``failed``, ``error``.
+    """
+    root = Path(root).resolve()
+    try:
+        run_id = validate_identifier(run_id, label="run_id")
+    except EvidenceError as exc:
+        raise WorkerError(str(exc)) from exc
+
+    manifest = load_ownership_manifest(root, run_id)
+    tasks = list(manifest.get("tasks") or [])
+    # Stable order by task_id
+    tasks_sorted = sorted(
+        tasks,
+        key=lambda t: str((t or {}).get("task_id") or ""),
+    )
+
+    out: list[dict[str, Any]] = []
+    for task in tasks_sorted:
+        if not isinstance(task, Mapping):
+            continue
+        tid_raw = task.get("task_id")
+        if not tid_raw:
+            continue
+        try:
+            tid = validate_task_id(str(tid_raw))
+        except WorkerError as exc:
+            out.append({"task_id": str(tid_raw), "status": "error", "error": str(exc)})
+            continue
+
+        epath = envelope_path(root, tid, run_id=run_id)
+        if epath.is_file() and not force:
+            out.append({"task_id": tid, "status": "already-sealed"})
+            continue
+
+        wt = worktree_dir(root, run_id, tid)
+        if not wt.is_dir():
+            out.append({"task_id": tid, "status": "skipped-no-worktree"})
+            continue
+
+        try:
+            env = seal_task(root, run_id, tid, base_sha=base_sha)
+        except WorkerError as exc:
+            msg = str(exc)
+            if "worktree missing" in msg.lower():
+                out.append({"task_id": tid, "status": "skipped-no-worktree"})
+            else:
+                out.append({"task_id": tid, "status": "error", "error": msg})
+            continue
+        except OSError as exc:
+            out.append({"task_id": tid, "status": "error", "error": str(exc)})
+            continue
+
+        env_status = env.get("status")
+        if env_status == "ok":
+            changed = env.get("changed_files") or []
+            if not isinstance(changed, list):
+                changed = []
+            out.append(
+                {
+                    "task_id": tid,
+                    "status": "sealed",
+                    "head_sha": env.get("head_sha"),
+                    "changed_files_count": len(changed),
+                    "envelope_status": env_status,
+                }
+            )
+        else:
+            out.append(
+                {
+                    "task_id": tid,
+                    "status": "failed",
+                    "detail": env_status or "non-ok seal",
+                    "envelope_status": env_status,
+                    "head_sha": env.get("head_sha"),
+                    "error": env.get("note") or env.get("evidence") or "",
+                }
+            )
+    return out
+
+
 __all__ = [
     "WorkerError",
     "build_ownership_manifest",
@@ -642,6 +748,7 @@ __all__ = [
     "ownership_manifest_path",
     "prepare_owned_tasks",
     "prepare_task",
+    "seal_all_tasks",
     "seal_task",
     "validate_task_id",
     "worktree_dir",
