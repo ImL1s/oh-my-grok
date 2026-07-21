@@ -339,10 +339,12 @@ omg wiki query "auth"
 |--|--|
 | **何時** | symbols / check；**不是** 完整 LSP MCP |
 | **呼叫** | `lsp` · `/oh-my-grok:omg-lsp` |
-| **CLI** | `omg lsp status` · `omg lsp check path.py` |
+| **CLI** | `omg lsp status` · `omg lsp check path.py` · `omg lsp symbols path.py` · `omg lsp diagnostics path.py` |
 | **SKILL** | [`skills/omg-lsp/SKILL.md`](../skills/omg-lsp/SKILL.md) |
 
-優先用 Grok `read_file` / `grep`。本機有 pyright 才有 check。
+優先用 Grok `read_file` / `grep`。`symbols` / `diagnostics` 走 stdlib `ast`
+（僅 Python；diagnostics 為 **syntax-only**，不是 type-checking）。本機有
+pyright 才有 `check`。
 
 ---
 
