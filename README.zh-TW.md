@@ -196,7 +196,7 @@ interview → ralplan → implement → review → qa → acceptance → verifie
 ```text
 omg {setup,doctor,state,cancel,resume,wiki,hud,lsp,interview,goal,accept,
      integrate,worker,review,qa,autopilot,ulw,ralph,ralplan,ask,pipeline,
-     dual-review} ...
+     dual-review,mcp-server,mcp-install} ...
 ```
 
 ```bash

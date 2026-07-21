@@ -378,6 +378,41 @@ pyright 才有 `check`。
 
 ---
 
+### 會話內 MCP（`omg mcp-server`）— 聚焦 ops 表面
+
+**聚焦**的會話內 read + proposal MCP 表面，**不是** OMC ~54-tool 對等。
+只暴露讀取與非權威 proposal 寫入；`passes` / `verified` / accept **永遠不是**
+MCP tool（僅 CLI，且在 `OMG_MCP_SERVER=1` 時**結構性拒絕**）；LSP 是本機
+`ast` probe，不是語意 bridge；沒有 code-exec / 狀態突變 / 權威寫入工具。
+這是 in-session **workflow** 能力對齊，不是 tool 數量對齊。
+
+```bash
+grok mcp add omg omg -- mcp-server
+omg mcp-install --print-only
+omg mcp-server                 # stdio JSON-RPC（會設 OMG_MCP_SERVER=1）
+```
+
+| Tool | 類型 | 後端 |
+|------|------|------|
+| `omg_state_status` | 讀 | `hud.hud_pack` |
+| `omg_state_read` / `omg_state_list_active` | 讀 | state load |
+| `omg_note_read` / `omg_note_write` | 讀 / proposal | `.omg/notepad.md` |
+| `omg_wiki_*` | 讀 / proposal | `.omg/wiki/` |
+| `omg_project_memory_*` | 讀 / proposal | `.omg/project-memory.json` |
+| `omg_artifact_write` | 僅 proposal | `.omg/artifacts/` |
+| `omg_lsp_symbols` / `omg_lsp_diagnostics` | 讀 | ast probe |
+| `omg_resume_context` | 讀 | resume pack + RESUME.md |
+
+**三道安全機制：** (1) 策展 allowlist；(2) `OMG_MCP_SERVER=1` 時
+`set_verified` / `register_cli_acceptance_token` 直接 raise；(3) 寫入路徑
+禁閉（拒 `.omg/state/**` 與 traversal）。
+
+**刻意排除（OMC 有、OMG 沒有）：** `state_write`、`state_clear`、`python_repl`、
+`ast_grep_replace`、語意 LSP goto/hover/rename/find_references、
+`shared_memory`、`session_search`、`merge_readiness`，以及任何 accept/verify 工具。
+
+---
+
 ## Agents（skills 會用到的角色）
 
 | Agent | 典型 `capability_mode` | 角色 |
@@ -416,6 +451,7 @@ Grok 內建（`explore`、`plan`、`general-purpose`）仍補臨時缺口。
 | omg-ask | `ask` | 否 |
 | omg-cancel | `cancel` | 否 |
 | omg-wiki / hud / lsp | wiki / hud / lsp | 否 |
+| *（MCP 表面）* | `mcp-server` / `mcp-install` | **永不**（結構性拒絕） |
 
 ---
 

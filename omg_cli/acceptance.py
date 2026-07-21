@@ -106,6 +106,7 @@ __all__ = [
     "prd_path",
     "read_manifest_sha256",
     "register_cli_acceptance_token",
+    "refuse_if_mcp_server",
     "resolve_allowlist",
     "result_path",
     "run_acceptance",
@@ -114,6 +115,8 @@ __all__ = [
     "sha_path",
     "sha256_hex",
     "validate_prd",
+    "in_mcp_server_context",
+    "MCP_SERVER_ENV",
     "_basename_allowed",
 ]
 
@@ -124,6 +127,30 @@ __all__ = [
 # Key: (root.resolve(), run_id, manifest_sha256)
 _CLI_ACCEPTANCE_TOKENS: set[tuple[str, str, str]] = set()
 
+# In-session MCP server (omg mcp-server) sets this marker so verified / token
+# registration is STRUCTURALLY impossible from that process — defense in depth
+# beyond the curated tool allowlist (see omg_cli.mcp).
+MCP_SERVER_ENV = "OMG_MCP_SERVER"
+
+
+def in_mcp_server_context() -> bool:
+    """True when this process is the focused in-session MCP server."""
+    return os.environ.get(MCP_SERVER_ENV) == "1"
+
+
+def refuse_if_mcp_server(op: str) -> None:
+    """Raise if authoritative acceptance ops are attempted under OMG_MCP_SERVER=1.
+
+    Mirrors the worker isolation idea: even a mis-wired MCP handler cannot mint
+    tokens or mark verified from the MCP process.
+    """
+    if in_mcp_server_context():
+        raise PermissionError(
+            f"{op} refused: {MCP_SERVER_ENV}=1 "
+            "(MCP server process cannot register acceptance tokens or set "
+            "verified; use the omg CLI outside the MCP process)"
+        )
+
 
 def _token_key(root: Path | str, run_id: str, manifest_sha: str) -> tuple[str, str, str]:
     return (str(Path(root).resolve()), str(run_id), str(manifest_sha))
@@ -133,6 +160,7 @@ def register_cli_acceptance_token(
     root: Path | str, run_id: str, manifest_sha: str
 ) -> None:
     """Record that this process wrote a CLI acceptance result (internal / tests)."""
+    refuse_if_mcp_server("register_cli_acceptance_token")
     if not manifest_sha:
         return
     _CLI_ACCEPTANCE_TOKENS.add(_token_key(root, run_id, manifest_sha))

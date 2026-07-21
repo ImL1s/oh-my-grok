@@ -24,6 +24,21 @@ Last updated: 2026-07-21 · Plugin version: **0.3.2**
 3. **Only `omg` CLI** writes `passes` / `verified` under `.omg/state/` after semantic acceptance.
 4. **Hooks are defense-in-depth** — fail-open; live canary via `scripts/canary_pretool.py` (PATH shim, never real claude/codex).
 
+## In-session MCP server (`omg mcp-server`)
+
+FOCUSED read + proposal surface (not OMC ~54-tool parity). The MCP process **is**
+omg-cli code, so “verified is CLI-only” does not self-enforce — three mechanisms
+hold the line:
+
+| # | Mechanism | What it stops |
+|---|-----------|---------------|
+| 1 | Curated tool **allowlist** | No accept / set_verified / state_write / python_repl / … tools |
+| 2 | **Structural refusal** (`OMG_MCP_SERVER=1`) | `set_verified` + `register_cli_acceptance_token` raise in-process |
+| 3 | **Path confinement** on every write handler | No write into `.omg/state/**`; refuse `..` / symlink escape |
+
+Kick-a-run tools (if ever added) must spawn a **fresh** `omg` subprocess without
+the MCP env marker — never run acceptance/FSM in-process inside the MCP server.
+
 ## Acceptance policy (summary)
 
 Acceptance child env (`omg_cli.acceptance.sanitized_env`) strips `OMG_ALLOW_*`

@@ -385,6 +385,55 @@ pyright via `check` if installed.
 
 ---
 
+### In-session MCP (`omg mcp-server`) — focused ops surface
+
+A **FOCUSED** in-session read + proposal MCP surface, **NOT** OMC ~54-tool
+parity. Exposes reads and non-authoritative proposal writes only;
+`passes` / `verified` / accept are **never** MCP tools (CLI-only **and**
+structurally refused when `OMG_MCP_SERVER=1`); LSP is a local `ast` probe, not
+a semantic bridge; no code-exec / state-mutation / authoritative-write tools.
+This is the “different alignment” for in-session **workflow** capability, not
+tool-count parity.
+
+```bash
+# Register with Grok (stdio; scope user|project):
+grok mcp add omg omg -- mcp-server
+# or:
+omg mcp-install --print-only   # shows the grok command
+omg mcp-install                # runs grok mcp add when grok is on PATH
+omg mcp-server                 # stdio JSON-RPC (sets OMG_MCP_SERVER=1)
+```
+
+| Tool | Kind | Backing |
+|------|------|---------|
+| `omg_state_status` | read | `hud.hud_pack` / run view |
+| `omg_state_read` | read | `state.load_run` / `load_run_view` |
+| `omg_state_list_active` | read | active pointer + runs list |
+| `omg_note_read` / `omg_note_write` | read / proposal | `.omg/notepad.md` |
+| `omg_wiki_query` / `omg_wiki_list` / `omg_wiki_ingest` | read / proposal | `.omg/wiki/` |
+| `omg_project_memory_read` / `omg_project_memory_add_note` | read / proposal | `.omg/project-memory.json` |
+| `omg_artifact_write` | proposal only | `.omg/artifacts/` |
+| `omg_lsp_symbols` / `omg_lsp_diagnostics` | read | `lsp_tools` ast probe |
+| `omg_resume_context` | read | resume pack + `RESUME.md` |
+
+**Security (three load-bearing mechanisms):**
+
+1. **Curated allowlist** — only the tools above; registry tests fail-closed.
+2. **Structural refusal** — `set_verified` / `register_cli_acceptance_token` raise
+   when `OMG_MCP_SERVER=1`.
+3. **Path confinement** — every write resolves under
+   `.omg/notepad.md` / `.omg/wiki/` / `.omg/artifacts/` / `.omg/project-memory*`;
+   rejects `.omg/state/**` and `..` / symlink traversal.
+
+**Deliberately excluded (OMC ships some of these; OMG does not):**
+`state_write`, `state_clear` (authoritative), `python_repl` (arbitrary exec),
+`ast_grep_replace` (mutates code), semantic LSP
+`goto` / `hover` / `rename` / `find_references` (keep the ast probe only),
+`shared_memory`, `session_search`, `merge_readiness`, and **any**
+accept / verify / `set_verified` / token-registration tool.
+
+---
+
 ## Agents (roles used by skills)
 
 | Agent | Typical `capability_mode` | Role |
@@ -423,6 +472,7 @@ Grok built-ins (`explore`, `plan`, `general-purpose`) still fill ad-hoc gaps.
 | omg-ask | `ask` | no |
 | omg-cancel | `cancel` | no |
 | omg-wiki / hud / lsp | wiki / hud / lsp | no |
+| *(MCP surface)* | `mcp-server` / `mcp-install` | **never** (structurally refused) |
 
 ---
 
