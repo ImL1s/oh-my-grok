@@ -15,6 +15,33 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Host Stop veto (not feasible on Grok today).
 - Full OMC LSP/AST MCP bridge (local pyright probe only in 0.3.0).
 
+## [0.4.3] - 2026-07-21
+
+Local-path install refresh + codebase docs. Merged via PR #4; standing reviewer
+(Fable 5) GO on the engineering bar.
+
+### Fixed
+- **`install-plugin.sh` force-refreshes a local-path install:** `grok plugin
+  update` is a no-op for a local-path (frozen-snapshot) install, so a bumped
+  checkout left the installed plugin snapshot stale (caught only by `omg doctor`'s
+  version-drift / installed-capabilities-lock checks). The installer now detects a
+  same-path install (realpath match) and force-refreshes via `grok plugin
+  uninstall … && install`, erroring loudly (exit 1) if the reinstall fails;
+  different-path duplicates stay WARN-only.
+- **`omg update` surfaces the installer's recovery output:** on a non-zero
+  `install-plugin.sh` exit it now forwards the captured stdout+stderr (previously
+  it printed only `exited rc=1`, swallowing the reinstall-gap recovery message).
+
+### Added
+- **`CLAUDE.md`** — a codebase architecture guide (two-surface design, the Grok
+  host contract, `capability_mode` isolation, the two fail-closed security modules
+  `verdict.py`/`command_policy.py`, the worker/seal/integrate flow, and the
+  version-bump gotchas incl. the `grok plugin update` no-op-for-local-path finding).
+
+### Docs
+- README/skills refreshed: the Upgrade note now documents uninstall+reinstall for
+  local-path installs, plus `omg worker seal --all` and `omg note --prune`.
+
 ## [0.4.2] - 2026-07-21
 
 ULW leader batch seal — closes the ULW→integrate gap the live suite surfaced.
