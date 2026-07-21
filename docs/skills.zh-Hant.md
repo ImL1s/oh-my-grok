@@ -148,18 +148,29 @@ omg accept --yes
 
 ---
 
-### `omg team` — 實驗性 grok-only tmux team plane（D1）
+### `omg team` — 實驗性 tmux team plane（D1 零設定 + D3 multi-CLI + D2 分階段 driver）
 
 | | |
 |--|--|
 | **何時** | 選擇性多 pane ULW + 真實 worktree；測試用 hermetic dry-run |
 | **閘門** | `OMG_EXPERIMENTAL_TMUX_TEAM=1`（未設則拒絕） |
-| **CLI** | `omg team start\|status\|collect\|stop` |
-| **誠實範圍** | 僅 grok panes；整合隔離（ownership + seal + integrate）；**不是** multi-CLI、也**不是**執行沙箱。`collect` 永不寫 `verified`。 |
+| **CLI** | `omg team start\|run\|status\|collect\|stop` |
+| **誠實範圍** | 零設定 = grok panes；`--routing` 啟 multi-CLI（含角色地板）。**整合**隔離（ownership + seal + integrate）— **不是**執行沙箱。`collect` / `run` 永不寫 `verified`。 |
+
+**`omg team run`** 是 team plane 上的**分階段 DRIVER**（不是新的 planner/verifier）：
+
+`team-plan → team-prd → team-exec → team-verify → team-fix`（終態：`complete` / `failed` / `blocked`）。
+
+- **team-plan / team-prd** — 穿透標記；任務拆解屬 **leader / ralplan**，`run` 只吃 `--tasks-json` 或 `--tasks-path`。
+- **team-exec** — `start_team` 再 `collect_team`（dry-run 只 start，不碰 tmux/subprocess）。
+- **team-verify** — 以 POST-A2 `parse_verdict_file` 閘 `stages/team-verifier.md|json`；APPROVE → `complete`，否則 → `team-fix`。**不**代寫 verdict。
+- **team-fix** — `--max-fix`（預設 3）上限；超限 → `failed`。
+- 進 exec/fix 會作廢舊 verify 戳記；`verified` 仍只經 `omg accept`。
 
 ```bash
 export OMG_EXPERIMENTAL_TMUX_TEAM=1
 omg team start --goal "平行修 A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --dry-run
+omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --dry-run --max-fix 3
 omg team status --run RUN --json
 omg team collect --run RUN   # seal_all_tasks + integrate；永不 verified
 omg team stop --run RUN      # 只殺記錄的 session + pgid（禁止 pkill -f）

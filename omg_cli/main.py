@@ -697,7 +697,11 @@ def cmd_integrate(args: argparse.Namespace) -> int:
 
 
 def cmd_team(args: argparse.Namespace) -> int:
-    """Experimental tmux team plane (D1 grok-only / D3 multi-CLI; gate OMG_EXPERIMENTAL_TMUX_TEAM=1)."""
+    """Experimental tmux team plane (D1/D3) + staged pipeline (D2).
+
+    Gate: OMG_EXPERIMENTAL_TMUX_TEAM=1. Pipeline is THIN glue over start/collect;
+    never sets verified.
+    """
     from omg_cli.team.plane import (
         TeamError,
         TeamGateError,
@@ -707,6 +711,10 @@ def cmd_team(args: argparse.Namespace) -> int:
         status_locked_view,
         stop_team,
         team_status,
+    )
+    from omg_cli.team.pipeline import (
+        TeamPipelineError,
+        run_team_pipeline,
     )
     from omg_cli.team.roles import UnknownRoleError
     from omg_cli.team.routing import RoutingError, parse_routing_json
@@ -738,6 +746,41 @@ def cmd_team(args: argparse.Namespace) -> int:
             )
             print(json.dumps(meta, indent=2, ensure_ascii=False))
             return 0
+        if action == "run":
+            # Staged FSM driver (plan→prd→exec→verify→fix). Decomposition is
+            # the leader's / ralplan's job; this only sequences + gates verify.
+            goal = getattr(args, "goal", None) or ""
+            tasks_json = getattr(args, "tasks_json", None)
+            tasks_path = getattr(args, "tasks_path", None)
+            if not tasks_json and not tasks_path:
+                print(
+                    "omg team run: --tasks-json or --tasks-path required",
+                    file=sys.stderr,
+                )
+                return 2
+            routing_raw = getattr(args, "routing", None)
+            routing = parse_routing_json(routing_raw) if routing_raw else None
+            result = run_team_pipeline(
+                goal,
+                root=root,
+                tasks_json=tasks_json,
+                tasks_path=tasks_path,
+                dry_run=bool(getattr(args, "dry_run", False)),
+                max_fix=int(getattr(args, "max_fix", 3) or 3),
+                force=bool(getattr(args, "force", False)),
+                run_id=getattr(args, "run_id", None),
+                yolo=bool(getattr(args, "yolo", False)),
+                safe=bool(getattr(args, "safe", False)),
+                routing=routing,
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            phase = str(result.get("phase") or "")
+            if phase == "complete":
+                return 0
+            if phase == "blocked":
+                return 2
+            # failed (or unexpected) — not verified; exit 1
+            return 1
         if action == "status":
             st = team_status(
                 root,
@@ -781,6 +824,9 @@ def cmd_team(args: argparse.Namespace) -> int:
     except TeamGateError as exc:
         print(f"omg team: {exc}", file=sys.stderr)
         return 2
+    except TeamPipelineError as exc:
+        print(f"omg team: {exc}", file=sys.stderr)
+        return 1
     except (RoutingError, UnknownRoleError) as exc:
         # FLOOR rejections — fail closed at team start (not silent).
         print(f"omg team: {exc}", file=sys.stderr)
@@ -1761,6 +1807,69 @@ def build_parser() -> argparse.ArgumentParser:
         help="supersede active run when creating a new run",
     )
     p_t_start.set_defaults(func=cmd_team, team_action="start")
+
+    p_t_run = team_sub.add_parser(
+        "run",
+        parents=[common],
+        help=(
+            "staged team pipeline driver (team-plan→prd→exec→verify→fix); "
+            "THIN glue over start/collect + parse_verdict_file gate; "
+            "never sets verified"
+        ),
+    )
+    p_t_run.add_argument(
+        "--goal",
+        dest="goal",
+        required=True,
+        help="shared goal text",
+    )
+    p_t_run.add_argument(
+        "--tasks-json",
+        dest="tasks_json",
+        default=None,
+        help=(
+            'JSON array of tasks (leader/ralplan decomposition); '
+            'required unless --tasks-path is set'
+        ),
+    )
+    p_t_run.add_argument(
+        "--tasks-path",
+        dest="tasks_path",
+        default=None,
+        help="path to JSON tasks array or {tasks:[...]} (existing ralplan artifact)",
+    )
+    p_t_run.add_argument(
+        "--max-fix",
+        dest="max_fix",
+        type=int,
+        default=3,
+        help="max team-fix rounds before terminal failed (default 3)",
+    )
+    p_t_run.add_argument(
+        "--routing",
+        dest="routing",
+        default=None,
+        help='optional role→{provider,model?} JSON (same as team start)',
+    )
+    p_t_run.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="existing run_id (default: create a new team-pipeline run)",
+    )
+    p_t_run.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="sequence stages with dry-run start_team; no tmux/subprocess",
+    )
+    p_t_run.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="supersede active run when creating a new run",
+    )
+    p_t_run.set_defaults(func=cmd_team, team_action="run")
 
     p_t_status = team_sub.add_parser(
         "status",

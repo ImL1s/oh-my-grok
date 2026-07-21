@@ -131,9 +131,9 @@ This remains **fail-open** on hook timeout/crash. Primary isolation is still
 
 This is intentional break-glass, not a sandbox. Document and name-prefix (`omg-`) are the mitigations — not PreToolUse.
 
-## Experimental team plane: `omg team` (D1 zero-config + D3 multi-CLI routing)
+## Experimental team plane: `omg team` (D1 zero-config + D3 multi-CLI + D2 staged driver)
 
-Gated by **`OMG_EXPERIMENTAL_TMUX_TEAM=1`**. Lifecycle: `start` / `status` / `collect` / `stop`.
+Gated by **`OMG_EXPERIMENTAL_TMUX_TEAM=1`**. Lifecycle: `start` / `run` / `status` / `collect` / `stop`.
 
 | Claim | Reality |
 |-------|---------|
@@ -141,9 +141,10 @@ Gated by **`OMG_EXPERIMENTAL_TMUX_TEAM=1`**. Lifecycle: `start` / `status` / `co
 | Multi-CLI panes | **Present** behind the same gate when `--routing` maps role→`{provider,model?}` (providers: grok / codex / agy / cursor / gemini) |
 | Isolation | **Integration** isolation only: ownership manifest + per-task git worktrees + `seal` + `integrate` — **not** an execution sandbox |
 | Kill path | `stop` kills **only** the recorded tmux session name + recorded `pgid`s — **no** self-matching `pkill -f` |
-| `verified` | **Never** set by `collect` / `stop`; remains behind `omg accept` |
-| Nested | Refuses start inside a spawned-worker context (`OMG_TEAM_WORKER` / related markers) |
+| `verified` | **Never** set by `collect` / `stop` / **`run`**; remains behind `omg accept` |
+| Nested | Refuses start / run inside a spawned-worker context (`OMG_TEAM_WORKER` / related markers) |
 | Routing floors | Reviewer/verifier → structured-verdict providers only (`grok`/`codex`/`claude`/`gemini`; **cursor forbidden**); unknown roles fail closed; posture derived from role (never free-form) |
+| `omg team run` | **Staged DRIVER** only (`team-plan→team-prd→team-exec→team-verify→team-fix`). Does **not** reimplement ralplan/dual_review/planner/verifier — sequences the team plane + gates durable `stages/team-verifier.*` via POST-A2 `parse_verdict_file`. Decomposition is the leader’s / ralplan’s job (`--tasks-json` / `--tasks-path`). No autopilot parity beyond “sequences them.” |
 
 ### Per-provider posture enforcement (NOT uniform)
 
@@ -170,6 +171,7 @@ Do **not** claim uniform sandboxing across providers, OMC multi-CLI team parity,
 - “Live canary pass proves hard isolation forever” (re-run after Grok upgrades).
 - “`omg --madmax` is sandboxed” or “madmax is a mode FSM / sets verified.”
 - “`omg team` multi-CLI panes are an execution sandbox / uniform CLI sandbox across providers.” (Integration isolation only; see posture table.)
+- “`omg team run` is a full planner/verifier / autopilot-parity mode.” (It is a thin staged driver over existing lanes.)
 - “agy `--sandbox` is a hard read-only jail enforced by OMG.”
 - “gemini reviewer panes are CLI-sandboxed.”
 

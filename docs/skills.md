@@ -150,14 +150,24 @@ omg accept --yes
 
 ---
 
-### `omg team` — experimental tmux team plane (D1 zero-config + D3 multi-CLI)
+### `omg team` — experimental tmux team plane (D1 zero-config + D3 multi-CLI + D2 staged driver)
 
 | | |
 |--|--|
 | **When** | Opt-in multi-pane ULW with real worktrees; hermetic dry-run for tests |
 | **Gate** | `OMG_EXPERIMENTAL_TMUX_TEAM=1` (refused otherwise) |
-| **CLI** | `omg team start\|status\|collect\|stop` |
-| **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` never sets `verified`. |
+| **CLI** | `omg team start\|run\|status\|collect\|stop` |
+| **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` never set `verified`. |
+
+**`omg team run`** is a **staged DRIVER** over the team plane (not a new planner/verifier):
+
+`team-plan → team-prd → team-exec → team-verify → team-fix` (terminal: `complete` / `failed` / `blocked`).
+
+- **team-plan / team-prd** — pass-through markers. Decomposition is the **leader’s / ralplan’s** job; `run` only consumes `--tasks-json` or `--tasks-path`.
+- **team-exec** — `start_team` then `collect_team` (dry-run: start only; no tmux/subprocess).
+- **team-verify** — gates a durable artifact at `stages/team-verifier.md|json` via POST-A2 `parse_verdict_file`. APPROVE → `complete`; else → `team-fix`. Does **not** author verdicts.
+- **team-fix** — bounded by `--max-fix` (default 3); re-enters exec with findings; exceeding budget → `failed`.
+- Stale verify stamps are invalidated on (re)entry to exec/fix (mirror autopilot). `verified` remains behind `omg accept` only.
 
 ```bash
 export OMG_EXPERIMENTAL_TMUX_TEAM=1
@@ -165,6 +175,8 @@ omg team start --goal "parallelize A/B" --tasks-json '[{"task_id":"t1","owned_fi
 # multi-CLI (role→provider); floors reject cursor-on-reviewer and unknown roles:
 omg team start --goal "…" --tasks-json '[{"task_id":"t1","role":"executor","owned_files":["a.py"]}]' \
   --routing '{"executor":{"provider":"codex"}}' --dry-run
+# staged pipeline (sequences existing lanes; no new planner):
+omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --dry-run --max-fix 3
 omg team status --run RUN --json
 omg team collect --run RUN   # seal_all_tasks + integrate; never verified
 omg team stop --run RUN      # kill recorded session + pgids only (no pkill -f)
