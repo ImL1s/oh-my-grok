@@ -423,3 +423,101 @@ def test_floor_denies_c_after_arg_consuming_wxq_options():
         ["python3", "scripts/check_docs_links.py", "-vc"],
         project_root=root,
     )
+
+
+def test_floor_fail_closed_unknown_arg_options_before_eval():
+    """Unknown ``--flag value`` must not end the interpreter region (fail closed).
+
+    Enumeration of arg-consuming options is incomplete: any unlisted option with
+    a space-separated value previously treated that value as a bare script
+    boundary, so a following ``-c``/``-e`` escaped the floor under break-glass.
+    """
+    root = Path(__file__).resolve().parents[1]
+    node_allowed = resolve_allowlist(["node"])
+
+    # The 6 live bypass repros (must DENY both normal and no_allowlist).
+    bypass_repros = [
+        (
+            ["python3", "--check-hash-based-pycs", "always", "-c",
+             'import os; os.system("id")'],
+            "-c",
+        ),
+        (["node", "--max-old-space-size", "100", "-e", "x"], "-e"),
+        (["node", "--stack-size", "1000", "-e", "x"], "-e"),
+        (["node", "--title", "x", "-e", "x"], "-e"),
+        (["node", "--v8-pool-size", "4", "-e", "x"], "-e"),
+        (["node", "--report-dir", "/tmp", "-e", "x"], "-e"),
+    ]
+    for argv, match in bypass_repros:
+        for no_al in (False, True):
+            kwargs: dict = {"no_allowlist": no_al, "project_root": root}
+            if argv[0] == "node" and not no_al:
+                kwargs = {"allowlist": node_allowed, "project_root": root}
+            with pytest.raises(CommandPolicyError, match=match):
+                check_command_policy(argv, **kwargs)
+
+    # Known-option path still works (incl. .py value of -W).
+    for no_al in (False, True):
+        with pytest.raises(CommandPolicyError, match="-c"):
+            check_command_policy(
+                ["python3", "-W", "ignore", "-c", "x"],
+                no_allowlist=no_al,
+                project_root=root,
+            )
+        with pytest.raises(CommandPolicyError, match="-c"):
+            check_command_policy(
+                ["python3", "-W", "x.py", "-c", "x"],
+                no_allowlist=no_al,
+                project_root=root,
+            )
+        with pytest.raises(CommandPolicyError, match="-c"):
+            check_command_policy(
+                ["python3", "-X", "importtime", "-c", "x"],
+                no_allowlist=no_al,
+                project_root=root,
+            )
+        with pytest.raises(CommandPolicyError, match="-c"):
+            check_command_policy(
+                ["python3", "-Q", "new", "-c", "x"],
+                no_allowlist=no_al,
+                project_root=root,
+            )
+    with pytest.raises(CommandPolicyError, match="-e"):
+        check_command_policy(
+            ["node", "-r", "./foo", "-e", "x"], no_allowlist=True
+        )
+
+    # Baselines.
+    for no_al in (False, True):
+        with pytest.raises(CommandPolicyError, match="-c"):
+            check_command_policy(
+                ["python3", "-c", "x"], no_allowlist=no_al, project_root=root
+            )
+        with pytest.raises(CommandPolicyError, match="-c"):
+            check_command_policy(
+                ["python3", "-cimport os"],
+                no_allowlist=no_al,
+                project_root=root,
+            )
+        with pytest.raises(CommandPolicyError, match="-c"):
+            check_command_policy(
+                ["python3", "-ic", "x"], no_allowlist=no_al, project_root=root
+            )
+    with pytest.raises(CommandPolicyError, match="-e"):
+        check_command_policy(["node", "-e", "x"], no_allowlist=True)
+    with pytest.raises(CommandPolicyError, match="-e|-p"):
+        check_command_policy(["node", "-pe", "x"], no_allowlist=True)
+
+    # FP: real script / -m boundaries still allow trailing -c-looking args.
+    check_command_policy(
+        ["python3", "-m", "pytest", "-rc"],
+        project_root=root,
+    )
+    check_command_policy(
+        ["python3", "-m", "pytest", "-q", "-c", "pytest.ini"],
+        project_root=root,
+    )
+    check_command_policy(
+        ["python3", "scripts/check_docs_links.py", "-vc"],
+        project_root=root,
+    )

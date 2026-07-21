@@ -325,10 +325,12 @@ def _has_flag(argv: Sequence[str], *flags: str) -> bool:
     return False
 
 
-# Interpreter options whose value is a SEPARATE next argv token (not glued).
-# A bare non-``-`` token is a script/module boundary only when it is *not* the
-# value of one of these. Glued forms (``-Wignore``, ``--require=x``) are one
-# token and need no skip — the normal path handles them.
+# Known interpreter options whose value is a SEPARATE next argv token (not glued).
+# Fail-closed bare-token scanning already treats non-``.py`` positionals as
+# option values; this set covers the residual case pure fail-closed cannot:
+# a ``.py`` token that is the *value* of a known option (e.g. ``-W x.py -c``),
+# not the script boundary. Glued forms (``-Wignore``, ``--require=x``) are one
+# token and need no skip.
 _INTERPRETER_SEPARATE_ARG_OPTIONS: frozenset[str] = frozenset(
     {
         # Python
@@ -355,16 +357,27 @@ def _interpreter_flag_region(argv: Sequence[str]) -> list[str]:
     boundary token itself is excluded except when it *is* an eval flag that the
     floor must still see — those flags are included then scanning stops):
 
-    - bare script path (token not starting with ``-``), unless it is the value
-      of a preceding arg-consuming option (see ``_INTERPRETER_SEPARATE_ARG_OPTIONS``)
+    - bare token ending in ``.py`` (unambiguous script path)
     - ``-m`` (module; rest are module args)
     - ``-c`` / glued ``-cCODE`` / cluster activating ``c`` (python code exec)
     - ``-e`` / ``-p`` / ``--eval`` / ``--print`` (node eval; same idea)
     - ``--`` (end of options)
 
+    Bare non-``.py`` tokens do **not** end the region: treat them as the value of
+    a (possibly unknown) arg-consuming option and keep scanning, so a following
+    eval flag still lands in the region. Known options in
+    ``_INTERPRETER_SEPARATE_ARG_OPTIONS`` also consume the next token even when it
+    ends in ``.py`` (``-W x.py -c`` must still see ``-c``).
+
+    TRADE-OFF (intentional fail-closed): a bare NON-``.py`` positional now fails
+    closed, so ``python3 extensionless_script -c foo`` DENIES under break-glass.
+    Normal mode already requires a ``.py`` script; legit break-glass is
+    ``-m pytest`` or a ``.py`` path. Floors must over-deny, never under-deny.
+
     Because interpreter eval flags appear *in* this region (python/node consume
     them before any script), they remain floor hits. A ``-c`` / ``-e`` after a
-    script path or after ``-m`` is a *script/module* arg and is not in the region.
+    ``.py`` script path or after ``-m`` is a *script/module* arg and is not in
+    the region.
     """
     if not argv:
         return []
@@ -373,9 +386,18 @@ def _interpreter_flag_region(argv: Sequence[str]) -> list[str]:
     n = len(argv)
     while i < n:
         tok = str(argv[i])
-        # Boundaries that end option parsing without themselves being floor flags
-        if tok == "--" or tok == "-m" or not tok.startswith("-"):
+        # Explicit option-list terminators (excluded from out).
+        if tok == "--" or tok == "-m":
             break
+
+        # Bare (non-option) token: end ONLY for an unambiguous .py script path.
+        # Any other bare token is treated as an option value — keep scanning
+        # (fail closed) so a later -c/-e/-p still hits the floor.
+        if not tok.startswith("-"):
+            if tok.endswith(".py"):
+                break
+            i += 1
+            continue
 
         # Include this interpreter option token.
         out.append(tok)
@@ -400,9 +422,9 @@ def _interpreter_flag_region(argv: Sequence[str]) -> list[str]:
             ):
                 break
 
-        # Arg-consuming options take the NEXT token as value (not a script).
-        # Advance past that value without treating it as a boundary so a
-        # following -c/-e stays in the region. Glued forms are one token.
+        # Known arg-consuming options take the NEXT token as value even if it
+        # ends in .py (only residual the pure fail-closed bare rule cannot cover).
+        # Glued forms are one token.
         if tok in _INTERPRETER_SEPARATE_ARG_OPTIONS and i + 1 < n:
             i += 2
             continue
