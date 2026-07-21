@@ -325,6 +325,28 @@ def _has_flag(argv: Sequence[str], *flags: str) -> bool:
     return False
 
 
+# Interpreter options whose value is a SEPARATE next argv token (not glued).
+# A bare non-``-`` token is a script/module boundary only when it is *not* the
+# value of one of these. Glued forms (``-Wignore``, ``--require=x``) are one
+# token and need no skip — the normal path handles them.
+_INTERPRETER_SEPARATE_ARG_OPTIONS: frozenset[str] = frozenset(
+    {
+        # Python
+        "-W",
+        "-X",
+        "-Q",
+        # Node
+        "-r",
+        "--require",
+        "--loader",
+        "--experimental-loader",
+        "--import",
+        "--conditions",
+        "-C",
+    }
+)
+
+
 def _interpreter_flag_region(argv: Sequence[str]) -> list[str]:
     """Return argv[0] plus only INTERPRETER option tokens (not script/module args).
 
@@ -333,7 +355,8 @@ def _interpreter_flag_region(argv: Sequence[str]) -> list[str]:
     boundary token itself is excluded except when it *is* an eval flag that the
     floor must still see — those flags are included then scanning stops):
 
-    - bare script path (token not starting with ``-``)
+    - bare script path (token not starting with ``-``), unless it is the value
+      of a preceding arg-consuming option (see ``_INTERPRETER_SEPARATE_ARG_OPTIONS``)
     - ``-m`` (module; rest are module args)
     - ``-c`` / glued ``-cCODE`` / cluster activating ``c`` (python code exec)
     - ``-e`` / ``-p`` / ``--eval`` / ``--print`` (node eval; same idea)
@@ -376,6 +399,14 @@ def _interpreter_flag_region(argv: Sequence[str]) -> list[str]:
                 tok, "e"
             ):
                 break
+
+        # Arg-consuming options take the NEXT token as value (not a script).
+        # Advance past that value without treating it as a boundary so a
+        # following -c/-e stays in the region. Glued forms are one token.
+        if tok in _INTERPRETER_SEPARATE_ARG_OPTIONS and i + 1 < n:
+            i += 2
+            continue
+
         i += 1
     return out
 
