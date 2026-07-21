@@ -662,8 +662,8 @@ def _import_capabilities_lock_mod() -> Any:
 
 
 def check_capabilities_lock() -> SoftResult:
-    """Soft: skills/agents content matches omg_capabilities.lock.json aggregate."""
-    name = "capabilities lock"
+    """Soft: local-checkout skills/agents match omg_capabilities.lock.json (commit hygiene)."""
+    name = "capabilities lock (local checkout)"
     try:
         mod = _import_capabilities_lock_mod()
     except Exception as e:
@@ -684,11 +684,13 @@ def check_capabilities_lock() -> SoftResult:
         return (
             name,
             "warn",
-            "skills/agents changed since lock — regenerate: "
-            "python3 scripts/generate_capabilities_lock.py",
+            "local checkout skills/agents changed since lock — regenerate: "
+            "python3 scripts/generate_capabilities_lock.py "
+            "(commit-hygiene guard; installed-version drift is covered by "
+            "'plugin version drift')",
         )
     n = len(current.get("files") or {})
-    return (name, "ok", f"{n} files match lock")
+    return (name, "ok", f"local checkout: {n} files match lock")
 
 
 def run_checks() -> list[tuple[str, bool, str]]:

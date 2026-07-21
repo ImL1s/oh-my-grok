@@ -117,19 +117,20 @@ def test_doctor_check_capabilities_lock(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(doctor, "plugin_root", lambda: root)
 
     name, level, detail = doctor.check_capabilities_lock()
-    assert name == "capabilities lock"
+    assert name == "capabilities lock (local checkout)"
     assert level == "warn"
     assert "no omg_capabilities.lock.json" in detail
 
     gen.write_lock(root)
     name, level, detail = doctor.check_capabilities_lock()
     assert level == "ok"
-    assert "2 files match lock" in detail
+    assert "local checkout: 2 files match lock" in detail
 
     (root / "skills" / "omg-x" / "SKILL.md").write_text("drift\n", encoding="utf-8")
     name, level, detail = doctor.check_capabilities_lock()
     assert level == "warn"
     assert "regenerate" in detail.lower()
+    assert "commit-hygiene" in detail.lower()
 
 
 def test_run_soft_checks_includes_capabilities_lock(
@@ -163,8 +164,12 @@ def test_run_soft_checks_includes_capabilities_lock(
     monkeypatch.setattr(
         doctor,
         "check_capabilities_lock",
-        lambda: ("capabilities lock", "ok", "n files match lock"),
+        lambda: (
+            "capabilities lock (local checkout)",
+            "ok",
+            "local checkout: n files match lock",
+        ),
     )
     soft = doctor.run_soft_checks()
     names = [n for n, _, _ in soft]
-    assert "capabilities lock" in names
+    assert "capabilities lock (local checkout)" in names

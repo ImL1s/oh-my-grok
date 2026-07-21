@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Generate / check omg_capabilities.lock.json (skills + agents content hashes).
+"""Generate / check omg_capabilities.lock.json for the LOCAL CHECKOUT.
 
-Parity with OMX omx-capabilities.lock.json: detect when installed plugin
-skills/agents content drifts from the committed lock.
+Hashes skills/omg-*/SKILL.md and agents/omg-*.md under the repo (or --root)
+and writes/checks omg_capabilities.lock.json. This is a commit-hygiene / CI
+guard: it catches uncommitted or unregenerated local skill/agent edits against
+the committed lock. It does NOT hash the installed frozen snapshot under
+~/.grok/installed-plugins (installed-version drift is covered elsewhere, e.g.
+doctor 'plugin version drift').
 
 Usage:
   python3 scripts/generate_capabilities_lock.py          # rewrite lock
@@ -134,18 +138,21 @@ def _diff_lock(stored: dict[str, Any], current: dict[str, Any]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Generate or check omg_capabilities.lock.json"
+        description=(
+            "Generate or check omg_capabilities.lock.json for the local checkout "
+            "(commit-hygiene / CI guard on skills+agents; not installed-snapshot drift)"
+        )
     )
     parser.add_argument(
         "--check",
         action="store_true",
-        help="recompute and exit 1 if lock is stale (print diff)",
+        help="recompute local checkout and exit 1 if lock is stale (print diff)",
     )
     parser.add_argument(
         "--root",
         type=Path,
         default=None,
-        help="plugin/repo root (default: repo containing this script)",
+        help="local checkout / plugin root (default: repo containing this script)",
     )
     args = parser.parse_args(argv)
     root = (args.root if args.root is not None else _repo_root()).resolve()
