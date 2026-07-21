@@ -146,8 +146,34 @@ def _json_verdict(
     return None
 
 
+_SEVERITY_RANK = {
+    "FAILED": 3,
+    "REQUEST_CHANGES": 2,
+    "APPROVE": 1,
+}
+
+
+def _most_severe_verdict(verdicts: list[str]) -> str | None:
+    """Pick FAILED > REQUEST_CHANGES > APPROVE; ignore other tokens / None."""
+    best: str | None = None
+    best_rank = 0
+    for v in verdicts:
+        if not v:
+            continue
+        rank = _SEVERITY_RANK.get(v, 0)
+        if rank > best_rank:
+            best = v
+            best_rank = rank
+    return best
+
+
 def _extract_json_objects(text: str) -> list[dict]:
-    """Best-effort: top-level JSON object(s) from raw or fenced text."""
+    """Best-effort: top-level JSON object(s) from raw or fenced text.
+
+    Collects (1) whole-doc if it looks like JSON, (2) fenced ```json blocks,
+    (3) EVERY top-level balanced ``{...}`` substring in the full text.  Objects
+    may be double-counted across sources; content-signature dedup handles that.
+    """
     if not text or not text.strip():
         return []
     candidates: list[str] = []
@@ -157,22 +183,20 @@ def _extract_json_objects(text: str) -> list[dict]:
     # fenced json blocks
     for m in re.finditer(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE):
         candidates.append(m.group(1).strip())
-    # first balanced-looking object — always try when prose trails JSON
-    # (e.g. schema-v2 blob + terminal APPROVE line). Previously skipped when
-    # the whole strip was already a candidate, which fails json.loads.
-    start = text.find("{")
-    if start >= 0:
-        depth = 0
-        for i, ch in enumerate(text[start:], start):
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
+    # ALL top-level balanced objects (naive brace depth; json.loads filters)
+    depth = 0
+    start = -1
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
                 depth -= 1
-                if depth == 0:
-                    bal = text[start : i + 1]
-                    if bal not in candidates:
-                        candidates.append(bal)
-                    break
+                if depth == 0 and start >= 0:
+                    candidates.append(text[start : i + 1])
+                    start = -1
     out: list[dict] = []
     seen: set[int] = set()
     for c in candidates:
@@ -187,7 +211,14 @@ def _extract_json_objects(text: str) -> list[dict]:
             seen.add(sig)
             out.append(data)
         elif isinstance(data, list):
-            out.extend(x for x in data if isinstance(x, dict))
+            for x in data:
+                if not isinstance(x, dict):
+                    continue
+                sig = hash(json.dumps(x, sort_keys=True, ensure_ascii=False))
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                out.append(x)
     return out
 
 
@@ -196,16 +227,28 @@ def parse_schema_v2_verdict(
     *,
     expected_run_id: str | None = None,
 ) -> str | None:
-    """Parse research structured verdict documents; None if not schema-v2 shaped."""
+    """Parse research structured verdict documents; None if not schema-v2 shaped.
+
+    When multiple schema_version=2 objects exist, return the most severe usable
+    verdict (FAILED > REQUEST_CHANGES > APPROVE).  Schema-v2 present but no
+    usable verdict from any such object → UNKNOWN (fail-closed).
+    """
+    found_schema_v2 = False
+    collected: list[str] = []
     for data in _extract_json_objects(text):
         if data.get("schema_version") not in (2, "2", 2.0):
             continue
+        found_schema_v2 = True
         jv = _json_verdict(data, expected_run_id=expected_run_id)
         if jv is not None:
-            return jv
-        # schema v2 present but unusable → fail closed for this doc
-        return "UNKNOWN"
-    return None
+            collected.append(jv)
+    if not found_schema_v2:
+        return None
+    severe = _most_severe_verdict(collected)
+    if severe is not None:
+        return severe
+    # schema v2 present but unusable → fail closed for this doc
+    return "UNKNOWN"
 
 
 def prose_has_terminal_approve(text: str) -> bool:
@@ -266,11 +309,17 @@ def parse_verdict(
     if sv2 is not None:
         return sv2
 
-    # 2) Any JSON object (full file or embedded)
+    # 2) Any JSON object (full file or embedded) — severity aggregate, not
+    # first-match-wins. A stray earlier APPROVE must never override a real
+    # FAILED / REQUEST_CHANGES present anywhere in the document.
+    json_verdicts: list[str] = []
     for data in _extract_json_objects(text):
         jv = _json_verdict(data, expected_run_id=expected_run_id)
         if jv is not None:
-            return jv
+            json_verdicts.append(jv)
+    severe = _most_severe_verdict(json_verdicts)
+    if severe is not None:
+        return severe
 
     # 3) Prose fail-closed path (ignore fenced examples / negations)
     has_failed = bool(_FAILED_RE.search(text))
