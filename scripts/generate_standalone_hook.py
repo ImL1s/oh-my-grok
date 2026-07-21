@@ -70,30 +70,67 @@ def _extract_function_source(src: str, name: str) -> str:
     raise SystemExit(f"generate_standalone_hook: function {name!r} not found")
 
 
-def _deny_body_after_imports(src: str) -> str:
-    """Return deny.py source AFTER its import preamble; fail if any import is non-stdlib."""
-    tree = ast.parse(src)
-    last_import_end = 0
-    for node in tree.body:
+def _validate_stdlib_only(src: str, label: str) -> None:
+    """Fail-closed if ANY import in the tree (nested too) is non-stdlib or relative.
+
+    ``ast.walk`` covers function/class-body imports, not just top-level — a nested
+    ``import requests`` or ``from .evil import x`` would otherwise slip into the
+    embedded body and break the "runs under python3 -I -S, stdlib-only" guarantee.
+    """
+    for node in ast.walk(ast.parse(src)):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 top = alias.name.split(".")[0]
                 if top not in STDLIB_IMPORT_ALLOWLIST:
                     raise SystemExit(
-                        f"generate_standalone_hook: deny.py imports non-stdlib {alias.name!r}; "
-                        "standalone must be stdlib-only"
+                        f"generate_standalone_hook: {label} imports non-stdlib {alias.name!r}; "
+                        "the standalone must be stdlib-only"
                     )
-            last_import_end = max(last_import_end, node.end_lineno or 0)
         elif isinstance(node, ast.ImportFrom):
-            mod = (node.module or "").split(".")[0]
-            if node.level == 0 and mod not in STDLIB_IMPORT_ALLOWLIST:
+            if node.level and node.level > 0:
                 raise SystemExit(
-                    f"generate_standalone_hook: deny.py imports from non-stdlib {node.module!r}; "
-                    "standalone must be stdlib-only"
+                    f"generate_standalone_hook: {label} has a relative import "
+                    f"(level {node.level}); not allowed in the standalone"
                 )
-            last_import_end = max(last_import_end, node.end_lineno or 0)
+            mod = (node.module or "").split(".")[0]
+            if mod not in STDLIB_IMPORT_ALLOWLIST:
+                raise SystemExit(
+                    f"generate_standalone_hook: {label} imports from non-stdlib {node.module!r}; "
+                    "the standalone must be stdlib-only"
+                )
+
+
+def _deny_body_after_imports(src: str) -> str:
+    """Return deny.py source AFTER a CONTIGUOUS top-level import preamble.
+
+    Fail-closed: every import (nested too) must be stdlib and non-relative, and NO
+    top-level import may appear AFTER the first non-import statement — a late import
+    would otherwise extend the stripped preamble and silently drop preceding globals.
+    """
+    _validate_stdlib_only(src, "deny.py")
+    tree = ast.parse(src)
+    preamble_end = 0
+    seen_code = False
+    for node in tree.body:
+        is_import = isinstance(node, (ast.Import, ast.ImportFrom))
+        is_docstring = (
+            isinstance(node, ast.Expr)
+            and isinstance(getattr(node, "value", None), ast.Constant)
+            and isinstance(node.value.value, str)
+        )
+        if is_import:
+            if seen_code:
+                raise SystemExit(
+                    "generate_standalone_hook: deny.py has a top-level import after code; "
+                    "move all imports into the contiguous top preamble"
+                )
+            preamble_end = max(preamble_end, node.end_lineno or 0)
+        elif is_docstring and not seen_code:
+            preamble_end = max(preamble_end, node.end_lineno or 0)
+        else:
+            seen_code = True
     lines = src.splitlines(keepends=True)
-    body = "".join(lines[last_import_end:])
+    body = "".join(lines[preamble_end:])
     return body.strip("\n") + "\n"
 
 
@@ -171,6 +208,7 @@ def render(root: Path | None = None) -> str:
     common_src = (root / "hooks" / "bin" / "_common.py").read_text(encoding="utf-8")
 
     hook_disabled_src = _extract_function_source(common_src, "hook_disabled")
+    _validate_stdlib_only(hook_disabled_src, "_common.hook_disabled")
     deny_body = _deny_body_after_imports(deny_src)
 
     # Source SHA over the canonical inputs (drift-detectable by doctor).

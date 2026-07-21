@@ -95,9 +95,12 @@ omg setup
 omg doctor
 ```
 
-`install-plugin.sh` runs `grok plugin install . --trust` **and** writes  
-`~/.grok/hooks/omg-pretool-deny.json` with an **absolute path** into this checkout  
-(plugin-bundled PreToolUse alone has been insufficient in live sessions).
+`install-plugin.sh` runs `grok plugin install . --trust` **and** installs the global
+PreToolUse soft-gate under `$GROK_HOME/hooks/` — a **self-contained** standalone
+(`omg_pretool_deny_standalone.py`, launched `python3 -I -S … || true`), **not** a
+checkout-path script (plugin-bundled PreToolUse alone has been insufficient in live
+sessions; a checkout-path hook under TCC-protected `~/Documents` bricked every tool
+in other workspaces — see `docs/security-model.md`).
 
 ### Plugin-only (half surface — not enough alone)
 
@@ -115,11 +118,13 @@ This installs skills/agents from GitHub. It does **not** put `omg` on PATH and d
 | Upgrade | `omg update` (git pull + `install-plugin.sh`, which force-refreshes the frozen snapshot + doctor) |
 | Relocate clone | Re-run `./scripts/install-plugin.sh` (it warns on stale duplicate entries) + refresh `ln -sf …/bin/omg ~/.local/bin/omg` |
 | Uninstall | `omg uninstall --yes` (plugin + global hook + OMG rules block + CLI link; **never** touches project `.omg/`) |
-| Uninstall (manual) | `grok plugin uninstall oh-my-grok` · `rm -f ~/.grok/hooks/omg-pretool-deny.json` · `rm -f ~/.local/bin/omg` |
+| Uninstall (manual) | `grok plugin uninstall oh-my-grok` · `omg install-hook --remove` (removes json then standalone under `$GROK_HOME/hooks/`) · `rm -f ~/.local/bin/omg` |
 
 > **Why `omg update`, not `git pull` alone:** `grok plugin install` copies a **frozen snapshot** into `~/.grok/installed-plugins/`; a bare `git pull` leaves the loaded plugin stale, and for a local-path install both `grok plugin install` (re-run) and `grok plugin update` are no-ops. So `install-plugin.sh` (which `omg update` runs) force-refreshes a same-path install by **uninstall + reinstall** (back-to-back), and `omg doctor` flags version/enabled/installed-content drift so you can't silently run an old copy.
 
-`omg setup` scaffolds **project** files (`.omg/`, AGENTS fragment) **and** installs the global guidance contract `~/.grok/rules/omg.md` (skip with `--no-global-rules`). It does **not** install the plugin itself.
+`omg setup` scaffolds **project** files (`.omg/`, AGENTS fragment) **and** installs the global guidance contract `$GROK_HOME/rules/omg.md` (skip with `--no-global-rules`) **and** the global PreToolUse soft-gate `$GROK_HOME/hooks/` (skip with `--no-global-hook`; repair anytime with `omg install-hook`). It does **not** install the plugin itself.
+
+> **Recovery:** a grok session already bricked by an *old* checkout-path hook can't run `omg` through its blocked terminal. From any plain shell: `python3 -m omg_cli.hook_install` (repairs it), or `rm "${GROK_HOME:-$HOME/.grok}/hooks/omg-pretool-deny.json"` to disable the soft-gate, then restart grok.
 
 Smoke after install:
 

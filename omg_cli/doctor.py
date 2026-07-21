@@ -254,7 +254,12 @@ def check_global_pretool_hook() -> tuple[str, bool, str]:
     symlink) / not a readable regular file / a neutral-cwd behavioral smoke returns
     the wrong allow/deny decisions.
     """
-    from omg_cli.hook_install import grok_home
+    from omg_cli.hook_install import (
+        MATCHER,
+        STANDALONE_BASENAME,
+        grok_home,
+        launcher_command,
+    )
 
     name = "global PreToolUse soft-gate"
     gh = grok_home()
@@ -275,10 +280,11 @@ def check_global_pretool_hook() -> tuple[str, bool, str]:
             f"{path} has {len(commands)} command hooks (expected exactly 1; a second "
             "command is a second chance to exit 2 and block)",
         )
-    has_shell = any(("run_terminal_command" in m or "Shell" in m or "Bash" in m) for m in matchers)
-    has_spawn = any(("spawn_subagent" in m or "Task" in m) for m in matchers)
-    if not (has_shell and has_spawn):
-        return _check(name, False, f"{path} matcher must cover shell + spawn: {matchers!r}")
+    if matchers != [MATCHER]:
+        return _check(
+            name, False,
+            f"{path} matcher is not the canonical shell+spawn matcher: {matchers!r}",
+        )
     for h in entries:
         if h.get("type") != "command":
             return _check(name, False, f"{path} hook type must be 'command' (got {h.get('type')!r})")
@@ -304,6 +310,17 @@ def check_global_pretool_hook() -> tuple[str, bool, str]:
             f"hook script escapes $GROK_HOME ({resolved} not under {gh_resolved}); "
             "checkout-path / symlink installs brick other workspaces — run: omg install-hook",
         )
+    # The command must be EXACTLY our canonical launcher for the canonical install
+    # path. This rejects an appended `; exit 2` / `$()` / `` ` `` injection or a dropped
+    # `|| true` — any of which could make the hook exit 2 (grok's explicit deny) and
+    # block every tool, which a substring / decision-only smoke would miss.
+    expected_py = gh / "hooks" / STANDALONE_BASENAME
+    if cmd != launcher_command(expected_py):
+        return _check(
+            name, False,
+            f"{path} command is not the canonical `-I -S … || true` launcher for "
+            f"{expected_py}: {cmd!r} — run: omg install-hook",
+        )
     if not resolved.is_file():
         return _check(name, False, f"hook script is not a regular file: {resolved}")
     try:
@@ -313,21 +330,32 @@ def check_global_pretool_hook() -> tuple[str, bool, str]:
         return _check(name, False, f"hook script cannot be opened: {e}")
 
     # Behavioral smoke through the ACTUAL shell command (exercises -I -S + || true).
-    try:
-        _, out_allow = _run_hook_command(
-            cmd, '{"tool_name":"run_terminal_command","tool_input":{"command":"ls"}}'
-        )
-        _, out_deny = _run_hook_command(
-            cmd, '{"tool_name":"run_terminal_command","tool_input":{"command":"claude -p x"}}'
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        return _check(name, False, f"hook smoke could not run: {e}")
-    if '"deny"' in out_allow:
-        return _check(name, False, f"hook denied a benign command in smoke: {out_allow!r}")
-    if '"deny"' not in out_deny:
-        return _check(name, False, f"hook did not deny an external CLI in smoke: {out_deny!r}")
+    # EVERY probe must exit 0 (a nonzero exit — esp. 2 — is grok's explicit deny) and
+    # return the right JSON decision. Parse the decision; never substring-match.
+    probes = (
+        ("allow", '{"tool_name":"run_terminal_command","tool_input":{"command":"ls -la"}}'),
+        ("deny", '{"tool_name":"run_terminal_command","tool_input":{"command":"claude -p x"}}'),
+        ("deny", '{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore"}}'),
+    )
+    for want, payload in probes:
+        try:
+            rc, out = _run_hook_command(cmd, payload)
+        except (OSError, subprocess.SubprocessError) as e:
+            return _check(name, False, f"hook smoke could not run: {e}")
+        if rc != 0:
+            return _check(
+                name, False,
+                f"hook smoke exited {rc} (must be 0; a nonzero/2 exit is grok's explicit "
+                f"deny and would block the tool): {out!r}",
+            )
+        try:
+            got = json.loads(out)["decision"]
+        except Exception:
+            return _check(name, False, f"hook smoke emitted non-decision JSON: {out!r}")
+        if got != want:
+            return _check(name, False, f"hook smoke decision {got!r} (want {want!r}) for {payload}")
 
-    return _check(name, True, f"{path} → {resolved} (smoke allow/deny ok)")
+    return _check(name, True, f"{path} → {resolved} (canonical launcher; smoke rc0 allow/deny/spawn ok)")
 
 
 def check_global_pretool_hook_freshness() -> SoftResult:
@@ -364,6 +392,28 @@ def check_global_pretool_hook_freshness() -> SoftResult:
             name, "warn",
             f"$GROK_HOME is under TCC-protected {tcc}; a grok process without that "
             "access may fail to read the hook — prefer the default ~/.grok",
+        )
+    # Grok merges EVERY $GROK_HOME/hooks/*.json. Another PreToolUse command hook can
+    # exit 2 and block a tool regardless of ours — we can't control third-party hooks,
+    # so surface them (honest WARN, not our FAIL).
+    others: list[str] = []
+    hooks_dir = gh / "hooks"
+    if hooks_dir.is_dir():
+        for jf in sorted(hooks_dir.glob("*.json")):
+            if jf.name == GLOBAL_PRETOOL_HOOK_NAME:
+                continue
+            try:
+                data = json.loads(jf.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            cmds, _mm, _ee = _extract_pretool_hooks(data)
+            if cmds:
+                others.append(jf.name)
+    if others:
+        return (
+            name, "warn",
+            f"other PreToolUse hook file(s) present ({others}); a hook there that exits 2 "
+            "can also block a tool — audit them (grok merges all $GROK_HOME/hooks/*.json)",
         )
     return (name, "ok", f"installed standalone matches committed (sha {ih[:12]}…)")
 

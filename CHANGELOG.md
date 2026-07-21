@@ -64,8 +64,11 @@ panes sealed). All three found by real `grok`/`codex` in real tmux, fixed, and r
   `$GROK_HOME/hooks/` (always readable, non-TCC, workspace-independent). It signals
   deny ONLY via stdout JSON (grok honors that regardless of exit code) and **always
   exits 0**; the launcher `python3 -I -S "<abs>" || true` normalizes any
-  interpreter/startup failure to fail-**open**. Live grok canary proves deny-JSON+rc0
-  still blocks.
+  interpreter/startup failure to fail-**open** (the path is `shlex.quote`d so a
+  `$GROK_HOME` with shell metacharacters can't inject an `exit 2`). A live grok 0.2.106
+  canary confirmed the hook's deny-JSON-at-rc0 actually blocks the command (parent
+  `parent_host_signature=true`, no shim marker written); the spawned child was
+  additionally capability-isolated.
 - **Install/repair:** one transactional installer (`omg_cli/hook_install.py`) shared by
   `omg setup` (new; end-user path previously installed NO hook) and
   `scripts/install-plugin.sh` (new `omg install-hook` subcommand; `omg setup

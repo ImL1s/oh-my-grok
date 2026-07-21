@@ -12,12 +12,10 @@ def _checkout_root() -> Path:
 
 
 def _grok_home(home: Path | None) -> Path:
-    if home is not None:
-        return Path(home)
-    raw = os.environ.get("GROK_HOME")
-    if raw is not None and raw.strip() != "":
-        return Path(raw)
-    return Path.home() / ".grok"
+    # Single source of truth for the grok config root (honors $GROK_HOME).
+    from omg_cli.hook_install import grok_home
+
+    return grok_home(home)
 
 
 def run_uninstall(

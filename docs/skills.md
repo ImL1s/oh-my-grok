@@ -107,7 +107,7 @@ omg resume --clear   # after successfully continuing
 
 > Recovery (a grok session bricked by an old checkout-path hook can't run `omg`
 > through its blocked terminal): from any plain shell run
-> `python3 -m omg_cli.hook_install`, or `rm "$HOME/.grok/hooks/omg-pretool-deny.json"`
+> `python3 -m omg_cli.hook_install`, or `rm "${GROK_HOME:-$HOME/.grok}/hooks/omg-pretool-deny.json"`
 > to disable the soft-gate, then restart grok.
 
 ---

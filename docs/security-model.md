@@ -167,8 +167,8 @@ remains **fail-open** on hook timeout/crash; primary isolation is still
 **Out-of-band recovery** (a session already bricked by the OLD hook cannot run
 `omg` through its blocked terminal): from any plain shell, run
 `python3 -m omg_cli.hook_install` (repairs it), or as a last resort
-`rm "$HOME/.grok/hooks/omg-pretool-deny.json"` to disable the soft-gate, then
-restart grok.
+`rm "${GROK_HOME:-$HOME/.grok}/hooks/omg-pretool-deny.json"` to disable the
+soft-gate, then restart grok.
 
 ## Host launcher: `omg --madmax` (break-glass)
 

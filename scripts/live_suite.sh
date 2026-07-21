@@ -68,8 +68,9 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 need_grok
 echo "== live_suite mode=$MODE ts=$TS =="
 
-# Global hook preflight
-if [[ ! -f "${HOME}/.grok/hooks/omg-pretool-deny.json" ]]; then
+# Global hook preflight (honor $GROK_HOME)
+GROK_HOME_DIR="${GROK_HOME:-$HOME/.grok}"
+if [[ ! -f "${GROK_HOME_DIR}/hooks/omg-pretool-deny.json" ]]; then
   echo "WARN: global hook missing; running install-plugin.sh"
   bash "$ROOT/scripts/install-plugin.sh" || true
 fi
