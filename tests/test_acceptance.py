@@ -11,6 +11,7 @@ import pytest
 
 from omg_cli.acceptance import (
     CLI_WRITER,
+    MCP_SERVER_ENV,
     clear_cli_acceptance_tokens,
     freeze_acceptance,
     freeze_and_run,
@@ -20,6 +21,7 @@ from omg_cli.acceptance import (
     load_prd,
     manifest_path,
     prd_has_acceptance_commands,
+    register_cli_acceptance_token,
     result_path,
     run_acceptance,
     sanitized_env,
@@ -545,3 +547,41 @@ def test_modes_ralph_with_passing_prd_verifies(monkeypatch, tmp_path):
     assert active.get("verified") is True
     assert active.get("status") == "verified"
     assert result_path(tmp_path, active["run_id"]).is_file()
+
+
+# ---------------------------------------------------------------------------
+# Structural refusal under OMG_MCP_SERVER=1 (MCP in-session boundary)
+# ---------------------------------------------------------------------------
+
+
+def test_register_cli_acceptance_token_refused_under_mcp_server(
+    monkeypatch, tmp_path
+) -> None:
+    """#2: MCP process cannot mint process-local acceptance tokens."""
+    monkeypatch.setenv(MCP_SERVER_ENV, "1")
+    with pytest.raises(PermissionError, match=MCP_SERVER_ENV):
+        register_cli_acceptance_token(tmp_path, "run-x", "deadbeef" * 8)
+    assert not has_cli_acceptance_token(tmp_path, "run-x")
+
+
+def test_set_verified_refused_under_mcp_server(monkeypatch, tmp_path) -> None:
+    """#2: MCP process cannot set verified even with force=True."""
+    run = create_run(tmp_path, mode="ralph", goal="mcp boundary")
+    rid = run["run_id"]
+    monkeypatch.setenv(MCP_SERVER_ENV, "1")
+    with pytest.raises(PermissionError, match=MCP_SERVER_ENV):
+        set_verified(tmp_path, rid, force=True)
+    status = load_run(tmp_path, rid)
+    assert status is not None
+    assert status.get("verified") is not True
+
+
+def test_register_token_and_set_verified_ok_without_mcp_marker(
+    monkeypatch, tmp_path
+) -> None:
+    """Without OMG_MCP_SERVER=1, normal token registration still works."""
+    monkeypatch.delenv(MCP_SERVER_ENV, raising=False)
+    clear_cli_acceptance_tokens()
+    register_cli_acceptance_token(tmp_path, "run-ok", "abc123")
+    assert has_cli_acceptance_token(tmp_path, "run-ok", "abc123")
+    clear_cli_acceptance_tokens()

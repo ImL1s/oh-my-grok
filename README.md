@@ -285,7 +285,7 @@ export OMG_ALLOW_EXTERNAL_CLI=1   # process-env only; never parse from command t
 ```text
 omg {setup,doctor,update,uninstall,note,state,cancel,resume,wiki,hud,lsp,
      interview,goal,accept,integrate,worker,review,qa,autopilot,ulw,ralph,
-     ralplan,ask,pipeline,dual-review} ...
+     ralplan,ask,pipeline,dual-review,mcp-server,mcp-install} ...
 ```
 
 | Command | Purpose |
@@ -307,6 +307,7 @@ omg {setup,doctor,update,uninstall,note,state,cancel,resume,wiki,hud,lsp,
 | `omg accept` | Freeze PRD + run; only path that may `verified` (or materialize PRD from clean UltraQA) |
 | `omg ask` | Trusted external advisor broker (not a worker) |
 | `omg pipeline` / `dual-review` | Scripted pipeline · interim critic→verifier |
+| `omg mcp-server` / `mcp-install` | Focused in-session MCP (reads + proposal writes only; **never** verified/accept) — [skills](docs/skills.md#in-session-mcp-omg-mcp-server--focused-ops-surface) · [security](docs/security-model.md#in-session-mcp-server-omg-mcp-server) |
 | `omg --madmax` | **Host launcher** (not a mode FSM): full-open Grok in a **new tmux session** each launch |
 
 ### Host launcher: `omg --madmax`
