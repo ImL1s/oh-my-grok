@@ -19,21 +19,25 @@ else
   ROOT_RESOLVED="$(cd "$ROOT" && pwd -P)"
 fi
 
-# Dedup warn: different source strings (e.g. "." vs abs path) create duplicate
-# same-named entries; do NOT auto-uninstall — only warn clearly.
-echo "== existing inventory (dedup check) =="
+# Inventory parse: (1) WARN on different-path duplicates (do NOT auto-remove);
+# (2) detect same-path install so we can force-refresh via uninstall+reinstall.
+# Reuses one `grok plugin list --json` parse for both.
+SAME_PATH_INSTALLED=0
+echo "== existing inventory (dedup + same-path check) =="
 if LIST_JSON="$(grok plugin list --json 2>/dev/null)"; then
   # Best-effort Python parse (stdlib only); skip quietly if parse fails.
   if command -v python3 >/dev/null 2>&1; then
     export OMG_INSTALL_ROOT="$ROOT_RESOLVED"
     export OMG_INSTALL_LIST_JSON="$LIST_JSON"
-    python3 - <<'PY' || true
+    PARSE_OUT="$(
+      python3 - <<'PY' || true
 import json, os, sys
 root = os.environ.get("OMG_INSTALL_ROOT", "")
 raw = os.environ.get("OMG_INSTALL_LIST_JSON", "")
 try:
     data = json.loads(raw)
 except Exception:
+    print("SAME_PATH_INSTALLED=0")
     sys.exit(0)
 cands = []
 if isinstance(data, list):
@@ -47,6 +51,7 @@ elif isinstance(data, dict):
     if not cands:
         cands = [data]
 stale = []
+same_path = False
 for item in cands:
     name = str(item.get("name") or item.get("id") or item.get("plugin") or "")
     if "oh-my-grok" not in name:
@@ -59,7 +64,10 @@ for item in cands:
         src_r = os.path.realpath(src)
     except Exception:
         src_r = src
-    if src_r.rstrip("/") != root.rstrip("/") and src.rstrip("/") != root.rstrip("/"):
+    root_n = root.rstrip("/")
+    if src_r.rstrip("/") == root_n or src.rstrip("/") == root_n:
+        same_path = True
+    else:
         key = name
         stale.append(f"  key={key!r} source/path={src!r}")
 if stale:
@@ -68,37 +76,73 @@ if stale:
         print(line, file=sys.stderr)
     print(f"  this checkout: {root!r}", file=sys.stderr)
     print("  recommend: grok plugin uninstall oh-my-grok  (then re-run this script)", file=sys.stderr)
-    print("  (installer will NOT auto-uninstall — remove the stale entry yourself)", file=sys.stderr)
+    print("  (installer will NOT auto-uninstall different-path entries — remove those yourself)", file=sys.stderr)
+print(f"SAME_PATH_INSTALLED={1 if same_path else 0}")
 PY
+    )"
     unset OMG_INSTALL_ROOT OMG_INSTALL_LIST_JSON
+    if [[ "$PARSE_OUT" == *"SAME_PATH_INSTALLED=1"* ]]; then
+      SAME_PATH_INSTALLED=1
+      echo "found existing oh-my-grok install for this checkout (will refresh snapshot)"
+    else
+      echo "no same-path oh-my-grok install detected (fresh install path)"
+    fi
   fi
 else
-  echo "(grok plugin list --json unavailable; skipping dedup check)"
+  echo "(grok plugin list --json unavailable; skipping dedup/same-path check)"
 fi
 
 echo "== grok plugin validate =="
 grok plugin validate "$ROOT"
 
+# Install / force-refresh frozen snapshot.
+# grok plugin install copies a FROZEN snapshot into ~/.grok/installed-plugins/.
+# For an ALREADY-installed local-path plugin, both `install` and `update` are
+# no-ops — the only reliable refresh is uninstall-then-reinstall (back-to-back).
 echo "== grok plugin install . --trust =="
-# SOURCE is this repo root; --trust for non-interactive hook/skill activation.
-# "already installed" is OK — still force-refresh via update below.
 INSTALLED_OK=0
-if grok plugin install "$ROOT" --trust; then
-  INSTALLED_OK=1
-  echo "install: ok (or already present)"
+REFRESHED=0
+if [[ "$SAME_PATH_INSTALLED" -eq 1 ]]; then
+  # Reinstall = refresh: uninstall FIRST, then install immediately.
+  echo "refreshing (uninstall+reinstall)…"
+  if grok plugin uninstall oh-my-grok --confirm; then
+    echo "uninstall: ok (preparing fresh install)"
+  else
+    echo "WARN: grok plugin uninstall oh-my-grok --confirm returned non-zero; attempting reinstall anyway" >&2
+  fi
+  # BACK-TO-BACK: do not leave a gap — if reinstall fails the plugin may be gone.
+  if grok plugin install "$ROOT" --trust; then
+    INSTALLED_OK=1
+    REFRESHED=1
+    echo "install: ok (fresh snapshot after uninstall+reinstall)"
+  else
+    echo "ERROR: ============================================================" >&2
+    echo "ERROR: reinstall FAILED after uninstall — plugin may now be REMOVED." >&2
+    echo "ERROR: re-run this script, or:" >&2
+    echo "ERROR:   grok plugin install \"$ROOT\" --trust" >&2
+    echo "ERROR: ============================================================" >&2
+    exit 1
+  fi
 else
-  echo "WARN: plugin install returned non-zero (may already be installed); continuing with update/enable" >&2
+  # Not already installed for this path — normal install (no uninstall).
+  if grok plugin install "$ROOT" --trust; then
+    INSTALLED_OK=1
+    echo "install: ok (new install)"
+  else
+    echo "WARN: plugin install returned non-zero (may already be installed under another key); continuing with update/enable" >&2
+  fi
 fi
 
-echo "== grok plugin update (force-refresh frozen snapshot) =="
-# grok plugin install copies a FROZEN snapshot into ~/.grok/installed-plugins/;
-# re-running install on an already-installed source no-ops. update force-refreshes.
+echo "== grok plugin update (best-effort; no-op for local-path) =="
+# Local-path installs: `grok plugin update` is a no-op. Snapshot refresh is
+# performed above via uninstall+reinstall when same-path was detected. Keep
+# update as a harmless best-effort (may still help non-local install sources).
 UPDATED_OK=0
 if grok plugin update oh-my-grok; then
   UPDATED_OK=1
-  echo "update: refreshed on-disk snapshot for oh-my-grok"
+  echo "update: ok (no-op for local-path; refresh is uninstall+reinstall above)"
 else
-  echo "WARN: grok plugin update oh-my-grok failed (best-effort); snapshot may be stale" >&2
+  echo "WARN: grok plugin update oh-my-grok failed (best-effort; local-path refresh uses uninstall+reinstall)" >&2
 fi
 
 echo "== grok plugin enable (plugins disabled by default) =="
@@ -163,8 +207,9 @@ if [[ -x "$OMG_BIN" ]]; then
 fi
 
 echo
-echo "summary: install=${INSTALLED_OK} update=${UPDATED_OK} enable=${ENABLED_OK}"
+echo "summary: install=${INSTALLED_OK} refresh=${REFRESHED} update=${UPDATED_OK} enable=${ENABLED_OK}"
 echo "  (1=ok/attempted-success, 0=non-zero — re-run or check grok plugin list)"
+echo "  refresh=1 means same-path uninstall+reinstall refreshed the frozen snapshot"
 echo
 echo "Next steps:"
 echo "  1. Confirm omg on PATH (install tried ~/.local/bin/omg):"
@@ -176,7 +221,7 @@ echo "       \"$ROOT/scripts/smoke.sh\""
 echo "  4. Optional PreToolUse canary (never runs real claude/codex):"
 echo "       python3 \"$ROOT/scripts/canary_pretool.py\" --dry"
 echo "       python3 \"$ROOT/scripts/canary_pretool.py\" --live   # needs grok + global hook"
-echo "  5. After relocate/upgrade: re-run this script (update refreshes snapshot;"
-echo "     global hook uses absolute path)"
+echo "  5. After relocate/upgrade: re-run this script (same-path reinstall"
+echo "     refreshes the frozen snapshot; global hook uses absolute path)"
 echo
 echo "install-plugin OK"

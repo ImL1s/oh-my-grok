@@ -50,7 +50,7 @@ Workers fan out only via Grok **`spawn_subagent`** (depth 1). No Rust fork of gr
 | **Grok plugin** | `skills/omg-*`, `agents/omg-*`, hooks (event spool + PreToolUse soft-guard + SessionStart RESUME.md) |
 | **`omg` CLI** | `setup` / `doctor` / `resume` / modes / `accept` / `integrate` / `goal` / `interview` / `wiki` / `hud` / `lsp` / `autopilot`… |
 
-Version: **0.4.0** · License: MIT
+Version: **0.4.2** · License: MIT
 
 ---
 
@@ -73,7 +73,7 @@ curl -fsSL https://x.ai/cli/install.sh | bash
 git clone https://github.com/ImL1s/oh-my-grok.git ~/.local/share/oh-my-grok
 cd ~/.local/share/oh-my-grok
 ./scripts/install-plugin.sh
-# optional pin: git checkout v0.4.0
+# optional pin: git checkout v0.4.2
 
 # 2) omg on PATH (not on PyPI yet; install script also tries this)
 ln -sf "$(pwd)/bin/omg" ~/.local/bin/omg   # ensure ~/.local/bin is on PATH
@@ -93,7 +93,7 @@ omg doctor
 
 ```bash
 grok plugin install ImL1s/oh-my-grok --trust
-# better pin: grok plugin install ImL1s/oh-my-grok@v0.4.0 --trust
+# better pin: grok plugin install ImL1s/oh-my-grok@v0.4.2 --trust
 ```
 
 This installs skills/agents from GitHub. It does **not** put `omg` on PATH and does **not** guarantee the global soft-gate. **Every `omg …` command in this README (including `omg setup` / `omg doctor` in the smoke steps below) requires the Full install** — plugin-only gives you in-session skills only. Prefer **Full install** unless that is all you need.
@@ -102,12 +102,12 @@ This installs skills/agents from GitHub. It does **not** put `omg` on PATH and d
 
 | Action | Commands |
 |--------|----------|
-| Upgrade | `omg update` (git pull + `grok plugin update` to force-refresh the frozen snapshot + doctor) |
+| Upgrade | `omg update` (git pull + `install-plugin.sh`, which force-refreshes the frozen snapshot + doctor) |
 | Relocate clone | Re-run `./scripts/install-plugin.sh` (it warns on stale duplicate entries) + refresh `ln -sf …/bin/omg ~/.local/bin/omg` |
 | Uninstall | `omg uninstall --yes` (plugin + global hook + OMG rules block + CLI link; **never** touches project `.omg/`) |
 | Uninstall (manual) | `grok plugin uninstall oh-my-grok` · `rm -f ~/.grok/hooks/omg-pretool-deny.json` · `rm -f ~/.local/bin/omg` |
 
-> **Why `omg update`, not `git pull` alone:** `grok plugin install` copies a **frozen snapshot** into `~/.grok/installed-plugins/`; a bare `git pull` leaves the loaded plugin stale. `omg update` (and re-running `install-plugin.sh`) runs `grok plugin update` to refresh it, and `omg doctor` now flags version/enabled/content drift so you can't silently run an old copy.
+> **Why `omg update`, not `git pull` alone:** `grok plugin install` copies a **frozen snapshot** into `~/.grok/installed-plugins/`; a bare `git pull` leaves the loaded plugin stale, and for a local-path install both `grok plugin install` (re-run) and `grok plugin update` are no-ops. So `install-plugin.sh` (which `omg update` runs) force-refreshes a same-path install by **uninstall + reinstall** (back-to-back), and `omg doctor` flags version/enabled/installed-content drift so you can't silently run an old copy.
 
 `omg setup` scaffolds **project** files (`.omg/`, AGENTS fragment) **and** installs the global guidance contract `~/.grok/rules/omg.md` (skip with `--no-global-rules`). It does **not** install the plugin itself.
 
@@ -292,7 +292,7 @@ omg {setup,doctor,update,uninstall,note,state,cancel,resume,wiki,hud,lsp,
 |---------|---------|
 | `omg setup` / `omg doctor` | Scaffold `.omg/` + install `~/.grok/rules/omg.md` · health (+ `--strict`) |
 | `omg update` / `omg uninstall` | git pull + refresh plugin snapshot · remove plugin/hook/rules block (`--yes`; never `.omg/`) |
-| `omg note "…"` | Durable project note in `.omg/notepad.md` (`--priority` = permanent, `--show` prints) |
+| `omg note "…"` | Durable project note in `.omg/notepad.md` (`--priority` = permanent, `--show` prints, `--prune` drops expired 7d) |
 | `omg state` / `omg cancel` | Active run · process-group cancel |
 | `omg resume` | Smart resume routing + `.omg/state/RESUME.md` (SessionStart inject) |
 | `omg wiki` / `hud` / `lsp` | Local markdown wiki · statusline pack · optional language-tool probe |
@@ -300,6 +300,7 @@ omg {setup,doctor,update,uninstall,note,state,cancel,resume,wiki,hud,lsp,
 | `omg goal …` | Hash-chained ultragoal ledger + tail repair (**no host `/goal`** on Grok — repo ledger only) |
 | `omg ulw` / `ralph` / `ralplan` | Parallel / persist / plan-only modes |
 | `omg worker own\|prepare\|seal\|join` | ULW ownership + worktree + envelopes |
+| `omg worker seal --all [--force]` | Leader batch-seals every prepared worktree with a real `head_sha` (fail-closed; nonzero if any task failed) |
 | `omg integrate` | Cherry-pick ULW envelopes (does **not** set verified alone) |
 | `omg review` / `omg qa` | Hash-bound review · UltraQA (**QA clean ≠ verified**) |
 | `omg autopilot …` | Strict phases; `start` / `transition` / `status` / `complete` — [skills](docs/skills.md#omg-autopilot--full-lifecycle-in-session) · [guide](docs/autopilot.md) |
@@ -471,6 +472,8 @@ Full dual-review ship bar (C1–C9) is complete. Recent lines:
 - **v0.2.x:** acceptance policy, run mutex, ULW integrate, ralplan FSM, worker prepare/seal, pipeline order, live suite.
 - **2026-07-20 core-purpose parity:** evidence stamps, session lease, interview, goal ledger + repair, ULW ownership/join, hash-bound review, UltraQA, strict autopilot; destination gates; CLI acceptance authority for `verified`.
 - **v0.2.6:** `omg --madmax` full-open host launch in tmux; OSS install dual-track + release protocol; CI smoke.
+- **v0.4.2:** `omg worker seal --all` — leader batch seal (fail-closed; valid `head_sha`); local-path installer force-refresh (uninstall+reinstall).
+- **v0.4.1:** backlog polish (`omg note --prune`, installed-snapshot capabilities lock, docs-drift guard) + command_policy break-glass floor hardening (fail-closed region boundary).
 - **v0.4.0:** OMC/OMX parity — global guidance injection (`~/.grok/rules/omg.md`); `omg update`/`uninstall`/`note`; self-healing installer + doctor drift checks; kill switches; capabilities lock; verdict-gate hardening + 6 audited security fixes (Fable 5 full-branch GO).
 - **v0.3.2:** QA freeze allowlist UX + pytest marker coalesce; auto PRD from clean UltraQA; autopilot complete short-circuit; `autopilot_phase` sync on verified.
 - **v0.3.1:** strict-v2 accept lease; residual verdict false-green; integrate/fanout/env isolation hygiene (improve-deep).
