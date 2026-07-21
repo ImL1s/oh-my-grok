@@ -15,6 +15,27 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Host Stop veto (not feasible on Grok today).
 - Full OMC LSP/AST MCP bridge (local pyright probe only in 0.3.0).
 
+## [0.4.2] - 2026-07-21
+
+ULW leader batch seal — closes the ULW→integrate gap the live suite surfaced.
+Merged via PR #3; standing reviewer (Fable 5) design bless + implementation GO.
+
+### Added
+- **`omg worker seal --all [--force]`:** a leader-side batch seal — one command
+  seals every prepared worktree with a real `head_sha` from `git rev-parse HEAD`,
+  so real grok ULW sessions stop hand-writing envelopes with invalid head_shas
+  (which `omg integrate` correctly refused). A pure driver over the existing
+  fail-closed `seal_task`; join's ownership gate and integrate's
+  `preflight_clean_tree` are untouched.
+  - Fail-closed status discrimination: only a literal "worktree missing" is a
+    benign skip; a returned `status="failed"` envelope (head==base / still-dirty)
+    surfaces as `failed` (never masked as `sealed`); every other `WorkerError` is
+    `error`. The CLI returns nonzero if any task failed/errored.
+  - Honest trust boundary: seals only `.omg/worktrees/<run_id>/<validated task_id>`
+    for task_ids in a CLI-written manifest (no provenance verification claimed);
+    a traversal task_id is rejected by `validate_task_id`.
+  - `--force` re-seals a worktree whose head advanced past its recorded head_sha.
+
 ## [0.4.1] - 2026-07-21
 
 Backlog polish + a security-floor hardening pass, all reviewer-driven (Fable 5
