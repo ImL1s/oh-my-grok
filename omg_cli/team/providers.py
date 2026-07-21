@@ -12,8 +12,10 @@ Hard rules
    — never taken from task JSON.
 3. **Model** is optional; if present, reject spaces / leading ``-`` (injection)
    and optional allowlist misses.
-4. **Prompt body never inline in argv** — prefer ``--prompt-file`` / stdin /
-   path-only ``-p`` so the body stays out of ``ps``.
+4. **Prompt body never inline in argv at build time** — builders put a path
+   placeholder or stdin sentinel; pane delivery substitutes body only for
+   ``positional-text`` modes (cursor/agy/gemini). stdin / prompt-file keep
+   the body out of ``ps``.
 5. **Unknown provider** → :class:`TeamProviderError` (fail-closed).
 """
 
@@ -23,7 +25,7 @@ import inspect
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Sequence
+from typing import Final, Literal, Sequence
 
 from omg_cli.team.roles import role_posture
 
@@ -34,6 +36,25 @@ from omg_cli.team.roles import role_posture
 EXECUTOR_PROVIDERS: Final[frozenset[str]] = frozenset(
     {"grok", "codex", "agy", "cursor", "gemini"}
 )
+
+# How the pane command must deliver the materialized prompt file.
+# - prompt-file: argv already has ``--prompt-file <path>`` (grok)
+# - stdin: trailing ``-`` sentinel; pane redirects ``< path`` (codex)
+# - positional-text: path placeholder in argv; pane substitutes file body
+#   (cursor trailing positional; agy/gemini ``-p`` value)
+PromptDelivery = Literal["prompt-file", "stdin", "positional-text"]
+
+PROMPT_DELIVERY_PROMPT_FILE: Final[PromptDelivery] = "prompt-file"
+PROMPT_DELIVERY_STDIN: Final[PromptDelivery] = "stdin"
+PROMPT_DELIVERY_POSITIONAL_TEXT: Final[PromptDelivery] = "positional-text"
+
+_PROVIDER_PROMPT_DELIVERY: Final[dict[str, PromptDelivery]] = {
+    "grok": PROMPT_DELIVERY_PROMPT_FILE,
+    "codex": PROMPT_DELIVERY_STDIN,
+    "cursor": PROMPT_DELIVERY_POSITIONAL_TEXT,
+    "agy": PROMPT_DELIVERY_POSITIONAL_TEXT,
+    "gemini": PROMPT_DELIVERY_POSITIONAL_TEXT,
+}
 
 # Optional model allowlist (None → any non-empty validated model string).
 ALLOWED_EXECUTOR_MODELS: frozenset[str] | None = None
@@ -116,6 +137,7 @@ class ExecutorInvocation:
     needs_pty: bool
     posture: str  # "read-only" | "read-write"
     provider: str
+    prompt_delivery: PromptDelivery
 
 
 EXECUTOR_SPECS: Final[dict[str, ExecutorSpec]] = {
@@ -282,9 +304,10 @@ def _build_cursor(
     # Verified: cursor-agent --print --trust --workspace <cwd> [--model M]
     #   read-only → --mode ask; read-write → default agent mode (no --mode).
     # (ref ~/.claude/skills/cursor-cli-agent/cursor-exec.sh + `cursor-agent --help`).
-    # Real CLI takes prompt as trailing positional; no --prompt-file. We pass the
-    # *path* (not body) so the secret stays out of argv; D1 may expand to body
-    # at spawn if the CLI requires text content.
+    # Real CLI takes prompt TEXT as trailing positional (no native --prompt-file
+    # / -f; the skill wrapper's -f is cat→positional). We leave the path as a
+    # placeholder; plane substitutes the file body at pane-build time
+    # (prompt_delivery=positional-text).
     argv: list[str] = [
         "cursor-agent",
         "--print",
@@ -307,10 +330,10 @@ def _build_agy(
     cwd: str,  # noqa: ARG001 — agy has no --cwd; caller chdirs / PTY env
     model: str | None,
 ) -> list[str]:
-    # Verified: agy -p <prompt> --model M --dangerously-skip-permissions [--sandbox]
-    # needs_pty=True (ref ~/.claude/skills/agy-cli-agent/agy-pty.py).
-    # Real CLI expects prompt *text* after -p; D0 passes path only (no body in
-    # argv). Read-only → --sandbox; read-write → no sandbox.
+    # Verified: agy -p <prompt TEXT> --model M --dangerously-skip-permissions
+    # [--sandbox]; needs_pty=True (ref agy-pty.py). Path is a placeholder;
+    # plane substitutes body at pane-build (positional-text).
+    # Read-only → --sandbox; read-write → no sandbox.
     argv: list[str] = ["agy", "-p", prompt_file]
     if model:
         argv.extend(["--model", model])
@@ -327,10 +350,10 @@ def _build_gemini(
     cwd: str,  # noqa: ARG001 — gemini has no fixed cwd flag in brief template
     model: str | None,
 ) -> list[str]:
-    # Verified: gemini -p <prompt> [--model M] (advisor-grade; file path as -p).
-    # Posture is recorded on ExecutorInvocation but gemini template has no
-    # read-only/write switch in the D0 brief (plan/yolo exist on real CLI but
-    # are intentionally NOT wired — no free-form / no guess).
+    # Verified: gemini -p <prompt TEXT> [--model M]. Path placeholder;
+    # plane substitutes body (positional-text). Posture recorded on
+    # ExecutorInvocation but gemini template has no RO/RW switch (plan/yolo
+    # exist on real CLI but are intentionally NOT wired — no free-form).
     argv: list[str] = ["gemini", "-p", prompt_file]
     if model:
         argv.extend(["--model", model])
@@ -392,11 +415,13 @@ def build_executor_argv(
     builder = _BUILDERS[canon]
     argv = builder(posture=posture, prompt_file=pf, cwd=workdir, model=m)
     spec = EXECUTOR_SPECS[canon]
+    delivery = _PROVIDER_PROMPT_DELIVERY[canon]
     inv = ExecutorInvocation(
         argv=argv,
         needs_pty=spec.needs_pty,
         posture=posture,
         provider=canon,
+        prompt_delivery=delivery,
     )
     # Self-check: built argv must not carry free-form elevation.
     if argv_has_free_form(inv.argv):
@@ -421,8 +446,12 @@ __all__ = [
     "ALLOWED_EXECUTOR_MODELS",
     "EXECUTOR_PROVIDERS",
     "EXECUTOR_SPECS",
+    "PROMPT_DELIVERY_POSITIONAL_TEXT",
+    "PROMPT_DELIVERY_PROMPT_FILE",
+    "PROMPT_DELIVERY_STDIN",
     "ExecutorInvocation",
     "ExecutorSpec",
+    "PromptDelivery",
     "TeamProviderError",
     "TeamProviderMissing",
     "argv_has_free_form",

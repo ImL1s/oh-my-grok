@@ -25,6 +25,7 @@ from omg_cli.team.plane import (
     TEAM_WORKER_ENV,
     TeamError,
     TeamGateError,
+    build_executor_pane_command,
     collect_team,
     experimental_enabled,
     in_spawned_worker_context,
@@ -34,6 +35,12 @@ from omg_cli.team.plane import (
     stop_team,
     team_meta_path,
     team_status,
+)
+from omg_cli.team.providers import (
+    PROMPT_DELIVERY_POSITIONAL_TEXT,
+    PROMPT_DELIVERY_PROMPT_FILE,
+    PROMPT_DELIVERY_STDIN,
+    build_executor_argv,
 )
 from omg_cli.team.roles import UnknownRoleError
 from omg_cli.team.routing import RoutingError
@@ -588,9 +595,22 @@ def test_dry_run_multi_cli_codex_argv(
     assert "-s" in rec["argv"]
     assert rec["argv"][rec["argv"].index("-s") + 1] == "workspace-write"
     assert rec["needs_pty"] is False
+    assert rec["prompt_delivery"] == PROMPT_DELIVERY_STDIN
     assert rec["pid"] is None
     # pane command embeds codex, not only grok
     assert "codex" in rec["pane_command"]
+    # stdin delivery: redirect prompt file into codex's trailing `-`
+    assert rec["argv"][-1] == "-"
+    # shell fragment ends with: ... - < '<promptfile>'
+    assert " < " in rec["pane_command"]
+    prompt_path = Path(rec["worktree"]) / ".omg" / "team-prompt" / "t1.prompt.md"
+    assert prompt_path.is_file()
+    assert str(prompt_path) in rec["pane_command"] or prompt_path.name in rec[
+        "pane_command"
+    ]
+    # Body must NOT appear in recorded argv (stays out of ps for stdin mode).
+    body = prompt_path.read_text(encoding="utf-8")
+    assert body not in rec["argv"]
     run = load_run(tmp_path, meta["run_id"])
     assert run is not None
     assert run.get("verified") is not True
@@ -617,8 +637,90 @@ def test_dry_run_agy_records_needs_pty(
     assert rec["provider"] == "agy"
     assert rec["needs_pty"] is True
     assert rec["argv"][0] == "agy"
+    assert rec["prompt_delivery"] == PROMPT_DELIVERY_POSITIONAL_TEXT
     assert "pty" in rec["pane_command"] or "python3" in rec["pane_command"]
     assert meta["routing"]["by_role"]["executor"]["needs_pty"] is True
+    # positional-text: prompt BODY (not path alone) must reach the pty payload
+    # (JSON-escaped inside python3 -c payload, so match a distinctive line).
+    prompt_path = Path(rec["worktree"]) / ".omg" / "team-prompt" / "t-agy.prompt.md"
+    body = prompt_path.read_text(encoding="utf-8")
+    assert "agy pane" in body
+    assert "agy pane" in rec["pane_command"]
+    # path placeholder must not remain as the sole -p value in the pane payload
+    # once body is substituted (argv record still has the path).
+    assert str(prompt_path) in rec["argv"]
+    assert str(prompt_path) not in rec["pane_command"]
+
+
+def test_build_executor_pane_command_codex_stdin_redirect(tmp_path: Path) -> None:
+    """Unit: codex pane ends with `... - < 'promptfile'`."""
+    pf = tmp_path / "task.prompt.md"
+    pf.write_text("DO THE TASK\n", encoding="utf-8")
+    inv = build_executor_argv(
+        "codex",
+        "executor",
+        prompt_file=pf,
+        cwd=tmp_path,
+        model=None,
+    )
+    assert inv.prompt_delivery == PROMPT_DELIVERY_STDIN
+    cmd = build_executor_pane_command(
+        inv.argv,
+        needs_pty=inv.needs_pty,
+        prompt_delivery=inv.prompt_delivery,
+        prompt_file=pf,
+    )
+    assert "codex" in cmd
+    assert inv.argv[-1] == "-"
+    # Redirection on the inner exec, not in the argv list itself.
+    assert f"< {pf!s}" in cmd or f"< '{pf}'" in cmd or f'< "{pf}"' in cmd or (
+        " < " in cmd and str(pf) in cmd
+    )
+    assert "DO THE TASK" not in cmd  # body not inlined for stdin mode
+
+
+def test_build_executor_pane_command_cursor_positional_body(tmp_path: Path) -> None:
+    pf = tmp_path / "task.prompt.md"
+    body = "CURSOR_TASK_BODY_UNIQUE_xyz"
+    pf.write_text(body, encoding="utf-8")
+    inv = build_executor_argv(
+        "cursor",
+        "executor",
+        prompt_file=pf,
+        cwd=tmp_path,
+    )
+    assert inv.prompt_delivery == PROMPT_DELIVERY_POSITIONAL_TEXT
+    assert inv.argv[-1] == str(pf)  # path placeholder at build time
+    cmd = build_executor_pane_command(
+        inv.argv,
+        needs_pty=inv.needs_pty,
+        prompt_delivery=inv.prompt_delivery,
+        prompt_file=pf,
+    )
+    assert body in cmd
+    assert "cursor-agent" in cmd
+
+
+def test_build_executor_pane_command_grok_prompt_file_unchanged(tmp_path: Path) -> None:
+    pf = tmp_path / "task.prompt.md"
+    pf.write_text("GROK_BODY\n", encoding="utf-8")
+    inv = build_executor_argv(
+        "grok",
+        "executor",
+        prompt_file=pf,
+        cwd=tmp_path,
+    )
+    assert inv.prompt_delivery == PROMPT_DELIVERY_PROMPT_FILE
+    cmd = build_executor_pane_command(
+        inv.argv,
+        needs_pty=inv.needs_pty,
+        prompt_delivery=inv.prompt_delivery,
+        prompt_file=pf,
+    )
+    assert "--prompt-file" in cmd
+    assert str(pf) in cmd
+    assert "GROK_BODY" not in cmd  # body stays in file
+    assert " < " not in cmd
 
 
 def test_start_rejects_cursor_on_reviewer(

@@ -51,7 +51,7 @@ from omg_cli.team.plane import (
     team_dir,
     team_meta_path,
 )
-from omg_cli.team.providers import build_executor_argv
+from omg_cli.team.providers import PROMPT_DELIVERY_PROMPT_FILE, build_executor_argv
 from omg_cli.team.routing import ResolvedRouting, RoutingError, resolve_routing
 from omg_cli.workers import (
     WorkerError,
@@ -296,7 +296,13 @@ def _build_pane_record(
         needs_pty = bool(inv.needs_pty)
         provider = inv.provider
         posture = inv.posture
-        pane_cmd = build_executor_pane_command(argv, needs_pty=needs_pty)
+        prompt_delivery = inv.prompt_delivery
+        pane_cmd = build_executor_pane_command(
+            argv,
+            needs_pty=needs_pty,
+            prompt_delivery=prompt_delivery,
+            prompt_file=prompt_path,
+        )
     else:
         argv = _build_task_grok_argv(
             goal=goal,
@@ -313,6 +319,7 @@ def _build_pane_record(
         needs_pty = False
         provider = "grok"
         posture = "read-write"
+        prompt_delivery = PROMPT_DELIVERY_PROMPT_FILE
         pane_cmd = build_pane_command(_grok_args_for_pane(argv))
 
     argv_path = tdir / f"{tid}.argv.json"
@@ -331,6 +338,7 @@ def _build_pane_record(
         "provider": provider,
         "posture": posture,
         "needs_pty": needs_pty,
+        "prompt_delivery": prompt_delivery,
         "pid": None,
         "pgid": None,
         "status": "dry_run" if dry_run else "pending",

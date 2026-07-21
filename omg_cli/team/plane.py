@@ -18,7 +18,8 @@ Lifecycle (mirrors process fanout's dry-run / PID contract with tmux):
 
 Dry-run never calls ``tmux_available()`` or ``subprocess`` — writes team.json
 with ``pid=None`` / ``status=dry_run`` (parity with fanout). Multi-CLI dry-run
-still records the would-be per-provider argv (and ``needs_pty``).
+still records the would-be per-provider argv, ``needs_pty``, and
+``prompt_delivery``.
 """
 from __future__ import annotations
 
@@ -53,7 +54,13 @@ from omg_cli.state import (
     load_run,
     write_status,
 )
-from omg_cli.team.providers import build_executor_argv
+from omg_cli.team.providers import (
+    PROMPT_DELIVERY_POSITIONAL_TEXT,
+    PROMPT_DELIVERY_PROMPT_FILE,
+    PROMPT_DELIVERY_STDIN,
+    PromptDelivery,
+    build_executor_argv,
+)
 from omg_cli.team.roles import normalize_role
 from omg_cli.team.routing import (
     ResolvedRouting,
@@ -308,12 +315,35 @@ def build_team_task_prompt(
     return "\n".join(lines)
 
 
+def _resolve_prompt_body(
+    argv: Sequence[str],
+    *,
+    prompt_file: Path | str,
+) -> list[str]:
+    """Replace *prompt_file* path placeholders in *argv* with the file body."""
+    path = Path(prompt_file)
+    pf = str(path)
+    # Also match resolved path forms (build may store absolute or relative).
+    candidates = {pf}
+    try:
+        candidates.add(str(path.resolve()))
+    except OSError:
+        pass
+    try:
+        body = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise TeamError(f"cannot read prompt file for pane delivery: {exc}") from exc
+    return [body if tok in candidates else tok for tok in argv]
+
+
 def build_executor_pane_command(
     argv: Sequence[str],
     *,
     needs_pty: bool = False,
     shell: str | None = None,
     da1_drain: bool = True,
+    prompt_delivery: PromptDelivery | str = PROMPT_DELIVERY_PROMPT_FILE,
+    prompt_file: Path | str | None = None,
 ) -> str:
     """Login-shell wrapped pane command for any executor argv.
 
@@ -321,6 +351,13 @@ def build_executor_pane_command(
     full argv (binary included). When *needs_pty* is True (agy), the binary is
     launched under ``pty.spawn`` so headless/non-TTY output is not dropped
     (ref agy-pty.py).
+
+    Prompt delivery (provider-aware; see :class:`ExecutorInvocation.prompt_delivery`):
+    - ``prompt-file``: argv already contains ``--prompt-file <path>``; exec as-is.
+    - ``stdin``: redirect materialized prompt into the process stdin
+      (``exec … - < path``) so codex's trailing ``-`` sentinel is fed.
+    - ``positional-text``: read prompt file body and substitute path placeholders
+      in argv (cursor trailing positional; agy/gemini ``-p`` value).
     """
     shell = shell or os.environ.get("SHELL") or "/bin/zsh"
     drain = (
@@ -328,10 +365,34 @@ def build_executor_pane_command(
         if da1_drain
         else ""
     )
+    delivery = str(prompt_delivery or PROMPT_DELIVERY_PROMPT_FILE)
     argv_list = [str(x) for x in argv]
+
+    if delivery == PROMPT_DELIVERY_POSITIONAL_TEXT:
+        if prompt_file is None:
+            raise TeamError(
+                "positional-text prompt delivery requires prompt_file "
+                "(path of materialized task prompt)"
+            )
+        argv_list = _resolve_prompt_body(argv_list, prompt_file=prompt_file)
+    elif delivery == PROMPT_DELIVERY_STDIN:
+        if prompt_file is None:
+            raise TeamError(
+                "stdin prompt delivery requires prompt_file "
+                "(redirect source for codex trailing '-')"
+            )
+    elif delivery != PROMPT_DELIVERY_PROMPT_FILE:
+        raise TeamError(f"unknown prompt_delivery mode: {delivery!r}")
+
+    stdin_redirect = ""
+    if delivery == PROMPT_DELIVERY_STDIN:
+        # Inner shell redirect only — body stays out of ps-visible argv.
+        stdin_redirect = f" < {shlex.quote(str(prompt_file))}"
+
     if needs_pty:
         # pty.spawn child gets a real pty (agy issue #76); argv via JSON
         # avoids shell-quoting the full command body twice.
+        # stdin redirect does not apply under pty.spawn (agy uses positional-text).
         payload = json.dumps(argv_list, ensure_ascii=False)
         py = (
             "import json,pty,sys;"
@@ -342,9 +403,12 @@ def build_executor_pane_command(
         inner_body = (
             f"sleep 0.2; {drain}"
             f"exec python3 -c {shlex.quote(py)} {shlex.quote(payload)}"
+            f"{stdin_redirect}"
         )
     else:
-        inner_body = f"sleep 0.2; {drain}exec {shlex.join(argv_list)}"
+        inner_body = (
+            f"sleep 0.2; {drain}exec {shlex.join(argv_list)}{stdin_redirect}"
+        )
     return f"exec {shlex.quote(shell)} -lc {shlex.quote(inner_body)}"
 
 
@@ -756,7 +820,13 @@ def start_team(
             needs_pty = bool(inv.needs_pty)
             provider = inv.provider
             posture = inv.posture
-            pane_cmd = build_executor_pane_command(argv, needs_pty=needs_pty)
+            prompt_delivery = inv.prompt_delivery
+            pane_cmd = build_executor_pane_command(
+                argv,
+                needs_pty=needs_pty,
+                prompt_delivery=prompt_delivery,
+                prompt_file=prompt_path,
+            )
         else:
             # D1 zero-config path — identical to pre-D3 behavior.
             argv = _build_task_grok_argv(
@@ -774,6 +844,7 @@ def start_team(
             needs_pty = False
             provider = "grok"
             posture = "read-write"  # executor default; D1 does not route roles
+            prompt_delivery = PROMPT_DELIVERY_PROMPT_FILE
             pane_cmd = build_pane_command(_grok_args_for_pane(argv))
 
         # Persist per-task argv under team/ (mirrors fanout workers/*.argv.json)
@@ -793,6 +864,7 @@ def start_team(
             "provider": provider,
             "posture": posture,
             "needs_pty": needs_pty,
+            "prompt_delivery": prompt_delivery,
             "pid": None,
             "pgid": None,
             "status": "dry_run" if dry_run else "pending",

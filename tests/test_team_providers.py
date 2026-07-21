@@ -15,6 +15,9 @@ from omg_cli.ask.providers import AskProviderError, normalize_provider
 from omg_cli.team.providers import (
     EXECUTOR_PROVIDERS,
     EXECUTOR_SPECS,
+    PROMPT_DELIVERY_POSITIONAL_TEXT,
+    PROMPT_DELIVERY_PROMPT_FILE,
+    PROMPT_DELIVERY_STDIN,
     TeamProviderError,
     argv_has_free_form,
     build_executor_argv,
@@ -89,6 +92,7 @@ def test_grok_read_only_uses_plan() -> None:
     assert "bypassPermissions" not in inv.argv
     assert inv.posture == "read-only"
     assert inv.needs_pty is False
+    assert inv.prompt_delivery == PROMPT_DELIVERY_PROMPT_FILE
     assert not argv_has_free_form(inv.argv)
 
 
@@ -117,6 +121,7 @@ def test_codex_read_only_sandbox() -> None:
     assert "workspace-write" not in inv.argv
     assert inv.argv[-1] == "-"  # stdin sentinel; body not in argv
     assert str(_PROMPT) not in inv.argv  # body path not required in argv
+    assert inv.prompt_delivery == PROMPT_DELIVERY_STDIN
     assert not argv_has_free_form(inv.argv)
 
 
@@ -127,6 +132,7 @@ def test_codex_read_write_workspace_write() -> None:
     assert inv.argv[inv.argv.index("-s") + 1] == "workspace-write"
     assert "read-only" not in inv.argv
     assert inv.argv[-1] == "-"
+    assert inv.prompt_delivery == PROMPT_DELIVERY_STDIN
     assert not argv_has_free_form(inv.argv)
 
 
@@ -142,8 +148,9 @@ def test_cursor_read_only_mode_ask() -> None:
     assert "--mode" in inv.argv
     assert inv.argv[inv.argv.index("--mode") + 1] == "ask"
     assert inv.argv[inv.argv.index("--model") + 1] == _MODEL
-    # prompt path as trailing (body not inlined)
+    # prompt path as trailing placeholder (body substituted at pane-build)
     assert inv.argv[-1] == str(_PROMPT)
+    assert inv.prompt_delivery == PROMPT_DELIVERY_POSITIONAL_TEXT
     assert not argv_has_free_form(inv.argv)
 
 
@@ -154,6 +161,7 @@ def test_cursor_read_write_default_agent_mode() -> None:
     assert "--mode" not in inv.argv  # default agent = write
     assert "ask" not in inv.argv
     assert "--print" in inv.argv and "--trust" in inv.argv
+    assert inv.prompt_delivery == PROMPT_DELIVERY_POSITIONAL_TEXT
     assert not argv_has_free_form(inv.argv)
 
 
@@ -167,6 +175,7 @@ def test_agy_read_only_sandbox() -> None:
     assert "--sandbox" in inv.argv
     assert inv.needs_pty is True
     assert inv.argv[inv.argv.index("--model") + 1] == _MODEL
+    assert inv.prompt_delivery == PROMPT_DELIVERY_POSITIONAL_TEXT
     assert not argv_has_free_form(inv.argv)
 
 
@@ -177,6 +186,7 @@ def test_agy_read_write_no_sandbox() -> None:
     assert "--sandbox" not in inv.argv
     assert "--dangerously-skip-permissions" in inv.argv
     assert inv.needs_pty is True
+    assert inv.prompt_delivery == PROMPT_DELIVERY_POSITIONAL_TEXT
     assert not argv_has_free_form(inv.argv)
 
 
@@ -188,10 +198,26 @@ def test_gemini_file_prompt_both_postures() -> None:
         assert inv.argv[0] == "gemini"
         assert inv.argv[1:3] == ["-p", str(_PROMPT)]
         assert inv.argv[inv.argv.index("--model") + 1] == _MODEL
+        assert inv.prompt_delivery == PROMPT_DELIVERY_POSITIONAL_TEXT
         # No free-form elevation (yolo / approval-mode not wired)
         assert "--yolo" not in inv.argv
         assert "--approval-mode" not in inv.argv
         assert not argv_has_free_form(inv.argv)
+
+
+def test_prompt_delivery_modes_per_provider() -> None:
+    expected = {
+        "grok": PROMPT_DELIVERY_PROMPT_FILE,
+        "codex": PROMPT_DELIVERY_STDIN,
+        "cursor": PROMPT_DELIVERY_POSITIONAL_TEXT,
+        "agy": PROMPT_DELIVERY_POSITIONAL_TEXT,
+        "gemini": PROMPT_DELIVERY_POSITIONAL_TEXT,
+    }
+    for provider, mode in expected.items():
+        inv = build_executor_argv(
+            provider, _EXECUTOR_ROLE, prompt_file=_PROMPT, cwd=_CWD, model=_MODEL
+        )
+        assert inv.prompt_delivery == mode
 
 
 # ---------------------------------------------------------------------------
