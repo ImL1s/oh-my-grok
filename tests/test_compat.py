@@ -261,3 +261,61 @@ def test_doctor_compat_warn_default_and_strict_fail(monkeypatch, tmp_path):
 
     rc_strict = doctor.run_doctor(strict=True, project_root=tmp_path)
     assert rc_strict == 1
+
+
+def test_spawn_subagent_bare_mention_is_not_a_risk(tmp_path):
+    """Descriptive Grok tool-name mention must not false-positive as OMC routing."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "CLAUDE.md").write_text(
+        "enforces `capability_mode` on `spawn_subagent`. It is not a sandbox.",
+        encoding="utf-8",
+    )
+    findings = scan_claude_md(home=tmp_path / "empty-home", project_root=proj)
+    by_path = {f.path: f for f in findings}
+    assert str(proj / "CLAUDE.md") in by_path
+    assert by_path[str(proj / "CLAUDE.md")].level == "ok"
+
+
+def test_spawn_subagent_call_syntax_still_flagged(tmp_path):
+    """Call-shape spawn_subagent(...) remains a routing-risk marker."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "CLAUDE.md").write_text(
+        "call spawn_subagent(prompt=...) now",
+        encoding="utf-8",
+    )
+    findings = scan_claude_md(home=tmp_path / "empty-home", project_root=proj)
+    risks = [f for f in findings if f.level != "ok" and f.code == "claude.md.markers"]
+    assert risks
+    assert "spawn_subagent" in risks[0].detail
+
+
+def test_spawn_subagent_arrow_trigger_still_flagged(tmp_path):
+    """Keyword→action arrow form remains a routing-risk marker."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "CLAUDE.md").write_text(
+        'Keyword triggers: "spawn_subagent"→spawn',
+        encoding="utf-8",
+    )
+    findings = scan_claude_md(home=tmp_path / "empty-home", project_root=proj)
+    risks = [f for f in findings if f.level != "ok" and f.code == "claude.md.markers"]
+    assert risks
+    assert "spawn_subagent" in risks[0].detail
+
+
+def test_repo_own_claude_md_is_not_flagged_by_compat_scan():
+    """Canary: repo's own CLAUDE.md (Grok-plugin docs) must scan OK."""
+    from omg_cli.doctor import plugin_root
+
+    root = plugin_root()
+    claude_md = root / "CLAUDE.md"
+    assert claude_md.is_file(), f"missing canary file: {claude_md}"
+    findings = scan_claude_md(
+        home=Path("/nonexistent-omg-compat-home"),
+        project_root=root,
+    )
+    project_hits = [f for f in findings if f.path == str(claude_md)]
+    assert project_hits, f"no finding for {claude_md}: {findings!r}"
+    assert project_hits[0].level == "ok", project_hits[0]
