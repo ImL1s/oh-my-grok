@@ -298,6 +298,82 @@ def test_join_rejects_ownership_violation(tmp_path):
     assert any(r.get("status") == "ownership_violation" for r in joined["results"])
 
 
+def test_ownership_dotfile_not_collapsed(tmp_path):
+    """`.lstrip("./")` wrongly maps ".config" -> "config"; dotfiles must stay distinct.
+
+    Owning ["a.py"] + changing [".config"] is foreign (ownership_violation).
+    Owning [".config"] + changing [".config"] is OK (not foreign).
+    """
+    from omg_cli.workers import (
+        build_ownership_manifest,
+        envelope_path,
+        join_worker_results,
+    )
+
+    base = _init_repo(tmp_path)
+
+    # Case 1: owned "a.py" must NOT accept changed ".config" as owned
+    run1 = create_run(tmp_path, mode="ulw", goal="dot-foreign", extra={"base_sha": base})
+    rid1 = run1["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid1,
+        [{"task_id": "t-foreign", "owned_files": ["a.py"]}],
+    )
+    epath1 = envelope_path(tmp_path, "t-foreign", run_id=rid1)
+    epath1.parent.mkdir(parents=True, exist_ok=True)
+    epath1.write_text(
+        json.dumps(
+            {
+                "task_id": "t-foreign",
+                "status": "ok",
+                "writer": "omg-cli",
+                "base_sha": base,
+                "head_sha": "c" * 40,
+                "changed_files": [".config"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    joined1 = join_worker_results(tmp_path, rid1)
+    assert joined1["complete"] is False
+    assert "t-foreign" in joined1["failed"]
+    viol = [r for r in joined1["results"] if r.get("status") == "ownership_violation"]
+    assert viol, joined1["results"]
+    assert ".config" in (viol[0].get("foreign_files") or [])
+
+    # Case 2: owning ".config" + changing ".config" is legitimate
+    # force=True: same tmp_path still has run1 as active non-terminal.
+    run2 = create_run(
+        tmp_path, mode="ulw", goal="dot-ok", extra={"base_sha": base}, force=True
+    )
+    rid2 = run2["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid2,
+        [{"task_id": "t-ok", "owned_files": [".config"]}],
+    )
+    epath2 = envelope_path(tmp_path, "t-ok", run_id=rid2)
+    epath2.parent.mkdir(parents=True, exist_ok=True)
+    epath2.write_text(
+        json.dumps(
+            {
+                "task_id": "t-ok",
+                "status": "ok",
+                "writer": "omg-cli",
+                "base_sha": base,
+                "head_sha": "d" * 40,
+                "changed_files": [".config"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    joined2 = join_worker_results(tmp_path, rid2)
+    assert joined2["complete"] is True
+    assert joined2["failed"] == []
+    assert not any(r.get("status") == "ownership_violation" for r in joined2["results"])
+
+
 def test_ownership_seal_join_integrate_closed_path(tmp_path):
     """I-06-style: own → seal both → join → integrate; missing blocks integrate."""
     from omg_cli.integrate import integrate_results, result_path

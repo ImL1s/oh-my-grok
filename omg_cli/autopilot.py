@@ -289,8 +289,10 @@ def transition(
             invalidate_quality_stages(
                 root, run_id, reason="rework invalidates review/qa stamps"
             )
-        if next_phase == "review" and src in {"rework", "implement"}:
-            # Re-entering review requires a fresh structured_review stamp
+        if next_phase == "review" and src in {"rework", "implement", "blocked"}:
+            # Re-entering review (after leaving the linear implement→review
+            # edge) requires a fresh structured_review stamp — includes
+            # qa→blocked→review so a pre-block clean stamp cannot reopen qa.
             invalidate_quality_stages(
                 root, run_id, reason=f"re-enter review from {src}"
             )
