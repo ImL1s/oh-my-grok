@@ -16,7 +16,10 @@ def _project_root() -> Path:
 def cmd_setup(args: argparse.Namespace) -> int:
     from omg_cli.setup_cmd import run_setup
 
-    return run_setup(_project_root())
+    return run_setup(
+        _project_root(),
+        install_rules=not getattr(args, "no_global_rules", False),
+    )
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -1022,6 +1025,11 @@ def build_parser() -> argparse.ArgumentParser:
         "setup",
         parents=[common],
         help="ensure .omg dirs, merge AGENTS + gitignore",
+    )
+    p_setup.add_argument(
+        "--no-global-rules",
+        action="store_true",
+        help="do not install ~/.grok/rules/omg.md global guidance",
     )
     p_setup.set_defaults(func=cmd_setup)
 

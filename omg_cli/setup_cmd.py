@@ -87,7 +87,9 @@ def merge_gitignore_fragment(project_root: Path) -> str:
     return "appended"
 
 
-def run_setup(project_root: Path | None = None) -> int:
+def run_setup(
+    project_root: Path | None = None, *, install_rules: bool = True
+) -> int:
     from omg_cli.compat import format_isolation_banner
 
     root = Path(project_root or Path.cwd()).resolve()
@@ -100,11 +102,24 @@ def run_setup(project_root: Path | None = None) -> int:
     print(f"  .omg/ dirs: ensured")
     print(f"  AGENTS.md: {agents_action}")
     print(f"  .gitignore: {gi_action}")
+
+    if install_rules:
+        try:
+            from omg_cli.guidance import GuidanceError, install_global_rules
+
+            rpath, raction = install_global_rules()
+            print(f"  {rpath}: {raction}")
+        except GuidanceError as e:
+            print(f"  global rules: SKIPPED ({e})")  # never crash setup
+
     print()
     print("Next: install the Grok Build plugin from this repo:")
     print()
     print(f"  cd {plugin_root()}")
     print("  grok plugin install . --trust")
+    print()
+    print("Global guidance (~/.grok/rules/omg.md) is installed and loads every")
+    print("Grok session (skip with: omg setup --no-global-rules).")
     print()
     print("Then verify:")
     print("  omg doctor")

@@ -475,6 +475,37 @@ def check_plugin_trust() -> SoftResult:
     )
 
 
+def check_global_rules() -> SoftResult:
+    """Soft: status of ~/.grok/rules/omg.md (GROK_HOME-aware) OMG contract."""
+    from omg_cli.guidance import rules_status
+
+    name = "global rules (~/.grok/rules/omg.md)"
+    try:
+        st = rules_status()
+    except Exception as e:
+        return (name, "warn", f"status unavailable ({type(e).__name__})")
+    if st.get("corrupt"):
+        return (name, "fail", "corrupt OMG markers — re-run: omg setup")
+    if not st.get("present"):
+        return (
+            name,
+            "warn",
+            "not installed — run: omg setup (injects OMG contract every session)",
+        )
+    problems = []
+    if not st.get("version_ok"):
+        problems.append(
+            f"version {st.get('installed_version')} != {st.get('expected_version')}"
+        )
+    if st.get("drift"):
+        problems.append("hand-edited inside markers")
+    if not st.get("source_hash_ok"):
+        problems.append("source-hash mismatch")
+    if problems:
+        return (name, "warn", "; ".join(problems) + " — re-run: omg setup")
+    return (name, "ok", f"present, v{st.get('installed_version')}")
+
+
 def run_checks() -> list[tuple[str, bool, str]]:
     return [
         check_grok_on_path(),
@@ -490,7 +521,11 @@ def run_checks() -> list[tuple[str, bool, str]]:
 
 def run_soft_checks() -> list[SoftResult]:
     """Soft/best-effort checks (WARN by default; FAIL under --strict)."""
-    return [check_plugin_trust(), check_effective_discovery_foreign()]
+    return [
+        check_plugin_trust(),
+        check_effective_discovery_foreign(),
+        check_global_rules(),
+    ]
 
 
 def _format_soft_tag(level: str, *, strict: bool) -> str:

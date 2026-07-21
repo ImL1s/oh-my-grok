@@ -217,6 +217,29 @@ def test_summarize_plugin_payload_from_list():
     assert "0.1.0" in detail
 
 
+def test_check_global_rules_missing_warns(tmp_path, monkeypatch):
+    """No rules file under GROK_HOME → soft warn suggesting omg setup."""
+    grok_home = tmp_path / ".grokhome"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    name, level, detail = doctor.check_global_rules()
+    assert "global rules" in name
+    assert level == "warn"
+    assert "omg setup" in detail.lower()
+
+
+def test_check_global_rules_ok_after_install(tmp_path, monkeypatch):
+    """After install_global_rules under GROK_HOME → soft ok."""
+    from omg_cli.guidance import install_global_rules
+
+    grok_home = tmp_path / ".grokhome"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    install_global_rules()
+    name, level, detail = doctor.check_global_rules()
+    assert "global rules" in name
+    assert level == "ok"
+    assert "present" in detail.lower() or "v" in detail
+
+
 def test_check_global_pretool_hook_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     name, ok, detail = doctor.check_global_pretool_hook()

@@ -55,7 +55,9 @@ def test_unknown_command_fails():
 
 
 def test_setup_on_tmp_path(tmp_path):
-    r = _run_omg("setup", cwd=tmp_path)
+    grok_home = tmp_path / ".grokhome"
+    env = {"GROK_HOME": str(grok_home)}
+    r = _run_omg("setup", cwd=tmp_path, env=env)
     assert r.returncode == 0, r.stderr
     assert (tmp_path / ".omg" / "state" / "runs").is_dir()
     assert (tmp_path / ".omg" / "plans").is_dir()
@@ -77,19 +79,38 @@ def test_setup_on_tmp_path(tmp_path):
     assert "[compat.claude]" in r.stdout
     assert "skills = false" in r.stdout
     assert "hooks = false" in r.stdout
+    # global rules installed under GROK_HOME (never real ~/.grok)
+    rules = grok_home / "rules" / "omg.md"
+    assert rules.is_file(), f"expected global rules at {rules}"
+    assert "<!-- OMG:START -->" in rules.read_text(encoding="utf-8")
 
 
 def test_setup_idempotent_agents_marker(tmp_path):
-    r1 = _run_omg("setup", cwd=tmp_path)
+    env = {"GROK_HOME": str(tmp_path / ".grokhome")}
+    r1 = _run_omg("setup", cwd=tmp_path, env=env)
     assert r1.returncode == 0
     text1 = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
-    r2 = _run_omg("setup", cwd=tmp_path)
+    r2 = _run_omg("setup", cwd=tmp_path, env=env)
     assert r2.returncode == 0
     text2 = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
     # marker block should not duplicate
     marker = "<!-- OMG:START -->"
     assert text1.count(marker) == 1
     assert text2.count(marker) == 1
+    # second setup with same GROK_HOME still succeeds (idempotent rules)
+    rules = tmp_path / ".grokhome" / "rules" / "omg.md"
+    assert rules.is_file()
+    assert marker in rules.read_text(encoding="utf-8")
+
+
+def test_setup_no_global_rules_skips_install(tmp_path):
+    """setup --no-global-rules returns 0 and does not create rules file."""
+    grok_home = tmp_path / ".grokhome"
+    env = {"GROK_HOME": str(grok_home)}
+    r = _run_omg("setup", "--no-global-rules", cwd=tmp_path, env=env)
+    assert r.returncode == 0, r.stderr
+    rules = grok_home / "rules" / "omg.md"
+    assert not rules.is_file(), f"rules must not be created with --no-global-rules: {rules}"
 
 
 def test_doctor_runnable():
@@ -116,8 +137,9 @@ def test_doctor_strict_flag_accepted():
 
 
 def test_state_no_active(tmp_path):
-    # setup dirs then state with no run
-    _run_omg("setup", cwd=tmp_path)
+    # setup dirs then state with no run (hermetic GROK_HOME)
+    env = {"GROK_HOME": str(tmp_path / ".grokhome")}
+    _run_omg("setup", cwd=tmp_path, env=env)
     r = _run_omg("state", cwd=tmp_path)
     assert r.returncode == 0
     assert "no active run" in r.stdout.lower()
