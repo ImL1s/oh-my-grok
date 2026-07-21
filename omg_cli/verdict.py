@@ -171,8 +171,9 @@ def _extract_json_objects(text: str) -> list[dict]:
     """Best-effort: top-level JSON object(s) from raw or fenced text.
 
     Collects (1) whole-doc if it looks like JSON, (2) fenced ```json blocks,
-    (3) EVERY top-level balanced ``{...}`` substring in the full text.  Objects
-    may be double-counted across sources; content-signature dedup handles that.
+    (3) EVERY top-level balanced ``{...}`` from BOTH a quote-aware brace scan
+    and a quote-agnostic brace scan.  Objects may be double-counted across
+    sources; content-signature dedup handles that.
     """
     if not text or not text.strip():
         return []
@@ -183,7 +184,8 @@ def _extract_json_objects(text: str) -> list[dict]:
     # fenced json blocks
     for m in re.finditer(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE):
         candidates.append(m.group(1).strip())
-    # ALL top-level balanced objects (brace depth; ignore braces inside strings)
+    # Pass 1: quote-AWARE — ignore braces inside double-quoted strings
+    # (keeps objects whose string values contain unbalanced braces).
     depth = 0
     start = -1
     in_string = False
@@ -200,6 +202,21 @@ def _extract_json_objects(text: str) -> list[dict]:
             continue
         if in_string:
             continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    candidates.append(text[start : i + 1])
+                    start = -1
+    # Pass 2: quote-AGNOSTIC — count every brace regardless of strings
+    # (recovers objects after an unmatched prose quote that blinds pass 1).
+    depth = 0
+    start = -1
+    for i, ch in enumerate(text):
         if ch == "{":
             if depth == 0:
                 start = i

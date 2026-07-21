@@ -295,3 +295,27 @@ def test_scanner_balanced_braces_in_string_still_extracts_stale():
         '{"verdict":"APPROVE"}'
     )
     assert parse_verdict(text, expected_run_id="REAL-RUN-123") == "FAILED"
+
+
+def test_scanner_union_prose_odd_quote_before_stale():
+    """Odd prose double-quote must not hide a following raw JSON stale object.
+
+    Quote-aware-only scan stays in_string=True after the unmatched prose quote,
+    skips every following brace, misses the WRONG-run FAILED object, and lets
+    fenced APPROVE win. Union with quote-agnostic brace scan must yield FAILED.
+    """
+    t = (
+        'He said "beware of stale runs\n'
+        '{"run_id": "WRONG", "verdict": "FAILED"}\n'
+        "Example:\n"
+        "```json\n"
+        '{"verdict": "APPROVE"}\n'
+        "```\n"
+    )
+    assert parse_verdict(t, expected_run_id="REAL-RUN-123") == "FAILED"
+
+
+def test_scanner_union_prose_odd_quote_legit_unbound_approve():
+    """Odd prose quote + real unbound APPROVE (no stale object) still approves."""
+    t = 'He said "ok"\n{"verdict":"APPROVE"}'
+    assert parse_verdict(t, expected_run_id="R") == "APPROVE"
