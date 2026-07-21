@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -28,6 +29,12 @@ CLAUDE_MD_MARKERS: tuple[str, ...] = (
     "ulw",
     "spawn_subagent",
 )
+
+# spawn_subagent is Grok's own subagent-spawn tool name (see omg_cli/deny.py), legitimately
+# DOCUMENTED in Grok-plugin CLAUDE.md files. Only a real routing-trigger SHAPE (call syntax or the
+# "keyword"→action arrow used by the other markers) is a compat risk — a bare descriptive mention
+# is not. Match the trigger shape instead of a bare substring for this one marker.
+_SPAWN_SUBAGENT_TRIGGER_RE = re.compile(r'spawn_subagent\s*\(|["\']spawn_subagent["\']\s*→')
 
 # Markers that are high-signal for Claude-side orchestration (always risk)
 _HIGH_SIGNAL_MARKERS: tuple[str, ...] = (
@@ -269,7 +276,10 @@ def _markers_in_text(text: str) -> list[str]:
     """Return list of CLAUDE_MD_MARKERS found in text (order preserved, unique)."""
     found: list[str] = []
     for marker in CLAUDE_MD_MARKERS:
-        if marker in text:
+        if marker == "spawn_subagent":
+            if _SPAWN_SUBAGENT_TRIGGER_RE.search(text):
+                found.append(marker)
+        elif marker in text:
             found.append(marker)
     return found
 
