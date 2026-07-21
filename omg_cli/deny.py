@@ -26,6 +26,7 @@ _DENY_AT_CMD_POS = re.compile(
     re.IGNORECASE,
 )
 _OMC_TEAM = re.compile(rf"{_CMD_POS}\s*omc\s+team\b", re.IGNORECASE)
+_OMG_TEAM = re.compile(rf"{_CMD_POS}\s*omg\s+team\b", re.IGNORECASE)
 
 # eval claude ... (command-position eval of a deny bin)
 _EVAL = re.compile(
@@ -58,7 +59,7 @@ def should_deny_command(command: str) -> bool:
     # Deny when a blocked bin appears in command position (not as a free word/arg)
     if _DENY_AT_CMD_POS.search(command):
         return True
-    if _OMC_TEAM.search(command):
+    if _OMC_TEAM.search(command) or _OMG_TEAM.search(command):
         return True
     # sh/bash/zsh -c/-lc '...claude...' (quoted or unquoted) and similar wrappers
     if _SH_C.search(command):

@@ -1,4 +1,4 @@
-"""Hermetic tests for experimental grok-only tmux team plane (D1).
+"""Hermetic tests for experimental tmux team plane (D1 + D3 multi-CLI).
 
 No live tmux. dry_run must never call tmux_available / subprocess.
 """
@@ -35,7 +35,11 @@ from omg_cli.team.plane import (
     team_meta_path,
     team_status,
 )
+from omg_cli.team.roles import UnknownRoleError
+from omg_cli.team.routing import RoutingError
 from omg_cli.workers import ownership_manifest_path, worktree_dir
+
+_PROVIDERS_ALL = frozenset({"grok", "codex", "agy", "cursor", "gemini"})
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BIN_OMG = REPO_ROOT / "bin" / "omg"
@@ -521,3 +525,257 @@ def test_hand_written_verified_team_json_not_honored(
         team_status(tmp_path, rid)
     # status.json verified untouched
     assert (load_run(tmp_path, rid) or {}).get("verified") is not True
+
+
+# ---------------------------------------------------------------------------
+# D3 multi-CLI routing (dry-run only)
+# ---------------------------------------------------------------------------
+
+
+def test_zero_config_still_all_grok(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No routing → D1 parity: all grok panes."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+
+    meta = start_team("z", TASKS_TWO, root=tmp_path, dry_run=True)
+    assert meta.get("multi_cli") is False
+    assert meta.get("routing") is None
+    for rec in meta["tasks"]:
+        assert rec["argv"][0] == "grok"
+        assert rec["provider"] == "grok"
+        assert rec["needs_pty"] is False
+
+
+def test_dry_run_multi_cli_codex_argv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+
+    tasks = [
+        {
+            "task_id": "t1",
+            "role": "executor",
+            "owned_files": ["a.py"],
+        }
+    ]
+    meta = start_team(
+        "multi",
+        tasks,
+        root=tmp_path,
+        dry_run=True,
+        routing={"executor": {"provider": "codex"}},
+        available_providers=_PROVIDERS_ALL,
+    )
+    assert meta["multi_cli"] is True
+    assert meta["dry_run"] is True
+    assert meta["routing"] is not None
+    assert meta["routing"]["by_role"]["executor"]["provider"] == "codex"
+    assert len(meta["tasks"]) == 1
+    rec = meta["tasks"][0]
+    assert rec["task_id"] == "t1"
+    assert rec["provider"] == "codex"
+    assert rec["role"] == "executor"
+    assert rec["posture"] == "read-write"
+    assert rec["argv"][0] == "codex"
+    assert "exec" in rec["argv"]
+    assert "-s" in rec["argv"]
+    assert rec["argv"][rec["argv"].index("-s") + 1] == "workspace-write"
+    assert rec["needs_pty"] is False
+    assert rec["pid"] is None
+    # pane command embeds codex, not only grok
+    assert "codex" in rec["pane_command"]
+    run = load_run(tmp_path, meta["run_id"])
+    assert run is not None
+    assert run.get("verified") is not True
+
+
+def test_dry_run_agy_records_needs_pty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+
+    tasks = [{"task_id": "t-agy", "role": "executor", "owned_files": ["x.py"]}]
+    meta = start_team(
+        "agy pane",
+        tasks,
+        root=tmp_path,
+        dry_run=True,
+        routing={"executor": {"provider": "agy"}},
+        available_providers=_PROVIDERS_ALL,
+    )
+    rec = meta["tasks"][0]
+    assert rec["provider"] == "agy"
+    assert rec["needs_pty"] is True
+    assert rec["argv"][0] == "agy"
+    assert "pty" in rec["pane_command"] or "python3" in rec["pane_command"]
+    assert meta["routing"]["by_role"]["executor"]["needs_pty"] is True
+
+
+def test_start_rejects_cursor_on_reviewer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+
+    tasks = [
+        {
+            "task_id": "rev",
+            "role": "code-reviewer",
+            "owned_files": ["r.py"],
+        }
+    ]
+    with pytest.raises((TeamError, RoutingError), match="FLOOR 1|cursor|structured"):
+        start_team(
+            "bad",
+            tasks,
+            root=tmp_path,
+            dry_run=True,
+            routing={"code-reviewer": {"provider": "cursor"}},
+            available_providers=_PROVIDERS_ALL,
+        )
+
+
+def test_start_rejects_unknown_role_routing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+
+    tasks = [{"task_id": "t1", "owned_files": ["a.py"]}]
+    with pytest.raises(UnknownRoleError):
+        start_team(
+            "bad role",
+            tasks,
+            root=tmp_path,
+            dry_run=True,
+            routing={"not-a-role": {"provider": "codex"}},
+            available_providers=_PROVIDERS_ALL,
+        )
+
+
+def test_loud_fallback_at_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+
+    tasks = [{"task_id": "t1", "role": "executor", "owned_files": ["a.py"]}]
+    meta = start_team(
+        "fallback",
+        tasks,
+        root=tmp_path,
+        dry_run=True,
+        routing={"executor": {"provider": "codex"}},
+        available_providers=frozenset({"grok"}),  # codex missing → loud fallback
+    )
+    rec = meta["tasks"][0]
+    assert rec["provider"] == "grok"
+    assert rec["argv"][0] == "grok"
+    route = meta["routing"]["by_role"]["executor"]
+    assert route["fallback_from"] == "codex"
+    assert route["warning"]
+    assert meta["routing"]["warnings"]
+    err = capsys.readouterr().err
+    assert "codex" in err or route["warning"]
+
+
+def test_resolved_routing_snapshot_stable_in_team_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", lambda: False)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+
+    tasks = [
+        {"task_id": "t1", "role": "executor", "owned_files": ["a.py"]},
+        {"task_id": "t2", "role": "code-reviewer", "owned_files": ["b.py"]},
+    ]
+    meta = start_team(
+        "snap",
+        tasks,
+        root=tmp_path,
+        dry_run=True,
+        routing={
+            "executor": {"provider": "codex"},
+            "code-reviewer": {"provider": "gemini"},
+        },
+        available_providers=_PROVIDERS_ALL,
+    )
+    rid = meta["run_id"]
+    disk = load_team_meta(tmp_path, rid)
+    assert disk["routing"] == meta["routing"]
+    assert disk["routing"]["by_role"]["executor"]["provider"] == "codex"
+    assert disk["routing"]["by_role"]["code-reviewer"]["provider"] == "gemini"
+    # status is pure read — does not rewrite routing
+    st = team_status(tmp_path, rid)
+    locked = status_locked_view(st)
+    assert set(locked.keys()) == set(STATUS_TOP_KEYS)
+    disk2 = load_team_meta(tmp_path, rid)
+    assert disk2["routing"] == disk["routing"]
+
+
+def test_cli_team_start_dry_run_with_routing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    env = os.environ.copy()
+    env[EXPERIMENTAL_ENV] = "1"
+    for k in plane.WORKER_ENV_MARKERS:
+        env.pop(k, None)
+    env["PYTHONPATH"] = str(REPO_ROOT) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    # Hermetic: force binary-check skip by only using providers we can fake via
+    # PATH? resolve_routing probes PATH. Inject a fake codex on PATH.
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for name in ("codex", "grok"):
+        p = fake_bin / name
+        p.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        p.chmod(0o755)
+    env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
+
+    tasks = json.dumps(
+        [{"task_id": "t1", "role": "executor", "owned_files": ["a.py"]}]
+    )
+    routing = json.dumps({"executor": {"provider": "codex"}})
+    r = subprocess.run(
+        [
+            PYTHON,
+            str(BIN_OMG),
+            "team",
+            "start",
+            "--dry-run",
+            "--goal",
+            "cli multi",
+            "--tasks-json",
+            tasks,
+            "--routing",
+            routing,
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr + r.stdout
+    payload = json.loads(r.stdout)
+    assert payload["multi_cli"] is True
+    assert payload["tasks"][0]["provider"] == "codex"
+    assert payload["tasks"][0]["argv"][0] == "codex"
+    assert team_meta_path(tmp_path, payload["run_id"]).is_file()

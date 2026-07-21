@@ -25,6 +25,7 @@ PRE_TOOL = ROOT / "hooks" / "bin" / "pre_tool_use_deny.py"
     "command codex exec",
     "xargs claude",
     "omc team 2:codex 'x'",
+    "omg team start --goal x",
     "agy -p x",
     "cursor-agent -p x",
     # -lc / login-command forms
@@ -67,6 +68,13 @@ def test_deny_external_cli(cmd):
     "nohup sleep 1",
     "sudo apt update",
     "time make",
+    # omg subcommands that are NOT team must stay allowed
+    "omg doctor",
+    "omg accept --run x",
+    "omg setup",
+    "omg worker seal",
+    # quoted/arg mention of omg team (mirror: echo "run omc team" is not denied)
+    'echo "run omg team"',
 ])
 def test_allow_benign(cmd):
     assert should_deny_command(cmd) is False
@@ -338,6 +346,9 @@ def test_multiline_command_deny_not_bypassed_by_newline():
     assert should_deny_command("cd /tmp\ncodex exec foo") is True
     assert should_deny_command("set -e\n\n  agy -p go") is True
     assert should_deny_command("echo a\r\ncursor-agent --print x") is True
+    # omg team / omc team on their own line (command-position includes newline)
+    assert should_deny_command("echo hi\nomg team start --goal x") is True
+    assert should_deny_command("echo hi\nomc team 2:codex 'x'") is True
     # sanity: a plain multi-line script with no denied bin is still allowed
     assert should_deny_command("echo start\necho done") is False
     # the denied word as a mere argument mid-line stays allowed
@@ -348,3 +359,18 @@ def test_multiline_command_deny_not_bypassed_by_newline():
         "toolInput": {"command": "echo x\nagy -p go"},
     }
     assert decide_pre_tool_use(ev)["decision"] == "deny"
+
+
+def test_omg_team_command_position_denied():
+    """omg team at command position is denied (symmetric with omc team)."""
+    assert should_deny_command("omg team start --goal x") is True
+    assert should_deny_command("omg team") is True
+    assert should_deny_command("echo hi\nomg team start --goal x") is True
+    # other omg subcommands not denied
+    assert should_deny_command("omg doctor") is False
+    assert should_deny_command("omg accept --run x") is False
+    assert should_deny_command("omg setup") is False
+    assert should_deny_command("omg worker seal") is False
+    # arg/quoted mention stays allowed (same posture as omc team)
+    assert should_deny_command('echo "run omg team"') is False
+    assert should_deny_command('echo "run omc team"') is False

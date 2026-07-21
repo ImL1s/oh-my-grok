@@ -697,7 +697,7 @@ def cmd_integrate(args: argparse.Namespace) -> int:
 
 
 def cmd_team(args: argparse.Namespace) -> int:
-    """Experimental grok-only tmux team plane (D1; gate OMG_EXPERIMENTAL_TMUX_TEAM=1)."""
+    """Experimental tmux team plane (D1 grok-only / D3 multi-CLI; gate OMG_EXPERIMENTAL_TMUX_TEAM=1)."""
     from omg_cli.team.plane import (
         TeamError,
         TeamGateError,
@@ -708,6 +708,8 @@ def cmd_team(args: argparse.Namespace) -> int:
         stop_team,
         team_status,
     )
+    from omg_cli.team.roles import UnknownRoleError
+    from omg_cli.team.routing import RoutingError, parse_routing_json
 
     root = _project_root()
     action = getattr(args, "team_action", None)
@@ -719,6 +721,10 @@ def cmd_team(args: argparse.Namespace) -> int:
             if not tasks_json:
                 print("omg team start: --tasks-json required", file=sys.stderr)
                 return 2
+            routing_raw = getattr(args, "routing", None)
+            routing = parse_routing_json(routing_raw) if routing_raw else None
+            # parse_routing_json returns None for empty; keep None so zero-config
+            # stays D1. Non-empty --routing enables multi-CLI floors.
             meta = start_team(
                 goal,
                 tasks_json,
@@ -728,6 +734,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 yolo=bool(getattr(args, "yolo", False)),
                 safe=bool(getattr(args, "safe", False)),
                 force=bool(getattr(args, "force", False)),
+                routing=routing,
             )
             print(json.dumps(meta, indent=2, ensure_ascii=False))
             return 0
@@ -772,6 +779,10 @@ def cmd_team(args: argparse.Namespace) -> int:
         print(f"omg team: unknown action {action!r}", file=sys.stderr)
         return 2
     except TeamGateError as exc:
+        print(f"omg team: {exc}", file=sys.stderr)
+        return 2
+    except (RoutingError, UnknownRoleError) as exc:
+        # FLOOR rejections — fail closed at team start (not silent).
         print(f"omg team: {exc}", file=sys.stderr)
         return 2
     except TeamError as exc:
@@ -1697,8 +1708,8 @@ def build_parser() -> argparse.ArgumentParser:
         "team",
         parents=[common],
         help=(
-            "experimental grok-only tmux team plane "
-            "(requires OMG_EXPERIMENTAL_TMUX_TEAM=1)"
+            "experimental tmux team plane (grok-only zero-config; multi-CLI "
+            "via --routing; requires OMG_EXPERIMENTAL_TMUX_TEAM=1)"
         ),
     )
     team_sub = p_team.add_subparsers(dest="team_action")
@@ -1717,7 +1728,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--tasks-json",
         dest="tasks_json",
         required=True,
-        help='JSON array: [{"task_id","owned_files":[...],"capability_mode"?}]',
+        help=(
+            'JSON array: [{"task_id","owned_files":[...],"role"?,'
+            '"capability_mode"?}]'
+        ),
+    )
+    p_t_start.add_argument(
+        "--routing",
+        dest="routing",
+        default=None,
+        help=(
+            'JSON object role→{provider,model?}, e.g. '
+            '\'{"executor":{"provider":"codex"}}\'; enables multi-CLI floors'
+        ),
     )
     p_t_start.add_argument(
         "--run",

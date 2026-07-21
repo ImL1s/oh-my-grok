@@ -150,18 +150,21 @@ omg accept --yes
 
 ---
 
-### `omg team` — experimental grok-only tmux team plane (D1)
+### `omg team` — experimental tmux team plane (D1 zero-config + D3 multi-CLI)
 
 | | |
 |--|--|
 | **When** | Opt-in multi-pane ULW with real worktrees; hermetic dry-run for tests |
 | **Gate** | `OMG_EXPERIMENTAL_TMUX_TEAM=1` (refused otherwise) |
 | **CLI** | `omg team start\|status\|collect\|stop` |
-| **Honesty** | Grok panes only; integration isolation (ownership + seal + integrate); **not** multi-CLI or an execution sandbox. `collect` never sets `verified`. |
+| **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` never sets `verified`. |
 
 ```bash
 export OMG_EXPERIMENTAL_TMUX_TEAM=1
 omg team start --goal "parallelize A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --dry-run
+# multi-CLI (role→provider); floors reject cursor-on-reviewer and unknown roles:
+omg team start --goal "…" --tasks-json '[{"task_id":"t1","role":"executor","owned_files":["a.py"]}]' \
+  --routing '{"executor":{"provider":"codex"}}' --dry-run
 omg team status --run RUN --json
 omg team collect --run RUN   # seal_all_tasks + integrate; never verified
 omg team stop --run RUN      # kill recorded session + pgids only (no pkill -f)

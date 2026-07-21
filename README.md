@@ -42,8 +42,8 @@ OMG does **not** replace Grok Build.
 | **`.omg/`** | Plans, artifacts, run state (CLI is single-writer for `passes` / `verified`) |
 
 Workers fan out only via Grok **`spawn_subagent`** (depth 1). No Rust fork of grok-build.  
-**tmux:** host session shell for `omg --madmax` (break-glass full-open launch), plus an **experimental grok-only** team plane (`omg team`, gate `OMG_EXPERIMENTAL_TMUX_TEAM=1`). Panes run **grok only**; isolation is **integration** isolation (worktree ownership + seal + integrate), **not** an execution sandbox. Multi-CLI executor panes are **not** present yet.  
-**Scope honesty:** [core purpose parity](docs/research/core-parity-matrix-2026-07-20.md) — partial lifestyle surfaces (resume/wiki/hud/LSP probe); **not** OMC Stop hard-pin, full LSP MCP, or multi-CLI team parity.
+**tmux:** host session shell for `omg --madmax` (break-glass full-open launch), plus an **experimental** team plane (`omg team`, gate `OMG_EXPERIMENTAL_TMUX_TEAM=1`). Zero-config panes are **grok only**; optional `--routing` enables **multi-CLI executor panes** (codex/agy/cursor/gemini) with role floors. Isolation is **integration** isolation (worktree ownership + seal + integrate), **not** an execution sandbox — see the per-provider posture table in [`docs/security-model.md`](docs/security-model.md).  
+**Scope honesty:** [core purpose parity](docs/research/core-parity-matrix-2026-07-20.md) — partial lifestyle surfaces (resume/wiki/hud/LSP probe); **not** OMC Stop hard-pin, full LSP MCP, or execution-sandbox team parity.
 
 | Component | Role |
 |-----------|------|

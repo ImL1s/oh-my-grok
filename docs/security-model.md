@@ -131,20 +131,36 @@ This remains **fail-open** on hook timeout/crash. Primary isolation is still
 
 This is intentional break-glass, not a sandbox. Document and name-prefix (`omg-`) are the mitigations — not PreToolUse.
 
-## Experimental team plane: `omg team` (D1 — grok-only)
+## Experimental team plane: `omg team` (D1 zero-config + D3 multi-CLI routing)
 
 Gated by **`OMG_EXPERIMENTAL_TMUX_TEAM=1`**. Lifecycle: `start` / `status` / `collect` / `stop`.
 
-| Claim | Reality (D1) |
-|-------|----------------|
-| Panes | **grok only** (via madmax `build_pane_command`); multi-CLI executor panes are **not** shipped |
-| Isolation | **Integration** isolation: ownership manifest + per-task git worktrees + `seal` + `integrate` |
-| Not a sandbox | Does **not** replace `capability_mode` or OS sandbox; panes can still be full Grok processes |
+| Claim | Reality |
+|-------|---------|
+| Zero-config panes | **grok only** (D1 path via madmax `build_pane_command`) when `--routing` is omitted |
+| Multi-CLI panes | **Present** behind the same gate when `--routing` maps role→`{provider,model?}` (providers: grok / codex / agy / cursor / gemini) |
+| Isolation | **Integration** isolation only: ownership manifest + per-task git worktrees + `seal` + `integrate` — **not** an execution sandbox |
 | Kill path | `stop` kills **only** the recorded tmux session name + recorded `pgid`s — **no** self-matching `pkill -f` |
 | `verified` | **Never** set by `collect` / `stop`; remains behind `omg accept` |
 | Nested | Refuses start inside a spawned-worker context (`OMG_TEAM_WORKER` / related markers) |
+| Routing floors | Reviewer/verifier → structured-verdict providers only (`grok`/`codex`/`claude`/`gemini`; **cursor forbidden**); unknown roles fail closed; posture derived from role (never free-form) |
 
-Do **not** claim multi-CLI team parity or execution-sandbox parity for this surface.
+### Per-provider posture enforcement (NOT uniform)
+
+Posture is **derived from role** (`omg_cli/team/roles.py` → `role_posture`) and applied by
+`build_executor_argv` (`omg_cli/team/providers.py`). Enforcement strength **differs by provider**:
+
+| Provider | read-only enforcement |
+|----------|------------------------|
+| **grok** | CLI-enforced (`--permission-mode plan` vs `bypassPermissions`) |
+| **codex** | CLI-enforced (`-s read-only` vs `workspace-write`) |
+| **agy** | `--sandbox` **best-effort** only (`--dangerously-skip-permissions` is present in **both** postures for headless autonomy) — OMG does **not** enforce agy's sandbox; cite agy's real `--sandbox` semantics, not a hard jail |
+| **cursor** | `--mode ask` (read-only) vs default agent mode (read-write); **forbidden from reviewer/verifier roles** (no structured-verdict mode) |
+| **gemini** | **NONE** — read-only and read-write argv are identical; a gemini pane (including a gemini reviewer) is contained **only** by the integration boundary, **not** CLI-sandboxed |
+
+This is exactly why the contract is **“integration isolation, NOT execution isolation.”** A shell-capable executor pane runs with operator-level machine access; only worktree ownership + seal + integrate bound what reaches the leader tree, and `verified` stays CLI-only (`omg accept`).
+
+Do **not** claim uniform sandboxing across providers, OMC multi-CLI team parity, or that multi-CLI panes are an execution sandbox.
 
 ## Do not claim
 
@@ -153,7 +169,9 @@ Do **not** claim multi-CLI team parity or execution-sandbox parity for this surf
 - “`--permission-mode plan` is a hard read-only lock for all sessions.”
 - “Live canary pass proves hard isolation forever” (re-run after Grok upgrades).
 - “`omg --madmax` is sandboxed” or “madmax is a mode FSM / sets verified.”
-- “`omg team` is multi-CLI / OMC team parity / an execution sandbox.” (D1 is grok-only + integration isolation only.)
+- “`omg team` multi-CLI panes are an execution sandbox / uniform CLI sandbox across providers.” (Integration isolation only; see posture table.)
+- “agy `--sandbox` is a hard read-only jail enforced by OMG.”
+- “gemini reviewer panes are CLI-sandboxed.”
 
 ## Related
 
