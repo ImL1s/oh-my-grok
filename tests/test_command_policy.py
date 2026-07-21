@@ -266,3 +266,54 @@ def test_no_allowlist_blocks_combined_short_flags():
     check_command_policy(
         ["python3", "-m", "pytest", "-q"], no_allowlist=True, project_root=root
     )
+
+
+def test_floor_still_denies_interpreter_c_e_region():
+    """Floor must still deny interpreter-owned -c/-e (before script/-m)."""
+    root = Path(__file__).resolve().parents[1]
+    for no_al in (False, True):
+        with pytest.raises(CommandPolicyError, match="-c"):
+            check_command_policy(
+                ["python3", "-c", "x"],
+                no_allowlist=no_al,
+                project_root=root,
+            )
+        with pytest.raises(CommandPolicyError, match="-c"):
+            check_command_policy(
+                ["python3", "-cimport os"],
+                no_allowlist=no_al,
+                project_root=root,
+            )
+        with pytest.raises(CommandPolicyError, match="-c"):
+            check_command_policy(
+                ["python3", "-ic", "x"],
+                no_allowlist=no_al,
+                project_root=root,
+            )
+    # node floor: -e / -pe (cluster)
+    with pytest.raises(CommandPolicyError, match="-e"):
+        check_command_policy(["node", "-e", "x"], no_allowlist=True)
+    with pytest.raises(CommandPolicyError, match="-e|-p"):
+        check_command_policy(["node", "-pe", "x"], no_allowlist=True)
+
+
+def test_floor_ignores_script_and_module_args():
+    """Tokens after script path or -m belong to the script/module, not python.
+
+    ``-vc`` / ``-rc`` / pytest ``-c`` must not trip the interpreter -c/-e floor.
+    """
+    root = Path(__file__).resolve().parents[1]
+    # Real project .py so path grammar passes; -vc is check.py's arg.
+    check_command_policy(
+        ["python3", "scripts/check_docs_links.py", "-vc"],
+        project_root=root,
+    )
+    # pytest module args (including its own -c config) after -m
+    check_command_policy(
+        ["python3", "-m", "pytest", "-rc"],
+        project_root=root,
+    )
+    check_command_policy(
+        ["python3", "-m", "pytest", "-q", "-c", "pytest.ini"],
+        project_root=root,
+    )

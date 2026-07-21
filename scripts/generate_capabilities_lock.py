@@ -4,9 +4,9 @@
 Hashes skills/omg-*/SKILL.md and agents/omg-*.md under the repo (or --root)
 and writes/checks omg_capabilities.lock.json. This is a commit-hygiene / CI
 guard: it catches uncommitted or unregenerated local skill/agent edits against
-the committed lock. It does NOT hash the installed frozen snapshot under
-~/.grok/installed-plugins (installed-version drift is covered elsewhere, e.g.
-doctor 'plugin version drift').
+the committed lock. Installed frozen-snapshot drift (under
+~/.grok/installed-plugins) is checked separately by doctor
+``check_installed_capabilities_lock`` via ``compute_lock_for``.
 
 Usage:
   python3 scripts/generate_capabilities_lock.py          # rewrite lock
@@ -69,8 +69,12 @@ def _plugin_version(root: Path) -> str:
         return "0"
 
 
-def compute_lock(root: Path) -> dict[str, Any]:
-    """Compute capabilities lock dict for *root* (plugin / working tree)."""
+def compute_lock_for(root: Path) -> dict[str, Any]:
+    """Hash skills/omg-*/SKILL.md + agents/omg-*.md under an arbitrary root.
+
+    Used for both the local checkout (commit-hygiene) and the installed frozen
+    snapshot under ~/.grok/installed-plugins (OMX-parity installed-drift).
+    """
     root = Path(root).resolve()
     files: dict[str, str] = {}
     for path in _capability_files(root):
@@ -83,6 +87,11 @@ def compute_lock(root: Path) -> dict[str, Any]:
         "files": files,
         "aggregate": aggregate,
     }
+
+
+def compute_lock(root: Path) -> dict[str, Any]:
+    """Compute capabilities lock dict for *root* (plugin / working tree)."""
+    return compute_lock_for(root)
 
 
 def read_lock(root: Path) -> dict[str, Any] | None:
