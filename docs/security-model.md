@@ -131,6 +131,21 @@ This remains **fail-open** on hook timeout/crash. Primary isolation is still
 
 This is intentional break-glass, not a sandbox. Document and name-prefix (`omg-`) are the mitigations — not PreToolUse.
 
+## Experimental team plane: `omg team` (D1 — grok-only)
+
+Gated by **`OMG_EXPERIMENTAL_TMUX_TEAM=1`**. Lifecycle: `start` / `status` / `collect` / `stop`.
+
+| Claim | Reality (D1) |
+|-------|----------------|
+| Panes | **grok only** (via madmax `build_pane_command`); multi-CLI executor panes are **not** shipped |
+| Isolation | **Integration** isolation: ownership manifest + per-task git worktrees + `seal` + `integrate` |
+| Not a sandbox | Does **not** replace `capability_mode` or OS sandbox; panes can still be full Grok processes |
+| Kill path | `stop` kills **only** the recorded tmux session name + recorded `pgid`s — **no** self-matching `pkill -f` |
+| `verified` | **Never** set by `collect` / `stop`; remains behind `omg accept` |
+| Nested | Refuses start inside a spawned-worker context (`OMG_TEAM_WORKER` / related markers) |
+
+Do **not** claim multi-CLI team parity or execution-sandbox parity for this surface.
+
 ## Do not claim
 
 - “Workers cannot run external CLIs because PreToolUse blocks them” **without** stating fail-open residual and capability_mode primary.
@@ -138,6 +153,7 @@ This is intentional break-glass, not a sandbox. Document and name-prefix (`omg-`
 - “`--permission-mode plan` is a hard read-only lock for all sessions.”
 - “Live canary pass proves hard isolation forever” (re-run after Grok upgrades).
 - “`omg --madmax` is sandboxed” or “madmax is a mode FSM / sets verified.”
+- “`omg team` is multi-CLI / OMC team parity / an execution sandbox.” (D1 is grok-only + integration isolation only.)
 
 ## Related
 

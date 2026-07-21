@@ -148,6 +148,25 @@ omg accept --yes
 
 ---
 
+### `omg team` — 實驗性 grok-only tmux team plane（D1）
+
+| | |
+|--|--|
+| **何時** | 選擇性多 pane ULW + 真實 worktree；測試用 hermetic dry-run |
+| **閘門** | `OMG_EXPERIMENTAL_TMUX_TEAM=1`（未設則拒絕） |
+| **CLI** | `omg team start\|status\|collect\|stop` |
+| **誠實範圍** | 僅 grok panes；整合隔離（ownership + seal + integrate）；**不是** multi-CLI、也**不是**執行沙箱。`collect` 永不寫 `verified`。 |
+
+```bash
+export OMG_EXPERIMENTAL_TMUX_TEAM=1
+omg team start --goal "平行修 A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --dry-run
+omg team status --run RUN --json
+omg team collect --run RUN   # seal_all_tasks + integrate；永不 verified
+omg team stop --run RUN      # 只殺記錄的 session + pgid（禁止 pkill -f）
+```
+
+---
+
 ### `omg-ralph` — 持久迴圈（單 story）
 
 | | |

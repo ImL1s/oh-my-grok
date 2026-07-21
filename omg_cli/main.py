@@ -696,6 +696,89 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_team(args: argparse.Namespace) -> int:
+    """Experimental grok-only tmux team plane (D1; gate OMG_EXPERIMENTAL_TMUX_TEAM=1)."""
+    from omg_cli.team.plane import (
+        TeamError,
+        TeamGateError,
+        collect_team,
+        format_status_table,
+        start_team,
+        status_locked_view,
+        stop_team,
+        team_status,
+    )
+
+    root = _project_root()
+    action = getattr(args, "team_action", None)
+
+    try:
+        if action == "start":
+            goal = getattr(args, "goal", None) or ""
+            tasks_json = getattr(args, "tasks_json", None)
+            if not tasks_json:
+                print("omg team start: --tasks-json required", file=sys.stderr)
+                return 2
+            meta = start_team(
+                goal,
+                tasks_json,
+                root=root,
+                run_id=getattr(args, "run_id", None),
+                dry_run=bool(getattr(args, "dry_run", False)),
+                yolo=bool(getattr(args, "yolo", False)),
+                safe=bool(getattr(args, "safe", False)),
+                force=bool(getattr(args, "force", False)),
+            )
+            print(json.dumps(meta, indent=2, ensure_ascii=False))
+            return 0
+        if action == "status":
+            st = team_status(
+                root,
+                getattr(args, "run_id", None),
+            )
+            if getattr(args, "as_json", False):
+                print(
+                    json.dumps(
+                        status_locked_view(st),
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                )
+            else:
+                print(format_status_table(st))
+            return 0
+        if action == "collect":
+            result = collect_team(
+                root,
+                getattr(args, "run_id", None),
+                force_seal=bool(getattr(args, "force", False)),
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            # Never sets verified; integrate status drives exit
+            integrate = result.get("integrate") or {}
+            status = integrate.get("status")
+            if status == "ok":
+                return 0
+            if status == "missing":
+                return 1
+            return 1
+        if action == "stop":
+            result = stop_team(
+                root,
+                getattr(args, "run_id", None),
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if not result.get("errors") else 1
+        print(f"omg team: unknown action {action!r}", file=sys.stderr)
+        return 2
+    except TeamGateError as exc:
+        print(f"omg team: {exc}", file=sys.stderr)
+        return 2
+    except TeamError as exc:
+        print(f"omg team: {exc}", file=sys.stderr)
+        return 1
+
+
 def cmd_worker(args: argparse.Namespace) -> int:
     """prepare/seal worktrees and ULW result envelopes (no-shell bridge)."""
     from omg_cli.state import load_active_run, load_run
@@ -1610,6 +1693,95 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_worker.set_defaults(func=cmd_worker)
 
+    p_team = sub.add_parser(
+        "team",
+        parents=[common],
+        help=(
+            "experimental grok-only tmux team plane "
+            "(requires OMG_EXPERIMENTAL_TMUX_TEAM=1)"
+        ),
+    )
+    team_sub = p_team.add_subparsers(dest="team_action")
+    p_t_start = team_sub.add_parser(
+        "start",
+        parents=[common],
+        help="create run + ownership worktrees + tmux session (or --dry-run)",
+    )
+    p_t_start.add_argument(
+        "--goal",
+        dest="goal",
+        required=True,
+        help="shared goal text for all task panes",
+    )
+    p_t_start.add_argument(
+        "--tasks-json",
+        dest="tasks_json",
+        required=True,
+        help='JSON array: [{"task_id","owned_files":[...],"capability_mode"?}]',
+    )
+    p_t_start.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="existing run_id (default: create a new ulw/team run)",
+    )
+    p_t_start.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="write team.json skeleton (pid=None); never call tmux/subprocess",
+    )
+    p_t_start.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="supersede active run when creating a new run",
+    )
+    p_t_start.set_defaults(func=cmd_team, team_action="start")
+
+    p_t_status = team_sub.add_parser(
+        "status",
+        parents=[common],
+        help="read team.json + ownership + optional pane liveness (no state write)",
+    )
+    p_t_status.add_argument(
+        "--run", dest="run_id", default=None, help="run_id (default: active)"
+    )
+    p_t_status.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="print LOCKED field set as JSON",
+    )
+    p_t_status.set_defaults(func=cmd_team, team_action="status")
+
+    p_t_collect = team_sub.add_parser(
+        "collect",
+        parents=[common],
+        help="seal_all_tasks + integrate_results (never sets verified)",
+    )
+    p_t_collect.add_argument(
+        "--run", dest="run_id", default=None, help="run_id (default: active)"
+    )
+    p_t_collect.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="re-seal even when envelopes already exist",
+    )
+    p_t_collect.set_defaults(func=cmd_team, team_action="collect")
+
+    p_t_stop = team_sub.add_parser(
+        "stop",
+        parents=[common],
+        help="kill recorded tmux session + killpg recorded pgids (no pkill -f)",
+    )
+    p_t_stop.add_argument(
+        "--run", dest="run_id", default=None, help="run_id (default: active)"
+    )
+    p_t_stop.set_defaults(func=cmd_team, team_action="stop")
+    p_team.set_defaults(func=cmd_team)
+
     p_review = sub.add_parser(
         "review",
         parents=[common],
@@ -2019,6 +2191,7 @@ KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
         "accept",
         "integrate",
         "worker",
+        "team",
         "review",
         "qa",
         "autopilot",
