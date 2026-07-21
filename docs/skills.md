@@ -355,11 +355,18 @@ Prefer Grok `read_file` / `grep`. Optional pyright if installed.
 |-------|---------------------------|------|
 | `omg-orchestrator` | leader | Decompose + coordinate |
 | `omg-executor` | `read-write` (no shell) | Implement |
+| `omg-debugger` | `read-write` (no shell) | Root-cause / regression / build-fix |
+| `omg-designer` | `read-write` (no shell) | UI/UX implementation |
+| `omg-writer` | `read-write` (no shell) | README / API docs / comments |
+| `omg-test-engineer` | `read-write` (no shell) | Test strategy / coverage / flaky hardening |
 | `omg-critic` / `omg-verifier` | `read-only` | Challenge / evidence |
 | `omg-code-reviewer` / `omg-architect` | `read-only` | Structured review lanes |
-| `omg-qa-tester` / `omg-analyst` | `read-only` | QA scenarios / interview analysis |
+| `omg-security-reviewer` | `read-only` | OWASP / secrets / unsafe patterns |
+| `omg-qa-tester` / `omg-analyst` | see taxonomy | QA scenarios / interview analysis |
 
-Grok built-ins (`explore`, `plan`, `general-purpose`) fill gaps (no 19-role OMC zoo).
+Machine-readable posture / class floors for team routing live in
+`omg_cli/team/roles.py` (`role_posture`, `role_class`, `is_reviewer_or_verifier`).
+Grok built-ins (`explore`, `plan`, `general-purpose`) still fill ad-hoc gaps.
 
 ---
 

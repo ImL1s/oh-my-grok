@@ -352,11 +352,18 @@ omg wiki query "auth"
 |-------|------------------------|------|
 | `omg-orchestrator` | leader | 拆解與協調 |
 | `omg-executor` | `read-write`（無 shell） | 實作 |
+| `omg-debugger` | `read-write`（無 shell） | 根因 / 回歸 / build 修復 |
+| `omg-designer` | `read-write`（無 shell） | UI/UX 實作 |
+| `omg-writer` | `read-write`（無 shell） | README / API 文件 / 註解 |
+| `omg-test-engineer` | `read-write`（無 shell） | 測試策略 / 覆蓋 / flaky 加固 |
 | `omg-critic` / `omg-verifier` | `read-only` | 挑戰 / 證據 |
 | `omg-code-reviewer` / `omg-architect` | `read-only` | 結構化審查 |
-| `omg-qa-tester` / `omg-analyst` | `read-only` | QA / interview 分析 |
+| `omg-security-reviewer` | `read-only` | OWASP / secrets / 不安全模式 |
+| `omg-qa-tester` / `omg-analyst` | 見 taxonomy | QA 情境 / interview 分析 |
 
-Grok 內建（`explore`、`plan`、`general-purpose`）補洞（沒有 OMC 那 19 角色 zoo）。
+團隊路由用的 posture / class 地板在 `omg_cli/team/roles.py`
+（`role_posture`、`role_class`、`is_reviewer_or_verifier`）。
+Grok 內建（`explore`、`plan`、`general-purpose`）仍補臨時缺口。
 
 ---
 
