@@ -15,6 +15,45 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Host Stop veto (not feasible on Grok today).
 - Full OMC LSP/AST MCP bridge (local pyright probe only in 0.3.0).
 
+## [0.4.1] - 2026-07-21
+
+Backlog polish + a security-floor hardening pass, all reviewer-driven (Fable 5
+full-branch GO). Merged via PR #2. 528 → 547 unit tests.
+
+### Fixed (security)
+- **command_policy break-glass floor:** a v0.4.0-round attempt to fix a
+  false-positive (`python3 -m pytest -rc` wrongly denied) narrowed the `-c`/`-e`
+  floor scan and reopened a real code-exec bypass under `--no-allowlist`. Fixed
+  in layers, ending in a **fail-closed region boundary**: a bare token ends the
+  interpreter region only if it is a real `.py` script (or `-m`/`--`); any other
+  bare token is treated as a (possibly unknown) option's value, so a following
+  `-c`/`-e`/`-p`/`--eval`/`--print` stays caught. Unknown/future interpreter
+  options can no longer hide an eval flag (verified with fuzz + break-glass
+  probes). Trade-off: an extensionless positional script fails closed under
+  break-glass (intentional; normal mode requires `.py`).
+
+### Fixed
+- **workers.py:** ownership path normalization used `.lstrip("./")`, collapsing a
+  dotfile `.config` to `config`; now `_norm_relpath` keeps dotfiles intact.
+- **autopilot.py:** invalidate review/QA stamps on `review` entry from `blocked`
+  too, closing the `qa→blocked→review→qa` stale-review-stamp reuse.
+
+### Added
+- **`omg note --prune`:** the `[7d]` tag is now a real TTL (drops entries older
+  than 7 days; keeps `[permanent]` + unparseable-timestamp lines).
+- **`doctor` installed-snapshot capabilities lock:** hashes the installed frozen
+  snapshot's skills/agents against the committed lock (true OMX installed-drift;
+  complements the local-checkout guard).
+- **Docs-drift guard** extended from `omg goal` to every sub-actioned command.
+
+### Notes
+- Deliberately unchanged: the `deny.py` quoted/heredoc-line false-positive stays
+  fail-closed (fixing it reopens the heredoc-body bypass).
+- Backlog: ULW leader-side auto-seal (`omg worker seal --all`) is a designed
+  feature for a later release; an unknown future interpreter option taking a
+  separate `.py`-suffixed value would need adding to the arg-consuming set (no
+  such real option exists today).
+
 ## [0.4.0] - 2026-07-21
 
 OMC/OMX parity upgrade — global guidance injection, install lifecycle, and a

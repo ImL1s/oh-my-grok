@@ -1,6 +1,6 @@
 {
   "name": "oh-my-grok",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "OMC/OMX-style multi-agent orchestration for Grok Build: global guidance injection (~/.grok/rules/omg.md), skills, agents, ledger hooks, self-healing install/update/uninstall, notepad, kill switches. Pair with the omg CLI for hard keywords (ulw/ralph/ralplan/resume), setup, and outer persistence loops.",
   "author": {
     "name": "ImL1s",
