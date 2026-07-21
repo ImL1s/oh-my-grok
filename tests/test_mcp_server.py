@@ -1,17 +1,26 @@
 """Hermetic tests for focused in-session MCP server (omg mcp-server).
 
 No live grok. Covers allowlist registry, path confinement, protocol round-trip,
-and handlers over a tmp .omg root.
+wire framing (NDJSON vs Content-Length), and handlers over a tmp .omg root.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
 
 import pytest
 
-from omg_cli.mcp.server import handle_message, run_ndjson_roundtrip
+from omg_cli.mcp.server import (
+    FRAMING_CONTENT_LENGTH,
+    FRAMING_NDJSON,
+    encode_message,
+    handle_message,
+    read_message,
+    run_ndjson_roundtrip,
+    run_stdio_server,
+)
 from omg_cli.mcp.tools import (
     FORBIDDEN_TOOL_NAMES,
     TOOL_HANDLERS,
@@ -305,6 +314,166 @@ def test_tools_call_forbidden_name_is_error(tmp_path: Path) -> None:
     )
     assert resp is not None
     assert resp["result"]["isError"] is True
+
+
+# ---------------------------------------------------------------------------
+# Wire framing: respond in the client's framing (NDJSON vs Content-Length)
+# Regression: Grok Build CLI sends NDJSON initialize and cannot parse
+# Content-Length replies → "MCP server omg timed out after 30s".
+# ---------------------------------------------------------------------------
+
+
+def _initialize_request(req_id: int = 1) -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "g", "version": "1"},
+        },
+    }
+
+
+def _tools_list_request(req_id: int = 2) -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "tools/list",
+        "params": {},
+    }
+
+
+def _split_ndjson_responses(raw: bytes) -> list[dict]:
+    """Parse bare NDJSON response bytes; fail if Content-Length headers appear."""
+    assert b"Content-Length:" not in raw, (
+        f"NDJSON client must not receive Content-Length framing, got: {raw[:200]!r}"
+    )
+    lines = [ln for ln in raw.split(b"\n") if ln.strip()]
+    assert lines, f"expected at least one NDJSON response line, got: {raw!r}"
+    out: list[dict] = []
+    for ln in lines:
+        # Each response must be a single JSON object line (no headers).
+        assert ln.lstrip().startswith(b"{"), f"expected bare JSON object, got: {ln!r}"
+        out.append(json.loads(ln.decode("utf-8")))
+    return out
+
+
+def _split_content_length_responses(raw: bytes) -> list[dict]:
+    """Parse Content-Length framed response bytes."""
+    assert raw.startswith(b"Content-Length:") or b"Content-Length:" in raw
+    msgs: list[dict] = []
+    buf = io.BytesIO(raw)
+    while True:
+        framing: list[str] = []
+        msg = read_message(buf, framing_out=framing)
+        if msg is None:
+            break
+        assert framing == [FRAMING_CONTENT_LENGTH]
+        msgs.append(msg)
+    assert msgs, f"expected Content-Length framed responses, got: {raw[:200]!r}"
+    return msgs
+
+
+def test_encode_message_ndjson_has_no_content_length_header() -> None:
+    msg = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+    raw = encode_message(msg, framing=FRAMING_NDJSON)
+    assert raw.endswith(b"\n")
+    assert b"Content-Length:" not in raw
+    assert json.loads(raw.decode("utf-8").strip()) == msg
+
+
+def test_encode_message_content_length_default_back_compat() -> None:
+    msg = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+    raw = encode_message(msg)  # default framing
+    assert raw.startswith(b"Content-Length:")
+    body = raw.split(b"\r\n\r\n", 1)[1]
+    assert json.loads(body.decode("utf-8")) == msg
+
+
+def _run_stdio_server_isolated(
+    *,
+    root: Path,
+    stdin: io.BytesIO,
+    stdout: io.BytesIO,
+) -> int:
+    """Call run_stdio_server without leaking OMG_MCP_SERVER=1 into later tests."""
+    from omg_cli.acceptance import MCP_SERVER_ENV
+
+    prev = os.environ.get(MCP_SERVER_ENV)
+    try:
+        return run_stdio_server(root=root, stdin=stdin, stdout=stdout)
+    finally:
+        if prev is None:
+            os.environ.pop(MCP_SERVER_ENV, None)
+        else:
+            os.environ[MCP_SERVER_ENV] = prev
+
+
+def test_ndjson_stdio_roundtrip_responses_are_ndjson(tmp_path: Path) -> None:
+    """Client sends NDJSON (Grok shape) → server must reply NDJSON, not headers.
+
+    This is the exact live-capture mismatch: grok sends `{...}\\n` and previously
+    received `Content-Length: N\\r\\n\\r\\n{...}` which it cannot parse.
+    """
+    reqs = [_initialize_request(1), _tools_list_request(2)]
+    stdin_bytes = b"".join(
+        (json.dumps(r, separators=(",", ":")) + "\n").encode("utf-8") for r in reqs
+    )
+    stdin = io.BytesIO(stdin_bytes)
+    stdout = io.BytesIO()
+    code = _run_stdio_server_isolated(root=tmp_path, stdin=stdin, stdout=stdout)
+    assert code == 0
+    raw = stdout.getvalue()
+    responses = _split_ndjson_responses(raw)
+    assert len(responses) == 2
+    init, listed = responses
+    assert init["id"] == 1
+    assert "result" in init
+    assert init["result"]["serverInfo"]["name"] == "omg"
+    assert listed["id"] == 2
+    names = {t["name"] for t in listed["result"]["tools"]}
+    assert "omg_note_write" in names
+    assert "set_verified" not in names
+
+
+def test_content_length_stdio_roundtrip_responses_are_content_length(
+    tmp_path: Path,
+) -> None:
+    """Client sends Content-Length → server keeps Content-Length framing."""
+    reqs = [_initialize_request(1), _tools_list_request(2)]
+    stdin_bytes = b"".join(encode_message(r, framing=FRAMING_CONTENT_LENGTH) for r in reqs)
+    stdin = io.BytesIO(stdin_bytes)
+    stdout = io.BytesIO()
+    code = _run_stdio_server_isolated(root=tmp_path, stdin=stdin, stdout=stdout)
+    assert code == 0
+    raw = stdout.getvalue()
+    responses = _split_content_length_responses(raw)
+    assert len(responses) == 2
+    assert responses[0]["id"] == 1
+    assert "result" in responses[0]
+    assert responses[1]["id"] == 2
+    assert "tools" in responses[1]["result"]
+
+
+def test_read_message_detects_ndjson_framing() -> None:
+    payload = b'{"jsonrpc":"2.0","id":0,"method":"ping"}\n'
+    holder: list[str] = []
+    msg = read_message(io.BytesIO(payload), framing_out=holder)
+    assert msg == {"jsonrpc": "2.0", "id": 0, "method": "ping"}
+    assert holder == [FRAMING_NDJSON]
+
+
+def test_read_message_detects_content_length_framing() -> None:
+    payload = encode_message(
+        {"jsonrpc": "2.0", "id": 0, "method": "ping"},
+        framing=FRAMING_CONTENT_LENGTH,
+    )
+    holder: list[str] = []
+    msg = read_message(io.BytesIO(payload), framing_out=holder)
+    assert msg == {"jsonrpc": "2.0", "id": 0, "method": "ping"}
+    assert holder == [FRAMING_CONTENT_LENGTH]
 
 
 # ---------------------------------------------------------------------------
