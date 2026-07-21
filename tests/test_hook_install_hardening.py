@@ -202,3 +202,51 @@ def test_install_repaired_on_mode_change(tmp_path):
     _p, a = hi.install_global_hook(home=gh)
     assert a == "repaired", a
     assert _stat.S_IMODE(os.stat(py).st_mode) == 0o755
+
+
+# --- Codex re-verify round 2: 3 remaining edge cases ---
+
+def test_install_quarantines_dangling_symlink_json(tmp_path):
+    # B1(lexists): a DANGLING symlink json is 'present' and must be quarantined, not ignored.
+    import os
+    from omg_cli import hook_install as hi
+
+    gh = tmp_path / ".grok"
+    hooks = gh / "hooks"
+    hooks.mkdir(parents=True)
+    jpath = hooks / hi.HOOK_JSON_NAME
+    os.symlink(str(tmp_path / "no-such-target.json"), str(jpath))  # dangling
+    assert os.path.lexists(jpath) and not jpath.is_file()
+    _p, a = hi.install_global_hook(home=gh, root=tmp_path / "no-such-root")
+    assert a == "quarantined-no-source", a
+    assert not os.path.lexists(jpath)  # dangling symlink renamed away (grok won't discover it)
+
+
+def test_generator_rejects_unprovided_from_binding():
+    # B2: `from os import environ` is stdlib but binds a name the header doesn't provide;
+    # stripping it would leave `environ` unbound in the body.
+    gen = _load_gen()
+    with pytest.raises(SystemExit):
+        gen._deny_body_after_imports("from os import environ\n\nX = environ\n")
+
+
+def test_generator_rejects_rebound_dynamic_import():
+    # B2: `loader = __import__; loader(...)` rebinds the dynamic-import builtin.
+    gen = _load_gen()
+    with pytest.raises(SystemExit):
+        gen._validate_stdlib_only("loader = __import__\n", "test")
+
+
+def test_install_repaired_on_json_mode_change(tmp_path):
+    # B4: the json's own mode/type repair is also 'repaired', not 'unchanged'.
+    import os
+    import stat as _stat
+    from omg_cli import hook_install as hi
+
+    gh = tmp_path / ".grok"
+    hi.install_global_hook(home=gh)
+    jp = gh / "hooks" / hi.HOOK_JSON_NAME
+    os.chmod(jp, 0o600)  # wrong mode, canonical content
+    _p, a = hi.install_global_hook(home=gh)
+    assert a == "repaired", a
+    assert _stat.S_IMODE(os.stat(jp).st_mode) == 0o644

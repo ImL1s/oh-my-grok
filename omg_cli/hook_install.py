@@ -279,7 +279,10 @@ def install_global_hook(*, home: Path | None = None, root: Path | None = None) -
     prior_json = _safe_read_text(json_path)
     prior_py = _safe_read_bytes(installed_py)
     prior_sig = _lstat_sig(installed_py)
-    exists = json_path.is_file()
+    prior_json_sig = _lstat_sig(json_path)
+    # lexists (not is_file): a symlink json — even a DANGLING one grok would try to
+    # discover — counts as present, so it can be treated as dangerous and quarantined.
+    exists = os.path.lexists(json_path)
     outside_home = exists and json_target_outside_grok_home(json_path, gh)
     # Any managed json that is not byte-canonical is treated as dangerous/repairable.
     noncanonical = exists and (prior_json is None or prior_json != canonical_json)
@@ -321,11 +324,15 @@ def install_global_hook(*, home: Path | None = None, root: Path | None = None) -
         return json_path, "created"
     now_py = _safe_read_bytes(installed_py)
     now_sig = _lstat_sig(installed_py)
-    same_script = prior_py == now_py and prior_sig == now_sig  # bytes AND type/mode
-    if prior_json == canonical_json and same_script:
-        return json_path, "unchanged"  # a TRUE no-op
-    if prior_json == canonical_json and not same_script:
-        return json_path, "repaired"  # json fine; script bytes/mode/type were missing/stale/wrong
+    now_json_sig = _lstat_sig(json_path)
+    # A TRUE no-op requires BOTH files unchanged in content AND type/mode (lstat), so a
+    # repaired mode/symlink on either the script or the json is reported, not hidden.
+    same_script = (prior_py == now_py) and (prior_sig == now_sig)
+    same_json = (prior_json == canonical_json) and (prior_json_sig == now_json_sig)
+    if same_json and same_script:
+        return json_path, "unchanged"
+    if prior_json == canonical_json:
+        return json_path, "repaired"  # content was canonical; bytes/mode/type of a file changed
     return json_path, "updated"
 
 

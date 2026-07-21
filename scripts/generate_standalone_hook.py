@@ -41,6 +41,10 @@ from pathlib import Path
 # non-stdlib import would break the "self-contained, runs under ``python3 -I -S``
 # with no PYTHONPATH" guarantee. Enforced at generation time (fail-closed).
 STDLIB_IMPORT_ALLOWLIST = frozenset({"__future__", "os", "re", "sys", "json", "typing"})
+# Runtime names the generated _HEADER binds. deny.py's stripped top-level imports must
+# bind ONLY these — otherwise the stripped body references an unbound name (NameError),
+# e.g. `from os import environ` binds `environ`, which the header does not provide.
+HEADER_PROVIDED_NAMES = frozenset({"json", "os", "re", "sys", "Any", "annotations"})
 STANDALONE_BASENAME = "omg_pretool_deny_standalone.py"
 
 
@@ -121,6 +125,12 @@ def _validate_stdlib_only(src: str, label: str) -> None:
                     f"generate_standalone_hook: {label} uses a dynamic import ({fname}); "
                     "not allowed in the standalone"
                 )
+        elif isinstance(node, ast.Name) and node.id == "__import__":
+            # `loader = __import__; loader(...)` rebinds the dynamic-import builtin.
+            raise SystemExit(
+                f"generate_standalone_hook: {label} references __import__ (dynamic import); "
+                "not allowed in the standalone"
+            )
 
 
 def _deny_body_after_imports(src: str) -> str:
@@ -147,6 +157,19 @@ def _deny_body_after_imports(src: str) -> str:
                     "generate_standalone_hook: deny.py has a top-level import after code; "
                     "move all imports into the contiguous top preamble"
                 )
+            # The stripped preamble may bind ONLY names the header re-provides — else the
+            # body references an unbound name (e.g. `from os import environ` → `environ`).
+            for alias in node.names:
+                if isinstance(node, ast.Import):
+                    bound = (alias.asname or alias.name).split(".")[0]
+                else:  # ImportFrom
+                    bound = alias.asname or alias.name
+                if bound not in HEADER_PROVIDED_NAMES:
+                    raise SystemExit(
+                        f"generate_standalone_hook: deny.py top-level import binds {bound!r}, "
+                        "which the standalone header does not provide; add it to the header "
+                        "(and HEADER_PROVIDED_NAMES) or drop the import"
+                    )
             preamble_end = max(preamble_end, node.end_lineno or 0)
         elif is_docstring and not seen_code:
             preamble_end = max(preamble_end, node.end_lineno or 0)
