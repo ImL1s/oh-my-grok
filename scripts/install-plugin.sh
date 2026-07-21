@@ -29,56 +29,13 @@ if LIST_JSON="$(grok plugin list --json 2>/dev/null)"; then
   if command -v python3 >/dev/null 2>&1; then
     export OMG_INSTALL_ROOT="$ROOT_RESOLVED"
     export OMG_INSTALL_LIST_JSON="$LIST_JSON"
+    # Multi-candidate same-path classifier (importable helper; unit-tested).
+    # Independent realpath of source/path/installPath/install_path vs root —
+    # never OR-collapse to a single field (path is dual-meaning: checkout vs snapshot).
+    # stdout captured for SAME_PATH_INSTALLED=; stderr WARNs pass through.
     PARSE_OUT="$(
-      python3 - <<'PY' || true
-import json, os, sys
-root = os.environ.get("OMG_INSTALL_ROOT", "")
-raw = os.environ.get("OMG_INSTALL_LIST_JSON", "")
-try:
-    data = json.loads(raw)
-except Exception:
-    print("SAME_PATH_INSTALLED=0")
-    sys.exit(0)
-cands = []
-if isinstance(data, list):
-    cands = [x for x in data if isinstance(x, dict)]
-elif isinstance(data, dict):
-    for k in ("plugins", "items", "data", "result"):
-        n = data.get(k)
-        if isinstance(n, list):
-            cands = [x for x in n if isinstance(x, dict)]
-            break
-    if not cands:
-        cands = [data]
-stale = []
-same_path = False
-for item in cands:
-    name = str(item.get("name") or item.get("id") or item.get("plugin") or "")
-    if "oh-my-grok" not in name:
-        continue
-    src = str(item.get("source") or item.get("path") or item.get("installPath") or "")
-    if not src:
-        continue
-    # Normalize for comparison
-    try:
-        src_r = os.path.realpath(src)
-    except Exception:
-        src_r = src
-    root_n = root.rstrip("/")
-    if src_r.rstrip("/") == root_n or src.rstrip("/") == root_n:
-        same_path = True
-    else:
-        key = name
-        stale.append(f"  key={key!r} source/path={src!r}")
-if stale:
-    print("WARN: found oh-my-grok entry(ies) whose source/path differs from this checkout:", file=sys.stderr)
-    for line in stale:
-        print(line, file=sys.stderr)
-    print(f"  this checkout: {root!r}", file=sys.stderr)
-    print("  recommend: grok plugin uninstall oh-my-grok  (then re-run this script)", file=sys.stderr)
-    print("  (installer will NOT auto-uninstall different-path entries — remove those yourself)", file=sys.stderr)
-print(f"SAME_PATH_INSTALLED={1 if same_path else 0}")
-PY
+      PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+        python3 "$ROOT/scripts/omg_install_classifier.py" || true
     )"
     unset OMG_INSTALL_ROOT OMG_INSTALL_LIST_JSON
     if [[ "$PARSE_OUT" == *"SAME_PATH_INSTALLED=1"* ]]; then

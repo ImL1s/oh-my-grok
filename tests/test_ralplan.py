@@ -313,6 +313,49 @@ def test_dry_run_accepts_via_json_verdict(monkeypatch, tmp_path):
     assert state["accepted"] is True
 
 
+def test_verifier_has_approve_cross_artifact_severity_rc_beats_sibling_approve(
+    tmp_path,
+):
+    """A2a false-green: real md REQUEST_CHANGES must beat sibling unbound JSON APPROVE.
+
+    Pre-fix used raw ``or`` across siblings; path-bound md REQUEST_CHANGES was
+    overridden by a legacy-exempt (no run_id) json APPROVE. Aggregate must be
+    most-severe: FAILED > REQUEST_CHANGES > APPROVE.
+    """
+    rid = "run-a2a-rc"
+    sdir = tmp_path / ".omg" / "state" / "runs" / rid / "stages"
+    sdir.mkdir(parents=True)
+    md = stage_artifact_path(tmp_path, rid, "verifier", 1)
+    js = stage_artifact_json_path(tmp_path, rid, "verifier", 1)
+    md.write_text("## Verdict\nREQUEST CHANGES\n\nPlan is incomplete.\n", encoding="utf-8")
+    js.write_text(json.dumps({"verdict": "APPROVE", "notes": "stray"}) + "\n", encoding="utf-8")
+    assert verifier_has_approve(tmp_path, rid, 1) is False
+
+
+def test_verifier_has_approve_cross_artifact_failed_beats_sibling_approve(tmp_path):
+    """A2a: real md FAILED must beat sibling unbound JSON APPROVE."""
+    rid = "run-a2a-failed"
+    sdir = tmp_path / ".omg" / "state" / "runs" / rid / "stages"
+    sdir.mkdir(parents=True)
+    md = stage_artifact_path(tmp_path, rid, "verifier", 1)
+    js = stage_artifact_json_path(tmp_path, rid, "verifier", 1)
+    md.write_text("## Verdict\nFAILED\n\nBlocking defects.\n", encoding="utf-8")
+    js.write_text(json.dumps({"verdict": "APPROVE"}) + "\n", encoding="utf-8")
+    assert verifier_has_approve(tmp_path, rid, 1) is False
+
+
+def test_verifier_has_approve_json_rc_beats_sibling_md_approve(tmp_path):
+    """A2a: REQUEST_CHANGES in either sibling wins (json reject + md approve)."""
+    rid = "run-a2a-json-rc"
+    sdir = tmp_path / ".omg" / "state" / "runs" / rid / "stages"
+    sdir.mkdir(parents=True)
+    md = stage_artifact_path(tmp_path, rid, "verifier", 1)
+    js = stage_artifact_json_path(tmp_path, rid, "verifier", 1)
+    md.write_text("## Verdict\nAPPROVE\n", encoding="utf-8")
+    js.write_text(json.dumps({"verdict": "REQUEST_CHANGES"}) + "\n", encoding="utf-8")
+    assert verifier_has_approve(tmp_path, rid, 1) is False
+
+
 def test_revise_loop_then_approve(monkeypatch, tmp_path):
     """First verifier rejects; second round APPROVE → accepted; round==2."""
     monkeypatch.setattr(

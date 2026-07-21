@@ -31,7 +31,11 @@ from omg_cli.modes import (
     plugin_root,
 )
 from omg_cli.state import create_run, load_run, write_status
-from omg_cli.verdict import artifact_contains_approve, parse_structured_verdict
+from omg_cli.verdict import (
+    artifact_contains_approve,
+    parse_structured_verdict,
+    parse_verdict_file,
+)
 
 DEFAULT_MAX_ROUNDS = 3
 V2_MAX_ROUNDS = 5
@@ -293,13 +297,39 @@ def build_stage_prompt(
     return "\n".join(lines)
 
 
+# Cross-artifact severity ranks (mirror verdict._SEVERITY_RANK; local to avoid
+# exporting a private helper). FAILED > REQUEST_CHANGES > APPROVE; UNKNOWN=0.
+_VERIFIER_SEVERITY_RANK = {
+    "FAILED": 3,
+    "REQUEST_CHANGES": 2,
+    "APPROVE": 1,
+}
+
+
 def verifier_has_approve(root: Path, run_id: str, round_n: int) -> bool:
-    """Check verifier artifacts for this round (md then json)."""
+    """Check verifier artifacts for this round via cross-artifact severity.
+
+    Parse BOTH sibling artifacts (``.md`` and ``.json``) independently, then
+    take the most severe verdict (FAILED > REQUEST_CHANGES > APPROVE). Approve
+    ONLY if the aggregate is APPROVE. A real REQUEST_CHANGES/FAILED in either
+    sibling must beat an APPROVE in the other (closes the raw-``or`` false-green
+    where a path-bound md REQUEST_CHANGES was overridden by a legacy-exempt
+    unbound json APPROVE).
+
+    Dry-run stub ``.md`` (no severity signal → UNKNOWN) + real ``.json`` APPROVE
+    still aggregates to APPROVE — stubs are not rejects.
+    """
     md = stage_artifact_path(root, run_id, "verifier", round_n)
     js = stage_artifact_json_path(root, run_id, "verifier", round_n)
-    return artifact_contains_approve(
-        md, expected_run_id=run_id
-    ) or artifact_contains_approve(js, expected_run_id=run_id)
+    best: str | None = None
+    best_rank = 0
+    for path in (md, js):
+        v = parse_verdict_file(path, expected_run_id=run_id)
+        rank = _VERIFIER_SEVERITY_RANK.get(v, 0)
+        if rank > best_rank:
+            best = v
+            best_rank = rank
+    return best == "APPROVE"
 
 
 def _execute_stage(
