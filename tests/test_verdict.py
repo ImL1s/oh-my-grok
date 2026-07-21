@@ -263,3 +263,35 @@ def test_legit_unbound_approve_regression():
     )
     assert parse_verdict("## Verdict\nAPPROVE\n", expected_run_id="R") == "APPROVE"
     assert parse_verdict('{"verdict":"APPROVE"}') == "APPROVE"
+
+
+def test_scanner_ignores_unbalanced_brace_in_string():
+    """Lone `}` inside a JSON string must not truncate the stale-run object.
+
+    Pre-fix brace scanner treated the `}` in `"note": "} closer"` as a
+    structural closer, truncated the first object to invalid JSON, dropped it,
+    and let the stray APPROVE win. Must stay FAILED under run_id binding.
+    """
+    b2 = (
+        '{"run_id": "WRONG", "verdict": "FAILED", "note": "} closer"}\n'
+        '{"verdict": "APPROVE"}'
+    )
+    assert parse_verdict(b2, expected_run_id="REAL-RUN-123") == "FAILED"
+
+
+def test_scanner_lone_open_brace_in_string_stays_failed():
+    """Regression pin: lone `{` inside a string must not hide the stale FAILED."""
+    text = (
+        '{"verdict": "APPROVE", "note": "open { brace"}\n'
+        '{"run_id": "WRONG", "verdict": "FAILED"}'
+    )
+    assert parse_verdict(text, expected_run_id="REAL-RUN-123") == "FAILED"
+
+
+def test_scanner_balanced_braces_in_string_still_extracts_stale():
+    """Balanced braces inside a string must still extract the stale FAILED object."""
+    text = (
+        '{"run_id":"WRONG","verdict":"FAILED","note":"cfg {\\"debug\\": true}"}\n'
+        '{"verdict":"APPROVE"}'
+    )
+    assert parse_verdict(text, expected_run_id="REAL-RUN-123") == "FAILED"

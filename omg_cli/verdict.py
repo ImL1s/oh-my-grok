@@ -183,10 +183,23 @@ def _extract_json_objects(text: str) -> list[dict]:
     # fenced json blocks
     for m in re.finditer(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE):
         candidates.append(m.group(1).strip())
-    # ALL top-level balanced objects (naive brace depth; json.loads filters)
+    # ALL top-level balanced objects (brace depth; ignore braces inside strings)
     depth = 0
     start = -1
+    in_string = False
+    escape = False
     for i, ch in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
         if ch == "{":
             if depth == 0:
                 start = i
