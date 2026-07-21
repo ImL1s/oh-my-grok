@@ -636,6 +636,61 @@ def check_plugin_enabled() -> SoftResult:
     )
 
 
+def _import_capabilities_lock_mod() -> Any:
+    """Load scripts/generate_capabilities_lock.py (not a package module)."""
+    import importlib.util
+
+    script = plugin_root() / "scripts" / "generate_capabilities_lock.py"
+    # Prefer import via scripts on sys.path when the file is reachable that way.
+    scripts_dir = str(plugin_root() / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    try:
+        import generate_capabilities_lock as mod  # type: ignore
+
+        return mod
+    except ImportError:
+        pass
+    if not script.is_file():
+        raise ImportError(f"missing {script}")
+    spec = importlib.util.spec_from_file_location("generate_capabilities_lock", script)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {script}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def check_capabilities_lock() -> SoftResult:
+    """Soft: skills/agents content matches omg_capabilities.lock.json aggregate."""
+    name = "capabilities lock"
+    try:
+        mod = _import_capabilities_lock_mod()
+    except Exception as e:
+        return (name, "warn", f"cannot load lock generator ({type(e).__name__}: {e})")
+    root = plugin_root()
+    try:
+        current = mod.compute_lock(root)
+        stored = mod.read_lock(root)
+    except Exception as e:
+        return (name, "warn", f"lock compute failed ({type(e).__name__}: {e})")
+    if stored is None:
+        return (
+            name,
+            "warn",
+            "no omg_capabilities.lock.json (run scripts/generate_capabilities_lock.py)",
+        )
+    if stored.get("aggregate") != current.get("aggregate"):
+        return (
+            name,
+            "warn",
+            "skills/agents changed since lock — regenerate: "
+            "python3 scripts/generate_capabilities_lock.py",
+        )
+    n = len(current.get("files") or {})
+    return (name, "ok", f"{n} files match lock")
+
+
 def run_checks() -> list[tuple[str, bool, str]]:
     return [
         check_grok_on_path(),
@@ -657,6 +712,7 @@ def run_soft_checks() -> list[SoftResult]:
         check_global_rules(),
         check_plugin_version_drift(),
         check_plugin_enabled(),
+        check_capabilities_lock(),
     ]
 
 

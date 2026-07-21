@@ -28,6 +28,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return run_doctor(strict=bool(getattr(args, "strict", False)))
 
 
+def cmd_note(args: argparse.Namespace) -> int:
+    from omg_cli.note import run_note
+
+    return run_note(
+        " ".join(args.text),
+        priority=bool(getattr(args, "priority", False)),
+        show=bool(getattr(args, "show", False)),
+    )
+
+
 def cmd_update(args: argparse.Namespace) -> int:
     from omg_cli.update_cmd import run_update
 
@@ -1056,6 +1066,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="treat compat.claude isolation risks as FAIL (exit 1)",
     )
     p_doctor.set_defaults(func=cmd_doctor)
+
+    p_note = sub.add_parser(
+        "note",
+        parents=[common],
+        help="append a durable project note (.omg/notepad.md)",
+    )
+    p_note.add_argument(
+        "text",
+        nargs="*",
+        help="note text (omit to show the notepad)",
+    )
+    p_note.add_argument(
+        "--priority",
+        action="store_true",
+        help="permanent (else 7d TTL tag)",
+    )
+    p_note.add_argument(
+        "--show",
+        action="store_true",
+        help="print the notepad and exit",
+    )
+    p_note.set_defaults(func=cmd_note)
 
     p_update = sub.add_parser(
         "update",
