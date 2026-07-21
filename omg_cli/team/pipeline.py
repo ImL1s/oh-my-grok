@@ -5,7 +5,8 @@ lanes; does **not** reimplement ralplan / dual_review / a planner or verifier.
 
 - ``team-plan`` / ``team-prd`` — pass-through stage markers (leader/ralplan
   decomposition is consumed via ``--tasks-json`` or a path to existing tasks).
-- ``team-exec`` — ``start_team`` then ``collect_team`` (dry-run: start only).
+- ``team-exec`` — ``start_team``, wait for panes (non-dry), then
+  ``collect_team`` (dry-run: start only; no wait/poll/collect).
 - ``team-verify`` — gates a durable verifier artifact under the run dir via
   POST-A2 ``parse_verdict_file`` (never fakes a verdict).
 - ``team-fix`` — bounded re-entry into ``team-exec`` (``--max-fix``, default 3).
@@ -19,6 +20,8 @@ discipline. ``verified`` is never written here — only via ``omg accept``.
 from __future__ import annotations
 
 import json
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -42,6 +45,7 @@ from omg_cli.team.plane import (
     load_team_meta,
     start_team,
     team_meta_path,
+    team_status,
 )
 from omg_cli.verdict import parse_verdict_file
 
@@ -82,6 +86,12 @@ LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
 DEFAULT_MAX_FIX = 3
 DEFAULT_RALPH_MAX_ITER = int(DEFAULT_MAX_ITER.get("ralph", 3))
 SCHEMA_VERSION = 1
+
+# Non-dry team-exec: wait for panes to finish before collect (D2/D4 race fix).
+# start_team only SPAWNS panes; collect must not run until workers seal/exit.
+DEFAULT_TEAM_EXEC_WAIT_SECS = 900
+TEAM_EXEC_WAIT_ENV = "OMG_TEAM_EXEC_WAIT_SECS"
+DEFAULT_TEAM_EXEC_POLL_SECS = 2.0
 
 # Severity ranks for cross-artifact aggregation (mirror ralplan / verdict).
 _SEVERITY_RANK = {
@@ -591,6 +601,89 @@ def _plane_write_status_compat(
         return _ws(root, run_id, mapped, extra=extra, lease=owned)
 
 
+def _team_exec_wait_secs() -> float:
+    """Bounded wait for panes before collect; env ``OMG_TEAM_EXEC_WAIT_SECS``."""
+    raw = (os.environ.get(TEAM_EXEC_WAIT_ENV) or "").strip()
+    if not raw:
+        return float(DEFAULT_TEAM_EXEC_WAIT_SECS)
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return float(DEFAULT_TEAM_EXEC_WAIT_SECS)
+
+
+def any_team_pane_alive(root: Path | str, run_id: str) -> bool:
+    """True when any launched pane still reports ``alive`` via ``team_status``.
+
+    Reuses the plane's status liveness probe (``load_team_meta`` +
+    ``_window_alive`` / tmux list-windows). Exposed for hermetic monkeypatch.
+    """
+    status = team_status(root, run_id, probe_tmux=True)
+    for task in status.get("tasks") or []:
+        if isinstance(task, Mapping) and task.get("alive") is True:
+            return True
+    return False
+
+
+def wait_for_team_panes(
+    root: Path | str,
+    run_id: str,
+    *,
+    timeout_secs: float | None = None,
+    poll_interval: float = DEFAULT_TEAM_EXEC_POLL_SECS,
+) -> dict[str, Any]:
+    """Poll pane liveness until none are alive, or *timeout_secs* elapses.
+
+    On timeout, returns with ``wait_timeout=True`` so callers may proceed to
+    collect (collect/integrate stay fail-closed for unsealed tasks).
+    """
+    timeout = (
+        float(timeout_secs)
+        if timeout_secs is not None
+        else _team_exec_wait_secs()
+    )
+    poll = max(0.05, float(poll_interval))
+    deadline = time.monotonic() + timeout
+    polls = 0
+    while True:
+        polls += 1
+        if not any_team_pane_alive(root, run_id):
+            return {
+                "waited": True,
+                "polls": polls,
+                "timed_out": False,
+                "wait_timeout": False,
+                "timeout_secs": timeout,
+            }
+        now = time.monotonic()
+        if now >= deadline:
+            break
+        remaining = deadline - now
+        time.sleep(min(poll, max(0.0, remaining)))
+
+    # Final probe after deadline (or after last short sleep).
+    polls += 1
+    if not any_team_pane_alive(root, run_id):
+        return {
+            "waited": True,
+            "polls": polls,
+            "timed_out": False,
+            "wait_timeout": False,
+            "timeout_secs": timeout,
+        }
+    return {
+        "waited": True,
+        "polls": polls,
+        "timed_out": True,
+        "wait_timeout": True,
+        "timeout_secs": timeout,
+        "note": (
+            f"wait_timeout after {timeout}s; proceeding to collect "
+            "(fail-closed if unsealed)"
+        ),
+    }
+
+
 def _run_exec_stage(
     root: Path,
     run_id: str,
@@ -601,7 +694,12 @@ def _run_exec_stage(
     safe: bool,
     routing: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    """team-exec body: start_team (+ collect when not dry-run). Never verified."""
+    """team-exec body: start_team, wait panes (non-dry), then collect.
+
+    Non-dry: poll liveness until panes finish (or ``OMG_TEAM_EXEC_WAIT_SECS``)
+    before ``collect_team``. Dry-run: start only — no wait, poll, or collect.
+    Never sets verified.
+    """
     import omg_cli.team.plane as plane_mod
 
     tasks = list(state.get("tasks") or [])
@@ -620,6 +718,7 @@ def _run_exec_stage(
     # Plane was written for legacy-v1 dry-run status tokens; bridge for v2.
     prev_ws = plane_mod.write_status
     plane_mod.write_status = _plane_write_status_compat  # type: ignore[assignment]
+    wait_info: dict[str, Any] | None = None
     try:
         meta = start_team(
             goal,
@@ -634,21 +733,29 @@ def _run_exec_stage(
         )
         collect_result: dict[str, Any] | None = None
         if not dry_run:
+            # Race fix: start_team only SPAWNS panes; workers need wall-clock
+            # time to work + seal before collect/integrate (fail-closed join).
+            wait_info = wait_for_team_panes(root, run_id)
             collect_result = collect_team(root, run_id)
             # Defensive: collect never sets verified (plane contract).
             _ = collect_result.get("verified")
     finally:
         plane_mod.write_status = prev_ws  # type: ignore[assignment]
 
-    return {
+    out: dict[str, Any] = {
         "start": {
             "run_id": meta.get("run_id"),
             "dry_run": meta.get("dry_run"),
             "task_count": len(meta.get("tasks") or []),
             "writer": meta.get("writer"),
         },
+        "wait": wait_info,
         "collect": collect_result,
     }
+    if wait_info and wait_info.get("wait_timeout"):
+        out["wait_timeout"] = True
+        out["note"] = wait_info.get("note")
+    return out
 
 
 def _run_verify_stage(root: Path, run_id: str, lease: Any) -> str:
@@ -1333,10 +1440,13 @@ def _run_team_pipeline_ralph(
 __all__ = [
     "DEFAULT_MAX_FIX",
     "DEFAULT_RALPH_MAX_ITER",
+    "DEFAULT_TEAM_EXEC_WAIT_SECS",
     "LEGAL_TRANSITIONS",
     "STAGES",
+    "TEAM_EXEC_WAIT_ENV",
     "TERMINAL",
     "TeamPipelineError",
+    "any_team_pane_alive",
     "assert_legal_transition",
     "invalidate_team_verify_stamp",
     "load_team_pipeline",
@@ -1350,4 +1460,5 @@ __all__ = [
     "team_verifier_artifact_paths",
     "team_verify_stamp_path",
     "transition",
+    "wait_for_team_panes",
 ]

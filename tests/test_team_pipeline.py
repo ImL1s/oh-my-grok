@@ -22,7 +22,9 @@ from omg_cli.acceptance import result_path
 from omg_cli.team.pipeline import (
     DEFAULT_MAX_FIX,
     LEGAL_TRANSITIONS,
+    TEAM_EXEC_WAIT_ENV,
     TeamPipelineError,
+    _run_exec_stage,
     assert_legal_transition,
     invalidate_team_verify_stamp,
     load_team_pipeline,
@@ -36,6 +38,7 @@ from omg_cli.team.pipeline import (
     team_verifier_artifact_paths,
     team_verify_stamp_path,
     transition,
+    wait_for_team_panes,
 )
 from omg_cli.team.plane import load_team_meta, stop_team, team_meta_path
 
@@ -597,6 +600,257 @@ def test_tasks_path_loads_decomposition(
 
 def test_default_max_fix_constant() -> None:
     assert DEFAULT_MAX_FIX == 3
+
+
+# ---------------------------------------------------------------------------
+# D2/D4 — team-exec waits for panes before collect
+# ---------------------------------------------------------------------------
+
+
+def test_non_dry_exec_waits_then_collects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Non-dry: poll liveness (alive→done) and only then call collect."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    # No real tmux/subprocess; start/collect/liveness are fully mocked.
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "Popen", _boom_subprocess)
+
+    st = start_team_pipeline(tmp_path, "wait panes", TASKS_ONE, dry_run=False)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "team-prd")
+    transition(tmp_path, rid, "team-exec")
+    state = load_team_pipeline(tmp_path, rid)
+
+    order: list[str] = []
+    alive_calls = {"n": 0}
+
+    def fake_start(*_a: Any, **_k: Any) -> dict[str, Any]:
+        order.append("start")
+        return {
+            "run_id": rid,
+            "dry_run": False,
+            "tasks": [{"task_id": "t1"}],
+            "writer": CLI_WRITER,
+        }
+
+    def fake_alive(_root: Any, _run_id: str) -> bool:
+        # First poll: still alive; second+: done (workers finished).
+        alive_calls["n"] += 1
+        order.append(f"alive:{alive_calls['n']}")
+        return alive_calls["n"] < 2
+
+    def fake_collect(_root: Any, _run_id: str, **_k: Any) -> dict[str, Any]:
+        order.append("collect")
+        return {"ok": True, "verified": False}
+
+    def fake_sleep(_secs: float) -> None:
+        order.append("sleep")
+
+    monkeypatch.setattr("omg_cli.team.pipeline.start_team", fake_start)
+    monkeypatch.setattr("omg_cli.team.pipeline.collect_team", fake_collect)
+    monkeypatch.setattr(
+        "omg_cli.team.pipeline.any_team_pane_alive", fake_alive
+    )
+    monkeypatch.setattr("omg_cli.team.pipeline.time.sleep", fake_sleep)
+    monkeypatch.setenv(TEAM_EXEC_WAIT_ENV, "30")
+
+    result = _run_exec_stage(
+        tmp_path,
+        rid,
+        state,
+        dry_run=False,
+        yolo=False,
+        safe=False,
+        routing=None,
+    )
+
+    assert "collect" in order
+    start_i = order.index("start")
+    collect_i = order.index("collect")
+    assert start_i < collect_i
+    # At least one alive probe returned True before collect, and collect
+    # only after a False (done) probe.
+    alive_before_collect = [
+        e for e in order[start_i:collect_i] if e.startswith("alive:")
+    ]
+    assert alive_before_collect, order
+    assert order[collect_i - 1].startswith("alive:"), order
+    # Second probe is the "done" one (index 2) immediately before collect.
+    assert order[collect_i - 1] == "alive:2", order
+    assert result.get("collect") is not None
+    assert result.get("wait") is not None
+    assert result["wait"].get("wait_timeout") is not True
+    assert result["wait"].get("polls", 0) >= 2
+    assert result.get("wait_timeout") is not True
+
+
+def test_exec_wait_timeout_still_collects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """On wait timeout, proceed to collect with wait_timeout note."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "Popen", _boom_subprocess)
+
+    st = start_team_pipeline(tmp_path, "timeout wait", TASKS_ONE, dry_run=False)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "team-prd")
+    transition(tmp_path, rid, "team-exec")
+    state = load_team_pipeline(tmp_path, rid)
+
+    order: list[str] = []
+
+    def fake_start(*_a: Any, **_k: Any) -> dict[str, Any]:
+        order.append("start")
+        return {
+            "run_id": rid,
+            "dry_run": False,
+            "tasks": [{"task_id": "t1"}],
+            "writer": CLI_WRITER,
+        }
+
+    def always_alive(_root: Any, _run_id: str) -> bool:
+        order.append("alive")
+        return True
+
+    def fake_collect(_root: Any, _run_id: str, **_k: Any) -> dict[str, Any]:
+        order.append("collect")
+        return {"ok": False, "verified": False}
+
+    # Drive wait_for_team_panes with zero timeout so one probe then timeout.
+    monkeypatch.setattr("omg_cli.team.pipeline.start_team", fake_start)
+    monkeypatch.setattr("omg_cli.team.pipeline.collect_team", fake_collect)
+    monkeypatch.setattr(
+        "omg_cli.team.pipeline.any_team_pane_alive", always_alive
+    )
+    monkeypatch.setattr("omg_cli.team.pipeline.time.sleep", lambda _s: None)
+    monkeypatch.setenv(TEAM_EXEC_WAIT_ENV, "0")
+
+    result = _run_exec_stage(
+        tmp_path,
+        rid,
+        state,
+        dry_run=False,
+        yolo=False,
+        safe=False,
+        routing=None,
+    )
+
+    assert order[0] == "start"
+    assert "collect" in order
+    assert order.index("start") < order.index("collect")
+    assert any(e == "alive" for e in order)
+    assert result.get("wait_timeout") is True
+    assert result.get("wait") is not None
+    assert result["wait"].get("wait_timeout") is True
+    assert result["wait"].get("timed_out") is True
+    assert "wait_timeout" in str(result.get("note") or "")
+    assert result.get("collect") is not None
+
+
+def test_dry_run_exec_no_wait_no_poll_no_collect(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Dry-run: start only — no liveness poll, no sleep, no collect."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "Popen", _boom_subprocess)
+
+    st = start_team_pipeline(tmp_path, "dry no wait", TASKS_ONE, dry_run=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "team-prd")
+    transition(tmp_path, rid, "team-exec")
+    state = load_team_pipeline(tmp_path, rid)
+
+    order: list[str] = []
+
+    def fake_start(*_a: Any, **_k: Any) -> dict[str, Any]:
+        order.append("start")
+        return {
+            "run_id": rid,
+            "dry_run": True,
+            "tasks": [{"task_id": "t1"}],
+            "writer": CLI_WRITER,
+        }
+
+    def boom_alive(*_a: Any, **_k: Any) -> bool:
+        raise AssertionError("any_team_pane_alive must not run in dry_run")
+
+    def boom_collect(*_a: Any, **_k: Any) -> dict[str, Any]:
+        raise AssertionError("collect_team must not run in dry_run")
+
+    def boom_sleep(*_a: Any, **_k: Any) -> None:
+        raise AssertionError("time.sleep must not run in dry_run")
+
+    def boom_wait(*_a: Any, **_k: Any) -> dict[str, Any]:
+        raise AssertionError("wait_for_team_panes must not run in dry_run")
+
+    monkeypatch.setattr("omg_cli.team.pipeline.start_team", fake_start)
+    monkeypatch.setattr("omg_cli.team.pipeline.collect_team", boom_collect)
+    monkeypatch.setattr(
+        "omg_cli.team.pipeline.any_team_pane_alive", boom_alive
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.pipeline.wait_for_team_panes", boom_wait
+    )
+    monkeypatch.setattr("omg_cli.team.pipeline.time.sleep", boom_sleep)
+
+    result = _run_exec_stage(
+        tmp_path,
+        rid,
+        state,
+        dry_run=True,
+        yolo=False,
+        safe=False,
+        routing=None,
+    )
+
+    assert order == ["start"]
+    assert result.get("collect") is None
+    assert result.get("wait") is None
+    assert result.get("wait_timeout") is not True
+
+
+def test_wait_for_team_panes_unit_alive_then_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unit: wait_for_team_panes returns after liveness clears."""
+    calls = {"n": 0}
+    sleeps: list[float] = []
+
+    def fake_alive(_root: Any, _run_id: str) -> bool:
+        calls["n"] += 1
+        return calls["n"] < 2
+
+    monkeypatch.setattr(
+        "omg_cli.team.pipeline.any_team_pane_alive", fake_alive
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.pipeline.time.sleep",
+        lambda s: sleeps.append(s),
+    )
+
+    out = wait_for_team_panes(
+        Path("/tmp"),
+        "run-x",
+        timeout_secs=10.0,
+        poll_interval=0.1,
+    )
+    assert out["waited"] is True
+    assert out["wait_timeout"] is False
+    assert out["timed_out"] is False
+    assert out["polls"] >= 2
+    assert sleeps  # slept between alive polls
 
 
 # ---------------------------------------------------------------------------
