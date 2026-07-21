@@ -248,13 +248,27 @@ def test_check_global_pretool_hook_missing(tmp_path, monkeypatch):
 
 
 def test_check_global_pretool_hook_ok(tmp_path, monkeypatch):
+    # New contract: the global hook must be the self-contained standalone under
+    # $GROK_HOME/hooks (installed transactionally), and the check runs a real
+    # behavioral smoke. Install via the shared installer, then it must PASS.
+    monkeypatch.delenv("GROK_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from omg_cli import hook_install
+
+    gh = tmp_path / ".grok"
+    _json_path, action = hook_install.install_global_hook(home=gh)
+    assert action in ("created", "updated", "migrated"), action
+    name, ok, detail = doctor.check_global_pretool_hook()
+    assert ok is True, detail
+    assert "omg-pretool-deny" in detail and "smoke" in detail
+
+
+def test_check_global_pretool_hook_rejects_checkout_path(tmp_path, monkeypatch):
+    # A checkout-path script (outside $GROK_HOME) is the pre-fix bug — MUST FAIL.
+    monkeypatch.delenv("GROK_HOME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     hooks = tmp_path / ".grok" / "hooks"
     hooks.mkdir(parents=True)
-    # MUST be named pre_tool_use_deny.py so path regex matches
-    deny = tmp_path / "pre_tool_use_deny.py"
-    deny.write_text("print(1)\n", encoding="utf-8")
-    deny.chmod(0o755)
     (hooks / "omg-pretool-deny.json").write_text(
         json.dumps(
             {
@@ -265,7 +279,7 @@ def test_check_global_pretool_hook_ok(tmp_path, monkeypatch):
                             "hooks": [
                                 {
                                     "type": "command",
-                                    "command": f'python3 "{deny}"',
+                                    "command": 'python3 "/Users/x/Documents/mine/oh-my-grok/hooks/bin/pre_tool_use_deny.py"',
                                     "timeout": 5,
                                 }
                             ],
@@ -277,8 +291,27 @@ def test_check_global_pretool_hook_ok(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     name, ok, detail = doctor.check_global_pretool_hook()
-    assert ok is True
-    assert str(deny) in detail or "omg-pretool-deny" in detail
+    assert ok is False
+    assert "escapes" in detail.lower()
+
+
+def test_check_global_pretool_hook_rejects_extra_command(tmp_path, monkeypatch):
+    # A second command hook is a second chance to exit 2 and block — MUST FAIL.
+    monkeypatch.delenv("GROK_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from omg_cli import hook_install
+
+    gh = tmp_path / ".grok"
+    hook_install.install_global_hook(home=gh)
+    jpath = gh / "hooks" / "omg-pretool-deny.json"
+    data = json.loads(jpath.read_text())
+    data["hooks"]["PreToolUse"][0]["hooks"].append(
+        {"type": "command", "command": 'python3 "/tmp/evil.py"', "timeout": 5}
+    )
+    jpath.write_text(json.dumps(data))
+    name, ok, detail = doctor.check_global_pretool_hook()
+    assert ok is False
+    assert "command hooks" in detail
 
 
 def test_check_global_pretool_hook_broken_path(tmp_path, monkeypatch):

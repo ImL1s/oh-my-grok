@@ -111,32 +111,25 @@ else
   echo "WARN: grok plugin enable oh-my-grok failed (best-effort)" >&2
 fi
 
-echo "== global PreToolUse soft-gate (~/.grok/hooks) =="
+echo "== global PreToolUse soft-gate (\${GROK_HOME:-\$HOME/.grok}/hooks) =="
 # Live 2026-07-19: plugin-bundled hooks/hooks.json did not appear in session
 # hook_execution runs; only global/settings + ~/.grok/hooks fired. Install deny
-# as a global hook so soft-gate is effective for leader + subagents.
-HOOKS_DIR="${HOME}/.grok/hooks"
-mkdir -p "$HOOKS_DIR"
-DENY_PY="${ROOT}/hooks/bin/pre_tool_use_deny.py"
-cat > "${HOOKS_DIR}/omg-pretool-deny.json" <<EOF
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "run_terminal_command|Bash|Shell|spawn_subagent|Task",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${DENY_PY}\"",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  }
-}
-EOF
-echo "wrote ${HOOKS_DIR}/omg-pretool-deny.json -> ${DENY_PY}"
+# as a global hook so the soft-gate is effective for leader + subagents.
+#
+# CRITICAL (2026-07-22): the global hook must be a SELF-CONTAINED standalone under
+# $GROK_HOME/hooks — NEVER a checkout-path script. A grok session in another
+# workspace (or a checkout under TCC-protected ~/Documents) cannot open a
+# checkout-path script; python then exits 2, which grok reads as an *explicit
+# deny*, bricking every tool call. One transactional installer (omg_cli.hook_install)
+# is shared with `omg setup`. Regenerate the committed standalone first so the
+# installed bytes always match canonical omg_cli/deny.py.
+python3 "$ROOT/scripts/generate_standalone_hook.py" >/dev/null 2>&1 || \
+  echo "WARN: could not regenerate standalone hook (using committed copy)" >&2
+if PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 -m omg_cli.hook_install; then
+  :
+else
+  echo "WARN: global hook install returned non-zero (soft-gate is fail-open; re-run 'omg install-hook')" >&2
+fi
 
 echo "== inventory (best-effort) =="
 if grok plugin list --json >/dev/null 2>&1; then

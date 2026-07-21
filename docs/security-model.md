@@ -12,7 +12,7 @@ Last updated: 2026-07-21 · Plugin version: **0.3.2**
 | **2. Agent / headless tool filter** | `disallowedTools` frontmatter; parent `--disallowed-tools` | **Hard when honored** | Extra deny of shell/spawn on executor; RO stages inject shell deny in dual-review / ralplan. | Wrong tool id, TUI ignoring headless flags, or leader still has shell. |
 | **3. OS sandbox** | Grok `--sandbox` / custom deny paths | **Kernel-ish when enabled** | Path denies (e.g. `.omg/state/**`) for the Grok process. | Default off; macOS child network restrictions limited; outer `omg` CLI is outside child sandbox. |
 | **4. Permission rules** | `--allow` / `--deny` rules | **Gate, not removal** | Can refuse invocations that still appear in the toolset. | Wrappers/interpreters residual; not a general allowlist engine. |
-| **5. PreToolUse hooks** | `hooks/bin/pre_tool_use_deny.py` + `omg_cli.deny` | **Soft (fail-open)** | Command-position deny of `claude`/`codex`/… when hook healthy and host honors deny. Subagents **inherit** parent PreToolUse (host source + unit tests). | Timeout / crash / missing binary / malformed JSON → **tool may still run**. Never market as hard sandbox. |
+| **5. PreToolUse hooks** | global: self-contained `omg_pretool_deny_standalone.py` under `$GROK_HOME/hooks` (from `omg_cli.deny`); logic = `omg_cli.deny` | **Soft (fail-open)** | Command-position deny of `claude`/`codex`/… when hook healthy and host honors deny (deny via stdout JSON, always exit 0, `-I -S \|\| true` launcher). Subagents **inherit** parent PreToolUse (host source + unit tests). | Timeout / crash / missing binary / malformed JSON → **tool may still run**. Never market as hard sandbox. |
 | **6. Acceptance allowlist** | `omg_cli.command_policy` + `omg accept` | **CLI gate (operator intent)** | Only frozen argv families run for `verified`: `true`/`false`/`pytest`/`python -m pytest\|unittest` / project `.py`; deny `python -c`, shells, `npx`, agent CLIs. | Approved runners still execute **repo code**. Not an OS sandbox. |
 | **7. Ask broker** | `omg ask` child-only env + fixed providers; stdin prompt by default | **User-invoked path** | External advisors only when human runs CLI; `OMG_ALLOW_EXTERNAL_CLI` not exported to parent shell; prompt body not in argv (`OMG_ASK_STDIN=1`); freeform `--extra` off unless `OMG_ASK_ALLOW_EXTRA=1`. | Provider may ignore stdin; never auto-ingested into pipeline. |
 | **8. Prompt / skills HARD RULES** | Skills, agent bodies, CLI-injected reminders | **Convention only** | Documents required `capability_mode`, depth=1, no external workers. | Models can ignore text. |
@@ -124,13 +124,51 @@ Procedure + host source evidence: [`docs/research/subagent-pretooluse-spike.md`]
 ### Global PreToolUse install (required for soft-gate effectiveness)
 
 Live 2026-07-19 showed plugin-bundled `hooks/hooks.json` may not appear in
-session `hook_execution` runs. Soft-gate effectiveness requires:
+session `hook_execution` runs. Soft-gate effectiveness requires a global hook
+under `$GROK_HOME/hooks/`, installed by BOTH end-user and dev paths:
 
-1. `scripts/install-plugin.sh` (writes `~/.grok/hooks/omg-pretool-deny.json`)
-2. `omg doctor` hard check `global PreToolUse soft-gate` (fail if missing)
+1. `omg setup` (and `omg install-hook`) — the end-user path — installs it.
+2. `scripts/install-plugin.sh` — the dev path — calls the same installer.
+3. `omg doctor` hard check `global PreToolUse soft-gate` + soft freshness check.
 
-This remains **fail-open** on hook timeout/crash. Primary isolation is still
+**The hook must be SELF-CONTAINED and live under `$GROK_HOME`, never a checkout
+path (2026-07-22 fix).** Root cause of the prior design's failure: the global
+hook pointed `python3 "<checkout>/hooks/bin/pre_tool_use_deny.py"`, a script under
+macOS-TCC-protected `~/Documents` that also `import`ed `omg_cli`. A grok session
+in another workspace (or without Documents access) could not `open()` it, so
+`python3` exited **2** — and grok's hook contract reads a PreToolUse exit code of
+2 as an *explicit deny*. Every tool call (even `ls`) was blocked. The in-code
+fail-open never ran because python could not even open the file.
+
+The self-contained standalone (`hooks/bin/omg_pretool_deny_standalone.py`,
+generated from `omg_cli/deny.py` + `_common.hook_disabled` by
+`scripts/generate_standalone_hook.py`, drift-guarded by `--check` in CI) closes
+this with a layered fail-**open** ladder:
+
+1. **Wire contract** — grok honors a stdout `{"decision":"deny"}` *regardless of
+   exit code*, and treats any non-`{0,2}` exit as fail-open. So the standalone
+   signals deny ONLY via stdout JSON and **always exits 0** — a nonzero exit
+   (especially 2) can never come from us.
+2. **Launcher** — installed as `python3 -I -S "<abs>" || true`. `-I -S` isolates
+   the interpreter (no `PYTHONPATH` / user-site / sibling-module injection);
+   `|| true` normalizes any interpreter/startup failure (e.g. rc 2 "can't open
+   file") to rc 0 → fail-open.
+3. **In-code** — whole-body `try/except` defaults to allow on any error.
+4. **doctor** — realpath-under-`$GROK_HOME` + real `open()` + a behavioral
+   subprocess smoke (allow/deny) + installed-vs-committed hash (WARN on stale).
+   `os.access` is *not* trusted (it checks permission bits, not TCC).
+
+Migration: an existing checkout-path json is auto-repaired on `omg setup` /
+`install-hook`; if it cannot be replaced it is **quarantined** to a non-`.json`
+name (grok discovers `*.json`) so it can no longer deny every tool. This all
+remains **fail-open** on hook timeout/crash; primary isolation is still
 `capability_mode` without Execute on implementers.
+
+**Out-of-band recovery** (a session already bricked by the OLD hook cannot run
+`omg` through its blocked terminal): from any plain shell, run
+`python3 -m omg_cli.hook_install` (repairs it), or as a last resort
+`rm "$HOME/.grok/hooks/omg-pretool-deny.json"` to disable the soft-gate, then
+restart grok.
 
 ## Host launcher: `omg --madmax` (break-glass)
 

@@ -88,7 +88,10 @@ def merge_gitignore_fragment(project_root: Path) -> str:
 
 
 def run_setup(
-    project_root: Path | None = None, *, install_rules: bool = True
+    project_root: Path | None = None,
+    *,
+    install_rules: bool = True,
+    install_hook: bool = True,
 ) -> int:
     from omg_cli.compat import format_isolation_banner
 
@@ -111,6 +114,25 @@ def run_setup(
             print(f"  {rpath}: {raction}")
         except GuidanceError as e:
             print(f"  global rules: SKIPPED ({e})")  # never crash setup
+
+    if install_hook:
+        # Install the global PreToolUse soft-gate under $GROK_HOME/hooks/ (self-
+        # contained, always readable — never a checkout-path script that bricks
+        # other workspaces). Transactional + never raises → never crashes setup.
+        try:
+            from omg_cli.hook_install import install_global_hook
+
+            hpath, haction = install_global_hook()
+            print(f"  {hpath}: {haction}")
+            if haction in ("migrated", "quarantined-no-source"):
+                print(
+                    "    (repaired a prior checkout-path hook that could deny every "
+                    "tool; restart any running grok session to pick it up)"
+                )
+        except Exception as e:  # noqa: BLE001 — never crash setup
+            print(f"  global hook: SKIPPED ({type(e).__name__}: {e})")
+    else:
+        print("  global hook: skipped (--no-global-hook); doctor will report it missing")
 
     print()
     print("Next: install the Grok Build plugin from this repo:")

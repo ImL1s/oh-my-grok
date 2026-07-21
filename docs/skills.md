@@ -97,12 +97,18 @@ Each skill’s **normative** playbook is its `SKILL.md`. Below is the operator s
 
 ```bash
 omg doctor
-omg setup
+omg setup                 # installs global rules + the PreToolUse soft-gate ($GROK_HOME/hooks)
+omg install-hook          # (re)install/repair just the global soft-gate; omg setup --no-global-hook opts out
 # after session restart:
 # read .omg/state/RESUME.md then:
 omg resume
 omg resume --clear   # after successfully continuing
 ```
+
+> Recovery (a grok session bricked by an old checkout-path hook can't run `omg`
+> through its blocked terminal): from any plain shell run
+> `python3 -m omg_cli.hook_install`, or `rm "$HOME/.grok/hooks/omg-pretool-deny.json"`
+> to disable the soft-gate, then restart grok.
 
 ---
 

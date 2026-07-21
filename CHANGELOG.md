@@ -49,6 +49,35 @@ panes sealed). All three found by real `grok`/`codex` in real tmux, fixed, and r
 - **team-exec race:** the staged pipeline now waits for panes to finish/seal before `collect`
   (bounded by `OMG_TEAM_EXEC_WAIT_SECS`); collect had run before workers sealed → integrate refused.
 
+### Fixed (install security — the global hook could deny EVERY tool call)
+- **Root cause (live, 2026-07-22):** the global PreToolUse soft-gate pointed
+  `python3 "<checkout>/hooks/bin/pre_tool_use_deny.py"` — a script under
+  macOS-TCC-protected `~/Documents` that also `import`ed `omg_cli`. A grok session in
+  another workspace (or lacking Documents access) could not `open()` it, so `python3`
+  exited **2**; grok reads a PreToolUse exit code of 2 as an *explicit deny*, so it
+  blocked every tool call (even `ls`, `spawn_subagent`). The in-code fail-open never
+  ran — python could not open the file. Confirmed live and fixed model-diverse
+  (Codex gpt-5.6-sol max + Fable 5 design review + a real grok canary).
+- **Fix:** a SELF-CONTAINED, stdlib-only standalone (`hooks/bin/omg_pretool_deny_standalone.py`,
+  generated from `omg_cli/deny.py` + `_common.hook_disabled` by
+  `scripts/generate_standalone_hook.py`, `--check`-guarded in CI) installed under
+  `$GROK_HOME/hooks/` (always readable, non-TCC, workspace-independent). It signals
+  deny ONLY via stdout JSON (grok honors that regardless of exit code) and **always
+  exits 0**; the launcher `python3 -I -S "<abs>" || true` normalizes any
+  interpreter/startup failure to fail-**open**. Live grok canary proves deny-JSON+rc0
+  still blocks.
+- **Install/repair:** one transactional installer (`omg_cli/hook_install.py`) shared by
+  `omg setup` (new; end-user path previously installed NO hook) and
+  `scripts/install-plugin.sh` (new `omg install-hook` subcommand; `omg setup
+  --no-global-hook` opts out). Atomic writes; migrates a prior checkout-path json and
+  **quarantines** it to a non-`.json` name on failure ("no hook > broken hook").
+  Plugin-bundled `hooks/hooks.json` now points at the standalone too.
+- **doctor:** `check_global_pretool_hook` rewritten — realpath-under-`$GROK_HOME`
+  (rejects checkout paths + symlink escapes), rejects a 2nd command hook, real `open()`
+  + a behavioral subprocess smoke (allow/deny), and a soft freshness check
+  (installed-vs-committed hash + TCC-home WARN). `os.access` (TCC-blind false-green)
+  removed. GROK_HOME honored consistently across setup/install/doctor/uninstall.
+
 ### Added
 - **`omg team` — multi-CLI tmux team plane** (behind `OMG_EXPERIMENTAL_TMUX_TEAM=1`): D0 vetted
   executor argv adapters (grok/codex/agy/cursor/gemini) → D1 grok-only start/status/collect/stop

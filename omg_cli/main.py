@@ -19,7 +19,14 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return run_setup(
         _project_root(),
         install_rules=not getattr(args, "no_global_rules", False),
+        install_hook=not getattr(args, "no_global_hook", False),
     )
+
+
+def cmd_install_hook(args: argparse.Namespace) -> int:
+    from omg_cli.hook_install import main as hook_install_main
+
+    return hook_install_main(["--remove"] if getattr(args, "remove", False) else [])
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -1333,7 +1340,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not install ~/.grok/rules/omg.md global guidance",
     )
+    p_setup.add_argument(
+        "--no-global-hook",
+        action="store_true",
+        help="do not install the global PreToolUse soft-gate ($GROK_HOME/hooks/); "
+        "doctor will still report it missing",
+    )
     p_setup.set_defaults(func=cmd_setup)
+
+    p_install_hook = sub.add_parser(
+        "install-hook",
+        parents=[common],
+        help="install/repair the global PreToolUse soft-gate ($GROK_HOME/hooks/)",
+    )
+    p_install_hook.add_argument(
+        "--remove",
+        action="store_true",
+        help="uninstall the global hook instead of installing it",
+    )
+    p_install_hook.set_defaults(func=cmd_install_hook)
 
     p_doctor = sub.add_parser(
         "doctor",
