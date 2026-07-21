@@ -9,6 +9,9 @@ lanes; does **not** reimplement ralplan / dual_review / a planner or verifier.
 - ``team-verify`` — gates a durable verifier artifact under the run dir via
   POST-A2 ``parse_verdict_file`` (never fakes a verdict).
 - ``team-fix`` — bounded re-entry into ``team-exec`` (``--max-fix``, default 3).
+- ``--ralph`` (D4) — outer bounded persistence loop around exec→verify→fix
+  (max_iter from ralph defaults); links team.json ↔ ralph state; never sets
+  ``verified``.
 
 Strict transitions + stale verify-stamp invalidation mirror autopilot
 discipline. ``verified`` is never written here — only via ``omg accept``.
@@ -21,6 +24,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from omg_cli.evidence import CLI_WRITER, assert_safe_supervised_parent, validate_identifier
+from omg_cli.modes import DEFAULT_MAX_ITER, ralph_context_pack
 from omg_cli.state import (
     create_run,
     execution_lease,
@@ -31,10 +35,13 @@ from omg_cli.team.plane import (
     EXPERIMENTAL_ENV,
     TeamError,
     TeamGateError,
+    _atomic_write_json,
     collect_team,
     experimental_enabled,
     in_spawned_worker_context,
+    load_team_meta,
     start_team,
+    team_meta_path,
 )
 from omg_cli.verdict import parse_verdict_file
 
@@ -73,6 +80,7 @@ LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 DEFAULT_MAX_FIX = 3
+DEFAULT_RALPH_MAX_ITER = int(DEFAULT_MAX_ITER.get("ralph", 3))
 SCHEMA_VERSION = 1
 
 # Severity ranks for cross-artifact aggregation (mirror ralplan / verdict).
@@ -650,6 +658,153 @@ def _run_verify_stage(root: Path, run_id: str, lease: Any) -> str:
     return verdict
 
 
+def team_ralph_state_path(root: Path | str, run_id: str) -> Path:
+    """CLI-stamped ralph composition state linked to a team pipeline run."""
+    run_id = validate_identifier(run_id, label="run_id")
+    return (
+        Path(root).resolve()
+        / ".omg"
+        / "state"
+        / "runs"
+        / run_id
+        / "stages"
+        / "team-ralph.json"
+    )
+
+
+def _link_team_ralph(
+    root: Path,
+    run_id: str,
+    *,
+    max_iter: int,
+    goal: str,
+) -> dict[str, Any]:
+    """Write linked_ralph / linked_team mirrors (team.json + team-ralph.json)."""
+    ralph_path = team_ralph_state_path(root, run_id)
+    ralph_path.parent.mkdir(parents=True, exist_ok=True)
+    ralph_state = {
+        "writer": CLI_WRITER,
+        "schema_version": SCHEMA_VERSION,
+        "run_id": run_id,
+        "mode": "team-ralph",
+        "status": "running",
+        "goal": goal,
+        "max_iter": int(max_iter),
+        "iteration": 0,
+        "linked_team": {
+            "run_id": run_id,
+            "team_meta": str(team_meta_path(root, run_id)),
+            "pipeline": str(team_pipeline_state_path(root, run_id)),
+        },
+        "history": [],
+        "created_at": _utc_now(),
+        "note": (
+            "bounded ralph composition over team pipeline; "
+            "complete only via team-verify APPROVE; never sets verified"
+        ),
+    }
+    ralph_path.write_text(
+        json.dumps(ralph_state, indent=2, ensure_ascii=False, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    # Mirror onto team.json when present (after first exec start_team creates it)
+    meta_path = team_meta_path(root, run_id)
+    if meta_path.is_file():
+        try:
+            meta = load_team_meta(root, run_id)
+            meta = dict(meta)
+            meta["linked_ralph"] = {
+                "path": str(ralph_path),
+                "max_iter": int(max_iter),
+                "status": "running",
+            }
+            meta["writer"] = CLI_WRITER
+            meta.pop("verified", None)
+            meta.pop("passes", None)
+            _atomic_write_json(meta_path, meta)
+        except TeamError:
+            pass
+
+    return ralph_state
+
+
+def _update_linked_ralph(
+    root: Path,
+    run_id: str,
+    *,
+    iteration: int,
+    max_iter: int,
+    status: str,
+    verdict: str | None = None,
+    findings: str | None = None,
+    context_pack: str | None = None,
+) -> None:
+    path = team_ralph_state_path(root, run_id)
+    data: dict[str, Any]
+    if path.is_file():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            data = raw if isinstance(raw, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            data = {}
+    else:
+        data = {}
+    data["writer"] = CLI_WRITER
+    data["run_id"] = run_id
+    data["mode"] = "team-ralph"
+    data["iteration"] = int(iteration)
+    data["max_iter"] = int(max_iter)
+    data["status"] = status
+    data["updated_at"] = _utc_now()
+    if verdict is not None:
+        data["last_verify_verdict"] = verdict
+    if findings is not None:
+        data["findings"] = findings
+    if context_pack is not None:
+        data["last_context_pack"] = context_pack
+    hist = list(data.get("history") or [])
+    hist.append(
+        {
+            "iteration": iteration,
+            "status": status,
+            "verdict": verdict,
+            "at": _utc_now(),
+        }
+    )
+    data["history"] = hist
+    if "linked_team" not in data:
+        data["linked_team"] = {
+            "run_id": run_id,
+            "team_meta": str(team_meta_path(root, run_id)),
+            "pipeline": str(team_pipeline_state_path(root, run_id)),
+        }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    # Keep team.json linked_ralph in sync when team meta exists
+    meta_path = team_meta_path(root, run_id)
+    if meta_path.is_file():
+        try:
+            meta = dict(load_team_meta(root, run_id))
+            meta["linked_ralph"] = {
+                "path": str(path),
+                "max_iter": int(max_iter),
+                "iteration": int(iteration),
+                "status": status,
+            }
+            meta["writer"] = CLI_WRITER
+            meta.pop("verified", None)
+            meta.pop("passes", None)
+            _atomic_write_json(meta_path, meta)
+        except TeamError:
+            pass
+
+
 def run_team_pipeline(
     goal: str,
     *,
@@ -663,8 +818,15 @@ def run_team_pipeline(
     yolo: bool = False,
     safe: bool = False,
     routing: Mapping[str, Any] | None = None,
+    ralph: bool = False,
+    max_iter: int | None = None,
 ) -> dict[str, Any]:
     """Drive the staged FSM to a terminal phase. Never sets verified/passes.
+
+    When *ralph* is True, wrap exec→verify→fix in a **bounded** outer
+    persistence loop (``max_iter``, default from ralph DEFAULT_MAX_ITER).
+    Terminal complete still requires a real team-verify APPROVE stamp; the
+    driver never sets ``verified``.
 
     Returns status_team_pipeline dict (includes phase, fix_round, verified=False
     unless an independent ``omg accept`` already verified the run).
@@ -680,6 +842,54 @@ def run_team_pipeline(
             "refusing team pipeline inside a spawned-worker context"
         )
 
+    if ralph:
+        return _run_team_pipeline_ralph(
+            goal,
+            root=root_path,
+            tasks_json=tasks_json,
+            tasks_path=tasks_path,
+            dry_run=dry_run,
+            max_fix=max_fix,
+            force=force,
+            run_id=run_id,
+            yolo=yolo,
+            safe=safe,
+            routing=routing,
+            max_iter=max_iter,
+        )
+
+    return _run_team_pipeline_core(
+        goal,
+        root=root_path,
+        tasks_json=tasks_json,
+        tasks_path=tasks_path,
+        dry_run=dry_run,
+        max_fix=max_fix,
+        force=force,
+        run_id=run_id,
+        yolo=yolo,
+        safe=safe,
+        routing=routing,
+    )
+
+
+def _run_team_pipeline_core(
+    goal: str,
+    *,
+    root: Path,
+    tasks_json: str | Sequence[Mapping[str, Any]] | None = None,
+    tasks_path: Path | str | None = None,
+    dry_run: bool = False,
+    max_fix: int = DEFAULT_MAX_FIX,
+    force: bool = False,
+    run_id: str | None = None,
+    yolo: bool = False,
+    safe: bool = False,
+    routing: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Inner staged driver (plan→prd→exec→verify→fix). Never sets verified."""
+    root_path = root.resolve()
+
     tasks = _parse_tasks(tasks_json, tasks_path=tasks_path)
     st = start_team_pipeline(
         root_path,
@@ -694,10 +904,17 @@ def run_team_pipeline(
     max_fix_i = int(max_fix)
 
     # ---- team-plan (pass-through marker; tasks already recorded) ----
-    transition(root_path, rid, "team-prd", reason="plan recorded (leader decomposition)")
+    transition(
+        root_path,
+        rid,
+        "team-prd",
+        reason="plan recorded (leader decomposition)",
+    )
 
     # ---- team-prd (pass-through; no planner) ----
-    transition(root_path, rid, "team-exec", reason="prd marker (no new planner)")
+    transition(
+        root_path, rid, "team-exec", reason="prd marker (no new planner)"
+    )
 
     # Main exec → verify → (fix → exec)* loop
     while True:
@@ -726,15 +943,24 @@ def run_team_pipeline(
                     reason=f"team-exec failed: {exc}",
                 )
                 return status_team_pipeline(root_path, rid)
-            with execution_lease(root_path, rid, intent="team-pipeline-exec-meta") as lease:
+            with execution_lease(
+                root_path, rid, intent="team-pipeline-exec-meta"
+            ) as lease:
                 state = load_team_pipeline(root_path, rid)
                 state["exec_meta"] = exec_meta
                 _save(root_path, rid, state, lease)
-            transition(root_path, rid, "team-verify", reason="exec collected (or dry-run start)")
+            transition(
+                root_path,
+                rid,
+                "team-verify",
+                reason="exec collected (or dry-run start)",
+            )
             continue
 
         if phase == "team-verify":
-            with execution_lease(root_path, rid, intent="team-pipeline-verify") as lease:
+            with execution_lease(
+                root_path, rid, intent="team-pipeline-verify"
+            ) as lease:
                 verdict = _run_verify_stage(root_path, rid, lease)
                 state = load_team_pipeline(root_path, rid)
                 state["last_verify_verdict"] = verdict
@@ -793,8 +1019,320 @@ def run_team_pipeline(
         return status_team_pipeline(root_path, rid)
 
 
+def _run_team_pipeline_ralph(
+    goal: str,
+    *,
+    root: Path,
+    tasks_json: str | Sequence[Mapping[str, Any]] | None = None,
+    tasks_path: Path | str | None = None,
+    dry_run: bool = False,
+    max_fix: int = DEFAULT_MAX_FIX,
+    force: bool = False,
+    run_id: str | None = None,
+    yolo: bool = False,
+    safe: bool = False,
+    routing: Mapping[str, Any] | None = None,
+    max_iter: int | None = None,
+) -> dict[str, Any]:
+    """Bounded ralph outer loop over the staged team pipeline.
+
+    Discipline mirrors ``modes.run_mode`` ralph: loops max_iter times; never
+    sets verified without acceptance (here: never sets verified at all —
+    complete is only via durable team-verify APPROVE).
+    """
+    root_path = root.resolve()
+    max_iter_i = (
+        int(max_iter) if max_iter is not None else DEFAULT_RALPH_MAX_ITER
+    )
+    max_iter_i = max(1, max_iter_i)
+    # Inner fix budget: when ralph owns the outer loop, keep per-pass fix
+    # budget at 0 so each ralph iteration is one exec→verify cycle (unless
+    # caller explicitly raised max_fix).
+    max_fix_i = int(max_fix)
+    if max_fix_i == DEFAULT_MAX_FIX:
+        # Default when --ralph without custom --max-fix: one verify per iter
+        max_fix_i = 0
+
+    tasks = _parse_tasks(tasks_json, tasks_path=tasks_path)
+    st = start_team_pipeline(
+        root_path,
+        goal,
+        tasks,
+        dry_run=dry_run,
+        max_fix=max_fix_i,
+        force=force,
+        run_id=run_id,
+    )
+    rid = str(st["run_id"])
+
+    with execution_lease(root_path, rid, intent="team-pipeline-ralph-init") as lease:
+        state = load_team_pipeline(root_path, rid)
+        state["ralph"] = True
+        state["ralph_max_iter"] = max_iter_i
+        state["ralph_iteration"] = 0
+        state["max_fix"] = max_fix_i
+        _save(root_path, rid, state, lease)
+
+    _link_team_ralph(root_path, rid, max_iter=max_iter_i, goal=goal)
+
+    transition(
+        root_path,
+        rid,
+        "team-prd",
+        reason="ralph: plan recorded (leader decomposition)",
+    )
+    transition(
+        root_path,
+        rid,
+        "team-exec",
+        reason="ralph: prd marker → first exec",
+    )
+
+    for iteration in range(1, max_iter_i + 1):
+        pack = ralph_context_pack(
+            run_id=rid,
+            iteration=iteration,
+            max_iter=max_iter_i,
+            project_root=root_path,
+            story=goal,
+        )
+        with execution_lease(
+            root_path, rid, intent=f"team-ralph-iter-{iteration}"
+        ) as lease:
+            state = load_team_pipeline(root_path, rid)
+            state["ralph_iteration"] = iteration
+            state["ralph_context_pack"] = pack
+            # Re-inject findings into tasks for re-exec
+            findings = state.get("findings")
+            if findings and iteration > 1:
+                state["tasks"] = _augment_tasks_for_fix(
+                    list(state.get("tasks") or []),
+                    findings=str(findings),
+                    fix_round=iteration,
+                )
+            _save(root_path, rid, state, lease)
+
+        _update_linked_ralph(
+            root_path,
+            rid,
+            iteration=iteration,
+            max_iter=max_iter_i,
+            status="running",
+            context_pack=pack,
+        )
+
+        # Ensure we are in team-exec for this iteration
+        phase = str(load_team_pipeline(root_path, rid).get("phase") or "")
+        if phase == "team-fix":
+            # Budget for inner fix already checked; re-enter exec
+            fix_round = int(
+                load_team_pipeline(root_path, rid).get("fix_round") or 0
+            )
+            if fix_round > max_fix_i and iteration >= max_iter_i:
+                transition(
+                    root_path,
+                    rid,
+                    "failed",
+                    reason=(
+                        f"ralph max_iter={max_iter_i} and max_fix exceeded"
+                    ),
+                )
+                _update_linked_ralph(
+                    root_path,
+                    rid,
+                    iteration=iteration,
+                    max_iter=max_iter_i,
+                    status="failed",
+                    findings="max_iter and max_fix exhausted",
+                )
+                out = status_team_pipeline(root_path, rid)
+                out["ralph"] = True
+                out["ralph_iteration"] = iteration
+                out["ralph_max_iter"] = max_iter_i
+                return out
+            transition(
+                root_path,
+                rid,
+                "team-exec",
+                reason=f"ralph iter {iteration}/{max_iter_i} re-enter exec",
+            )
+        elif phase in TERMINAL:
+            out = status_team_pipeline(root_path, rid)
+            out["ralph"] = True
+            out["ralph_iteration"] = iteration
+            out["ralph_max_iter"] = max_iter_i
+            return out
+        elif phase != "team-exec":
+            # Unexpected mid-state — try to get to exec via legal path or fail
+            if phase == "team-verify":
+                pass  # will handle below in verify branch of one-shot
+            else:
+                transition(
+                    root_path,
+                    rid,
+                    "failed",
+                    reason=f"ralph unexpected phase {phase!r}",
+                )
+                out = status_team_pipeline(root_path, rid)
+                out["ralph"] = True
+                return out
+
+        # ---- one exec ----
+        state = load_team_pipeline(root_path, rid)
+        if str(state.get("phase")) == "team-exec":
+            try:
+                exec_meta = _run_exec_stage(
+                    root_path,
+                    rid,
+                    state,
+                    dry_run=bool(state.get("dry_run") or dry_run),
+                    yolo=yolo,
+                    safe=safe,
+                    routing=routing,
+                )
+            except (TeamError, TeamGateError) as exc:
+                transition(
+                    root_path,
+                    rid,
+                    "failed",
+                    reason=f"team-exec failed: {exc}",
+                )
+                _update_linked_ralph(
+                    root_path,
+                    rid,
+                    iteration=iteration,
+                    max_iter=max_iter_i,
+                    status="failed",
+                    findings=str(exc),
+                )
+                out = status_team_pipeline(root_path, rid)
+                out["ralph"] = True
+                out["ralph_iteration"] = iteration
+                return out
+            with execution_lease(
+                root_path, rid, intent="team-ralph-exec-meta"
+            ) as lease:
+                state = load_team_pipeline(root_path, rid)
+                state["exec_meta"] = exec_meta
+                _save(root_path, rid, state, lease)
+            transition(
+                root_path,
+                rid,
+                "team-verify",
+                reason=f"ralph iter {iteration} exec done",
+            )
+
+        # ---- verify ----
+        with execution_lease(
+            root_path, rid, intent="team-ralph-verify"
+        ) as lease:
+            verdict = _run_verify_stage(root_path, rid, lease)
+            state = load_team_pipeline(root_path, rid)
+            state["last_verify_verdict"] = verdict
+            if verdict != "APPROVE":
+                state["findings"] = (
+                    f"[ralph iter {iteration}/{max_iter_i}] "
+                    f"team-verify verdict={verdict}"
+                )
+            _save(root_path, rid, state, lease)
+
+        if verdict == "APPROVE" and stage_verify_is_approve(root_path, rid):
+            transition(
+                root_path,
+                rid,
+                "complete",
+                reason=(
+                    f"ralph iter {iteration}: team-verify APPROVE "
+                    "(durable artifact; verified still requires omg accept)"
+                ),
+            )
+            _update_linked_ralph(
+                root_path,
+                rid,
+                iteration=iteration,
+                max_iter=max_iter_i,
+                status="complete",
+                verdict=verdict,
+            )
+            out = status_team_pipeline(root_path, rid)
+            out["ralph"] = True
+            out["ralph_iteration"] = iteration
+            out["ralph_max_iter"] = max_iter_i
+            # Defensive: never set verified
+            run = load_run(root_path, rid) or {}
+            out["verified"] = bool(run.get("verified") is True)
+            return out
+
+        # Not approve
+        _update_linked_ralph(
+            root_path,
+            rid,
+            iteration=iteration,
+            max_iter=max_iter_i,
+            status="running",
+            verdict=verdict,
+            findings=str(
+                load_team_pipeline(root_path, rid).get("findings") or ""
+            ),
+        )
+
+        if iteration >= max_iter_i:
+            transition(
+                root_path,
+                rid,
+                "team-fix",
+                reason=f"verify={verdict} (final ralph iter)",
+            )
+            # Entering fix increments fix_round; immediately fail on budget
+            transition(
+                root_path,
+                rid,
+                "failed",
+                reason=(
+                    f"ralph max_iter exceeded ({iteration}>={max_iter_i}); "
+                    f"last_verify={verdict}; never sets verified"
+                ),
+            )
+            _update_linked_ralph(
+                root_path,
+                rid,
+                iteration=iteration,
+                max_iter=max_iter_i,
+                status="failed",
+                verdict=verdict,
+            )
+            out = status_team_pipeline(root_path, rid)
+            out["ralph"] = True
+            out["ralph_iteration"] = iteration
+            out["ralph_max_iter"] = max_iter_i
+            out["verified"] = False
+            return out
+
+        # More iterations: team-fix → team-exec on next loop
+        transition(
+            root_path,
+            rid,
+            "team-fix",
+            reason=f"ralph iter {iteration}: verify={verdict}",
+        )
+        # Continue loop — next iteration re-enters exec
+
+    # Unreachable (loop always returns) but keep fail-closed
+    transition(
+        root_path,
+        rid,
+        "failed",
+        reason="ralph loop exhausted without terminal",
+    )
+    out = status_team_pipeline(root_path, rid)
+    out["ralph"] = True
+    out["verified"] = False
+    return out
+
+
 __all__ = [
     "DEFAULT_MAX_FIX",
+    "DEFAULT_RALPH_MAX_ITER",
     "LEGAL_TRANSITIONS",
     "STAGES",
     "TERMINAL",
@@ -808,6 +1346,7 @@ __all__ = [
     "start_team_pipeline",
     "status_team_pipeline",
     "team_pipeline_state_path",
+    "team_ralph_state_path",
     "team_verifier_artifact_paths",
     "team_verify_stamp_path",
     "transition",

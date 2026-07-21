@@ -708,7 +708,7 @@ def cmd_integrate(args: argparse.Namespace) -> int:
 
 
 def cmd_team(args: argparse.Namespace) -> int:
-    """Experimental tmux team plane (D1/D3) + staged pipeline (D2).
+    """Experimental tmux team plane (D1/D3) + staged pipeline (D2) + scale/resume/ralph (D4).
 
     Gate: OMG_EXPERIMENTAL_TMUX_TEAM=1. Pipeline is THIN glue over start/collect;
     never sets verified.
@@ -729,6 +729,7 @@ def cmd_team(args: argparse.Namespace) -> int:
     )
     from omg_cli.team.roles import UnknownRoleError
     from omg_cli.team.routing import RoutingError, parse_routing_json
+    from omg_cli.team.scaling import resume_team, scale_team
 
     root = _project_root()
     action = getattr(args, "team_action", None)
@@ -760,6 +761,7 @@ def cmd_team(args: argparse.Namespace) -> int:
         if action == "run":
             # Staged FSM driver (plan→prd→exec→verify→fix). Decomposition is
             # the leader's / ralplan's job; this only sequences + gates verify.
+            # --ralph wraps exec→verify→fix in a bounded outer max_iter loop.
             goal = getattr(args, "goal", None) or ""
             tasks_json = getattr(args, "tasks_json", None)
             tasks_path = getattr(args, "tasks_path", None)
@@ -783,6 +785,8 @@ def cmd_team(args: argparse.Namespace) -> int:
                 yolo=bool(getattr(args, "yolo", False)),
                 safe=bool(getattr(args, "safe", False)),
                 routing=routing,
+                ralph=bool(getattr(args, "ralph", False)),
+                max_iter=getattr(args, "max_iter", None),
             )
             print(json.dumps(result, indent=2, ensure_ascii=False))
             phase = str(result.get("phase") or "")
@@ -792,6 +796,28 @@ def cmd_team(args: argparse.Namespace) -> int:
                 return 2
             # failed (or unexpected) — not verified; exit 1
             return 1
+        if action == "scale":
+            add = getattr(args, "add", None)
+            remove = getattr(args, "remove", None)
+            result = scale_team(
+                root,
+                getattr(args, "run_id", None),
+                add=add,
+                remove=remove,
+                dry_run=bool(getattr(args, "dry_run", False)),
+                tasks_json=getattr(args, "tasks_json", None),
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
+        if action == "resume":
+            result = resume_team(
+                root,
+                getattr(args, "run_id", None),
+            )
+            if getattr(args, "as_json", False) or True:
+                # Always JSON (operator machine-readable); --json kept for symmetry
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
         if action == "status":
             st = team_status(
                 root,
@@ -1954,7 +1980,89 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="supersede active run when creating a new run",
     )
+    p_t_run.add_argument(
+        "--ralph",
+        dest="ralph",
+        action="store_true",
+        help=(
+            "wrap staged pipeline in a bounded ralph persistence loop "
+            "(exec→verify→fix up to --max-iter; never sets verified; "
+            "links team.json ↔ team-ralph.json)"
+        ),
+    )
+    p_t_run.add_argument(
+        "--max-iter",
+        dest="max_iter",
+        type=int,
+        default=None,
+        help=(
+            "with --ralph: max outer iterations (default 3 from ralph); "
+            "stop at team-verify APPROVE or max_iter → failed"
+        ),
+    )
     p_t_run.set_defaults(func=cmd_team, team_action="run")
+
+    p_t_scale = team_sub.add_parser(
+        "scale",
+        parents=[common],
+        help=(
+            "dynamic scale: --add N / --remove N panes on a running team "
+            "(cap-bounded; scale lock; no pkill -f; never sets verified)"
+        ),
+    )
+    p_t_scale.add_argument(
+        "--run", dest="run_id", required=True, help="team run_id"
+    )
+    p_t_scale_grp = p_t_scale.add_mutually_exclusive_group(required=True)
+    p_t_scale_grp.add_argument(
+        "--add",
+        dest="add",
+        type=int,
+        default=None,
+        help="add N new task panes (respects max_workers_cap; monotonic indices)",
+    )
+    p_t_scale_grp.add_argument(
+        "--remove",
+        dest="remove",
+        type=int,
+        default=None,
+        help=(
+            "graceful drain: remove N idle/newest panes (kill recorded pgids + "
+            "windows only; preserve worktrees; never below 1)"
+        ),
+    )
+    p_t_scale.add_argument(
+        "--tasks-json",
+        dest="tasks_json",
+        default=None,
+        help="optional JSON tasks for --add (length must equal N; else synthetic)",
+    )
+    p_t_scale.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="append/mark team.json only; no tmux/subprocess",
+    )
+    p_t_scale.set_defaults(func=cmd_team, team_action="scale")
+
+    p_t_resume = team_sub.add_parser(
+        "resume",
+        parents=[common],
+        help=(
+            "reconcile team.json pane liveness after leader restart "
+            "(idempotent status write; never sets verified)"
+        ),
+    )
+    p_t_resume.add_argument(
+        "--run", dest="run_id", required=True, help="team run_id"
+    )
+    p_t_resume.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="print JSON (default for resume)",
+    )
+    p_t_resume.set_defaults(func=cmd_team, team_action="resume")
 
     p_t_status = team_sub.add_parser(
         "status",

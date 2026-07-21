@@ -150,14 +150,14 @@ omg accept --yes
 
 ---
 
-### `omg team` — experimental tmux team plane (D1 zero-config + D3 multi-CLI + D2 staged driver)
+### `omg team` — experimental tmux team plane (D1 zero-config + D3 multi-CLI + D2 staged driver + D4 scale/resume/ralph)
 
 | | |
 |--|--|
 | **When** | Opt-in multi-pane ULW with real worktrees; hermetic dry-run for tests |
 | **Gate** | `OMG_EXPERIMENTAL_TMUX_TEAM=1` (refused otherwise) |
-| **CLI** | `omg team start\|run\|status\|collect\|stop` |
-| **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` never set `verified`. |
+| **CLI** | `omg team start\|run\|scale\|resume\|status\|collect\|stop` |
+| **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` / `scale` / `resume` never set `verified`. Scaling/resume/ralph are **lifecycle extensions** of the same team plane (no new isolation claims). |
 
 **`omg team run`** is a **staged DRIVER** over the team plane (not a new planner/verifier):
 
@@ -167,7 +167,13 @@ omg accept --yes
 - **team-exec** — `start_team` then `collect_team` (dry-run: start only; no tmux/subprocess).
 - **team-verify** — gates a durable artifact at `stages/team-verifier.md|json` via POST-A2 `parse_verdict_file`. APPROVE → `complete`; else → `team-fix`. Does **not** author verdicts.
 - **team-fix** — bounded by `--max-fix` (default 3); re-enters exec with findings; exceeding budget → `failed`.
+- **`--ralph [--max-iter N]`** (D4) — outer **bounded** persistence loop (default max_iter=3 from ralph) around exec→verify→fix; records `linked_ralph` on `team.json` and `linked_team` on `stages/team-ralph.json` so stop/cancel can cancel both; still completes only on real team-verify APPROVE — **never** sets `verified`.
 - Stale verify stamps are invalidated on (re)entry to exec/fix (mirror autopilot). `verified` remains behind `omg accept` only.
+
+**Lifecycle (D4):**
+
+- **`omg team scale --run ID --add N|--remove N [--dry-run]`** — dynamic panes under a run-dir scale lock; `--add` respects `max_workers_cap()` and monotonic window indices; `--remove` graceful drain (idle/newest), kills only recorded pgids + windows (**not** the session; **no** `pkill -f`), marks `scaled_down`, preserves worktrees; never below 1 active pane.
+- **`omg team resume --run ID`** — re-read `team.json`, reconcile pane liveness after leader restart; idempotent status writes only.
 
 ```bash
 export OMG_EXPERIMENTAL_TMUX_TEAM=1
@@ -177,6 +183,10 @@ omg team start --goal "…" --tasks-json '[{"task_id":"t1","role":"executor","ow
   --routing '{"executor":{"provider":"codex"}}' --dry-run
 # staged pipeline (sequences existing lanes; no new planner):
 omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --dry-run --max-fix 3
+# ralph composition (bounded outer loop; never verified):
+omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --ralph --max-iter 2 --dry-run
+omg team scale --run RUN --add 2 --dry-run
+omg team resume --run RUN
 omg team status --run RUN --json
 omg team collect --run RUN   # seal_all_tasks + integrate; never verified
 omg team stop --run RUN      # kill recorded session + pgids only (no pkill -f)

@@ -148,14 +148,14 @@ omg accept --yes
 
 ---
 
-### `omg team` — 實驗性 tmux team plane（D1 零設定 + D3 multi-CLI + D2 分階段 driver）
+### `omg team` — 實驗性 tmux team plane（D1 零設定 + D3 multi-CLI + D2 分階段 driver + D4 scale/resume/ralph）
 
 | | |
 |--|--|
 | **何時** | 選擇性多 pane ULW + 真實 worktree；測試用 hermetic dry-run |
 | **閘門** | `OMG_EXPERIMENTAL_TMUX_TEAM=1`（未設則拒絕） |
-| **CLI** | `omg team start\|run\|status\|collect\|stop` |
-| **誠實範圍** | 零設定 = grok panes；`--routing` 啟 multi-CLI（含角色地板）。**整合**隔離（ownership + seal + integrate）— **不是**執行沙箱。`collect` / `run` 永不寫 `verified`。 |
+| **CLI** | `omg team start\|run\|scale\|resume\|status\|collect\|stop` |
+| **誠實範圍** | 零設定 = grok panes；`--routing` 啟 multi-CLI（含角色地板）。**整合**隔離（ownership + seal + integrate）— **不是**執行沙箱。`collect` / `run` / `scale` / `resume` 永不寫 `verified`。scale/resume/ralph 是**同一** team plane 的生命週期延伸（無新隔離宣稱）。 |
 
 **`omg team run`** 是 team plane 上的**分階段 DRIVER**（不是新的 planner/verifier）：
 
@@ -165,12 +165,21 @@ omg accept --yes
 - **team-exec** — `start_team` 再 `collect_team`（dry-run 只 start，不碰 tmux/subprocess）。
 - **team-verify** — 以 POST-A2 `parse_verdict_file` 閘 `stages/team-verifier.md|json`；APPROVE → `complete`，否則 → `team-fix`。**不**代寫 verdict。
 - **team-fix** — `--max-fix`（預設 3）上限；超限 → `failed`。
+- **`--ralph [--max-iter N]`**（D4）— 外層**有界**持久迴圈（預設 max_iter=3）；`team.json` 記 `linked_ralph`、`stages/team-ralph.json` 記 `linked_team`；仍只靠真實 team-verify APPROVE 進 complete，**永不**寫 `verified`。
 - 進 exec/fix 會作廢舊 verify 戳記；`verified` 仍只經 `omg accept`。
+
+**生命週期（D4）：**
+
+- **`omg team scale --run ID --add N|--remove N [--dry-run]`** — 動態加/減 pane（run 目錄 scale lock；`--add` 受 `max_workers_cap()` 與單調 window index 限制；`--remove` 優雅排空，只殺記錄的 pgid + window，**不**殺 session、**禁止** `pkill -f`，標記 `scaled_down` 並保留 worktree；active 不可低於 1）。
+- **`omg team resume --run ID`** — leader 重啟後重讀 `team.json`、對帳 pane 存活；只做冪等 status 寫入。
 
 ```bash
 export OMG_EXPERIMENTAL_TMUX_TEAM=1
 omg team start --goal "平行修 A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --dry-run
 omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --dry-run --max-fix 3
+omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --ralph --max-iter 2 --dry-run
+omg team scale --run RUN --add 2 --dry-run
+omg team resume --run RUN
 omg team status --run RUN --json
 omg team collect --run RUN   # seal_all_tasks + integrate；永不 verified
 omg team stop --run RUN      # 只殺記錄的 session + pgid（禁止 pkill -f）

@@ -146,20 +146,23 @@ This remains **fail-open** on hook timeout/crash. Primary isolation is still
 
 This is intentional break-glass, not a sandbox. Document and name-prefix (`omg-`) are the mitigations — not PreToolUse.
 
-## Experimental team plane: `omg team` (D1 zero-config + D3 multi-CLI + D2 staged driver)
+## Experimental team plane: `omg team` (D1 zero-config + D3 multi-CLI + D2 staged driver + D4 scale/resume/ralph)
 
-Gated by **`OMG_EXPERIMENTAL_TMUX_TEAM=1`**. Lifecycle: `start` / `run` / `status` / `collect` / `stop`.
+Gated by **`OMG_EXPERIMENTAL_TMUX_TEAM=1`**. Lifecycle: `start` / `run` / `scale` / `resume` / `status` / `collect` / `stop`.
 
 | Claim | Reality |
 |-------|---------|
 | Zero-config panes | **grok only** (D1 path via madmax `build_pane_command`) when `--routing` is omitted |
 | Multi-CLI panes | **Present** behind the same gate when `--routing` maps role→`{provider,model?}` (providers: grok / codex / agy / cursor / gemini) |
-| Isolation | **Integration** isolation only: ownership manifest + per-task git worktrees + `seal` + `integrate` — **not** an execution sandbox |
-| Kill path | `stop` kills **only** the recorded tmux session name + recorded `pgid`s — **no** self-matching `pkill -f` |
-| `verified` | **Never** set by `collect` / `stop` / **`run`**; remains behind `omg accept` |
-| Nested | Refuses start / run inside a spawned-worker context (`OMG_TEAM_WORKER` / related markers) |
+| Isolation | **Integration** isolation only: ownership manifest + per-task git worktrees + `seal` + `integrate` — **not** an execution sandbox. D4 scale/resume/ralph add **no** new isolation claims. |
+| Kill path | `stop` / scale-down kill **only** the recorded tmux session/window names + recorded `pgid`s — **no** self-matching `pkill -f` |
+| `verified` | **Never** set by `collect` / `stop` / **`run`** / **`scale`** / **`resume`** / ralph loop; remains behind `omg accept` |
+| Nested | Refuses start / run / scale / resume inside a spawned-worker context (`OMG_TEAM_WORKER` / related markers) |
 | Routing floors | Reviewer/verifier → structured-verdict providers only (`grok`/`codex`/`claude`/`gemini`; **cursor forbidden**); unknown roles fail closed; posture derived from role (never free-form) |
 | `omg team run` | **Staged DRIVER** only (`team-plan→team-prd→team-exec→team-verify→team-fix`). Does **not** reimplement ralplan/dual_review/planner/verifier — sequences the team plane + gates durable `stages/team-verifier.*` via POST-A2 `parse_verdict_file`. Decomposition is the leader’s / ralplan’s job (`--tasks-json` / `--tasks-path`). No autopilot parity beyond “sequences them.” |
+| `omg team scale` | Dynamic `--add N` / `--remove N` under a run-dir **scale lock**; bounded by `max_workers_cap()`; monotonic window indices; scale-down preserves worktrees and never goes below 1 active pane |
+| `omg team resume` | Idempotent liveness reconciliation into `team.json` after leader restart; fail-closed if not a team run |
+| `omg team run --ralph` | Bounded outer max_iter loop (ralph discipline) around the same staged driver; `linked_ralph` ↔ `linked_team`; complete only via real team-verify APPROVE — **not** a second isolation boundary |
 
 ### Per-provider posture enforcement (NOT uniform)
 
@@ -187,6 +190,7 @@ Do **not** claim uniform sandboxing across providers, OMC multi-CLI team parity,
 - “`omg --madmax` is sandboxed” or “madmax is a mode FSM / sets verified.”
 - “`omg team` multi-CLI panes are an execution sandbox / uniform CLI sandbox across providers.” (Integration isolation only; see posture table.)
 - “`omg team run` is a full planner/verifier / autopilot-parity mode.” (It is a thin staged driver over existing lanes.)
+- “`omg team scale` / `resume` / `--ralph` add an execution sandbox or new isolation boundary.” (Lifecycle only; same integration-isolation-not-execution-sandbox contract.)
 - “agy `--sandbox` is a hard read-only jail enforced by OMG.”
 - “gemini reviewer panes are CLI-sandboxed.”
 
