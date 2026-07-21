@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any, Callable
 
@@ -506,6 +507,135 @@ def check_global_rules() -> SoftResult:
     return (name, "ok", f"present, v{st.get('installed_version')}")
 
 
+def _plugin_list_entries(data: Any) -> list[dict[str, Any]]:
+    """Normalize ``grok plugin list --json`` into a list of dict entries."""
+    if data is None:
+        return []
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    if isinstance(data, dict):
+        for key in ("plugins", "items", "data", "result"):
+            nested = data.get(key)
+            if isinstance(nested, list):
+                return [x for x in nested if isinstance(x, dict)]
+        return [data]
+    return []
+
+
+def _entry_name(item: dict[str, Any]) -> str:
+    return str(item.get("name") or item.get("id") or item.get("plugin") or "")
+
+
+def _entry_source_path(item: dict[str, Any]) -> str:
+    for key in ("source", "path", "installPath", "install_path"):
+        val = item.get(key)
+        if val is not None and str(val).strip():
+            return str(val)
+    return ""
+
+
+def check_plugin_version_drift() -> SoftResult:
+    """Soft: installed plugin version vs local plugin.json; detect duplicates."""
+    name = "plugin version drift"
+    try:
+        local = str(
+            json.loads((plugin_root() / "plugin.json").read_text(encoding="utf-8"))[
+                "version"
+            ]
+        )
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as e:
+        return (name, "warn", f"cannot read local plugin.json version ({e})")
+
+    data = _run_grok_json(("grok", "plugin", "list", "--json"))
+    if data is None:
+        return (name, "warn", "cannot read installed inventory")
+
+    matches = [
+        item
+        for item in _plugin_list_entries(data)
+        if PLUGIN_NAME in _entry_name(item)
+    ]
+    if not matches:
+        return (name, "warn", f"{PLUGIN_NAME} not installed via grok plugin")
+
+    # Duplicate sources (different install paths for the same name)
+    sources: list[str] = []
+    for item in matches:
+        src = _entry_source_path(item)
+        if src:
+            sources.append(src)
+    unique_sources = {s.rstrip("/") for s in sources if s}
+    if len(matches) > 1 and len(unique_sources) > 1:
+        bits: list[str] = []
+        for item in matches:
+            key = _entry_name(item)
+            src = _entry_source_path(item) or "?"
+            bits.append(f"{key}@{src}")
+        return (
+            name,
+            "warn",
+            "duplicate oh-my-grok entries with differing source/path: "
+            + "; ".join(bits)
+            + " — run: grok plugin uninstall oh-my-grok (remove the stale one)",
+        )
+
+    mismatches: list[str] = []
+    for item in matches:
+        installed = item.get("version")
+        if installed is None:
+            continue
+        installed_s = str(installed)
+        if installed_s != local:
+            mismatches.append(installed_s)
+
+    if mismatches:
+        shown = mismatches[0]
+        return (
+            name,
+            "warn",
+            f"installed {shown} != local {local} — re-run scripts/install-plugin.sh "
+            "(grok plugin update)",
+        )
+    return (name, "ok", f"installed == local ({local})")
+
+
+def check_plugin_enabled() -> SoftResult:
+    """Soft: oh-my-grok present in GROK_HOME/config.toml [plugins].enabled."""
+    name = "plugin enabled ([plugins].enabled)"
+    grok_home = Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok"))
+    cfg = grok_home / "config.toml"
+    if not cfg.is_file():
+        return (
+            name,
+            "warn",
+            "no ~/.grok/config.toml; cannot confirm enabled",
+        )
+    try:
+        with cfg.open("rb") as fh:
+            data = tomllib.load(fh)
+    except tomllib.TOMLDecodeError:
+        return (name, "warn", "config.toml unreadable")
+    except OSError:
+        return (name, "warn", "config.toml unreadable")
+
+    enabled = (data.get("plugins") or {}).get("enabled") or []
+    if not isinstance(enabled, list):
+        enabled = []
+
+    def _is_omg(entry: Any) -> bool:
+        s = str(entry)
+        return s == PLUGIN_NAME or s.endswith("/" + PLUGIN_NAME)
+
+    if any(_is_omg(e) for e in enabled):
+        return (name, "ok", "oh-my-grok in [plugins].enabled")
+    return (
+        name,
+        "warn",
+        "oh-my-grok NOT in [plugins].enabled — run: grok plugin enable oh-my-grok "
+        "(plugins are disabled by default)",
+    )
+
+
 def run_checks() -> list[tuple[str, bool, str]]:
     return [
         check_grok_on_path(),
@@ -525,6 +655,8 @@ def run_soft_checks() -> list[SoftResult]:
         check_plugin_trust(),
         check_effective_discovery_foreign(),
         check_global_rules(),
+        check_plugin_version_drift(),
+        check_plugin_enabled(),
     ]
 
 
