@@ -293,36 +293,44 @@ def check_global_pretool_hook() -> tuple[str, bool, str]:
             return _check(name, False, f"{path} invalid timeout: {to!r}")
 
     cmd = commands[0]
-    m = _PY_IN_CMD_RE.search(cmd)
-    if not m:
-        return _check(name, False, f"{path} command references no .py script: {cmd!r}")
-    script = Path(m.group(1) or m.group(2))
-    try:
-        resolved = script.resolve()          # follows symlinks (catch symlink escape)
-        gh_resolved = gh.resolve()
-    except OSError as e:
-        return _check(name, False, f"cannot resolve hook path: {e}")
-    try:
-        resolved.relative_to(gh_resolved)
-    except ValueError:
-        return _check(
-            name, False,
-            f"hook script escapes $GROK_HOME ({resolved} not under {gh_resolved}); "
-            "checkout-path / symlink installs brick other workspaces — run: omg install-hook",
-        )
-    # The command must be EXACTLY our canonical launcher for the canonical install
-    # path. This rejects an appended `; exit 2` / `$()` / `` ` `` injection or a dropped
-    # `|| true` — any of which could make the hook exit 2 (grok's explicit deny) and
-    # block every tool, which a substring / decision-only smoke would miss.
+    # AUTHORITATIVE check first: the command must be EXACTLY our canonical launcher for
+    # the canonical install path. `expected_py` is known directly (no regex), so a
+    # metacharacter $GROK_HOME can't confuse path extraction and false-FAIL a correct
+    # install. This rejects an appended `; exit 2` / `$()` / `` ` `` injection or a
+    # dropped `|| true` — any of which could exit 2 (grok's explicit deny) and block
+    # every tool, which a substring / decision-only smoke would miss.
     expected_py = gh / "hooks" / STANDALONE_BASENAME
     if cmd != launcher_command(expected_py):
+        # Non-canonical — surface the most useful reason (regex only for the message).
+        m = _PY_IN_CMD_RE.search(cmd)
+        if m:
+            script = Path(m.group(1) or m.group(2))
+            try:
+                r = script.resolve()
+                r.relative_to(gh.resolve())
+            except (OSError, ValueError):
+                return _check(
+                    name, False,
+                    f"hook script escapes $GROK_HOME ({script}); checkout-path / symlink "
+                    "installs brick other workspaces — run: omg install-hook",
+                )
         return _check(
             name, False,
             f"{path} command is not the canonical `-I -S … || true` launcher for "
             f"{expected_py}: {cmd!r} — run: omg install-hook",
         )
+    # Canonical command ⇒ the script IS expected_py. Resolve it (catch a symlink at the
+    # canonical path escaping $GROK_HOME) and prove doctor can really open() it.
+    try:
+        resolved = expected_py.resolve()
+        resolved.relative_to(gh.resolve())
+    except (OSError, ValueError):
+        return _check(
+            name, False,
+            f"hook script escapes $GROK_HOME via symlink ({expected_py}); run: omg install-hook",
+        )
     if not resolved.is_file():
-        return _check(name, False, f"hook script is not a regular file: {resolved}")
+        return _check(name, False, f"hook script missing / not a regular file: {resolved}")
     try:
         with open(resolved, "rb"):           # REAL open — os.access cannot see TCC
             pass

@@ -35,6 +35,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import tempfile
 import time
@@ -45,7 +46,6 @@ STANDALONE_BASENAME = "omg_pretool_deny_standalone.py"
 MATCHER = "run_terminal_command|Bash|Shell|spawn_subagent|Task"
 
 _PY_IN_CMD_RE = re.compile(r"""["']([^"']+\.py)["']|(\S+\.py)""")
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class HookInstallError(Exception):
@@ -128,6 +128,16 @@ def _safe_read_bytes(path: Path) -> bytes | None:
         return path.read_bytes()
     except OSError:
         return None
+
+
+def _lstat_sig(path: Path) -> tuple[int, int] | None:
+    """(file-type, permission-mode) via lstat — detects a symlink→regular or mode repair
+    that byte-comparison alone would miss (so 'unchanged' means a TRUE no-op)."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    return (stat.S_IFMT(st.st_mode), stat.S_IMODE(st.st_mode))
 
 
 def _atomic_write(path: Path, data: str, *, mode: int) -> None:
@@ -245,7 +255,8 @@ def _quarantine(json_path: Path) -> tuple[Path, bool]:
         os.replace(json_path, dest)
     except OSError:
         pass
-    return dest, (not json_path.is_file())
+    # lexists (not is_file): a dangling symlink json still gets discovered by grok.
+    return dest, (not os.path.lexists(json_path))
 
 
 def install_global_hook(*, home: Path | None = None, root: Path | None = None) -> tuple[Path, str]:
@@ -267,6 +278,7 @@ def install_global_hook(*, home: Path | None = None, root: Path | None = None) -
     canonical_json = render_hook_json(installed_py)
     prior_json = _safe_read_text(json_path)
     prior_py = _safe_read_bytes(installed_py)
+    prior_sig = _lstat_sig(installed_py)
     exists = json_path.is_file()
     outside_home = exists and json_target_outside_grok_home(json_path, gh)
     # Any managed json that is not byte-canonical is treated as dangerous/repairable.
@@ -296,8 +308,11 @@ def install_global_hook(*, home: Path | None = None, root: Path | None = None) -
         os.replace(staged, installed_py)
         _atomic_write(json_path, canonical_json, mode=0o644)
     except Exception as e:  # noqa: BLE001
-        if noncanonical and json_path.is_file():
-            _quarantine(json_path)
+        # Publish failed → a noncanonical (dangerous) json must never stay active.
+        if noncanonical and os.path.lexists(json_path):
+            _dest, removed = _quarantine(json_path)
+            if not removed:
+                return json_path, "failed:QuarantineLeftActive"
         return json_path, f"failed:{type(e).__name__}"
 
     if outside_home:
@@ -305,10 +320,12 @@ def install_global_hook(*, home: Path | None = None, root: Path | None = None) -
     if prior_json is None:
         return json_path, "created"
     now_py = _safe_read_bytes(installed_py)
-    if prior_json == canonical_json and prior_py == now_py:
-        return json_path, "unchanged"
-    if prior_json == canonical_json and prior_py != now_py:
-        return json_path, "repaired"  # json was fine but the script was missing/stale/corrupt
+    now_sig = _lstat_sig(installed_py)
+    same_script = prior_py == now_py and prior_sig == now_sig  # bytes AND type/mode
+    if prior_json == canonical_json and same_script:
+        return json_path, "unchanged"  # a TRUE no-op
+    if prior_json == canonical_json and not same_script:
+        return json_path, "repaired"  # json fine; script bytes/mode/type were missing/stale/wrong
     return json_path, "updated"
 
 

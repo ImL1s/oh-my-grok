@@ -86,6 +86,14 @@ def _validate_stdlib_only(src: str, label: str) -> None:
                         f"generate_standalone_hook: {label} imports non-stdlib {alias.name!r}; "
                         "the standalone must be stdlib-only"
                     )
+                if alias.asname is not None:
+                    # A stripped `import os as X` would leave X unbound in the body (the
+                    # header re-imports plain names only) → NameError. Force plain imports.
+                    raise SystemExit(
+                        f"generate_standalone_hook: {label} uses an import alias "
+                        f"({alias.name} as {alias.asname}); the standalone header re-imports "
+                        "plain stdlib names only — use a plain import"
+                    )
         elif isinstance(node, ast.ImportFrom):
             if node.level and node.level > 0:
                 raise SystemExit(
@@ -97,6 +105,21 @@ def _validate_stdlib_only(src: str, label: str) -> None:
                 raise SystemExit(
                     f"generate_standalone_hook: {label} imports from non-stdlib {node.module!r}; "
                     "the standalone must be stdlib-only"
+                )
+            for alias in node.names:
+                if alias.asname is not None:
+                    raise SystemExit(
+                        f"generate_standalone_hook: {label} uses a from-import alias "
+                        f"({alias.name} as {alias.asname}); use a plain import"
+                    )
+        elif isinstance(node, ast.Call):
+            # Dynamic imports bypass the static import allowlist entirely.
+            fn = node.func
+            fname = getattr(fn, "id", None) or getattr(fn, "attr", None)
+            if fname in ("__import__", "import_module"):
+                raise SystemExit(
+                    f"generate_standalone_hook: {label} uses a dynamic import ({fname}); "
+                    "not allowed in the standalone"
                 )
 
 

@@ -132,3 +132,73 @@ def test_doctor_rejects_noncanonical_command(tmp_path, monkeypatch):
     jpath.write_text(json.dumps(data, indent=2) + "\n")
     name, ok, detail = doctor.check_global_pretool_hook()
     assert ok is False and "canonical" in detail
+
+
+# --- Codex re-verify round: 4 remaining blockers ---
+
+def test_install_quarantine_left_active_reported(tmp_path, monkeypatch):
+    # B1: if quarantine can't remove a dangerous json on a failed install, report it.
+    from omg_cli import hook_install as hi
+
+    gh = tmp_path / ".grok"
+    hooks = gh / "hooks"
+    hooks.mkdir(parents=True)
+    bad = {"hooks": {"PreToolUse": [{"matcher": hi.MATCHER, "hooks": [
+        {"type": "command", "command": 'python3 "/Users/x/Documents/oh-my-grok/hooks/bin/pre_tool_use_deny.py"', "timeout": 5}
+    ]}]}}
+    (hooks / hi.HOOK_JSON_NAME).write_text(json.dumps(bad))
+    # bad candidate → smoke fails → except path → quarantine, but pretend it can't remove
+    badbin = tmp_path / "badrepo" / "hooks" / "bin"
+    badbin.mkdir(parents=True)
+    (badbin / hi.STANDALONE_BASENAME).write_text(
+        'import json,sys\nprint(json.dumps({"decision":"deny"}))\nsys.exit(0)\n'
+    )
+    monkeypatch.setattr(hi, "_quarantine", lambda p: (p, False))
+    _p, a = hi.install_global_hook(home=gh, root=tmp_path / "badrepo")
+    assert a == "failed:QuarantineLeftActive", a
+
+
+def test_generator_rejects_import_alias():
+    gen = _load_gen()
+    with pytest.raises(SystemExit):
+        gen._validate_stdlib_only("import os as operating_system\n", "test")
+
+
+def test_generator_rejects_from_import_alias():
+    gen = _load_gen()
+    with pytest.raises(SystemExit):
+        gen._validate_stdlib_only("from typing import Any as A\n", "test")
+
+
+def test_generator_rejects_dynamic_import():
+    gen = _load_gen()
+    with pytest.raises(SystemExit):
+        gen._validate_stdlib_only('x = __import__("requests")\n', "test")
+
+
+def test_doctor_passes_metacharacter_grok_home(tmp_path, monkeypatch):
+    # B3: a canonical install under a $GROK_HOME containing shell metacharacters must
+    # PASS — doctor compares the exact canonical command (no regex path extraction).
+    gh = tmp_path / 'gh"weird'
+    monkeypatch.setenv("GROK_HOME", str(gh))
+    from omg_cli import doctor, hook_install as hi
+
+    _p, action = hi.install_global_hook(home=gh)
+    assert action == "created", action
+    name, ok, detail = doctor.check_global_pretool_hook()
+    assert ok is True, detail
+
+
+def test_install_repaired_on_mode_change(tmp_path):
+    # B4: same script bytes but a repaired mode/type is 'repaired', not 'unchanged'.
+    import os
+    import stat as _stat
+    from omg_cli import hook_install as hi
+
+    gh = tmp_path / ".grok"
+    hi.install_global_hook(home=gh)
+    py = gh / "hooks" / hi.STANDALONE_BASENAME
+    os.chmod(py, 0o600)  # wrong mode, identical bytes
+    _p, a = hi.install_global_hook(home=gh)
+    assert a == "repaired", a
+    assert _stat.S_IMODE(os.stat(py).st_mode) == 0o755
