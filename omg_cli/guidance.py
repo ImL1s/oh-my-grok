@@ -177,6 +177,35 @@ def install_global_rules(
     return (path, action)
 
 
+def uninstall_global_rules(*, home: Path | None = None) -> tuple[Path, str]:
+    """Remove OMG's managed block from the global rules file, preserving any
+    non-OMG (user) content. Returns (path, action):
+      "absent"     - no rules file (or no OMG markers; foreign file left alone)
+      "removed"    - file existed, remainder after stripping the managed block
+                     was whitespace-only -> file deleted
+      "kept-user"  - managed block stripped, user content rewritten in place
+    """
+    path = rules_file_path(home)
+    if not path.is_file():
+        return (path, "absent")
+
+    text = path.read_text(encoding="utf-8")
+    # GuidanceCorruptionError propagates to the caller.
+    span = _extract_managed_block(text)
+    if span is None:
+        # No OMG markers: never delete a foreign/hand-written file.
+        return (path, "absent")
+
+    start, end = span
+    remainder = (text[:start] + text[end:]).strip()
+    if remainder == "":
+        path.unlink()
+        return (path, "removed")
+
+    _atomic_write(path, remainder + "\n")
+    return (path, "kept-user")
+
+
 def _parse_installed_version(block: str) -> str | None:
     m = _VERSION_LINE_RE.search(block)
     if not m:

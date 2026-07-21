@@ -28,6 +28,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return run_doctor(strict=bool(getattr(args, "strict", False)))
 
 
+def cmd_update(args: argparse.Namespace) -> int:
+    from omg_cli.update_cmd import run_update
+
+    return run_update()
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    from omg_cli.uninstall_cmd import run_uninstall
+
+    return run_uninstall(yes=bool(getattr(args, "yes", False)))
+
+
 def _print_state_human(data: dict) -> None:
     """One-screen human summary (Codex P1-5 lightweight HUD substitute)."""
     rid = data.get("run_id") or "?"
@@ -1045,6 +1057,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_doctor.set_defaults(func=cmd_doctor)
 
+    p_update = sub.add_parser(
+        "update",
+        parents=[common],
+        help="git pull + refresh installed plugin",
+    )
+    p_update.set_defaults(func=cmd_update)
+
+    p_uninstall = sub.add_parser(
+        "uninstall",
+        parents=[common],
+        help="remove plugin, global hook, and OMG rules block",
+    )
+    p_uninstall.add_argument(
+        "--yes",
+        action="store_true",
+        help="actually perform removal",
+    )
+    p_uninstall.set_defaults(func=cmd_uninstall)
+
     p_state = sub.add_parser(
         "state",
         parents=[common],
@@ -1878,6 +1909,8 @@ KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
     {
         "setup",
         "doctor",
+        "update",
+        "uninstall",
         "state",
         "cancel",
         "resume",
