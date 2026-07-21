@@ -3,10 +3,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import append_event, ensure_omg_dirs, read_hook_event
+from _common import append_event, ensure_omg_dirs, hook_disabled, read_hook_event
 
 
 def main() -> None:
+    if hook_disabled("subagent_stop"):
+        return
     try:
         root = ensure_omg_dirs()
         ev = read_hook_event()

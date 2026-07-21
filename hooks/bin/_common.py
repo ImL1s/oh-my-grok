@@ -8,6 +8,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+def hook_disabled(name: str, env: dict | None = None) -> bool:
+    """True if OMG hooks are globally disabled or this hook name is skipped.
+
+    DISABLE_OMG in {"1","true","yes","on"} (case-insensitive) -> all hooks off.
+    OMG_SKIP_HOOKS is a comma/space-separated list of logical hook names; if
+    `name` matches any entry (case-insensitive, trimmed) -> this hook off.
+    """
+    e = env if env is not None else os.environ
+    flag = str(e.get("DISABLE_OMG", "")).strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    raw = str(e.get("OMG_SKIP_HOOKS", ""))
+    skip = {t.strip().lower() for chunk in raw.split(",") for t in chunk.split()}
+    return name.strip().lower() in skip if name else False
+
+
 def workspace_root() -> Path:
     for key in ("GROK_WORKSPACE_ROOT", "CLAUDE_PROJECT_DIR", "PWD"):
         v = os.environ.get(key)
