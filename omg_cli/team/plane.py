@@ -820,10 +820,12 @@ def start_team(
             "workspace_mode": WORKSPACE_MODE,
             "goal": goal,
             "task_count": n,
+            "next_worker_index": n,
             "created_at": _utc_now(),
             "tasks": task_records,
             "multi_cli": multi_cli,
             "routing": routing_payload,
+            "linked_ralph": None,
             "note": note,
         }
         _atomic_write_json(team_meta_path(root_path, rid), meta)
@@ -873,10 +875,12 @@ def start_team(
         "workspace_mode": WORKSPACE_MODE,
         "goal": goal,
         "task_count": n,
+        "next_worker_index": n,
         "created_at": _utc_now(),
         "tasks": task_records,
         "multi_cli": multi_cli,
         "routing": routing_payload,
+        "linked_ralph": None,
         "note": (
             "experimental multi-CLI tmux team; stop via recorded session/pgids only"
             if multi_cli
@@ -1129,6 +1133,33 @@ def stop_team(
     for rec in updated.get("tasks") or []:
         if isinstance(rec, dict) and rec.get("status") not in ("dry_run",):
             rec["status"] = "stopped"
+    # Cancel linked ralph composition state when present (D4 team+ralph).
+    linked_ralph = updated.get("linked_ralph")
+    if isinstance(linked_ralph, Mapping) and linked_ralph.get("path"):
+        try:
+            from pathlib import Path as _P
+
+            rp = _P(str(linked_ralph["path"]))
+            if not rp.is_absolute():
+                rp = root_path / rp
+            if rp.is_file():
+                rdata = json.loads(rp.read_text(encoding="utf-8"))
+                if isinstance(rdata, dict) and rdata.get("writer") == CLI_WRITER:
+                    rdata["status"] = "cancelled"
+                    rdata["cancelled_via"] = "team_stop"
+                    rdata["cancelled_at"] = _utc_now()
+                    rp.write_text(
+                        json.dumps(
+                            rdata, indent=2, ensure_ascii=False, sort_keys=True
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                    actions.append(f"cancelled linked_ralph at {rp}")
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            errors.append(f"linked_ralph cancel: {exc}")
+    updated.pop("verified", None)
+    updated.pop("passes", None)
     _atomic_write_json(team_meta_path(root_path, run_id), updated)
 
     try:
@@ -1154,6 +1185,7 @@ def stop_team(
         "actions": actions,
         "signalled": signalled,
         "errors": errors,
+        "linked_ralph": linked_ralph,
         "note": "stop uses only recorded session name + pgids; no pkill -f",
     }
 

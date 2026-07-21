@@ -10,13 +10,15 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
 from omg_cli.evidence import CLI_WRITER
-from omg_cli.state import load_run
+from omg_cli.state import cancel_run, load_run
 from omg_cli.team import plane
 from omg_cli.team.plane import EXPERIMENTAL_ENV, TEAM_WORKER_ENV
+from omg_cli.acceptance import result_path
 from omg_cli.team.pipeline import (
     DEFAULT_MAX_FIX,
     LEGAL_TRANSITIONS,
@@ -30,14 +32,18 @@ from omg_cli.team.pipeline import (
     start_team_pipeline,
     status_team_pipeline,
     team_pipeline_state_path,
+    team_ralph_state_path,
     team_verifier_artifact_paths,
     team_verify_stamp_path,
     transition,
 )
+from omg_cli.team.plane import load_team_meta, stop_team, team_meta_path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BIN_OMG = REPO_ROOT / "bin" / "omg"
 PYTHON = sys.executable
+_REAL_SUBPROCESS_RUN = subprocess.run
+_REAL_SUBPROCESS_POPEN = subprocess.Popen
 
 TASKS_ONE = [{"task_id": "t1", "owned_files": ["a.py"]}]
 
@@ -591,3 +597,349 @@ def test_tasks_path_loads_decomposition(
 
 def test_default_max_fix_constant() -> None:
     assert DEFAULT_MAX_FIX == 3
+
+
+# ---------------------------------------------------------------------------
+# D4 — FABLE RALPH CRITERIA (mandatory)
+# ---------------------------------------------------------------------------
+
+
+def _all_status_json_verified_flags(root: Path) -> list[bool]:
+    flags: list[bool] = []
+    runs = root / ".omg" / "state" / "runs"
+    if not runs.is_dir():
+        return flags
+    for path in runs.glob("*/status.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict) and data.get("verified") is True:
+            flags.append(True)
+        else:
+            flags.append(False)
+    return flags
+
+
+def test_ralph_never_sets_verified_on_approve(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Criterion 1: green team-verify APPROVE → complete but never verified."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "Popen", _boom_subprocess)
+
+    real_start = plane.start_team
+
+    def start_and_plant(*a: Any, **k: Any) -> dict[str, Any]:
+        meta = real_start(*a, **k)
+        rid = str(meta["run_id"])
+        _write_verifier(
+            tmp_path,
+            rid,
+            json.dumps({"run_id": rid, "verdict": "APPROVE"}, indent=2) + "\n",
+        )
+        return meta
+
+    monkeypatch.setattr("omg_cli.team.pipeline.start_team", start_and_plant)
+
+    out = run_team_pipeline(
+        "ralph approve",
+        root=tmp_path,
+        tasks_json=TASKS_ONE,
+        dry_run=True,
+        ralph=True,
+        max_iter=3,
+        force=True,
+    )
+    rid = out["run_id"]
+    assert out["ralph"] is True
+    assert out["phase"] == "complete"
+    assert out["verified"] is False
+    assert stage_verify_is_approve(tmp_path, rid) is True
+    assert all(v is not True for v in _all_status_json_verified_flags(tmp_path))
+    run = load_run(tmp_path, rid)
+    assert run is not None
+    assert run.get("verified") is not True
+    assert not result_path(tmp_path, rid).is_file()
+
+
+def test_ralph_post_a2_verdict_aggregation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Criterion 2: POST-A2 parse_verdict_file — fenced APPROVE + prose RC → no approve."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "Popen", _boom_subprocess)
+
+    # A2b shape: fenced example APPROVE must not beat unfenced REQUEST CHANGES
+    fenced_rc_body = (
+        "Example format:\n"
+        "```json\n"
+        '{"verdict":"APPROVE"}\n'
+        "```\n\n"
+        "## Verdict\n"
+        "REQUEST CHANGES\n"
+        "\nNeeds a real test plan.\n"
+    )
+
+    real_start = plane.start_team
+
+    def start_and_plant_fenced(*a: Any, **k: Any) -> dict[str, Any]:
+        meta = real_start(*a, **k)
+        rid = str(meta["run_id"])
+        _write_verifier(tmp_path, rid, fenced_rc_body, which="md")
+        return meta
+
+    monkeypatch.setattr(
+        "omg_cli.team.pipeline.start_team", start_and_plant_fenced
+    )
+
+    out = run_team_pipeline(
+        "ralph a2 fenced",
+        root=tmp_path,
+        tasks_json=TASKS_ONE,
+        dry_run=True,
+        ralph=True,
+        max_iter=2,
+        force=True,
+    )
+    assert out["phase"] == "failed"
+    assert out["verified"] is False
+    assert stage_verify_is_approve(tmp_path, out["run_id"]) is False
+
+    # Sibling md REQUEST_CHANGES + run_id-less json APPROVE → most-severe wins
+    sibling_root = tmp_path / "sibling"
+    monkeypatch.setattr(subprocess, "run", _REAL_SUBPROCESS_RUN)
+    monkeypatch.setattr(subprocess, "Popen", _REAL_SUBPROCESS_POPEN)
+    _init_repo(sibling_root)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "Popen", _boom_subprocess)
+
+    def start_and_plant_sibling(*a: Any, **k: Any) -> dict[str, Any]:
+        meta = real_start(*a, **k)
+        r = str(meta["run_id"])
+        md_p, js_p = team_verifier_artifact_paths(sibling_root, r)
+        md_p.parent.mkdir(parents=True, exist_ok=True)
+        md_p.write_text("## Verdict\nREQUEST CHANGES\n", encoding="utf-8")
+        js_p.write_text('{"verdict": "APPROVE"}\n', encoding="utf-8")
+        return meta
+
+    monkeypatch.setattr(
+        "omg_cli.team.pipeline.start_team", start_and_plant_sibling
+    )
+
+    out2 = run_team_pipeline(
+        "ralph sibling",
+        root=sibling_root,
+        tasks_json=TASKS_ONE,
+        dry_run=True,
+        ralph=True,
+        max_iter=2,
+        force=True,
+    )
+    assert out2["phase"] == "failed"
+    assert out2["verified"] is False
+    assert parse_team_verify_verdict(sibling_root, out2["run_id"]) == (
+        "REQUEST_CHANGES"
+    )
+
+
+def test_ralph_max_iter_one_exactly_one_iteration_then_failed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Criterion 3: max_iter=1 + never-approving verifier → one iter then failed."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "Popen", _boom_subprocess)
+
+    real_start = plane.start_team
+
+    def start_and_plant_never(*a: Any, **k: Any) -> dict[str, Any]:
+        meta = real_start(*a, **k)
+        rid = str(meta["run_id"])
+        _write_verifier(
+            tmp_path,
+            rid,
+            json.dumps(
+                {"run_id": rid, "verdict": "REQUEST_CHANGES"},
+                indent=2,
+            )
+            + "\n",
+        )
+        return meta
+
+    monkeypatch.setattr(
+        "omg_cli.team.pipeline.start_team", start_and_plant_never
+    )
+
+    out = run_team_pipeline(
+        "ralph bounded",
+        root=tmp_path,
+        tasks_json=TASKS_ONE,
+        dry_run=True,
+        ralph=True,
+        max_iter=1,
+        force=True,
+    )
+    assert out["phase"] == "failed"
+    assert out["verified"] is False
+    assert out["ralph_iteration"] == 1
+    assert out["ralph_max_iter"] == 1
+    rid = out["run_id"]
+    ralph = json.loads(team_ralph_state_path(tmp_path, rid).read_text())
+    assert ralph["status"] == "failed"
+    assert ralph["max_iter"] == 1
+    assert ralph["iteration"] == 1
+    iterations = {h.get("iteration") for h in ralph.get("history") or []}
+    assert iterations == {1}
+
+
+def test_ralph_stop_and_cancel_cascade_linked_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Criterion 4: linked team↔ralph; stop/cancel kill recorded pgids only."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "Popen", _boom_subprocess)
+
+    real_start = plane.start_team
+
+    def start_and_plant(*a: Any, **k: Any) -> dict[str, Any]:
+        meta = real_start(*a, **k)
+        rid = str(meta["run_id"])
+        _write_verifier(
+            tmp_path,
+            rid,
+            json.dumps(
+                {"run_id": rid, "verdict": "REQUEST_CHANGES"},
+                indent=2,
+            )
+            + "\n",
+        )
+        return meta
+
+    monkeypatch.setattr("omg_cli.team.pipeline.start_team", start_and_plant)
+
+    out = run_team_pipeline(
+        "ralph cascade",
+        root=tmp_path,
+        tasks_json=TASKS_ONE,
+        dry_run=True,
+        ralph=True,
+        max_iter=1,
+        force=True,
+    )
+    rid = out["run_id"]
+    ralph_path = team_ralph_state_path(tmp_path, rid)
+    assert ralph_path.is_file()
+    ralph = json.loads(ralph_path.read_text(encoding="utf-8"))
+    assert ralph.get("linked_team", {}).get("run_id") == rid
+    team_meta = load_team_meta(tmp_path, rid)
+    assert team_meta.get("linked_ralph", {}).get("path")
+    assert str(ralph_path) in str(team_meta["linked_ralph"]["path"])
+
+    # Simulate live panes with recorded pgids (post-exec)
+    live = dict(team_meta)
+    live["dry_run"] = False
+    live["session"] = "omg-ralph-cascade"
+    live["tasks"] = [
+        {
+            **live["tasks"][0],
+            "pid": 55555,
+            "pgid": 515151,
+            "status": "running",
+        }
+    ]
+    team_meta_path(tmp_path, rid).write_text(
+        json.dumps(live, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    killpg_calls: list[tuple[int, int]] = []
+    tmux_cmds: list[list[str]] = []
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        killpg_calls.append((pgid, sig))
+        raise ProcessLookupError("gone")
+
+    def fake_tmux_run(args: Any, **kw: Any) -> Any:
+        tmux_cmds.append(list(args))
+        m = MagicMock()
+        m.returncode = 0
+        return m
+
+    def guard_run(cmd: Any, *a: Any, **k: Any) -> Any:
+        joined = " ".join(
+            str(x) for x in (cmd if isinstance(cmd, (list, tuple)) else [cmd])
+        )
+        if "pkill" in joined or "pgrep" in joined:
+            raise AssertionError(f"forbidden broad kill: {joined}")
+        raise AssertionError(f"unexpected subprocess.run: {joined}")
+
+    monkeypatch.setattr(plane.os, "killpg", fake_killpg)
+    monkeypatch.setattr(plane, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(subprocess, "run", guard_run)
+    monkeypatch.setattr(plane.subprocess, "run", guard_run)
+
+    stop_result = stop_team(tmp_path, rid)
+    assert killpg_calls
+    assert all(pg == 515151 for pg, _ in killpg_calls)
+    assert any(c[:2] == ["kill-session", "-t"] for c in tmux_cmds)
+    # cancelled linked ralph
+    ralph_after = json.loads(ralph_path.read_text(encoding="utf-8"))
+    assert ralph_after.get("status") == "cancelled"
+    assert ralph_after.get("cancelled_via") == "team_stop"
+
+    # omg cancel on the same run shape (fresh run) — leader pid only, no pkill
+    out2 = run_team_pipeline(
+        "ralph cancel",
+        root=tmp_path,
+        tasks_json=TASKS_ONE,
+        dry_run=True,
+        ralph=True,
+        max_iter=1,
+        force=True,
+    )
+    rid2 = out2["run_id"]
+    pid_json = tmp_path / ".omg" / "state" / "runs" / rid2 / "pid.json"
+    pid_json.parent.mkdir(parents=True, exist_ok=True)
+    pid_json.write_text(
+        json.dumps({"pid": 60606, "pgid": 616161, "starttime": "12345"})
+        + "\n",
+        encoding="utf-8",
+    )
+    killpg_cancel: list[tuple[int, int]] = []
+
+    def fake_killpg_cancel(pgid: int, sig: int) -> None:
+        killpg_cancel.append((pgid, sig))
+        raise ProcessLookupError("gone")
+
+    monkeypatch.setattr(os, "killpg", fake_killpg_cancel)
+    monkeypatch.setattr(
+        "omg_cli.state.process_starttime", lambda _pid: "12345"
+    )
+    monkeypatch.setattr("omg_cli.state._pid_alive", lambda _pid: True)
+
+    cancelled = cancel_run(tmp_path, rid2, kill_grace_s=0)
+    assert cancelled.get("status") == "cancelled"
+    assert killpg_cancel
+    signalled_pgids = {pg for pg, _ in killpg_cancel}
+    assert 616161 in signalled_pgids or 60606 in signalled_pgids
+    joined_actions = " ".join(cancelled.get("kill_actions") or [])
+    assert "pkill" not in joined_actions and "pgrep" not in joined_actions
