@@ -134,7 +134,7 @@ No Stop pin — say **continue** if the chat ends mid-run.
 |--|--|
 | **When** | Independent slices; parallel agents |
 | **Invoke** | `ulw` · `ultrawork` · `/oh-my-grok:omg-ultrawork` |
-| **CLI** | `omg ulw` · `omg worker own\|prepare\|seal\|join` · `omg integrate` |
+| **CLI** | `omg ulw` · `omg worker own\|prepare\|seal[ --all]\|join` · `omg integrate` |
 | **SKILL** | [`skills/omg-ultrawork/SKILL.md`](../skills/omg-ultrawork/SKILL.md) |
 
 ```bash
@@ -142,7 +142,7 @@ omg ulw "parallelize package A/B/C fixes"
 omg worker own --run RUN --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]'
 omg worker prepare-owned --run RUN
 # workers implement in worktrees …
-omg worker seal --run RUN --task t1
+omg worker seal --all --run RUN   # leader seals every worktree (real head_sha; --force to re-seal)
 omg worker join --run RUN
 omg integrate --run RUN
 omg accept --yes
