@@ -64,7 +64,59 @@ git commit -m "docs: post-release notes for vX.Y.Z"
 git push origin main
 ```
 
-## Not in this protocol yet
+## Packaging tracks
 
-- PyPI publish
+### Editable pipx / pip (available; **editable-only**)
+
+`pyproject.toml` at repo root exposes console script `omg = omg_cli.main:main`
+with dynamic version from `omg_cli.__version__` (reads `plugin.json`).
+
+**Supported recipes only:**
+
+```bash
+pipx install --editable /path/to/oh-my-grok
+# or, from a checkout:
+pip install -e .
+```
+
+**Not supported:** non-editable `pip install .` / wheel / sdist install into
+site-packages. Several modules resolve `plugin_root()` as
+`Path(__file__).resolve().parents[1]` to find checkout-root **siblings**
+(`plugin.json`, `templates/`, `skills/`, `agents/`, `hooks/`). A non-editable
+install copies only `omg_cli/` → those siblings are missing under
+site-packages → `omg --version` prints `0.0.0` and plugin_root features report
+"missing" (graceful, not a crash). PEP 660 editable install keeps `__file__` in
+the source tree so `plugin_root()` still resolves.
+
+`./scripts/install-plugin.sh` + `ln -sf …/bin/omg` remains the **primary**
+install path. If both the symlink and a pipx editable entry exist, you can get
+two `omg` binaries on `PATH` — check with `which -a omg`.
+
+**Not in this protocol yet:** publishing a non-editable wheel to PyPI.
+
+### xAI plugin-marketplace (prepare only — do **not** submit)
+
+A sha-pinned listing for [xai-org/plugin-marketplace](https://github.com/xai-org/plugin-marketplace)
+needs, before any PR:
+
+| Prerequisite | Status |
+|--------------|--------|
+| `plugin.json` fields | Present |
+| `grok plugin validate .` | Gate in this protocol (pre-tag) |
+| Pinned sha | `git rev-parse <tag>` after release tag |
+| Registry entry schema | **UNVERIFIED** — pull exact schema from that repo's CONTRIBUTING before drafting |
+
+**Isolation honesty for any listing** (do not overclaim security):
+
+- Primary isolation is Grok's per-spawn `capability_mode` (read-only /
+  read-write; never `execute`/`all` for default workers).
+- PreToolUse soft-gate is **fail-open** — it is not a sandbox.
+- No OMC-style Stop hard-pin (Grok Stop is passive).
+
+Nothing is submitted by this release protocol; marketplace remains optional
+prep-only until a human opens a PR with a verified schema.
+
+### Still not in this protocol
+
 - Automated marketplace sha bump PR
+- Non-editable PyPI publish

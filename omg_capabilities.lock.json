@@ -1,21 +1,26 @@
 {
-  "version": "0.4.3",
+  "version": "0.5.0",
   "files": {
     "agents/omg-analyst.md": "b9962b590a679a5d644812c052276ef633c0937ee29abd873d865a0d55ddfb55",
     "agents/omg-architect.md": "3245a8769fe787523a6bc06d49973ed1898cd3d84ae32c1d09853cc15d3fe995",
     "agents/omg-code-reviewer.md": "49d25525a1f2ecae682a1af4234814401908f8cc86777a4c45e895baebaaecd6",
     "agents/omg-critic.md": "1bab25fc023e56ff74d73c305d7407b2d56cea4361212218b10844658e6f5d05",
+    "agents/omg-debugger.md": "f44275b6825fe24619485a5e99ebe518ac3ede088df42e3103a2ca72c6e54a28",
+    "agents/omg-designer.md": "7d70b6434cb4515e966843df0dddb6d7b979c48deb1c955461086327bb5a5d53",
     "agents/omg-executor.md": "c9fc6b6b3ffbeac549d99209a846919389d510ad10199953517983eb4a0cb538",
     "agents/omg-orchestrator.md": "b7749cb2acea06fe0b6784dd677f38d18de871f60e73cf928df9e3f22df9ffd8",
     "agents/omg-qa-tester.md": "5946c70eb0f7d9be4689fe801f676d96f0e23c55f51c4bc7f4a4bc941d528a10",
+    "agents/omg-security-reviewer.md": "be43140948b22abfcaa92aa98303237b6fe7b920d0a3312254b262d974c973bb",
+    "agents/omg-test-engineer.md": "945c46a304df1ec9b6f518c30f7f38d1e010a997fe0a723730aeeda227495e2a",
     "agents/omg-verifier.md": "8f410b7d8b43b0bef32f27b05d9cce2d7409f638babc396d4e1f4926be10816c",
+    "agents/omg-writer.md": "4609b70f3e027f71d6cd93ddd1036dbdd10ca7e82216e5607361479fdba751f9",
     "skills/omg-ask/SKILL.md": "652560e94b22e32f438cbe29cd8db875f254c12b76a1e5556a5fb550da339ba3",
     "skills/omg-autopilot/SKILL.md": "cc3ac72b57fcb6ea3dc6e2307e1a3b07843b3e061bffa05f6db72a80ce8bca6e",
     "skills/omg-cancel/SKILL.md": "cc60cbe53fceac3bdbda0df29743c51f464e35c61f74ec150a8aa4a2bfa8a93f",
     "skills/omg-deep-interview/SKILL.md": "4a9c414bed13559a264c5bbc20c6bdc04456cb767300c02578c870117c158daf",
     "skills/omg-dual-review/SKILL.md": "f19c495df050a6b38660a20754312541c963081c08d875ee558a29b183bc6fbe",
     "skills/omg-hud/SKILL.md": "8dd721f9cef62c126e3b4f0d40d4d2d4f1d8508cfd581a3ba9ea09cb6825bfb2",
-    "skills/omg-lsp/SKILL.md": "f9fb167cb2b47ab73662204317806405b48f30a600fc9b27bcd1650c079ebea3",
+    "skills/omg-lsp/SKILL.md": "841587d8fa6ca501c7e180cf7794e0ae2750b0b629a86235e8e4b93172419e71",
     "skills/omg-pipeline/SKILL.md": "cebeac3f1c8af94286af5c0ecde336ab02feca476f9ce5a8af915614796bc223",
     "skills/omg-ralph/SKILL.md": "6beb5510a2fa35c31d4d974e46b96bf4eae2bb984662f3686c17046ccc7a57ea",
     "skills/omg-ralplan/SKILL.md": "b060511de9d1c39b384366b6d5f1e88b618dbc437e23226b807edd308a1fe5f2",
@@ -25,5 +30,5 @@
     "skills/omg-using/SKILL.md": "15f64502b9afecc4df27cbafadbc89b4dd876125d376626f90723ffc026a0827",
     "skills/omg-wiki/SKILL.md": "bd8f8f4fd809ffc1bde337ab4ec81c5d81eb90adea9dd4dfb83861afa79c6ac9"
   },
-  "aggregate": "b4075a1d05e6af05683548fd26fa4bea85934492c2f1b1c0368b5a7070c13c2a"
+  "aggregate": "29a8e19da4ebf366faac72cc7e5a30c58a2ca5973c40617014fad1b66c6a78aa"
 }

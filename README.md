@@ -42,8 +42,8 @@ OMG does **not** replace Grok Build.
 | **`.omg/`** | Plans, artifacts, run state (CLI is single-writer for `passes` / `verified`) |
 
 Workers fan out only via Grok **`spawn_subagent`** (depth 1). No Rust fork of grok-build.  
-**tmux:** only as a **host session shell** for `omg --madmax` (OMC-style full-open launch) — **not** an OMC multi-CLI team control plane.  
-**Scope honesty:** [core purpose parity](docs/research/core-parity-matrix-2026-07-20.md) — partial lifestyle surfaces (resume/wiki/hud/LSP probe); **not** OMC Stop hard-pin, full LSP MCP, or tmux multi-CLI team plane.
+**tmux:** host session shell for `omg --madmax` (break-glass full-open launch), plus an **experimental** team plane (`omg team`, gate `OMG_EXPERIMENTAL_TMUX_TEAM=1`). Zero-config panes are **grok only**; optional `--routing` enables **multi-CLI executor panes** (codex/agy/cursor/gemini) with role floors. Isolation is **integration** isolation (worktree ownership + seal + integrate), **not** an execution sandbox — see the per-provider posture table in [`docs/security-model.md`](docs/security-model.md).  
+**Scope honesty:** [core purpose parity](docs/research/core-parity-matrix-2026-07-20.md) — partial lifestyle surfaces (resume/wiki/hud/LSP probe); **not** OMC Stop hard-pin, full LSP MCP, or execution-sandbox team parity.
 
 | Component | Role |
 |-----------|------|
@@ -75,9 +75,19 @@ cd ~/.local/share/oh-my-grok
 ./scripts/install-plugin.sh
 # optional pin: git checkout v0.4.2
 
-# 2) omg on PATH (not on PyPI yet; install script also tries this)
+# 2) omg on PATH (primary: install script also tries this)
 ln -sf "$(pwd)/bin/omg" ~/.local/bin/omg   # ensure ~/.local/bin is on PATH
 omg --version
+
+# 2b) OPTIONAL — editable pipx / pip (not a non-editable PyPI wheel)
+# ONLY supported form: editable. Non-editable `pip install .` copies only
+# omg_cli/ into site-packages; plugin_root() siblings (plugin.json, skills/,
+# templates/, …) resolve missing → omg --version prints 0.0.0. PEP 660 keeps
+# __file__ in the source tree so plugin_root() still works.
+# pipx install --editable ~/.local/share/oh-my-grok
+#   # or from checkout: pip install -e .
+# Caveat: if you also keep the step-2 symlink, you can get two `omg` on PATH —
+# `which -a omg` and prefer one. The install-plugin.sh symlink remains primary.
 
 # 3) Wire a project
 cd /path/to/your-project
@@ -85,9 +95,12 @@ omg setup
 omg doctor
 ```
 
-`install-plugin.sh` runs `grok plugin install . --trust` **and** writes  
-`~/.grok/hooks/omg-pretool-deny.json` with an **absolute path** into this checkout  
-(plugin-bundled PreToolUse alone has been insufficient in live sessions).
+`install-plugin.sh` runs `grok plugin install . --trust` **and** installs the global
+PreToolUse soft-gate under `$GROK_HOME/hooks/` — a **self-contained** standalone
+(`omg_pretool_deny_standalone.py`, launched `python3 -I -S … || true`), **not** a
+checkout-path script (plugin-bundled PreToolUse alone has been insufficient in live
+sessions; a checkout-path hook under TCC-protected `~/Documents` bricked every tool
+in other workspaces — see `docs/security-model.md`).
 
 ### Plugin-only (half surface — not enough alone)
 
@@ -105,11 +118,13 @@ This installs skills/agents from GitHub. It does **not** put `omg` on PATH and d
 | Upgrade | `omg update` (git pull + `install-plugin.sh`, which force-refreshes the frozen snapshot + doctor) |
 | Relocate clone | Re-run `./scripts/install-plugin.sh` (it warns on stale duplicate entries) + refresh `ln -sf …/bin/omg ~/.local/bin/omg` |
 | Uninstall | `omg uninstall --yes` (plugin + global hook + OMG rules block + CLI link; **never** touches project `.omg/`) |
-| Uninstall (manual) | `grok plugin uninstall oh-my-grok` · `rm -f ~/.grok/hooks/omg-pretool-deny.json` · `rm -f ~/.local/bin/omg` |
+| Uninstall (manual) | `grok plugin uninstall oh-my-grok` · `omg install-hook --remove` (removes json then standalone under `$GROK_HOME/hooks/`) · `rm -f ~/.local/bin/omg` |
 
 > **Why `omg update`, not `git pull` alone:** `grok plugin install` copies a **frozen snapshot** into `~/.grok/installed-plugins/`; a bare `git pull` leaves the loaded plugin stale, and for a local-path install both `grok plugin install` (re-run) and `grok plugin update` are no-ops. So `install-plugin.sh` (which `omg update` runs) force-refreshes a same-path install by **uninstall + reinstall** (back-to-back), and `omg doctor` flags version/enabled/installed-content drift so you can't silently run an old copy.
 
-`omg setup` scaffolds **project** files (`.omg/`, AGENTS fragment) **and** installs the global guidance contract `~/.grok/rules/omg.md` (skip with `--no-global-rules`). It does **not** install the plugin itself.
+`omg setup` scaffolds **project** files (`.omg/`, AGENTS fragment) **and** installs the global guidance contract `$GROK_HOME/rules/omg.md` (skip with `--no-global-rules`) **and** the global PreToolUse soft-gate `$GROK_HOME/hooks/` (skip with `--no-global-hook`; repair anytime with `omg install-hook`). It does **not** install the plugin itself.
+
+> **Recovery:** a grok session already bricked by an *old* checkout-path hook can't run `omg` through its blocked terminal. From any plain shell: `python3 -m omg_cli.hook_install` (repairs it), or `rm "${GROK_HOME:-$HOME/.grok}/hooks/omg-pretool-deny.json"` to disable the soft-gate, then restart grok.
 
 Smoke after install:
 
@@ -285,7 +300,7 @@ export OMG_ALLOW_EXTERNAL_CLI=1   # process-env only; never parse from command t
 ```text
 omg {setup,doctor,update,uninstall,note,state,cancel,resume,wiki,hud,lsp,
      interview,goal,accept,integrate,worker,review,qa,autopilot,ulw,ralph,
-     ralplan,ask,pipeline,dual-review} ...
+     ralplan,ask,pipeline,dual-review,mcp-server,mcp-install} ...
 ```
 
 | Command | Purpose |
@@ -307,6 +322,7 @@ omg {setup,doctor,update,uninstall,note,state,cancel,resume,wiki,hud,lsp,
 | `omg accept` | Freeze PRD + run; only path that may `verified` (or materialize PRD from clean UltraQA) |
 | `omg ask` | Trusted external advisor broker (not a worker) |
 | `omg pipeline` / `dual-review` | Scripted pipeline · interim critic→verifier |
+| `omg mcp-server` / `mcp-install` | Focused in-session MCP (reads + proposal writes only; **never** verified/accept) — [skills](docs/skills.md#in-session-mcp-omg-mcp-server--focused-ops-surface) · [security](docs/security-model.md#in-session-mcp-server-omg-mcp-server) |
 | `omg --madmax` | **Host launcher** (not a mode FSM): full-open Grok in a **new tmux session** each launch |
 
 ### Host launcher: `omg --madmax`

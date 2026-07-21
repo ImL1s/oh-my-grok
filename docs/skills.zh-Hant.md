@@ -148,6 +148,45 @@ omg accept --yes
 
 ---
 
+### `omg team` — 實驗性 tmux team plane（D1 零設定 + D3 multi-CLI + D2 分階段 driver + D4 scale/resume/ralph）
+
+| | |
+|--|--|
+| **何時** | 選擇性多 pane ULW + 真實 worktree；測試用 hermetic dry-run |
+| **閘門** | `OMG_EXPERIMENTAL_TMUX_TEAM=1`（未設則拒絕） |
+| **CLI** | `omg team start\|run\|scale\|resume\|status\|collect\|stop` |
+| **誠實範圍** | 零設定 = grok panes；`--routing` 啟 multi-CLI（含角色地板）。**整合**隔離（ownership + seal + integrate）— **不是**執行沙箱。`collect` / `run` / `scale` / `resume` 永不寫 `verified`。scale/resume/ralph 是**同一** team plane 的生命週期延伸（無新隔離宣稱）。 |
+
+**`omg team run`** 是 team plane 上的**分階段 DRIVER**（不是新的 planner/verifier）：
+
+`team-plan → team-prd → team-exec → team-verify → team-fix`（終態：`complete` / `failed` / `blocked`）。
+
+- **team-plan / team-prd** — 穿透標記；任務拆解屬 **leader / ralplan**，`run` 只吃 `--tasks-json` 或 `--tasks-path`。
+- **team-exec** — `start_team` 再 `collect_team`（dry-run 只 start，不碰 tmux/subprocess）。
+- **team-verify** — 以 POST-A2 `parse_verdict_file` 閘 `stages/team-verifier.md|json`；APPROVE → `complete`，否則 → `team-fix`。**不**代寫 verdict。
+- **team-fix** — `--max-fix`（預設 3）上限；超限 → `failed`。
+- **`--ralph [--max-iter N]`**（D4）— 外層**有界**持久迴圈（預設 max_iter=3）；`team.json` 記 `linked_ralph`、`stages/team-ralph.json` 記 `linked_team`；仍只靠真實 team-verify APPROVE 進 complete，**永不**寫 `verified`。
+- 進 exec/fix 會作廢舊 verify 戳記；`verified` 仍只經 `omg accept`。
+
+**生命週期（D4）：**
+
+- **`omg team scale --run ID --add N|--remove N [--dry-run]`** — 動態加/減 pane（run 目錄 scale lock；`--add` 受 `max_workers_cap()` 與單調 window index 限制；`--remove` 優雅排空，只殺記錄的 pgid + window，**不**殺 session、**禁止** `pkill -f`，標記 `scaled_down` 並保留 worktree；active 不可低於 1）。
+- **`omg team resume --run ID`** — leader 重啟後重讀 `team.json`、對帳 pane 存活；只做冪等 status 寫入。
+
+```bash
+export OMG_EXPERIMENTAL_TMUX_TEAM=1
+omg team start --goal "平行修 A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --dry-run
+omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --dry-run --max-fix 3
+omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --ralph --max-iter 2 --dry-run
+omg team scale --run RUN --add 2 --dry-run
+omg team resume --run RUN
+omg team status --run RUN --json
+omg team collect --run RUN   # seal_all_tasks + integrate；永不 verified
+omg team stop --run RUN      # 只殺記錄的 session + pgid（禁止 pkill -f）
+```
+
+---
+
 ### `omg-ralph` — 持久迴圈（單 story）
 
 | | |
@@ -339,10 +378,47 @@ omg wiki query "auth"
 |--|--|
 | **何時** | symbols / check；**不是** 完整 LSP MCP |
 | **呼叫** | `lsp` · `/oh-my-grok:omg-lsp` |
-| **CLI** | `omg lsp status` · `omg lsp check path.py` |
+| **CLI** | `omg lsp status` · `omg lsp check path.py` · `omg lsp symbols path.py` · `omg lsp diagnostics path.py` |
 | **SKILL** | [`skills/omg-lsp/SKILL.md`](../skills/omg-lsp/SKILL.md) |
 
-優先用 Grok `read_file` / `grep`。本機有 pyright 才有 check。
+優先用 Grok `read_file` / `grep`。`symbols` / `diagnostics` 走 stdlib `ast`
+（僅 Python；diagnostics 為 **syntax-only**，不是 type-checking）。本機有
+pyright 才有 `check`。
+
+---
+
+### 會話內 MCP（`omg mcp-server`）— 聚焦 ops 表面
+
+**聚焦**的會話內 read + proposal MCP 表面，**不是** OMC ~54-tool 對等。
+只暴露讀取與非權威 proposal 寫入；`passes` / `verified` / accept **永遠不是**
+MCP tool（僅 CLI，且在 `OMG_MCP_SERVER=1` 時**結構性拒絕**）；LSP 是本機
+`ast` probe，不是語意 bridge；沒有 code-exec / 狀態突變 / 權威寫入工具。
+這是 in-session **workflow** 能力對齊，不是 tool 數量對齊。
+
+```bash
+grok mcp add omg omg -- mcp-server
+omg mcp-install --print-only
+omg mcp-server                 # stdio JSON-RPC（會設 OMG_MCP_SERVER=1）
+```
+
+| Tool | 類型 | 後端 |
+|------|------|------|
+| `omg_state_status` | 讀 | `hud.hud_pack` |
+| `omg_state_read` / `omg_state_list_active` | 讀 | state load |
+| `omg_note_read` / `omg_note_write` | 讀 / proposal | `.omg/notepad.md` |
+| `omg_wiki_*` | 讀 / proposal | `.omg/wiki/` |
+| `omg_project_memory_*` | 讀 / proposal | `.omg/project-memory.json` |
+| `omg_artifact_write` | 僅 proposal | `.omg/artifacts/` |
+| `omg_lsp_symbols` / `omg_lsp_diagnostics` | 讀 | ast probe |
+| `omg_resume_context` | 讀 | resume pack + RESUME.md |
+
+**三道安全機制：** (1) 策展 allowlist；(2) `OMG_MCP_SERVER=1` 時
+`set_verified` / `register_cli_acceptance_token` 直接 raise；(3) 寫入路徑
+禁閉（拒 `.omg/state/**` 與 traversal）。
+
+**刻意排除（OMC 有、OMG 沒有）：** `state_write`、`state_clear`、`python_repl`、
+`ast_grep_replace`、語意 LSP goto/hover/rename/find_references、
+`shared_memory`、`session_search`、`merge_readiness`，以及任何 accept/verify 工具。
 
 ---
 
@@ -352,11 +428,18 @@ omg wiki query "auth"
 |-------|------------------------|------|
 | `omg-orchestrator` | leader | 拆解與協調 |
 | `omg-executor` | `read-write`（無 shell） | 實作 |
+| `omg-debugger` | `read-write`（無 shell） | 根因 / 回歸 / build 修復 |
+| `omg-designer` | `read-write`（無 shell） | UI/UX 實作 |
+| `omg-writer` | `read-write`（無 shell） | README / API 文件 / 註解 |
+| `omg-test-engineer` | `read-write`（無 shell） | 測試策略 / 覆蓋 / flaky 加固 |
 | `omg-critic` / `omg-verifier` | `read-only` | 挑戰 / 證據 |
 | `omg-code-reviewer` / `omg-architect` | `read-only` | 結構化審查 |
-| `omg-qa-tester` / `omg-analyst` | `read-only` | QA / interview 分析 |
+| `omg-security-reviewer` | `read-only` | OWASP / secrets / 不安全模式 |
+| `omg-qa-tester` / `omg-analyst` | 見 taxonomy | QA 情境 / interview 分析 |
 
-Grok 內建（`explore`、`plan`、`general-purpose`）補洞（沒有 OMC 那 19 角色 zoo）。
+團隊路由用的 posture / class 地板在 `omg_cli/team/roles.py`
+（`role_posture`、`role_class`、`is_reviewer_or_verifier`）。
+Grok 內建（`explore`、`plan`、`general-purpose`）仍補臨時缺口。
 
 ---
 
@@ -377,6 +460,7 @@ Grok 內建（`explore`、`plan`、`general-purpose`）補洞（沒有 OMC 那 1
 | omg-ask | `ask` | 否 |
 | omg-cancel | `cancel` | 否 |
 | omg-wiki / hud / lsp | wiki / hud / lsp | 否 |
+| *（MCP 表面）* | `mcp-server` / `mcp-install` | **永不**（結構性拒絕） |
 
 ---
 

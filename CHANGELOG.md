@@ -10,10 +10,97 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Planned
-- Optional PyPI/`pipx` CLI track (deferred).
-- Optional PR to xAI plugin-marketplace (sha-pinned).
+- Optional PyPI/`pipx` CLI track — **shipped editable-only** (`pyproject.toml` +
+  `pipx install --editable` / `pip install -e .`); non-editable wheel / PyPI
+  publish still deferred (`plugin_root()` needs checkout siblings).
+- Optional PR to xAI plugin-marketplace (sha-pinned) — **deferred / prep-only**
+  (document prerequisites in `docs/RELEASE.md`; do not submit).
 - Host Stop veto (not feasible on Grok today).
 - Full OMC LSP/AST MCP bridge (local pyright probe only in 0.3.0).
+
+## [0.5.0] - 2026-07-22
+
+Grok-native parity completion: fail-closed hardening, a multi-CLI tmux **team plane**
+(D0–D4), and an **in-session MCP server**. Every workstream carries a model-diverse
+(Fable 5) adversarial GO plus a REAL/live test pass. The multi-CLI team plane ships behind
+an explicit experimental gate; see the blast-radius note in `docs/security-model.md`.
+
+**Live testing earned its keep — it caught THREE integration/wire bugs that unit tests +
+adversarial security review all missed:** an MCP NDJSON-vs-Content-Length framing mismatch
+(grok timed out connecting), multi-CLI pane prompt-delivery (a real codex pane hung because
+its stdin sentinel `-` was never fed), and a team-exec/collect race (collect ran before the
+panes sealed). All three found by real `grok`/`codex` in real tmux, fixed, and re-verified live.
+
+### Fixed (fail-closed hardening — each RED→GREEN, each only makes a gate stricter)
+- **verdict/ralplan (A2):** `ralplan.verifier_has_approve` raw-`or` across sibling verifier
+  artifacts → cross-artifact severity aggregation; `verdict.parse_verdict` folds prose severity
+  into step 2 so a fenced-example APPROVE can't short-circuit an unfenced prose REQUEST CHANGES.
+- **install classifier (A1):** extracted to an importable, unit-tested
+  `scripts/omg_install_classifier.py` (independent candidates, realpath both sides;
+  mandatory no-false-positive on genuinely-different paths).
+- **doctor --strict (B):** the `spawn_subagent` bare-substring FP on the repo's own CLAUDE.md
+  — now matches routing-trigger shape; environmental FAILs stay honest.
+
+### Fixed (live-integration bugs, found by real-CLI smoke)
+- **MCP wire framing:** `omg mcp-server` now replies in the client's framing (NDJSON in →
+  NDJSON out); grok could not parse the Content-Length reply and timed out.
+- **multi-CLI pane prompt delivery:** codex reads the prompt via a stdin redirect; cursor/agy
+  get the prompt text (grok's `--prompt-file` unchanged) — a codex pane hung indefinitely before.
+- **team-exec race:** the staged pipeline now waits for panes to finish/seal before `collect`
+  (bounded by `OMG_TEAM_EXEC_WAIT_SECS`); collect had run before workers sealed → integrate refused.
+
+### Fixed (install security — the global hook could deny EVERY tool call)
+- **Root cause (live, 2026-07-22):** the global PreToolUse soft-gate pointed
+  `python3 "<checkout>/hooks/bin/pre_tool_use_deny.py"` — a script under
+  macOS-TCC-protected `~/Documents` that also `import`ed `omg_cli`. A grok session in
+  another workspace (or lacking Documents access) could not `open()` it, so `python3`
+  exited **2**; grok reads a PreToolUse exit code of 2 as an *explicit deny*, so it
+  blocked every tool call (even `ls`, `spawn_subagent`). The in-code fail-open never
+  ran — python could not open the file. Confirmed live and fixed model-diverse
+  (Codex gpt-5.6-sol max + Fable 5 design review + a real grok canary).
+- **Fix:** a SELF-CONTAINED, stdlib-only standalone (`hooks/bin/omg_pretool_deny_standalone.py`,
+  generated from `omg_cli/deny.py` + `_common.hook_disabled` by
+  `scripts/generate_standalone_hook.py`, `--check`-guarded in CI) installed under
+  `$GROK_HOME/hooks/` (always readable, non-TCC, workspace-independent). It signals
+  deny ONLY via stdout JSON (grok honors that regardless of exit code) and **always
+  exits 0**; the launcher `python3 -I -S "<abs>" || true` normalizes any
+  interpreter/startup failure to fail-**open** (the path is `shlex.quote`d so a
+  `$GROK_HOME` with shell metacharacters can't inject an `exit 2`). A live grok 0.2.106
+  canary confirmed the hook's deny-JSON-at-rc0 actually blocks the command (parent
+  `parent_host_signature=true`, no shim marker written); the spawned child was
+  additionally capability-isolated.
+- **Install/repair:** one transactional installer (`omg_cli/hook_install.py`) shared by
+  `omg setup` (new; end-user path previously installed NO hook) and
+  `scripts/install-plugin.sh` (new `omg install-hook` subcommand; `omg setup
+  --no-global-hook` opts out). Atomic writes; migrates a prior checkout-path json and
+  **quarantines** it to a non-`.json` name on failure ("no hook > broken hook").
+  Plugin-bundled `hooks/hooks.json` now points at the standalone too.
+- **doctor:** `check_global_pretool_hook` rewritten — realpath-under-`$GROK_HOME`
+  (rejects checkout paths + symlink escapes), rejects a 2nd command hook, real `open()`
+  + a behavioral subprocess smoke (allow/deny), and a soft freshness check
+  (installed-vs-committed hash + TCC-home WARN). `os.access` (TCC-blind false-green)
+  removed. GROK_HOME honored consistently across setup/install/doctor/uninstall.
+
+### Added
+- **`omg team` — multi-CLI tmux team plane** (behind `OMG_EXPERIMENTAL_TMUX_TEAM=1`): D0 vetted
+  executor argv adapters (grok/codex/agy/cursor/gemini) → D1 grok-only start/status/collect/stop
+  → D2 staged pipeline (`omg team run`) → D3 per-role multi-CLI executor panes + routing
+  (reviewer roles → structured-verdict providers only, **cursor forbidden**; unknown roles
+  fail-closed) → D4 dynamic scaling + resume + **ralph composition** (`omg team run --ralph`, a
+  bounded loop that NEVER sets verified). `deny.py` strengthened (worker can't launch a team).
+  Agent-role parity + machine-readable role taxonomy (F).
+- **In-session MCP server (`omg mcp-server`, `grok mcp add`)** — 14 read + non-authoritative-proposal
+  tools for Grok-native in-session parity. `verified` stays CLI-only via three fail-closed mechanisms
+  (curated allowlist, structural refusal under `OMG_MCP_SERVER=1`, path-confinement). Live-verified.
+- **`omg lsp symbols`/`diagnostics` (E):** stdlib-`ast` local probe. **`pyproject.toml` (C):**
+  editable-pipx packaging.
+
+### Scope honesty
+- The multi-CLI team plane provides **integration isolation, NOT execution isolation**: executor
+  panes run with operator-level machine access; only worktree ownership + seal + integrate bound
+  what reaches the leader tree, and `verified` stays CLI-only. Per-provider CLI-sandbox enforcement
+  is non-uniform (grok/codex CLI-enforced; agy `--sandbox` best-effort; gemini none). See
+  `docs/security-model.md`.
 
 ## [0.4.3] - 2026-07-21
 

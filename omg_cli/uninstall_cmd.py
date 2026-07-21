@@ -12,12 +12,10 @@ def _checkout_root() -> Path:
 
 
 def _grok_home(home: Path | None) -> Path:
-    if home is not None:
-        return Path(home)
-    raw = os.environ.get("GROK_HOME")
-    if raw is not None and raw.strip() != "":
-        return Path(raw)
-    return Path.home() / ".grok"
+    # Single source of truth for the grok config root (honors $GROK_HOME).
+    from omg_cli.hook_install import grok_home
+
+    return grok_home(home)
 
 
 def run_uninstall(
@@ -40,7 +38,8 @@ def run_uninstall(
     if not yes:
         print("omg uninstall: dry run (no changes). Would remove:")
         print(f"  - grok plugin uninstall oh-my-grok --confirm")
-        print(f"  - global hook (if present): {hook}")
+        print(f"  - global hook json (if present): {hook}")
+        print(f"  - global hook standalone (if present): {hook.with_name('omg_pretool_deny_standalone.py')}")
         print(f"  - OMG managed block in rules (if present): {rules}")
         print(
             f"  - ~/.local/bin/omg only if it is a symlink into this checkout "
@@ -64,15 +63,19 @@ def run_uninstall(
     except OSError as exc:
         print(f"omg uninstall: grok plugin uninstall skipped: {exc}")
 
-    # 2. remove global hook if present
-    if hook.is_file():
-        try:
-            hook.unlink()
-            print(f"omg uninstall: removed hook {hook}")
-        except OSError as exc:
-            print(f"omg uninstall: could not remove hook {hook}: {exc}", file=sys.stderr)
-    else:
-        print(f"omg uninstall: hook absent ({hook})")
+    # 2. remove global hook (json FIRST, then standalone .py — never leave an
+    #    active json pointing at a missing script). Shared with the installer.
+    try:
+        from omg_cli.hook_install import remove_global_hook
+
+        removed = remove_global_hook(home=gh)
+        if removed:
+            for r in removed:
+                print(f"omg uninstall: removed {r}")
+        else:
+            print(f"omg uninstall: global hook absent ({hook})")
+    except Exception as exc:  # noqa: BLE001 — best-effort, never crash uninstall
+        print(f"omg uninstall: could not remove global hook: {exc}", file=sys.stderr)
 
     # 3. strip OMG managed rules block (preserve USER policy / foreign content)
     try:

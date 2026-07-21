@@ -20,7 +20,9 @@ from typing import Literal, Sequence
 PROVIDERS = frozenset({"codex", "claude", "gemini"})
 ALIASES: dict[str, str] = {
     "fable": "claude",
-    "agy": "gemini",
+    # Intentionally NO "agy" → gemini: agy is Antigravity (different binary,
+    # needs PTY). Advisor path is synchronous foreground — out of scope.
+    # `omg ask agy` must fail closed, not silently run gemini.
 }
 
 PromptMode = Literal["stdin", "argv", "file"]

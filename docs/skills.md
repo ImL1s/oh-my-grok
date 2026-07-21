@@ -97,12 +97,18 @@ Each skill’s **normative** playbook is its `SKILL.md`. Below is the operator s
 
 ```bash
 omg doctor
-omg setup
+omg setup                 # installs global rules + the PreToolUse soft-gate ($GROK_HOME/hooks)
+omg install-hook          # (re)install/repair just the global soft-gate; omg setup --no-global-hook opts out
 # after session restart:
 # read .omg/state/RESUME.md then:
 omg resume
 omg resume --clear   # after successfully continuing
 ```
+
+> Recovery (a grok session bricked by an old checkout-path hook can't run `omg`
+> through its blocked terminal): from any plain shell run
+> `python3 -m omg_cli.hook_install`, or `rm "${GROK_HOME:-$HOME/.grok}/hooks/omg-pretool-deny.json"`
+> to disable the soft-gate, then restart grok.
 
 ---
 
@@ -146,6 +152,50 @@ omg worker seal --all --run RUN   # leader seals every worktree (real head_sha; 
 omg worker join --run RUN
 omg integrate --run RUN
 omg accept --yes
+```
+
+---
+
+### `omg team` — experimental tmux team plane (D1 zero-config + D3 multi-CLI + D2 staged driver + D4 scale/resume/ralph)
+
+| | |
+|--|--|
+| **When** | Opt-in multi-pane ULW with real worktrees; hermetic dry-run for tests |
+| **Gate** | `OMG_EXPERIMENTAL_TMUX_TEAM=1` (refused otherwise) |
+| **CLI** | `omg team start\|run\|scale\|resume\|status\|collect\|stop` |
+| **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` / `scale` / `resume` never set `verified`. Scaling/resume/ralph are **lifecycle extensions** of the same team plane (no new isolation claims). |
+
+**`omg team run`** is a **staged DRIVER** over the team plane (not a new planner/verifier):
+
+`team-plan → team-prd → team-exec → team-verify → team-fix` (terminal: `complete` / `failed` / `blocked`).
+
+- **team-plan / team-prd** — pass-through markers. Decomposition is the **leader’s / ralplan’s** job; `run` only consumes `--tasks-json` or `--tasks-path`.
+- **team-exec** — `start_team` then `collect_team` (dry-run: start only; no tmux/subprocess).
+- **team-verify** — gates a durable artifact at `stages/team-verifier.md|json` via POST-A2 `parse_verdict_file`. APPROVE → `complete`; else → `team-fix`. Does **not** author verdicts.
+- **team-fix** — bounded by `--max-fix` (default 3); re-enters exec with findings; exceeding budget → `failed`.
+- **`--ralph [--max-iter N]`** (D4) — outer **bounded** persistence loop (default max_iter=3 from ralph) around exec→verify→fix; records `linked_ralph` on `team.json` and `linked_team` on `stages/team-ralph.json` so stop/cancel can cancel both; still completes only on real team-verify APPROVE — **never** sets `verified`.
+- Stale verify stamps are invalidated on (re)entry to exec/fix (mirror autopilot). `verified` remains behind `omg accept` only.
+
+**Lifecycle (D4):**
+
+- **`omg team scale --run ID --add N|--remove N [--dry-run]`** — dynamic panes under a run-dir scale lock; `--add` respects `max_workers_cap()` and monotonic window indices; `--remove` graceful drain (idle/newest), kills only recorded pgids + windows (**not** the session; **no** `pkill -f`), marks `scaled_down`, preserves worktrees; never below 1 active pane.
+- **`omg team resume --run ID`** — re-read `team.json`, reconcile pane liveness after leader restart; idempotent status writes only.
+
+```bash
+export OMG_EXPERIMENTAL_TMUX_TEAM=1
+omg team start --goal "parallelize A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --dry-run
+# multi-CLI (role→provider); floors reject cursor-on-reviewer and unknown roles:
+omg team start --goal "…" --tasks-json '[{"task_id":"t1","role":"executor","owned_files":["a.py"]}]' \
+  --routing '{"executor":{"provider":"codex"}}' --dry-run
+# staged pipeline (sequences existing lanes; no new planner):
+omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --dry-run --max-fix 3
+# ralph composition (bounded outer loop; never verified):
+omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --ralph --max-iter 2 --dry-run
+omg team scale --run RUN --add 2 --dry-run
+omg team resume --run RUN
+omg team status --run RUN --json
+omg team collect --run RUN   # seal_all_tasks + integrate; never verified
+omg team stop --run RUN      # kill recorded session + pgids only (no pkill -f)
 ```
 
 ---
@@ -342,10 +392,61 @@ Not run/`verified` authority.
 |--|--|
 | **When** | Symbols / check; **not** full LSP MCP |
 | **Invoke** | `lsp` · `/oh-my-grok:omg-lsp` |
-| **CLI** | `omg lsp status` · `omg lsp check path.py` |
+| **CLI** | `omg lsp status` · `omg lsp check path.py` · `omg lsp symbols path.py` · `omg lsp diagnostics path.py` |
 | **SKILL** | [`skills/omg-lsp/SKILL.md`](../skills/omg-lsp/SKILL.md) |
 
-Prefer Grok `read_file` / `grep`. Optional pyright if installed.
+Prefer Grok `read_file` / `grep`. `symbols` / `diagnostics` use stdlib `ast`
+(Python only; diagnostics are **syntax-only**, not type-checking). Optional
+pyright via `check` if installed.
+
+---
+
+### In-session MCP (`omg mcp-server`) — focused ops surface
+
+A **FOCUSED** in-session read + proposal MCP surface, **NOT** OMC ~54-tool
+parity. Exposes reads and non-authoritative proposal writes only;
+`passes` / `verified` / accept are **never** MCP tools (CLI-only **and**
+structurally refused when `OMG_MCP_SERVER=1`); LSP is a local `ast` probe, not
+a semantic bridge; no code-exec / state-mutation / authoritative-write tools.
+This is the “different alignment” for in-session **workflow** capability, not
+tool-count parity.
+
+```bash
+# Register with Grok (stdio; scope user|project):
+grok mcp add omg omg -- mcp-server
+# or:
+omg mcp-install --print-only   # shows the grok command
+omg mcp-install                # runs grok mcp add when grok is on PATH
+omg mcp-server                 # stdio JSON-RPC (sets OMG_MCP_SERVER=1)
+```
+
+| Tool | Kind | Backing |
+|------|------|---------|
+| `omg_state_status` | read | `hud.hud_pack` / run view |
+| `omg_state_read` | read | `state.load_run` / `load_run_view` |
+| `omg_state_list_active` | read | active pointer + runs list |
+| `omg_note_read` / `omg_note_write` | read / proposal | `.omg/notepad.md` |
+| `omg_wiki_query` / `omg_wiki_list` / `omg_wiki_ingest` | read / proposal | `.omg/wiki/` |
+| `omg_project_memory_read` / `omg_project_memory_add_note` | read / proposal | `.omg/project-memory.json` |
+| `omg_artifact_write` | proposal only | `.omg/artifacts/` |
+| `omg_lsp_symbols` / `omg_lsp_diagnostics` | read | `lsp_tools` ast probe |
+| `omg_resume_context` | read | resume pack + `RESUME.md` |
+
+**Security (three load-bearing mechanisms):**
+
+1. **Curated allowlist** — only the tools above; registry tests fail-closed.
+2. **Structural refusal** — `set_verified` / `register_cli_acceptance_token` raise
+   when `OMG_MCP_SERVER=1`.
+3. **Path confinement** — every write resolves under
+   `.omg/notepad.md` / `.omg/wiki/` / `.omg/artifacts/` / `.omg/project-memory*`;
+   rejects `.omg/state/**` and `..` / symlink traversal.
+
+**Deliberately excluded (OMC ships some of these; OMG does not):**
+`state_write`, `state_clear` (authoritative), `python_repl` (arbitrary exec),
+`ast_grep_replace` (mutates code), semantic LSP
+`goto` / `hover` / `rename` / `find_references` (keep the ast probe only),
+`shared_memory`, `session_search`, `merge_readiness`, and **any**
+accept / verify / `set_verified` / token-registration tool.
 
 ---
 
@@ -355,11 +456,18 @@ Prefer Grok `read_file` / `grep`. Optional pyright if installed.
 |-------|---------------------------|------|
 | `omg-orchestrator` | leader | Decompose + coordinate |
 | `omg-executor` | `read-write` (no shell) | Implement |
+| `omg-debugger` | `read-write` (no shell) | Root-cause / regression / build-fix |
+| `omg-designer` | `read-write` (no shell) | UI/UX implementation |
+| `omg-writer` | `read-write` (no shell) | README / API docs / comments |
+| `omg-test-engineer` | `read-write` (no shell) | Test strategy / coverage / flaky hardening |
 | `omg-critic` / `omg-verifier` | `read-only` | Challenge / evidence |
 | `omg-code-reviewer` / `omg-architect` | `read-only` | Structured review lanes |
-| `omg-qa-tester` / `omg-analyst` | `read-only` | QA scenarios / interview analysis |
+| `omg-security-reviewer` | `read-only` | OWASP / secrets / unsafe patterns |
+| `omg-qa-tester` / `omg-analyst` | see taxonomy | QA scenarios / interview analysis |
 
-Grok built-ins (`explore`, `plan`, `general-purpose`) fill gaps (no 19-role OMC zoo).
+Machine-readable posture / class floors for team routing live in
+`omg_cli/team/roles.py` (`role_posture`, `role_class`, `is_reviewer_or_verifier`).
+Grok built-ins (`explore`, `plan`, `general-purpose`) still fill ad-hoc gaps.
 
 ---
 
@@ -380,6 +488,7 @@ Grok built-ins (`explore`, `plan`, `general-purpose`) fill gaps (no 19-role OMC 
 | omg-ask | `ask` | no |
 | omg-cancel | `cancel` | no |
 | omg-wiki / hud / lsp | wiki / hud / lsp | no |
+| *(MCP surface)* | `mcp-server` / `mcp-install` | **never** (structurally refused) |
 
 ---
 

@@ -42,3 +42,6 @@ progress.md
 
 # prior-session research scratch (not part of the plugin)
 .agents/
+
+# Python packaging build artifacts (pyproject/setuptools)
+*.egg-info/

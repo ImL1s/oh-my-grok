@@ -1,0 +1,883 @@
+"""Hermetic tests for experimental tmux team plane (D1 + D3 multi-CLI).
+
+No live tmux. dry_run must never call tmux_available / subprocess.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+
+from omg_cli.evidence import CLI_WRITER
+from omg_cli.fanout import HARD_CAP_WORKERS, max_workers_cap
+from omg_cli.state import create_run, load_run
+from omg_cli.team import plane
+from omg_cli.team.plane import (
+    EXPERIMENTAL_ENV,
+    STATUS_TASK_KEYS,
+    STATUS_TOP_KEYS,
+    TEAM_WORKER_ENV,
+    TeamError,
+    TeamGateError,
+    build_executor_pane_command,
+    collect_team,
+    experimental_enabled,
+    in_spawned_worker_context,
+    load_team_meta,
+    start_team,
+    status_locked_view,
+    stop_team,
+    team_meta_path,
+    team_status,
+)
+from omg_cli.team.providers import (
+    PROMPT_DELIVERY_POSITIONAL_TEXT,
+    PROMPT_DELIVERY_PROMPT_FILE,
+    PROMPT_DELIVERY_STDIN,
+    build_executor_argv,
+)
+from omg_cli.team.roles import UnknownRoleError
+from omg_cli.team.routing import RoutingError
+from omg_cli.workers import ownership_manifest_path, worktree_dir
+
+_PROVIDERS_ALL = frozenset({"grok", "codex", "agy", "cursor", "gemini"})
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+BIN_OMG = REPO_ROOT / "bin" / "omg"
+PYTHON = sys.executable
+
+TASKS_TWO = [
+    {"task_id": "t-a", "owned_files": ["a.py"]},
+    {"task_id": "t-b", "owned_files": ["b.py"]},
+]
+
+
+def _git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=check,
+    )
+
+
+def _init_repo(path: Path) -> str:
+    path.mkdir(parents=True, exist_ok=True)
+    _git(path, "init")
+    _git(path, "config", "user.email", "omg-test@example.com")
+    _git(path, "config", "user.name", "omg-test")
+    _git(path, "config", "commit.gpgsign", "false")
+    (path / ".gitignore").write_text(".omg/\n", encoding="utf-8")
+    (path / "README.md").write_text("base\n", encoding="utf-8")
+    _git(path, "add", "README.md", ".gitignore")
+    _git(path, "commit", "-m", "initial")
+    return _git(path, "rev-parse", "HEAD").stdout.strip()
+
+
+def _enable_team(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
+    for key in plane.WORKER_ENV_MARKERS:
+        monkeypatch.delenv(key, raising=False)
+
+
+def _boom_tmux(*_a: Any, **_k: Any) -> Any:
+    raise AssertionError("tmux_available must not be called in dry_run")
+
+
+def _boom_subprocess(*_a: Any, **_k: Any) -> Any:
+    raise AssertionError("subprocess must not be called in dry_run")
+
+
+# ---------------------------------------------------------------------------
+# Gates
+# ---------------------------------------------------------------------------
+
+
+def test_experimental_gate_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(EXPERIMENTAL_ENV, raising=False)
+    assert experimental_enabled() is False
+    monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
+    assert experimental_enabled() is True
+    monkeypatch.delenv(TEAM_WORKER_ENV, raising=False)
+    assert in_spawned_worker_context() is False
+    monkeypatch.setenv(TEAM_WORKER_ENV, "1")
+    assert in_spawned_worker_context() is True
+
+
+def test_start_refuses_without_experimental_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.delenv(EXPERIMENTAL_ENV, raising=False)
+    with pytest.raises(TeamGateError, match=EXPERIMENTAL_ENV):
+        start_team("g", TASKS_TWO, root=tmp_path, dry_run=True)
+
+
+def test_start_refuses_inside_spawned_worker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setenv(TEAM_WORKER_ENV, "1")
+    with pytest.raises(TeamGateError, match="spawned-worker"):
+        start_team("g", TASKS_TWO, root=tmp_path, dry_run=True)
+
+
+def test_start_caps_at_hard_cap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    cap = max_workers_cap()
+    assert cap <= HARD_CAP_WORKERS
+    too_many = [
+        {"task_id": f"t{i}", "owned_files": [f"f{i}.py"]}
+        for i in range(cap + 1)
+    ]
+    with pytest.raises(TeamGateError, match="hard cap"):
+        start_team("g", too_many, root=tmp_path, dry_run=True)
+
+
+# ---------------------------------------------------------------------------
+# dry-run start
+# ---------------------------------------------------------------------------
+
+
+def test_dry_run_writes_team_json_no_tmux_no_subprocess(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "Popen", _boom_subprocess)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+
+    meta = start_team(
+        "ship slices",
+        TASKS_TWO,
+        root=tmp_path,
+        dry_run=True,
+    )
+    assert meta["writer"] == CLI_WRITER
+    assert meta["dry_run"] is True
+    assert meta["workspace_mode"] == "worktree"
+    assert meta["session"]
+    assert meta["session"].startswith("omg-")
+    assert len(meta["tasks"]) == 2
+
+    rid = meta["run_id"]
+    path = team_meta_path(tmp_path, rid)
+    assert path.is_file()
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    assert disk["writer"] == CLI_WRITER
+    assert disk["dry_run"] is True
+
+    # ownership + real worktrees
+    assert ownership_manifest_path(tmp_path, rid).is_file()
+    for rec in meta["tasks"]:
+        assert rec["pid"] is None
+        assert rec["pgid"] is None
+        assert rec["status"] == "dry_run"
+        assert isinstance(rec["argv"], list)
+        assert rec["argv"][0] == "grok"
+        assert "--cwd" in rec["argv"]
+        assert rec["pane_command"]
+        assert "XAI_API_KEY" not in rec["pane_command"]
+        assert "export " not in rec["pane_command"]
+        wt = Path(rec["worktree"])
+        assert wt.is_dir()
+        assert wt == worktree_dir(tmp_path, rid, rec["task_id"])
+
+    run = load_run(tmp_path, rid)
+    assert run is not None
+    assert run.get("verified") is not True
+    assert run.get("team") is True
+
+
+def test_cli_team_start_dry_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    env = os.environ.copy()
+    env[EXPERIMENTAL_ENV] = "1"
+    for k in plane.WORKER_ENV_MARKERS:
+        env.pop(k, None)
+    env["PYTHONPATH"] = str(REPO_ROOT) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    tasks = json.dumps(TASKS_TWO)
+    r = subprocess.run(
+        [
+            PYTHON,
+            str(BIN_OMG),
+            "team",
+            "start",
+            "--dry-run",
+            "--goal",
+            "cli dry",
+            "--tasks-json",
+            tasks,
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr + r.stdout
+    payload = json.loads(r.stdout)
+    assert payload["writer"] == CLI_WRITER
+    assert payload["dry_run"] is True
+    assert team_meta_path(tmp_path, payload["run_id"]).is_file()
+
+
+def test_cli_team_start_refuses_without_gate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    env = os.environ.copy()
+    env.pop(EXPERIMENTAL_ENV, None)
+    env["PYTHONPATH"] = str(REPO_ROOT) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    r = subprocess.run(
+        [
+            PYTHON,
+            str(BIN_OMG),
+            "team",
+            "start",
+            "--dry-run",
+            "--goal",
+            "x",
+            "--tasks-json",
+            json.dumps(TASKS_TWO),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 2
+    assert EXPERIMENTAL_ENV in (r.stderr + r.stdout)
+
+
+# ---------------------------------------------------------------------------
+# status --json LOCKED keys
+# ---------------------------------------------------------------------------
+
+
+def test_status_json_locked_field_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+
+    meta = start_team("st", TASKS_TWO, root=tmp_path, dry_run=True)
+    rid = meta["run_id"]
+    # status may call tmux_available for liveness — allow False without boom
+    monkeypatch.setattr(plane, "tmux_available", lambda: False)
+    st = team_status(tmp_path, rid)
+    locked = status_locked_view(st)
+    assert set(locked.keys()) == set(STATUS_TOP_KEYS)
+    assert locked["run_id"] == rid
+    assert locked["session"] == meta["session"]
+    assert locked["dry_run"] is True
+    assert locked["workspace_mode"] == "worktree"
+    assert len(locked["tasks"]) == 2
+    for t in locked["tasks"]:
+        assert set(t.keys()) == set(STATUS_TASK_KEYS)
+        assert t["alive"] is False
+        assert t["status"] == "dry_run"
+
+
+# ---------------------------------------------------------------------------
+# collect delegates; never verified
+# ---------------------------------------------------------------------------
+
+
+def test_collect_delegates_seal_and_integrate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", lambda: False)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+
+    meta = start_team("collect me", TASKS_TWO, root=tmp_path, dry_run=True)
+    rid = meta["run_id"]
+
+    seal_calls: list[tuple[Any, ...]] = []
+    integrate_calls: list[tuple[Any, ...]] = []
+
+    def fake_seal(root: Any, run_id: str, **kw: Any) -> list[dict[str, Any]]:
+        seal_calls.append((root, run_id, kw))
+        return [{"task_id": "t-a", "status": "skipped-no-worktree"}]
+
+    def fake_integrate(root: Any, run_id: str, **kw: Any) -> dict[str, Any]:
+        integrate_calls.append((root, run_id, kw))
+        return {"status": "missing", "writer": CLI_WRITER, "run_id": run_id}
+
+    monkeypatch.setattr(plane, "seal_all_tasks", fake_seal)
+    # collect_team imports integrate_results inside the function
+    import omg_cli.integrate as integrate_mod
+
+    monkeypatch.setattr(integrate_mod, "integrate_results", fake_integrate)
+
+    # Also patch the name used after import inside collect_team — rebind module
+    monkeypatch.setattr(
+        "omg_cli.integrate.integrate_results",
+        fake_integrate,
+    )
+
+    result = collect_team(tmp_path, rid)
+    assert seal_calls, "seal_all_tasks must be called"
+    assert integrate_calls, "integrate_results must be called"
+    assert seal_calls[0][1] == rid
+    assert integrate_calls[0][1] == rid
+    assert result["writer"] == CLI_WRITER
+    run = load_run(tmp_path, rid)
+    assert run is not None
+    assert run.get("verified") is not True
+    assert result.get("verified") is not True
+
+
+def test_collect_rejects_forged_team_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="forge")
+    rid = run["run_id"]
+    path = team_meta_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "verified": True,
+                "run_id": rid,
+                "session": "evil",
+                "dry_run": False,
+                "tasks": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TeamError, match="CLI writer"):
+        collect_team(tmp_path, rid)
+    with pytest.raises(TeamError, match="CLI writer"):
+        load_team_meta(tmp_path, rid)
+    # forged verified is not honored anywhere in team plane
+    run2 = load_run(tmp_path, rid)
+    assert run2 is not None
+    assert run2.get("verified") is not True
+
+
+# ---------------------------------------------------------------------------
+# stop: recorded session/pgids only; dry_run not signalled
+# ---------------------------------------------------------------------------
+
+
+def test_stop_uses_only_recorded_session_and_pgids(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", lambda: False)
+
+    meta = start_team("stop me", TASKS_TWO, root=tmp_path, dry_run=True)
+    rid = meta["run_id"]
+
+    # Hand-edit to simulate a live record with pgids (not dry_run pids)
+    live = dict(meta)
+    live["dry_run"] = False
+    live["session"] = "omg-test-session-xyz"
+    live["tasks"] = [
+        {
+            **meta["tasks"][0],
+            "pid": 424242,
+            "pgid": 424242,
+            "status": "running",
+        },
+        {
+            **meta["tasks"][1],
+            "pid": None,
+            "pgid": None,
+            "status": "dry_run",
+        },
+    ]
+    live["writer"] = CLI_WRITER
+    team_meta_path(tmp_path, rid).write_text(
+        json.dumps(live, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    killpg_calls: list[tuple[int, int]] = []
+    tmux_cmds: list[list[str]] = []
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        killpg_calls.append((pgid, sig))
+        raise ProcessLookupError("gone")
+
+    def fake_tmux_run(args: Any, **kw: Any) -> MagicMock:
+        tmux_cmds.append(list(args))
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = ""
+        m.stderr = ""
+        return m
+
+    monkeypatch.setattr(plane.os, "killpg", fake_killpg)
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+    monkeypatch.setattr(plane, "_tmux_run", fake_tmux_run)
+
+    # Broad pkill must never be used — if anyone calls subprocess with pkill, fail
+    def guard_run(cmd: Any, *a: Any, **k: Any) -> Any:
+        joined = " ".join(str(x) for x in (cmd if isinstance(cmd, (list, tuple)) else [cmd]))
+        if "pkill" in joined or "pgrep" in joined:
+            raise AssertionError(f"forbidden broad kill: {joined}")
+        raise AssertionError(f"unexpected subprocess.run: {joined}")
+
+    monkeypatch.setattr(subprocess, "run", guard_run)
+    monkeypatch.setattr(plane.subprocess, "run", guard_run)
+
+    result = stop_team(tmp_path, rid)
+    assert result["writer"] == CLI_WRITER
+    # kill-session used recorded name only
+    assert any(
+        c[:2] == ["kill-session", "-t"] and c[2] == "omg-test-session-xyz"
+        for c in tmux_cmds
+    )
+    # only the recorded pgid signalled; dry_run pid=None never signalled
+    assert killpg_calls
+    assert all(pg == 424242 for pg, _sig in killpg_calls)
+    # actions must not invoke pkill; note text may mention the ban
+    assert not any(
+        a.strip().startswith("pkill") or " pkill " in f" {a} "
+        for a in result.get("actions") or []
+    )
+    assert all(
+        "killpg" in a or "tmux kill-session" in a or "tmux unavailable" in a
+        or a.startswith("tmux")
+        for a in result.get("actions") or []
+        if "dry_run" not in a
+    )
+
+
+def test_stop_dry_run_entries_not_signalled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", lambda: False)
+
+    meta = start_team("dry stop", TASKS_TWO, root=tmp_path, dry_run=True)
+    rid = meta["run_id"]
+
+    killpg_calls: list[Any] = []
+    monkeypatch.setattr(
+        plane.os,
+        "killpg",
+        lambda *a, **k: killpg_calls.append(a) or (_ for _ in ()).throw(
+            AssertionError("killpg on dry_run")
+        ),
+    )
+    result = stop_team(tmp_path, rid)
+    assert killpg_calls == []
+    assert result["dry_run"] is True
+    assert any("dry_run" in a for a in result["actions"])
+
+
+# ---------------------------------------------------------------------------
+# team.json CLI_WRITER stamp
+# ---------------------------------------------------------------------------
+
+
+def test_team_json_cli_writer_stamp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", lambda: False)
+    meta = start_team("stamp", TASKS_TWO, root=tmp_path, dry_run=True)
+    disk = json.loads(team_meta_path(tmp_path, meta["run_id"]).read_text())
+    assert disk["writer"] == CLI_WRITER
+    assert disk.get("verified") is not True
+
+
+def test_hand_written_verified_team_json_not_honored(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A hand-written team.json {verified:true} is not CLI-stamped → rejected."""
+    _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="v")
+    rid = run["run_id"]
+    path = team_meta_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"verified": True, "writer": "agent", "run_id": rid}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TeamError, match="CLI writer"):
+        stop_team(tmp_path, rid)
+    with pytest.raises(TeamError, match="CLI writer"):
+        team_status(tmp_path, rid)
+    # status.json verified untouched
+    assert (load_run(tmp_path, rid) or {}).get("verified") is not True
+
+
+# ---------------------------------------------------------------------------
+# D3 multi-CLI routing (dry-run only)
+# ---------------------------------------------------------------------------
+
+
+def test_zero_config_still_all_grok(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No routing → D1 parity: all grok panes."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+
+    meta = start_team("z", TASKS_TWO, root=tmp_path, dry_run=True)
+    assert meta.get("multi_cli") is False
+    assert meta.get("routing") is None
+    for rec in meta["tasks"]:
+        assert rec["argv"][0] == "grok"
+        assert rec["provider"] == "grok"
+        assert rec["needs_pty"] is False
+
+
+def test_dry_run_multi_cli_codex_argv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+
+    tasks = [
+        {
+            "task_id": "t1",
+            "role": "executor",
+            "owned_files": ["a.py"],
+        }
+    ]
+    meta = start_team(
+        "multi",
+        tasks,
+        root=tmp_path,
+        dry_run=True,
+        routing={"executor": {"provider": "codex"}},
+        available_providers=_PROVIDERS_ALL,
+    )
+    assert meta["multi_cli"] is True
+    assert meta["dry_run"] is True
+    assert meta["routing"] is not None
+    assert meta["routing"]["by_role"]["executor"]["provider"] == "codex"
+    assert len(meta["tasks"]) == 1
+    rec = meta["tasks"][0]
+    assert rec["task_id"] == "t1"
+    assert rec["provider"] == "codex"
+    assert rec["role"] == "executor"
+    assert rec["posture"] == "read-write"
+    assert rec["argv"][0] == "codex"
+    assert "exec" in rec["argv"]
+    assert "-s" in rec["argv"]
+    assert rec["argv"][rec["argv"].index("-s") + 1] == "workspace-write"
+    assert rec["needs_pty"] is False
+    assert rec["prompt_delivery"] == PROMPT_DELIVERY_STDIN
+    assert rec["pid"] is None
+    # pane command embeds codex, not only grok
+    assert "codex" in rec["pane_command"]
+    # stdin delivery: redirect prompt file into codex's trailing `-`
+    assert rec["argv"][-1] == "-"
+    # shell fragment ends with: ... - < '<promptfile>'
+    assert " < " in rec["pane_command"]
+    prompt_path = Path(rec["worktree"]) / ".omg" / "team-prompt" / "t1.prompt.md"
+    assert prompt_path.is_file()
+    assert str(prompt_path) in rec["pane_command"] or prompt_path.name in rec[
+        "pane_command"
+    ]
+    # Body must NOT appear in recorded argv (stays out of ps for stdin mode).
+    body = prompt_path.read_text(encoding="utf-8")
+    assert body not in rec["argv"]
+    run = load_run(tmp_path, meta["run_id"])
+    assert run is not None
+    assert run.get("verified") is not True
+
+
+def test_dry_run_agy_records_needs_pty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+
+    tasks = [{"task_id": "t-agy", "role": "executor", "owned_files": ["x.py"]}]
+    meta = start_team(
+        "agy pane",
+        tasks,
+        root=tmp_path,
+        dry_run=True,
+        routing={"executor": {"provider": "agy"}},
+        available_providers=_PROVIDERS_ALL,
+    )
+    rec = meta["tasks"][0]
+    assert rec["provider"] == "agy"
+    assert rec["needs_pty"] is True
+    assert rec["argv"][0] == "agy"
+    assert rec["prompt_delivery"] == PROMPT_DELIVERY_POSITIONAL_TEXT
+    assert "pty" in rec["pane_command"] or "python3" in rec["pane_command"]
+    assert meta["routing"]["by_role"]["executor"]["needs_pty"] is True
+    # positional-text: prompt BODY (not path alone) must reach the pty payload
+    # (JSON-escaped inside python3 -c payload, so match a distinctive line).
+    prompt_path = Path(rec["worktree"]) / ".omg" / "team-prompt" / "t-agy.prompt.md"
+    body = prompt_path.read_text(encoding="utf-8")
+    assert "agy pane" in body
+    assert "agy pane" in rec["pane_command"]
+    # path placeholder must not remain as the sole -p value in the pane payload
+    # once body is substituted (argv record still has the path).
+    assert str(prompt_path) in rec["argv"]
+    assert str(prompt_path) not in rec["pane_command"]
+
+
+def test_build_executor_pane_command_codex_stdin_redirect(tmp_path: Path) -> None:
+    """Unit: codex pane ends with `... - < 'promptfile'`."""
+    pf = tmp_path / "task.prompt.md"
+    pf.write_text("DO THE TASK\n", encoding="utf-8")
+    inv = build_executor_argv(
+        "codex",
+        "executor",
+        prompt_file=pf,
+        cwd=tmp_path,
+        model=None,
+    )
+    assert inv.prompt_delivery == PROMPT_DELIVERY_STDIN
+    cmd = build_executor_pane_command(
+        inv.argv,
+        needs_pty=inv.needs_pty,
+        prompt_delivery=inv.prompt_delivery,
+        prompt_file=pf,
+    )
+    assert "codex" in cmd
+    assert inv.argv[-1] == "-"
+    # Redirection on the inner exec, not in the argv list itself.
+    assert f"< {pf!s}" in cmd or f"< '{pf}'" in cmd or f'< "{pf}"' in cmd or (
+        " < " in cmd and str(pf) in cmd
+    )
+    assert "DO THE TASK" not in cmd  # body not inlined for stdin mode
+
+
+def test_build_executor_pane_command_cursor_positional_body(tmp_path: Path) -> None:
+    pf = tmp_path / "task.prompt.md"
+    body = "CURSOR_TASK_BODY_UNIQUE_xyz"
+    pf.write_text(body, encoding="utf-8")
+    inv = build_executor_argv(
+        "cursor",
+        "executor",
+        prompt_file=pf,
+        cwd=tmp_path,
+    )
+    assert inv.prompt_delivery == PROMPT_DELIVERY_POSITIONAL_TEXT
+    assert inv.argv[-1] == str(pf)  # path placeholder at build time
+    cmd = build_executor_pane_command(
+        inv.argv,
+        needs_pty=inv.needs_pty,
+        prompt_delivery=inv.prompt_delivery,
+        prompt_file=pf,
+    )
+    assert body in cmd
+    assert "cursor-agent" in cmd
+
+
+def test_build_executor_pane_command_grok_prompt_file_unchanged(tmp_path: Path) -> None:
+    pf = tmp_path / "task.prompt.md"
+    pf.write_text("GROK_BODY\n", encoding="utf-8")
+    inv = build_executor_argv(
+        "grok",
+        "executor",
+        prompt_file=pf,
+        cwd=tmp_path,
+    )
+    assert inv.prompt_delivery == PROMPT_DELIVERY_PROMPT_FILE
+    cmd = build_executor_pane_command(
+        inv.argv,
+        needs_pty=inv.needs_pty,
+        prompt_delivery=inv.prompt_delivery,
+        prompt_file=pf,
+    )
+    assert "--prompt-file" in cmd
+    assert str(pf) in cmd
+    assert "GROK_BODY" not in cmd  # body stays in file
+    assert " < " not in cmd
+
+
+def test_start_rejects_cursor_on_reviewer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+
+    tasks = [
+        {
+            "task_id": "rev",
+            "role": "code-reviewer",
+            "owned_files": ["r.py"],
+        }
+    ]
+    with pytest.raises((TeamError, RoutingError), match="FLOOR 1|cursor|structured"):
+        start_team(
+            "bad",
+            tasks,
+            root=tmp_path,
+            dry_run=True,
+            routing={"code-reviewer": {"provider": "cursor"}},
+            available_providers=_PROVIDERS_ALL,
+        )
+
+
+def test_start_rejects_unknown_role_routing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+
+    tasks = [{"task_id": "t1", "owned_files": ["a.py"]}]
+    with pytest.raises(UnknownRoleError):
+        start_team(
+            "bad role",
+            tasks,
+            root=tmp_path,
+            dry_run=True,
+            routing={"not-a-role": {"provider": "codex"}},
+            available_providers=_PROVIDERS_ALL,
+        )
+
+
+def test_loud_fallback_at_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+
+    tasks = [{"task_id": "t1", "role": "executor", "owned_files": ["a.py"]}]
+    meta = start_team(
+        "fallback",
+        tasks,
+        root=tmp_path,
+        dry_run=True,
+        routing={"executor": {"provider": "codex"}},
+        available_providers=frozenset({"grok"}),  # codex missing → loud fallback
+    )
+    rec = meta["tasks"][0]
+    assert rec["provider"] == "grok"
+    assert rec["argv"][0] == "grok"
+    route = meta["routing"]["by_role"]["executor"]
+    assert route["fallback_from"] == "codex"
+    assert route["warning"]
+    assert meta["routing"]["warnings"]
+    err = capsys.readouterr().err
+    assert "codex" in err or route["warning"]
+
+
+def test_resolved_routing_snapshot_stable_in_team_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", lambda: False)
+    monkeypatch.setattr(plane.subprocess, "run", _boom_subprocess)
+
+    tasks = [
+        {"task_id": "t1", "role": "executor", "owned_files": ["a.py"]},
+        {"task_id": "t2", "role": "code-reviewer", "owned_files": ["b.py"]},
+    ]
+    meta = start_team(
+        "snap",
+        tasks,
+        root=tmp_path,
+        dry_run=True,
+        routing={
+            "executor": {"provider": "codex"},
+            "code-reviewer": {"provider": "gemini"},
+        },
+        available_providers=_PROVIDERS_ALL,
+    )
+    rid = meta["run_id"]
+    disk = load_team_meta(tmp_path, rid)
+    assert disk["routing"] == meta["routing"]
+    assert disk["routing"]["by_role"]["executor"]["provider"] == "codex"
+    assert disk["routing"]["by_role"]["code-reviewer"]["provider"] == "gemini"
+    # status is pure read — does not rewrite routing
+    st = team_status(tmp_path, rid)
+    locked = status_locked_view(st)
+    assert set(locked.keys()) == set(STATUS_TOP_KEYS)
+    disk2 = load_team_meta(tmp_path, rid)
+    assert disk2["routing"] == disk["routing"]
+
+
+def test_cli_team_start_dry_run_with_routing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    env = os.environ.copy()
+    env[EXPERIMENTAL_ENV] = "1"
+    for k in plane.WORKER_ENV_MARKERS:
+        env.pop(k, None)
+    env["PYTHONPATH"] = str(REPO_ROOT) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    # Hermetic: force binary-check skip by only using providers we can fake via
+    # PATH? resolve_routing probes PATH. Inject a fake codex on PATH.
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for name in ("codex", "grok"):
+        p = fake_bin / name
+        p.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        p.chmod(0o755)
+    env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
+
+    tasks = json.dumps(
+        [{"task_id": "t1", "role": "executor", "owned_files": ["a.py"]}]
+    )
+    routing = json.dumps({"executor": {"provider": "codex"}})
+    r = subprocess.run(
+        [
+            PYTHON,
+            str(BIN_OMG),
+            "team",
+            "start",
+            "--dry-run",
+            "--goal",
+            "cli multi",
+            "--tasks-json",
+            tasks,
+            "--routing",
+            routing,
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr + r.stdout
+    payload = json.loads(r.stdout)
+    assert payload["multi_cli"] is True
+    assert payload["tasks"][0]["provider"] == "codex"
+    assert payload["tasks"][0]["argv"][0] == "codex"
+    assert team_meta_path(tmp_path, payload["run_id"]).is_file()

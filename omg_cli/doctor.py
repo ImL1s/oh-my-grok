@@ -2,6 +2,7 @@
 """omg doctor — health checks for plugin + CLI environment."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -24,7 +25,12 @@ HOOK_SCRIPTS = (
     "hooks/bin/subagent_stop.py",
     "hooks/bin/stop.py",
     "hooks/bin/pre_tool_use_deny.py",
+    "hooks/bin/omg_pretool_deny_standalone.py",
 )
+
+# macOS TCC-protected home subdirectories: a checkout here made the global hook
+# unreadable to grok processes without Documents/Desktop/Downloads access.
+_TCC_PROTECTED_DIR_NAMES = ("Documents", "Desktop", "Downloads")
 
 PLUGIN_NAME = "oh-my-grok"
 
@@ -195,26 +201,14 @@ def _home() -> Path:
     return Path(os.environ.get("HOME") or Path.home())
 
 
-def check_global_pretool_hook() -> tuple[str, bool, str]:
-    """Require ~/.grok/hooks/omg-pretool-deny.json with a resolvable deny script.
+_PY_IN_CMD_RE = re.compile(r"""["']([^"']+\.py)["']|(\S+\.py)""")
 
-    Live 2026-07-19: plugin-bundled hooks alone did not appear in session
-    hook_execution; soft-gate requires this global hook file.
-    """
-    path = _home() / ".grok" / "hooks" / GLOBAL_PRETOOL_HOOK_NAME
-    if not path.is_file():
-        return _check(
-            "global PreToolUse soft-gate",
-            False,
-            f"missing {path} (run scripts/install-plugin.sh)",
-        )
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        return _check("global PreToolUse soft-gate", False, f"invalid JSON: {e}")
-    # Extract first command string under hooks.PreToolUse[*].hooks[*].command
+
+def _extract_pretool_hooks(data: Any) -> tuple[list[str], list[str], list[dict]]:
+    """Return (commands, matchers, hook_entries) under hooks.PreToolUse[*].hooks[*]."""
     commands: list[str] = []
     matchers: list[str] = []
+    entries: list[dict] = []
     hooks_root = (data.get("hooks") or {}) if isinstance(data, dict) else {}
     for group in hooks_root.get("PreToolUse") or []:
         if not isinstance(group, dict):
@@ -222,49 +216,214 @@ def check_global_pretool_hook() -> tuple[str, bool, str]:
         if group.get("matcher") is not None:
             matchers.append(str(group.get("matcher") or ""))
         for h in group.get("hooks") or []:
-            if isinstance(h, dict) and isinstance(h.get("command"), str):
-                commands.append(h["command"])
-    if not commands:
-        return _check(
-            "global PreToolUse soft-gate",
-            False,
-            f"{path} has no PreToolUse command entries",
-        )
-    if not any("spawn_subagent" in m or "Task" in m for m in matchers):
-        return _check(
-            "global PreToolUse soft-gate",
-            False,
-            f"{path} matcher missing spawn_subagent|Task "
-            "(re-run scripts/install-plugin.sh)",
-        )
-    # Prefer a path that looks like pre_tool_use_deny.py
-    ok_path: str | None = None
-    for cmd in commands:
-        m = re.search(r'["\']([^"\']*pre_tool_use_deny\.py)["\']', cmd)
-        if not m:
-            m = re.search(r"(\S*pre_tool_use_deny\.py)", cmd)
-        if m:
-            candidate = Path(m.group(1))
-            if candidate.is_file() and os.access(candidate, os.R_OK):
-                ok_path = str(candidate)
-                break
-            return _check(
-                "global PreToolUse soft-gate",
-                False,
-                f"deny script not found or unreadable: {candidate}",
-            )
-    if ok_path is None:
-        # Command present but not our deny script — hard fail for this gate
-        return _check(
-            "global PreToolUse soft-gate",
-            False,
-            f"{path} commands do not reference pre_tool_use_deny.py: {commands!r}",
-        )
-    return _check(
-        "global PreToolUse soft-gate",
-        True,
-        f"{path} → {ok_path}",
+            if isinstance(h, dict):
+                entries.append(h)
+                if isinstance(h.get("command"), str):
+                    commands.append(h["command"])
+    return commands, matchers, entries
+
+
+def _run_hook_command(command: str, payload: str) -> tuple[int, str]:
+    """Run the hook's ACTUAL shell command with a stdin event; return (rc, stdout).
+
+    Exercises the real launcher (``python3 -I -S "<abs>" || true``) end-to-end —
+    the only way to prove the installed hook actually runs and decides correctly.
+    """
+    cwd = "/tmp" if os.path.isdir("/tmp") else None
+    proc = subprocess.run(
+        ["/bin/sh", "-c", command],
+        input=payload,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+        timeout=10,
     )
+    return proc.returncode, (proc.stdout or "").strip()
+
+
+def check_global_pretool_hook() -> tuple[str, bool, str]:
+    """Require a SAFE global PreToolUse soft-gate under ``$GROK_HOME/hooks``.
+
+    Hard predicates use real ``open()`` / ``resolve()`` / subprocess — NOT
+    ``os.access``, which checks permission bits and cannot see macOS TCC (the very
+    false-green that let a checkout-path install pass while grok could not open the
+    script → python exit 2 → grok read it as an explicit deny → every tool blocked).
+    FAIL when: json missing / malformed / has ≠1 command hook (a 2nd could exit 2) /
+    matcher missing shell or spawn / script escapes ``$GROK_HOME`` (checkout or
+    symlink) / not a readable regular file / a neutral-cwd behavioral smoke returns
+    the wrong allow/deny decisions.
+    """
+    from omg_cli.hook_install import (
+        MATCHER,
+        STANDALONE_BASENAME,
+        grok_home,
+        launcher_command,
+    )
+
+    name = "global PreToolUse soft-gate"
+    gh = grok_home()
+    path = gh / "hooks" / GLOBAL_PRETOOL_HOOK_NAME
+    if not path.is_file():
+        return _check(name, False, f"missing {path} (run: omg install-hook)")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        return _check(name, False, f"unreadable/invalid json {path}: {e}")
+
+    commands, matchers, entries = _extract_pretool_hooks(data)
+    if not commands:
+        return _check(name, False, f"{path} has no PreToolUse command entries")
+    if len(commands) != 1:
+        return _check(
+            name, False,
+            f"{path} has {len(commands)} command hooks (expected exactly 1; a second "
+            "command is a second chance to exit 2 and block)",
+        )
+    if matchers != [MATCHER]:
+        return _check(
+            name, False,
+            f"{path} matcher is not the canonical shell+spawn matcher: {matchers!r}",
+        )
+    for h in entries:
+        if h.get("type") != "command":
+            return _check(name, False, f"{path} hook type must be 'command' (got {h.get('type')!r})")
+        to = h.get("timeout")
+        if to is not None and (not isinstance(to, int) or isinstance(to, bool) or to <= 0 or to > 120):
+            return _check(name, False, f"{path} invalid timeout: {to!r}")
+
+    cmd = commands[0]
+    # AUTHORITATIVE check first: the command must be EXACTLY our canonical launcher for
+    # the canonical install path. `expected_py` is known directly (no regex), so a
+    # metacharacter $GROK_HOME can't confuse path extraction and false-FAIL a correct
+    # install. This rejects an appended `; exit 2` / `$()` / `` ` `` injection or a
+    # dropped `|| true` — any of which could exit 2 (grok's explicit deny) and block
+    # every tool, which a substring / decision-only smoke would miss.
+    expected_py = gh / "hooks" / STANDALONE_BASENAME
+    if cmd != launcher_command(expected_py):
+        # Non-canonical — surface the most useful reason (regex only for the message).
+        m = _PY_IN_CMD_RE.search(cmd)
+        if m:
+            script = Path(m.group(1) or m.group(2))
+            try:
+                r = script.resolve()
+                r.relative_to(gh.resolve())
+            except (OSError, ValueError):
+                return _check(
+                    name, False,
+                    f"hook script escapes $GROK_HOME ({script}); checkout-path / symlink "
+                    "installs brick other workspaces — run: omg install-hook",
+                )
+        return _check(
+            name, False,
+            f"{path} command is not the canonical `-I -S … || true` launcher for "
+            f"{expected_py}: {cmd!r} — run: omg install-hook",
+        )
+    # Canonical command ⇒ the script IS expected_py. Resolve it (catch a symlink at the
+    # canonical path escaping $GROK_HOME) and prove doctor can really open() it.
+    try:
+        resolved = expected_py.resolve()
+        resolved.relative_to(gh.resolve())
+    except (OSError, ValueError):
+        return _check(
+            name, False,
+            f"hook script escapes $GROK_HOME via symlink ({expected_py}); run: omg install-hook",
+        )
+    if not resolved.is_file():
+        return _check(name, False, f"hook script missing / not a regular file: {resolved}")
+    try:
+        with open(resolved, "rb"):           # REAL open — os.access cannot see TCC
+            pass
+    except OSError as e:
+        return _check(name, False, f"hook script cannot be opened: {e}")
+
+    # Behavioral smoke through the ACTUAL shell command (exercises -I -S + || true).
+    # EVERY probe must exit 0 (a nonzero exit — esp. 2 — is grok's explicit deny) and
+    # return the right JSON decision. Parse the decision; never substring-match.
+    probes = (
+        ("allow", '{"tool_name":"run_terminal_command","tool_input":{"command":"ls -la"}}'),
+        ("deny", '{"tool_name":"run_terminal_command","tool_input":{"command":"claude -p x"}}'),
+        ("deny", '{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore"}}'),
+    )
+    for want, payload in probes:
+        try:
+            rc, out = _run_hook_command(cmd, payload)
+        except (OSError, subprocess.SubprocessError) as e:
+            return _check(name, False, f"hook smoke could not run: {e}")
+        if rc != 0:
+            return _check(
+                name, False,
+                f"hook smoke exited {rc} (must be 0; a nonzero/2 exit is grok's explicit "
+                f"deny and would block the tool): {out!r}",
+            )
+        try:
+            got = json.loads(out)["decision"]
+        except Exception:
+            return _check(name, False, f"hook smoke emitted non-decision JSON: {out!r}")
+        if got != want:
+            return _check(name, False, f"hook smoke decision {got!r} (want {want!r}) for {payload}")
+
+    return _check(name, True, f"{path} → {resolved} (canonical launcher; smoke rc0 allow/deny/spawn ok)")
+
+
+def check_global_pretool_hook_freshness() -> SoftResult:
+    """WARN (→ FAIL under --strict) if the installed standalone drifted from the
+    committed one, or if ``$GROK_HOME`` resolves under a TCC-protected location
+    (doctor's own read succeeding does not prove grok's process can read it — only a
+    live cross-workspace grok canary proves that seam)."""
+    from omg_cli.hook_install import committed_standalone, grok_home, STANDALONE_BASENAME
+
+    name = "global soft-gate freshness"
+    gh = grok_home()
+    installed = gh / "hooks" / STANDALONE_BASENAME
+    if not installed.is_file():
+        return (name, "ok", f"standalone not installed ({installed})")
+    src = committed_standalone()
+    try:
+        ih = hashlib.sha256(installed.read_bytes()).hexdigest()
+    except OSError as e:
+        return (name, "warn", f"cannot hash installed hook: {e}")
+    if src.is_file():
+        try:
+            sh = hashlib.sha256(src.read_bytes()).hexdigest()
+        except OSError:
+            sh = None
+        if sh is not None and ih != sh:
+            return (name, "warn", "installed standalone is STALE vs committed (run: omg install-hook)")
+    try:
+        parts = set(gh.resolve().parts)
+    except OSError:
+        parts = set(gh.parts)
+    tcc = sorted(parts & set(_TCC_PROTECTED_DIR_NAMES))
+    if tcc:
+        return (
+            name, "warn",
+            f"$GROK_HOME is under TCC-protected {tcc}; a grok process without that "
+            "access may fail to read the hook — prefer the default ~/.grok",
+        )
+    # Grok merges EVERY $GROK_HOME/hooks/*.json. Another PreToolUse command hook can
+    # exit 2 and block a tool regardless of ours — we can't control third-party hooks,
+    # so surface them (honest WARN, not our FAIL).
+    others: list[str] = []
+    hooks_dir = gh / "hooks"
+    if hooks_dir.is_dir():
+        for jf in sorted(hooks_dir.glob("*.json")):
+            if jf.name == GLOBAL_PRETOOL_HOOK_NAME:
+                continue
+            try:
+                data = json.loads(jf.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            cmds, _mm, _ee = _extract_pretool_hooks(data)
+            if cmds:
+                others.append(jf.name)
+    if others:
+        return (
+            name, "warn",
+            f"other PreToolUse hook file(s) present ({others}); a hook there that exits 2 "
+            "can also block a tool — audit them (grok merges all $GROK_HOME/hooks/*.json)",
+        )
+    return (name, "ok", f"installed standalone matches committed (sha {ih[:12]}…)")
 
 
 def _run_grok_json(argv: tuple[str, ...] | list[str], *, timeout: float = 8.0) -> Any | None:
@@ -802,6 +961,7 @@ def run_soft_checks() -> list[SoftResult]:
         check_plugin_trust(),
         check_effective_discovery_foreign(),
         check_global_rules(),
+        check_global_pretool_hook_freshness(),
         check_plugin_version_drift(),
         check_plugin_enabled(),
         check_capabilities_lock(),

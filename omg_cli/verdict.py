@@ -342,26 +342,31 @@ def parse_verdict(
     # 2) Any JSON object (full file or embedded) — severity aggregate, not
     # first-match-wins. A stray earlier APPROVE must never override a real
     # FAILED / REQUEST_CHANGES present anywhere in the document.
+    #
+    # INTENTIONAL fail-closed (A2b / Fable): ALSO fold step-3 prose severity
+    # signals into this same aggregate. A fenced-example JSON APPROVE
+    # (often run_id-less) must not short-circuit before an unfenced prose
+    # REQUEST_CHANGES / FAILED is considered. Consequence (pinned by
+    # test_bound_json_approve_flips_on_unfenced_request_changes_prose): a
+    # genuine run_id-bound JSON APPROVE in the same document as an unfenced
+    # whole-word "REQUEST CHANGES" aggregates to REQUEST_CHANGES — same class
+    # as fenced-FAILED-poisons-APPROVE. Do not "fix" that over-rejection
+    # without an explicit product decision.
     json_verdicts: list[str] = []
     for data in _extract_json_objects(text):
         jv = _json_verdict(data, expected_run_id=expected_run_id)
         if jv is not None:
             json_verdicts.append(jv)
+    # Prose signals (step-3) folded here so severity is document-wide.
+    if bool(_FAILED_RE.search(text)):
+        json_verdicts.append("FAILED")
+    if bool(_REQUEST_CHANGES_RE.search(text)):
+        json_verdicts.append("REQUEST_CHANGES")
+    if prose_has_terminal_approve(text):
+        json_verdicts.append("APPROVE")
     severe = _most_severe_verdict(json_verdicts)
     if severe is not None:
         return severe
-
-    # 3) Prose fail-closed path (ignore fenced examples / negations)
-    has_failed = bool(_FAILED_RE.search(text))
-    has_rc = bool(_REQUEST_CHANGES_RE.search(text))
-    has_approve = prose_has_terminal_approve(text)
-
-    if has_failed:
-        return "FAILED"
-    if has_rc:
-        return "REQUEST_CHANGES"
-    if has_approve:
-        return "APPROVE"
     return "UNKNOWN"
 
 

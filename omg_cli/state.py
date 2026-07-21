@@ -1476,7 +1476,13 @@ def set_verified(
     should pass ``lease=...``. When ``lease is None``, a short-lived lease with
     intent ``"accept"`` is acquired for the duration of the commit (same pattern
     as integrate auto-lease). Nesting: never re-acquire when a lease is provided.
+
+    Structural refusal: when ``OMG_MCP_SERVER=1`` (in-session MCP process),
+    this always raises — verified is CLI-only and impossible from MCP.
     """
+    from omg_cli.acceptance import refuse_if_mcp_server
+
+    refuse_if_mcp_server("set_verified")
     root = Path(root)
     current = load_run(root, run_id)
     if current is None:

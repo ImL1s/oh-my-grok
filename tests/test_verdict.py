@@ -319,3 +319,49 @@ def test_scanner_union_prose_odd_quote_legit_unbound_approve():
     """Odd prose quote + real unbound APPROVE (no stale object) still approves."""
     t = 'He said "ok"\n{"verdict":"APPROVE"}'
     assert parse_verdict(t, expected_run_id="R") == "APPROVE"
+
+
+def test_fenced_json_approve_does_not_beat_prose_request_changes():
+    """A2b false-green: fenced example JSON APPROVE must not short-circuit prose RC.
+
+    Pre-fix step 2 returned the fenced unbound APPROVE before step 3 saw
+    unfenced ``## Verdict\\nREQUEST CHANGES``. Fold prose severity into step 2.
+    """
+    text = (
+        "Example format:\n"
+        "```json\n"
+        '{"verdict":"APPROVE"}\n'
+        "```\n\n"
+        "## Verdict\n"
+        "REQUEST CHANGES\n"
+        "\nNeeds a real test plan.\n"
+    )
+    assert parse_verdict(text) == "REQUEST_CHANGES"
+    assert parse_verdict(text, expected_run_id="any-run") == "REQUEST_CHANGES"
+
+
+def test_fenced_json_approve_does_not_beat_prose_failed():
+    """A2b: unfenced prose FAILED must beat fenced example JSON APPROVE."""
+    text = (
+        "```json\n"
+        '{"verdict":"APPROVE"}\n'
+        "```\n\n"
+        "FAILED\n"
+    )
+    assert parse_verdict(text) == "FAILED"
+
+
+def test_bound_json_approve_flips_on_unfenced_request_changes_prose():
+    """INTENTIONAL fail-closed (A2b Fable condition): bound JSON APPROVE + unfenced
+    whole-word REQUEST CHANGES aggregates to REQUEST_CHANGES, not APPROVE.
+
+    Same class as fenced-FAILED-poisons-APPROVE — document never reverts this
+    without an explicit product decision.
+    """
+    text = (
+        '{"run_id": "REAL-RUN-123", "verdict": "APPROVE"}\n\n'
+        "I considered REQUEST CHANGES but the notes still mention the token.\n"
+    )
+    assert (
+        parse_verdict(text, expected_run_id="REAL-RUN-123") == "REQUEST_CHANGES"
+    )

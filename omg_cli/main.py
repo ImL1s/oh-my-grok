@@ -19,7 +19,14 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return run_setup(
         _project_root(),
         install_rules=not getattr(args, "no_global_rules", False),
+        install_hook=not getattr(args, "no_global_hook", False),
     )
+
+
+def cmd_install_hook(args: argparse.Namespace) -> int:
+    from omg_cli.hook_install import main as hook_install_main
+
+    return hook_install_main(["--remove"] if getattr(args, "remove", False) else [])
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -242,7 +249,7 @@ def cmd_hud(args: argparse.Namespace) -> int:
 
 
 def cmd_lsp(args: argparse.Namespace) -> int:
-    from omg_cli.lsp_tools import probe_tools, symbols_pyright
+    from omg_cli.lsp_tools import diagnostics_ast, probe_tools, symbols_ast, symbols_pyright
 
     action = getattr(args, "lsp_action", None)
     if action == "status" or action is None:
@@ -253,7 +260,18 @@ def cmd_lsp(args: argparse.Namespace) -> int:
         result = symbols_pyright(path, cwd=_project_root())
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0 if result.get("ok") else 1
-    print("usage: omg lsp {status,check} …", file=sys.stderr)
+    if action == "symbols":
+        result = symbols_ast(Path(args.path))
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result.get("ok") else 1
+    if action == "diagnostics":
+        result = diagnostics_ast(Path(args.path))
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result.get("ok") else 1
+    print(
+        "usage: omg lsp {status,check,symbols,diagnostics} …",
+        file=sys.stderr,
+    )
     return 2
 
 
@@ -696,6 +714,172 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_team(args: argparse.Namespace) -> int:
+    """Experimental tmux team plane (D1/D3) + staged pipeline (D2) + scale/resume/ralph (D4).
+
+    Gate: OMG_EXPERIMENTAL_TMUX_TEAM=1. Pipeline is THIN glue over start/collect;
+    never sets verified.
+    """
+    from omg_cli.team.plane import (
+        TeamError,
+        TeamGateError,
+        collect_team,
+        format_status_table,
+        start_team,
+        status_locked_view,
+        stop_team,
+        team_status,
+    )
+    from omg_cli.team.pipeline import (
+        TeamPipelineError,
+        run_team_pipeline,
+    )
+    from omg_cli.team.roles import UnknownRoleError
+    from omg_cli.team.routing import RoutingError, parse_routing_json
+    from omg_cli.team.scaling import resume_team, scale_team
+
+    root = _project_root()
+    action = getattr(args, "team_action", None)
+
+    try:
+        if action == "start":
+            goal = getattr(args, "goal", None) or ""
+            tasks_json = getattr(args, "tasks_json", None)
+            if not tasks_json:
+                print("omg team start: --tasks-json required", file=sys.stderr)
+                return 2
+            routing_raw = getattr(args, "routing", None)
+            routing = parse_routing_json(routing_raw) if routing_raw else None
+            # parse_routing_json returns None for empty; keep None so zero-config
+            # stays D1. Non-empty --routing enables multi-CLI floors.
+            meta = start_team(
+                goal,
+                tasks_json,
+                root=root,
+                run_id=getattr(args, "run_id", None),
+                dry_run=bool(getattr(args, "dry_run", False)),
+                yolo=bool(getattr(args, "yolo", False)),
+                safe=bool(getattr(args, "safe", False)),
+                force=bool(getattr(args, "force", False)),
+                routing=routing,
+            )
+            print(json.dumps(meta, indent=2, ensure_ascii=False))
+            return 0
+        if action == "run":
+            # Staged FSM driver (plan→prd→exec→verify→fix). Decomposition is
+            # the leader's / ralplan's job; this only sequences + gates verify.
+            # --ralph wraps exec→verify→fix in a bounded outer max_iter loop.
+            goal = getattr(args, "goal", None) or ""
+            tasks_json = getattr(args, "tasks_json", None)
+            tasks_path = getattr(args, "tasks_path", None)
+            if not tasks_json and not tasks_path:
+                print(
+                    "omg team run: --tasks-json or --tasks-path required",
+                    file=sys.stderr,
+                )
+                return 2
+            routing_raw = getattr(args, "routing", None)
+            routing = parse_routing_json(routing_raw) if routing_raw else None
+            result = run_team_pipeline(
+                goal,
+                root=root,
+                tasks_json=tasks_json,
+                tasks_path=tasks_path,
+                dry_run=bool(getattr(args, "dry_run", False)),
+                max_fix=int(getattr(args, "max_fix", 3) or 3),
+                force=bool(getattr(args, "force", False)),
+                run_id=getattr(args, "run_id", None),
+                yolo=bool(getattr(args, "yolo", False)),
+                safe=bool(getattr(args, "safe", False)),
+                routing=routing,
+                ralph=bool(getattr(args, "ralph", False)),
+                max_iter=getattr(args, "max_iter", None),
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            phase = str(result.get("phase") or "")
+            if phase == "complete":
+                return 0
+            if phase == "blocked":
+                return 2
+            # failed (or unexpected) — not verified; exit 1
+            return 1
+        if action == "scale":
+            add = getattr(args, "add", None)
+            remove = getattr(args, "remove", None)
+            result = scale_team(
+                root,
+                getattr(args, "run_id", None),
+                add=add,
+                remove=remove,
+                dry_run=bool(getattr(args, "dry_run", False)),
+                tasks_json=getattr(args, "tasks_json", None),
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
+        if action == "resume":
+            result = resume_team(
+                root,
+                getattr(args, "run_id", None),
+            )
+            if getattr(args, "as_json", False) or True:
+                # Always JSON (operator machine-readable); --json kept for symmetry
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
+        if action == "status":
+            st = team_status(
+                root,
+                getattr(args, "run_id", None),
+            )
+            if getattr(args, "as_json", False):
+                print(
+                    json.dumps(
+                        status_locked_view(st),
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                )
+            else:
+                print(format_status_table(st))
+            return 0
+        if action == "collect":
+            result = collect_team(
+                root,
+                getattr(args, "run_id", None),
+                force_seal=bool(getattr(args, "force", False)),
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            # Never sets verified; integrate status drives exit
+            integrate = result.get("integrate") or {}
+            status = integrate.get("status")
+            if status == "ok":
+                return 0
+            if status == "missing":
+                return 1
+            return 1
+        if action == "stop":
+            result = stop_team(
+                root,
+                getattr(args, "run_id", None),
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if not result.get("errors") else 1
+        print(f"omg team: unknown action {action!r}", file=sys.stderr)
+        return 2
+    except TeamGateError as exc:
+        print(f"omg team: {exc}", file=sys.stderr)
+        return 2
+    except TeamPipelineError as exc:
+        print(f"omg team: {exc}", file=sys.stderr)
+        return 1
+    except (RoutingError, UnknownRoleError) as exc:
+        # FLOOR rejections — fail closed at team start (not silent).
+        print(f"omg team: {exc}", file=sys.stderr)
+        return 2
+    except TeamError as exc:
+        print(f"omg team: {exc}", file=sys.stderr)
+        return 1
+
+
 def cmd_worker(args: argparse.Namespace) -> int:
     """prepare/seal worktrees and ULW result envelopes (no-shell bridge)."""
     from omg_cli.state import load_active_run, load_run
@@ -1019,6 +1203,66 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_mcp_server(args: argparse.Namespace) -> int:
+    """Run focused stdio MCP server (sets OMG_MCP_SERVER=1)."""
+    from omg_cli.acceptance import MCP_SERVER_ENV
+    from omg_cli.mcp.server import run_stdio_server
+
+    os.environ[MCP_SERVER_ENV] = "1"
+    root = _project_root()
+    if getattr(args, "root", None):
+        root = Path(args.root).resolve()
+    return int(run_stdio_server(root=root))
+
+
+def cmd_mcp_install(args: argparse.Namespace) -> int:
+    """Print or run ``grok mcp add omg omg -- mcp-server``."""
+    scope = getattr(args, "scope", None) or "user"
+    argv = ["grok", "mcp", "add", "omg", "omg", "--", "mcp-server"]
+    if scope in ("user", "project"):
+        # Insert --scope after add name for readability if grok supports it.
+        argv = [
+            "grok",
+            "mcp",
+            "add",
+            "omg",
+            "omg",
+            "--scope",
+            scope,
+            "--",
+            "mcp-server",
+        ]
+    if getattr(args, "print_only", False) or getattr(args, "dry_run", False):
+        print(" ".join(argv))
+        return 0
+    import shutil
+    import subprocess
+
+    grok = shutil.which("grok")
+    if not grok:
+        print(
+            "grok not on PATH; run manually:\n  " + " ".join(argv),
+            file=sys.stderr,
+        )
+        return 1
+    # Rebuild with absolute-ish omg entry if available
+    omg_bin = shutil.which("omg") or "omg"
+    cmd = [
+        grok,
+        "mcp",
+        "add",
+        "omg",
+        omg_bin,
+        "--scope",
+        scope,
+        "--",
+        "mcp-server",
+    ]
+    print("running:", " ".join(cmd), file=sys.stderr)
+    proc = subprocess.run(cmd, check=False)
+    return int(proc.returncode)
+
+
 def cmd_dual_review(args: argparse.Namespace) -> int:
     """Grok-native critic→verifier. Does NOT set verified."""
     from omg_cli.dual_review import run_dual_review_cli
@@ -1096,7 +1340,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not install ~/.grok/rules/omg.md global guidance",
     )
+    p_setup.add_argument(
+        "--no-global-hook",
+        action="store_true",
+        help="do not install the global PreToolUse soft-gate ($GROK_HOME/hooks/); "
+        "doctor will still report it missing",
+    )
     p_setup.set_defaults(func=cmd_setup)
+
+    p_install_hook = sub.add_parser(
+        "install-hook",
+        parents=[common],
+        help="install/repair the global PreToolUse soft-gate ($GROK_HOME/hooks/)",
+    )
+    p_install_hook.add_argument(
+        "--remove",
+        action="store_true",
+        help="uninstall the global hook instead of installing it",
+    )
+    p_install_hook.set_defaults(func=cmd_install_hook)
 
     p_doctor = sub.add_parser(
         "doctor",
@@ -1250,6 +1512,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_lsp_ck.add_argument("path", help="file path")
     p_lsp_ck.set_defaults(func=cmd_lsp)
+    p_lsp_sym = lsp_sub.add_parser(
+        "symbols",
+        parents=[common],
+        help="list Python symbols via stdlib ast (local probe)",
+    )
+    p_lsp_sym.add_argument("path", help="Python file path")
+    p_lsp_sym.set_defaults(func=cmd_lsp)
+    p_lsp_diag = lsp_sub.add_parser(
+        "diagnostics",
+        parents=[common],
+        help="syntax diagnostics via ast.parse (local probe; not type-checking)",
+    )
+    p_lsp_diag.add_argument("path", help="Python file path")
+    p_lsp_diag.set_defaults(func=cmd_lsp)
     p_lsp.set_defaults(func=cmd_lsp)
 
     p_interview = sub.add_parser(
@@ -1609,6 +1885,252 @@ def build_parser() -> argparse.ArgumentParser:
         func=cmd_worker, worker_action="manifest", task_id="__manifest__"
     )
     p_worker.set_defaults(func=cmd_worker)
+
+    p_team = sub.add_parser(
+        "team",
+        parents=[common],
+        help=(
+            "experimental tmux team plane (grok-only zero-config; multi-CLI "
+            "via --routing; requires OMG_EXPERIMENTAL_TMUX_TEAM=1)"
+        ),
+    )
+    team_sub = p_team.add_subparsers(dest="team_action")
+    p_t_start = team_sub.add_parser(
+        "start",
+        parents=[common],
+        help="create run + ownership worktrees + tmux session (or --dry-run)",
+    )
+    p_t_start.add_argument(
+        "--goal",
+        dest="goal",
+        required=True,
+        help="shared goal text for all task panes",
+    )
+    p_t_start.add_argument(
+        "--tasks-json",
+        dest="tasks_json",
+        required=True,
+        help=(
+            'JSON array: [{"task_id","owned_files":[...],"role"?,'
+            '"capability_mode"?}]'
+        ),
+    )
+    p_t_start.add_argument(
+        "--routing",
+        dest="routing",
+        default=None,
+        help=(
+            'JSON object role→{provider,model?}, e.g. '
+            '\'{"executor":{"provider":"codex"}}\'; enables multi-CLI floors'
+        ),
+    )
+    p_t_start.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="existing run_id (default: create a new ulw/team run)",
+    )
+    p_t_start.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="write team.json skeleton (pid=None); never call tmux/subprocess",
+    )
+    p_t_start.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="supersede active run when creating a new run",
+    )
+    p_t_start.set_defaults(func=cmd_team, team_action="start")
+
+    p_t_run = team_sub.add_parser(
+        "run",
+        parents=[common],
+        help=(
+            "staged team pipeline driver (team-plan→prd→exec→verify→fix); "
+            "THIN glue over start/collect + parse_verdict_file gate; "
+            "never sets verified"
+        ),
+    )
+    p_t_run.add_argument(
+        "--goal",
+        dest="goal",
+        required=True,
+        help="shared goal text",
+    )
+    p_t_run.add_argument(
+        "--tasks-json",
+        dest="tasks_json",
+        default=None,
+        help=(
+            'JSON array of tasks (leader/ralplan decomposition); '
+            'required unless --tasks-path is set'
+        ),
+    )
+    p_t_run.add_argument(
+        "--tasks-path",
+        dest="tasks_path",
+        default=None,
+        help="path to JSON tasks array or {tasks:[...]} (existing ralplan artifact)",
+    )
+    p_t_run.add_argument(
+        "--max-fix",
+        dest="max_fix",
+        type=int,
+        default=3,
+        help="max team-fix rounds before terminal failed (default 3)",
+    )
+    p_t_run.add_argument(
+        "--routing",
+        dest="routing",
+        default=None,
+        help='optional role→{provider,model?} JSON (same as team start)',
+    )
+    p_t_run.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="existing run_id (default: create a new team-pipeline run)",
+    )
+    p_t_run.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="sequence stages with dry-run start_team; no tmux/subprocess",
+    )
+    p_t_run.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="supersede active run when creating a new run",
+    )
+    p_t_run.add_argument(
+        "--ralph",
+        dest="ralph",
+        action="store_true",
+        help=(
+            "wrap staged pipeline in a bounded ralph persistence loop "
+            "(exec→verify→fix up to --max-iter; never sets verified; "
+            "links team.json ↔ team-ralph.json)"
+        ),
+    )
+    p_t_run.add_argument(
+        "--max-iter",
+        dest="max_iter",
+        type=int,
+        default=None,
+        help=(
+            "with --ralph: max outer iterations (default 3 from ralph); "
+            "stop at team-verify APPROVE or max_iter → failed"
+        ),
+    )
+    p_t_run.set_defaults(func=cmd_team, team_action="run")
+
+    p_t_scale = team_sub.add_parser(
+        "scale",
+        parents=[common],
+        help=(
+            "dynamic scale: --add N / --remove N panes on a running team "
+            "(cap-bounded; scale lock; no pkill -f; never sets verified)"
+        ),
+    )
+    p_t_scale.add_argument(
+        "--run", dest="run_id", required=True, help="team run_id"
+    )
+    p_t_scale_grp = p_t_scale.add_mutually_exclusive_group(required=True)
+    p_t_scale_grp.add_argument(
+        "--add",
+        dest="add",
+        type=int,
+        default=None,
+        help="add N new task panes (respects max_workers_cap; monotonic indices)",
+    )
+    p_t_scale_grp.add_argument(
+        "--remove",
+        dest="remove",
+        type=int,
+        default=None,
+        help=(
+            "graceful drain: remove N idle/newest panes (kill recorded pgids + "
+            "windows only; preserve worktrees; never below 1)"
+        ),
+    )
+    p_t_scale.add_argument(
+        "--tasks-json",
+        dest="tasks_json",
+        default=None,
+        help="optional JSON tasks for --add (length must equal N; else synthetic)",
+    )
+    p_t_scale.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="append/mark team.json only; no tmux/subprocess",
+    )
+    p_t_scale.set_defaults(func=cmd_team, team_action="scale")
+
+    p_t_resume = team_sub.add_parser(
+        "resume",
+        parents=[common],
+        help=(
+            "reconcile team.json pane liveness after leader restart "
+            "(idempotent status write; never sets verified)"
+        ),
+    )
+    p_t_resume.add_argument(
+        "--run", dest="run_id", required=True, help="team run_id"
+    )
+    p_t_resume.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="print JSON (default for resume)",
+    )
+    p_t_resume.set_defaults(func=cmd_team, team_action="resume")
+
+    p_t_status = team_sub.add_parser(
+        "status",
+        parents=[common],
+        help="read team.json + ownership + optional pane liveness (no state write)",
+    )
+    p_t_status.add_argument(
+        "--run", dest="run_id", default=None, help="run_id (default: active)"
+    )
+    p_t_status.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="print LOCKED field set as JSON",
+    )
+    p_t_status.set_defaults(func=cmd_team, team_action="status")
+
+    p_t_collect = team_sub.add_parser(
+        "collect",
+        parents=[common],
+        help="seal_all_tasks + integrate_results (never sets verified)",
+    )
+    p_t_collect.add_argument(
+        "--run", dest="run_id", default=None, help="run_id (default: active)"
+    )
+    p_t_collect.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="re-seal even when envelopes already exist",
+    )
+    p_t_collect.set_defaults(func=cmd_team, team_action="collect")
+
+    p_t_stop = team_sub.add_parser(
+        "stop",
+        parents=[common],
+        help="kill recorded tmux session + killpg recorded pgids (no pkill -f)",
+    )
+    p_t_stop.add_argument(
+        "--run", dest="run_id", default=None, help="run_id (default: active)"
+    )
+    p_t_stop.set_defaults(func=cmd_team, team_action="stop")
+    p_team.set_defaults(func=cmd_team)
 
     p_review = sub.add_parser(
         "review",
@@ -1998,6 +2520,41 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_dual.set_defaults(func=cmd_dual_review)
 
+    p_mcp_server = sub.add_parser(
+        "mcp-server",
+        parents=[common],
+        help=(
+            "run focused in-session MCP server (stdio JSON-RPC; "
+            "reads + proposal writes only; sets OMG_MCP_SERVER=1)"
+        ),
+    )
+    p_mcp_server.add_argument(
+        "--root",
+        default=None,
+        help="project root (default: cwd)",
+    )
+    p_mcp_server.set_defaults(func=cmd_mcp_server)
+
+    p_mcp_install = sub.add_parser(
+        "mcp-install",
+        parents=[common],
+        help="register with Grok: grok mcp add omg omg -- mcp-server",
+    )
+    p_mcp_install.add_argument(
+        "--scope",
+        choices=("user", "project"),
+        default="user",
+        help="grok mcp add --scope (default: user)",
+    )
+    p_mcp_install.add_argument(
+        "--print-only",
+        "--dry-run",
+        dest="print_only",
+        action="store_true",
+        help="print the grok mcp add command without running it",
+    )
+    p_mcp_install.set_defaults(func=cmd_mcp_install)
+
     return parser
 
 
@@ -2008,6 +2565,7 @@ KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
         "doctor",
         "update",
         "uninstall",
+        "note",
         "state",
         "cancel",
         "resume",
@@ -2019,6 +2577,7 @@ KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
         "accept",
         "integrate",
         "worker",
+        "team",
         "review",
         "qa",
         "autopilot",
@@ -2028,6 +2587,8 @@ KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
         "ask",
         "pipeline",
         "dual-review",
+        "mcp-server",
+        "mcp-install",
     }
 )
 
