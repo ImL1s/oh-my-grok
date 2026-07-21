@@ -10,8 +10,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Planned
-- Optional PyPI/`pipx` CLI track (deferred).
-- Optional PR to xAI plugin-marketplace (sha-pinned).
+- Optional PyPI/`pipx` CLI track — **shipped editable-only** (`pyproject.toml` +
+  `pipx install --editable` / `pip install -e .`); non-editable wheel / PyPI
+  publish still deferred (`plugin_root()` needs checkout siblings).
+- Optional PR to xAI plugin-marketplace (sha-pinned) — **deferred / prep-only**
+  (document prerequisites in `docs/RELEASE.md`; do not submit).
 - Host Stop veto (not feasible on Grok today).
 - Full OMC LSP/AST MCP bridge (local pyright probe only in 0.3.0).
 

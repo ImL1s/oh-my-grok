@@ -75,9 +75,19 @@ cd ~/.local/share/oh-my-grok
 ./scripts/install-plugin.sh
 # optional pin: git checkout v0.4.2
 
-# 2) omg on PATH (not on PyPI yet; install script also tries this)
+# 2) omg on PATH (primary: install script also tries this)
 ln -sf "$(pwd)/bin/omg" ~/.local/bin/omg   # ensure ~/.local/bin is on PATH
 omg --version
+
+# 2b) OPTIONAL — editable pipx / pip (not a non-editable PyPI wheel)
+# ONLY supported form: editable. Non-editable `pip install .` copies only
+# omg_cli/ into site-packages; plugin_root() siblings (plugin.json, skills/,
+# templates/, …) resolve missing → omg --version prints 0.0.0. PEP 660 keeps
+# __file__ in the source tree so plugin_root() still works.
+# pipx install --editable ~/.local/share/oh-my-grok
+#   # or from checkout: pip install -e .
+# Caveat: if you also keep the step-2 symlink, you can get two `omg` on PATH —
+# `which -a omg` and prefer one. The install-plugin.sh symlink remains primary.
 
 # 3) Wire a project
 cd /path/to/your-project

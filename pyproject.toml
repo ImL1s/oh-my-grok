@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oh-my-grok"
+dynamic = ["version"]
+description = "OMC/OMX-style multi-agent orchestration CLI for the Grok Build CLI"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "ImL1s" }]
+
+[project.urls]
+Homepage = "https://github.com/ImL1s/oh-my-grok"
+Repository = "https://github.com/ImL1s/oh-my-grok"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+omg = "omg_cli.main:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "omg_cli.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["omg_cli*"]

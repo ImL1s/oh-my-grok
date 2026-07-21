@@ -72,7 +72,7 @@ Status values: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (reason)` | `REJECTED 
 | madmax full-open as bug | Rejected — break-glass |
 | Stop hard-pin | NEVER until host supports |
 | God-module split | Deferred |
-| PyPI packaging | Deferred |
+| PyPI packaging | Editable-only shipped (`pyproject.toml` + pipx `-e`); non-editable / marketplace submit still deferred |
 
 ## Worktrees (wave 1 executors)
 
