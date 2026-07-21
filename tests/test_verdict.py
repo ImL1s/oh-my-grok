@@ -167,3 +167,46 @@ def test_schema_v2_present_no_prose_approve_fallback():
     assert parse_verdict(approve) == "APPROVE"
     # prose-only terminal APPROVE (no schema_v2) still works
     assert parse_verdict("## Verdict\nAPPROVE\n") == "APPROVE"
+
+
+def test_run_id_binding_poisons_stale_document():
+    """A present-but-mismatched run_id makes the whole artifact stale/wrong-run:
+    a stray unbound `{"verdict":"APPROVE"}` snippet elsewhere must NOT win."""
+    # Real, correctly-bound verdict is a mismatch (stale run); a stray example
+    # APPROVE snippet with no run_id must NOT override the mismatched binding.
+    text = (
+        '{"run_id": "WRONG-STALE-RUN", "verdict": "FAILED"}\n\n'
+        "The expected format looks like:\n"
+        "```json\n"
+        '{"verdict": "APPROVE"}\n'
+        "```\n"
+    )
+    assert parse_verdict(text, expected_run_id="REAL-RUN-123") != "APPROVE"
+
+    # A wrong-run schema-v2 document cannot approve even with an APPROVE verdict.
+    wrong = '{"schema_version": 2, "run_id": "WRONG", "verdict": "APPROVE"}'
+    assert parse_verdict(wrong, expected_run_id="REAL-RUN-123") != "APPROVE"
+
+
+def test_run_id_binding_preserves_unbound_artifacts():
+    """ralplan/dual-review write path-bound verifier artifacts that legitimately
+    carry NO run_id — those must still be accepted under a run_id-bound gate."""
+    # bare unbound JSON approve (the real dual-review/ralplan shape)
+    assert (
+        parse_verdict('{"verdict": "APPROVE", "notes": "ok"}', expected_run_id="REAL-RUN-123")
+        == "APPROVE"
+    )
+    # prose terminal approve (the other real shape)
+    assert parse_verdict("## Verdict\nAPPROVE\n", expected_run_id="REAL-RUN-123") == "APPROVE"
+    # with NO run_id requirement the legacy behavior is unchanged
+    assert parse_verdict('{"verdict": "APPROVE"}') == "APPROVE"
+    # a correctly bound run_id still approves, including nested result objects
+    assert (
+        parse_verdict(
+            '{"run_id": "REAL-RUN-123", "verdict": "APPROVE"}',
+            expected_run_id="REAL-RUN-123",
+        )
+        == "APPROVE"
+    )
+    nested = '{"run_id": "REAL-RUN-123", "result": {"verdict": "APPROVE"}}'
+    assert parse_verdict(nested, expected_run_id="REAL-RUN-123") == "APPROVE"

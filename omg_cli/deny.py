@@ -8,10 +8,12 @@ from typing import Any
 # Executable names that default workers must not invoke as external agent CLIs
 _DENY_BINS = r"(?:claude|codex|omx|agy|cursor-agent|kimi)"
 
-# Command-position only: start of string or after shell operators (not bare whitespace).
-# Allows optional ENV=val prefixes, wrappers, and path prefixes.
+# Command-position only: start of string, a NEWLINE, or after shell operators
+# (not bare whitespace). A denied bin on its own line (multi-line scripts,
+# heredocs, sequential setup+run) is command-position too — the newline class
+# member closes the "no semicolon needed" bypass.
 # Bare "echo claude is a word" must NOT match (claude is an argument, not a command head).
-_CMD_POS = r"(?:^|[;&|(`]|\|\||&&)"
+_CMD_POS = r"(?:^|[;&|(`\n\r]|\|\||&&)"
 _ENV_ASSIGNS = r"(?:(?:[A-Za-z_][\w]*=\S*\s+)*)"
 # Wrappers that still leave the denied bin in command position after them.
 # Path-prefixed env/exec allowed: /usr/bin/env claude, /bin/exec codex.

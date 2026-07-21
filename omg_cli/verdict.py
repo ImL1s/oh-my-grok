@@ -241,6 +241,25 @@ def parse_verdict(
     if not text or not text.strip():
         return "UNKNOWN"
 
+    # 0) Document-level run_id poison guard (Codex P0 / 2026-07-20 council).
+    # If a run_id binding is required and EVERY run_id present in the document is
+    # for a different run (none match), the artifact is stale / wrong-run — fail
+    # closed so a stray unbound ``{"verdict":"APPROVE"}`` snippet elsewhere in the
+    # same text cannot override a present-but-mismatched binding. Artifacts with
+    # NO run_id at all keep legacy behavior: ralplan/dual-review write path-bound
+    # verifier artifacts (``## Verdict\nAPPROVE`` / ``{"verdict":"APPROVE"}``) that
+    # legitimately carry no run_id, and those must still be accepted.
+    if expected_run_id is not None:
+        present_run_ids = [
+            obj["run_id"]
+            for obj in _extract_json_objects(text)
+            if isinstance(obj.get("run_id"), str) and obj.get("run_id").strip()
+        ]
+        if present_run_ids and not any(
+            r.strip() == expected_run_id.strip() for r in present_run_ids
+        ):
+            return "FAILED"
+
     # 1) Strict schema v2 documents first when present — no prose fallback
     # even when the structured doc only resolves to UNKNOWN (fail-closed).
     sv2 = parse_schema_v2_verdict(text, expected_run_id=expected_run_id)

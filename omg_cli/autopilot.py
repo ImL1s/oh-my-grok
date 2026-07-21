@@ -270,6 +270,14 @@ def transition(
                 "verified only via complete_with_acceptance (same-process)"
             )
 
+        if next_phase == "implement":
+            # Any (re-)entry into implement produces new, unreviewed product
+            # code. Prior clean review/QA stamps must never remain authoritative
+            # for a later qa/acceptance gate — closes the
+            # qa→blocked→implement→blocked→qa false-green round-trip.
+            invalidate_quality_stages(
+                root, run_id, reason=f"(re)implement from {src}"
+            )
         if next_phase == "ralplan" and src in {"review", "qa"}:
             state["cycles"]["ralplan"] = int(state["cycles"].get("ralplan") or 0) + 1
             # Stale clean stamps must not open QA/acceptance after replan

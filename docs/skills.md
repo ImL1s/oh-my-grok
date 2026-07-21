@@ -209,7 +209,7 @@ omg interview close --run RUN
 |--|--|
 | **When** | Several durable stories, depends_on, cross-session resume |
 | **Invoke** | `ultragoal` · `goal ledger` · `/oh-my-grok:omg-ultragoal` |
-| **CLI** | `omg goal init\|status\|start\|checkpoint\|complete\|link-run\|verify\|repair` |
+| **CLI** | `omg goal init\|status\|link-run\|start-story\|checkpoint\|block-story\|resume-story\|complete-story\|verify\|repair` |
 | **SKILL** | [`skills/omg-ultragoal/SKILL.md`](../skills/omg-ultragoal/SKILL.md) |
 
 Grok has **no host `/goal`** — ledger is only under `.omg/ultragoal/`.  

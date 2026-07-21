@@ -238,3 +238,31 @@ def test_make_file_and_directory_overrides_denied():
         check_command_policy(["make", "--directory=/tmp", "test"])
     with pytest.raises(CommandPolicyError, match="make"):
         check_command_policy(["make", "--eval=evil", "test"])
+
+
+def test_no_allowlist_blocks_combined_short_flags():
+    """Break-glass floor must still deny python code exec via combined short
+    options like ``-ic`` (CPython treats it as ``-i -c``)."""
+    root = Path(__file__).resolve().parents[1]
+    # Normal path already denies it.
+    with pytest.raises(CommandPolicyError):
+        check_command_policy(
+            ["python3", "-ic", "print(1)"], project_root=root
+        )
+    # Break-glass must ALSO deny it — the -c floor is never liftable.
+    with pytest.raises(CommandPolicyError):
+        check_command_policy(
+            ["python3", "-ic", "import os; os.system('id')"],
+            no_allowlist=True,
+            project_root=root,
+        )
+    with pytest.raises(CommandPolicyError):
+        check_command_policy(
+            ["python3", "-Ic", "print(1)"], no_allowlist=True, project_root=root
+        )
+    # A cluster whose arg-consuming option is NOT c/e (e.g. -Om == -O -m) must
+    # not be false-flagged by the floor (it reaches the -m grammar instead).
+    # -m with an allowed module stays permitted.
+    check_command_policy(
+        ["python3", "-m", "pytest", "-q"], no_allowlist=True, project_root=root
+    )

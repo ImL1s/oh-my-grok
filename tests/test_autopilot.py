@@ -253,3 +253,23 @@ def test_legacy_v1_refused(tmp_path: Path) -> None:
     run = create_run(tmp_path, mode="autopilot", goal="legacy")
     with pytest.raises(AutopilotError):
         transition(tmp_path, run["run_id"], "interview")
+
+
+def test_blocked_implement_roundtrip_invalidates_stale_stamps(tmp_path: Path) -> None:
+    """qa→blocked→implement→blocked→qa must NOT reuse the stale clean review
+    stamp — re-entering implement produces new, unreviewed code."""
+    st = start_autopilot(tmp_path, "roundtrip", skip_interview=True)
+    rid = st["run_id"]
+    # Reach a clean qa the legitimate way.
+    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "review")
+    _stamp_review_clean(tmp_path, rid)
+    transition(tmp_path, rid, "qa")
+    _stamp_qa_clean(tmp_path, rid)
+    # Detour that used to smuggle new code past review/QA:
+    transition(tmp_path, rid, "blocked", reason="infra hiccup")
+    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "blocked", reason="another hiccup")
+    # The qa gate must now reject: the review stamp was invalidated on implement.
+    with pytest.raises(AutopilotError, match="review"):
+        transition(tmp_path, rid, "qa")

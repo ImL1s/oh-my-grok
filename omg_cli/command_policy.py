@@ -276,11 +276,37 @@ def _basename_allowed(base: str, allowed: frozenset[str]) -> bool:
     return False
 
 
-def _has_flag(argv: Sequence[str], *flags: str) -> bool:
-    """True if any argv token is a flag, ``flag=value``, or glued short form.
+# Short options that consume the remainder of their cluster as an argument
+# (CPython: -c CODE, -m MOD, -W arg, -X arg; node: -e CODE). Once one of these
+# is reached in a combined cluster, later characters are its value, not flags.
+_ARG_CONSUMING_SHORT = frozenset("cemWXQ")
 
-    Glued forms like ``-cimport os`` / ``-cprint(1)`` must match floor denials
-    for ``-c`` / ``-e`` (break-glass path included).
+
+def _short_cluster_activates(tok: str, flag_char: str) -> bool:
+    """True if a POSIX short-option cluster *tok* activates ``-<flag_char>``.
+
+    Combined short options are processed left to right; toggle flags may precede
+    an arg-consuming option. ``-ic`` == ``-i -c`` (activates c); ``-mc`` == ``-m
+    'c'`` (module named ``c`` — does NOT activate c). This is why a plain
+    ``startswith`` check missed ``-ic`` and let ``python3 -ic '<code>'`` through
+    the break-glass floor.
+    """
+    if not (tok.startswith("-") and not tok.startswith("--") and len(tok) >= 2):
+        return False
+    for ch in tok[1:]:
+        if ch == flag_char:
+            return True
+        if ch in _ARG_CONSUMING_SHORT:
+            # A different arg-consuming option: the remainder is its argument.
+            return False
+    return False
+
+
+def _has_flag(argv: Sequence[str], *flags: str) -> bool:
+    """True if any argv token is a flag, ``flag=value``, glued, or combined form.
+
+    Glued forms like ``-cimport os`` and combined clusters like ``-ic`` must both
+    match floor denials for ``-c`` / ``-e`` (break-glass path included).
     """
     flag_set = set(flags)
     for tok in argv[1:]:
@@ -289,9 +315,12 @@ def _has_flag(argv: Sequence[str], *flags: str) -> bool:
         for f in flags:
             if tok.startswith(f + "="):
                 return True
-            # Glued short options: -cCODE, -eCODE (not longer names like -cache)
+            # Short options (-c / -e): match glued value (-cCODE) AND combined
+            # clusters that activate the flag (-ic == -i -c).
             if len(f) == 2 and f.startswith("-") and not f.startswith("--"):
                 if tok.startswith(f) and (len(tok) == 2 or tok[2:3] != "-"):
+                    return True
+                if _short_cluster_activates(tok, f[1]):
                     return True
     return False
 
