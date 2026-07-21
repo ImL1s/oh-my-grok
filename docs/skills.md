@@ -376,10 +376,12 @@ Not run/`verified` authority.
 |--|--|
 | **When** | Symbols / check; **not** full LSP MCP |
 | **Invoke** | `lsp` · `/oh-my-grok:omg-lsp` |
-| **CLI** | `omg lsp status` · `omg lsp check path.py` |
+| **CLI** | `omg lsp status` · `omg lsp check path.py` · `omg lsp symbols path.py` · `omg lsp diagnostics path.py` |
 | **SKILL** | [`skills/omg-lsp/SKILL.md`](../skills/omg-lsp/SKILL.md) |
 
-Prefer Grok `read_file` / `grep`. Optional pyright if installed.
+Prefer Grok `read_file` / `grep`. `symbols` / `diagnostics` use stdlib `ast`
+(Python only; diagnostics are **syntax-only**, not type-checking). Optional
+pyright via `check` if installed.
 
 ---
 

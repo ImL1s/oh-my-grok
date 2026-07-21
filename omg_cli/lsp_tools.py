@@ -1,11 +1,12 @@
 """Optional local language-tool probes (research P2) — honest thin surface.
 
-Grok has no OMC MCP LSP bridge. Prefer host ``read_file`` / ``grep``. This module
-only reports available local CLIs and offers a best-effort symbol listing via
-``pyright`` when installed.
+Grok has no host LSP MCP. Prefer host ``read_file`` / ``grep``. This module
+reports available local CLIs, offers a best-effort pyright check when installed,
+and pure-stdlib ``ast`` probes for Python symbols / syntax diagnostics.
 """
 from __future__ import annotations
 
+import ast
 import json
 import shutil
 import subprocess
@@ -20,6 +21,8 @@ PROBE_TOOLS = (
     "rust-analyzer",
     "clangd",
 )
+
+_AST_HONESTY = "syntax-only (ast.parse); NOT type-checking"
 
 
 def probe_tools() -> dict[str, Any]:
@@ -82,4 +85,116 @@ def symbols_pyright(path: Path, *, cwd: Path | None = None) -> dict[str, Any]:
     return summary
 
 
-__all__ = ["PROBE_TOOLS", "probe_tools", "symbols_pyright"]
+def _symbol_entry(name: str, node: ast.AST) -> dict[str, Any]:
+    return {
+        "name": name,
+        "lineno": getattr(node, "lineno", None),
+        "col_offset": getattr(node, "col_offset", None),
+        "end_lineno": getattr(node, "end_lineno", None),
+    }
+
+
+def symbols_ast(path: Path | str) -> dict[str, Any]:
+    """List Python symbols via stdlib ``ast`` (no type-checker, Python source only).
+
+    Collects ``FunctionDef`` / ``AsyncFunctionDef`` / ``ClassDef`` (including
+    methods) and ``Import`` / ``ImportFrom`` names with source locations.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return {"ok": False, "error": {"msg": f"not a file: {path}"}}
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {"ok": False, "error": {"msg": str(exc)}}
+    try:
+        tree = ast.parse(source, filename=str(path))
+    except SyntaxError as exc:
+        return {
+            "ok": False,
+            "error": {
+                "msg": exc.msg or "SyntaxError",
+                "line": exc.lineno,
+                "col": exc.offset,
+                "text": exc.text,
+            },
+        }
+
+    symbols: list[dict[str, Any]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            symbols.append(_symbol_entry(node.name, node))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                symbols.append(_symbol_entry(alias.asname or alias.name, node))
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "*":
+                    base = node.module or "*"
+                    symbols.append(_symbol_entry(f"{base}.*", node))
+                else:
+                    symbols.append(_symbol_entry(alias.asname or alias.name, node))
+
+    return {
+        "ok": True,
+        "path": str(path),
+        "symbols": symbols,
+        "language": "python",
+        "honesty": (
+            "stdlib ast only (Python source); names/locations from parse tree, "
+            "not a semantic language server"
+        ),
+    }
+
+
+def diagnostics_ast(path: Path | str) -> dict[str, Any]:
+    """Syntax diagnostics via ``ast.parse`` only — not type-checking.
+
+    Always returns ``honesty`` describing the syntax-only scope. ``ok`` is True
+    when the probe ran (file readable); parse failures land in ``diagnostics``.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return {
+            "ok": False,
+            "error": {"msg": f"not a file: {path}"},
+            "honesty": _AST_HONESTY,
+        }
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {
+            "ok": False,
+            "error": {"msg": str(exc)},
+            "honesty": _AST_HONESTY,
+        }
+    try:
+        ast.parse(source, filename=str(path))
+    except SyntaxError as exc:
+        return {
+            "ok": True,
+            "path": str(path),
+            "diagnostics": [
+                {
+                    "line": exc.lineno,
+                    "col": exc.offset,
+                    "msg": exc.msg or "SyntaxError",
+                }
+            ],
+            "honesty": _AST_HONESTY,
+        }
+    return {
+        "ok": True,
+        "path": str(path),
+        "diagnostics": [],
+        "honesty": _AST_HONESTY,
+    }
+
+
+__all__ = [
+    "PROBE_TOOLS",
+    "probe_tools",
+    "symbols_pyright",
+    "symbols_ast",
+    "diagnostics_ast",
+]

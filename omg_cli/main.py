@@ -242,7 +242,7 @@ def cmd_hud(args: argparse.Namespace) -> int:
 
 
 def cmd_lsp(args: argparse.Namespace) -> int:
-    from omg_cli.lsp_tools import probe_tools, symbols_pyright
+    from omg_cli.lsp_tools import diagnostics_ast, probe_tools, symbols_ast, symbols_pyright
 
     action = getattr(args, "lsp_action", None)
     if action == "status" or action is None:
@@ -253,7 +253,18 @@ def cmd_lsp(args: argparse.Namespace) -> int:
         result = symbols_pyright(path, cwd=_project_root())
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0 if result.get("ok") else 1
-    print("usage: omg lsp {status,check} …", file=sys.stderr)
+    if action == "symbols":
+        result = symbols_ast(Path(args.path))
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result.get("ok") else 1
+    if action == "diagnostics":
+        result = diagnostics_ast(Path(args.path))
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result.get("ok") else 1
+    print(
+        "usage: omg lsp {status,check,symbols,diagnostics} …",
+        file=sys.stderr,
+    )
     return 2
 
 
@@ -1390,6 +1401,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_lsp_ck.add_argument("path", help="file path")
     p_lsp_ck.set_defaults(func=cmd_lsp)
+    p_lsp_sym = lsp_sub.add_parser(
+        "symbols",
+        parents=[common],
+        help="list Python symbols via stdlib ast (local probe)",
+    )
+    p_lsp_sym.add_argument("path", help="Python file path")
+    p_lsp_sym.set_defaults(func=cmd_lsp)
+    p_lsp_diag = lsp_sub.add_parser(
+        "diagnostics",
+        parents=[common],
+        help="syntax diagnostics via ast.parse (local probe; not type-checking)",
+    )
+    p_lsp_diag.add_argument("path", help="Python file path")
+    p_lsp_diag.set_defaults(func=cmd_lsp)
     p_lsp.set_defaults(func=cmd_lsp)
 
     p_interview = sub.add_parser(
