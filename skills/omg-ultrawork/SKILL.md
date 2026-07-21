@@ -78,10 +78,42 @@ Before sealing, record file ownership so join can fail closed:
 ```bash
 omg worker own --run RUN --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]'
 omg worker prepare-owned --run RUN
-# workers edit worktrees → leader seals
-omg worker seal --run RUN --task t1
-omg worker seal --run RUN --task t2
+# workers edit worktrees → leader seals every worktree with a real head_sha
+omg worker seal --all --run RUN
 omg worker join --run RUN   # blocks if missing/failed/untrusted writer
+omg integrate --run RUN
+```
+
+After workers finish, the **LEADER** runs `omg worker seal --all --run RUN` (one
+call seals each ownership-manifest task that has a checkout at
+`.omg/worktrees/<run_id>/<validated task_id>` with a real `head_sha` from
+`git rev-parse HEAD`), then `omg worker join --run RUN` and
+`omg integrate --run RUN`. Prefer `--all` over per-task `omg worker seal --task`
+and over any hand-written envelope (invalid placeholder `head_sha` fails closed
+at integrate).
+
+**Honest trust boundary for `seal --all`:** it does **not** verify that the
+leader (or any particular agent) created the worktree. It seals whatever
+checkout sits at the path for task_ids in the CLI-written ownership manifest.
+Placing a worktree there needs `.omg/` write access (same trust boundary as
+writing an envelope or the manifest directly — no new capability). Join's
+ownership gate still constrains a planted worktree's changes.
+
+**Failed seals surface as failed:** if `seal_task` writes an envelope with
+`status=failed` (e.g. head==base / no advance, still-dirty-after-seal,
+not-a-git-checkout), `seal --all` reports that task as `failed` (not
+`sealed`) and exits nonzero when any task is `failed` or `error`. Benign
+outcomes only: `sealed`, `already-sealed`, `skipped-no-worktree`.
+
+**`--force` re-seal:** without `--force`, an existing envelope is
+`already-sealed` — post-seal commits in the worktree are **not** picked up.
+Use `omg worker seal --all --force --run RUN` to re-seal and refresh
+`head_sha` after additional commits.
+
+Per-task seal remains available when you only need one task:
+
+```bash
+omg worker seal --run RUN --task t1
 ```
 
 Two envelope files alone are **not** proof of two native workers; join requires
@@ -107,7 +139,7 @@ Write-heavy children must leave a **result envelope** before exit:
 }
 ```
 
-- **Prefer `omg worker seal` over hand-writing this envelope.** `omg worker seal --run RUN --task <id>` (run by the **leader**, which has `omg` on PATH) computes `head_sha` from the worktree's real `git rev-parse HEAD` and writes a valid envelope. If you DO hand-write it, `head_sha` **must** be a real git object id (7–64 hex) from an actual commit in the worktree — a placeholder or empty value makes `omg integrate` fail closed (`envelope.head_sha must be a git object id`). A spawned worker that lacks `omg` on PATH must still commit its work in the worktree so the leader can seal it; do not fabricate a head_sha.
+- **Prefer `omg worker seal --all` (or per-task `seal --task`) over hand-writing this envelope.** Leader-side `omg worker seal --all --run RUN` seals each ownership-manifest task at `.omg/worktrees/<run_id>/<task_id>` with a real `head_sha` from `git rev-parse HEAD` (path-scoped; provenance of who created the worktree is not verified). Per-task `omg worker seal --run RUN --task <id>` is the same path for one task. If you DO hand-write an envelope, `head_sha` **must** be a real git object id (7–64 hex) from an actual commit in the worktree — a placeholder or empty value makes `omg integrate` fail closed (`envelope.head_sha must be a git object id`). A spawned worker that lacks `omg` on PATH must still commit its work in the worktree so the leader can seal it; do not fabricate a head_sha. `seal --all` will not pick up post-seal commits without `--force`.
 - `status` is `ok` or `failed`. Leader base is recorded by `omg ulw` as `base_sha` on the run.
 - Prefer clean leader tree (no auto-stash). Apply with:
 

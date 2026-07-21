@@ -706,6 +706,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
         load_ownership_manifest,
         prepare_owned_tasks,
         prepare_task,
+        seal_all_tasks,
         seal_task,
     )
 
@@ -759,6 +760,47 @@ def cmd_worker(args: argparse.Namespace) -> int:
                 )
             )
             return 0
+        if action == "seal" and getattr(args, "seal_all", False):
+            results = seal_all_tasks(
+                root,
+                run_id,
+                force=bool(getattr(args, "force", False)),
+            )
+            sealed = already = skipped = failed = errored = 0
+            # Per-task table
+            print(f"{'task_id':<24} {'status':<22} head_sha/detail")
+            print("-" * 72)
+            for row in results:
+                tid = str(row.get("task_id") or "")
+                st = str(row.get("status") or "")
+                if st == "sealed":
+                    sealed += 1
+                    detail = str(row.get("head_sha") or "")
+                    if row.get("changed_files_count") is not None:
+                        detail = f"{detail} files={row['changed_files_count']}"
+                elif st == "already-sealed":
+                    already += 1
+                    detail = ""
+                elif st == "skipped-no-worktree":
+                    skipped += 1
+                    detail = ""
+                elif st == "failed":
+                    failed += 1
+                    detail = str(
+                        row.get("detail") or row.get("error") or row.get("head_sha") or ""
+                    )
+                elif st == "error":
+                    errored += 1
+                    detail = str(row.get("error") or "")
+                else:
+                    detail = str(row.get("error") or row.get("head_sha") or "")
+                print(f"{tid:<24} {st:<22} {detail}")
+            print(
+                f"sealed {sealed}, already {already}, skipped {skipped}, "
+                f"failed {failed}, error {errored}"
+            )
+            # Non-benign: failed envelope or exception path
+            return 1 if (failed or errored) else 0
         if not task_id:
             print("omg worker: --task ID required", file=sys.stderr)
             return 2
@@ -1482,8 +1524,15 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="git add/commit in worktree and write ulw-results envelope",
     )
-    p_w_seal.add_argument(
-        "--task", dest="task_id", required=True, help="task_id for envelope"
+    seal_target = p_w_seal.add_mutually_exclusive_group(required=True)
+    seal_target.add_argument(
+        "--task", dest="task_id", default=None, help="task_id for envelope"
+    )
+    seal_target.add_argument(
+        "--all",
+        dest="seal_all",
+        action="store_true",
+        help="seal every ownership-manifest task with a local worktree",
     )
     p_w_seal.add_argument(
         "--run", dest="run_id", default=None, help="run_id (default: active)"
@@ -1507,7 +1556,17 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="optional evidence string on envelope",
     )
-    p_w_seal.set_defaults(func=cmd_worker, worker_action="seal")
+    p_w_seal.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help=(
+            "with --all: re-seal even when an envelope already exists "
+            "(pick up post-seal commits); without --force, existing "
+            "envelope → already-sealed"
+        ),
+    )
+    p_w_seal.set_defaults(func=cmd_worker, worker_action="seal", seal_all=False)
 
     p_w_own = worker_sub.add_parser(
         "own",
