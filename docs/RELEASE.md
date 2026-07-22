@@ -4,16 +4,16 @@
 
 | Field | Value |
 |-------|--------|
-| Version | **0.3.2** |
-| Tag | [`v0.3.2`](https://github.com/ImL1s/oh-my-grok/releases/tag/v0.3.2) |
-| Notes | QA freeze allowlist UX, pytest marker coalesce, auto PRD from UltraQA, autopilot complete short-circuit, `autopilot_phase` sync |
+| Version | **0.5.0** |
+| Tag | [`v0.5.0`](https://github.com/ImL1s/oh-my-grok/releases/tag/v0.5.0) |
+| Notes | Fail-closed gate and global-hook hardening; experimental multi-CLI team plane with integration isolation; in-session MCP server; local LSP probe; editable packaging |
 
 Source of truth: [`plugin.json`](../plugin.json) · history: [`CHANGELOG.md`](../CHANGELOG.md)  
 User guides: [`docs/skills.md`](./skills.md) (all skills) · [`docs/autopilot.md`](./autopilot.md) · skill: [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md)
 
 ## Version source of truth
 
-1. Bump **`plugin.json` `"version"`** first (e.g. `0.3.2`).
+1. Bump **`plugin.json` `"version"`** first (e.g. `X.Y.Z`).
 2. Confirm `omg --version` prints the same string.
 3. Update README `Version: **X.Y.Z**` and `docs/security-model.md` header if present.
 4. Add a CHANGELOG section for the release.

@@ -39,9 +39,10 @@ OMG **不取代** Grok Build。
 
 Workers 只經 Grok **`spawn_subagent`**（depth 1）。  
 **沒有** OMC 式 Stop hard-pin（chat 不會被強制釘住）。中斷就說 **繼續** 或再呼叫 skill。  
-**範圍誠實：** core purpose 編排對等子集 — 不是完整 OMC skill zoo / tmux multi-CLI team。
+**tmux team：** 已有實驗性 multi-CLI team plane（需設定 `OMG_EXPERIMENTAL_TMUX_TEAM=1`）；它只提供 worktree／seal／integrate 的**整合隔離**，不是執行 sandbox。
+**範圍誠實：** core purpose 編排對等子集 — 仍不是完整 OMC skill zoo，也不宣稱各 provider 有一致的執行 sandbox；詳見 [`docs/security-model.md`](docs/security-model.md)。
 
-版本：**0.3.2** · License: MIT
+版本：**0.5.0** · License: MIT
 
 ---
 
@@ -61,7 +62,7 @@ curl -fsSL https://x.ai/cli/install.sh | bash
 git clone https://github.com/ImL1s/oh-my-grok.git ~/.local/share/oh-my-grok
 cd ~/.local/share/oh-my-grok
 ./scripts/install-plugin.sh
-# 可選 pin：git checkout v0.3.2
+# 可選 pin：git checkout v0.5.0
 
 # 2) omg 到 PATH
 ln -sf "$(pwd)/bin/omg" ~/.local/bin/omg
@@ -76,7 +77,7 @@ omg doctor
 ### 只裝 plugin（半套）
 
 ```bash
-grok plugin install ImL1s/oh-my-grok@v0.3.2 --trust
+grok plugin install ImL1s/oh-my-grok@v0.5.0 --trust
 ```
 
 不會自動把 `omg` 放上 PATH，也不保證 global PreToolUse soft-gate。日常請用完整安裝。
