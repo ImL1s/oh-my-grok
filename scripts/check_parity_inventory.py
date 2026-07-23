@@ -31,15 +31,24 @@ def main() -> int:
     inventory = validate_parity_inventory(
         load_json_object(ROOT / "docs/parity/omg-parity.json")
     )
-    observed = {
-        name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for name, path in ARTIFACT_PATHS.items()
-    }
-    if observed != NORMATIVE_ARTIFACT_HASHES:
-        raise SystemExit(
-            "normative artifact hash drift: "
-            + json.dumps({"expected": NORMATIVE_ARTIFACT_HASHES, "observed": observed}, sort_keys=True)
-        )
+    # The normative parity artifacts are untracked OMX development inputs under
+    # `.omx/plans/`; their hashes are frozen into NORMATIVE_ARTIFACT_HASHES and
+    # bound into the release manifest. Re-verify them only when they are present
+    # (local parity dev). On CI and fresh clones they are absent, so this check
+    # is skipped rather than failing — the tracked inventory above is the gate.
+    missing = [name for name, path in ARTIFACT_PATHS.items() if not path.is_file()]
+    artifacts_checked = False
+    if not missing:
+        observed = {
+            name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for name, path in ARTIFACT_PATHS.items()
+        }
+        if observed != NORMATIVE_ARTIFACT_HASHES:
+            raise SystemExit(
+                "normative artifact hash drift: "
+                + json.dumps({"expected": NORMATIVE_ARTIFACT_HASHES, "observed": observed}, sort_keys=True)
+            )
+        artifacts_checked = True
     print(
         json.dumps(
             {
@@ -48,6 +57,7 @@ def main() -> int:
                 "requirements": len(inventory["requirement_ids"]),
                 "mcp_operations": len(inventory["mcp_operations"]),
                 "semantic_lsp_proxy_count": inventory["semantic_lsp_proxy_count"],
+                "normative_artifacts_verified": artifacts_checked,
             },
             sort_keys=True,
         )
