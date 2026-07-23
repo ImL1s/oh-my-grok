@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from itertools import combinations
 from pathlib import Path
 
@@ -79,6 +80,13 @@ def test_capability_tiers_remain_independent_evidence() -> None:
 
 def test_golden_partial_recovery_fixture_locks_caps_counts_and_warnings() -> None:
     path = FIXTURES / "recovery" / "bounded-900-lines-broken-chain-v1.jsonl"
+    # Git only preserves the executable bit, so a checked-out tracked fixture is
+    # 0o644, not the 0o400 immutable-source mode the recovery product writes.
+    # Normalize it here so this golden test asserts the contract deterministically
+    # across checkouts (the product's own 0o400 write is covered in
+    # test_run_manifest.py); without this the assertion passed locally but failed
+    # on a fresh CI checkout.
+    os.chmod(path, IMMUTABLE_SOURCE_MODE)
     manifest = validate_recovery_manifest(
         _load("recovery/bounded-900-lines-broken-chain-v1.manifest.json")
     )
