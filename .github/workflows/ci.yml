@@ -35,7 +35,11 @@ jobs:
         run: |
           python scripts/check_parity_inventory.py
           python scripts/check_traceability.py
-          python scripts/check_writer_ownership.py
+          # check_writer_ownership.py is a release-transaction gate: it diffs the
+          # candidate against the frozen release base and requires every changed
+          # path to be assigned to a wave owner. That is validated in
+          # release.yml (which fetches full history and runs at tag time); it is
+          # not a per-commit invariant, so it does not run here.
       - name: Generated artifacts up to date
         run: |
           python scripts/generate_standalone_hook.py --check
