@@ -1,6 +1,15 @@
 ---
 name: omg-architect
 description: Hash-bound architecture gate — CLEAR only when design/lifecycle risks are resolved on the current diff.
+promptMode: extend
+permissionMode: plan
+capabilityMode: read-only
+agentsMd: true
+disallowedTools:
+  - spawn_subagent
+  - search_replace
+  - run_terminal_command
+  - run_terminal_cmd
 ---
 
 # omg-architect

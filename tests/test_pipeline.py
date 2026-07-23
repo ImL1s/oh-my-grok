@@ -40,7 +40,6 @@ def test_pipeline_dry_run_plan_implement_order(monkeypatch, tmp_path):
     rid = active["run_id"]
     state = load_pipeline_state(tmp_path, rid)
     assert state is not None
-    stages = [h["stage"] for h in state["history"] if h.get("event") in ("enter", "exit")]
     # Expect plan then implement then dual_review then accept
     enter_stages = [h["stage"] for h in state["history"] if h.get("event") == "enter"]
     assert enter_stages[0] == "plan"
@@ -111,8 +110,6 @@ def test_pipeline_plan_only(monkeypatch, tmp_path):
 def test_pipeline_never_sets_allow_env(monkeypatch, tmp_path):
     monkeypatch.delenv("OMG_ALLOW_EXTERNAL_CLI", raising=False)
     launch_envs = []
-
-    real_popen = subprocess.Popen
 
     def tracking_popen(argv, **kwargs):
         launch_envs.append(kwargs.get("env"))

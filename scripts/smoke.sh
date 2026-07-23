@@ -81,6 +81,16 @@ echo "== accept --help (policy flags) =="
 "${OMG[@]}" accept --help | grep -E -- '--review|--yes|--allow-cmd|--no-allowlist' >/dev/null \
   || fail "accept --help missing policy flags"
 
+echo "== standalone release/install surfaces =="
+bash "${ROOT}/scripts/install.sh" --help | grep -F 'exact tag' >/dev/null \
+  || fail "install.sh --help missing immutable-tag contract"
+python3 "${ROOT}/scripts/release_attest.py" --help >/dev/null \
+  || fail "release_attest.py --help failed"
+[[ "$(python3 "${ROOT}/scripts/generate_standalone_hook.py" --interface)" == "standalone_hook_generator/1" ]] \
+  || fail "standalone hook generator interface mismatch"
+# W6 owns the generated hook bytes; W1 deliberately does not turn a known
+# cross-wave stale output into a local smoke failure before W6 regenerates it.
+
 echo "== canary_pretool --dry =="
 python3 "${ROOT}/scripts/canary_pretool.py" --dry >/dev/null \
   || fail "canary_pretool --dry failed"

@@ -32,7 +32,6 @@ from omg_cli.team.providers import (
     resolve_executor_binary,
 )
 from omg_cli.team.roles import (
-    UnknownRoleError,
     is_reviewer_or_verifier,
     normalize_role,
     role_posture,
@@ -347,12 +346,57 @@ def parse_routing_json(raw: str | Mapping[str, Any] | None) -> dict[str, Any] | 
     return dict(data)
 
 
+@dataclass(frozen=True, slots=True)
+class NativeRoleRoute:
+    """Fail-closed Grok-native role/capability route; no provider fallback."""
+
+    role: str
+    subagent_type: str
+    capability_mode: str
+    transport: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "role": self.role,
+            "subagent_type": self.subagent_type,
+            "capability_mode": self.capability_mode,
+            "transport": self.transport,
+        }
+
+
+def resolve_native_routing(
+    roles: Sequence[str], *, transport: str = "grok_native"
+) -> Mapping[str, NativeRoleRoute]:
+    """Resolve canonical Grok routes without PATH probes or silent fallback."""
+
+    from omg_cli.team.roles import native_subagent_type, required_capability_mode
+
+    if transport not in {"grok_native", "tmux_grok"}:
+        raise RoutingError("native team transport must be grok_native or tmux_grok")
+    resolved: dict[str, NativeRoleRoute] = {}
+    for raw in roles:
+        role = normalize_role(raw)
+        route = NativeRoleRoute(
+            role=role,
+            subagent_type=native_subagent_type(role),
+            capability_mode=required_capability_mode(role),
+            transport=transport,
+        )
+        previous = resolved.get(role)
+        if previous is not None and previous != route:  # pragma: no cover - deterministic
+            raise RoutingError(f"native role {role!r} resolved inconsistently")
+        resolved[role] = route
+    return {key: resolved[key] for key in sorted(resolved)}
+
+
 __all__ = [
     "DEFAULT_PROVIDER",
     "STRUCTURED_VERDICT_PROVIDERS",
     "ResolvedRouting",
+    "NativeRoleRoute",
     "RoleRoute",
     "RoutingError",
     "parse_routing_json",
     "resolve_routing",
+    "resolve_native_routing",
 ]

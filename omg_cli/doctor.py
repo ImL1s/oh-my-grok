@@ -839,11 +839,12 @@ def check_capabilities_lock() -> SoftResult:
             "warn",
             "no omg_capabilities.lock.json (run scripts/generate_capabilities_lock.py)",
         )
-    if stored.get("aggregate") != current.get("aggregate"):
+    if not mod.lock_matches(stored, current):
         return (
             name,
             "warn",
-            "local checkout skills/agents changed since lock — regenerate: "
+            "local checkout version/session surface/skills/agents changed since lock "
+            "— regenerate: "
             "python3 scripts/generate_capabilities_lock.py "
             "(commit-hygiene guard; installed-version drift is covered by "
             "'plugin version drift')",
@@ -922,11 +923,12 @@ def check_installed_capabilities_lock() -> SoftResult:
                 "warn",
                 "no omg_capabilities.lock.json in checkout — cannot verify installed",
             )
-        if stored.get("aggregate") != installed_lock.get("aggregate"):
+        if not mod.lock_matches(stored, installed_lock):
             return (
                 name,
                 "warn",
-                "INSTALLED skills/agents differ from committed lock — re-run "
+                "INSTALLED skills/agents differ or version/session surface drifted "
+                "from committed lock — re-run "
                 "scripts/install-plugin.sh (grok plugin update)",
             )
         return (
@@ -940,6 +942,123 @@ def check_installed_capabilities_lock() -> SoftResult:
             "warn",
             f"cannot locate installed snapshot ({type(e).__name__}: {e})",
         )
+
+
+def check_installed_release_identity() -> SoftResult:
+    """Verify the immutable stage/current/CLI/plugin/receipt byte identity.
+
+    Absence is an honest development/source-install warning.  Once an immutable
+    receipt exists, any malformed receipt, pointer drift, package drift or owned
+    global-file drift is a hard failure even in non-strict doctor mode.
+    """
+
+    name = "immutable install identity"
+    try:
+        from omg_cli.hook_install import grok_home
+        from omg_cli.setup_cmd import compute_package_identity, verified_current_install
+
+        gh = grok_home()
+        store = gh / "omg"
+        current = store / "current"
+        receipt_pointer = store / "current-receipt"
+        if not os.path.lexists(current) and not os.path.lexists(receipt_pointer):
+            return (
+                name,
+                "warn",
+                "no immutable release receipt (development/source install); "
+                "use the checksum-verified release installer",
+            )
+        # During the install transaction the jointly switched CLI/plugin/current
+        # surfaces must pass strict doctor *before* an installed receipt can be
+        # published.  The installer supplies both exact values only to that child
+        # process; validate every available byte/pointer invariant, then a second
+        # environment-free strict doctor runs after receipt publication.
+        if current.is_symlink() and not os.path.lexists(receipt_pointer):
+            expected = os.environ.get("OMG_EXPECTED_INSTALL_DIGEST", "")
+            expected_stage = os.environ.get("OMG_EXPECTED_INSTALL_STAGE", "")
+            if not re.fullmatch(r"[0-9a-f]{64}", expected) or not expected_stage:
+                return (name, "fail", "managed current pointer has no immutable receipt")
+            stage = current.resolve(strict=True)
+            if stage != Path(expected_stage).resolve(strict=True):
+                return (name, "fail", "pending install stage differs from expected stage")
+            stage_identity = compute_package_identity(stage)
+            if stage_identity["digest"] != expected:
+                return (name, "fail", "pending immutable stage digest differs")
+            active_identity = compute_package_identity(plugin_root())
+            if active_identity["digest"] != expected:
+                return (name, "fail", "pending active CLI/plugin package differs")
+            cli = _home() / ".local" / "bin" / "omg"
+            if not cli.is_symlink() or cli.resolve(strict=True) != (stage / "bin" / "omg").resolve():
+                return (name, "fail", "pending CLI pointer differs from stage")
+            return (
+                name,
+                "ok",
+                f"pending transaction version={stage_identity['version']} digest={expected[:16]}",
+            )
+        if not current.is_symlink() or not receipt_pointer.is_symlink():
+            return (name, "fail", "managed current/receipt pointers are not symlinks")
+        cli = _home() / ".local" / "bin" / "omg"
+        verified = verified_current_install(store, cli)
+        stage = verified.stage
+        receipt = verified.receipt
+        expected = str(receipt["installed"]["package_digest"])
+        stage_identity = compute_package_identity(stage)
+        if stage_identity["digest"] != expected:
+            return (name, "fail", "immutable stage digest differs from receipt")
+        recorded_inventory = receipt["installed"].get("inventory")
+        if recorded_inventory is not None and recorded_inventory != stage_identity["inventory"]:
+            return (name, "fail", "immutable stage inventory differs from receipt")
+        active_identity = compute_package_identity(plugin_root())
+        if active_identity["digest"] != expected:
+            return (name, "fail", "active CLI/plugin package differs from receipt")
+        if receipt["mode"] == "release":
+            for key in ("asset_name", "asset_sha256", "checksums_sha256"):
+                value = receipt["source"].get(key)
+                if key == "checksums_sha256" and not value:
+                    # Explicit --asset-sha256 is a valid manual/offline trust root.
+                    continue
+                if not isinstance(value, str) or (key.endswith("sha256") and not re.fullmatch(r"[0-9a-f]{64}", value)):
+                    return (name, "fail", "release receipt checksum identity is incomplete")
+        owned = receipt.get("owned_inventory")
+        if not isinstance(owned, list):
+            return (name, "fail", "receipt owned inventory is malformed")
+        for row in owned:
+            if not isinstance(row, dict) or row.get("kind") not in {"global_hook", "global_guidance"}:
+                continue
+            path = Path(str(row.get("path") or ""))
+            expected_file = str(row.get("identity") or "")
+            if row.get("kind") == "global_guidance":
+                from omg_cli.guidance import render_managed_block, rules_status
+
+                status = rules_status(version=str(receipt["installed"]["package_version"]), home=gh)
+                actual_owned = hashlib.sha256(
+                    render_managed_block(str(receipt["installed"]["package_version"])).encode("utf-8")
+                ).hexdigest()
+                if (
+                    not status.get("present")
+                    or status.get("corrupt")
+                    or not status.get("version_ok")
+                    or not status.get("source_hash_ok")
+                    or status.get("drift")
+                    or actual_owned != expected_file
+                ):
+                    return (name, "fail", "owned global_guidance block drifted")
+                continue
+            if (
+                not path.is_file()
+                or path.is_symlink()
+                or hashlib.sha256(path.read_bytes()).hexdigest() != expected_file
+            ):
+                return (name, "fail", f"owned {row.get('kind')} bytes drifted")
+        return (
+            name,
+            "ok",
+            f"version={stage_identity['version']} digest={expected[:16]} receipt={receipt['receipt_hash'][:16]}",
+        )
+    except Exception as e:
+        # Bound and redact exception type only; no tokens, prompts, commands or
+        # credential-bearing URLs are echoed from malformed receipt content.
+        return (name, "fail", f"identity readback failed ({type(e).__name__})")
 
 
 def run_checks() -> list[tuple[str, bool, str]]:
@@ -966,6 +1085,7 @@ def run_soft_checks() -> list[SoftResult]:
         check_plugin_enabled(),
         check_capabilities_lock(),
         check_installed_capabilities_lock(),
+        check_installed_release_identity(),
     ]
 
 

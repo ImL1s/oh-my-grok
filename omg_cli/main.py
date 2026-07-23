@@ -249,25 +249,28 @@ def cmd_hud(args: argparse.Namespace) -> int:
 
 
 def cmd_lsp(args: argparse.Namespace) -> int:
-    from omg_cli.lsp_tools import diagnostics_ast, probe_tools, symbols_ast, symbols_pyright
+    from omg_cli.lsp_tools import probe_tools
 
     action = getattr(args, "lsp_action", None)
     if action == "status" or action is None:
         print(json.dumps(probe_tools(), indent=2, ensure_ascii=False))
         return 0
-    if action == "check":
-        path = Path(args.path)
-        result = symbols_pyright(path, cwd=_project_root())
+    if action in {"check", "symbols", "diagnostics"}:
+        status = probe_tools()
+        result = {
+            "ok": False,
+            "ownership": status["ownership"],
+            "status": "semantic_proxy_unsupported",
+            "operation": action,
+            "path": str(Path(args.path)),
+            "semantic_proxy_operations": status["semantic_proxy_operations"],
+            "error": (
+                "semantic LSP operations belong to Grok; OMG only validates "
+                "the public .lsp.json registration"
+            ),
+        }
         print(json.dumps(result, indent=2, ensure_ascii=False))
-        return 0 if result.get("ok") else 1
-    if action == "symbols":
-        result = symbols_ast(Path(args.path))
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-        return 0 if result.get("ok") else 1
-    if action == "diagnostics":
-        result = diagnostics_ast(Path(args.path))
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-        return 0 if result.get("ok") else 1
+        return 1
     print(
         "usage: omg lsp {status,check,symbols,diagnostics} …",
         file=sys.stderr,
@@ -1278,6 +1281,9 @@ def cmd_dual_review(args: argparse.Namespace) -> int:
     if not goal:
         from omg_cli.state import load_run
 
+        if not isinstance(run_id, str):
+            print("omg dual-review: --run requires a run ID", file=sys.stderr)
+            return 2
         data = load_run(_project_root(), run_id)
         goal = (data or {}).get("goal") or "(dual-review)"
 
@@ -1295,6 +1301,666 @@ def cmd_dual_review(args: argparse.Namespace) -> int:
         safe=bool(getattr(args, "safe", False)),
         force=bool(getattr(args, "force", False)),
     )
+
+
+def _read_json_path(path: Path | str, *, label: str) -> object:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} is not readable JSON: {exc}") from exc
+
+
+def _write_json_path(path: Path | str, value: object) -> Path:
+    from omg_cli.contracts.writer_chain import canonical_json_bytes
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(canonical_json_bytes(value))
+    return target
+
+
+def cmd_session(args: argparse.Namespace) -> int:
+    """Expose Grok's exact create/resume/continue/fork argv contract."""
+    from omg_cli.host_session import (
+        HostSessionError,
+        allocate_host_session,
+        session_route_argv,
+    )
+
+    action = getattr(args, "session_action", None)
+    try:
+        if action == "allocate":
+            binding = allocate_host_session()
+            result: object = {
+                "session_id": binding.session_id,
+                "argv": binding.launch_argv(),
+                "route": "create",
+            }
+        elif action == "route":
+            route = session_route_argv(
+                create_session_id=getattr(args, "session_id", None),
+                resume_session_id=getattr(args, "resume_session_id", None),
+                continue_best_effort=bool(getattr(args, "continue_best_effort", False)),
+                fork_session=bool(getattr(args, "fork_session", False)),
+                new_session_id=getattr(args, "new_session_id", None),
+                existing_session_ids=getattr(args, "existing_session_ids", None) or (),
+            )
+            result = {
+                "argv": route,
+                "best_effort": route[:1] == ["--continue"],
+                "named_fork": "--fork-session" in route,
+            }
+        else:
+            print("omg session: action required", file=sys.stderr)
+            return 2
+    except HostSessionError as exc:
+        print(f"omg session: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_recover(args: argparse.Namespace) -> int:
+    """Create an immutable bounded session recovery pack."""
+    import hashlib
+
+    from omg_cli.session_recovery import SessionRecoveryError, recover_session
+
+    root = _project_root()
+    source = Path(args.source).expanduser()
+    destination = getattr(args, "output", None)
+    if destination is None:
+        source_key = hashlib.sha256(str(source.resolve(strict=False)).encode()).hexdigest()[:16]
+        destination_path = root / ".omg" / "state" / "recovery" / f"manual-{source_key}"
+    else:
+        destination_path = Path(destination).expanduser()
+        if not destination_path.is_absolute():
+            destination_path = root / destination_path
+    try:
+        result = recover_session(
+            source,
+            destination_path,
+            repository_id="OMG",
+            host="grok",
+        )
+    except (OSError, ValueError, SessionRecoveryError) as exc:
+        print(f"omg recover: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result.get("error") is None else 1
+
+
+def cmd_memory(args: argparse.Namespace) -> int:
+    """Operate the deterministic, redacted project fact store."""
+    from datetime import datetime, timezone
+
+    from omg_cli.project_memory import (
+        export_memory,
+        import_memory,
+        rescan_memory,
+        search_memory,
+        upsert_fact,
+    )
+
+    root = _project_root()
+    action = getattr(args, "memory_action", None)
+    try:
+        if action == "put":
+            observed_at = getattr(args, "updated_at", None) or datetime.now(
+                timezone.utc
+            ).isoformat().replace("+00:00", "Z")
+            result: object = upsert_fact(
+                root,
+                key=args.key,
+                value=args.value,
+                source="user",
+                updated_at=observed_at,
+            )
+        elif action == "search":
+            result = search_memory(root, args.query, limit=args.limit)
+        elif action in {"show", "export"}:
+            store = export_memory(root)
+            result = store
+            if getattr(args, "output", None):
+                target = _write_json_path(args.output, result)
+                print(
+                    json.dumps(
+                        {"path": str(target), "facts": len(store["facts"])},
+                        indent=2,
+                    )
+                )
+                return 0
+        elif action == "import":
+            value = _read_json_path(args.file, label="memory import")
+            if not isinstance(value, dict):
+                raise ValueError("memory import must be a JSON object")
+            result = import_memory(root, value)
+        elif action == "rescan":
+            value = _read_json_path(args.file, label="memory rescan")
+            facts = value.get("facts") if isinstance(value, dict) else value
+            if not isinstance(facts, list) or not all(isinstance(row, dict) for row in facts):
+                raise ValueError("memory rescan must contain a JSON fact array")
+            observed_at = getattr(args, "observed_at", None) or datetime.now(
+                timezone.utc
+            ).isoformat().replace("+00:00", "Z")
+            result = rescan_memory(root, facts, observed_at=observed_at)
+        else:
+            print("omg memory: action required", file=sys.stderr)
+            return 2
+    except (OSError, ValueError) as exc:
+        print(f"omg memory: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_tracker(args: argparse.Namespace) -> int:
+    """Project passive lifecycle journals into the canonical tracker view."""
+    from omg_cli.contracts.state_schemas import ContractValidationError
+    from omg_cli.runtime_events import read_all_runtime_events
+    from omg_cli.tracker import (
+        TrackerError,
+        load_tracker_projection,
+        project_lifecycle_events,
+        reconcile_native_inventory,
+    )
+
+    root = _project_root()
+    action = getattr(args, "tracker_action", None)
+    try:
+        if action == "status":
+            result = load_tracker_projection(root, args.run_id)
+            if result is None:
+                result = {
+                    "run_id": args.run_id,
+                    "status": "not_projected",
+                    "authoritative": False,
+                }
+        elif action == "project":
+            if getattr(args, "events", None):
+                value = _read_json_path(args.events, label="tracker events")
+                if isinstance(value, dict):
+                    value = value.get("events")
+                if not isinstance(value, list) or not all(
+                    isinstance(row, dict) for row in value
+                ):
+                    raise ValueError("tracker events must be a JSON array")
+                events = value
+            else:
+                events = [
+                    row
+                    for row in read_all_runtime_events(root)
+                    if row.get("run_id") == args.run_id
+                ]
+            result = project_lifecycle_events(
+                root,
+                run_id=args.run_id,
+                generation=args.generation,
+                events=events,
+            )
+        elif action == "reconcile":
+            value = _read_json_path(args.inventory, label="native inventory")
+            inventory = value.get("inventory") if isinstance(value, dict) else value
+            if not isinstance(inventory, list) or not all(
+                isinstance(row, dict) for row in inventory
+            ):
+                raise ValueError("native inventory must be a JSON array")
+            result = reconcile_native_inventory(
+                root,
+                run_id=args.run_id,
+                inventory=inventory,
+            )
+        else:
+            print("omg tracker: action required", file=sys.stderr)
+            return 2
+    except (OSError, ValueError, TrackerError, ContractValidationError) as exc:
+        print(f"omg tracker: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_compact(args: argparse.Namespace) -> int:
+    """Create/read generation-fenced compaction checkpoints."""
+    from omg_cli.compaction import (
+        CompactionError,
+        create_compaction_checkpoint,
+        load_compaction_checkpoint,
+        render_resume_context,
+    )
+    from omg_cli.contracts.state_schemas import ContractValidationError
+    from omg_cli.contracts.writer_chain import sha256_hex
+
+    action = getattr(args, "compact_action", None)
+    try:
+        if action == "create":
+            receipts_value = _read_json_path(args.receipts, label="compaction receipts")
+            receipts = (
+                receipts_value.get("receipts")
+                if isinstance(receipts_value, dict)
+                else receipts_value
+            )
+            recovery = _read_json_path(
+                args.recovery_manifest, label="recovery manifest"
+            )
+            if not isinstance(receipts, list) or not all(
+                isinstance(row, dict) for row in receipts
+            ):
+                raise ValueError("compaction receipts must be a JSON array")
+            if not isinstance(recovery, dict):
+                raise ValueError("recovery manifest must be a JSON object")
+            result: object = create_compaction_checkpoint(
+                _project_root(),
+                run_id=args.run_id,
+                generation=args.generation,
+                guidance=Path(args.guidance_file).read_bytes(),
+                receipts=receipts,
+                recovery_manifest=recovery,
+            )
+        elif action == "show":
+            result = load_compaction_checkpoint(args.path)
+        elif action == "render":
+            rendered = render_resume_context(load_compaction_checkpoint(args.path))
+            guidance = rendered.pop("guidance")
+            target = Path(args.guidance_out)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(guidance)
+            result = {
+                **rendered,
+                "guidance_path": str(target),
+                "guidance_sha256": sha256_hex(guidance),
+            }
+        else:
+            print("omg compact: action required", file=sys.stderr)
+            return 2
+    except (OSError, ValueError, CompactionError, ContractValidationError) as exc:
+        print(f"omg compact: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _notification_config(path: str | None) -> dict:
+    from omg_cli.notify import disabled_notification_config, load_notification_config
+
+    if path is None:
+        default = _project_root() / ".omg" / "notifications.json"
+        if not default.is_file():
+            return disabled_notification_config()
+        path = str(default)
+    return load_notification_config(path)
+
+
+def cmd_notify(args: argparse.Namespace) -> int:
+    """Operate the outbound-only, non-authoritative notification queue."""
+    from omg_cli.notify import (
+        create_notification_event,
+        enqueue_notification,
+        process_notification_queue,
+    )
+
+    action = getattr(args, "notify_action", None)
+    try:
+        if action == "status":
+            result: object = {
+                "config": _notification_config(getattr(args, "config", None)),
+                "inbound_listener": False,
+                "authoritative": False,
+            }
+        else:
+            nonce = os.environ.get("OMG_NOTIFICATION_OWNER_NONCE", "")
+            if not nonce:
+                raise ValueError("OMG_NOTIFICATION_OWNER_NONCE is required")
+            owner = {
+                "owner_id": args.owner_id,
+                "generation": args.generation,
+                "owner_nonce": nonce,
+            }
+            if action == "send":
+                event = create_notification_event(
+                    severity=args.severity,
+                    title=args.title,
+                    message=args.message,
+                    owner_id=args.owner_id,
+                    generation=args.generation,
+                    owner_nonce=nonce,
+                    stable_source_id=getattr(args, "stable_source_id", None),
+                )
+                result = enqueue_notification(
+                    _project_root(),
+                    event,
+                    owner=owner,
+                    max_attempts=args.max_attempts,
+                )
+            elif action == "process":
+                result = process_notification_queue(
+                    _project_root(),
+                    _notification_config(getattr(args, "config", None)),
+                    owner=owner,
+                    max_records=args.max_records,
+                    rate_limit_per_second=args.rate_limit,
+                )
+            else:
+                print("omg notify: action required", file=sys.stderr)
+                return 2
+    except (OSError, ValueError) as exc:
+        print(f"omg notify: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_native_status(args: argparse.Namespace) -> int:
+    """Report only public native UI/workflow observations."""
+    from omg_cli.sidecar import native_dashboard_status
+    from omg_cli.workflows.grok_adapter import (
+        assess_native_capability,
+        safe_headless_probe,
+    )
+
+    result = {
+        "native_dashboard": native_dashboard_status(),
+        "native_workflow": assess_native_capability(_project_root()),
+        "headless_probe": safe_headless_probe(
+            timeout_seconds=float(getattr(args, "timeout", 5.0))
+        )
+        if bool(getattr(args, "probe", False))
+        else {
+            "attempted": False,
+            "status": "optional_unclaimed",
+            "note": "pass --probe for bounded help-only observation",
+        },
+    }
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _workflow_receipts(value: object) -> dict[str, dict]:
+    if isinstance(value, dict) and isinstance(value.get("results"), list):
+        value = value["results"]
+    if isinstance(value, list):
+        rows = value
+        mapped: dict[str, dict] = {}
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("task_id"), str):
+                raise ValueError("workflow receipt rows require task_id")
+            if row["task_id"] in mapped:
+                raise ValueError("workflow receipt task_id is duplicated")
+            mapped[row["task_id"]] = row
+        return mapped
+    if isinstance(value, dict) and all(
+        isinstance(key, str) and isinstance(row, dict) for key, row in value.items()
+    ):
+        mapped = {}
+        for key, row in value.items():
+            embedded = row.get("task_id")
+            if embedded is not None and embedded != key:
+                raise ValueError("workflow receipt map key differs from task_id")
+            mapped[key] = row
+        return mapped
+    raise ValueError("workflow receipts must be a task map or result array")
+
+
+def cmd_workflow(args: argparse.Namespace) -> int:
+    """Compile, install, plan, and reconcile repository-workflow/v1 runs."""
+    from omg_cli.workflows import (
+        build_plan,
+        install_workflow,
+        list_workflows,
+        resolve_workflow,
+        run_workflow,
+    )
+    from omg_cli.workflows.registry import WorkflowRegistryError
+    from omg_cli.workflows.review import (
+        validate_success_task_receipt,
+        validate_task_receipt_identity,
+    )
+    from omg_cli.workflows.schema import WorkflowSchemaError
+
+    root = _project_root()
+    action = getattr(args, "workflow_action", None)
+    try:
+        if action == "install":
+            result: object = install_workflow(root, Path(args.file))
+        elif action == "list":
+            result = list_workflows(root, name=getattr(args, "name", None))
+        elif action == "show":
+            result = resolve_workflow(root, args.name, getattr(args, "version", None))
+        elif action in {"plan", "run"}:
+            definition = resolve_workflow(
+                root, args.name, getattr(args, "version", None)
+            )
+            workflow_input = _read_json_path(args.input, label="workflow input")
+            if not isinstance(workflow_input, dict):
+                raise ValueError("workflow input must be a JSON object")
+            if action == "plan":
+                result = build_plan(
+                    definition,
+                    workflow_input,
+                    repository_id="OMG",
+                    run_generation=args.generation,
+                )
+            else:
+                receipt_value = _read_json_path(
+                    args.receipts, label="workflow receipts"
+                )
+                receipts = _workflow_receipts(receipt_value)
+                receipt_plan = build_plan(
+                    definition,
+                    workflow_input,
+                    repository_id="OMG",
+                    run_generation=args.generation,
+                )
+                expected_tasks = {
+                    task["task_id"]: task for task in receipt_plan["tasks"]
+                }
+                missing_receipts = sorted(set(expected_tasks) - set(receipts))
+                if missing_receipts:
+                    raise ValueError(
+                        f"missing workflow receipts: {missing_receipts!r}"
+                    )
+                for task_id, receipt in receipts.items():
+                    task = expected_tasks.get(task_id)
+                    if task is None:
+                        raise ValueError(f"foreign workflow receipt: {task_id}")
+                    validate_task_receipt_identity(receipt_plan, task, receipt)
+                    validate_success_task_receipt(
+                        definition,
+                        receipt_plan,
+                        task,
+                        receipt,
+                        root=root,
+                    )
+
+                def execute_task(task: dict, _context: dict) -> dict:
+                    receipt = receipts.get(task["task_id"])
+                    if receipt is None:
+                        raise ValueError(f"missing workflow receipt: {task['task_id']}")
+                    return receipt
+
+                result = run_workflow(
+                    root,
+                    definition,
+                    workflow_input,
+                    execute_task=execute_task,
+                    repository_id="OMG",
+                    run_generation=args.generation,
+                    repository_policy=args.repository_permission,
+                    host_capabilities=args.host_capability,
+                    launch_receipt_permissions=args.launch_permission,
+                    allowed_mcp=args.allow_mcp,
+                    allowed_write_paths=args.allow_write_path,
+                )
+        else:
+            print("omg workflow: action required", file=sys.stderr)
+            return 2
+    except (OSError, ValueError, WorkflowRegistryError, WorkflowSchemaError) as exc:
+        print(f"omg workflow: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if action == "run":
+        return 0 if isinstance(result, dict) and result.get("terminal") == "ship" else 1
+    return 0
+
+
+def cmd_capabilities(args: argparse.Namespace) -> int:
+    """Report independent capability tiers without inferring host health."""
+    import importlib.util
+
+    from omg_cli import __version__
+    from omg_cli.contracts.capability_schema import CAPABILITY_TIERS
+    from omg_cli.lsp_tools import registration_status
+    from omg_cli.sidecar import native_dashboard_status
+    from omg_cli.workflows.grok_adapter import assess_native_capability
+
+    root = _project_root()
+    lock_path = root / "omg_capabilities.lock.json"
+    try:
+        lock = (
+            _read_json_path(lock_path, label="capability lock")
+            if lock_path.is_file()
+            else None
+        )
+        lsp = registration_status(root)
+        workflow = assess_native_capability(root)
+        notification = _notification_config(
+            getattr(args, "notification_config", None)
+        )
+    except (OSError, ValueError) as exc:
+        print(f"omg capabilities: {exc}", file=sys.stderr)
+        return 1
+    mcp_installed = importlib.util.find_spec("omg_cli.mcp.server") is not None
+    workflow_installed = importlib.util.find_spec("omg_cli.workflows.runner") is not None
+    result = {
+        "schema": "omg-capability-status/v1",
+        "tiers": list(CAPABILITY_TIERS),
+        "version": __version__,
+        "surfaces": {
+            "mcp": {
+                "configured": (root / ".mcp.json").is_file(),
+                "installed": mcp_installed,
+                "enabled": False,
+                "loadable": mcp_installed,
+                "observed": False,
+                "healthy": False,
+                "verified": False,
+                "classification": "native_substitute",
+                "note": "fresh Grok session evidence is required above configured/loadable",
+            },
+            "lsp": {
+                "configured": lsp["registered"],
+                "installed": any(row["command_available"] for row in lsp["servers"]),
+                "enabled": False,
+                "loadable": lsp["configuration_valid"],
+                "observed": lsp["host_observed"],
+                "healthy": lsp["healthy"],
+                "verified": lsp["healthy"],
+                "classification": "host_owned",
+                "status": lsp["status"],
+            },
+            "repository_workflow": {
+                "configured": True,
+                "installed": workflow_installed,
+                "enabled": True,
+                "loadable": workflow_installed,
+                "observed": False,
+                "healthy": False,
+                "verified": False,
+                "classification": "native_substitute",
+                "scope": "product-owned runner only",
+            },
+            "grok_native_workflow": {
+                "configured": workflow["local_bundle_observed"],
+                "installed": workflow["local_bundle_observed"],
+                "enabled": False,
+                "loadable": False,
+                "observed": workflow["fresh_invocation_observed"],
+                "healthy": workflow["semantic_claim"],
+                "verified": workflow["semantic_claim"],
+                "classification": "optional_unclaimed",
+                "status": workflow["status"],
+            },
+            "notifications": {
+                "configured": notification["enabled"],
+                "installed": True,
+                "enabled": notification["enabled"],
+                "loadable": True,
+                "observed": False,
+                "healthy": False,
+                "verified": False,
+                "authoritative": False,
+                "classification": "native_substitute",
+            },
+            "native_dashboard": {
+                "configured": False,
+                "installed": False,
+                "enabled": False,
+                "loadable": False,
+                "observed": False,
+                "healthy": False,
+                "verified": False,
+                "classification": "optional_unclaimed",
+                "status": native_dashboard_status(),
+            },
+        },
+        "lock": lock,
+    }
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_parity(args: argparse.Namespace) -> int:
+    """Delegate run-manifest operations and release-bundle readback."""
+    from omg_cli.contracts.release_transaction import verify_release_bundle_files
+    from omg_cli.contracts.run_manifest import main as run_manifest_main
+    from omg_cli.contracts.state_schemas import ContractValidationError
+    from omg_cli.contracts.writer_chain import sha256_hex
+
+    action = getattr(args, "parity_action", None)
+    if action == "run":
+        return int(run_manifest_main(list(getattr(args, "manifest_args", None) or [])))
+    if action != "release-readback":
+        print("omg parity: action required", file=sys.stderr)
+        return 2
+    root = _project_root()
+    try:
+        manifest_path = Path(args.manifest).resolve()
+        relative = manifest_path.relative_to(root).as_posix()
+        manifest = _read_json_path(manifest_path, label="release bundle manifest")
+        if not isinstance(manifest, dict):
+            raise ValueError("release bundle manifest must be a JSON object")
+        registries: object = []
+        if getattr(args, "claimed_registries", None):
+            registries = _read_json_path(
+                args.claimed_registries, label="claimed registries"
+            )
+            if isinstance(registries, dict):
+                registries = registries.get("claimed_registries")
+        if not isinstance(registries, list) or not all(
+            isinstance(row, dict) for row in registries
+        ):
+            raise ValueError("claimed registries must be a JSON array")
+        verified = verify_release_bundle_files(
+            root,
+            manifest,
+            manifest_relative_path=relative,
+            claimed_registries=registries,
+        )
+        result = {
+            "verified": True,
+            "manifest_path": relative,
+            "manifest_sha256": sha256_hex(manifest_path.read_bytes()),
+            "candidate_commit": verified["candidate_commit"],
+            "candidate_tree": verified["candidate_tree"],
+            "semver": verified["semver"],
+            "public_upload_order": verified["public_upload_order"],
+            "release_asset_root": verified["release_asset_root"],
+        }
+    except (OSError, ValueError, ContractValidationError) as exc:
+        print(f"omg parity: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1469,6 +2135,299 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_resume.set_defaults(func=cmd_resume)
 
+    p_session = sub.add_parser(
+        "session",
+        parents=[common],
+        help="build exact Grok create/resume/continue/fork session argv",
+    )
+    session_sub = p_session.add_subparsers(dest="session_action")
+    p_session_allocate = session_sub.add_parser(
+        "allocate",
+        parents=[common],
+        help="allocate a new canonical Grok session UUID",
+    )
+    p_session_allocate.set_defaults(func=cmd_session, session_action="allocate")
+    p_session_route = session_sub.add_parser(
+        "route",
+        parents=[common],
+        help="validate one exact Grok host-session route",
+    )
+    route = p_session_route.add_mutually_exclusive_group(required=True)
+    route.add_argument("--session-id", help="new session UUID")
+    route.add_argument("--resume", dest="resume_session_id", help="existing session UUID")
+    route.add_argument(
+        "--continue",
+        dest="continue_best_effort",
+        action="store_true",
+        help="use Grok's best-effort continuation route",
+    )
+    p_session_route.add_argument(
+        "--fork-session",
+        action="store_true",
+        help="fork the selected resume/continue route",
+    )
+    p_session_route.add_argument(
+        "--new-session-id",
+        help="new child UUID required for a fork",
+    )
+    p_session_route.add_argument(
+        "--existing-session-id",
+        dest="existing_session_ids",
+        action="append",
+        default=[],
+        help="known UUID that the child must not reuse (repeatable)",
+    )
+    p_session_route.set_defaults(func=cmd_session, session_action="route")
+    p_session.set_defaults(func=cmd_session)
+
+    p_recover = sub.add_parser(
+        "recover",
+        parents=[common],
+        help="recover a bounded immutable session JSONL suffix",
+    )
+    p_recover.add_argument("source", help="regular JSONL source file (symlinks refused)")
+    p_recover.add_argument(
+        "--output",
+        default=None,
+        help="recovery directory (default: .omg/state/recovery/manual-<hash>)",
+    )
+    p_recover.set_defaults(func=cmd_recover)
+
+    p_memory = sub.add_parser(
+        "memory",
+        parents=[common],
+        help="deterministic redacted project fact memory",
+    )
+    memory_sub = p_memory.add_subparsers(dest="memory_action")
+    p_memory_put = memory_sub.add_parser("put", parents=[common], help="upsert user fact")
+    p_memory_put.add_argument("key")
+    p_memory_put.add_argument("value")
+    p_memory_put.add_argument("--updated-at", default=None)
+    p_memory_put.set_defaults(func=cmd_memory, memory_action="put")
+    p_memory_search = memory_sub.add_parser(
+        "search", parents=[common], help="search fact keys and values"
+    )
+    p_memory_search.add_argument("query")
+    p_memory_search.add_argument("--limit", type=int, default=20)
+    p_memory_search.set_defaults(func=cmd_memory, memory_action="search")
+    p_memory_show = memory_sub.add_parser(
+        "show", parents=[common], help="print canonical fact store"
+    )
+    p_memory_show.set_defaults(func=cmd_memory, memory_action="show", output=None)
+    p_memory_export = memory_sub.add_parser(
+        "export", parents=[common], help="write canonical fact store JSON"
+    )
+    p_memory_export.add_argument("--output", required=True)
+    p_memory_export.set_defaults(func=cmd_memory, memory_action="export")
+    p_memory_import = memory_sub.add_parser(
+        "import", parents=[common], help="merge canonical fact store JSON"
+    )
+    p_memory_import.add_argument("file")
+    p_memory_import.set_defaults(func=cmd_memory, memory_action="import")
+    p_memory_rescan = memory_sub.add_parser(
+        "rescan", parents=[common], help="replace scanner observations from JSON"
+    )
+    p_memory_rescan.add_argument("file")
+    p_memory_rescan.add_argument("--observed-at", default=None)
+    p_memory_rescan.set_defaults(func=cmd_memory, memory_action="rescan")
+    p_memory.set_defaults(func=cmd_memory)
+
+    p_tracker = sub.add_parser(
+        "tracker",
+        parents=[common],
+        help="generation-fenced passive lifecycle projection",
+    )
+    tracker_sub = p_tracker.add_subparsers(dest="tracker_action")
+    p_tracker_status = tracker_sub.add_parser(
+        "status", parents=[common], help="show a projected run"
+    )
+    p_tracker_status.add_argument("--run", dest="run_id", required=True)
+    p_tracker_status.set_defaults(func=cmd_tracker, tracker_action="status")
+    p_tracker_project = tracker_sub.add_parser(
+        "project", parents=[common], help="project journal or supplied events"
+    )
+    p_tracker_project.add_argument("--run", dest="run_id", required=True)
+    p_tracker_project.add_argument("--generation", type=int, required=True)
+    p_tracker_project.add_argument(
+        "--events",
+        default=None,
+        help="optional JSON event array; otherwise read passive journals",
+    )
+    p_tracker_project.set_defaults(func=cmd_tracker, tracker_action="project")
+    p_tracker_reconcile = tracker_sub.add_parser(
+        "reconcile", parents=[common], help="reconcile signed native inventory"
+    )
+    p_tracker_reconcile.add_argument("--run", dest="run_id", required=True)
+    p_tracker_reconcile.add_argument("--inventory", required=True)
+    p_tracker_reconcile.set_defaults(func=cmd_tracker, tracker_action="reconcile")
+    p_tracker.set_defaults(func=cmd_tracker)
+
+    p_compact = sub.add_parser(
+        "compact",
+        parents=[common],
+        help="lossless generation-fenced runtime compaction",
+    )
+    compact_sub = p_compact.add_subparsers(dest="compact_action")
+    p_compact_create = compact_sub.add_parser(
+        "create", parents=[common], help="create or adopt a checkpoint"
+    )
+    p_compact_create.add_argument("--run", dest="run_id", required=True)
+    p_compact_create.add_argument("--generation", type=int, required=True)
+    p_compact_create.add_argument("--guidance-file", required=True)
+    p_compact_create.add_argument("--receipts", required=True)
+    p_compact_create.add_argument("--recovery-manifest", required=True)
+    p_compact_create.set_defaults(func=cmd_compact, compact_action="create")
+    p_compact_show = compact_sub.add_parser(
+        "show", parents=[common], help="validate and print checkpoint"
+    )
+    p_compact_show.add_argument("path")
+    p_compact_show.set_defaults(func=cmd_compact, compact_action="show")
+    p_compact_render = compact_sub.add_parser(
+        "render", parents=[common], help="restore exact guidance bytes"
+    )
+    p_compact_render.add_argument("path")
+    p_compact_render.add_argument("--guidance-out", required=True)
+    p_compact_render.set_defaults(func=cmd_compact, compact_action="render")
+    p_compact.set_defaults(func=cmd_compact)
+
+    p_notify = sub.add_parser(
+        "notify",
+        parents=[common],
+        help="outbound-only non-authoritative notification queue",
+    )
+    notify_sub = p_notify.add_subparsers(dest="notify_action")
+    p_notify_status = notify_sub.add_parser(
+        "status", parents=[common], help="show validated adapter configuration"
+    )
+    p_notify_status.add_argument("--config", default=None)
+    p_notify_status.set_defaults(func=cmd_notify, notify_action="status")
+    p_notify_send = notify_sub.add_parser(
+        "send", parents=[common], help="enqueue one bounded notification"
+    )
+    p_notify_send.add_argument("--owner", dest="owner_id", required=True)
+    p_notify_send.add_argument("--generation", type=int, required=True)
+    p_notify_send.add_argument(
+        "--severity", choices=("info", "success", "warning", "error"), default="info"
+    )
+    p_notify_send.add_argument("--title", required=True)
+    p_notify_send.add_argument("--message", required=True)
+    p_notify_send.add_argument("--stable-source-id", default=None)
+    p_notify_send.add_argument("--max-attempts", type=int, default=3)
+    p_notify_send.set_defaults(func=cmd_notify, notify_action="send")
+    p_notify_process = notify_sub.add_parser(
+        "process", parents=[common], help="deliver a bounded queue batch"
+    )
+    p_notify_process.add_argument("--owner", dest="owner_id", required=True)
+    p_notify_process.add_argument("--generation", type=int, required=True)
+    p_notify_process.add_argument("--config", default=None)
+    p_notify_process.add_argument("--max-records", type=int, default=32)
+    p_notify_process.add_argument("--rate-limit", type=float, default=10.0)
+    p_notify_process.set_defaults(func=cmd_notify, notify_action="process")
+    p_notify.set_defaults(func=cmd_notify)
+
+    p_native_status = sub.add_parser(
+        "native-status",
+        parents=[common],
+        help="honest public Grok dashboard/workflow observation tiers",
+    )
+    p_native_status.add_argument(
+        "--probe",
+        action="store_true",
+        help="run bounded grok --help observation (never invoke slash commands)",
+    )
+    p_native_status.add_argument("--timeout", type=float, default=5.0)
+    p_native_status.set_defaults(func=cmd_native_status)
+
+    p_workflow = sub.add_parser(
+        "workflow",
+        parents=[common],
+        help="repository-workflow/v1 compiler, registry, and receipt runner",
+    )
+    workflow_sub = p_workflow.add_subparsers(dest="workflow_action")
+    p_workflow_install = workflow_sub.add_parser(
+        "install", parents=[common], help="install immutable workflow definition"
+    )
+    p_workflow_install.add_argument("file")
+    p_workflow_install.set_defaults(func=cmd_workflow, workflow_action="install")
+    p_workflow_list = workflow_sub.add_parser(
+        "list", parents=[common], help="list installed workflow versions"
+    )
+    p_workflow_list.add_argument("--name", default=None)
+    p_workflow_list.set_defaults(func=cmd_workflow, workflow_action="list")
+    p_workflow_show = workflow_sub.add_parser(
+        "show", parents=[common], help="resolve and print one workflow"
+    )
+    p_workflow_show.add_argument("name")
+    p_workflow_show.add_argument("--version", default=None)
+    p_workflow_show.set_defaults(func=cmd_workflow, workflow_action="show")
+    for workflow_action in ("plan", "run"):
+        p_workflow_action = workflow_sub.add_parser(
+            workflow_action,
+            parents=[common],
+            help=(
+                "build deterministic task IDs and waves"
+                if workflow_action == "plan"
+                else "reconcile externally gathered task receipts"
+            ),
+        )
+        p_workflow_action.add_argument("name")
+        p_workflow_action.add_argument("--version", default=None)
+        p_workflow_action.add_argument("--input", required=True)
+        p_workflow_action.add_argument("--generation", type=int, default=0)
+        if workflow_action == "run":
+            p_workflow_action.add_argument("--receipts", required=True)
+            p_workflow_action.add_argument(
+                "--repository-permission", action="append", default=[]
+            )
+            p_workflow_action.add_argument("--host-capability", action="append", default=[])
+            p_workflow_action.add_argument(
+                "--launch-permission", action="append", default=[]
+            )
+            p_workflow_action.add_argument("--allow-mcp", action="append", default=[])
+            p_workflow_action.add_argument(
+                "--allow-write-path", action="append", default=[]
+            )
+        p_workflow_action.set_defaults(
+            func=cmd_workflow,
+            workflow_action=workflow_action,
+        )
+    p_workflow.set_defaults(func=cmd_workflow)
+
+    p_capabilities = sub.add_parser(
+        "capabilities",
+        parents=[common],
+        help="independent configured→verified capability tiers",
+    )
+    p_capabilities.add_argument("--notification-config", default=None)
+    p_capabilities.set_defaults(func=cmd_capabilities)
+
+    p_parity = sub.add_parser(
+        "parity",
+        parents=[common],
+        help="frozen run-manifest and release-bundle verification",
+    )
+    parity_sub = p_parity.add_subparsers(dest="parity_action")
+    p_parity_run = parity_sub.add_parser(
+        "run",
+        parents=[common],
+        help="delegate the exact W0 run-manifest engine",
+    )
+    p_parity_run.add_argument(
+        "manifest_args",
+        nargs=argparse.REMAINDER,
+        help="run-manifest action and arguments",
+    )
+    p_parity_run.set_defaults(func=cmd_parity, parity_action="run")
+    p_parity_readback = parity_sub.add_parser(
+        "release-readback",
+        parents=[common],
+        help="verify the exact prebuilt release-bundle file set",
+    )
+    p_parity_readback.add_argument("--manifest", required=True)
+    p_parity_readback.add_argument("--claimed-registries", default=None)
+    p_parity_readback.set_defaults(func=cmd_parity, parity_action="release-readback")
+    p_parity.set_defaults(func=cmd_parity)
+
     p_wiki = sub.add_parser(
         "wiki",
         parents=[common],
@@ -1502,27 +2461,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_lsp = sub.add_parser(
         "lsp",
         parents=[common],
-        help="optional local language-tool probe (no host LSP MCP)",
+        help="inspect host-owned .lsp.json registration (no semantic proxy)",
     )
     lsp_sub = p_lsp.add_subparsers(dest="lsp_action")
-    p_lsp_st = lsp_sub.add_parser("status", parents=[common], help="list local tools")
+    p_lsp_st = lsp_sub.add_parser(
+        "status", parents=[common], help="inspect registration and command availability"
+    )
     p_lsp_st.set_defaults(func=cmd_lsp)
     p_lsp_ck = lsp_sub.add_parser(
-        "check", parents=[common], help="pyright check one file if available"
+        "check", parents=[common], help="report semantic check as host-owned/unsupported"
     )
     p_lsp_ck.add_argument("path", help="file path")
     p_lsp_ck.set_defaults(func=cmd_lsp)
     p_lsp_sym = lsp_sub.add_parser(
         "symbols",
         parents=[common],
-        help="list Python symbols via stdlib ast (local probe)",
+        help="report symbol lookup as host-owned/unsupported",
     )
     p_lsp_sym.add_argument("path", help="Python file path")
     p_lsp_sym.set_defaults(func=cmd_lsp)
     p_lsp_diag = lsp_sub.add_parser(
         "diagnostics",
         parents=[common],
-        help="syntax diagnostics via ast.parse (local probe; not type-checking)",
+        help="report diagnostics as host-owned/unsupported",
     )
     p_lsp_diag.add_argument("path", help="Python file path")
     p_lsp_diag.set_defaults(func=cmd_lsp)
@@ -2569,6 +3530,16 @@ KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
         "state",
         "cancel",
         "resume",
+        "session",
+        "recover",
+        "memory",
+        "tracker",
+        "compact",
+        "notify",
+        "native-status",
+        "workflow",
+        "capabilities",
+        "parity",
         "wiki",
         "hud",
         "lsp",

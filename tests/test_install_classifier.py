@@ -4,10 +4,20 @@ from __future__ import annotations
 import json
 
 from scripts.omg_install_classifier import (
+    classify_doctor_result,
     classify_oh_my_grok_installs,
     is_same_path_candidate,
     path_field_candidates,
 )
+
+
+def test_doctor_result_classifier_is_exact_and_release_fail_closed():
+    assert classify_doctor_result(mode="release", rc=0, valid=True) == "installed"
+    assert classify_doctor_result(mode="development", rc=2, valid=True) == "completed_with_warning"
+    assert classify_doctor_result(mode="release", rc=2, valid=True) == "hard_failure"
+    assert classify_doctor_result(mode="release", rc=1, valid=True) == "hard_failure"
+    assert classify_doctor_result(mode="release", rc=None, valid=False) == "hard_failure"
+    assert classify_doctor_result(mode="release", rc=True, valid=True) == "hard_failure"
 
 
 def test_source_absent_path_snapshot_installpath_checkout_is_same_path(tmp_path):

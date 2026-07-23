@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -25,9 +27,12 @@ from omg_cli.team.pipeline import (
     TEAM_EXEC_WAIT_ENV,
     TeamPipelineError,
     _run_exec_stage,
+    advance_native_pipeline,
     assert_legal_transition,
+    finalize_native_integration,
     invalidate_team_verify_stamp,
     load_team_pipeline,
+    native_dag_snapshot,
     parse_team_verify_verdict,
     run_team_pipeline,
     stage_verify_is_approve,
@@ -40,7 +45,15 @@ from omg_cli.team.pipeline import (
     transition,
     wait_for_team_panes,
 )
-from omg_cli.team.plane import load_team_meta, stop_team, team_meta_path
+from omg_cli.team.plane import (
+    create_native_team,
+    load_team_meta,
+    prepare_native_spawn,
+    reconcile_native_spawn,
+    record_native_result,
+    stop_team,
+    team_meta_path,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BIN_OMG = REPO_ROOT / "bin" / "omg"
@@ -1115,27 +1128,56 @@ def test_ralph_stop_and_cancel_cascade_linked_state(
     live["tasks"] = [
         {
             **live["tasks"][0],
-            "pid": 55555,
-            "pgid": 515151,
-            "status": "running",
+            "pane_id": "%17",
+                "pid": 55555,
+                "pgid": 515151,
+                "pid_start": "test-start-55555",
+                "status": "running",
         }
     ]
-    team_meta_path(tmp_path, rid).write_text(
-        json.dumps(live, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-        encoding="utf-8",
+    launch_nonce = "c" * 32
+    _receipt, receipt_hash = plane._persist_team_launch_receipt(
+        tmp_path,
+        rid,
+        session=live["session"],
+        session_id="$17",
+        launch_nonce=launch_nonce,
+        tasks=live["tasks"],
     )
+    live["launch_nonce"] = launch_nonce
+    live["launch_receipt_sha256"] = receipt_hash
+    live["identity_generation"] = 0
+    live["identity_receipt_sha256"] = receipt_hash
+    plane._atomic_write_json(team_meta_path(tmp_path, rid), live)
 
     killpg_calls: list[tuple[int, int]] = []
     tmux_cmds: list[list[str]] = []
+    process_gone = False
+    session_killed = False
 
     def fake_killpg(pgid: int, sig: int) -> None:
+        nonlocal process_gone
         killpg_calls.append((pgid, sig))
+        process_gone = True
         raise ProcessLookupError("gone")
 
     def fake_tmux_run(args: Any, **kw: Any) -> Any:
-        tmux_cmds.append(list(args))
+        nonlocal session_killed
+        command = list(args)
+        tmux_cmds.append(command)
         m = MagicMock()
         m.returncode = 0
+        m.stdout = ""
+        if command[0] == "display-message":
+            m.stdout = f"{live['session']}\t$17\n"
+        elif command[0] == "show-options":
+            m.stdout = launch_nonce + "\n"
+        elif command[0] == "list-panes":
+            m.stdout = "0\t%17\t55555\n"
+        elif command[0] == "kill-session":
+            session_killed = True
+        elif command[0] == "has-session":
+            m.returncode = 1 if session_killed else 0
         return m
 
     def guard_run(cmd: Any, *a: Any, **k: Any) -> Any:
@@ -1147,11 +1189,22 @@ def test_ralph_stop_and_cancel_cascade_linked_state(
         raise AssertionError(f"unexpected subprocess.run: {joined}")
 
     monkeypatch.setattr(plane.os, "killpg", fake_killpg)
+
+    def fake_getpgid(_pid: int) -> int:
+        if process_gone:
+            raise ProcessLookupError("gone")
+        return 515151
+
+    monkeypatch.setattr(plane.os, "getpgid", fake_getpgid)
+    monkeypatch.setattr(
+        plane, "_pid_start_identity", lambda _pid: "test-start-55555"
+    )
     monkeypatch.setattr(plane, "_tmux_run", fake_tmux_run)
     monkeypatch.setattr(subprocess, "run", guard_run)
     monkeypatch.setattr(plane.subprocess, "run", guard_run)
 
     stop_result = stop_team(tmp_path, rid)
+    assert stop_result["identity_verified"] is True
     assert killpg_calls
     assert all(pg == 515151 for pg, _ in killpg_calls)
     assert any(c[:2] == ["kill-session", "-t"] for c in tmux_cmds)
@@ -1197,3 +1250,367 @@ def test_ralph_stop_and_cancel_cascade_linked_state(
     assert 616161 in signalled_pgids or 60606 in signalled_pgids
     joined_actions = " ".join(cancelled.get("kill_actions") or [])
     assert "pkill" not in joined_actions and "pgrep" not in joined_actions
+
+
+def _linked_ralph_stop_fixture(
+    monkeypatch: pytest.MonkeyPatch, root: Path
+) -> tuple[str, Path, dict[str, Any]]:
+    _init_repo(root)
+    _enable_team(monkeypatch)
+    meta = plane.start_team("linked Ralph stop", TASKS_ONE, root=root, dry_run=True)
+    run_id = str(meta["run_id"])
+    ralph_path = team_ralph_state_path(root, run_id)
+    ralph_path.parent.mkdir(parents=True, exist_ok=True)
+    state = {
+        "writer": CLI_WRITER,
+        "schema_version": plane.SCHEMA_VERSION,
+        "run_id": run_id,
+        "mode": "team-ralph",
+        "status": "running",
+        "linked_team": {
+            "run_id": run_id,
+            "team_meta": str(team_meta_path(root, run_id)),
+            "pipeline": str(team_pipeline_state_path(root, run_id)),
+        },
+    }
+    ralph_path.write_text(json.dumps(state) + "\n", encoding="utf-8")
+    linked = dict(load_team_meta(root, run_id))
+    linked["linked_ralph"] = {"path": str(ralph_path), "status": "running"}
+    team_meta_path(root, run_id).write_text(
+        json.dumps(linked) + "\n", encoding="utf-8"
+    )
+    return run_id, ralph_path, state
+
+
+def _linked_live_ralph_stop_fixture(
+    monkeypatch: pytest.MonkeyPatch, root: Path
+) -> tuple[str, Path, dict[str, Any]]:
+    run_id, ralph_path, state = _linked_ralph_stop_fixture(monkeypatch, root)
+    live = dict(load_team_meta(root, run_id))
+    live["dry_run"] = False
+    live["session"] = "omg-linked-stop"
+    live["tasks"] = [
+        {
+            **live["tasks"][0],
+            "pane_id": "%23",
+            "pid": 55555,
+            "pgid": 515151,
+            "status": "running",
+        }
+    ]
+    nonce = "d" * 32
+    _receipt, receipt_hash = plane._persist_team_launch_receipt(
+        root,
+        run_id,
+        session=live["session"],
+        session_id="$23",
+        launch_nonce=nonce,
+        tasks=live["tasks"],
+    )
+    live["launch_nonce"] = nonce
+    live["launch_receipt_sha256"] = receipt_hash
+    team_meta_path(root, run_id).write_text(
+        json.dumps(live) + "\n", encoding="utf-8"
+    )
+    return run_id, ralph_path, state
+
+
+@pytest.mark.parametrize(
+    "failure_mode",
+    [
+        "initial_identity",
+        "signal_identity",
+        "sigkill_identity",
+        "group_survivor",
+        "kill_session",
+        "session_readback",
+    ],
+)
+def test_stop_refusal_preserves_durable_team_run_and_linked_ralph_truth(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure_mode: str,
+) -> None:
+    run_id, ralph_path, _state = _linked_live_ralph_stop_fixture(
+        monkeypatch, tmp_path
+    )
+    ralph_before = ralph_path.read_bytes()
+    commands: list[list[str]] = []
+    session_killed = False
+    process_gone = False
+    pgid_read_count = 0
+
+    def tmux_runner(args: Any, **_kwargs: Any) -> MagicMock:
+        nonlocal session_killed
+        command = list(args)
+        commands.append(command)
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        if command[0] == "display-message":
+            result.stdout = "omg-linked-stop\t$23\n"
+        elif command[0] == "show-options":
+            result.stdout = "d" * 32 + "\n"
+        elif command[0] == "list-panes":
+            result.stdout = "0\t%23\t55555\n"
+        elif command[0] == "kill-session":
+            if failure_mode == "kill_session":
+                result.returncode = 1
+            else:
+                session_killed = True
+        elif command[0] == "has-session":
+            if failure_mode == "session_readback":
+                result.returncode = 2
+            else:
+                result.returncode = 1 if session_killed else 0
+        return result
+
+    def getpgid(_pid: int) -> int:
+        nonlocal pgid_read_count
+        pgid_read_count += 1
+        if process_gone:
+            raise ProcessLookupError("gone")
+        if failure_mode == "initial_identity":
+            return 999999
+        if failure_mode == "signal_identity" and pgid_read_count >= 2:
+            return 999999
+        if failure_mode == "sigkill_identity" and pgid_read_count >= 3:
+            return 999999
+        return 515151
+
+    def killpg(_pgid: int, sig: int) -> None:
+        nonlocal process_gone
+        if sig == 0:
+            if failure_mode == "group_survivor":
+                return
+            if process_gone:
+                raise ProcessLookupError("group gone")
+            return
+        if failure_mode == "group_survivor" and sig == signal.SIGTERM:
+            process_gone = True
+            return
+        if failure_mode in {"kill_session", "session_readback"}:
+            process_gone = True
+
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+    monkeypatch.setattr(plane, "_tmux_run", tmux_runner)
+    monkeypatch.setattr(plane.os, "getpgid", getpgid)
+    monkeypatch.setattr(plane.os, "killpg", killpg)
+    if failure_mode == "group_survivor":
+        monkeypatch.setattr(
+            plane,
+            "_wait_process_group_disappearance",
+            lambda _pgid: (
+                False,
+                "process group disappearance timed out pgid=515151",
+            ),
+        )
+
+    result = stop_team(
+        tmp_path,
+        run_id,
+        kill_grace_s=0.001 if failure_mode == "sigkill_identity" else 0,
+    )
+
+    durable_team = load_team_meta(tmp_path, run_id)
+    durable_run = load_run(tmp_path, run_id)
+    assert result["stop_completed"] is False
+    assert durable_team["stop_state"] == "stop_refused"
+    assert {task["status"] for task in durable_team["tasks"]} <= {
+        "running",
+        "launch_unknown",
+    }
+    assert durable_run is not None
+    assert durable_run["status"] == "blocked"
+    assert durable_run["stage"] == "team_stop_refused"
+    assert ralph_path.read_bytes() == ralph_before
+    assert json.loads(ralph_path.read_text(encoding="utf-8"))["status"] == "running"
+
+
+@pytest.mark.parametrize("stored_path_kind", ["absolute", "relative"])
+def test_stop_rejects_linked_ralph_path_escape_without_external_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    stored_path_kind: str,
+) -> None:
+    run_id, ralph_path, _state = _linked_ralph_stop_fixture(monkeypatch, tmp_path)
+    outside = tmp_path.parent / f"outside-ralph-{stored_path_kind}.json"
+    original = b'{"writer":"omg-cli","status":"protected"}\n'
+    outside.write_bytes(original)
+    meta = dict(load_team_meta(tmp_path, run_id))
+    meta["linked_ralph"]["path"] = (
+        str(outside)
+        if stored_path_kind == "absolute"
+        else os.path.relpath(outside, tmp_path)
+    )
+    team_meta_path(tmp_path, run_id).write_text(
+        json.dumps(meta) + "\n", encoding="utf-8"
+    )
+
+    result = stop_team(tmp_path, run_id)
+
+    assert outside.read_bytes() == original
+    assert json.loads(ralph_path.read_text(encoding="utf-8"))["status"] == "running"
+    assert not any("cancelled linked_ralph" in action for action in result["actions"])
+    assert any("stored path" in error for error in result["errors"])
+
+
+def test_stop_rejects_linked_ralph_symlink_without_target_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    run_id, ralph_path, _state = _linked_ralph_stop_fixture(monkeypatch, tmp_path)
+    outside = tmp_path.parent / "outside-ralph-symlink.json"
+    original = b'{"writer":"omg-cli","status":"protected"}\n'
+    outside.write_bytes(original)
+    ralph_path.unlink()
+    ralph_path.symlink_to(outside)
+
+    result = stop_team(tmp_path, run_id)
+
+    assert ralph_path.is_symlink()
+    assert outside.read_bytes() == original
+    assert not any("cancelled linked_ralph" in action for action in result["actions"])
+    assert any("symlink" in error for error in result["errors"])
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("writer", "forged"), ("schema_version", 99), ("run_id", "other-run")],
+)
+def test_stop_rejects_linked_ralph_schema_or_writer_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    field: str,
+    value: Any,
+) -> None:
+    run_id, ralph_path, state = _linked_ralph_stop_fixture(monkeypatch, tmp_path)
+    state[field] = value
+    ralph_path.write_text(json.dumps(state) + "\n", encoding="utf-8")
+
+    result = stop_team(tmp_path, run_id)
+
+    assert json.loads(ralph_path.read_text(encoding="utf-8"))["status"] == "running"
+    assert not any("cancelled linked_ralph" in action for action in result["actions"])
+    assert any("schema or writer" in error for error in result["errors"])
+
+
+def _complete_native_dag_task(
+    root: Path,
+    *,
+    task_id: str,
+    start_sequence: int,
+    host_id: str,
+) -> dict[str, Any]:
+    prepared = prepare_native_spawn(
+        root,
+        run_id="run-dag",
+        team_id="team-dag",
+        task_id=task_id,
+        expected_sequence=start_sequence,
+        expected_generation=0,
+        lease_generation=0,
+        description=f"run {task_id}",
+        expires_at="2099-01-01T00:00:00Z",
+    )
+    pair = prepared["receipt_pair"]
+    bound = reconcile_native_spawn(
+        root,
+        run_id="run-dag",
+        team_id="team-dag",
+        task_id=task_id,
+        inventory=[
+            {
+                "spawn_receipt_hash": pair["spawn_receipt_hash"],
+                "role_receipt_hash": pair["role_receipt_hash"],
+                "run_id": "run-dag",
+                "task_id": task_id,
+                "parent_id": "leader",
+                "host_spawn_id": host_id,
+                "observed_session_id": f"session-{host_id}",
+            }
+        ],
+        expected_state="spawn_requested",
+        expected_sequence=start_sequence + 1,
+        expected_generation=0,
+        now=datetime(2026, 7, 22, tzinfo=timezone.utc),
+    )
+    binding = bound["task"]["binding"]
+    running_sequence = start_sequence + 2
+    accepted = record_native_result(
+        root,
+        result={
+            "store_kind": "native_worker_result",
+            "schema_version": 1,
+            "transport": "grok_native",
+            "run_id": "run-dag",
+            "team_id": "team-dag",
+            "task_id": task_id,
+            "generation": 0,
+            "host_spawn_id": binding["host_spawn_id"],
+            "observed_session_id": binding["observed_session_id"],
+            "spawn_receipt_hash": binding["spawn_receipt_hash"],
+            "role_receipt_hash": binding["role_receipt_hash"],
+            "expected_state": "running",
+            "expected_sequence": running_sequence,
+            "replay_id": f"result-{task_id}",
+            "status": "ok",
+            "artifact": {"kind": "team-result"},
+            "verification_evidence": [],
+            "completed_at": "2026-07-22T00:01:00Z",
+        },
+    )
+    return finalize_native_integration(
+        root,
+        run_id="run-dag",
+        team_id="team-dag",
+        task_id=task_id,
+        expected_sequence=running_sequence + 1,
+        expected_generation=0,
+        result_hash=accepted["result_hash"],
+    )
+
+
+def test_native_pipeline_full_dependency_dag_unlocks_only_after_integration(
+    tmp_path: Path,
+) -> None:
+    create_native_team(
+        tmp_path,
+        run_id="run-dag",
+        team_id="team-dag",
+        leader_id="leader",
+        parent_session_id="parent-session",
+        base_sha="a" * 40,
+        created_at="2026-07-22T00:00:00Z",
+        tasks=[
+            {"task_id": "author", "role": "verifier", "prompt": "author evidence"},
+            {
+                "task_id": "checker",
+                "role": "verifier",
+                "prompt": "check author evidence",
+                "dependencies": ["author"],
+            },
+        ],
+    )
+    assert native_dag_snapshot(
+        tmp_path, run_id="run-dag", team_id="team-dag"
+    )["ready"] == ["author"]
+    first = _complete_native_dag_task(
+        tmp_path, task_id="author", start_sequence=0, host_id="host-author"
+    )
+    assert first["task"]["state"] == "complete"
+    assert [action["task_id"] for action in first["reconciliation"]["actions"]] == [
+        "checker"
+    ]
+    assert native_dag_snapshot(
+        tmp_path, run_id="run-dag", team_id="team-dag"
+    )["ready"] == ["checker"]
+
+    second = _complete_native_dag_task(
+        tmp_path, task_id="checker", start_sequence=1, host_id="host-checker"
+    )
+    assert second["task"]["state"] == "complete"
+    status = advance_native_pipeline(
+        tmp_path,
+        run_id="run-dag",
+        team_id="team-dag",
+        recover_stale=False,
+    )
+    assert status["dag"]["complete"] is True

@@ -442,6 +442,115 @@ def build_executor_argv_signature_has_free_form_param() -> bool:
     return bool(forbidden & set(sig.parameters))
 
 
+# ---------------------------------------------------------------------------
+# Authoritative W3 Grok-native provider
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class GrokNativeSpawn:
+    """Exact ``spawn_subagent`` payload plus receipt identities."""
+
+    tool_name: str
+    tool_input: dict[str, object]
+    spawn_receipt_hash: str
+    role_receipt_hash: str
+    transport: str = "grok_native"
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "tool_name": self.tool_name,
+            "tool_input": dict(self.tool_input),
+            "spawn_receipt_hash": self.spawn_receipt_hash,
+            "role_receipt_hash": self.role_receipt_hash,
+            "transport": self.transport,
+        }
+
+
+def build_grok_native_spawn(
+    envelope: dict[str, object],
+    spawn_receipt: dict[str, object],
+    role_receipt: dict[str, object],
+    *,
+    description: str,
+    worktree: Path | str | None = None,
+    background: bool = True,
+) -> GrokNativeSpawn:
+    """Build the only supported default team worker dispatch.
+
+    This returns data for Grok's host tool call, never an OS subprocess argv.
+    The caller must persist both receipts before dispatch and CAS-bind the host
+    result afterward.  No Claude, Codex, Cursor, Antigravity, or shell fallback
+    is selected here.
+    """
+
+    from omg_cli.contracts.state_schemas import (
+        ContractValidationError,
+        require_nonempty_string,
+    )
+    from omg_cli.contracts.team_envelope import validate_worker_envelope
+    from omg_cli.contracts.tracker_contract import (
+        make_role_receipt,
+        validate_spawn_receipt,
+    )
+    from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
+
+    worker = validate_worker_envelope(envelope)
+    spawn = validate_spawn_receipt(spawn_receipt)
+    role = make_role_receipt(spawn)
+    if role != dict(role_receipt):
+        raise ContractValidationError("role receipt disagrees with spawn receipt")
+    bindings = (
+        ("run_id", worker["run_id"]),
+        ("team_id", worker["team_id"]),
+        ("task_id", worker["task_id"]),
+        ("requested_role", worker["requested_role"]),
+        ("capability_mode", worker["capability_mode"]),
+        ("depth", worker["depth"]),
+        ("receipt_generation", worker["claim_generation"]),
+        ("expected_state", worker["expected_state"]),
+        ("expected_sequence", worker["expected_sequence"]),
+    )
+    for field, expected in bindings:
+        if spawn[field] != expected:
+            raise ContractValidationError(f"native spawn {field} differs from envelope")
+    desc = require_nonempty_string(description.strip(), label="description")
+    if len(desc.encode("utf-8")) > 160:
+        raise ContractValidationError("native spawn description exceeds 160 bytes")
+    if worktree is not None and not worker["write_scope"]:
+        raise ContractValidationError("no-write task may not receive a worktree")
+    spawn_hash = sha256_hex(canonical_json_bytes(spawn))
+    role_hash = sha256_hex(canonical_json_bytes(role))
+    fenced_prompt = (
+        str(worker["prompt"])
+        + "\n\n[OMG native team envelope]\n"
+        + f"run={worker['run_id']} team={worker['team_id']} task={worker['task_id']}\n"
+        + f"generation={worker['claim_generation']} depth=1 capability_mode={worker['capability_mode']}\n"
+        + f"spawn_receipt_sha256={spawn_hash}\nrole_receipt_sha256={role_hash}\n"
+        + "You are a leaf: do not call spawn_subagent. Follow only the declared write scope."
+    )
+    if len(fenced_prompt.encode("utf-8")) > 131_072:
+        raise ContractValidationError("native spawn prompt exceeds bounded byte cap")
+    tool_input: dict[str, object] = {
+        "prompt": fenced_prompt,
+        "description": desc,
+        "subagent_type": str(worker["requested_role"]),
+        "background": bool(background),
+        "capability_mode": str(worker["capability_mode"]),
+    }
+    if worktree is not None:
+        resolved = Path(worktree).resolve()
+        if not resolved.is_dir():
+            raise ContractValidationError("native spawn worktree cwd does not exist")
+        tool_input["cwd"] = str(resolved)
+    return GrokNativeSpawn(
+        tool_name="spawn_subagent",
+        tool_input=tool_input,
+        spawn_receipt_hash=spawn_hash,
+        role_receipt_hash=role_hash,
+    )
+
+
 __all__ = [
     "ALLOWED_EXECUTOR_MODELS",
     "EXECUTOR_PROVIDERS",
@@ -457,6 +566,8 @@ __all__ = [
     "argv_has_free_form",
     "build_executor_argv",
     "build_executor_argv_signature_has_free_form_param",
+    "build_grok_native_spawn",
+    "GrokNativeSpawn",
     "normalize_executor_provider",
     "resolve_executor_binary",
 ]

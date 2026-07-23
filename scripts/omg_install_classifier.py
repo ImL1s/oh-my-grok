@@ -118,6 +118,26 @@ def classify_oh_my_grok_installs(
     return {"same_path": same_path, "stale": stale}
 
 
+def classify_doctor_result(*, mode: str, rc: int | None, valid: bool) -> str:
+    """Exact lifecycle classifier shared by source and release installation.
+
+    ``rc=0`` is verified success.  ``rc=2`` is a visible development-only
+    warning (never release success).  Non-integer/malformed output and every
+    other code are hard failures; callers must roll back and must not print a
+    success banner.
+    """
+
+    if mode not in {"development", "release"}:
+        raise ValueError("mode must be development or release")
+    if valid is not True or not isinstance(rc, int) or isinstance(rc, bool):
+        return "hard_failure"
+    if rc == 0:
+        return "installed"
+    if rc == 2 and mode == "development":
+        return "completed_with_warning"
+    return "hard_failure"
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI for install-plugin.sh: env OMG_INSTALL_ROOT + OMG_INSTALL_LIST_JSON."""
     del argv  # unused; env-driven

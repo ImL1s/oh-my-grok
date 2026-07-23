@@ -108,3 +108,39 @@ def is_reviewer_or_verifier(role: str) -> bool:
 def all_role_metadata() -> Mapping[str, RoleMeta]:
     """Read-only view of the full taxonomy (for tests / D3 tables)."""
     return _ROLES
+
+
+def native_subagent_type(role: str) -> str:
+    """Return the installed Grok agent name for a depth-one child.
+
+    ``orchestrator`` is deliberately leader-only: allowing it as a child would
+    make the depth-one rule depend only on prompt compliance.  Every other
+    canonical role maps to exactly one plugin agent definition.
+    """
+
+    key = normalize_role(role)
+    role_meta(key)  # fail closed on unknown roles
+    if key == "orchestrator":
+        raise UnknownRoleError("orchestrator-child")
+    return f"omg-{key}"
+
+
+def required_capability_mode(role: str) -> str:
+    """Canonical Grok ``capability_mode`` for the requested role."""
+
+    return role_posture(role)
+
+
+__all__ = [
+    "CANONICAL_ROLES",
+    "RoleMeta",
+    "UnknownRoleError",
+    "all_role_metadata",
+    "is_reviewer_or_verifier",
+    "native_subagent_type",
+    "normalize_role",
+    "required_capability_mode",
+    "role_class",
+    "role_meta",
+    "role_posture",
+]

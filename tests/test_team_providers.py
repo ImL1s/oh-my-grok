@@ -12,6 +12,8 @@ from pathlib import Path
 import pytest
 
 from omg_cli.ask.providers import AskProviderError, normalize_provider
+from omg_cli.contracts.state_schemas import ContractValidationError
+from omg_cli.contracts.tracker_contract import make_role_receipt
 from omg_cli.team.providers import (
     EXECUTOR_PROVIDERS,
     EXECUTOR_SPECS,
@@ -22,6 +24,7 @@ from omg_cli.team.providers import (
     argv_has_free_form,
     build_executor_argv,
     build_executor_argv_signature_has_free_form_param,
+    build_grok_native_spawn,
     normalize_executor_provider,
 )
 from omg_cli.team.roles import UnknownRoleError, role_posture
@@ -372,3 +375,85 @@ def test_all_providers_both_postures_no_free_form() -> None:
             assert all(isinstance(a, str) for a in inv.argv)
             # Prompt body never appears; secret-looking content not smuggled.
             assert "TOP_SECRET" not in " ".join(inv.argv)
+
+
+def _native_contracts() -> tuple[dict, dict, dict]:
+    envelope = {
+        "store_kind": "worker_envelope",
+        "schema_version": 1,
+        "run_id": "run-provider",
+        "team_id": "team-provider",
+        "task_id": "task-provider",
+        "parent_task_id": "leader",
+        "dependencies": [],
+        "dependency_results": {},
+        "prompt": "review bounded source",
+        "requested_role": "omg-verifier",
+        "capability_mode": "read-only",
+        "depth": 1,
+        "write_scope": [],
+        "verification_commands": [],
+        "artifact_contract": {"kind": "team-result"},
+        "guidance_hashes": {},
+        "mailbox_cursor": "start",
+        "claim_generation": 0,
+        "state_endpoint": "/tmp/native-state",
+        "cancellation_token": "cancel-provider",
+        "expected_state": "ready",
+        "expected_sequence": 0,
+    }
+    spawn = {
+        "store_kind": "spawn_receipt",
+        "schema_version": 1,
+        "receipt_id": "spawn-provider",
+        "run_id": "run-provider",
+        "team_id": "team-provider",
+        "task_id": "task-provider",
+        "parent_id": "leader",
+        "parent_session_id": "session-provider",
+        "requested_role": "omg-verifier",
+        "capability_mode": "read-only",
+        "depth": 1,
+        "attempt": 1,
+        "receipt_generation": 0,
+        "lease_generation": 0,
+        "dispatch_nonce": "nonce-provider",
+        "expires_at": "2099-01-01T00:00:00Z",
+        "expected_state": "ready",
+        "expected_sequence": 0,
+    }
+    return envelope, spawn, make_role_receipt(spawn)
+
+
+def test_grok_native_provider_has_exact_tool_shape_and_no_fallback() -> None:
+    envelope, spawn, role = _native_contracts()
+    invocation = build_grok_native_spawn(
+        envelope, spawn, role, description="review source"
+    ).to_dict()
+    assert invocation["tool_name"] == "spawn_subagent"
+    assert invocation["transport"] == "grok_native"
+    assert invocation["tool_input"]["subagent_type"] == "omg-verifier"
+    assert invocation["tool_input"]["capability_mode"] == "read-only"
+    assert "provider" not in invocation and "argv" not in invocation
+
+
+def test_grok_native_provider_rejects_receipt_capability_disagreement(
+    tmp_path: Path,
+) -> None:
+    envelope, spawn, _ = _native_contracts()
+    wrong = {**spawn, "capability_mode": "read-write"}
+    with pytest.raises(ContractValidationError, match="capability_mode"):
+        build_grok_native_spawn(
+            envelope,
+            wrong,
+            make_role_receipt(wrong),
+            description="review source",
+        )
+    with pytest.raises(ContractValidationError, match="no-write"):
+        build_grok_native_spawn(
+            envelope,
+            spawn,
+            make_role_receipt(spawn),
+            description="review source",
+            worktree=tmp_path,
+        )

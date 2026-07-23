@@ -128,3 +128,19 @@ def test_omg_ultraqa_and_interview_not_stubs():
     assert di.count("\n") >= 80
     assert "QA clean" in uq or "verified" in uq.lower()
     assert "pressure-pass" in di or "pressure pass" in di.lower()
+
+
+def test_omg_lsp_is_registration_only_without_semantic_proxy_claims():
+    text = _skill("omg-lsp")
+    low = text.lower()
+    assert ".lsp.json" in text
+    assert "configured_unobserved" in text
+    assert "semantic proxy" in low
+    for forbidden in (
+        "omg lsp check",
+        "omg lsp symbols",
+        "omg lsp diagnostics",
+        "stdlib ast",
+        "local pyright probe",
+    ):
+        assert forbidden not in low

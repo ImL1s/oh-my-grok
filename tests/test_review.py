@@ -1,13 +1,9 @@
 """U-09 structured hash-bound review gate."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-import pytest
-
 from omg_cli.review import (
-    ReviewError,
     compute_diff_hash,
     evaluate_lane,
     run_structured_review,

@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from collections.abc import Iterable
 from typing import Any
+
+from omg_cli.contracts.state_schemas import require_integer, require_safe_id, require_sha256
 
 
 class HostSessionError(ValueError):
@@ -110,3 +113,98 @@ def session_flag_argv(
     if resume_session_id is not None:
         return ["--resume", _validated_uuid(resume_session_id)]
     return []
+
+
+def session_route_argv(
+    *,
+    create_session_id: str | None = None,
+    resume_session_id: str | None = None,
+    continue_best_effort: bool = False,
+    fork_session: bool = False,
+    new_session_id: str | None = None,
+    existing_session_ids: Iterable[str] = (),
+) -> list[str]:
+    """Return exactly one legal Grok create/resume/continue/fork route."""
+
+    existing = {_validated_uuid(value) for value in existing_session_ids}
+    if continue_best_effort:
+        if fork_session:
+            if create_session_id is not None or resume_session_id is not None or new_session_id is None:
+                raise HostSessionError("best-effort fork requires one new --session-id")
+            child = _validated_uuid(new_session_id)
+            if child in existing:
+                raise HostSessionError("fork session id already exists")
+            return ["--continue", "--fork-session", "--session-id", child]
+        if any((create_session_id, resume_session_id, new_session_id)):
+            raise HostSessionError("--continue cannot be combined with an explicit route")
+        return ["--continue"]
+    if fork_session:
+        if create_session_id is not None or resume_session_id is None or new_session_id is None:
+            raise HostSessionError("fork requires --resume parent and a new --session-id")
+        parent = _validated_uuid(resume_session_id)
+        child = _validated_uuid(new_session_id)
+        if child == parent or child in existing:
+            raise HostSessionError("fork session id already exists")
+        return ["--resume", parent, "--fork-session", "--session-id", child]
+    if new_session_id is not None:
+        raise HostSessionError("new_session_id is only valid for a named fork")
+    if create_session_id is not None and resume_session_id is not None:
+        raise HostSessionError("cannot combine create and resume routes")
+    if create_session_id is not None:
+        created = _validated_uuid(create_session_id)
+        if created in existing:
+            raise HostSessionError("session id already exists")
+        return ["--session-id", created]
+    if resume_session_id is not None:
+        return ["--resume", _validated_uuid(resume_session_id)]
+    raise HostSessionError("one create, resume, continue, or fork route is required")
+
+
+def bind_session_lineage(
+    *,
+    session_id: str,
+    parent_session_id: str | None,
+    run_id: str,
+    cwd_hash: str,
+    generation: int,
+    spawn_receipt_hash: str,
+    role_receipt_hash: str,
+    observed_session_id: str,
+) -> dict[str, Any]:
+    """Bind native session identity to run/cwd generation and signed receipts."""
+
+    session = _validated_uuid(session_id)
+    observed = _validated_uuid(observed_session_id)
+    if observed != session:
+        raise HostSessionError("observed native session does not match allocated session")
+    parent = _validated_uuid(parent_session_id) if parent_session_id is not None else None
+    try:
+        require_safe_id(run_id, label="run_id")
+        require_sha256(cwd_hash, label="cwd_hash")
+        require_sha256(spawn_receipt_hash, label="spawn_receipt_hash")
+        require_sha256(role_receipt_hash, label="role_receipt_hash")
+        require_integer(generation, label="generation", minimum=0)
+    except (TypeError, ValueError) as exc:
+        raise HostSessionError(str(exc)) from exc
+    return {
+        "store_kind": "host_session_lineage",
+        "schema_version": 1,
+        "session_id": session,
+        "parent_session_id": parent,
+        "run_id": run_id,
+        "cwd_hash": cwd_hash,
+        "generation": generation,
+        "spawn_receipt_hash": spawn_receipt_hash,
+        "role_receipt_hash": role_receipt_hash,
+    }
+
+
+__all__ = [
+    "HostSessionBinding",
+    "HostSessionError",
+    "allocate_host_session",
+    "bind_session_lineage",
+    "load_host_session",
+    "session_flag_argv",
+    "session_route_argv",
+]

@@ -4,6 +4,7 @@ import os
 import stat
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,19 @@ def test_help_exits_zero():
     assert "setup" in out
     assert "doctor" in out
     assert "state" in out
+    for command in (
+        "session",
+        "recover",
+        "memory",
+        "tracker",
+        "compact",
+        "notify",
+        "native-status",
+        "workflow",
+        "capabilities",
+        "parity",
+    ):
+        assert command in out
 
 
 def test_version_flag_matches_plugin_json():
@@ -47,6 +61,300 @@ def test_version_flag_matches_plugin_json():
     out = (r.stdout + r.stderr).strip()
     assert expected in out
     assert "omg" in out.lower() or expected in out
+
+
+def test_session_router_exact_create_resume_continue_and_fork():
+    parent = str(uuid.UUID(int=1))
+    child = str(uuid.UUID(int=2))
+
+    allocate = _run_omg("session", "allocate")
+    assert allocate.returncode == 0, allocate.stderr
+    allocation = json.loads(allocate.stdout)
+    assert allocation["argv"] == ["--session-id", allocation["session_id"]]
+    uuid.UUID(allocation["session_id"])
+
+    resume = _run_omg("session", "route", "--resume", parent)
+    assert resume.returncode == 0, resume.stderr
+    assert json.loads(resume.stdout)["argv"] == ["--resume", parent]
+
+    continuation = _run_omg("session", "route", "--continue")
+    assert continuation.returncode == 0, continuation.stderr
+    assert json.loads(continuation.stdout)["argv"] == ["--continue"]
+
+    fork = _run_omg(
+        "session",
+        "route",
+        "--resume",
+        parent,
+        "--fork-session",
+        "--new-session-id",
+        child,
+    )
+    assert fork.returncode == 0, fork.stderr
+    assert json.loads(fork.stdout)["argv"] == [
+        "--resume",
+        parent,
+        "--fork-session",
+        "--session-id",
+        child,
+    ]
+
+    reused = _run_omg(
+        "session",
+        "route",
+        "--resume",
+        parent,
+        "--fork-session",
+        "--new-session-id",
+        child,
+        "--existing-session-id",
+        child,
+    )
+    assert reused.returncode == 1
+    assert "already exists" in reused.stderr
+
+
+def test_memory_cli_put_search_and_export(tmp_path):
+    put = _run_omg("memory", "put", "architecture", "Python plugin", cwd=tmp_path)
+    assert put.returncode == 0, put.stderr
+    assert json.loads(put.stdout)["key"] == "architecture"
+
+    search = _run_omg("memory", "search", "python", cwd=tmp_path)
+    assert search.returncode == 0, search.stderr
+    assert [row["key"] for row in json.loads(search.stdout)] == ["architecture"]
+
+    output = tmp_path / "facts-export.json"
+    export = _run_omg(
+        "memory", "export", "--output", str(output), cwd=tmp_path
+    )
+    assert export.returncode == 0, export.stderr
+    assert json.loads(output.read_text(encoding="utf-8"))["store_kind"] == (
+        "project_fact_memory"
+    )
+
+
+def test_recovery_tracker_compaction_and_notification_cli(tmp_path):
+    source = REPO_ROOT / "tests" / "fixtures" / "recovery" / (
+        "source-913-lines-broken-chain-v1.jsonl"
+    )
+    recovery_dir = tmp_path / "recovered"
+    recovered = _run_omg(
+        "recover", str(source), "--output", str(recovery_dir), cwd=tmp_path
+    )
+    assert recovered.returncode == 0, recovered.stderr
+    recovery = json.loads(recovered.stdout)
+    assert recovery["manifest"]["partial"] is True
+    assert "W_BROKEN_CHAIN" in recovery["manifest"]["warnings"]
+    assert "W_UNKNOWN_RECORD_TYPE" in recovery["manifest"]["warnings"]
+    assert recovery["manifest"]["counters"]["physical_lines_retained"] == 900
+    assert recovery["manifest"]["counters"]["unknown_records_retained"] == 3
+    assert recovery["manifest"]["counters"]["complete_turns_retained"] == 124
+
+    events = tmp_path / "events.json"
+    events.write_text("[]\n", encoding="utf-8")
+    projected = _run_omg(
+        "tracker",
+        "project",
+        "--run",
+        "run-1",
+        "--generation",
+        "0",
+        "--events",
+        str(events),
+        cwd=tmp_path,
+    )
+    assert projected.returncode == 0, projected.stderr
+    assert json.loads(projected.stdout)["run_id"] == "run-1"
+    status = _run_omg("tracker", "status", "--run", "run-1", cwd=tmp_path)
+    assert status.returncode == 0, status.stderr
+    assert json.loads(status.stdout)["event_count"] == 0
+
+    guidance = tmp_path / "guidance.md"
+    guidance.write_bytes(b"exact\x00guidance\n")
+    receipts = tmp_path / "receipts.json"
+    receipts.write_text("[]\n", encoding="utf-8")
+    compacted = _run_omg(
+        "compact",
+        "create",
+        "--run",
+        "run-1",
+        "--generation",
+        "0",
+        "--guidance-file",
+        str(guidance),
+        "--receipts",
+        str(receipts),
+        "--recovery-manifest",
+        recovery["manifest_path"],
+        cwd=tmp_path,
+    )
+    assert compacted.returncode == 0, compacted.stderr
+    checkpoint = json.loads(compacted.stdout)["path"]
+    restored = tmp_path / "restored.md"
+    rendered = _run_omg(
+        "compact",
+        "render",
+        checkpoint,
+        "--guidance-out",
+        str(restored),
+        cwd=tmp_path,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    assert restored.read_bytes() == guidance.read_bytes()
+
+    notify_status = _run_omg("notify", "status", cwd=tmp_path)
+    assert notify_status.returncode == 0, notify_status.stderr
+    assert json.loads(notify_status.stdout)["authoritative"] is False
+    queued = _run_omg(
+        "notify",
+        "send",
+        "--owner",
+        "run-1",
+        "--generation",
+        "1",
+        "--title",
+        "Done",
+        "--message",
+        "Checks finished",
+        cwd=tmp_path,
+        env={"OMG_NOTIFICATION_OWNER_NONCE": "0123456789abcdef"},
+    )
+    assert queued.returncode == 0, queued.stderr
+    queued_status = json.loads(queued.stdout)
+    assert queued_status["queued"] is True
+    assert queued_status["authoritative"] is False
+
+
+def test_native_and_capability_status_do_not_infer_host_health():
+    native = _run_omg("native-status")
+    assert native.returncode == 0, native.stderr
+    native_status = json.loads(native.stdout)
+    assert native_status["native_dashboard"]["status"] == "optional_unclaimed"
+    assert native_status["native_workflow"]["status"] == "optional_unclaimed"
+    assert native_status["headless_probe"]["attempted"] is False
+
+    capabilities = _run_omg("capabilities")
+    assert capabilities.returncode == 0, capabilities.stderr
+    status = json.loads(capabilities.stdout)
+    tiers = {
+        "configured",
+        "installed",
+        "enabled",
+        "loadable",
+        "observed",
+        "healthy",
+        "verified",
+    }
+    assert set(status["tiers"]) == tiers
+    for surface in status["surfaces"].values():
+        assert tiers <= set(surface)
+    assert status["surfaces"]["mcp"]["classification"] == "native_substitute"
+    assert status["surfaces"]["lsp"]["classification"] == "host_owned"
+    assert (
+        status["surfaces"]["repository_workflow"]["classification"]
+        == "native_substitute"
+    )
+    assert status["surfaces"]["grok_native_workflow"]["verified"] is False
+    assert status["surfaces"]["native_dashboard"]["verified"] is False
+
+
+def test_repository_workflow_cli_plan_and_receipt_run(tmp_path):
+    from tests.test_repository_workflows import _provision_receipts
+
+    definition = REPO_ROOT / "tests" / "fixtures" / "workflow" / (
+        "production-safety-review-v1.json"
+    )
+    workflow_input = tmp_path / "input.json"
+    workflow_input.write_text(
+        json.dumps({"candidate_commit": "abc123"}) + "\n", encoding="utf-8"
+    )
+
+    install = _run_omg("workflow", "install", str(definition), cwd=tmp_path)
+    assert install.returncode == 0, install.stderr
+    installed = json.loads(install.stdout)
+    assert installed["definition"]["name"] == "production-safety-review"
+
+    plan_result = _run_omg(
+        "workflow",
+        "plan",
+        "production-safety-review",
+        "--version",
+        "1.0.0",
+        "--input",
+        str(workflow_input),
+        cwd=tmp_path,
+    )
+    assert plan_result.returncode == 0, plan_result.stderr
+    plan = json.loads(plan_result.stdout)
+    assert len(plan["waves"]) == 4
+    assert len(plan["tasks"]) == 7
+
+    definition_value = json.loads(definition.read_text(encoding="utf-8"))
+    _expected_plan, receipt_map = _provision_receipts(
+        tmp_path, definition_value, {"candidate_commit": "abc123"}
+    )
+    receipts = list(receipt_map.values())
+    receipt_path = tmp_path / "receipts.json"
+    receipt_path.write_text(json.dumps(receipts) + "\n", encoding="utf-8")
+    permissions = (
+        "read_repository",
+        "run_declared_verification",
+        "emit_declared_artifact",
+    )
+    run_args = [
+        "workflow",
+        "run",
+        "production-safety-review",
+        "--version",
+        "1.0.0",
+        "--input",
+        str(workflow_input),
+        "--receipts",
+        str(receipt_path),
+    ]
+    for permission in permissions:
+        run_args.extend(["--repository-permission", permission])
+        run_args.extend(["--host-capability", permission])
+        run_args.extend(["--launch-permission", permission])
+    run = _run_omg(*run_args, cwd=tmp_path)
+    assert run.returncode == 1, run.stderr + run.stdout
+    summary = json.loads(run.stdout)
+    assert summary["terminal"] == "no_ship"
+    assert summary["review"]["verifier_approved"] is False
+    assert summary["review"]["skeptic_approved"] is False
+    assert summary["review"]["product_authority_verified"] is False
+    assert (
+        summary["review"]["authority_error"]
+        == "E_WORKFLOW_PRODUCT_AUTHORITY_UNAVAILABLE"
+    )
+
+    stale_receipts = [dict(row) for row in receipts]
+    stale_receipts[0]["run_generation"] = 99
+    stale_path = tmp_path / "stale-receipts.json"
+    stale_path.write_text(json.dumps(stale_receipts) + "\n", encoding="utf-8")
+    stale_args = [
+        value if value != str(receipt_path) else str(stale_path) for value in run_args
+    ]
+    stale = _run_omg(*stale_args, cwd=tmp_path)
+    assert stale.returncode == 1
+    assert "run_generation does not match launch plan" in stale.stderr
+
+    missing = tmp_path / "missing.json"
+    missing.write_text("[]\n", encoding="utf-8")
+    denied_args = [
+        value if value != str(receipt_path) else str(missing) for value in run_args
+    ]
+    blocked = _run_omg(*denied_args, cwd=tmp_path)
+    assert blocked.returncode == 1
+    assert "missing workflow receipts" in blocked.stderr
+    assert blocked.stdout == ""
+
+
+def test_parity_run_delegates_the_frozen_manifest_engine():
+    delegated = _run_omg("parity", "run", "init", "--help")
+    assert delegated.returncode == 0, delegated.stderr
+    assert "--repository-id {OMG,OMA}" in delegated.stdout
+    assert "--ownership-manifest-hash" in delegated.stdout
 
 
 def test_unknown_command_fails():

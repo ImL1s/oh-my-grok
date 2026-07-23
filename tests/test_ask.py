@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -20,8 +19,61 @@ from omg_cli.ask.providers import (
     argv_codex,
     build_provider_argv,
     normalize_provider,
+    resolve_advisor_route,
     validate_extra,
 )
+
+
+def test_unified_skill_agent_advisor_route_is_non_authoritative():
+    route = resolve_advisor_route(
+        "fable", skill="omg-dual-review", requested_role="omg-code-reviewer"
+    )
+    assert route.provider == "claude"
+    assert route.requested_role == "code-reviewer"
+    assert route.role_class == "reviewer"
+    assert route.posture == "read-only"
+    assert route.worker_eligible is False
+    assert route.auto_apply is False
+    assert route.authoritative is False
+
+
+def test_structured_review_route_rejects_unqualified_provider():
+    with pytest.raises(AskProviderError, match="structured reviewer"):
+        resolve_advisor_route(
+            "gemini", skill="omg-ask", requested_role="security-reviewer"
+        )
+
+
+def test_unknown_skill_cannot_route_external_advisor():
+    with pytest.raises(AskProviderError, match="not allowed"):
+        resolve_advisor_route("codex", skill="omg-ultrawork")
+
+
+def test_unknown_role_is_normalized_to_usage_error():
+    with pytest.raises(AskProviderError, match="invalid advisor role"):
+        resolve_advisor_route("codex", requested_role="not-a-role")
+
+
+def test_run_ask_records_resolved_advisor_route(tmp_path):
+    result = run_ask(
+        "claude",
+        "review",
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        skill="omg-dual-review",
+        requested_role="verifier",
+    )
+    assert result.advisor_route == {
+        "skill": "omg-dual-review",
+        "requested_role": "verifier",
+        "role_class": "verifier",
+        "provider": "claude",
+        "posture": "read-only",
+        "worker_eligible": False,
+        "auto_apply": False,
+        "authoritative": False,
+    }
 
 
 def test_unknown_provider_exit_2():
@@ -243,8 +295,6 @@ def test_timeout_kills_process_group(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     monkeypatch.setattr(os, "killpg", fake_killpg, raising=False)
     # communicate after timeout
-    orig_comm = SlowProc.communicate
-
     def comm(self, input=None, timeout=None):
         if not getattr(self, "_timed", False):
             self._timed = True

@@ -20,7 +20,7 @@ import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from omg_cli.evidence import sha256_bytes, validate_identifier
 
@@ -1292,3 +1292,27 @@ def integrate_results(
         if _owned_lease_cm is not None:
             _owned_lease_cm.__exit__(None, None, None)
 
+
+def integrate_native_team_delivery(
+    root: Path | str,
+    *,
+    run_id: str,
+    team_id: str,
+    task_id: str,
+    generation: int,
+    delivery_hash: str,
+    post_integration_commands: Sequence[Sequence[str]] = (),
+) -> dict[str, Any]:
+    """Compatibility entrypoint for W3 strict delivery integration."""
+
+    from omg_cli.team.worktree import integrate_owned_delivery
+
+    return integrate_owned_delivery(
+        root,
+        run_id=run_id,
+        team_id=team_id,
+        task_id=task_id,
+        generation=generation,
+        delivery_hash=delivery_hash,
+        post_integration_commands=post_integration_commands,
+    )

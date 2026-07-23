@@ -50,7 +50,7 @@ English: [`skills.md`](./skills.md)
 | cancel、中止 | `omg-cancel` | `omg cancel` | 安全中止 |
 | wiki、專案記憶 | `omg-wiki` | `omg wiki *` | 本地 markdown wiki |
 | hud、statusline | `omg-hud` | `omg hud` | 一行狀態 |
-| lsp、symbols | `omg-lsp` | `omg lsp *` | 誠實本地 probe（非完整 LSP MCP） |
+| lsp、symbols | `omg-lsp` | `omg lsp *` | 檢查 host-owned `.lsp.json`；無語意 proxy |
 
 **多關鍵字同時出現時的優先序**（見 `omg-using`）：  
 `cancel` > `ralplan` > `autopilot` > `ultragoal` > `ralph` > `ulw`。
@@ -372,18 +372,20 @@ omg wiki query "auth"
 
 ---
 
-### `omg-lsp` — 語言 probe（誠實）
+### `omg-lsp` — host-owned LSP 註冊
 
 | | |
 |--|--|
-| **何時** | symbols / check；**不是** 完整 LSP MCP |
+| **何時** | 檢查公開 `.lsp.json` 註冊與本機 server command 是否可用 |
 | **呼叫** | `lsp` · `/oh-my-grok:omg-lsp` |
 | **CLI** | `omg lsp status` · `omg lsp check path.py` · `omg lsp symbols path.py` · `omg lsp diagnostics path.py` |
 | **SKILL** | [`skills/omg-lsp/SKILL.md`](../skills/omg-lsp/SKILL.md) |
 
-優先用 Grok `read_file` / `grep`。`symbols` / `diagnostics` 走 stdlib `ast`
-（僅 Python；diagnostics 為 **syntax-only**，不是 type-checking）。本機有
-pyright 才有 `check`。
+`omg lsp status` 只驗證 host-owned 註冊，不會啟動 server。它會回報
+`semantic_proxy_count: 0`；configured 但未由 host 觀測，不代表 healthy。
+`check`、`symbols`、`diagnostics` 會回傳 `semantic_proxy_unsupported` 並以
+exit code 1 結束。語意語言操作請使用 Grok host tools；repository 查找則用
+`read_file` / `grep`。
 
 ---
 
@@ -391,8 +393,8 @@ pyright 才有 `check`。
 
 **聚焦**的會話內 read + proposal MCP 表面，**不是** OMC ~54-tool 對等。
 只暴露讀取與非權威 proposal 寫入；`passes` / `verified` / accept **永遠不是**
-MCP tool（僅 CLI，且在 `OMG_MCP_SERVER=1` 時**結構性拒絕**）；LSP 是本機
-`ast` probe，不是語意 bridge；沒有 code-exec / 狀態突變 / 權威寫入工具。
+MCP tool（僅 CLI，且在 `OMG_MCP_SERVER=1` 時**結構性拒絕**）；語意 LSP
+操作不會註冊；沒有 code-exec / 狀態突變 / 權威寫入工具。
 這是 in-session **workflow** 能力對齊，不是 tool 數量對齊。
 
 ```bash
@@ -409,7 +411,6 @@ omg mcp-server                 # stdio JSON-RPC（會設 OMG_MCP_SERVER=1）
 | `omg_wiki_*` | 讀 / proposal | `.omg/wiki/` |
 | `omg_project_memory_*` | 讀 / proposal | `.omg/project-memory.json` |
 | `omg_artifact_write` | 僅 proposal | `.omg/artifacts/` |
-| `omg_lsp_symbols` / `omg_lsp_diagnostics` | 讀 | ast probe |
 | `omg_resume_context` | 讀 | resume pack + RESUME.md |
 
 **三道安全機制：** (1) 策展 allowlist；(2) `OMG_MCP_SERVER=1` 時
@@ -417,10 +418,32 @@ omg mcp-server                 # stdio JSON-RPC（會設 OMG_MCP_SERVER=1）
 禁閉（拒 `.omg/state/**` 與 traversal）。
 
 **刻意排除（OMC 有、OMG 沒有）：** `state_write`、`state_clear`、`python_repl`、
-`ast_grep_replace`、語意 LSP goto/hover/rename/find_references、
+`ast_grep_replace`、所有語意 LSP 操作（包括 goto/hover/rename/
+find_references/symbols/diagnostics）、
 `shared_memory`、`session_search`、`merge_readiness`，以及任何 accept/verify 工具。
 
 ---
+
+### 產品服務與 repository workflows（0.6.0）
+
+這些是 CLI contract，不是新增 chat skill。Skill 可以呼叫它們，但權威狀態與
+證據仍由 CLI artifact 管理。
+
+| 指令 | Contract |
+|---|---|
+| `omg session allocate\|route` | 精確 create/resume/continue/fork argv；child UUID 不可重用。 |
+| `omg recover` | 不可變、受限 JSONL suffix；部分恢復保留 broken-chain/未知紀錄警告。 |
+| `omg memory put\|search\|show\|export\|import\|rescan` | Redacted、確定性的專案 facts。 |
+| `omg tracker status\|project\|reconcile` | Passive、generation-fenced lifecycle projection。 |
+| `omg compact create\|show\|render` | Lossless guidance checkpoint / restore。 |
+| `omg notify status\|send\|process` | 只出站、非權威 delivery queue。 |
+| `omg workflow install\|list\|show\|plan\|run` | 不可變 registry、確定 waves、receipt-bound ship gate。 |
+| `omg parity run\|release-readback` | 委派 frozen W0 manifest engine，並驗 exact bundle。 |
+| `omg capabilities` / `omg native-status` | 分開的 capability tiers；不探測私有 sidecar。 |
+
+Workflow plan 不會啟動外部 CLI。Leader 應使用 Grok 原生 `spawn_subagent`、傳入
+精確 `capability_mode`，再把綁定 task ID 的 receipts 交給 `omg workflow run`。
+詳見 [workflows.zh-Hant.md](./workflows.zh-Hant.md)。
 
 ## Agents（skills 會用到的角色）
 

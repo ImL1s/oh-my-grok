@@ -30,12 +30,29 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
+          pip install ruff mypy
+      - name: Static parity contracts
+        run: |
+          python scripts/check_parity_inventory.py
+          python scripts/check_traceability.py
+          python scripts/check_writer_ownership.py
       - name: Generated artifacts up to date
         run: |
           python scripts/generate_standalone_hook.py --check
           python scripts/generate_capabilities_lock.py --check
       - name: Hermetic unit/integration
         run: python -m pytest -q -m "not live" --tb=short
+      - name: Static Python checks
+        run: |
+          ruff check \
+            omg_cli/__init__.py omg_cli/main.py omg_cli/autopilot.py omg_cli/modes.py \
+            omg_cli/pipeline.py omg_cli/ralplan.py omg_cli/review.py omg_cli/qa.py \
+            omg_cli/guidance.py tests/test_cli_router.py tests/test_autopilot.py \
+            tests/test_modes.py tests/test_pipeline.py tests/test_ralplan.py \
+            tests/test_review.py tests/test_qa.py tests/test_packaging.py \
+            tests/test_docs_cli_drift.py tests/test_release_readback.py
+          python -m mypy --follow-imports=skip omg_cli/main.py omg_cli/__init__.py tests/test_release_readback.py
+          python -m compileall -q omg_cli
       - name: Smoke + hermetic e2e
         run: ./scripts/smoke.sh
         env:

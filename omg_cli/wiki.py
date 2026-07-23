@@ -4,11 +4,20 @@ CLI is the writer for durable pages; agents propose text via ``omg wiki ingest``
 """
 from __future__ import annotations
 
-import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from omg_cli.contracts.path_keys import (
+    DATA_FILE_MODE,
+    atomic_write_bytes,
+    ensure_managed_dir,
+    exclusive_lock,
+)
+from omg_cli.contracts.writer_chain import sha256_hex
+from omg_cli.redaction import redact_text
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
@@ -23,14 +32,31 @@ def wiki_root(root: Path) -> Path:
 
 def ensure_wiki(root: Path) -> Path:
     path = wiki_root(root)
-    path.mkdir(parents=True, exist_ok=True)
+    ensure_managed_dir(path)
     index = path / "INDEX.md"
-    if not index.is_file():
-        index.write_text(
-            "# OMG Wiki Index\n\nPages are markdown under `.omg/wiki/`.\n"
-            "Use `omg wiki list` / `omg wiki query` / `omg wiki ingest`.\n",
-            encoding="utf-8",
-        )
+    with exclusive_lock(path / ".wiki-init.lock"):
+        if index.is_file():
+            try:
+                index.read_text(encoding="utf-8")
+                os.chmod(index, DATA_FILE_MODE)
+            except UnicodeDecodeError:
+                raw = index.read_bytes()
+                quarantine = path / f"INDEX.corrupt-{sha256_hex(raw)}.md"
+                if quarantine.exists() and quarantine.read_bytes() == raw:
+                    index.unlink()
+                else:
+                    os.replace(index, quarantine)
+                    os.chmod(quarantine, DATA_FILE_MODE)
+        if not index.is_file():
+            atomic_write_bytes(
+                index,
+                (
+                    "# OMG Wiki Index\n\nPages are markdown under `.omg/wiki/`.\n"
+                    "Use `omg wiki list` / `omg wiki query` / `omg wiki ingest`.\n"
+                ).encode("utf-8"),
+                mode=DATA_FILE_MODE,
+                replace=False,
+            )
     return path
 
 
@@ -58,45 +84,77 @@ def ingest(
         raise WikiError("body required")
     root = Path(root)
     wroot = ensure_wiki(root)
-    slug = slugify(title)
+    clean_title = redact_text(title.strip())
+    clean_body = redact_text(body.strip())
+    slug = slugify(clean_title)
     path = wroot / f"{slug}.md"
-    tags = [t.strip() for t in (tags or []) if t and t.strip()]
-    header = [
-        f"# {title.strip()}",
-        "",
-        f"<!-- omg-wiki slug={slug} updated={_utc_now()} -->",
-    ]
-    if tags:
-        header.append(f"<!-- tags: {', '.join(tags)} -->")
-    if source:
-        header.append(f"<!-- source: {source.strip()[:200]} -->")
-    header.append("")
-    text = "\n".join(header) + body.strip() + "\n"
-    # Append if exists (knowledge accumulates)
-    if path.is_file():
-        prev = path.read_text(encoding="utf-8")
-        text = (
-            prev.rstrip()
-            + "\n\n---\n\n"
-            + f"## Update {_utc_now()}\n\n"
-            + body.strip()
-            + "\n"
+    clean_tags = [redact_text(t.strip()) for t in (tags or []) if t and t.strip()]
+    with exclusive_lock(wroot / ".wiki.lock"):
+        header = [
+            f"# {clean_title}",
+            "",
+            f"<!-- omg-wiki slug={slug} updated={_utc_now()} -->",
+        ]
+        if clean_tags:
+            header.append(f"<!-- tags: {', '.join(clean_tags)} -->")
+        if source:
+            header.append(f"<!-- source: {redact_text(source.strip())[:200]} -->")
+        header.append("")
+        text = "\n".join(header) + clean_body + "\n"
+        if path.is_file():
+            try:
+                prev = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                raw = path.read_bytes()
+                quarantine = path.with_name(f"{slug}.corrupt-{sha256_hex(raw)}.md")
+                os.replace(path, quarantine)
+                os.chmod(quarantine, DATA_FILE_MODE)
+                prev = ""
+            if prev:
+                text = (
+                    prev.rstrip()
+                    + "\n\n---\n\n"
+                    + f"## Update {_utc_now()}\n\n"
+                    + clean_body
+                    + "\n"
+                )
+        atomic_write_bytes(
+            path,
+            text.encode("utf-8"),
+            mode=DATA_FILE_MODE,
+            replace=True,
         )
-    path.write_text(text, encoding="utf-8")
-    _touch_index(wroot, slug, title.strip())
-    return {"path": str(path), "slug": slug, "title": title.strip()}
+        _rebuild_index(wroot)
+    return {"path": str(path), "slug": slug, "title": clean_title}
 
 
 def _touch_index(wroot: Path, slug: str, title: str) -> None:
-    index = wroot / "INDEX.md"
-    line = f"- [{title}]({slug}.md)\n"
-    if index.is_file():
-        cur = index.read_text(encoding="utf-8")
-        if f"({slug}.md)" in cur:
-            return
-        index.write_text(cur.rstrip() + "\n" + line, encoding="utf-8")
-    else:
-        index.write_text("# OMG Wiki Index\n\n" + line, encoding="utf-8")
+    del slug, title
+    _rebuild_index(wroot)
+
+
+def _rebuild_index(wroot: Path) -> None:
+    pages: list[tuple[str, str]] = []
+    for page in sorted(wroot.glob("*.md"), key=lambda item: item.name.encode("utf-8")):
+        if page.name == "INDEX.md" or ".corrupt-" in page.name:
+            continue
+        try:
+            first = page.read_text(encoding="utf-8").splitlines()[0]
+        except (OSError, UnicodeDecodeError, IndexError):
+            continue
+        title = first[2:].strip() if first.startswith("# ") else page.stem
+        pages.append((page.stem, title))
+    body = (
+        "# OMG Wiki Index\n\nPages are markdown under `.omg/wiki/`.\n"
+        "Use `omg wiki list` / `omg wiki query` / `omg wiki ingest`.\n\n"
+        + "".join(f"- [{title}]({slug}.md)\n" for slug, title in pages)
+    )
+    atomic_write_bytes(
+        wroot / "INDEX.md",
+        body.encode("utf-8"),
+        mode=DATA_FILE_MODE,
+        replace=True,
+    )
 
 
 def list_pages(root: Path) -> list[dict[str, str]]:

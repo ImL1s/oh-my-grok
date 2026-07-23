@@ -23,7 +23,7 @@ from omg_cli.ask.providers import (
     AskProviderMissing,
     build_provider_argv,
     default_prompt_mode,
-    normalize_provider,
+    resolve_advisor_route,
     write_prompt_temp,
 )
 
@@ -41,6 +41,7 @@ class AskResult:
     argv: list[str]
     truncated: bool
     dry_run: bool = False
+    advisor_route: dict[str, Any] | None = None
 
 
 def child_env_for_ask(base: dict[str, str] | None = None) -> dict[str, str]:
@@ -97,6 +98,7 @@ def write_ask_artifact(
     run_id: str | None,
     truncated: bool,
     dry_run: bool = False,
+    advisor_route: dict[str, Any] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     body = f"""# omg ask — {provider}
@@ -110,6 +112,7 @@ def write_ask_artifact(
 - run_id: {run_id or ""}
 - dry_run: {bool(dry_run)}
 - truncated: {bool(truncated)}
+- advisor_route: {json.dumps(advisor_route or {}, ensure_ascii=False, sort_keys=True)}
 
 ## Prompt
 
@@ -145,6 +148,7 @@ def write_ask_meta(
     truncated: bool,
     bytes_captured: int,
     dry_run: bool = False,
+    advisor_route: dict[str, Any] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, Any] = {
@@ -162,6 +166,7 @@ def write_ask_meta(
         "truncated": truncated,
         "bytes_captured": bytes_captured,
         "dry_run": bool(dry_run),
+        "advisor_route": advisor_route or {},
     }
     path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
@@ -237,6 +242,8 @@ def run_ask(
     files: Sequence[Path | str] | None = None,
     check_binary: bool | None = None,
     prompt_mode: str | None = None,
+    skill: str = "omg-ask",
+    requested_role: str | None = None,
 ) -> AskResult:
     """User-invoked trusted broker. Sets OMG_ALLOW_EXTERNAL_CLI only in child env.
 
@@ -264,7 +271,11 @@ def run_ask(
                 chunks.append(f"(unreadable: {exc})")
         prompt = "\n".join(chunks)
 
-    canon = normalize_provider(provider)
+    route = resolve_advisor_route(
+        provider, skill=skill, requested_role=requested_role
+    )
+    canon = route.provider
+    route_payload = route.as_dict()
     if check_binary is None:
         check_binary = not dry_run
 
@@ -324,6 +335,7 @@ def run_ask(
             run_id=run_id,
             truncated=False,
             dry_run=True,
+            advisor_route=route_payload,
         )
         if meta_path is not None:
             write_ask_meta(
@@ -338,6 +350,7 @@ def run_ask(
                 truncated=False,
                 bytes_captured=0,
                 dry_run=True,
+                advisor_route=route_payload,
             )
         # Parent env must be unchanged for allow key
         if os.environ.get("OMG_ALLOW_EXTERNAL_CLI") != parent_had_allow:
@@ -355,6 +368,7 @@ def run_ask(
             argv=argv,
             truncated=False,
             dry_run=True,
+            advisor_route=route_payload,
         )
 
     # Real launch
@@ -452,6 +466,7 @@ def run_ask(
         run_id=run_id,
         truncated=truncated,
         dry_run=False,
+        advisor_route=route_payload,
     )
     if meta_path is not None:
         write_ask_meta(
@@ -466,6 +481,7 @@ def run_ask(
             truncated=truncated,
             bytes_captured=bytes_captured,
             dry_run=False,
+            advisor_route=route_payload,
         )
 
     if run_id:
@@ -481,6 +497,7 @@ def run_ask(
         argv=argv,
         truncated=truncated,
         dry_run=False,
+        advisor_route=route_payload,
     )
 
 

@@ -1,200 +1,208 @@
-"""Optional local language-tool probes (research P2) — honest thin surface.
+"""Host-owned Grok LSP registration inspection.
 
-Grok has no host LSP MCP. Prefer host ``read_file`` / ``grep``. This module
-reports available local CLIs, offers a best-effort pyright check when installed,
-and pure-stdlib ``ast`` probes for Python symbols / syntax diagnostics.
+OMG does not proxy semantic LSP operations.  It can only validate a plugin
+``.lsp.json`` registration and report local command availability.  A valid
+configuration is *configured/unobserved*, never evidence that a host server is
+healthy.
 """
 from __future__ import annotations
 
-import ast
 import json
+import os
 import shutil
-import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-PROBE_TOOLS = (
-    "pyright",
-    "basedpyright",
-    "typescript-language-server",
-    "gopls",
-    "rust-analyzer",
-    "clangd",
-)
 
-_AST_HONESTY = "syntax-only (ast.parse); NOT type-checking"
-
-
-def probe_tools() -> dict[str, Any]:
-    found: dict[str, str | None] = {}
-    for name in PROBE_TOOLS:
-        found[name] = shutil.which(name)
-    available = [k for k, v in found.items() if v]
-    return {
-        "available": available,
-        "paths": found,
-        "honesty": (
-            "OMG has no host LSP MCP. Use Grok read_file/grep by default; "
-            "local CLIs listed here are optional extras."
-        ),
-    }
+LSP_CONFIG_NAME = ".lsp.json"
+SEMANTIC_PROXY_OPERATIONS: tuple[str, ...] = ()
+_OPTIONAL_KEYS = {
+    "args",
+    "transport",
+    "env",
+    "initializationOptions",
+    "settings",
+    "workspaceFolder",
+    "startupTimeout",
+    "shutdownTimeout",
+    "restartOnCrash",
+    "maxRestarts",
+}
+_SERVER_KEYS = {"command", "extensionToLanguage"} | _OPTIONAL_KEYS
 
 
-def symbols_pyright(path: Path, *, cwd: Path | None = None) -> dict[str, Any]:
-    """Best-effort: run pyright --outputjson if available."""
-    bin_name = shutil.which("basedpyright") or shutil.which("pyright")
-    if not bin_name:
-        return {
-            "ok": False,
-            "error": "pyright/basedpyright not on PATH",
-            "fallback": "use grep / read_file",
-        }
-    path = Path(path)
-    if not path.is_file():
-        return {"ok": False, "error": f"not a file: {path}"}
-    try:
-        proc = subprocess.run(
-            [bin_name, "--outputjson", str(path)],
-            cwd=str(cwd or path.parent),
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"ok": False, "error": str(exc)}
-    # pyright json is diagnostics-heavy; surface summary only
-    raw = (proc.stdout or "").strip()
-    summary: dict[str, Any] = {
-        "ok": proc.returncode in (0, 1),  # 1 often means diagnostics present
-        "tool": bin_name,
-        "exit_code": proc.returncode,
-        "path": str(path),
-    }
-    if raw:
-        try:
-            data = json.loads(raw)
-            summary["diagnostics_count"] = len(
-                (data.get("generalDiagnostics") or data.get("diagnostics") or [])
+class LSPRegistrationError(ValueError):
+    """The plugin LSP registration is invalid or unsafe to classify."""
+
+
+def _require_int(value: Any, label: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise LSPRegistrationError(f"{label} must be an integer >= {minimum}")
+    return value
+
+
+def validate_registration(value: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Validate Grok's documented named-server ``lsp.json`` shape."""
+    if not isinstance(value, Mapping) or not value:
+        raise LSPRegistrationError("LSP registration must be a non-empty object")
+    normalized: dict[str, dict[str, Any]] = {}
+    for name in sorted(value):
+        raw = value[name]
+        if not isinstance(name, str) or not name or len(name) > 128:
+            raise LSPRegistrationError("LSP server name must be bounded non-empty text")
+        if not isinstance(raw, Mapping):
+            raise LSPRegistrationError(f"LSP server {name!r} must be an object")
+        server = dict(raw)
+        unknown = sorted(set(server) - _SERVER_KEYS)
+        if unknown:
+            raise LSPRegistrationError(f"LSP server {name!r} has unknown fields: {unknown}")
+        command = server.get("command")
+        if not isinstance(command, str) or not command.strip() or len(command) > 4096:
+            raise LSPRegistrationError(f"LSP server {name!r} command is required")
+        mapping = server.get("extensionToLanguage")
+        if not isinstance(mapping, dict) or not mapping:
+            raise LSPRegistrationError(
+                f"LSP server {name!r} extensionToLanguage is required"
             )
-            summary["version"] = data.get("version")
-        except json.JSONDecodeError:
-            summary["raw_preview"] = raw[:500]
+        for extension, language in mapping.items():
+            if (
+                not isinstance(extension, str)
+                or not extension.startswith(".")
+                or "/" in extension
+                or "\\" in extension
+                or not isinstance(language, str)
+                or not language.strip()
+            ):
+                raise LSPRegistrationError(
+                    f"LSP server {name!r} has invalid extension mapping"
+                )
+        args = server.get("args", [])
+        if not isinstance(args, list) or not all(isinstance(item, str) for item in args):
+            raise LSPRegistrationError(f"LSP server {name!r} args must be text array")
+        if server.get("transport", "stdio") not in {"stdio", "socket"}:
+            raise LSPRegistrationError(f"LSP server {name!r} transport is unsupported")
+        env = server.get("env", {})
+        if not isinstance(env, dict) or not all(
+            isinstance(key, str) and isinstance(item, str) for key, item in env.items()
+        ):
+            raise LSPRegistrationError(f"LSP server {name!r} env must be text mapping")
+        for timeout_key in ("startupTimeout", "shutdownTimeout", "maxRestarts"):
+            if timeout_key in server:
+                _require_int(server[timeout_key], f"{name}.{timeout_key}")
+        if "restartOnCrash" in server and not isinstance(server["restartOnCrash"], bool):
+            raise LSPRegistrationError(f"LSP server {name!r} restartOnCrash must be boolean")
+        normalized[name] = server
+    return normalized
+
+
+def load_registration(
+    root: Path | str | None = None, *, config_path: Path | str | None = None
+) -> tuple[Path, dict[str, dict[str, Any]] | None, str | None]:
+    """Load and validate a plugin registration without starting any server."""
+    base = Path(root).resolve() if root is not None else Path.cwd().resolve()
+    path = Path(config_path) if config_path is not None else base / LSP_CONFIG_NAME
+    if not path.is_absolute():
+        path = base / path
+    path = path.resolve(strict=False)
+    try:
+        path.relative_to(base)
+    except ValueError as exc:
+        raise LSPRegistrationError("LSP registration path escapes plugin root") from exc
+    if not path.is_file() or path.is_symlink():
+        return path, None, None
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(parsed, dict):
+            raise LSPRegistrationError("LSP registration must be a JSON object")
+        return path, validate_registration(parsed), None
+    except (OSError, UnicodeError, json.JSONDecodeError, LSPRegistrationError) as exc:
+        return path, None, str(exc)
+
+
+def _command_available(command: str) -> bool:
+    candidate = Path(command).expanduser()
+    if candidate.is_absolute():
+        return candidate.is_file() and os.access(candidate, os.X_OK)
+    return shutil.which(command) is not None
+
+
+def registration_status(
+    root: Path | str | None = None,
+    *,
+    config_path: Path | str | None = None,
+    host_observation: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return registration/local availability; health needs explicit host proof."""
+    path, registration, error = load_registration(root, config_path=config_path)
+    servers: list[dict[str, Any]] = []
+    if registration is not None:
+        for name, server in registration.items():
+            servers.append(
+                {
+                    "name": name,
+                    "command": server["command"],
+                    "transport": server.get("transport", "stdio"),
+                    "extensions": sorted(server["extensionToLanguage"]),
+                    "command_available": _command_available(server["command"]),
+                }
+            )
+    observed = isinstance(host_observation, Mapping) and bool(
+        host_observation.get("observed")
+    )
+    healthy = (
+        observed
+        and isinstance(host_observation, Mapping)
+        and host_observation.get("healthy") is True
+    )
+    if error is not None:
+        status = "invalid_registration"
+    elif registration is None:
+        status = "missing_registration"
+    elif not observed:
+        status = "configured_unobserved"
+    elif healthy:
+        status = "host_observed_healthy"
     else:
-        summary["stderr_preview"] = (proc.stderr or "")[:500]
-    return summary
-
-
-def _symbol_entry(name: str, node: ast.AST) -> dict[str, Any]:
+        status = "host_observed_unhealthy"
     return {
-        "name": name,
-        "lineno": getattr(node, "lineno", None),
-        "col_offset": getattr(node, "col_offset", None),
-        "end_lineno": getattr(node, "end_lineno", None),
-    }
-
-
-def symbols_ast(path: Path | str) -> dict[str, Any]:
-    """List Python symbols via stdlib ``ast`` (no type-checker, Python source only).
-
-    Collects ``FunctionDef`` / ``AsyncFunctionDef`` / ``ClassDef`` (including
-    methods) and ``Import`` / ``ImportFrom`` names with source locations.
-    """
-    path = Path(path)
-    if not path.is_file():
-        return {"ok": False, "error": {"msg": f"not a file: {path}"}}
-    try:
-        source = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        return {"ok": False, "error": {"msg": str(exc)}}
-    try:
-        tree = ast.parse(source, filename=str(path))
-    except SyntaxError as exc:
-        return {
-            "ok": False,
-            "error": {
-                "msg": exc.msg or "SyntaxError",
-                "line": exc.lineno,
-                "col": exc.offset,
-                "text": exc.text,
-            },
-        }
-
-    symbols: list[dict[str, Any]] = []
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            symbols.append(_symbol_entry(node.name, node))
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                symbols.append(_symbol_entry(alias.asname or alias.name, node))
-        elif isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                if alias.name == "*":
-                    base = node.module or "*"
-                    symbols.append(_symbol_entry(f"{base}.*", node))
-                else:
-                    symbols.append(_symbol_entry(alias.asname or alias.name, node))
-
-    return {
-        "ok": True,
-        "path": str(path),
-        "symbols": symbols,
-        "language": "python",
+        "ok": error is None,
+        "ownership": "host_owned",
+        "status": status,
+        "registration_path": str(path),
+        "registered": registration is not None,
+        "configuration_valid": registration is not None and error is None,
+        "host_observed": observed,
+        "healthy": healthy,
+        "servers": servers,
+        "error": error,
+        "semantic_proxy_operations": [],
+        "semantic_proxy_count": 0,
         "honesty": (
-            "stdlib ast only (Python source); names/locations from parse tree, "
-            "not a semantic language server"
+            "OMG validates registration and local command presence only; "
+            "configured but unobserved is not healthy, and semantic operations belong to Grok."
         ),
     }
 
 
-def diagnostics_ast(path: Path | str) -> dict[str, Any]:
-    """Syntax diagnostics via ``ast.parse`` only — not type-checking.
-
-    Always returns ``honesty`` describing the syntax-only scope. ``ok`` is True
-    when the probe ran (file readable); parse failures land in ``diagnostics``.
-    """
-    path = Path(path)
-    if not path.is_file():
-        return {
-            "ok": False,
-            "error": {"msg": f"not a file: {path}"},
-            "honesty": _AST_HONESTY,
-        }
-    try:
-        source = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        return {
-            "ok": False,
-            "error": {"msg": str(exc)},
-            "honesty": _AST_HONESTY,
-        }
-    try:
-        ast.parse(source, filename=str(path))
-    except SyntaxError as exc:
-        return {
-            "ok": True,
-            "path": str(path),
-            "diagnostics": [
-                {
-                    "line": exc.lineno,
-                    "col": exc.offset,
-                    "msg": exc.msg or "SyntaxError",
-                }
-            ],
-            "honesty": _AST_HONESTY,
-        }
-    return {
-        "ok": True,
-        "path": str(path),
-        "diagnostics": [],
-        "honesty": _AST_HONESTY,
-    }
+def probe_tools(root: Path | str | None = None) -> dict[str, Any]:
+    """Backward-compatible status entrypoint with no semantic tool execution."""
+    status = registration_status(root)
+    status["available"] = [
+        row["name"] for row in status["servers"] if row["command_available"]
+    ]
+    status["missing"] = [
+        row["name"] for row in status["servers"] if not row["command_available"]
+    ]
+    return status
 
 
 __all__ = [
-    "PROBE_TOOLS",
+    "LSP_CONFIG_NAME",
+    "LSPRegistrationError",
+    "SEMANTIC_PROXY_OPERATIONS",
+    "load_registration",
     "probe_tools",
-    "symbols_pyright",
-    "symbols_ast",
-    "diagnostics_ast",
+    "registration_status",
+    "validate_registration",
 ]

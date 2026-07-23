@@ -24,6 +24,9 @@ plan is approved is expected, not an obstacle.
 Long or autonomous runs: `omg autopilot`, `omg ralph`, or `omg pipeline`. These
 are outer CLI loops that re-invoke `grok` with `--rules` (so this contract
 survives every headless turn) and `--session-id` / `--resume` between turns.
+For a reviewed, reusable stage graph use `omg workflow plan` and execute its
+tasks only through native `spawn_subagent`; return task-ID-bound receipts to
+`omg workflow run`. Do not launch foreign CLI workers or invent receipts.
 </workflow_routing>
 
 <subagents>
@@ -52,6 +55,9 @@ session start, read `.omg/state/RESUME.md` if it exists. OMG's non-PreToolUse
 hooks are PASSIVE (Grok only lets PreToolUse block or inject) — nothing re-pushes
 context into the chat for you, so after a resume or compaction re-read `.omg/`
 yourself instead of assuming context carried over.
+`omg recover` is intentionally bounded and partial: preserve broken-chain and
+unknown-record warnings. Notifications and native dashboards are never
+authoritative for run or release state.
 </state>
 
 ## Cancel

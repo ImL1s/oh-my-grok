@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from omg_cli.evidence import assert_safe_supervised_parent
 from omg_cli.integrate import default_envelopes_dir
-from omg_cli.modes import DEFAULT_TIMEOUT, resolve_launch_timeout
+from omg_cli.modes import resolve_launch_timeout
 from omg_cli.state import create_run, load_run, write_status
 
 DEFAULT_MAX_PLAN_ROUNDS = 3
@@ -805,7 +805,7 @@ def run_pipeline(
         save_pipeline_state(root_path, run_id, state)
         write_status(root_path, run_id, "verifying", extra={"stage": "accept"})
         if dry_run:
-            print(f"omg pipeline dry-run: stage=accept")
+            print("omg pipeline dry-run: stage=accept")
 
         verified = bool(do_accept())
         _history(state, "accept", "exit", detail=f"verified={verified}")

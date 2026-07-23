@@ -6,8 +6,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
-
 import pytest
 
 from omg_cli.team.providers import build_executor_argv
@@ -17,6 +15,7 @@ from omg_cli.team.routing import (
     STRUCTURED_VERDICT_PROVIDERS,
     ResolvedRouting,
     RoutingError,
+    resolve_native_routing,
     resolve_routing,
 )
 
@@ -238,3 +237,19 @@ def test_default_provider_for_needed_roles() -> None:
         available_providers=_ALL,
     )
     assert snap.for_role("executor").provider == "grok"
+
+
+def test_native_routing_is_exact_role_capability_without_provider_fallback() -> None:
+    routes = resolve_native_routing(["executor", "verifier", "OMG-Executor"])
+    assert list(routes) == ["executor", "verifier"]
+    assert routes["executor"].to_dict() == {
+        "role": "executor",
+        "subagent_type": "omg-executor",
+        "capability_mode": "read-write",
+        "transport": "grok_native",
+    }
+    assert routes["verifier"].capability_mode == "read-only"
+    with pytest.raises(UnknownRoleError):
+        resolve_native_routing(["not-a-role"])
+    with pytest.raises(RoutingError, match="transport"):
+        resolve_native_routing(["executor"], transport="codex")

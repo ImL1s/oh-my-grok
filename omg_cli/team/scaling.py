@@ -13,13 +13,13 @@ HARD invariants (same as D1–D3):
 - Scale-down preserves worktrees (post-mortem); never removes below 1 active
   pane unless the team is being stopped entirely
 """
+
 from __future__ import annotations
 
 import json
 import os
 import signal
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -36,9 +36,14 @@ from omg_cli.team.plane import (
     _atomic_write_json,
     _build_task_grok_argv,
     _grok_args_for_pane,
-    _list_pane_pids,
+    _list_pane_identities,
+    _load_team_identity_chain,
     _materialize_task_prompt,
     _pgid_for_pid,
+    _pid_start_identity,
+    _persist_team_identity_receipt,
+    _read_tmux_launch_nonce,
+    _read_tmux_session_identity,
     _session_alive,
     _task_role,
     _tmux_run,
@@ -217,9 +222,7 @@ def _synthetic_scale_tasks(n: int, start_index: int) -> list[dict[str, Any]]:
     return tasks
 
 
-def _ownership_tasks_from_manifest(
-    root: Path, run_id: str
-) -> list[dict[str, Any]]:
+def _ownership_tasks_from_manifest(root: Path, run_id: str) -> list[dict[str, Any]]:
     try:
         man = load_ownership_manifest(root, run_id)
     except WorkerError:
@@ -341,6 +344,7 @@ def _build_pane_record(
         "prompt_delivery": prompt_delivery,
         "pid": None,
         "pgid": None,
+        "pid_start": None,
         "status": "dry_run" if dry_run else "pending",
         "scaled_in_at": _utc_now(),
     }
@@ -429,9 +433,7 @@ def _add_tmux_windows(
             )
             if nw2.returncode != 0:
                 err = (nw2.stderr or nw.stderr or nw2.stdout or "").strip()
-                raise TeamError(
-                    f"failed to create scaled-in window for {tid!r}: {err}"
-                )
+                raise TeamError(f"failed to create scaled-in window for {tid!r}: {err}")
 
 
 def _kill_pane_recorded(
@@ -442,31 +444,55 @@ def _kill_pane_recorded(
     actions: list[str],
     errors: list[str],
     signalled: list[dict[str, Any]],
+    authority: Mapping[str, Any],
 ) -> None:
-    """Kill only this pane's recorded pgid + its tmux window (not the session)."""
+    """Kill only an immutable, immediately revalidated pane identity."""
     tid = rec.get("task_id")
     widx = rec.get("window_index")
     pid = rec.get("pid")
     pgid = rec.get("pgid")
+    pane_id = rec.get("pane_id")
+    pid_start = rec.get("pid_start")
 
-    # 1) killpg / kill only recorded targets — never pkill -f
-    if pid is not None and not dry:
-        target: int | None = None
-        if isinstance(pgid, int) and pgid > 0:
-            target = pgid
-        elif isinstance(pid, int) and pid > 0:
-            target = pid
-        if target is not None:
-            try:
-                if os.name == "posix":
-                    os.killpg(target, signal.SIGTERM)
-                    actions.append(f"killpg:SIGTERM pgid={target} task={tid}")
-                else:
-                    os.kill(int(pid), signal.SIGTERM)
-                    actions.append(f"kill:SIGTERM pid={pid} task={tid}")
-                signalled.append({"task_id": tid, "pgid": target, "pid": pid})
-            except (ProcessLookupError, PermissionError, OSError) as exc:
-                errors.append(f"signal task={tid} target={target}: {exc}")
+    if not dry:
+        if (
+            not isinstance(widx, int)
+            or not isinstance(pane_id, str)
+            or not isinstance(pid, int)
+            or isinstance(pid, bool)
+            or pid <= 0
+            or not isinstance(pgid, int)
+            or isinstance(pgid, bool)
+            or pgid <= 0
+            or not isinstance(pid_start, str)
+            or not pid_start
+            or _read_tmux_session_identity(session)
+            != (session, authority.get("session_id"))
+            or _read_tmux_launch_nonce(session) != authority.get("launch_nonce")
+            or _list_pane_identities(session).get(widx) != (pane_id, pid)
+            or _pid_start_identity(pid) != pid_start
+            or _pgid_for_pid(pid) != pgid
+        ):
+            errors.append(f"immutable signal identity mismatch task={tid}")
+            return
+        # Re-read PID -> PGID at the last possible point before signal.
+        observed_pgid = _pgid_for_pid(pid)
+        if observed_pgid != pgid:
+            errors.append(f"signal PGID drift refused task={tid}")
+            return
+        try:
+            if os.name == "posix":
+                os.killpg(observed_pgid, signal.SIGTERM)
+                actions.append(f"killpg:SIGTERM pgid={observed_pgid} task={tid}")
+            else:
+                os.kill(pid, signal.SIGTERM)
+                actions.append(f"kill:SIGTERM pid={pid} task={tid}")
+            signalled.append({"task_id": tid, "pgid": observed_pgid, "pid": pid})
+        except ProcessLookupError:
+            actions.append(f"process already gone pgid={observed_pgid} task={tid}")
+        except (PermissionError, OSError) as exc:
+            errors.append(f"signal task={tid} target={observed_pgid}: {exc}")
+            return
     elif dry:
         actions.append(f"dry_run: skipped kill for task={tid}")
 
@@ -474,12 +500,9 @@ def _kill_pane_recorded(
     if session and not dry and widx is not None:
         try:
             if tmux_available():
-                r = _tmux_run(
-                    ["kill-window", "-t", f"{session}:{int(widx)}"]
-                )
+                r = _tmux_run(["kill-window", "-t", f"{session}:{int(widx)}"])
                 actions.append(
-                    f"tmux kill-window -t {session}:{widx} "
-                    f"(exit {r.returncode})"
+                    f"tmux kill-window -t {session}:{widx} (exit {r.returncode})"
                 )
             else:
                 actions.append("tmux unavailable; skipped kill-window")
@@ -593,9 +616,7 @@ def _scale_up(
             existing_own.append(
                 {
                     "task_id": tid,
-                    "owned_files": [
-                        f".omg/team-scale/{tid}.md"
-                    ],
+                    "owned_files": [f".omg/team-scale/{tid}.md"],
                     "role": rec.get("role") or "executor",
                 }
             )
@@ -641,17 +662,44 @@ def _scale_up(
     if not effective_dry:
         session = str(meta.get("session") or "")
         try:
+            chain = _load_team_identity_chain(root, run_id, meta)
+            authority = chain[0]
             _add_tmux_windows(session=session, records=new_records)
-            pane_pids = _list_pane_pids(session)
+            pane_identities = _list_pane_identities(session)
             for rec in new_records:
                 widx = int(rec["window_index"])
-                pid = pane_pids.get(widx)
-                if pid is not None:
+                pane_identity = pane_identities.get(widx)
+                if pane_identity is not None:
+                    pane_id, pid = pane_identity
+                    rec["pane_id"] = pane_id
                     rec["pid"] = pid
                     rec["pgid"] = _pgid_for_pid(pid)
-                    rec["status"] = STATUS_RUNNING
+                    rec["pid_start"] = _pid_start_identity(pid)
+                    rec["status"] = (
+                        STATUS_RUNNING
+                        if rec["pgid"] is not None and rec["pid_start"] is not None
+                        else "launched"
+                    )
                 else:
                     rec["status"] = "launched"
+            if any(rec["status"] != STATUS_RUNNING for rec in new_records):
+                raise TeamError("scale-up failed to bind complete worker identity")
+            generation = int(meta.get("identity_generation", 0)) + 1
+            _scale_receipt, scale_receipt_hash = _persist_team_identity_receipt(
+                root,
+                run_id,
+                session=session,
+                session_id=str(authority["session_id"]),
+                launch_nonce=str(authority["launch_nonce"]),
+                generation=generation,
+                previous_receipt_sha256=str(
+                    meta.get("identity_receipt_sha256")
+                    or meta.get("launch_receipt_sha256")
+                ),
+                operation="add",
+                tasks_before=active,
+                tasks_after=[*active, *new_records],
+            )
         except TeamError:
             raise
         except OSError as exc:
@@ -671,6 +719,9 @@ def _scale_up(
         "task_ids": [r["task_id"] for r in new_records],
         "dry_run": effective_dry,
     }
+    if not effective_dry:
+        updated["identity_generation"] = generation
+        updated["identity_receipt_sha256"] = scale_receipt_hash
     # Never copy forged verified
     updated.pop("verified", None)
     updated.pop("passes", None)
@@ -726,11 +777,7 @@ def _scale_down(
         if isinstance(raw, Mapping):
             tasks_all.append(dict(raw))
 
-    active = [
-        t
-        for t in tasks_all
-        if str(t.get("status") or "") != STATUS_SCALED_DOWN
-    ]
+    active = [t for t in tasks_all if str(t.get("status") or "") != STATUS_SCALED_DOWN]
     if len(active) <= 1:
         raise TeamError(
             "scale --remove refused: never remove below 1 active pane "
@@ -765,18 +812,53 @@ def _scale_down(
     signalled: list[dict[str, Any]] = []
     preserved_worktrees: list[str] = []
 
+    authority: Mapping[str, Any] = {}
+    generation: int | None = None
+    scale_receipt_hash: str | None = None
+    immutable_victims: dict[str, Mapping[str, Any]] = {}
+    survivors = [task for task in active if str(task.get("task_id")) not in victim_ids]
+    if not effective_dry:
+        chain = _load_team_identity_chain(root, run_id, meta)
+        authority = chain[0]
+        generation = int(meta.get("identity_generation", 0)) + 1
+        _scale_receipt, scale_receipt_hash = _persist_team_identity_receipt(
+            root,
+            run_id,
+            session=session,
+            session_id=str(authority["session_id"]),
+            launch_nonce=str(authority["launch_nonce"]),
+            generation=generation,
+            previous_receipt_sha256=str(
+                meta.get("identity_receipt_sha256") or meta.get("launch_receipt_sha256")
+            ),
+            operation="remove",
+            tasks_before=active,
+            tasks_after=survivors,
+        )
+        immutable_victims = {
+            str(row.get("task_id")): row
+            for row in _scale_receipt["tasks_before"]
+            if str(row.get("task_id")) in victim_ids
+        }
+
     for v in victims:
+        signal_identity = immutable_victims.get(str(v.get("task_id")), v)
         _kill_pane_recorded(
-            v,
+            signal_identity,
             session=session,
             dry=effective_dry,
             actions=actions,
             errors=errors,
             signalled=signalled,
+            authority=authority,
         )
         wt = str(v.get("worktree") or "")
         if wt:
             preserved_worktrees.append(wt)
+    if errors:
+        raise TeamError(
+            "scale-down refused incomplete cancellation: " + "; ".join(errors)
+        )
 
     # Mark scaled_down; PRESERVE worktrees (do not delete)
     now = _utc_now()
@@ -801,6 +883,9 @@ def _scale_down(
         "actions": actions,
         "dry_run": effective_dry,
     }
+    if not effective_dry:
+        updated["identity_generation"] = generation
+        updated["identity_receipt_sha256"] = scale_receipt_hash
     updated.pop("verified", None)
     updated.pop("passes", None)
     _atomic_write_json(team_meta_path(root, run_id), updated)
@@ -965,12 +1050,65 @@ def resume_team(
     }
 
 
+def native_dispatch_plan(
+    root: Path | str,
+    *,
+    run_id: str,
+    team_id: str,
+    max_concurrency: int,
+) -> dict[str, Any]:
+    """Select ready tasks without changing lanes or launching processes."""
+
+    from omg_cli.fanout import max_workers_cap
+    from omg_cli.team.plane import load_native_team
+
+    if isinstance(max_concurrency, bool) or not isinstance(max_concurrency, int):
+        raise TeamError("native max_concurrency must be an integer")
+    hard_cap = max_workers_cap()
+    if not 1 <= max_concurrency <= hard_cap:
+        raise TeamError(f"native max_concurrency must be between 1 and {hard_cap}")
+    state = load_native_team(root, run_id, team_id)
+    active_states = {
+        "spawn_requested",
+        "launch_unknown",
+        "running",
+    }
+    active = sum(task["state"] in active_states for task in state["tasks"].values())
+    slots = max(0, max_concurrency - active)
+    ready = [
+        {
+            "task_id": task_id,
+            "sequence": task["sequence"],
+            "generation": task["generation"],
+            "logical_role": task["logical_role"],
+            "capability_mode": task["envelope"]["capability_mode"],
+        }
+        for task_id, task in sorted(state["tasks"].items())
+        if task["state"] == "ready"
+    ][:slots]
+    return {
+        "run_id": run_id,
+        "team_id": team_id,
+        "transport": state["transport"],
+        "max_concurrency": max_concurrency,
+        "active": active,
+        "slots": slots,
+        "ready": ready,
+        "blocked_by_capacity": max(
+            0,
+            sum(task["state"] == "ready" for task in state["tasks"].values())
+            - len(ready),
+        ),
+    }
+
+
 __all__ = [
     "SCALE_LOCK_NAME",
     "STATUS_NEEDS_COLLECT",
     "STATUS_SCALED_DOWN",
     "acquire_scale_lock",
     "resume_team",
+    "native_dispatch_plan",
     "scale_lock_path",
     "scale_team",
 ]

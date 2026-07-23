@@ -1,6 +1,15 @@
 ---
 name: omg-code-reviewer
 description: Hash-bound code review lane — APPROVE only with file/line findings or clean APPROVE on current diff.
+promptMode: extend
+permissionMode: plan
+capabilityMode: read-only
+agentsMd: true
+disallowedTools:
+  - spawn_subagent
+  - search_replace
+  - run_terminal_command
+  - run_terminal_cmd
 ---
 
 # omg-code-reviewer

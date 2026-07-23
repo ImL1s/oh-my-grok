@@ -1,0 +1,425 @@
+{
+  "capability_tiers": [
+    "configured",
+    "installed",
+    "enabled",
+    "loadable",
+    "observed",
+    "healthy",
+    "verified"
+  ],
+  "classifications": [
+    "faithful",
+    "native_substitute",
+    "host_owned",
+    "host_impossible",
+    "optional_unclaimed"
+  ],
+  "frozen_pins": {
+    "GROK_BUILD": "7cfcb20d2b50b0d18801a6c0af2e401c0e060894",
+    "OMA": "f8eeaae6f42ebbfc1c22be504277377332c0d8fe",
+    "OMC": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+    "OMG": "25a80b7f5e95dcf4a9e53dd71e71295a21030dd3",
+    "OMX": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca"
+  },
+  "mcp_operations": [
+    "run_status.read",
+    "trace.timeline",
+    "trace.summary",
+    "resume_metadata.read",
+    "project_memory.search",
+    "wiki.read",
+    "team_status.read",
+    "mailbox.list",
+    "proposal.create"
+  ],
+  "normative_artifact_hashes": {
+    "plan": "29852abd254d1aa5c51b3a5a98739f0763a195f9c9b9b77ccea69e8ba3a770f5",
+    "prd": "0a9c2c644188bd461ffd96e0fc89f6ca017f2c5e6b15bbd28683b3d978c17952",
+    "requirements": "f9ff4cdad865330b2ea6db3443f19ce2ed48567ba3cc5164459822226e11805f",
+    "test_spec": "4cc4337225a3dcdb722351aedf573368ea23657e2d9ef9be1aca60f7927566d2"
+  },
+  "ownership_manifest_id": "dual-parity-writers-v1",
+  "repository_id": "OMG",
+  "requirement_ids": [
+    "DUAL-001",
+    "DUAL-002",
+    "DUAL-003",
+    "LAUNCH-001",
+    "LSP-001",
+    "MCP-001",
+    "OMA-AUTH-001",
+    "OMA-G007-001",
+    "OMA-HOOK-001",
+    "OMA-IDENTITY-001",
+    "OMA-INSTALL-001",
+    "OMA-LSP-001",
+    "OMA-MCP-001",
+    "OMA-MEM-001",
+    "OMA-NOTIFY-001",
+    "OMA-SESSION-001",
+    "OMA-TEAM-001",
+    "OMG-EXT-001",
+    "OMG-HOOK-001",
+    "OMG-HOOK-002",
+    "OMG-INSTALL-001",
+    "OMG-LSP-001",
+    "OMG-MCP-001",
+    "OMG-MEM-001",
+    "OMG-NOTIFY-001",
+    "OMG-SESSION-001",
+    "OMG-SPAWN-001",
+    "OMG-TEAM-001",
+    "OWN-001",
+    "OWN-002",
+    "OWN-003",
+    "RELEASE-001",
+    "RELEASE-002",
+    "RESUME-001",
+    "RESUME-002",
+    "RESUME-003",
+    "REVIEW-001",
+    "TRACK-001",
+    "TRUTH-001",
+    "TRUTH-002",
+    "WORKFLOW-001"
+  ],
+  "rows": [
+    {
+      "claim_state": "contract_only",
+      "classification": "faithful",
+      "operation_tests": [
+        "tests/test_state_schemas.py"
+      ],
+      "requirement_id": "DUAL-001"
+    },
+    {
+      "claim_state": "contract_only",
+      "classification": "faithful",
+      "operation_tests": [
+        "tests/test_parity_inventory.py"
+      ],
+      "requirement_id": "DUAL-002"
+    },
+    {
+      "claim_state": "contract_only",
+      "classification": "faithful",
+      "operation_tests": [
+        "tests/test_path_keys.py"
+      ],
+      "requirement_id": "DUAL-003"
+    },
+    {
+      "claim_state": "contract_only",
+      "classification": "faithful",
+      "operation_tests": [
+        "tests/test_carrier_contract.py"
+      ],
+      "requirement_id": "LAUNCH-001"
+    },
+    {
+      "claim_state": "host_owned",
+      "classification": "host_owned",
+      "operation_tests": [
+        "tests/test_parity_inventory.py"
+      ],
+      "requirement_id": "LSP-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "native_substitute",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "MCP-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "optional_unclaimed",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMA-AUTH-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "optional_unclaimed",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMA-G007-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "optional_unclaimed",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMA-HOOK-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "optional_unclaimed",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMA-IDENTITY-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "optional_unclaimed",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMA-INSTALL-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "optional_unclaimed",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMA-LSP-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "optional_unclaimed",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMA-MCP-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "optional_unclaimed",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMA-MEM-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "optional_unclaimed",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMA-NOTIFY-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "optional_unclaimed",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMA-SESSION-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "optional_unclaimed",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMA-TEAM-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "native_substitute",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMG-EXT-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "native_substitute",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMG-HOOK-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "native_substitute",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMG-HOOK-002"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "native_substitute",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMG-INSTALL-001"
+    },
+    {
+      "claim_state": "host_owned",
+      "classification": "host_owned",
+      "operation_tests": [
+        "tests/test_parity_inventory.py"
+      ],
+      "requirement_id": "OMG-LSP-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "native_substitute",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMG-MCP-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "native_substitute",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMG-MEM-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "native_substitute",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMG-NOTIFY-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "native_substitute",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMG-SESSION-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "native_substitute",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMG-SPAWN-001"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "native_substitute",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "OMG-TEAM-001"
+    },
+    {
+      "claim_state": "contract_only",
+      "classification": "faithful",
+      "operation_tests": [
+        "tests/test_writer_ownership.py"
+      ],
+      "requirement_id": "OWN-001"
+    },
+    {
+      "claim_state": "contract_only",
+      "classification": "faithful",
+      "operation_tests": [
+        "tests/test_writer_chain.py"
+      ],
+      "requirement_id": "OWN-002"
+    },
+    {
+      "claim_state": "contract_only",
+      "classification": "faithful",
+      "operation_tests": [
+        "tests/test_writer_chain.py"
+      ],
+      "requirement_id": "OWN-003"
+    },
+    {
+      "claim_state": "contract_only",
+      "classification": "faithful",
+      "operation_tests": [
+        "tests/test_release_transaction.py"
+      ],
+      "requirement_id": "RELEASE-001"
+    },
+    {
+      "claim_state": "contract_only",
+      "classification": "faithful",
+      "operation_tests": [
+        "tests/test_release_transaction.py"
+      ],
+      "requirement_id": "RELEASE-002"
+    },
+    {
+      "claim_state": "contract_only",
+      "classification": "faithful",
+      "operation_tests": [
+        "tests/test_state_schemas.py"
+      ],
+      "requirement_id": "RESUME-001"
+    },
+    {
+      "claim_state": "contract_only",
+      "classification": "faithful",
+      "operation_tests": [
+        "tests/test_state_schemas.py"
+      ],
+      "requirement_id": "RESUME-002"
+    },
+    {
+      "claim_state": "contract_only",
+      "classification": "faithful",
+      "operation_tests": [
+        "tests/test_state_schemas.py"
+      ],
+      "requirement_id": "RESUME-003"
+    },
+    {
+      "claim_state": "planned",
+      "classification": "native_substitute",
+      "operation_tests": [
+        "tests/test_traceability.py"
+      ],
+      "requirement_id": "REVIEW-001"
+    },
+    {
+      "claim_state": "contract_only",
+      "classification": "faithful",
+      "operation_tests": [
+        "tests/test_state_schemas.py"
+      ],
+      "requirement_id": "TRACK-001"
+    },
+    {
+      "claim_state": "contract_only",
+      "classification": "faithful",
+      "operation_tests": [
+        "tests/test_state_schemas.py"
+      ],
+      "requirement_id": "TRUTH-001"
+    },
+    {
+      "claim_state": "contract_only",
+      "classification": "faithful",
+      "operation_tests": [
+        "tests/test_parity_inventory.py"
+      ],
+      "requirement_id": "TRUTH-002"
+    },
+    {
+      "claim_state": "contract_only",
+      "classification": "native_substitute",
+      "operation_tests": [
+        "tests/test_workflow_contract.py"
+      ],
+      "requirement_id": "WORKFLOW-001"
+    }
+  ],
+  "schema_version": 1,
+  "semantic_lsp_proxy_count": 0,
+  "store_kind": "parity_inventory",
+  "workflow": {
+    "contract": "repository-workflow/v1",
+    "grok_native_projection": "optional_unclaimed",
+    "portable_classification": "native_substitute"
+  }
+}

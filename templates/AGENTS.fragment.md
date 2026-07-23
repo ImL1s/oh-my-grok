@@ -26,12 +26,15 @@ omg cancel         # abort active run
 omg ulw "goal"     # parallel ultrawork
 omg ralph "goal"   # persistence loop
 omg ralplan "goal" # plan consensus
+omg workflow list  # installed repository workflows
+omg capabilities  # honest configured -> verified tiers
 ```
 
 ## Layout
 ```text
 .omg/
   state/runs/<run-id>/   # CLI single-writer status
+  workflows/ memory/ state/recovery/
   plans/ research/ handoffs/ artifacts/ ultragoal/ wiki/
 ```
 <!-- OMG:END -->

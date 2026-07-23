@@ -1,12 +1,9 @@
-"""Focused in-session MCP surface for oh-my-grok (reads + proposal writes).
-
-Not OMC ~54-tool parity. ``passes`` / ``verified`` / accept are never tools;
-see ``omg_cli.mcp.tools`` for the curated allowlist and path confinement.
-"""
+"""Exact nine-operation MCP surface for oh-my-grok."""
 from __future__ import annotations
 
-from omg_cli.mcp.server import handle_message, run_stdio_server
+from omg_cli.mcp.server import MCPRuntime, handle_message, run_stdio_server
 from omg_cli.mcp.tools import (
+    EXACT_TOOL_NAMES,
     FORBIDDEN_TOOL_NAMES,
     TOOL_HANDLERS,
     TOOL_SPECS,
@@ -14,7 +11,9 @@ from omg_cli.mcp.tools import (
 )
 
 __all__ = [
+    "EXACT_TOOL_NAMES",
     "FORBIDDEN_TOOL_NAMES",
+    "MCPRuntime",
     "TOOL_HANDLERS",
     "TOOL_SPECS",
     "handle_message",

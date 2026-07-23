@@ -42,7 +42,7 @@ Workers 只經 Grok **`spawn_subagent`**（depth 1）。
 **tmux team：** 已有實驗性 multi-CLI team plane（需設定 `OMG_EXPERIMENTAL_TMUX_TEAM=1`）；它只提供 worktree／seal／integrate 的**整合隔離**，不是執行 sandbox。
 **範圍誠實：** core purpose 編排對等子集 — 仍不是完整 OMC skill zoo，也不宣稱各 provider 有一致的執行 sandbox；詳見 [`docs/security-model.md`](docs/security-model.md)。
 
-版本：**0.5.0** · License: MIT
+版本：**0.6.0** · License: MIT
 
 ---
 
@@ -52,32 +52,42 @@ Workers 只經 Grok **`spawn_subagent`**（depth 1）。
 
 OMG 有 **兩個表面**：Grok **plugin**（skills/agents/hooks）+ **`omg` CLI**（狀態、accept、verified）。完整產品兩個都要。
 
-### 完整安裝（推薦）
+### 方便的完整安裝（推薦）
 
 ```bash
 # 0) 安裝 Grok CLI
 curl -fsSL https://x.ai/cli/install.sh | bash
 
-# 1) 穩定路徑 clone
-git clone https://github.com/ImL1s/oh-my-grok.git ~/.local/share/oh-my-grok
-cd ~/.local/share/oh-my-grok
-./scripts/install-plugin.sh
-# 可選 pin：git checkout v0.5.0
-
-# 2) omg 到 PATH
-ln -sf "$(pwd)/bin/omg" ~/.local/bin/omg
+# 1) 從 GitHub latest release 安裝完整產品
+# installer 只會從解析出的同一個 immutable tag 下載 archive + SHA256SUMS
+curl -fsSL https://raw.githubusercontent.com/ImL1s/oh-my-grok/main/scripts/install.sh | bash
 omg --version
 
-# 3) 專案初始化
+# 2) 專案初始化
 cd /path/to/your-project
 omg setup
-omg doctor
+omg doctor --strict
 ```
+
+### 手動 pin GitHub 版本
+
+```bash
+TAG=v0.6.0
+curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.6.0.tar.gz"
+curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/SHA256SUMS"
+shasum -a 256 -c SHA256SUMS
+curl -fsSLo install.sh "https://raw.githubusercontent.com/ImL1s/oh-my-grok/${TAG}/scripts/install.sh"
+bash install.sh --offline --archive ./oh-my-grok-0.6.0.tar.gz \
+  --checksums ./SHA256SUMS --source-tag "${TAG}"
+omg doctor --strict
+```
+
+方便路徑會先解析一次 GitHub `latest`，驗證 semantic tag，再從該 tag 下載兩個資產；切換 plugin / CLI、strict doctor、receipt、失敗 rollback 都在同一 transaction。Contributor 仍可 clone 固定 tag 後執行 `./scripts/install-plugin.sh`。
 
 ### 只裝 plugin（半套）
 
 ```bash
-grok plugin install ImL1s/oh-my-grok@v0.5.0 --trust
+grok plugin install ImL1s/oh-my-grok@v0.6.0 --trust
 ```
 
 不會自動把 `omg` 放上 PATH，也不保證 global PreToolUse soft-gate。日常請用完整安裝。
@@ -196,8 +206,9 @@ interview → ralplan → implement → review → qa → acceptance → verifie
 
 ```text
 omg {setup,doctor,state,cancel,resume,wiki,hud,lsp,interview,goal,accept,
-     integrate,worker,review,qa,autopilot,ulw,ralph,ralplan,ask,pipeline,
-     dual-review,mcp-server,mcp-install} ...
+     session,recover,memory,tracker,compact,notify,native-status,workflow,
+     capabilities,parity,integrate,worker,team,review,qa,autopilot,ulw,ralph,
+     ralplan,ask,pipeline,dual-review,mcp-server,mcp-install} ...
 ```
 
 ```bash
@@ -212,12 +223,21 @@ omg autopilot start "完成功能 X" --skip-interview
 omg autopilot status --run RUN
 omg autopilot complete --run RUN
 
+omg workflow install ./production-safety-review.json
+omg workflow plan production-safety-review --input ./input.json
+omg native-status
+omg capabilities
+
+omg session allocate
+omg recover ~/.grok/sessions/example.jsonl
+omg memory search architecture
+
 omg accept --yes
 omg state --human
 omg cancel
 ```
 
-更多 CLI 細節與 flags 見英文 [README.md](./README.md#commands)。
+Repository workflow 的 receipt、權限交集與 ship gate 見 [docs/workflows.zh-Hant.md](docs/workflows.zh-Hant.md)。更多 CLI 細節與 flags 見英文 [README.md](./README.md#commands)。
 
 ---
 

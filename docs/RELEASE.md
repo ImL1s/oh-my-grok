@@ -1,122 +1,155 @@
 # Release protocol (maintainers)
 
-## Latest published
+## Current product line
 
 | Field | Value |
-|-------|--------|
-| Version | **0.5.0** |
-| Tag | [`v0.5.0`](https://github.com/ImL1s/oh-my-grok/releases/tag/v0.5.0) |
-| Notes | Fail-closed gate and global-hook hardening; experimental multi-CLI team plane with integration isolation; in-session MCP server; local LSP probe; editable packaging |
+|---|---|
+| Version | **0.6.0** |
+| Intended tag | `v0.6.0` |
+| Public assets | `oh-my-grok-0.6.0.tar.gz`, then `SHA256SUMS` |
+| Install | GitHub release transaction; no PyPI dependency |
 
-Source of truth: [`plugin.json`](../plugin.json) · history: [`CHANGELOG.md`](../CHANGELOG.md)  
-User guides: [`docs/skills.md`](./skills.md) (all skills) · [`docs/autopilot.md`](./autopilot.md) · skill: [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md)
+The release is not published merely because tests pass or a tag exists. Product
+success is immutable release transaction state `complete` plus a run manifest
+finalized to `closed` after exact branch, commit, bundle, GitHub asset, and
+latest-release readback.
 
-## Version source of truth
+## Version and generated artifacts
 
-1. Bump **`plugin.json` `"version"`** first (e.g. `X.Y.Z`).
-2. Confirm `omg --version` prints the same string.
-3. Update README `Version: **X.Y.Z**` and `docs/security-model.md` header if present.
-4. Add a CHANGELOG section for the release.
-5. Refresh this file’s **Latest published** table after tag + GitHub Release.
-
-## Pre-tag gates (local)
+`omg_cli.__version__` must equal `plugin.json.version`. The Python constant is import-safe for wheel/build metadata; `plugin.json` is the plugin manifest. Before freezing product bytes:
 
 ```bash
-python3 -m pytest -q -m "not live"
-OMG_E2E=1 ./scripts/smoke.sh
-grok plugin validate .
-# optional isolation claims:
-# python3 scripts/canary_pretool.py --live
-# ./scripts/live_suite.sh --quick
+python3 - <<'PY'
+import json
+from omg_cli import __version__
+assert __version__ == json.load(open("plugin.json"))["version"]
+print(__version__)
+PY
+python3 scripts/generate_standalone_hook.py --check
+python3 scripts/generate_capabilities_lock.py --check
 ```
 
-Do **not** require live_suite for docs-only patches.
+When inputs intentionally changed, run each generator once, review the bytes, run it again, and prove the hash is unchanged before `--check`.
 
-## Tag + GitHub Release
+## Candidate gates
+
+Run on the exact candidate commit and record outputs in the W6 aggregate:
 
 ```bash
-VERSION=$(python3 -c "import json; print(json.load(open('plugin.json'))['version'])")
-git tag -a "v${VERSION}" -m "oh-my-grok v${VERSION}"
-git push origin main
-git push origin "v${VERSION}"
-gh release create "v${VERSION}" --title "v${VERSION}" --generate-notes
-# or paste CHANGELOG section as --notes
+python3 scripts/check_parity_inventory.py
+python3 scripts/check_traceability.py
+python3 scripts/check_writer_ownership.py
+python3 -m pytest -q -m "not live" --tb=short
+ruff check omg_cli/{__init__,main,autopilot,modes,pipeline,ralplan,review,qa,guidance}.py \
+  tests/{test_cli_router,test_autopilot,test_modes,test_pipeline,test_ralplan,test_review,test_qa,test_packaging,test_docs_cli_drift,test_release_readback}.py
+python3 -m mypy --follow-imports=skip omg_cli/main.py omg_cli/__init__.py tests/test_release_readback.py
+python3 -m compileall -q omg_cli
+OMG_E2E=1 OMG_SMOKE_STRICT=0 ./scripts/smoke.sh
 ```
 
-Or use `grok plugin tag` if it matches your workflow and then push the tag.
+Live Grok gates are required only for claims that depend on current host behavior. A config file or help probe cannot promote a capability to observed/healthy/verified.
 
-## Dual-track install text for release notes
+## Frozen run manifest
 
-- **Full:** clone (or `git checkout vX.Y.Z`) → `./scripts/install-plugin.sh` → symlink `bin/omg`
-- **Plugin-only:** `grok plugin install ImL1s/oh-my-grok@vX.Y.Z --trust` (CLI + global soft-gate still needed for full product)
-
-## Post-release docs hygiene
-
-After a product release, a small **docs-only** follow-up is fine (no version bump):
-
-- README default flow / tips matching new CLI behavior
-- `docs/security-model.md` residual honesty for new gates
-- This file’s **Latest published** row
+`omg parity run` delegates the exact contract engine in `omg_cli.contracts.run_manifest`; it is not a second implementation.
 
 ```bash
-git add README.md docs/ CHANGELOG.md   # only what changed
-git commit -m "docs: post-release notes for vX.Y.Z"
-git push origin main
+omg parity run init --root . --repository-id OMG --run-id RUN_ID \
+  --frozen-base-commit COMMIT --frozen-base-tree TREE \
+  --approved-branch main --approved-remote origin \
+  --approved-remote-old-oid OLD_OID \
+  --ownership-manifest-hash SHA256 \
+  --artifact-hash requirements=SHA256 \
+  --artifact-hash prd=SHA256 \
+  --artifact-hash test_spec=SHA256 \
+  --artifact-hash plan=SHA256 \
+  --release-channel github
+
+omg parity run verify --path .omg/state/runs/RUN_ID/run-manifest.json --root .
 ```
 
-## Packaging tracks
+All W0-W6 handoffs and aggregate input/final signatures must verify against the frozen candidate. Do not sign around a moving worktree or regenerate another wave's artifact.
 
-### Editable pipx / pip (available; **editable-only**)
+## Build once, upload exact bytes
 
-`pyproject.toml` at repo root exposes console script `omg = omg_cli.main:main`
-with dynamic version from `omg_cli.__version__` (reads `plugin.json`).
+The integration/release owner creates one deterministic prebuilt bundle at:
 
-**Supported recipes only:**
+```text
+.omg/artifacts/dual-parity/<run-id>/OMG-W6/
+  release-bundle-manifest.json
+  release-bundle/
+    oh-my-grok-<version>.tar.gz
+    SHA256SUMS
+```
+
+The manifest binds candidate commit/tree, toolchain, environment allowlist, source date epoch, archive hash/length, exact checksum bytes, and public upload order. Verify before any network writer:
 
 ```bash
-pipx install --editable /path/to/oh-my-grok
-# or, from a checkout:
-pip install -e .
+omg parity release-readback \
+  --manifest .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle-manifest.json
+python3 scripts/release_attest.py \
+  --asset .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle/oh-my-grok-0.6.0.tar.gz \
+  --checksums .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle/SHA256SUMS
 ```
 
-**Not supported:** non-editable `pip install .` / wheel / sdist install into
-site-packages. Several modules resolve `plugin_root()` as
-`Path(__file__).resolve().parents[1]` to find checkout-root **siblings**
-(`plugin.json`, `templates/`, `skills/`, `agents/`, `hooks/`). A non-editable
-install copies only `omg_cli/` → those siblings are missing under
-site-packages → `omg --version` prints `0.0.0` and plugin_root features report
-"missing" (graceful, not a crash). PEP 660 editable install keeps `__file__` in
-the source tree so `plugin_root()` still resolves.
+Missing, extra, renamed, symlinked, or byte-drifted files fail closed. Never rebuild after upload begins. Upload only the two prebuilt files, in the manifest order.
 
-`./scripts/install-plugin.sh` + `ln -sf …/bin/omg` remains the **primary**
-install path. If both the symlink and a pipx editable entry exist, you can get
-two `omg` binaries on `PATH` — check with `which -a omg`.
+## GitHub publication and readback
 
-**Not in this protocol yet:** publishing a non-editable wheel to PyPI.
+External writers are serialized by the run-manifest release state machine. Before each call, record the idempotency identity and exact expected bytes; after each call, perform bounded readback. Timeout/ambiguous results remain `unknown`, not success. Do not perform a blind retry.
 
-### xAI plugin-marketplace (prepare only — do **not** submit)
+The approved sequence is:
 
-A sha-pinned listing for [xai-org/plugin-marketplace](https://github.com/xai-org/plugin-marketplace)
-needs, before any PR:
+1. push the frozen candidate to the approved `main` ref and read back its OID;
+2. create/read back the exact annotated `v<version>` tag;
+3. create the GitHub release from that tag;
+4. upload archive, read back hash/length;
+5. upload `SHA256SUMS`, read back hash/length;
+6. set/read back GitHub latest;
+7. verify public latest install in a clean location;
+8. persist canonical `release-completion-evidence.json`, including the
+   transaction-bound readback chain, then use the dedicated release finalizer
+   to move the run manifest from `release_active` to `closed`.
 
-| Prerequisite | Status |
-|--------------|--------|
-| `plugin.json` fields | Present |
-| `grok plugin validate .` | Gate in this protocol (pre-tag) |
-| Pinned sha | `git rev-parse <tag>` after release tag |
-| Registry entry schema | **UNVERIFIED** — pull exact schema from that repo's CONTRIBUTING before drafting |
+```bash
+omg parity run finalize-release \
+  --path .omg/state/runs/RUN_ID/run-manifest.json \
+  --expected-revision REVISION \
+  --expected-previous-manifest-hash SHA256 \
+  --expected-lease-generation GENERATION \
+  --evidence .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-evidence-input.json
+```
 
-**Isolation honesty for any listing** (do not overclaim security):
+The generic manifest transition route cannot close a release. The finalizer
+binds the evidence to the exact `release_active` manifest hash, frozen bundle
+hash, release nonce, candidate commit, and required per-channel/asset
+readbacks; closed manifests fail verification if that immutable 0400 evidence
+is missing or altered. A release workflow may verify and prepare evidence, but
+it must not rebuild or silently publish different bytes. See
+`.github/workflows/release.yml`.
 
-- Primary isolation is Grok's per-spawn `capability_mode` (read-only /
-  read-write; never `execute`/`all` for default workers).
-- PreToolUse soft-gate is **fail-open** — it is not a sandbox.
-- No OMC-style Stop hard-pin (Grok Stop is passive).
+## User install text
 
-Nothing is submitted by this release protocol; marketplace remains optional
-prep-only until a human opens a PR with a verified schema.
+Convenient latest release:
 
-### Still not in this protocol
+```bash
+curl -fsSL https://raw.githubusercontent.com/ImL1s/oh-my-grok/main/scripts/install.sh | bash
+```
 
-- Automated marketplace sha bump PR
-- Non-editable PyPI publish
+Pinned/manual GitHub-only:
+
+```bash
+TAG=v0.6.0
+curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.6.0.tar.gz"
+curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/SHA256SUMS"
+shasum -a 256 -c SHA256SUMS
+curl -fsSLo install.sh "https://raw.githubusercontent.com/ImL1s/oh-my-grok/${TAG}/scripts/install.sh"
+bash install.sh --offline --archive ./oh-my-grok-0.6.0.tar.gz \
+  --checksums ./SHA256SUMS --source-tag "${TAG}"
+```
+
+The installer verifies before extraction, bounds and rejects link/path escape archive members, stages immutably, switches plugin + CLI transactionally, runs strict doctor, writes a receipt, and rolls back failed activation.
+
+## Plugin marketplace and package registries
+
+The GitHub release is the claimed OMG channel. An xAI marketplace PR remains optional and requires that registry's current schema plus an exact tag SHA. PyPI/non-editable wheel publication and npm-style package registries are not claimed release channels for OMG 0.6.0. Do not imply otherwise in release notes.

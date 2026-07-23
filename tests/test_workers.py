@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from omg_cli.state import create_run, load_run
+from omg_cli.state import create_run
 from omg_cli.workers import (
     WorkerError,
     envelope_path,

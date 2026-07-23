@@ -2,6 +2,7 @@
 
 Dry-run + FSM only — no live tmux/subprocess. Mirrors test_team_plane.py patterns.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,10 +21,11 @@ from omg_cli.state import create_run, load_run
 from omg_cli.team import plane, scaling
 from omg_cli.team.plane import (
     EXPERIMENTAL_ENV,
-    TEAM_WORKER_ENV,
     TeamError,
     TeamGateError,
+    create_native_team,
     load_team_meta,
+    prepare_native_spawn,
     start_team,
     team_meta_path,
 )
@@ -32,6 +34,7 @@ from omg_cli.team.scaling import (
     STATUS_RUNNING,
     STATUS_SCALED_DOWN,
     acquire_scale_lock,
+    native_dispatch_plan,
     resume_team,
     scale_lock_path,
     scale_team,
@@ -91,13 +94,8 @@ def _boom_tmux(*_a: Any, **_k: Any) -> Any:
 
 
 def _write_team_meta(root: Path, run_id: str, meta: dict[str, Any]) -> None:
-    path = team_meta_path(root, run_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
     meta["writer"] = CLI_WRITER
-    path.write_text(
-        json.dumps(meta, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    plane._atomic_write_json(team_meta_path(root, run_id), meta)
 
 
 def _tasks_n(n: int) -> list[dict[str, Any]]:
@@ -209,6 +207,8 @@ def test_scale_down_kills_only_recorded_targets_preserves_worktrees(
             **live["tasks"][0],
             "pid": 11111,
             "pgid": 424242,
+            "pane_id": "%11",
+            "pid_start": "start-11111",
             "status": STATUS_RUNNING,
             "window_index": 0,
         },
@@ -216,14 +216,26 @@ def test_scale_down_kills_only_recorded_targets_preserves_worktrees(
             **live["tasks"][1],
             "pid": 22222,
             "pgid": 424243,
+            "pane_id": "%22",
+            "pid_start": "start-22222",
             "status": STATUS_RUNNING,
             "window_index": 1,
         },
     ]
+    _receipt, receipt_hash = plane._persist_team_launch_receipt(
+        tmp_path,
+        rid,
+        session=live["session"],
+        session_id="$77",
+        launch_nonce="b" * 32,
+        tasks=live["tasks"],
+    )
+    live["launch_nonce"] = "b" * 32
+    live["launch_receipt_sha256"] = receipt_hash
+    live["identity_generation"] = 0
+    live["identity_receipt_sha256"] = receipt_hash
     _write_team_meta(tmp_path, rid, live)
-    worktrees_before = [
-        Path(t["worktree"]) for t in live["tasks"] if t.get("worktree")
-    ]
+    worktrees_before = [Path(t["worktree"]) for t in live["tasks"] if t.get("worktree")]
 
     killpg_calls: list[tuple[int, int]] = []
     tmux_cmds: list[list[str]] = []
@@ -249,6 +261,23 @@ def test_scale_down_kills_only_recorded_targets_preserves_worktrees(
     monkeypatch.setattr(scaling.os, "killpg", fake_killpg)
     monkeypatch.setattr(scaling, "tmux_available", lambda: True)
     monkeypatch.setattr(scaling, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(
+        scaling,
+        "_read_tmux_session_identity",
+        lambda _session: (live["session"], "$77"),
+    )
+    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "b" * 32)
+    monkeypatch.setattr(
+        scaling,
+        "_list_pane_identities",
+        lambda _session: {0: ("%11", 11111), 1: ("%22", 22222)},
+    )
+    monkeypatch.setattr(scaling, "_pid_start_identity", lambda pid: f"start-{pid}")
+    monkeypatch.setattr(
+        scaling,
+        "_pgid_for_pid",
+        lambda pid: {11111: 424242, 22222: 424243}[pid],
+    )
     monkeypatch.setattr(subprocess, "run", guard_run)
     monkeypatch.setattr(plane.subprocess, "run", guard_run)
 
@@ -258,8 +287,7 @@ def test_scale_down_kills_only_recorded_targets_preserves_worktrees(
     assert killpg_calls
     assert all(pg in (424242, 424243) for pg, _ in killpg_calls)
     assert any(
-        c[:2] == ["kill-window", "-t"] and c[2].endswith(":1")
-        for c in tmux_cmds
+        c[:2] == ["kill-window", "-t"] and c[2].endswith(":1") for c in tmux_cmds
     )
     for wt in worktrees_before:
         assert wt.is_dir()
@@ -284,6 +312,72 @@ def test_scale_down_refuses_last_active_pane(
     rid2 = meta2["run_id"]
     with pytest.raises(TeamError, match="minimum is 1"):
         scale_team(tmp_path, rid2, remove=2, dry_run=True)
+
+
+def test_scale_down_fails_closed_when_pid_pgid_drifts_before_signal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team("pgid drift", TASKS_TWO, root=tmp_path, dry_run=True)
+    rid = meta["run_id"]
+    live = dict(load_team_meta(tmp_path, rid))
+    live["dry_run"] = False
+    live["session"] = "omg-scale-drift"
+    live["tasks"] = [
+        {
+            **task,
+            "pane_id": f"%{index + 31}",
+            "pid": 31000 + index,
+            "pgid": 41000 + index,
+            "pid_start": f"start-{31000 + index}",
+            "status": STATUS_RUNNING,
+        }
+        for index, task in enumerate(live["tasks"])
+    ]
+    _receipt, receipt_hash = plane._persist_team_launch_receipt(
+        tmp_path,
+        rid,
+        session=live["session"],
+        session_id="$31",
+        launch_nonce="c" * 32,
+        tasks=live["tasks"],
+    )
+    live.update(
+        {
+            "launch_nonce": "c" * 32,
+            "launch_receipt_sha256": receipt_hash,
+            "identity_generation": 0,
+            "identity_receipt_sha256": receipt_hash,
+        }
+    )
+    _write_team_meta(tmp_path, rid, live)
+    monkeypatch.setattr(
+        scaling,
+        "_read_tmux_session_identity",
+        lambda _session: (live["session"], "$31"),
+    )
+    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "c" * 32)
+    monkeypatch.setattr(
+        scaling,
+        "_list_pane_identities",
+        lambda _session: {0: ("%31", 31000), 1: ("%32", 31001)},
+    )
+    monkeypatch.setattr(scaling, "_pid_start_identity", lambda pid: f"start-{pid}")
+    reads = iter([41001, 99999])
+    monkeypatch.setattr(scaling, "_pgid_for_pid", lambda _pid: next(reads))
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        scaling.os, "killpg", lambda pgid, sig: signals.append((pgid, int(sig)))
+    )
+
+    with pytest.raises(TeamError, match="PGID drift"):
+        scale_team(tmp_path, rid, remove=1)
+
+    assert signals == []
+    disk = load_team_meta(tmp_path, rid)
+    assert disk["identity_generation"] == 0
+    assert all(task["status"] == STATUS_RUNNING for task in disk["tasks"])
 
 
 # ---------------------------------------------------------------------------
@@ -384,9 +478,9 @@ def test_resume_idempotent_second_run_unchanged(
     second = resume_team(tmp_path, rid)
     assert first["changes"] == 1
     assert second["changes"] == 0
-    assert load_team_meta(tmp_path, rid)["tasks"] == load_team_meta(
-        tmp_path, rid
-    )["tasks"]
+    assert (
+        load_team_meta(tmp_path, rid)["tasks"] == load_team_meta(tmp_path, rid)["tasks"]
+    )
     # reconciliations stable (all unchanged on second pass)
     assert all(r.get("unchanged") for r in second["reconciliations"])
 
@@ -501,3 +595,209 @@ def test_cli_team_scale_dry_run(tmp_path: Path) -> None:
     run = load_run(tmp_path, rid)
     assert run is not None
     assert run.get("verified") is not True
+
+
+def test_native_dispatch_plan_respects_capacity_without_process_launch(
+    tmp_path: Path,
+) -> None:
+    create_native_team(
+        tmp_path,
+        run_id="run-scale-native",
+        team_id="team-scale-native",
+        leader_id="leader",
+        parent_session_id="parent-session",
+        base_sha="a" * 40,
+        created_at="2026-07-22T00:00:00Z",
+        tasks=[
+            {"task_id": task_id, "role": "verifier", "prompt": task_id}
+            for task_id in ("a", "b", "c")
+        ],
+    )
+    first = native_dispatch_plan(
+        tmp_path,
+        run_id="run-scale-native",
+        team_id="team-scale-native",
+        max_concurrency=2,
+    )
+    assert [item["task_id"] for item in first["ready"]] == ["a", "b"]
+    assert first["slots"] == 2
+    prepare_native_spawn(
+        tmp_path,
+        run_id="run-scale-native",
+        team_id="team-scale-native",
+        task_id="a",
+        expected_sequence=0,
+        expected_generation=0,
+        lease_generation=0,
+        description="task a",
+        expires_at="2099-01-01T00:00:00Z",
+    )
+    second = native_dispatch_plan(
+        tmp_path,
+        run_id="run-scale-native",
+        team_id="team-scale-native",
+        max_concurrency=2,
+    )
+    assert second["active"] == 1
+    assert [item["task_id"] for item in second["ready"]] == ["b"]
+    assert second["blocked_by_capacity"] == 1
+    with pytest.raises(TeamError, match="max_concurrency"):
+        native_dispatch_plan(
+            tmp_path,
+            run_id="run-scale-native",
+            team_id="team-scale-native",
+            max_concurrency=max_workers_cap() + 1,
+        )
+
+
+# ---------------------------------------------------------------------------
+# aborted scale intent receipts (orphan adoption)
+# ---------------------------------------------------------------------------
+
+
+def _prepare_scale_signal_team(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[str, dict[str, Any]]:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team("orphan intent", TASKS_TWO, root=tmp_path, dry_run=True)
+    rid = meta["run_id"]
+    live = dict(load_team_meta(tmp_path, rid))
+    live["dry_run"] = False
+    live["session"] = "omg-scale-orphan"
+    live["tasks"] = [
+        {
+            **task,
+            "pane_id": f"%{index + 31}",
+            "pid": 31000 + index,
+            "pgid": 41000 + index,
+            "pid_start": f"start-{31000 + index}",
+            "status": STATUS_RUNNING,
+        }
+        for index, task in enumerate(live["tasks"])
+    ]
+    _receipt, receipt_hash = plane._persist_team_launch_receipt(
+        tmp_path,
+        rid,
+        session=live["session"],
+        session_id="$31",
+        launch_nonce="c" * 32,
+        tasks=live["tasks"],
+    )
+    live.update(
+        {
+            "launch_nonce": "c" * 32,
+            "launch_receipt_sha256": receipt_hash,
+            "identity_generation": 0,
+            "identity_receipt_sha256": receipt_hash,
+        }
+    )
+    _write_team_meta(tmp_path, rid, live)
+    monkeypatch.setattr(
+        scaling,
+        "_read_tmux_session_identity",
+        lambda _session: (live["session"], "$31"),
+    )
+    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "c" * 32)
+    monkeypatch.setattr(
+        scaling,
+        "_list_pane_identities",
+        lambda _session: {0: ("%31", 31000), 1: ("%32", 31001)},
+    )
+    monkeypatch.setattr(scaling, "_pid_start_identity", lambda pid: f"start-{pid}")
+    return rid, live
+
+
+def test_scale_down_retry_after_aborted_signal_adopts_orphan_receipt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.contracts.writer_chain import (
+        canonical_json_bytes,
+        parse_canonical_json_bytes,
+        sha256_hex,
+    )
+
+    rid, _live = _prepare_scale_signal_team(monkeypatch, tmp_path)
+    reads = iter([41001, 99999])
+    monkeypatch.setattr(scaling, "_pgid_for_pid", lambda _pid: next(reads))
+    monkeypatch.setattr(
+        scaling.os, "killpg", lambda pgid, sig: (_ for _ in ()).throw(AssertionError)
+    )
+
+    with pytest.raises(TeamError, match="PGID drift"):
+        scale_team(tmp_path, rid, remove=1)
+
+    orphan_path = plane.team_identity_receipt_path(tmp_path, rid, 1)
+    assert orphan_path.is_file()
+    orphan_bytes = orphan_path.read_bytes()
+    disk = load_team_meta(tmp_path, rid)
+    assert disk["identity_generation"] == 0
+
+    monkeypatch.setattr(
+        scaling, "_pgid_for_pid", lambda pid: {31000: 41000, 31001: 41001}[pid]
+    )
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        scaling.os, "killpg", lambda pgid, sig: killed.append((pgid, int(sig)))
+    )
+    monkeypatch.setattr(scaling, "tmux_available", lambda: True)
+    tmux_cmds: list[list[str]] = []
+
+    def fake_tmux_run(args: Any, **kw: Any) -> Any:
+        tmux_cmds.append(list(args))
+        from unittest.mock import MagicMock
+
+        m = MagicMock()
+        m.returncode = 0
+        return m
+
+    monkeypatch.setattr(scaling, "_tmux_run", fake_tmux_run)
+
+    out = scale_team(tmp_path, rid, remove=1)
+    assert out["op"] == "remove"
+    assert out["removed"] == 1
+    assert killed and all(pg == 41001 for pg, _ in killed)
+
+    disk = load_team_meta(tmp_path, rid)
+    assert disk["identity_generation"] == 1
+    assert orphan_path.read_bytes() == orphan_bytes
+    parsed = parse_canonical_json_bytes(orphan_bytes)
+    assert disk["identity_receipt_sha256"] == sha256_hex(canonical_json_bytes(parsed))
+
+
+def test_scale_down_tampered_orphan_receipt_stays_fail_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.contracts.writer_chain import (
+        canonical_json_bytes,
+        parse_canonical_json_bytes,
+    )
+
+    rid, _live = _prepare_scale_signal_team(monkeypatch, tmp_path)
+    reads = iter([41001, 99999])
+    monkeypatch.setattr(scaling, "_pgid_for_pid", lambda _pid: next(reads))
+    monkeypatch.setattr(
+        scaling.os, "killpg", lambda pgid, sig: (_ for _ in ()).throw(AssertionError)
+    )
+    with pytest.raises(TeamError, match="PGID drift"):
+        scale_team(tmp_path, rid, remove=1)
+
+    orphan_path = plane.team_identity_receipt_path(tmp_path, rid, 1)
+    tampered = parse_canonical_json_bytes(orphan_path.read_bytes())
+    tampered["tasks_after"] = []
+    orphan_path.chmod(0o600)
+    orphan_path.write_bytes(canonical_json_bytes(tampered))
+    orphan_path.chmod(0o400)
+
+    monkeypatch.setattr(
+        scaling, "_pgid_for_pid", lambda pid: {31000: 41000, 31001: 41001}[pid]
+    )
+    monkeypatch.setattr(scaling.os, "killpg", lambda pgid, sig: None)
+    monkeypatch.setattr(scaling, "tmux_available", lambda: True)
+
+    with pytest.raises(
+        TeamError, match="immutable team identity generation already exists"
+    ):
+        scale_team(tmp_path, rid, remove=1)
+    disk = load_team_meta(tmp_path, rid)
+    assert disk["identity_generation"] == 0

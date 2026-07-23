@@ -5,7 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from omg_cli.note import add_note, notepad_path, prune_notes, read_notes, run_note
+from omg_cli.note import (
+    add_note,
+    export_notes,
+    import_notes,
+    notepad_path,
+    prune_notes,
+    read_notes,
+    run_note,
+)
 
 
 def test_add_note_creates_header_and_7d_line(tmp_path: Path) -> None:
@@ -164,3 +172,15 @@ def test_omg_note_prune_cli_exits_zero(tmp_path: Path) -> None:
     )
     assert r.returncode == 0, r.stderr
     assert "pruned:" in r.stdout
+
+
+def test_note_export_import_is_deterministic_private_and_redacted(tmp_path: Path) -> None:
+    path = add_note(tmp_path, "token=raw-secret durable")
+    assert (path.stat().st_mode & 0o777) == 0o600
+    bundle = export_notes(tmp_path)
+    assert "raw-secret" not in bundle["content"]
+    target = tmp_path / "target"
+    first = import_notes(target, bundle)
+    second = import_notes(target, bundle)
+    assert first == second
+    assert read_notes(target) == bundle["content"]

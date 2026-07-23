@@ -13,12 +13,15 @@ from omg_cli.fanout import (
     FANOUT_PROCESS,
     build_worker_prompt,
     fanout_meta_path,
+    native_fanout_plan,
+    prepare_native_fanout,
     resolve_worker_count,
     run_process_fanout,
     worker_id_label,
     workers_dir,
 )
-from omg_cli.state import load_active_run, load_run
+from omg_cli.state import load_active_run
+from omg_cli.team.plane import create_native_team
 
 
 def test_resolve_worker_count_defaults_and_cap():
@@ -256,3 +259,59 @@ def test_cli_ulw_fanout_process_dry_run(tmp_path):
     data = json.loads(runs[0].read_text(encoding="utf-8"))
     assert data["workers"] == 2
     assert data["fanout"] == "process"
+
+
+def test_native_fanout_is_depth_one_spawn_subagent_without_process_fallback(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("native fanout must not launch a process")
+        ),
+    )
+    create_native_team(
+        tmp_path,
+        run_id="run-native-fanout",
+        team_id="team-native-fanout",
+        leader_id="leader",
+        parent_session_id="session",
+        base_sha="a" * 40,
+        tasks=[
+            {"task_id": "verify-a", "role": "verifier", "prompt": "verify A"},
+            {"task_id": "verify-b", "role": "verifier", "prompt": "verify B"},
+        ],
+        created_at="2026-07-22T00:00:00Z",
+    )
+
+    plan = native_fanout_plan(
+        tmp_path,
+        run_id="run-native-fanout",
+        team_id="team-native-fanout",
+        max_concurrency=2,
+    )
+    assert plan["carrier"] == "spawn_subagent"
+    assert plan["transport"] == "grok_native"
+    assert plan["depth"] == 1
+    assert plan["fallback"] is None
+
+    prepared = prepare_native_fanout(
+        tmp_path,
+        run_id="run-native-fanout",
+        team_id="team-native-fanout",
+        max_concurrency=2,
+        lease_generation=3,
+        expires_at="2099-01-01T00:00:00Z",
+    )
+    assert [row["task_id"] for row in prepared["plan"]["ready"]] == [
+        "verify-a",
+        "verify-b",
+    ]
+    assert len(prepared["invocations"]) == 2
+    for row in prepared["invocations"]:
+        assert row["invocation"]["tool_name"] == "spawn_subagent"
+        assert row["invocation"]["transport"] == "grok_native"
+        assert row["invocation"]["tool_input"]["capability_mode"] == "read-only"
+        assert "argv" not in row["invocation"]
+        assert "fallback" not in row["invocation"]

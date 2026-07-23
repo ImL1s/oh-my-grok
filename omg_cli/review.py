@@ -8,7 +8,6 @@ CLI-stamped proposals (never forged disk writer fields alone).
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path

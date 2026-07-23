@@ -15,6 +15,8 @@ Grok Build plugin + `omg` CLI 的使用者文件。
 | [skills.md](./skills.md) | 英文 skills 目錄 |
 | [autopilot.zh-Hant.md](./autopilot.zh-Hant.md) | Autopilot 深講 |
 | [autopilot.md](./autopilot.md) | Autopilot（英文） |
+| [workflows.zh-Hant.md](./workflows.zh-Hant.md) | 版本化 repository workflows、receipt 與 ship gate |
+| [workflows.md](./workflows.md) | Repository workflows（英文） |
 | [security-model.md](./security-model.md) | 隔離誠實說明（英文） |
 | [RELEASE.md](./RELEASE.md) | 維護者發版流程（英文） |
 
@@ -35,6 +37,8 @@ Grok Build plugin + `omg` CLI 的使用者文件。
 | 外部顧問 | `omg-ask` | `omg ask` |
 | 取消 | `omg-cancel` | `omg cancel` |
 | Wiki / HUD / LSP | `omg-wiki` / `omg-hud` / `omg-lsp` | `omg wiki` / `hud` / `lsp` |
+| 可重跑分階段審查 | repository workflow | `omg workflow install|list|show|plan|run` |
+| 恢復、記憶、觀測 | 產品服務 | `omg recover` / `memory` / `tracker` / `compact` |
 
 完整表格與可複製範例：**[skills.zh-Hant.md](./skills.zh-Hant.md)**。
 

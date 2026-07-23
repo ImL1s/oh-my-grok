@@ -50,7 +50,7 @@ Same *idea* as OMC’s skill zoo, **Grok-native** runtime: playbooks + `omg` CLI
 | `cancel`, abort, kill workers | `omg-cancel` | `omg cancel` | Safe abort |
 | `wiki`, project memory | `omg-wiki` | `omg wiki *` | Local markdown wiki |
 | `hud`, statusline | `omg-hud` | `omg hud` | One-line run status |
-| `lsp`, symbols | `omg-lsp` | `omg lsp *` | Honest local probe (not full LSP MCP) |
+| `lsp`, symbols | `omg-lsp` | `omg lsp *` | Inspect host-owned `.lsp.json`; no semantic proxy |
 
 **Priority when several keywords match** (from `omg-using`):  
 `cancel` > `ralplan` > `autopilot` > `ultragoal` > `ralph` > `ulw`.
@@ -386,18 +386,20 @@ Not run/`verified` authority.
 
 ---
 
-### `omg-lsp` — language probe (honest)
+### `omg-lsp` — host-owned LSP registration
 
 | | |
 |--|--|
-| **When** | Symbols / check; **not** full LSP MCP |
+| **When** | Inspect the public `.lsp.json` registration and local server-command availability |
 | **Invoke** | `lsp` · `/oh-my-grok:omg-lsp` |
 | **CLI** | `omg lsp status` · `omg lsp check path.py` · `omg lsp symbols path.py` · `omg lsp diagnostics path.py` |
 | **SKILL** | [`skills/omg-lsp/SKILL.md`](../skills/omg-lsp/SKILL.md) |
 
-Prefer Grok `read_file` / `grep`. `symbols` / `diagnostics` use stdlib `ast`
-(Python only; diagnostics are **syntax-only**, not type-checking). Optional
-pyright via `check` if installed.
+`omg lsp status` validates the host-owned registration without starting a
+server. It reports `semantic_proxy_count: 0`; configured but unobserved is not
+healthy. `check`, `symbols`, and `diagnostics` return
+`semantic_proxy_unsupported` with exit code 1. Use Grok's host tools for
+semantic language operations and `read_file` / `grep` for repository lookup.
 
 ---
 
@@ -406,8 +408,8 @@ pyright via `check` if installed.
 A **FOCUSED** in-session read + proposal MCP surface, **NOT** OMC ~54-tool
 parity. Exposes reads and non-authoritative proposal writes only;
 `passes` / `verified` / accept are **never** MCP tools (CLI-only **and**
-structurally refused when `OMG_MCP_SERVER=1`); LSP is a local `ast` probe, not
-a semantic bridge; no code-exec / state-mutation / authoritative-write tools.
+structurally refused when `OMG_MCP_SERVER=1`); semantic LSP operations are not
+registered; no code-exec / state-mutation / authoritative-write tools.
 This is the “different alignment” for in-session **workflow** capability, not
 tool-count parity.
 
@@ -429,7 +431,6 @@ omg mcp-server                 # stdio JSON-RPC (sets OMG_MCP_SERVER=1)
 | `omg_wiki_query` / `omg_wiki_list` / `omg_wiki_ingest` | read / proposal | `.omg/wiki/` |
 | `omg_project_memory_read` / `omg_project_memory_add_note` | read / proposal | `.omg/project-memory.json` |
 | `omg_artifact_write` | proposal only | `.omg/artifacts/` |
-| `omg_lsp_symbols` / `omg_lsp_diagnostics` | read | `lsp_tools` ast probe |
 | `omg_resume_context` | read | resume pack + `RESUME.md` |
 
 **Security (three load-bearing mechanisms):**
@@ -443,12 +444,34 @@ omg mcp-server                 # stdio JSON-RPC (sets OMG_MCP_SERVER=1)
 
 **Deliberately excluded (OMC ships some of these; OMG does not):**
 `state_write`, `state_clear` (authoritative), `python_repl` (arbitrary exec),
-`ast_grep_replace` (mutates code), semantic LSP
-`goto` / `hover` / `rename` / `find_references` (keep the ast probe only),
+`ast_grep_replace` (mutates code), all semantic LSP operations including
+`goto` / `hover` / `rename` / `find_references` / `symbols` / `diagnostics`,
 `shared_memory`, `session_search`, `merge_readiness`, and **any**
 accept / verify / `set_verified` / token-registration tool.
 
 ---
+
+### Product services and repository workflows (0.6.0)
+
+These are CLI contracts rather than additional chat skills. A leader may call
+them from a skill, but authority and evidence remain in the CLI artifacts.
+
+| Command | Contract |
+|---|---|
+| `omg session allocate\|route` | Exact create/resume/continue/fork argv; named child UUIDs cannot be reused. |
+| `omg recover` | Immutable bounded JSONL suffix; partial recovery preserves broken-chain/unknown-record warnings. |
+| `omg memory put\|search\|show\|export\|import\|rescan` | Redacted deterministic project facts. |
+| `omg tracker status\|project\|reconcile` | Passive generation-fenced lifecycle projection. |
+| `omg compact create\|show\|render` | Lossless guidance checkpoint and restore. |
+| `omg notify status\|send\|process` | Outbound-only, non-authoritative delivery queue. |
+| `omg workflow install\|list\|show\|plan\|run` | Immutable workflow registry, deterministic waves, receipt-bound ship gate. |
+| `omg parity run\|release-readback` | Frozen W0 manifest delegation and exact bundle verification. |
+| `omg capabilities` / `omg native-status` | Independent capability tiers; no private-sidecar probing. |
+
+Workflow planning never launches a foreign CLI. The leader executes plan tasks
+through Grok-native `spawn_subagent`, supplies the exact `capability_mode`, and
+passes task-ID-bound receipts to `omg workflow run`. See
+[workflows.md](./workflows.md).
 
 ## Agents (roles used by skills)
 

@@ -18,7 +18,7 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from omg_cli.evidence import EvidenceError, validate_identifier
 from omg_cli.integrate import (
@@ -739,6 +739,56 @@ def seal_all_tasks(
     return out
 
 
+def prepare_native_team_worktree(
+    root: Path | str,
+    *,
+    run_id: str,
+    team_id: str,
+    task_id: str,
+    generation: int,
+    base_sha: str,
+    owned_paths: Sequence[str],
+) -> dict[str, Any]:
+    """Compatibility entrypoint for the strict W3 worktree broker."""
+
+    from omg_cli.team.worktree import create_owned_worktree
+
+    return create_owned_worktree(
+        root,
+        run_id=run_id,
+        team_id=team_id,
+        task_id=task_id,
+        generation=generation,
+        base_sha=base_sha,
+        owned_paths=owned_paths,
+    )
+
+
+def seal_native_team_worktree(
+    root: Path | str,
+    *,
+    run_id: str,
+    team_id: str,
+    task_id: str,
+    generation: int,
+    verification_commands: Sequence[Sequence[str]] = (),
+    message: str = "omg native team delivery",
+) -> dict[str, Any]:
+    """Seal one receipted W3 worktree into an immutable delivery."""
+
+    from omg_cli.team.worktree import seal_owned_worktree
+
+    return seal_owned_worktree(
+        root,
+        run_id=run_id,
+        team_id=team_id,
+        task_id=task_id,
+        generation=generation,
+        verification_commands=verification_commands,
+        message=message,
+    )
+
+
 __all__ = [
     "WorkerError",
     "build_ownership_manifest",
@@ -747,9 +797,11 @@ __all__ = [
     "load_ownership_manifest",
     "ownership_manifest_path",
     "prepare_owned_tasks",
+    "prepare_native_team_worktree",
     "prepare_task",
     "seal_all_tasks",
     "seal_task",
+    "seal_native_team_worktree",
     "validate_task_id",
     "worktree_dir",
 ]

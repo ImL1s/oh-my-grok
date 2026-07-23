@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -23,13 +26,153 @@ def git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProces
     )
 
 
+def install_realpath_e2e(project_root: Path) -> None:
+    """Exercise symlink-source install/reinstall/uninstall outside user homes."""
+
+    from omg_cli.setup_cmd import SHIPPING_ROOTS, install_package, read_install_receipt
+    from omg_cli.uninstall_cmd import run_uninstall
+
+    case = Path(tempfile.mkdtemp(prefix="omg-install-realpath-"))
+    package = case / "release-package"
+    package.mkdir()
+    for relative in SHIPPING_ROOTS:
+        source = REPO / relative
+        target = package / relative
+        if source.is_dir():
+            shutil.copytree(source, target)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+    version = json.loads((package / "plugin.json").read_text(encoding="utf-8"))["version"]
+    asset = case / f"oh-my-grok-{version}.tar.gz"
+    with tarfile.open(asset, "w:gz") as archive:
+        archive.add(package, arcname=f"oh-my-grok-{version}")
+    digest = hashlib.sha256(asset.read_bytes()).hexdigest()
+    sums = case / "SHA256SUMS"
+    sums.write_text(f"{digest}  {asset.name}\n", encoding="utf-8")
+    source_link = case / "source-via-symlink"
+    source_link.symlink_to(package, target_is_directory=True)
+
+    isolated_home = case / "home"
+    isolated_grok_home = case / "grok-home"
+    host: dict[str, object] = {"path": None, "enabled": False}
+
+    def plugin_entry() -> dict[str, object]:
+        path = Path(str(host["path"]))
+        metadata = json.loads((path / "plugin.json").read_text(encoding="utf-8"))
+        return {
+            "name": "oh-my-grok",
+            "version": metadata["version"],
+            "path": str(path),
+            "source": str(path),
+            "installPath": str(path),
+            "enabled": bool(host["enabled"]),
+            "trusted": True,
+        }
+
+    def runner(argv, **_kwargs):
+        args = list(argv)
+        stdout = ""
+        rc = 0
+        if args == ["grok", "plugin", "list", "--json"]:
+            stdout = json.dumps([plugin_entry()] if host["path"] else [])
+        elif args[:3] == ["grok", "plugin", "validate"]:
+            rc = 0 if (Path(args[3]) / "plugin.json").is_file() else 1
+        elif args[:3] == ["grok", "plugin", "install"]:
+            host.update(path=str(Path(args[3]).resolve()), enabled=False)
+        elif args[:3] == ["grok", "plugin", "enable"]:
+            if not host["path"]:
+                rc = 1
+            else:
+                host["enabled"] = True
+        elif args[:3] == ["grok", "plugin", "uninstall"]:
+            host.update(path=None, enabled=False)
+        elif args == ["grok", "inspect", "--json"]:
+            stdout = json.dumps(
+                {
+                    "plugins": [plugin_entry()] if host["path"] else [],
+                    "skills": ["omg-autopilot"] if host["path"] else [],
+                }
+            )
+        else:
+            rc = 2
+        return subprocess.CompletedProcess(args, rc, stdout=stdout, stderr="")
+
+    probes: list[dict[str, str]] = []
+
+    def doctor_probe(stage: Path, env: dict[str, str]) -> dict[str, object]:
+        assert stage.resolve() != REPO.resolve()
+        assert Path(env["HOME"]).resolve() == isolated_home.resolve()
+        assert Path(env["GROK_HOME"]).resolve() == isolated_grok_home.resolve()
+        probes.append({"stage": str(stage), "pending": env.get("OMG_EXPECTED_INSTALL_DIGEST", "")})
+        return {"argv": [str(stage / "bin" / "omg"), "doctor", "--strict"], "rc": 0, "valid": True}
+
+    marker = project_root / ".omg" / "install-realpath.keep"
+    marker.write_text("preserve project state\n", encoding="utf-8")
+    old_home = os.environ.get("HOME")
+    old_grok_home = os.environ.get("GROK_HOME")
+    os.environ["HOME"] = str(isolated_home)
+    os.environ["GROK_HOME"] = str(isolated_grok_home)
+    try:
+        first = install_package(
+            source_link,
+            home=isolated_home,
+            grok_home=isolated_grok_home,
+            runner=runner,
+            doctor_probe=doctor_probe,
+            mode="release",
+            asset=asset,
+            checksums=sums,
+            source_tag=f"v{version}",
+            source_uri=f"file://{asset}",
+        )
+        assert first["status"] in {"release_verified", "installed"}, first
+        current = isolated_grok_home / "omg" / "current"
+        receipt_pointer = isolated_grok_home / "omg" / "current-receipt"
+        cli = isolated_home / ".local" / "bin" / "omg"
+        assert current.is_symlink() and cli.is_symlink() and receipt_pointer.is_symlink()
+        stage = current.resolve(strict=True)
+        assert package.resolve() != stage and source_link.resolve() != stage
+        assert isolated_grok_home.resolve() in stage.parents
+        receipt = read_install_receipt(receipt_pointer.resolve(strict=True))
+        assert receipt["source"]["package_realpath"] == str(package.resolve())
+
+        second = install_package(
+            source_link,
+            home=isolated_home,
+            grok_home=isolated_grok_home,
+            runner=runner,
+            doctor_probe=doctor_probe,
+            mode="release",
+            asset=asset,
+            checksums=sums,
+            source_tag=f"v{version}",
+            source_uri=f"file://{asset}",
+        )
+        assert second["status"] == "already_installed", second
+        assert run_uninstall(yes=True, runner=runner, home=isolated_grok_home) == 0
+        assert not current.exists() and not os.path.lexists(cli)
+        assert marker.read_text(encoding="utf-8") == "preserve project state\n"
+        assert len(probes) == 3, probes  # pending + final + idempotent strict doctor
+    finally:
+        if old_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = old_home
+        if old_grok_home is None:
+            os.environ.pop("GROK_HOME", None)
+        else:
+            os.environ["GROK_HOME"] = old_grok_home
+    print("PASS immutable symlink-source install/reinstall/uninstall realpath")
+
+
 def main() -> int:
-    from omg_cli.state import create_run, set_verified, load_run, ensure_omg_dirs
+    from omg_cli.state import create_run, set_verified, load_run
     from omg_cli.workers import prepare_task, seal_task
     from omg_cli.integrate import integrate_results, default_envelopes_dir
     from omg_cli.acceptance import freeze_and_run, freeze_acceptance, is_trusted_acceptance
     from omg_cli.command_policy import check_command_policy, CommandPolicyError
-    from omg_cli.pipeline import run_pipeline, report_path, load_pipeline_state
+    from omg_cli.pipeline import run_pipeline, report_path
 
     root = Path(tempfile.mkdtemp(prefix="omg-e2e-"))
     print("e2e root", root)
@@ -229,6 +372,9 @@ def main() -> int:
     assert r.returncode != 0
     assert load_run(root, rid5).get("verified") is not True
     print("PASS cli accept/deny")
+
+    # 8) isolated install transaction realpaths, idempotence, and owned cleanup
+    install_realpath_e2e(root)
 
     print("ALL_REAL_E2E_OK", root)
     return 0

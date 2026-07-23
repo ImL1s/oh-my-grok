@@ -1,42 +1,48 @@
 ---
 name: omg-lsp
 description: >
-  Honest language-intelligence surface for OMG. Use when user says LSP, go to
-  definition, hover, symbols, or semantic rename. Prefer Grok read_file/grep;
-  optional local pyright probe and stdlib ast symbols/diagnostics via omg lsp.
+  Honest host-owned LSP registration surface for OMG. Use to inspect or explain
+  repository .lsp.json configuration without claiming semantic proxy tools.
 ---
 
-# omg-lsp — optional local probes (no host LSP MCP)
+# omg-lsp — host-owned registration and status
 
 ## Honesty
 
 | OMC | OMG |
 |-----|-----|
-| MCP LSP/AST tools | **No host MCP LSP** — local probe only |
-| Default | Grok `read_file` / `grep` / `list_dir` |
-| Optional | `omg lsp status` / `check` / `symbols` / `diagnostics` |
+| LSP registration | Repository `.lsp.json`, interpreted by Grok Build |
+| OMG semantic proxy tools | **None** |
+| OMG observation | Validate registration and report observed host status |
 
-Do **not** claim semantic rename, goto-def, hover, or workspace-wide language
-server features unless a local tool truly provides them. Prefer host tools.
+OMG does not implement hover, symbols, diagnostics, goto-definition, rename,
+references, or language-server subprocess proxies. Those semantics belong to
+the host. A valid registration with no fresh host observation is
+`configured_unobserved`, never `healthy`.
 
 ## Playbook
 
 ```bash
-omg lsp status                          # which local CLIs are on PATH
-omg lsp check path/to/file.py           # pyright/basedpyright if installed
-omg lsp symbols path/to/file.py         # stdlib ast: functions/classes/imports
-omg lsp diagnostics path/to/file.py     # stdlib ast.parse syntax errors only
+omg lsp status                          # registration + host-observation truth
 ```
 
-- **`symbols` / `diagnostics`** — pure Python `ast` (always available; Python
-  source only). Not a language server.
-- **`check`** — optional subprocess to pyright when installed.
-- Fallback: grep for symbol, read definitions, small safe edits.
+The repository registration uses Grok's server mapping shape, for example:
+
+```json
+{
+  "python": {
+    "command": "pyright-langserver --stdio",
+    "extensionToLanguage": {".py": "python"}
+  }
+}
+```
+
+Use Grok's native language features when the host reports them. Otherwise use
+ordinary read/search tools and describe the limitation plainly.
 
 ## Anti-patterns
 
-- Inventing LSP results
-- Blocking workflow when pyright absent
-- Treating `omg lsp diagnostics` as type-checking (it is **syntax-only**
-  via `ast.parse`; no types, no imports resolution, no semantic analysis)
-- Claiming goto-def / hover / rename / find-references from these probes
+- Treating a valid `.lsp.json` as proof that a server started successfully
+- Treating local command discovery as host health evidence
+- Advertising or calling OMG semantic LSP proxy operations
+- Inventing hover, diagnostics, symbol, rename, or reference results

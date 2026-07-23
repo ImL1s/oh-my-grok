@@ -22,8 +22,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import hook_disabled
-from omg_cli.deny import decide_pre_tool_use
+from _common import (  # noqa: E402
+    append_hook_observation,
+    ensure_omg_dirs,
+    hook_disabled,
+    read_hook_event,
+)
+from omg_cli.deny import decide_pre_tool_use  # noqa: E402
 
 
 def main() -> None:
@@ -33,12 +38,16 @@ def main() -> None:
             json.dumps({"decision": "allow", "reason": "OMG hooks disabled"}) + "\n"
         )
         sys.exit(0)
-    try:
-        raw = sys.stdin.read()
-        event = json.loads(raw) if raw.strip() else {}
-    except Exception:
-        event = {}
+    event = read_hook_event()
     decision = decide_pre_tool_use(event)
+    try:
+        append_hook_observation(
+            ensure_omg_dirs(),
+            "PreToolUse",
+            {**event, "status": decision.get("decision", "allow")},
+        )
+    except Exception:
+        pass
     # Always print JSON decision
     sys.stdout.write(json.dumps(decision) + "\n")
     if decision.get("decision") == "deny":

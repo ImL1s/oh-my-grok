@@ -16,7 +16,55 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Optional PR to xAI plugin-marketplace (sha-pinned) — **deferred / prep-only**
   (document prerequisites in `docs/RELEASE.md`; do not submit).
 - Host Stop veto (not feasible on Grok today).
-- Full OMC LSP/AST MCP bridge (local pyright probe only in 0.3.0).
+- Full OMC semantic LSP proxy (host-owned `.lsp.json` registration ships in 0.6.0;
+  OMG does not claim host health or proxy hover/rename/goto operations).
+
+## [0.6.0] - 2026-07-23
+
+Evidence-gated product composition across the parity workstreams. This release
+adds public CLI routes without promoting unobserved Grok-native capabilities.
+
+### Added
+- **Repository workflows:** immutable `repository-workflow/v1` registry,
+  deterministic plan/task IDs and waves, explicit permission intersection,
+  externally gathered task receipts, replay/effect fences, and independent
+  verifier + skeptic `ship` decision. Grok `/create-workflow` and Rhai stay
+  `optional_unclaimed` until stable public schema plus fresh invocation proof.
+- **Session continuity:** exact create/resume/continue/fork argv routes and
+  bounded immutable JSONL recovery that preserves `W_BROKEN_CHAIN` and unknown
+  record warnings instead of fabricating full history.
+- **Project services:** redacted deterministic fact memory, generation-fenced
+  lifecycle tracker, lossless compaction checkpoints, and outbound-only,
+  non-authoritative notification adapters.
+- **Host discovery manifests:** conventional `.mcp.json` and `.lsp.json` using
+  `${GROK_PLUGIN_ROOT}`. `omg capabilities` reports configured, installed,
+  enabled, loadable, observed, healthy, and verified independently.
+- **Parity/release routes:** `omg parity run` delegates the frozen W0 manifest
+  engine; `omg parity release-readback` rejects missing, extra, renamed, or
+  byte-drifted prebuilt assets.
+- **GitHub-only install:** convenient latest-release bootstrap plus a pinned
+  manual/offline archive path. Both verify `SHA256SUMS`, switch transactionally,
+  run strict doctor, emit a receipt, and roll back failed activation.
+
+### Security
+- Workflow planning never launches shell agents. Runtime receipts must bind to
+  planned task IDs/actors, and effective permission is the repository/host/
+  launch intersection. Notifications never own run status. OMG does not probe
+  private sidecars or infer native health from config files.
+
+### Fixed
+- **Workflow runner:** executor liveness is observed before draining the result
+  pipe, so a child that publishes its receipt and exits between an empty poll
+  and the liveness check is no longer misclassified as
+  `E_WORKFLOW_EXECUTOR_EXITED_WITHOUT_RESULT` (`effect_unknown`).
+- **Uninstall (host-copy model):** receipt-backed uninstall now accepts the
+  receipt's verified `plugin_realpath` under Grok's `installed-plugins/` copy
+  root (byte-identity still required), and rollback reinstalls the host copy
+  from the immutable stage when the host already deleted the copy.
+- **Team scale retry:** an aborted scale attempt (intent receipt persisted,
+  signalling failed) no longer wedges the identity chain — an orphan receipt
+  that matches the retried intent on every deterministic field is adopted
+  idempotently; any other content stays a hard conflict.
 
 ## [0.5.0] - 2026-07-22
 

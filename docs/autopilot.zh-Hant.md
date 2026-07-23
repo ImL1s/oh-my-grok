@@ -3,7 +3,7 @@
 English: [`autopilot.md`](./autopilot.md) · Skills 目錄: [`skills.zh-Hant.md`](./skills.zh-Hant.md)
 
 **對象：** 使用 Grok Build 的人 + 維護 skill 的人。  
-**版本：** 與 [`plugin.json`](../plugin.json) 一致（目前 **0.3.2+**）。  
+**版本：** 與 [`plugin.json`](../plugin.json) 一致（目前 **0.6.0**）。
 **Skill 原文：** [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md)
 
 ---
@@ -143,6 +143,17 @@ omg autopilot status --run "$RUN"
 ```
 
 ---
+
+## Repository workflow 是另一層
+
+若團隊要保存、review、版本化固定 stage graph，請用
+`omg workflow install|list|show|plan|run`。Autopilot 可以依 plan 用 Grok 原生
+`spawn_subagent` 執行，但不可改寫 contract 或捏造 receipt。Workflow 的
+`ship` 也不能取代 `omg accept` 或 release state machine。詳見
+[workflows.zh-Hant.md](./workflows.zh-Hant.md)。
+
+Grok `/create-workflow` 與 Rhai projection 目前仍是 `optional_unclaimed`；只有
+help 文字或本地 `.rhai` 檔不能當成已驗證 native integration。
 
 ## 相關 skills
 

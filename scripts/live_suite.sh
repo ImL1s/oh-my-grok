@@ -72,7 +72,49 @@ echo "== live_suite mode=$MODE ts=$TS =="
 GROK_HOME_DIR="${GROK_HOME:-$HOME/.grok}"
 if [[ ! -f "${GROK_HOME_DIR}/hooks/omg-pretool-deny.json" ]]; then
   echo "WARN: global hook missing; running install-plugin.sh"
-  bash "$ROOT/scripts/install-plugin.sh" || true
+  bash "$ROOT/scripts/install-plugin.sh" \
+    || fail "install-plugin.sh failed while repairing the live hook/plugin surface"
+fi
+
+echo "== L-INSTALL-READBACK =="
+PLUGIN_LIST="$EVIDENCE/plugin-list-$TS.json"
+INSPECT="$EVIDENCE/inspect-$TS.json"
+grok plugin list --json >"$PLUGIN_LIST" \
+  || fail "grok plugin list --json failed"
+grok inspect --json >"$INSPECT" \
+  || fail "grok inspect --json failed"
+python3 - "$PLUGIN_LIST" "$INSPECT" <<'PY' \
+  || fail "installed plugin/discovery readback mismatch"
+import json
+import sys
+from pathlib import Path
+
+listing = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+inspect = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+if isinstance(listing, dict):
+    for key in ("plugins", "items", "data", "result"):
+        if isinstance(listing.get(key), list):
+            listing = listing[key]
+            break
+    else:
+        listing = [listing]
+if not isinstance(listing, list):
+    raise SystemExit("plugin inventory is not a list")
+matching = [
+    row for row in listing
+    if isinstance(row, dict)
+    and str(row.get("name") or row.get("id") or row.get("plugin") or "").split("@", 1)[0] == "oh-my-grok"
+]
+if len(matching) != 1:
+    raise SystemExit(f"expected exactly one oh-my-grok plugin, got {len(matching)}")
+if matching[0].get("enabled") is False:
+    raise SystemExit("oh-my-grok plugin is disabled")
+if "oh-my-grok" not in json.dumps(inspect, sort_keys=True) and "omg-" not in json.dumps(inspect, sort_keys=True):
+    raise SystemExit("fresh inspect did not discover OMG surfaces")
+print("L-INSTALL-READBACK exact plugin + fresh inspect OK")
+PY
+if [[ "${OMG_LIVE_INSTALL_STRICT:-0}" == "1" ]]; then
+  "${OMG[@]}" doctor --strict || fail "strict installed-release doctor failed"
 fi
 
 echo "== L-CANARY =="

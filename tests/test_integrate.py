@@ -767,7 +767,7 @@ def test_assert_ancestor_ok_and_equal(tmp_path):
 def test_assert_ancestor_bad_fails(tmp_path):
     """Divergent histories: sibling commit is not an ancestor of leader HEAD."""
     leader = tmp_path / "leader"
-    base = _init_repo(leader)
+    _init_repo(leader)
     # Side branch with unique commit
     _git(leader, "checkout", "-b", "side")
     (leader / "side.txt").write_text("s\n", encoding="utf-8")

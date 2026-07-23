@@ -5,8 +5,6 @@ import json
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from omg_cli.ralplan import (
     DEFAULT_MAX_ROUNDS,
     READ_ONLY_STAGES,
@@ -20,7 +18,7 @@ from omg_cli.ralplan import (
     stage_prompt_path,
     verifier_has_approve,
 )
-from omg_cli.state import load_active_run, load_run
+from omg_cli.state import load_active_run
 
 
 def test_default_max_rounds_is_three():

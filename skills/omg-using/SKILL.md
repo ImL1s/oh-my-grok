@@ -35,7 +35,7 @@ Route users and sessions into the correct oh-my-grok workflow. This skill does *
 | `ultraqa`, `QA loop`, `fix failing tests`, retest | `omg-ultraqa` | Bounded QA freeze→run→repair |
 | `wiki`, project memory, capture decision | `omg-wiki` | `.omg/wiki` markdown knowledge |
 | `hud`, statusline | `omg-hud` | One-line `omg hud` |
-| `lsp`, go-to-definition, symbols | `omg-lsp` | Honest probes; prefer grep/read_file |
+| `lsp`, go-to-definition, symbols | `omg-lsp` | Host-owned registration/status; no OMG semantic proxies |
 | `ulw`, `ultrawork`, `parallel`, `fan-out` | `omg-ultrawork` | Parallel decompose → spawn → integrate → verify |
 | `ralph`, `don't stop`, `keep going until done`, `persist until verified` | `omg-ralph` | One-story persistence iteration; outer CLI owns loop |
 | `ralplan`, `plan consensus`, `critic plan`, `steelman plan` | `omg-ralplan` | Plan → critic → revise → verifier (no implementation) |
@@ -59,7 +59,7 @@ On Grok Build, **only `PreToolUse` can block**; `Stop` is passive (observe/log o
 | Bounded test-fix loop | **`omg-ultraqa`** / `omg qa *` |
 | Full plan→implement→accept (CLI FSM) | **`omg pipeline "goal"`** |
 | Parallel fan-out | **`omg ulw "goal"`** (or pipeline `--implement ulw`) |
-| Project wiki / HUD / LSP probe | **`omg wiki` / `omg hud` / `omg lsp`** |
+| Project wiki / HUD / LSP registration status | **`omg wiki` / `omg hud` / `omg lsp status`** |
 | Stop supervised run | **`omg cancel`** |
 
 In-session skills (ralph/ulw) intentionally stop after **one unit of work**; the **CLI** re-launches. Autopilot is multi-phase **within** the session playbook but still cannot Stop-pin the chat — re-load `omg-autopilot` or say “continue” and read `omg autopilot status`. Do not invent infinite self-loops without CLI stamps.

@@ -21,6 +21,17 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, IO
 
+from omg_cli.contracts.path_keys import (
+    DATA_FILE_MODE,
+    atomic_write_bytes,
+    ensure_managed_dir,
+    exclusive_lock,
+    safe_path_key,
+)
+from omg_cli.contracts.state_schemas import require_integer, require_sha256
+from omg_cli.contracts.writer_chain import canonical_json_bytes, parse_canonical_json_bytes
+from omg_cli.redaction import redact_value
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover — non-POSIX
@@ -47,7 +58,7 @@ OMG_SUBDIRS = (
 def ensure_omg_dirs(root: Path) -> Path:
     root = Path(root)
     for sub in OMG_SUBDIRS:
-        (root / ".omg" / sub).mkdir(parents=True, exist_ok=True)
+        ensure_managed_dir(root / ".omg" / sub)
     return root
 
 
@@ -113,7 +124,7 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     replacement durable across a crash.  Concurrency is provided separately by
     the execution/transition locks below.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_managed_dir(path.parent)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         with tmp.open("w", encoding="utf-8") as f:
@@ -121,7 +132,9 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
             f.write("\n")
             f.flush()
             os.fsync(f.fileno())
+        os.chmod(tmp, DATA_FILE_MODE)
         os.replace(tmp, path)
+        os.chmod(path, DATA_FILE_MODE)
         if os.name == "posix":
             dir_fd = os.open(path.parent, os.O_RDONLY)
             try:
@@ -1529,3 +1542,126 @@ def set_verified(
     current["verified_at"] = current["updated_at"]
     _atomic_write_json(_status_path(root, run_id), current)
     return current
+
+
+def _projector_view_path(root: Path | str, run_id: str) -> Path:
+    _safe_run_id(run_id)
+    key = safe_path_key(run_id, namespace="projector-view")
+    return Path(root).resolve() / ".omg" / "state" / "projector-views" / key / "view.json"
+
+
+def _validate_manifest_binding(value: dict[str, Any]) -> dict[str, Any]:
+    required = {
+        "run_manifest_path",
+        "run_manifest_hash",
+        "run_manifest_revision",
+        "lease_generation",
+    }
+    binding = dict(value)
+    if set(binding) != required:
+        raise ValueError("projector manifest binding keys mismatch")
+    if not isinstance(binding["run_manifest_path"], str) or not binding["run_manifest_path"]:
+        raise ValueError("projector manifest path required")
+    require_sha256(binding["run_manifest_hash"], label="run_manifest_hash")
+    require_integer(binding["run_manifest_revision"], label="run_manifest_revision", minimum=0)
+    require_integer(binding["lease_generation"], label="lease_generation", minimum=0)
+    return binding
+
+
+def _contains_acceptance_authority(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = str(key).lower().replace("-", "_")
+            if normalized in {"passes", "verified"} or "acceptance" in normalized:
+                return True
+            if _contains_acceptance_authority(item):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_acceptance_authority(item) for item in value)
+    return False
+
+
+def _validate_projector_view(value: dict[str, Any], run_id: str) -> dict[str, Any]:
+    row = dict(value)
+    required = {
+        "store_kind",
+        "schema_version",
+        "run_id",
+        "projection_revision",
+        "manifest_binding",
+        "view",
+    }
+    if set(row) != required:
+        raise ValueError("projector view keys mismatch")
+    if row["store_kind"] != "run_state_projection" or row["schema_version"] != 1:
+        raise ValueError("projector view header mismatch")
+    if row["run_id"] != run_id:
+        raise ValueError("projector view run mismatch")
+    require_integer(row["projection_revision"], label="projection_revision", minimum=1)
+    if not isinstance(row["manifest_binding"], dict):
+        raise ValueError("projector manifest binding must be an object")
+    row["manifest_binding"] = _validate_manifest_binding(row["manifest_binding"])
+    if not isinstance(row["view"], dict):
+        raise ValueError("projector view payload must be an object")
+    if _contains_acceptance_authority(row["view"]):
+        raise PermissionError("projector view cannot write acceptance authority")
+    return row
+
+
+def load_projector_view(root: Path | str, run_id: str) -> dict[str, Any] | None:
+    path = _projector_view_path(root, run_id)
+    if not path.exists():
+        return None
+    parsed = parse_canonical_json_bytes(path.read_bytes())
+    if not isinstance(parsed, dict):
+        raise ValueError("projector view must be an object")
+    return _validate_projector_view(parsed, run_id)
+
+
+def write_projector_view(
+    root: Path | str,
+    *,
+    run_id: str,
+    view: dict[str, Any],
+    manifest_binding: dict[str, Any],
+    expected_projection_revision: int,
+) -> dict[str, Any]:
+    """CAS-write a non-authoritative, manifest-bound projected run view."""
+
+    require_integer(
+        expected_projection_revision,
+        label="expected_projection_revision",
+        minimum=0,
+    )
+    if _contains_acceptance_authority(view):
+        raise PermissionError("projector view cannot write acceptance authority")
+    path = _projector_view_path(root, run_id)
+    ensure_managed_dir(path.parent)
+    with exclusive_lock(path.with_suffix(".lock")):
+        current = load_projector_view(root, run_id)
+        revision = current["projection_revision"] if current else 0
+        if revision != expected_projection_revision:
+            raise PermissionError(
+                f"projector CAS mismatch: expected {expected_projection_revision}, found {revision}"
+            )
+        payload = redact_value(dict(view))
+        if not isinstance(payload, dict):  # pragma: no cover - dict input
+            raise ValueError("projector view payload is malformed")
+        row = _validate_projector_view(
+            {
+                "store_kind": "run_state_projection",
+                "schema_version": 1,
+                "run_id": run_id,
+                "projection_revision": revision + 1,
+                "manifest_binding": _validate_manifest_binding(manifest_binding),
+                "view": payload,
+            },
+            run_id,
+        )
+        atomic_write_bytes(
+            path,
+            canonical_json_bytes(row),
+            mode=DATA_FILE_MODE,
+            replace=True,
+        )
+        return row

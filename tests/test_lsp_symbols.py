@@ -1,125 +1,122 @@
-"""stdlib ast local probes: omg lsp symbols / diagnostics."""
+"""Registration/status-only tests for Grok-owned LSP support."""
 from __future__ import annotations
 
-import shutil
+import json
 from pathlib import Path
 
 import pytest
 
-from omg_cli.lsp_tools import diagnostics_ast, symbols_ast, symbols_pyright
-from omg_cli.main import build_parser
-
-SAMPLE = '''\
-import os
-from typing import Any
-
-class Foo:
-    def method(self) -> None:
-        pass
-
-    async def amethod(self) -> int:
-        return 1
-
-def top_level(x: Any) -> str:
-    return str(x)
-
-async def async_top() -> None:
-    pass
-'''
+import omg_cli.lsp_tools as lsp
+from omg_cli.main import main
 
 
-def test_symbols_ast_names_and_linenos(tmp_path: Path) -> None:
-    p = tmp_path / "sample.py"
-    p.write_text(SAMPLE, encoding="utf-8")
-    result = symbols_ast(p)
-    assert result["ok"] is True
-    assert result["path"] == str(p)
-    by_name = {s["name"]: s for s in result["symbols"]}
-    assert set(by_name) >= {
-        "os",
-        "Any",
-        "Foo",
-        "method",
-        "amethod",
-        "top_level",
-        "async_top",
+VALID = {
+    "python": {
+        "command": "pyright-langserver",
+        "args": ["--stdio"],
+        "extensionToLanguage": {".py": "python"},
+        "startupTimeout": 30000,
     }
-    assert by_name["Foo"]["lineno"] == 4
-    assert by_name["method"]["lineno"] == 5
-    assert by_name["amethod"]["lineno"] == 8
-    assert by_name["top_level"]["lineno"] == 11
-    assert by_name["async_top"]["lineno"] == 14
-    assert by_name["os"]["lineno"] == 1
-    assert by_name["Any"]["lineno"] == 2
-    for s in result["symbols"]:
-        assert "col_offset" in s
-        assert "end_lineno" in s
-        assert s["end_lineno"] is None or s["end_lineno"] >= s["lineno"]
+}
 
 
-def test_symbols_ast_syntax_error(tmp_path: Path) -> None:
-    p = tmp_path / "bad.py"
-    p.write_text("def broken(\n", encoding="utf-8")
-    result = symbols_ast(p)
-    assert result["ok"] is False
-    assert "error" in result
-    assert result["error"].get("line") is not None
+def _write(root: Path, value=VALID) -> Path:
+    path = root / ".lsp.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    return path
 
 
-def test_diagnostics_ast_syntax_error_line_col_honesty(tmp_path: Path) -> None:
-    p = tmp_path / "bad.py"
-    # deliberate SyntaxError: unclosed paren on line 2
-    p.write_text("x = 1\ndef broken(\n", encoding="utf-8")
-    result = diagnostics_ast(p)
-    assert result["ok"] is True
-    assert "honesty" in result
-    assert "syntax-only" in result["honesty"]
-    assert "NOT type-checking" in result["honesty"]
-    assert result["diagnostics"]
-    diag = result["diagnostics"][0]
-    assert diag["line"] == 2
-    assert diag["col"] is not None
-    assert diag["msg"]
+def test_valid_registration_is_configured_unobserved(tmp_path: Path, monkeypatch) -> None:
+    _write(tmp_path)
+    monkeypatch.setattr(lsp.shutil, "which", lambda _name: "/usr/bin/fake")
+    status = lsp.registration_status(tmp_path)
+    assert status["ok"] is True
+    assert status["registered"] is True
+    assert status["status"] == "configured_unobserved"
+    assert status["healthy"] is False
+    assert status["servers"][0]["command_available"] is True
 
 
-def test_diagnostics_ast_clean_file(tmp_path: Path) -> None:
-    p = tmp_path / "ok.py"
-    p.write_text("x = 1\n", encoding="utf-8")
-    result = diagnostics_ast(p)
-    assert result["ok"] is True
-    assert result["diagnostics"] == []
-    assert "honesty" in result
+def test_missing_registration_is_explicit(tmp_path: Path) -> None:
+    status = lsp.registration_status(tmp_path)
+    assert status["status"] == "missing_registration"
+    assert status["registered"] is False
+    assert status["configuration_valid"] is False
 
 
-def test_cmd_lsp_symbols_dispatch(tmp_path: Path) -> None:
-    p = tmp_path / "sample.py"
-    p.write_text("def hello():\n    return 1\n", encoding="utf-8")
-    args = build_parser().parse_args(["lsp", "symbols", str(p)])
-    assert args.func(args) == 0
+def test_invalid_registration_is_not_healthy(tmp_path: Path) -> None:
+    _write(tmp_path, {"python": {"command": "pyright-langserver"}})
+    status = lsp.registration_status(tmp_path)
+    assert status["ok"] is False
+    assert status["status"] == "invalid_registration"
+    assert status["healthy"] is False
+    assert "extensionToLanguage" in status["error"]
 
 
-def test_cmd_lsp_diagnostics_dispatch_syntax_error(tmp_path: Path) -> None:
-    p = tmp_path / "bad.py"
-    p.write_text("def broken(\n", encoding="utf-8")
-    args = build_parser().parse_args(["lsp", "diagnostics", str(p)])
-    # probe succeeds (ok True) even when file has syntax errors
-    assert args.func(args) == 0
+def test_host_observation_is_required_for_healthy(tmp_path: Path) -> None:
+    _write(tmp_path)
+    asserted = lsp.registration_status(
+        tmp_path, host_observation={"observed": True, "healthy": True}
+    )
+    assert asserted["status"] == "host_observed_healthy"
+    assert asserted["healthy"] is True
+    unhealthy = lsp.registration_status(
+        tmp_path, host_observation={"observed": True, "healthy": False}
+    )
+    assert unhealthy["status"] == "host_observed_unhealthy"
 
 
-def test_cmd_lsp_symbols_exit_1_on_syntax_error(tmp_path: Path) -> None:
-    p = tmp_path / "bad.py"
-    p.write_text("def broken(\n", encoding="utf-8")
-    args = build_parser().parse_args(["lsp", "symbols", str(p)])
-    assert args.func(args) == 1
+def test_zero_semantic_proxy_operations(tmp_path: Path) -> None:
+    _write(tmp_path)
+    status = lsp.registration_status(tmp_path)
+    assert lsp.SEMANTIC_PROXY_OPERATIONS == ()
+    assert status["semantic_proxy_operations"] == []
+    assert status["semantic_proxy_count"] == 0
+    for forbidden in (
+        "symbols_ast",
+        "diagnostics_ast",
+        "symbols_pyright",
+        "hover",
+        "definition",
+        "references",
+        "rename",
+    ):
+        assert not hasattr(lsp, forbidden)
 
 
-@pytest.mark.skipif(
-    not (shutil.which("pyright") or shutil.which("basedpyright")),
-    reason="pyright/basedpyright not on PATH",
+def test_registration_path_cannot_escape_root(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside-lsp.json"
+    outside.write_text(json.dumps(VALID), encoding="utf-8")
+    with pytest.raises(lsp.LSPRegistrationError, match="escapes"):
+        lsp.load_registration(tmp_path, config_path=outside)
+
+
+def test_probe_tools_is_status_alias_without_execution(tmp_path: Path, monkeypatch) -> None:
+    _write(tmp_path)
+    monkeypatch.setattr(lsp.shutil, "which", lambda _name: None)
+    status = lsp.probe_tools(tmp_path)
+    assert status["available"] == []
+    assert status["missing"] == ["python"]
+    assert "configured but unobserved is not healthy" in status["honesty"]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["lsp", "status"],
+        ["lsp", "check", "sample.py"],
+        ["lsp", "symbols", "sample.py"],
+    ],
 )
-def test_symbols_pyright_optional(tmp_path: Path) -> None:
-    p = tmp_path / "ok.py"
-    p.write_text("def hello() -> int:\n    return 1\n", encoding="utf-8")
-    result = symbols_pyright(p)
-    assert "ok" in result
-    assert result.get("path") == str(p) or result.get("tool")
+def test_lsp_cli_never_imports_removed_semantic_proxies(
+    argv: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(argv)
+    output = json.loads(capsys.readouterr().out)
+    if argv[-1] == "status":
+        assert code == 0
+        assert output["ownership"] == "host_owned"
+    else:
+        assert code == 1
+        assert output["status"] == "semantic_proxy_unsupported"
+        assert output["semantic_proxy_operations"] == []

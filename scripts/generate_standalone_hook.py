@@ -46,6 +46,7 @@ STDLIB_IMPORT_ALLOWLIST = frozenset({"__future__", "os", "re", "sys", "json", "t
 # e.g. `from os import environ` binds `environ`, which the header does not provide.
 HEADER_PROVIDED_NAMES = frozenset({"json", "os", "re", "sys", "Any", "annotations"})
 STANDALONE_BASENAME = "omg_pretool_deny_standalone.py"
+INTERFACE_VERSION = "standalone_hook_generator/1"
 
 
 def _repo_root() -> Path:
@@ -279,9 +280,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate/check the self-contained PreToolUse standalone hook")
     parser.add_argument("--check", action="store_true", help="exit 1 if the committed standalone is stale")
     parser.add_argument("--print", action="store_true", dest="to_stdout", help="print generated content to stdout")
+    parser.add_argument(
+        "--interface",
+        action="store_true",
+        help="print the stable generator interface identifier and exit",
+    )
     parser.add_argument("--root", type=Path, default=None, help="repo root (default: repo containing this script)")
     args = parser.parse_args(argv)
     root = (args.root if args.root is not None else _repo_root()).resolve()
+
+    if args.interface:
+        print(INTERFACE_VERSION)
+        return 0
 
     content = render(root)
     if args.to_stdout:

@@ -1,11 +1,18 @@
 """omg note — compaction-resistant project notepad under ``.omg/notepad.md``."""
 from __future__ import annotations
 
-import os
 import re
-import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from omg_cli.contracts.path_keys import (
+    DATA_FILE_MODE,
+    atomic_write_bytes,
+    ensure_managed_dir,
+    exclusive_lock,
+)
+from omg_cli.contracts.writer_chain import sha256_hex
+from omg_cli.redaction import redact_text
 
 
 HEADER = "# OMG notepad\n\n"
@@ -16,6 +23,10 @@ _NOTE_LINE_RE = re.compile(r"^- \[(7d|permanent)\]\s+(\S+)(?:\s|$)")
 
 def notepad_path(root: Path) -> Path:
     return Path(root) / ".omg" / "notepad.md"
+
+
+def _notepad_lock(root: Path) -> Path:
+    return Path(root) / ".omg" / "notepad.lock"
 
 
 def _utc_now() -> str:
@@ -42,21 +53,21 @@ def _parse_iso(ts: str) -> datetime | None:
 def add_note(root: Path, text: str, *, priority: bool = False) -> Path:
     """Append a durable note line. Create file + header if missing."""
     root = Path(root)
-    try:
-        from omg_cli.state import ensure_omg_dirs
-
-        ensure_omg_dirs(root)
-    except Exception:
-        (root / ".omg").mkdir(parents=True, exist_ok=True)
-
     path = notepad_path(root)
-    if not path.is_file():
-        path.write_text(HEADER, encoding="utf-8")
-
+    ensure_managed_dir(path.parent)
+    safe_text = redact_text(str(text).rstrip()).replace("\r", " ").replace("\n", " ")
     ttl = "permanent" if priority else "7d"
-    line = f"- [{ttl}] {_utc_now()} {text.rstrip()}\n"
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(line)
+    line = f"- [{ttl}] {_utc_now()} {safe_text}\n"
+    with exclusive_lock(_notepad_lock(root)):
+        current = path.read_text(encoding="utf-8") if path.is_file() else HEADER
+        if current and not current.endswith("\n"):
+            current += "\n"
+        atomic_write_bytes(
+            path,
+            (current + line).encode("utf-8"),
+            mode=DATA_FILE_MODE,
+            replace=True,
+        )
     return path
 
 
@@ -64,7 +75,10 @@ def read_notes(root: Path) -> str:
     path = notepad_path(root)
     if not path.is_file():
         return ""
-    return path.read_text(encoding="utf-8")
+    with exclusive_lock(_notepad_lock(root)):
+        if not path.is_file():
+            return ""
+        return path.read_text(encoding="utf-8")
 
 
 def prune_notes(root: Path, *, now_iso: str | None = None) -> tuple[int, int]:
@@ -84,49 +98,75 @@ def prune_notes(root: Path, *, now_iso: str | None = None) -> tuple[int, int]:
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
 
-    raw = path.read_text(encoding="utf-8")
-    lines = raw.splitlines()
+    ensure_managed_dir(path.parent)
+    with exclusive_lock(_notepad_lock(root)):
+        raw = path.read_text(encoding="utf-8")
+        lines = raw.splitlines()
 
-    kept_lines: list[str] = []
-    removed = 0
-    for line in lines:
-        m = _NOTE_LINE_RE.match(line)
-        if m is None:
-            kept_lines.append(line)
-            continue
-        kind, ts = m.group(1), m.group(2)
-        if kind == "permanent":
-            kept_lines.append(line)
-            continue
-        # kind == "7d"
-        parsed = _parse_iso(ts)
-        if parsed is None:
-            kept_lines.append(line)  # fail-safe: keep unparseable
-            continue
-        if (now - parsed) > _SEVEN_DAYS:
+        kept_lines: list[str] = []
+        removed = 0
+        for line in lines:
+            m = _NOTE_LINE_RE.match(line)
+            if m is None:
+                kept_lines.append(line)
+                continue
+            kind, ts = m.group(1), m.group(2)
+            if kind == "permanent":
+                kept_lines.append(line)
+                continue
+            parsed = _parse_iso(ts)
+            if parsed is None or (now - parsed) <= _SEVEN_DAYS:
+                kept_lines.append(line)
+                continue
             removed += 1
-            continue
-        kept_lines.append(line)
 
-    out = "\n".join(kept_lines)
-    if kept_lines or raw.endswith("\n"):
-        if not out.endswith("\n"):
-            out += "\n"
-
-    # Atomic rewrite
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    try:
-        tmp.write_text(out, encoding="utf-8")
-        os.replace(tmp, path)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+        out = "\n".join(kept_lines)
+        if kept_lines or raw.endswith("\n"):
+            if not out.endswith("\n"):
+                out += "\n"
+        atomic_write_bytes(
+            path,
+            out.encode("utf-8"),
+            mode=DATA_FILE_MODE,
+            replace=True,
+        )
 
     return (len(kept_lines), removed)
+
+
+def export_notes(root: Path) -> dict[str, str | int]:
+    content = read_notes(root)
+    safe = redact_text(content)
+    return {
+        "store_kind": "project_notepad_export",
+        "schema_version": 1,
+        "content": safe,
+        "sha256": sha256_hex(safe.encode("utf-8")),
+    }
+
+
+def import_notes(root: Path, bundle: dict) -> dict[str, str | int]:
+    if set(bundle) != {"store_kind", "schema_version", "content", "sha256"}:
+        raise ValueError("notepad export keys mismatch")
+    if bundle["store_kind"] != "project_notepad_export" or bundle["schema_version"] != 1:
+        raise ValueError("notepad export header mismatch")
+    content = bundle["content"]
+    if not isinstance(content, str):
+        raise ValueError("notepad export content must be text")
+    safe = redact_text(content)
+    digest = sha256_hex(safe.encode("utf-8"))
+    if digest != bundle["sha256"]:
+        raise ValueError("notepad export hash mismatch")
+    path = notepad_path(root)
+    ensure_managed_dir(path.parent)
+    with exclusive_lock(_notepad_lock(root)):
+        atomic_write_bytes(
+            path,
+            safe.encode("utf-8"),
+            mode=DATA_FILE_MODE,
+            replace=True,
+        )
+    return {**bundle, "content": safe, "sha256": digest}
 
 
 def run_note(

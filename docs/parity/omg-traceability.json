@@ -1,0 +1,584 @@
+{
+  "entries": [
+    {
+      "code_paths": [
+        "omg_cli/contracts/state_schemas.py"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "DUAL-001",
+      "test_paths": [
+        "tests/test_state_schemas.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/contracts/parity_schema.py"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "DUAL-002",
+      "test_paths": [
+        "tests/test_parity_inventory.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/contracts/path_keys.py"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "DUAL-003",
+      "test_paths": [
+        "tests/test_path_keys.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/contracts/tracker_contract.py"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "LAUNCH-001",
+      "test_paths": [
+        "tests/test_carrier_contract.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "docs/parity/omg-parity.json"
+      ],
+      "evidence_tier": "L0",
+      "requirement_id": "LSP-001",
+      "test_paths": [
+        "tests/test_parity_inventory.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "docs/parity/omg-parity.json"
+      ],
+      "evidence_tier": "L0",
+      "requirement_id": "MCP-001",
+      "test_paths": [
+        "tests/test_parity_inventory.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "docs/parity/omg-parity.json"
+      ],
+      "evidence_tier": "L0",
+      "requirement_id": "OMA-AUTH-001",
+      "test_paths": [
+        "tests/test_traceability.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "docs/parity/omg-parity.json"
+      ],
+      "evidence_tier": "L0",
+      "requirement_id": "OMA-G007-001",
+      "test_paths": [
+        "tests/test_traceability.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "docs/parity/omg-parity.json"
+      ],
+      "evidence_tier": "L0",
+      "requirement_id": "OMA-HOOK-001",
+      "test_paths": [
+        "tests/test_traceability.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "docs/parity/omg-parity.json"
+      ],
+      "evidence_tier": "L0",
+      "requirement_id": "OMA-IDENTITY-001",
+      "test_paths": [
+        "tests/test_traceability.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "docs/parity/omg-parity.json"
+      ],
+      "evidence_tier": "L0",
+      "requirement_id": "OMA-INSTALL-001",
+      "test_paths": [
+        "tests/test_traceability.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "docs/parity/omg-parity.json"
+      ],
+      "evidence_tier": "L0",
+      "requirement_id": "OMA-LSP-001",
+      "test_paths": [
+        "tests/test_traceability.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "docs/parity/omg-parity.json"
+      ],
+      "evidence_tier": "L0",
+      "requirement_id": "OMA-MCP-001",
+      "test_paths": [
+        "tests/test_traceability.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "docs/parity/omg-parity.json"
+      ],
+      "evidence_tier": "L0",
+      "requirement_id": "OMA-MEM-001",
+      "test_paths": [
+        "tests/test_traceability.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "docs/parity/omg-parity.json"
+      ],
+      "evidence_tier": "L0",
+      "requirement_id": "OMA-NOTIFY-001",
+      "test_paths": [
+        "tests/test_traceability.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "docs/parity/omg-parity.json"
+      ],
+      "evidence_tier": "L0",
+      "requirement_id": "OMA-SESSION-001",
+      "test_paths": [
+        "tests/test_traceability.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "docs/parity/omg-parity.json"
+      ],
+      "evidence_tier": "L0",
+      "requirement_id": "OMA-TEAM-001",
+      "test_paths": [
+        "tests/test_traceability.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "scripts/generate_capabilities_lock.py"
+      ],
+      "evidence_tier": "L4",
+      "requirement_id": "OMG-EXT-001",
+      "test_paths": [
+        "tests/test_plugin_session_discovery.py"
+      ],
+      "waves": [
+        "OMG-W4"
+      ]
+    },
+    {
+      "code_paths": [
+        "hooks/bin/session_start.py"
+      ],
+      "evidence_tier": "L2",
+      "requirement_id": "OMG-HOOK-001",
+      "test_paths": [
+        "tests/test_lifecycle_hooks.py"
+      ],
+      "waves": [
+        "OMG-W2"
+      ]
+    },
+    {
+      "code_paths": [
+        "hooks/bin/pre_tool_use_deny.py"
+      ],
+      "evidence_tier": "L2",
+      "requirement_id": "OMG-HOOK-002",
+      "test_paths": [
+        "tests/test_lifecycle_hooks.py"
+      ],
+      "waves": [
+        "OMG-W2"
+      ]
+    },
+    {
+      "code_paths": [
+        "scripts/install.sh"
+      ],
+      "evidence_tier": "L5",
+      "requirement_id": "OMG-INSTALL-001",
+      "test_paths": [
+        "tests/test_release_install.py"
+      ],
+      "waves": [
+        "OMG-W1"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/lsp_tools.py"
+      ],
+      "evidence_tier": "L4",
+      "requirement_id": "OMG-LSP-001",
+      "test_paths": [
+        "tests/test_lsp_symbols.py"
+      ],
+      "waves": [
+        "OMG-W4"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/mcp/tools.py"
+      ],
+      "evidence_tier": "L4",
+      "requirement_id": "OMG-MCP-001",
+      "test_paths": [
+        "tests/test_mcp_server.py"
+      ],
+      "waves": [
+        "OMG-W4"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/project_memory.py"
+      ],
+      "evidence_tier": "L2",
+      "requirement_id": "OMG-MEM-001",
+      "test_paths": [
+        "tests/test_project_memory.py"
+      ],
+      "waves": [
+        "OMG-W2"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/notify/**"
+      ],
+      "evidence_tier": "L2",
+      "requirement_id": "OMG-NOTIFY-001",
+      "test_paths": [
+        "tests/test_notification_dispatcher.py"
+      ],
+      "waves": [
+        "OMG-W5"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/host_session.py"
+      ],
+      "evidence_tier": "L2",
+      "requirement_id": "OMG-SESSION-001",
+      "test_paths": [
+        "tests/test_host_session.py"
+      ],
+      "waves": [
+        "OMG-W2"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/contracts/tracker_contract.py"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "OMG-SPAWN-001",
+      "test_paths": [
+        "tests/test_carrier_contract.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/team/plane.py"
+      ],
+      "evidence_tier": "L4",
+      "requirement_id": "OMG-TEAM-001",
+      "test_paths": [
+        "tests/test_team_plane.py"
+      ],
+      "waves": [
+        "OMG-W3"
+      ]
+    },
+    {
+      "code_paths": [
+        "scripts/check_writer_ownership.py"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "OWN-001",
+      "test_paths": [
+        "tests/test_writer_ownership.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/contracts/writer_chain.py"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "OWN-002",
+      "test_paths": [
+        "tests/test_writer_chain.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/contracts/writer_chain.py"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "OWN-003",
+      "test_paths": [
+        "tests/test_writer_chain.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/contracts/release_transaction.py"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "RELEASE-001",
+      "test_paths": [
+        "tests/test_release_transaction.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "tests/fixtures/release/three-registry-withdrawal-v1.json"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "RELEASE-002",
+      "test_paths": [
+        "tests/test_release_transaction.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/contracts/resume_contract.py"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "RESUME-001",
+      "test_paths": [
+        "tests/test_state_schemas.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/contracts/resume_contract.py"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "RESUME-002",
+      "test_paths": [
+        "tests/test_state_schemas.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "tests/fixtures/recovery/bounded-900-lines-broken-chain-v1.jsonl"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "RESUME-003",
+      "test_paths": [
+        "tests/test_state_schemas.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "docs/parity/omg-traceability.json"
+      ],
+      "evidence_tier": "L0",
+      "requirement_id": "REVIEW-001",
+      "test_paths": [
+        "tests/test_traceability.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/contracts/tracker_contract.py"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "TRACK-001",
+      "test_paths": [
+        "tests/test_state_schemas.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/contracts/capability_schema.py"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "TRUTH-001",
+      "test_paths": [
+        "tests/test_state_schemas.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/contracts/capability_schema.py"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "TRUTH-002",
+      "test_paths": [
+        "tests/test_state_schemas.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    },
+    {
+      "code_paths": [
+        "omg_cli/contracts/workflow_contract.py"
+      ],
+      "evidence_tier": "L1",
+      "requirement_id": "WORKFLOW-001",
+      "test_paths": [
+        "tests/test_workflow_contract.py"
+      ],
+      "waves": [
+        "OMG-W0"
+      ]
+    }
+  ],
+  "ownership_manifest_id": "dual-parity-writers-v1",
+  "repository_id": "OMG",
+  "requirement_ids": [
+    "DUAL-001",
+    "DUAL-002",
+    "DUAL-003",
+    "LAUNCH-001",
+    "LSP-001",
+    "MCP-001",
+    "OMA-AUTH-001",
+    "OMA-G007-001",
+    "OMA-HOOK-001",
+    "OMA-IDENTITY-001",
+    "OMA-INSTALL-001",
+    "OMA-LSP-001",
+    "OMA-MCP-001",
+    "OMA-MEM-001",
+    "OMA-NOTIFY-001",
+    "OMA-SESSION-001",
+    "OMA-TEAM-001",
+    "OMG-EXT-001",
+    "OMG-HOOK-001",
+    "OMG-HOOK-002",
+    "OMG-INSTALL-001",
+    "OMG-LSP-001",
+    "OMG-MCP-001",
+    "OMG-MEM-001",
+    "OMG-NOTIFY-001",
+    "OMG-SESSION-001",
+    "OMG-SPAWN-001",
+    "OMG-TEAM-001",
+    "OWN-001",
+    "OWN-002",
+    "OWN-003",
+    "RELEASE-001",
+    "RELEASE-002",
+    "RESUME-001",
+    "RESUME-002",
+    "RESUME-003",
+    "REVIEW-001",
+    "TRACK-001",
+    "TRUTH-001",
+    "TRUTH-002",
+    "WORKFLOW-001"
+  ],
+  "schema_version": 1,
+  "store_kind": "parity_traceability"
+}

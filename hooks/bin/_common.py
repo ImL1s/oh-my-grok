@@ -7,6 +7,13 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from omg_cli.contracts.path_keys import append_locked_jsonl, ensure_managed_dir
+from omg_cli.contracts.writer_chain import canonical_json_bytes
+from omg_cli.redaction import redact_value
+
+
+MAX_HOOK_INPUT_CHARS = 1_048_576
+
 
 def hook_disabled(name: str, env: dict | None = None) -> bool:
     """True if OMG hooks are globally disabled or this hook name is skipped.
@@ -44,7 +51,7 @@ def ensure_omg_dirs(root: Path | None = None) -> Path:
         "ultragoal",
         "wiki",
     ):
-        (root / ".omg" / sub).mkdir(parents=True, exist_ok=True)
+        ensure_managed_dir(root / ".omg" / sub)
     return root
 
 
@@ -52,20 +59,73 @@ def append_event(root: Path, payload: dict) -> None:
     ensure_omg_dirs(root)
     path = root / ".omg" / "state" / "events.jsonl"
     # Force system fields AFTER payload so callers cannot hijack ts/session_id
+    safe_payload = redact_value(payload)
+    if not isinstance(safe_payload, dict):
+        safe_payload = {"status": "redacted"}
     row = {
-        **payload,
+        **safe_payload,
         "ts": datetime.now(timezone.utc).isoformat(),
         "session_id": os.environ.get("GROK_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID"),
     }
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+    append_locked_jsonl(path, canonical_json_bytes(row))
+
+
+def append_hook_observation(root: Path, hook_event: str, event: dict) -> None:
+    """Persist legacy diagnostics plus one normalized, deduped observation."""
+
+    safe_keys = {
+        "host_spawn_id",
+        "bound",
+        "status",
+        "toolName",
+        "tool_name",
+        "subagent_type",
+        "capability_mode",
+        "generation",
+        "receipt_generation",
+        "lease_generation",
+        "spawn_receipt_hash",
+        "role_receipt_hash",
+        "parent_session_id",
+    }
+    payload = {key: event[key] for key in safe_keys if key in event}
+    payload.update(
+        {
+            "event": hook_event,
+            "status": payload.get("status", "ok"),
+            "raw_keys": sorted(str(key) for key in event)[:20],
+        }
+    )
+    duplicate = False
+    try:
+        from omg_cli.runtime_events import append_hook_event
+
+        result = append_hook_event(
+            root,
+            hook_event=hook_event,
+            payload=payload,
+            run_id=os.environ.get("OMG_RUN_ID"),
+            session_id=os.environ.get("GROK_SESSION_ID")
+            or os.environ.get("CLAUDE_SESSION_ID"),
+            event_id=str(event.get("event_id") or event.get("hook_event_id") or "") or None,
+            observed_at=event.get("observed_at")
+            if isinstance(event.get("observed_at"), str)
+            else None,
+        )
+        duplicate = bool(result.get("duplicate"))
+    except Exception:
+        # Lifecycle normalization is additive diagnostics and never blocks a
+        # host hook. The legacy append below remains the local failure trace.
+        pass
+    if not duplicate:
+        append_event(root, payload)
 
 
 def read_hook_event() -> dict:
     try:
-        raw = sys.stdin.read()
+        raw = sys.stdin.read(MAX_HOOK_INPUT_CHARS + 1)
+        if len(raw) > MAX_HOOK_INPUT_CHARS:
+            return {}
         return json.loads(raw) if raw.strip() else {}
     except Exception:
         return {}

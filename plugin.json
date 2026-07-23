@@ -1,7 +1,7 @@
 {
   "name": "oh-my-grok",
-  "version": "0.5.0",
-  "description": "OMC/OMX-style multi-agent orchestration for Grok Build: global guidance injection (~/.grok/rules/omg.md), skills, agents, ledger hooks, self-healing install/update/uninstall, notepad, kill switches. Pair with the omg CLI for hard keywords (ulw/ralph/ralplan/resume), setup, and outer persistence loops.",
+  "version": "0.6.0",
+  "description": "Evidence-gated multi-agent orchestration for Grok Build: repository workflows, resumable sessions, bounded recovery, project memory, lifecycle tracking, notifications, MCP/LSP registration, and verified release contracts.",
   "author": {
     "name": "ImL1s",
     "url": "https://github.com/ImL1s/oh-my-grok"
@@ -13,6 +13,10 @@
     "omg-ultrawork",
     "omg-ralph",
     "omg-resume",
+    "repository-workflows",
+    "session-recovery",
+    "mcp",
+    "lsp",
     "orchestration",
     "multi-agent",
     "grok-build"

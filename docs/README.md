@@ -12,6 +12,7 @@ User-facing docs for the Grok Build plugin + `omg` CLI.
 | [../README.md](../README.md) · [../README.zh-TW.md](../README.zh-TW.md) | Install, mental model, default flow, CLI reference |
 | [skills.md](./skills.md) · [skills.zh-Hant.md](./skills.zh-Hant.md) | **All skills** — triggers, invoke, CLI twin, examples |
 | [autopilot.md](./autopilot.md) · [autopilot.zh-Hant.md](./autopilot.zh-Hant.md) | Deep dive: autopilot skill + phase machine |
+| [workflows.md](./workflows.md) · [workflows.zh-Hant.md](./workflows.zh-Hant.md) | Versioned repository workflows, receipt execution, and ship gates |
 | [security-model.md](./security-model.md) | Isolation honesty (capability_mode, allowlist, fail-open hooks) |
 | [RELEASE.md](./RELEASE.md) | Maintainer release protocol |
 
@@ -32,6 +33,8 @@ User-facing docs for the Grok Build plugin + `omg` CLI.
 | External advisor | `omg-ask` | `omg ask` |
 | Cancel | `omg-cancel` | `omg cancel` |
 | Wiki / HUD / LSP | `omg-wiki` / `omg-hud` / `omg-lsp` | `omg wiki` / `hud` / `lsp` |
+| Repeatable staged review | repository workflow | `omg workflow install|list|show|plan|run` |
+| Recover / remember / observe | product services | `omg recover` / `memory` / `tracker` / `compact` |
 
 Full tables and copy-paste examples: **[skills.md](./skills.md)**.
 

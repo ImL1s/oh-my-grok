@@ -4,10 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
-
-import pytest
-
 from omg_cli import doctor
 
 
@@ -567,3 +563,25 @@ def test_check_installed_capabilities_lock_unavailable(monkeypatch):
     assert name == "installed capabilities lock"
     assert level == "warn"
     assert "cannot locate installed snapshot" in detail
+
+
+def test_check_installed_release_identity_absent_is_honest_warning(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("GROK_HOME", str(tmp_path / "grok"))
+    name, level, detail = doctor.check_installed_release_identity()
+    assert name == "immutable install identity"
+    assert level == "warn"
+    assert "development/source" in detail
+
+
+def test_check_installed_release_identity_corrupt_pointer_is_hard_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    grok_home = tmp_path / "grok"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    current = grok_home / "omg" / "current"
+    current.parent.mkdir(parents=True)
+    current.write_text("foreign", encoding="utf-8")
+    name, level, detail = doctor.check_installed_release_identity()
+    assert name == "immutable install identity"
+    assert level == "fail"
+    assert "pointers" in detail

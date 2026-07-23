@@ -2,7 +2,7 @@
 
 **Canonical truth table** for isolation claims. README, skills, and doctor footers should link here rather than invent stronger wording.
 
-Last updated: 2026-07-22 · Plugin version: **0.5.0**
+Last updated: 2026-07-23 · Plugin version: **0.6.0**
 
 ## Layer table (strongest → weakest)
 
@@ -38,6 +38,41 @@ hold the line:
 
 Kick-a-run tools (if ever added) must spawn a **fresh** `omg` subprocess without
 the MCP env marker — never run acceptance/FSM in-process inside the MCP server.
+
+The plugin `.mcp.json` is conventional registration only. `configured` and
+locally `loadable` do not mean Grok enabled, observed, or verified the server in
+the current session. A fresh host observation is required for those claims.
+
+## Repository workflow boundary
+
+`repository-workflow/v1` is product-owned. Definitions are immutable by name +
+version; the planner fixes task IDs, actor identities, generations, permission
+requests, and dependency waves. The CLI **does not spawn** shell or foreign
+agents: Grok's leader/skill performs native `spawn_subagent`, then supplies
+task-ID-bound receipts to `omg workflow run`.
+
+Effective permission is the intersection of repository policy, host
+capabilities, and launch-receipt permissions. MCP servers and write paths need
+separate allowlists. Missing/duplicate/foreign receipts, actor mismatch,
+permission denial, or an external effect without a verified receipt blocks
+shipment. Independent verifier and skeptic identities are required.
+
+Grok `/create-workflow`, `.grok/workflows/*.rhai`, and the native dashboard are
+`optional_unclaimed`. Help text or local files are not stable-schema or fresh
+invocation proof. OMG never probes undocumented localhost/private sidecars.
+
+## Recovery, memory, tracking, compaction, notifications
+
+- Recovery opens only a regular non-symlink source, copies a bounded suffix,
+  re-checks file identity, writes immutable evidence, redacts context, and keeps
+  broken-chain/unknown-record warnings. It is intentionally partial recovery.
+- Project memory redacts values and preserves user facts over scanner/import
+  data. Tracker projections and compaction checkpoints are generation-fenced.
+- Notification adapters are outbound-only, bounded, SSRF-checked where
+  applicable, and explicitly non-authoritative. They cannot set `passes`,
+  `verified`, workflow terminal state, or release state.
+- `.lsp.json` is host-owned registration. OMG validates config and local command
+  presence only; it does not proxy semantic LSP operations or infer health.
 
 ## Acceptance policy (summary)
 
@@ -231,6 +266,9 @@ Do **not** claim uniform sandboxing across providers, OMC multi-CLI team parity,
 - “`omg team scale` / `resume` / `--ralph` add an execution sandbox or new isolation boundary.” (Lifecycle only; same integration-isolation-not-execution-sandbox contract.)
 - “agy `--sandbox` is a hard read-only jail enforced by OMG.”
 - “gemini reviewer panes are CLI-sandboxed.”
+- “A `.mcp.json` / `.lsp.json` file proves the host enabled or verified it.”
+- “A local `.rhai` file or `/create-workflow` help text proves native workflow parity.”
+- “Notifications or a native dashboard are authoritative for run/release state.”
 
 ## Related
 

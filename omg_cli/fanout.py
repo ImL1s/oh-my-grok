@@ -464,6 +464,80 @@ def run_process_fanout(
     return 0
 
 
+def native_fanout_plan(
+    root: Path | str,
+    *,
+    run_id: str,
+    team_id: str,
+    max_concurrency: int,
+) -> dict[str, Any]:
+    """Return the default Grok ``spawn_subagent`` fan-out selection.
+
+    This path intentionally has no executable argv, subprocess, provider, or
+    fallback field.  Actual dispatch consumes persisted receipts through
+    :func:`prepare_native_fanout`.
+    """
+
+    from omg_cli.team.scaling import native_dispatch_plan
+
+    plan = native_dispatch_plan(
+        root,
+        run_id=run_id,
+        team_id=team_id,
+        max_concurrency=max_concurrency,
+    )
+    if plan["transport"] != "grok_native":
+        raise ValueError("native fanout cannot switch a tmux_grok team lane")
+    return {
+        **plan,
+        "carrier": "spawn_subagent",
+        "depth": 1,
+        "fallback": None,
+    }
+
+
+def prepare_native_fanout(
+    root: Path | str,
+    *,
+    run_id: str,
+    team_id: str,
+    max_concurrency: int,
+    lease_generation: int,
+    descriptions: dict[str, str] | None = None,
+    worktrees: dict[str, Path | str] | None = None,
+    expires_at: str | None = None,
+) -> dict[str, Any]:
+    """Persist receipts and prepare exact host calls for selected ready tasks."""
+
+    from omg_cli.team.plane import prepare_native_spawn
+
+    plan = native_fanout_plan(
+        root,
+        run_id=run_id,
+        team_id=team_id,
+        max_concurrency=max_concurrency,
+    )
+    desc = dict(descriptions or {})
+    cwd_by_task = dict(worktrees or {})
+    invocations: list[dict[str, Any]] = []
+    for item in plan["ready"]:
+        task_id = item["task_id"]
+        prepared = prepare_native_spawn(
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            task_id=task_id,
+            expected_sequence=item["sequence"],
+            expected_generation=item["generation"],
+            lease_generation=lease_generation,
+            description=desc.get(task_id, f"OMG team task {task_id}"),
+            worktree=cwd_by_task.get(task_id),
+            expires_at=expires_at,
+        )
+        invocations.append(prepared)
+    return {"plan": plan, "invocations": invocations}
+
+
 __all__ = [
     "DEFAULT_WORKERS",
     "DEFAULT_MAX_WORKERS",
@@ -473,6 +547,8 @@ __all__ = [
     "build_worker_prompt",
     "fanout_meta_path",
     "max_workers_cap",
+    "native_fanout_plan",
+    "prepare_native_fanout",
     "resolve_worker_count",
     "run_process_fanout",
     "worker_id_label",

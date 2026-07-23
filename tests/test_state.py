@@ -778,3 +778,39 @@ def test_acceptance_capability_names_are_never_serialized_in_strict_status(tmp_p
         )
     assert "acceptance_capability" not in updated
     assert "acceptance_token" not in updated
+
+
+def test_projector_view_is_manifest_bound_cas_and_cannot_write_acceptance(tmp_path):
+    from omg_cli.state import load_projector_view, write_projector_view
+
+    binding = {
+        "run_manifest_path": ".omg/state/runs/run-1/run-manifest.json",
+        "run_manifest_hash": "a" * 64,
+        "run_manifest_revision": 2,
+        "lease_generation": 3,
+    }
+    first = write_projector_view(
+        tmp_path,
+        run_id="run-1",
+        view={"status": "running", "event_count": 1},
+        manifest_binding=binding,
+        expected_projection_revision=0,
+    )
+    assert first["projection_revision"] == 1
+    assert load_projector_view(tmp_path, "run-1") == first
+    with pytest.raises(PermissionError, match="acceptance"):
+        write_projector_view(
+            tmp_path,
+            run_id="run-1",
+            view={"verified": True},
+            manifest_binding=binding,
+            expected_projection_revision=1,
+        )
+    with pytest.raises(PermissionError, match="CAS"):
+        write_projector_view(
+            tmp_path,
+            run_id="run-1",
+            view={"status": "running"},
+            manifest_binding=binding,
+            expected_projection_revision=0,
+        )

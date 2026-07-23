@@ -1,6 +1,7 @@
 # omg_cli/deny.py
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import Any
@@ -92,6 +93,357 @@ _READ_WRITE_TYPES = frozenset(
         "oh-my-claudecode:executor",
     }
 )
+
+_SAFE_RECEIPT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+_ISO8601 = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})"
+    r"(?:\.(\d{1,9}))?(Z|([+-])(\d{2}):(\d{2}))$"
+)
+_SPAWN_RECEIPT_KEYS = frozenset(
+    {
+        "store_kind",
+        "schema_version",
+        "receipt_id",
+        "run_id",
+        "team_id",
+        "task_id",
+        "parent_id",
+        "parent_session_id",
+        "requested_role",
+        "capability_mode",
+        "depth",
+        "attempt",
+        "receipt_generation",
+        "lease_generation",
+        "dispatch_nonce",
+        "expires_at",
+        "expected_state",
+        "expected_sequence",
+    }
+)
+_ROLE_RECEIPT_KEYS = frozenset(
+    (_SPAWN_RECEIPT_KEYS - {"receipt_id", "store_kind"})
+    | {"receipt_id", "store_kind", "spawn_receipt_hash"}
+)
+_RECEIPT_SAFE_FIELDS = (
+    "receipt_id",
+    "run_id",
+    "team_id",
+    "task_id",
+    "parent_id",
+    "parent_session_id",
+    "requested_role",
+    "dispatch_nonce",
+    "expected_state",
+)
+_SHA256_K = (
+    0x428A2F98,
+    0x71374491,
+    0xB5C0FBCF,
+    0xE9B5DBA5,
+    0x3956C25B,
+    0x59F111F1,
+    0x923F82A4,
+    0xAB1C5ED5,
+    0xD807AA98,
+    0x12835B01,
+    0x243185BE,
+    0x550C7DC3,
+    0x72BE5D74,
+    0x80DEB1FE,
+    0x9BDC06A7,
+    0xC19BF174,
+    0xE49B69C1,
+    0xEFBE4786,
+    0x0FC19DC6,
+    0x240CA1CC,
+    0x2DE92C6F,
+    0x4A7484AA,
+    0x5CB0A9DC,
+    0x76F988DA,
+    0x983E5152,
+    0xA831C66D,
+    0xB00327C8,
+    0xBF597FC7,
+    0xC6E00BF3,
+    0xD5A79147,
+    0x06CA6351,
+    0x14292967,
+    0x27B70A85,
+    0x2E1B2138,
+    0x4D2C6DFC,
+    0x53380D13,
+    0x650A7354,
+    0x766A0ABB,
+    0x81C2C92E,
+    0x92722C85,
+    0xA2BFE8A1,
+    0xA81A664B,
+    0xC24B8B70,
+    0xC76C51A3,
+    0xD192E819,
+    0xD6990624,
+    0xF40E3585,
+    0x106AA070,
+    0x19A4C116,
+    0x1E376C08,
+    0x2748774C,
+    0x34B0BCB5,
+    0x391C0CB3,
+    0x4ED8AA4A,
+    0x5B9CCA4F,
+    0x682E6FF3,
+    0x748F82EE,
+    0x78A5636F,
+    0x84C87814,
+    0x8CC70208,
+    0x90BEFFFA,
+    0xA4506CEB,
+    0xBEF9A3F7,
+    0xC67178F2,
+)
+
+
+def _rotate_right(value: int, amount: int) -> int:
+    return ((value >> amount) | (value << (32 - amount))) & 0xFFFFFFFF
+
+
+def _standalone_sha256_hex(body: bytes) -> str:
+    """Small standalone SHA-256 used by the generated deny soft-gate."""
+
+    message = bytearray(body)
+    bit_length = len(message) * 8
+    message.append(0x80)
+    while len(message) % 64 != 56:
+        message.append(0)
+    message.extend(bit_length.to_bytes(8, "big"))
+    digest = [
+        0x6A09E667,
+        0xBB67AE85,
+        0x3C6EF372,
+        0xA54FF53A,
+        0x510E527F,
+        0x9B05688C,
+        0x1F83D9AB,
+        0x5BE0CD19,
+    ]
+    for offset in range(0, len(message), 64):
+        words = [
+            int.from_bytes(message[index : index + 4], "big")
+            for index in range(offset, offset + 64, 4)
+        ]
+        for index in range(16, 64):
+            left = words[index - 15]
+            right = words[index - 2]
+            sigma0 = _rotate_right(left, 7) ^ _rotate_right(left, 18) ^ (left >> 3)
+            sigma1 = _rotate_right(right, 17) ^ _rotate_right(right, 19) ^ (right >> 10)
+            words.append(
+                (words[index - 16] + sigma0 + words[index - 7] + sigma1) & 0xFFFFFFFF
+            )
+        a, b, c, d, e, f, g, h = digest
+        for index in range(64):
+            big1 = _rotate_right(e, 6) ^ _rotate_right(e, 11) ^ _rotate_right(e, 25)
+            choose = (e & f) ^ ((~e) & g)
+            temp1 = (h + big1 + choose + _SHA256_K[index] + words[index]) & 0xFFFFFFFF
+            big0 = _rotate_right(a, 2) ^ _rotate_right(a, 13) ^ _rotate_right(a, 22)
+            majority = (a & b) ^ (a & c) ^ (b & c)
+            temp2 = (big0 + majority) & 0xFFFFFFFF
+            h, g, f, e, d, c, b, a = (
+                g,
+                f,
+                e,
+                (d + temp1) & 0xFFFFFFFF,
+                c,
+                b,
+                a,
+                (temp1 + temp2) & 0xFFFFFFFF,
+            )
+        digest = [
+            (digest[0] + a) & 0xFFFFFFFF,
+            (digest[1] + b) & 0xFFFFFFFF,
+            (digest[2] + c) & 0xFFFFFFFF,
+            (digest[3] + d) & 0xFFFFFFFF,
+            (digest[4] + e) & 0xFFFFFFFF,
+            (digest[5] + f) & 0xFFFFFFFF,
+            (digest[6] + g) & 0xFFFFFFFF,
+            (digest[7] + h) & 0xFFFFFFFF,
+        ]
+    return "".join(f"{word:08x}" for word in digest)
+
+
+def _canonical_receipt_bytes(value: dict[str, Any]) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _days_from_civil(year: int, month: int, day: int) -> int:
+    adjusted_year = year - (1 if month <= 2 else 0)
+    era = adjusted_year // 400
+    year_of_era = adjusted_year - era * 400
+    shifted_month = month + (-3 if month > 2 else 9)
+    day_of_year = (153 * shifted_month + 2) // 5 + day - 1
+    day_of_era = year_of_era * 365 + year_of_era // 4 - year_of_era // 100 + day_of_year
+    return era * 146097 + day_of_era - 719468
+
+
+def _iso8601_epoch(value: object) -> tuple[int, int]:
+    if not isinstance(value, str):
+        raise ValueError("timestamp must be text")
+    match = _ISO8601.fullmatch(value)
+    if match is None:
+        raise ValueError("timestamp must be ISO-8601")
+    year, month, day, hour, minute, second = (
+        int(match.group(index)) for index in range(1, 7)
+    )
+    leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+    month_days = (31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+    if (
+        year < 1
+        or month not in range(1, 13)
+        or day not in range(1, month_days[month - 1] + 1)
+        or hour not in range(24)
+        or minute not in range(60)
+        or second not in range(60)
+    ):
+        raise ValueError("timestamp components out of range")
+    fraction = (match.group(7) or "").ljust(9, "0")
+    nanoseconds = int(fraction or "0")
+    offset_seconds = 0
+    if match.group(8) != "Z":
+        offset_hour = int(match.group(10))
+        offset_minute = int(match.group(11))
+        if offset_hour > 23 or offset_minute > 59:
+            raise ValueError("timestamp offset out of range")
+        offset_seconds = (offset_hour * 60 + offset_minute) * 60
+        if match.group(9) == "-":
+            offset_seconds = -offset_seconds
+    epoch = (
+        _days_from_civil(year, month, day) * 86400
+        + hour * 3600
+        + minute * 60
+        + second
+        - offset_seconds
+    )
+    return epoch, nanoseconds
+
+
+def _current_epoch() -> tuple[int, int]:
+    """Obtain wall-clock time using only generator-provided ``os``."""
+
+    directory = os.environ.get("TMPDIR") or "/tmp"
+    name = f".omg-receipt-clock-{os.getpid()}-{os.urandom(12).hex()}"
+    path = os.path.join(directory, name)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        observed = os.fstat(descriptor)
+        return observed.st_mtime_ns // 1_000_000_000, observed.st_mtime_ns % 1_000_000_000
+    finally:
+        os.close(descriptor)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _receipt_expectations(tin: dict[str, Any]) -> dict[str, Any]:
+    nested = tin.get("receipt_expectation") or tin.get("receiptExpectation")
+    return nested if isinstance(nested, dict) else tin
+
+
+def _validate_receipt_pair(tin: dict[str, Any]) -> None:
+    spawn = tin.get("spawn_receipt") or tin.get("spawnReceipt")
+    role = tin.get("role_receipt") or tin.get("roleReceipt")
+    if not isinstance(spawn, dict) or not isinstance(role, dict):
+        raise ValueError("spawn and role receipts are both required")
+    if set(spawn) != _SPAWN_RECEIPT_KEYS or set(role) != _ROLE_RECEIPT_KEYS:
+        raise ValueError("receipt keys mismatch")
+    if spawn["store_kind"] != "spawn_receipt" or spawn["schema_version"] != 1:
+        raise ValueError("spawn receipt header mismatch")
+    for field in _RECEIPT_SAFE_FIELDS:
+        if not isinstance(spawn[field], str) or _SAFE_RECEIPT_ID.fullmatch(spawn[field]) is None:
+            raise ValueError("spawn receipt identifier mismatch")
+    if spawn["capability_mode"] not in {"read-only", "read-write"}:
+        raise ValueError("spawn receipt capability mismatch")
+    if spawn["depth"] != 1 or isinstance(spawn["depth"], bool):
+        raise ValueError("spawn receipt depth mismatch")
+    for field in (
+        "attempt",
+        "receipt_generation",
+        "lease_generation",
+        "expected_sequence",
+    ):
+        if isinstance(spawn[field], bool) or not isinstance(spawn[field], int) or spawn[field] < 0:
+            raise ValueError("spawn receipt integer mismatch")
+
+    expectation = _receipt_expectations(tin)
+    now_value = expectation.get("observed_at") or expectation.get("now")
+    current = _iso8601_epoch(now_value) if now_value is not None else _current_epoch()
+    if _iso8601_epoch(spawn["expires_at"]) <= current:
+        raise ValueError("spawn receipt expired")
+
+    spawn_hash = _standalone_sha256_hex(_canonical_receipt_bytes(spawn))
+    expected_role = {
+        "store_kind": "role_receipt",
+        "schema_version": 1,
+        "receipt_id": f"role-{spawn['receipt_id']}",
+        "spawn_receipt_hash": spawn_hash,
+        **{
+            field: spawn[field]
+            for field in _SPAWN_RECEIPT_KEYS
+            if field not in {"store_kind", "schema_version", "receipt_id"}
+        },
+    }
+    if role != expected_role:
+        raise ValueError("role receipt disagrees with spawn receipt")
+
+    subagent_type, capability_mode = _spawn_fields(tin)
+    if spawn["requested_role"].lower() != subagent_type:
+        raise ValueError("spawn receipt requested role mismatch")
+    if spawn["capability_mode"] != capability_mode.replace("_", "-"):
+        raise ValueError("spawn receipt capability mismatch")
+    expected_fields = (
+        "run_id",
+        "team_id",
+        "task_id",
+        "parent_id",
+        "parent_session_id",
+        "attempt",
+        "receipt_generation",
+        "lease_generation",
+        "dispatch_nonce",
+        "expected_state",
+        "expected_sequence",
+    )
+    for field in expected_fields:
+        if field not in expectation or expectation[field] != spawn[field]:
+            raise ValueError(f"spawn receipt foreign or stale {field}")
+
+
+def validate_spawn_authority(tin: dict[str, Any]) -> dict[str, str] | None:
+    """Fail closed once either W0 native receipt is presented."""
+
+    if not any(
+        key in tin
+        for key in ("spawn_receipt", "spawnReceipt", "role_receipt", "roleReceipt")
+    ):
+        return None
+    try:
+        _validate_receipt_pair(tin)
+    except Exception:
+        return {
+            "decision": "deny",
+            "reason": (
+                "oh-my-grok: invalid, stale, foreign, replayed, or disagreeing "
+                "spawn/role receipt; regenerate authority and retry"
+            ),
+        }
+    return None
 
 
 def _tool_input(event: dict[str, Any]) -> dict[str, Any]:
@@ -221,6 +573,9 @@ def decide_spawn_subagent(tin: dict[str, Any]) -> dict[str, str]:
     if os.environ.get("OMG_ALLOW_UNSAFE_SPAWN") == "1":
         return {"decision": "allow", "reason": "OMG_ALLOW_UNSAFE_SPAWN=1"}
     st, cm = _spawn_fields(tin)
+    authority = validate_spawn_authority(tin)
+    if authority is not None:
+        return authority
     depth_deny = _depth_or_nested_spawn_denied(tin, st)
     if depth_deny:
         return {"decision": "deny", "reason": depth_deny}

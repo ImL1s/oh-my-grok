@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "omg": {
+      "command": "python3",
+      "args": [
+        "${GROK_PLUGIN_ROOT}/bin/omg",
+        "mcp-server"
+      ]
+    }
+  }
+}

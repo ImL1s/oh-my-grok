@@ -1437,6 +1437,122 @@ def _run_team_pipeline_ralph(
     return out
 
 
+# ---------------------------------------------------------------------------
+# W3 Grok-native DAG composition
+# ---------------------------------------------------------------------------
+
+
+def native_dag_snapshot(
+    root: Path | str, *, run_id: str, team_id: str
+) -> dict[str, Any]:
+    """Return the deterministic scheduling view of the authoritative DAG."""
+
+    from omg_cli.team.plane import NATIVE_TERMINAL_STATES, load_native_team
+
+    state = load_native_team(root, run_id, team_id)
+    buckets: dict[str, list[str]] = {}
+    for task_id, task in sorted(state["tasks"].items()):
+        buckets.setdefault(task["state"], []).append(task_id)
+    return {
+        "run_id": run_id,
+        "team_id": team_id,
+        "transport": state["transport"],
+        "revision": state["revision"],
+        "states": buckets,
+        "ready": list(buckets.get("ready", [])),
+        "terminal": all(
+            task["state"] in NATIVE_TERMINAL_STATES
+            for task in state["tasks"].values()
+        ),
+        "complete": all(
+            task["state"] == "complete" for task in state["tasks"].values()
+        ),
+    }
+
+
+def advance_native_pipeline(
+    root: Path | str,
+    *,
+    run_id: str,
+    team_id: str,
+    now: datetime | None = None,
+    recover_stale: bool = True,
+) -> dict[str, Any]:
+    """Run one restart-safe scheduling/recovery pass, then return a snapshot."""
+
+    from omg_cli.team.recovery import reconcile_team
+
+    reconciliation = reconcile_team(
+        root,
+        run_id=run_id,
+        team_id=team_id,
+        now=now,
+        recover_stale=recover_stale,
+    )
+    return {"reconciliation": reconciliation, "dag": native_dag_snapshot(
+        root, run_id=run_id, team_id=team_id
+    )}
+
+
+def finalize_native_integration(
+    root: Path | str,
+    *,
+    run_id: str,
+    team_id: str,
+    task_id: str,
+    expected_sequence: int,
+    expected_generation: int,
+    result_hash: str,
+) -> dict[str, Any]:
+    """Record a successful leader integration and unlock DAG dependents.
+
+    The actual worktree integration and fresh tests must already have passed;
+    this function only performs the two canonical CAS transitions.
+    """
+
+    from omg_cli.team.plane import load_native_team, transition_native_delivery
+    from omg_cli.team.recovery import reconcile_team
+
+    state = load_native_team(root, run_id, team_id)
+    task = dict(state["tasks"].get(task_id) or {})
+    if (
+        task.get("state") == "complete"
+        and task.get("generation") == expected_generation
+        and task.get("result_hash") == result_hash
+    ):
+        return {"task": task, "duplicate": True, "reconciliation": {"actions": []}}
+    integrating = transition_native_delivery(
+        root,
+        run_id=run_id,
+        team_id=team_id,
+        task_id=task_id,
+        expected_state="delivered",
+        expected_sequence=expected_sequence,
+        expected_generation=expected_generation,
+        next_state="integrating",
+        result_hash=result_hash,
+    )
+    complete = transition_native_delivery(
+        root,
+        run_id=run_id,
+        team_id=team_id,
+        task_id=task_id,
+        expected_state="integrating",
+        expected_sequence=integrating["sequence"],
+        expected_generation=expected_generation,
+        next_state="complete",
+        result_hash=result_hash,
+    )
+    reconciliation = reconcile_team(
+        root, run_id=run_id, team_id=team_id, recover_stale=False
+    )
+    return {
+        "task": complete,
+        "duplicate": False,
+        "reconciliation": reconciliation,
+    }
+
+
 __all__ = [
     "DEFAULT_MAX_FIX",
     "DEFAULT_RALPH_MAX_ITER",
@@ -1450,6 +1566,9 @@ __all__ = [
     "assert_legal_transition",
     "invalidate_team_verify_stamp",
     "load_team_pipeline",
+    "advance_native_pipeline",
+    "finalize_native_integration",
+    "native_dag_snapshot",
     "parse_team_verify_verdict",
     "run_team_pipeline",
     "stage_verify_is_approve",

@@ -1,22 +1,26 @@
-"""Stdio MCP JSON-RPC server (stdlib only) for the focused omg tool surface.
+"""Stdio MCP JSON-RPC server for the exact bounded OMG tool surface.
 
 Handles ``initialize``, ``tools/list``, ``tools/call``. Framing: auto-detect
 the client's framing on the first message (Content-Length headers **or**
 newline-delimited JSON) and respond in the **same** framing for the whole
 connection. Grok Build CLI sends NDJSON and cannot parse Content-Length replies.
 
-Never registers accept/verified tools. Sets no verified stamp — that is refused
-structurally when ``OMG_MCP_SERVER=1`` (see acceptance.refuse_if_mcp_server).
+Never registers shell, semantic-LSP, accept or verified tools.  Tool execution
+is concurrency-bounded and supports cooperative cancellation and deadlines.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import os
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, BinaryIO
 
 from omg_cli import __version__
-from omg_cli.mcp.tools import TOOL_SPECS, dispatch_tool
+from omg_cli.mcp.tools import TOOL_SPECS, ToolError, dispatch_tool
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "omg"
@@ -24,6 +28,126 @@ SERVER_NAME = "omg"
 # Wire framing. First inbound message locks the connection framing.
 FRAMING_CONTENT_LENGTH = "content-length"
 FRAMING_NDJSON = "ndjson"
+MAX_WIRE_BYTES = 1_048_576
+DEFAULT_CALL_TIMEOUT_SECONDS = 10.0
+MAX_CALL_TIMEOUT_SECONDS = 30.0
+MAX_CONCURRENT_CALLS = 8
+MAX_OUTSTANDING_CALLS = 64
+MAX_PRE_CANCELLED_REQUESTS = 1024
+
+
+class MCPRuntime:
+    """Bounded request executor shared by one MCP connection."""
+
+    def __init__(
+        self,
+        *,
+        max_workers: int = MAX_CONCURRENT_CALLS,
+        call_timeout_seconds: float = DEFAULT_CALL_TIMEOUT_SECONDS,
+    ) -> None:
+        if not 1 <= int(max_workers) <= MAX_CONCURRENT_CALLS:
+            raise ValueError("MCP max_workers must be between 1 and 8")
+        if not 0 < float(call_timeout_seconds) <= MAX_CALL_TIMEOUT_SECONDS:
+            raise ValueError("MCP timeout must be in (0, 30]")
+        self.call_timeout_seconds = float(call_timeout_seconds)
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=int(max_workers), thread_name_prefix="omg-mcp"
+        )
+        self._lock = threading.Lock()
+        self._inflight: dict[Any, threading.Event] = {}
+        self._pre_cancelled: set[Any] = set()
+        self._slots = threading.BoundedSemaphore(MAX_OUTSTANDING_CALLS)
+        self._closed = False
+
+    def cancel(self, request_id: Any) -> None:
+        try:
+            hash(request_id)
+        except TypeError:
+            return
+        with self._lock:
+            event = self._inflight.get(request_id)
+            if event is None:
+                if len(self._pre_cancelled) >= MAX_PRE_CANCELLED_REQUESTS:
+                    self._pre_cancelled.pop()
+                self._pre_cancelled.add(request_id)
+            else:
+                event.set()
+
+    def call(
+        self,
+        request_id: Any,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        root: Path,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        try:
+            hash(request_id)
+        except TypeError:
+            return ToolError("E_SCHEMA", "MCP request id must be scalar").payload()
+        if not self._slots.acquire(blocking=False):
+            return ToolError(
+                "E_SERVER_BUSY",
+                "MCP outstanding request bound reached",
+            ).payload()
+        timeout = self.call_timeout_seconds if timeout_seconds is None else float(timeout_seconds)
+        timeout = min(max(timeout, 0.001), MAX_CALL_TIMEOUT_SECONDS)
+        deadline = time.monotonic() + timeout
+        event = threading.Event()
+        with self._lock:
+            if self._closed:
+                self._slots.release()
+                return ToolError("E_SERVER_CLOSED", "MCP runtime is closed").payload()
+            if request_id in self._pre_cancelled:
+                self._pre_cancelled.discard(request_id)
+                event.set()
+            self._inflight[request_id] = event
+        try:
+            future = self._executor.submit(
+                dispatch_tool,
+                name,
+                arguments,
+                root=root,
+                cancel_event=event,
+                deadline=deadline,
+            )
+        except RuntimeError:
+            with self._lock:
+                self._inflight.pop(request_id, None)
+            self._slots.release()
+            return ToolError("E_SERVER_CLOSED", "MCP runtime is closed").payload()
+        try:
+            while True:
+                if event.is_set():
+                    future.cancel()
+                    return ToolError("E_CANCELLED", "MCP operation cancelled").payload()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    event.set()
+                    future.cancel()
+                    return ToolError("E_TIMEOUT", "MCP operation timed out").payload()
+                try:
+                    return future.result(timeout=min(remaining, 0.02))
+                except concurrent.futures.TimeoutError:
+                    continue
+                except Exception as exc:  # pragma: no cover - dispatch is defensive
+                    return ToolError("E_INTERNAL", str(exc)).payload()
+        finally:
+            with self._lock:
+                self._inflight.pop(request_id, None)
+            self._slots.release()
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            events = list(self._inflight.values())
+        for event in events:
+            event.set()
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
+
+_DEFAULT_RUNTIME = MCPRuntime()
 
 
 def server_info() -> dict[str, str]:
@@ -34,6 +158,8 @@ def handle_message(
     message: dict[str, Any],
     *,
     root: Path | None = None,
+    runtime: MCPRuntime | None = None,
+    call_timeout_seconds: float | None = None,
 ) -> dict[str, Any] | None:
     """Dispatch one JSON-RPC request dict. Returns response or None for notifications."""
     if not isinstance(message, dict):
@@ -61,21 +187,24 @@ def handle_message(
         return _error_response(msg_id, -32602, "Invalid params: expected object")
 
     if method == "initialize":
-        result = {
+        result: dict[str, Any] = {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": server_info(),
             "instructions": (
-                "Focused in-session read + proposal MCP surface for oh-my-grok. "
-                "NOT OMC ~54-tool parity. Exposes reads and non-authoritative "
-                "proposal writes only; passes/verified/accept are never MCP tools "
-                "(CLI-only AND structurally refused when OMG_MCP_SERVER=1). "
-                "LSP tools are local ast probes, not a semantic bridge."
+                "Exact nine-operation read + proposal MCP surface for oh-my-grok. "
+                "Only proposal.create writes, and only below mcp-proposals. "
+                "State, passes, verified, shell and semantic LSP operations are absent."
             ),
         }
         return _result_response(msg_id, result)
 
     if method == "notifications/initialized" or method == "initialized":
+        return None
+
+    if method in {"notifications/cancelled", "$/cancelRequest"}:
+        request_id = params.get("requestId", params.get("id"))
+        (runtime or _DEFAULT_RUNTIME).cancel(request_id)
         return None
 
     if method == "ping":
@@ -85,19 +214,25 @@ def handle_message(
         return _result_response(msg_id, {"tools": list(TOOL_SPECS)})
 
     if method == "tools/call":
+        if is_notification:
+            return None
         name = params.get("name")
         if not name or not isinstance(name, str):
             return _error_response(msg_id, -32602, "tools/call requires name")
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
             return _error_response(msg_id, -32602, "arguments must be object")
-        payload = dispatch_tool(name, arguments, root=root)
+        project = Path(root).resolve() if root is not None else Path.cwd().resolve()
+        payload = (runtime or _DEFAULT_RUNTIME).call(
+            msg_id,
+            name,
+            arguments,
+            root=project,
+            timeout_seconds=call_timeout_seconds,
+        )
         # MCP tools/call result shape: content[] + structuredContent optional
-        text = json.dumps(payload, ensure_ascii=False, indent=2)
-        is_error = not bool(payload.get("ok", True)) and "error" in payload
-        # Treat missing ok with error as error; pure ok True as success
-        if payload.get("ok") is False:
-            is_error = True
+        text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        is_error = payload.get("ok") is False
         result = {
             "content": [{"type": "text", "text": text}],
             "structuredContent": payload,
@@ -171,8 +306,18 @@ def read_message(
         # NDJSON path — finish the line (record framing before parse so parse
         # errors still let the server reply in NDJSON).
         _record_framing(framing_out, FRAMING_NDJSON)
-        rest = stream.readline()
-        line = (first + rest).decode("utf-8", errors="replace").strip()
+        rest = stream.readline(MAX_WIRE_BYTES + 2)
+        wire = first + rest
+        if not wire.endswith(b"\n"):
+            if len(wire) > MAX_WIRE_BYTES:
+                raise ValueError("MCP body exceeds bounded wire limit")
+            raise ValueError("incomplete MCP NDJSON line: newline required")
+        body = wire[:-1]
+        if body.endswith(b"\r"):
+            body = body[:-1]
+        if len(body) > MAX_WIRE_BYTES:
+            raise ValueError("MCP body exceeds bounded wire limit")
+        line = body.decode("utf-8", errors="replace").strip()
         if not line:
             return read_message(stream, framing_out=framing_out)
         return json.loads(line)
@@ -201,6 +346,8 @@ def read_message(
             break
     if length is None:
         raise ValueError("missing Content-Length")
+    if length < 0 or length > MAX_WIRE_BYTES:
+        raise ValueError("MCP body exceeds bounded wire limit")
     body = remainder.encode("utf-8") if remainder else b""
     while len(body) < length:
         chunk = stream.read(length - len(body))
@@ -229,43 +376,104 @@ def run_stdio_server(
 
     Response framing matches the client's framing (first message locks it).
     """
-    # Ensure marker is set even if caller forgot (main sets it too).
-    import os
-
+    # Ensure the guard marker covers the in-process server lifetime even if the
+    # caller forgot (main sets it too), then restore the caller environment.
+    # Tests and embedding hosts may run the server in-process; leaking this
+    # process-wide marker would incorrectly disable later CLI acceptance.
     from omg_cli.acceptance import MCP_SERVER_ENV
 
+    marker_present = MCP_SERVER_ENV in os.environ
+    marker_previous = os.environ.get(MCP_SERVER_ENV)
     os.environ[MCP_SERVER_ENV] = "1"
-
-    in_stream = stdin if stdin is not None else sys.stdin.buffer
-    out_stream = stdout if stdout is not None else sys.stdout.buffer
-    project = Path(root).resolve() if root is not None else Path.cwd().resolve()
-
-    # First successful framing detection locks the connection framing.
-    # Default only used if a parse error somehow precedes any detection.
-    framing_holder: list[str] = []
-
-    def _conn_framing() -> str:
-        return framing_holder[0] if framing_holder else FRAMING_CONTENT_LENGTH
-
-    while True:
+    runtime: MCPRuntime | None = None
+    request_pool: concurrent.futures.ThreadPoolExecutor | None = None
+    try:
+        in_stream = stdin if stdin is not None else sys.stdin.buffer
+        out_stream = stdout if stdout is not None else sys.stdout.buffer
+        project = Path(root).resolve() if root is not None else Path.cwd().resolve()
+        timeout_raw = os.environ.get("OMG_MCP_CALL_TIMEOUT_SECONDS", "").strip()
         try:
-            msg = read_message(in_stream, framing_out=framing_holder)
-        except (ValueError, json.JSONDecodeError) as exc:
-            err = _error_response(None, -32700, f"Parse error: {exc}")
-            write_message(out_stream, err, framing=_conn_framing())
-            continue
-        if msg is None:
-            break
-        try:
-            response = handle_message(msg, root=project)
-        except Exception as exc:  # noqa: BLE001 — surface to client, keep server up
-            response = _error_response(
-                msg.get("id") if isinstance(msg, dict) else None,
-                -32603,
-                f"Internal error: {exc}",
+            timeout = (
+                float(timeout_raw) if timeout_raw else DEFAULT_CALL_TIMEOUT_SECONDS
             )
-        if response is not None:
-            write_message(out_stream, response, framing=_conn_framing())
+        except ValueError:
+            timeout = DEFAULT_CALL_TIMEOUT_SECONDS
+        timeout = min(max(timeout, 0.001), MAX_CALL_TIMEOUT_SECONDS)
+        runtime = MCPRuntime(call_timeout_seconds=timeout)
+        request_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=MAX_CONCURRENT_CALLS,
+            thread_name_prefix="omg-mcp-request",
+        )
+
+        # First successful framing detection locks the connection framing.
+        # Default only used if a parse error somehow precedes any detection.
+        framing_holder: list[str] = []
+
+        def _conn_framing() -> str:
+            return framing_holder[0] if framing_holder else FRAMING_CONTENT_LENGTH
+
+        write_lock = threading.Lock()
+        pending: set[concurrent.futures.Future[None]] = set()
+
+        def _write(response: dict[str, Any]) -> None:
+            with write_lock:
+                write_message(out_stream, response, framing=_conn_framing())
+
+        def _serve(message: dict[str, Any]) -> None:
+            try:
+                response = handle_message(message, root=project, runtime=runtime)
+            except Exception as exc:  # noqa: BLE001 — keep server up
+                response = _error_response(
+                    message.get("id") if isinstance(message, dict) else None,
+                    -32603,
+                    f"Internal error: {exc}",
+                )
+            if response is not None:
+                _write(response)
+
+        while True:
+            finished = {future for future in pending if future.done()}
+            for future in finished:
+                pending.remove(future)
+                future.result()
+            try:
+                msg = read_message(in_stream, framing_out=framing_holder)
+            except (ValueError, json.JSONDecodeError) as exc:
+                err = _error_response(None, -32700, f"Parse error: {exc}")
+                _write(err)
+                continue
+            if msg is None:
+                break
+            is_tool_call = (
+                isinstance(msg, dict)
+                and msg.get("method") == "tools/call"
+                and "id" in msg
+            )
+            if is_tool_call:
+                if len(pending) >= MAX_OUTSTANDING_CALLS:
+                    _write(
+                        _error_response(
+                            msg.get("id"),
+                            -32000,
+                            "MCP outstanding request bound reached",
+                        )
+                    )
+                else:
+                    pending.add(request_pool.submit(_serve, msg))
+                continue
+            _serve(msg)
+        for future in concurrent.futures.as_completed(pending):
+            future.result()
+    finally:
+        if request_pool is not None:
+            request_pool.shutdown(wait=True, cancel_futures=True)
+        if runtime is not None:
+            runtime.close()
+        if marker_present:
+            assert marker_previous is not None
+            os.environ[MCP_SERVER_ENV] = marker_previous
+        else:
+            os.environ.pop(MCP_SERVER_ENV, None)
     return 0
 
 
@@ -275,12 +483,17 @@ def run_ndjson_roundtrip(
     root: Path | None = None,
 ) -> list[dict[str, Any] | None]:
     """In-process helper for tests: feed request dicts, collect responses."""
-    return [handle_message(r, root=root) for r in requests]
+    runtime = MCPRuntime()
+    try:
+        return [handle_message(r, root=root, runtime=runtime) for r in requests]
+    finally:
+        runtime.close()
 
 
 __all__ = [
     "FRAMING_CONTENT_LENGTH",
     "FRAMING_NDJSON",
+    "MCPRuntime",
     "PROTOCOL_VERSION",
     "SERVER_NAME",
     "encode_message",

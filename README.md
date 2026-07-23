@@ -43,14 +43,14 @@ OMG does **not** replace Grok Build.
 
 Workers fan out only via Grok **`spawn_subagent`** (depth 1). No Rust fork of grok-build.  
 **tmux:** host session shell for `omg --madmax` (break-glass full-open launch), plus an **experimental** team plane (`omg team`, gate `OMG_EXPERIMENTAL_TMUX_TEAM=1`). Zero-config panes are **grok only**; optional `--routing` enables **multi-CLI executor panes** (codex/agy/cursor/gemini) with role floors. Isolation is **integration** isolation (worktree ownership + seal + integrate), **not** an execution sandbox — see the per-provider posture table in [`docs/security-model.md`](docs/security-model.md).  
-**Scope honesty:** [core purpose parity](docs/research/core-parity-matrix-2026-07-20.md) — partial lifestyle surfaces (resume/wiki/hud/LSP probe); **not** OMC Stop hard-pin, full LSP MCP, or execution-sandbox team parity.
+**Scope honesty:** OMG owns repository workflows, recovery, project services, and release contracts. Grok-native `/create-workflow`/Rhai and public dashboard integration remain `optional_unclaimed`; LSP/MCP registration is not host-health proof, and the team plane is integration isolation rather than an execution sandbox.
 
 | Component | Role |
 |-----------|------|
-| **Grok plugin** | `skills/omg-*`, `agents/omg-*`, hooks (event spool + PreToolUse soft-guard + SessionStart RESUME.md) |
-| **`omg` CLI** | `setup` / `doctor` / `resume` / modes / `accept` / `integrate` / `goal` / `interview` / `wiki` / `hud` / `lsp` / `autopilot`… |
+| **Grok plugin** | `skills/omg-*`, `agents/omg-*`, hooks (event spool + PreToolUse soft-guard; SessionStart is passive-only) |
+| **`omg` CLI** | setup/doctor, modes, workflows, exact session routes, bounded recovery, memory/tracker/compaction, notifications, accept/release verification |
 
-Version: **0.5.0** · License: MIT
+Version: **0.6.0** · License: MIT
 
 ---
 
@@ -60,53 +60,55 @@ Version: **0.5.0** · License: MIT
 
 OMG has **two surfaces**: Grok **plugin** (skills/agents/hooks) + **`omg` CLI** (state, accept, verified). You need both for the full product.
 
-### Full install (recommended)
+### Convenient full install (recommended)
 
-Use a **stable path** so the global soft-gate does not break when you tidy folders:
+The bootstrap resolves GitHub `latest` once, validates its semantic tag, then downloads the archive and `SHA256SUMS` only from that immutable release tag. It verifies before extraction, switches the plugin + CLI transactionally, runs strict doctor, and rolls back a failed switch.
 
 ```bash
 # 0) Host
 curl -fsSL https://x.ai/cli/install.sh | bash
 # docs: https://github.com/xai-org/grok-build · https://x.ai/cli
 
-# 1) Clone to a stable home
-git clone https://github.com/ImL1s/oh-my-grok.git ~/.local/share/oh-my-grok
-cd ~/.local/share/oh-my-grok
-./scripts/install-plugin.sh
-# optional pin: git checkout v0.5.0
-
-# 2) omg on PATH (primary: install script also tries this)
-ln -sf "$(pwd)/bin/omg" ~/.local/bin/omg   # ensure ~/.local/bin is on PATH
+# 1) Full OMG product from the latest immutable GitHub release
+curl -fsSL https://raw.githubusercontent.com/ImL1s/oh-my-grok/main/scripts/install.sh | bash
 omg --version
 
-# 2b) OPTIONAL — editable pipx / pip (not a non-editable PyPI wheel)
-# ONLY supported form: editable. Non-editable `pip install .` copies only
-# omg_cli/ into site-packages; plugin_root() siblings (plugin.json, skills/,
-# templates/, …) resolve missing → omg --version prints 0.0.0. PEP 660 keeps
-# __file__ in the source tree so plugin_root() still works.
-# pipx install --editable ~/.local/share/oh-my-grok
-#   # or from checkout: pip install -e .
-# Caveat: if you also keep the step-2 symlink, you can get two `omg` on PATH —
-# `which -a omg` and prefer one. The install-plugin.sh symlink remains primary.
-
-# 3) Wire a project
+# 2) Wire a project
 cd /path/to/your-project
 omg setup
-omg doctor
+omg doctor --strict
 ```
 
-`install-plugin.sh` runs `grok plugin install . --trust` **and** installs the global
+The transaction installs to a stable, immutable stage and writes an install receipt. The underlying plugin switch installs the global
 PreToolUse soft-gate under `$GROK_HOME/hooks/` — a **self-contained** standalone
 (`omg_pretool_deny_standalone.py`, launched `python3 -I -S … || true`), **not** a
 checkout-path script (plugin-bundled PreToolUse alone has been insufficient in live
 sessions; a checkout-path hook under TCC-protected `~/Documents` bricked every tool
 in other workspaces — see `docs/security-model.md`).
 
+### Manual, pinned GitHub install
+
+Use this when you want to choose and inspect exact GitHub bytes. Both public assets must come from the same tag.
+
+```bash
+TAG=v0.6.0
+curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.6.0.tar.gz"
+curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/SHA256SUMS"
+shasum -a 256 -c SHA256SUMS
+curl -fsSLo install.sh "https://raw.githubusercontent.com/ImL1s/oh-my-grok/${TAG}/scripts/install.sh"
+bash install.sh --offline \
+  --archive ./oh-my-grok-0.6.0.tar.gz --checksums ./SHA256SUMS \
+  --source-tag "${TAG}"
+omg doctor --strict
+```
+
+Contributor checkout install remains available: clone a tag to a stable path, run `./scripts/install-plugin.sh`, then link `bin/omg`. Editable `pipx`/pip is development-only because the full plugin also needs root siblings such as `skills/`, `agents/`, hooks, and templates.
+
 ### Plugin-only (half surface — not enough alone)
 
 ```bash
 grok plugin install ImL1s/oh-my-grok --trust
-# better pin: grok plugin install ImL1s/oh-my-grok@v0.5.0 --trust
+# better pin: grok plugin install ImL1s/oh-my-grok@v0.6.0 --trust
 ```
 
 This installs skills/agents from GitHub. It does **not** put `omg` on PATH and does **not** guarantee the global soft-gate. **Every `omg …` command in this README (including `omg setup` / `omg doctor` in the smoke steps below) requires the Full install** — plugin-only gives you in-session skills only. Prefer **Full install** unless that is all you need.
@@ -115,7 +117,7 @@ This installs skills/agents from GitHub. It does **not** put `omg` on PATH and d
 
 | Action | Commands |
 |--------|----------|
-| Upgrade | `omg update` (git pull + `install-plugin.sh`, which force-refreshes the frozen snapshot + doctor) |
+| Upgrade | Re-run the convenient installer (release install), or `omg update` for a contributor checkout |
 | Relocate clone | Re-run `./scripts/install-plugin.sh` (it warns on stale duplicate entries) + refresh `ln -sf …/bin/omg ~/.local/bin/omg` |
 | Uninstall | `omg uninstall --yes` (plugin + global hook + OMG rules block + CLI link; **never** touches project `.omg/`) |
 | Uninstall (manual) | `grok plugin uninstall oh-my-grok` · `omg install-hook --remove` (removes json then standalone under `$GROK_HOME/hooks/`) · `rm -f ~/.local/bin/omg` |
@@ -299,8 +301,9 @@ export OMG_ALLOW_EXTERNAL_CLI=1   # process-env only; never parse from command t
 
 ```text
 omg {setup,doctor,update,uninstall,note,state,cancel,resume,wiki,hud,lsp,
-     interview,goal,accept,integrate,worker,review,qa,autopilot,ulw,ralph,
-     ralplan,ask,pipeline,dual-review,mcp-server,mcp-install} ...
+     session,recover,memory,tracker,compact,notify,native-status,workflow,
+     capabilities,parity,interview,goal,accept,integrate,worker,team,review,qa,
+     autopilot,ulw,ralph,ralplan,ask,pipeline,dual-review,mcp-server,mcp-install} ...
 ```
 
 | Command | Purpose |
@@ -309,13 +312,23 @@ omg {setup,doctor,update,uninstall,note,state,cancel,resume,wiki,hud,lsp,
 | `omg update` / `omg uninstall` | git pull + refresh plugin snapshot · remove plugin/hook/rules block (`--yes`; never `.omg/`) |
 | `omg note "…"` | Durable project note in `.omg/notepad.md` (`--priority` = permanent, `--show` prints, `--prune` drops expired 7d) |
 | `omg state` / `omg cancel` | Active run · process-group cancel |
-| `omg resume` | Smart resume routing + `.omg/state/RESUME.md` (SessionStart inject) |
+| `omg resume` | Smart resume routing + explicit `.omg/state/RESUME.md` continuity pack |
+| `omg session allocate\|route` | Exact Grok create/resume/continue/fork argv; named forks reject UUID reuse |
+| `omg recover` | Immutable newest-900-line/record JSONL recovery; broken-chain and unknown-record warnings stay visible |
+| `omg memory put\|search\|show\|export\|import\|rescan` | Redacted deterministic project fact store |
+| `omg tracker status\|project\|reconcile` | Passive generation-fenced lifecycle projection and native inventory reconciliation |
+| `omg compact create\|show\|render` | Lossless guidance checkpoint + generation fence |
+| `omg notify status\|send\|process` | Outbound-only, non-authoritative notification queue |
+| `omg workflow install\|list\|show\|plan\|run` | Versioned repository workflows and task-receipt ship gate — [guide](docs/workflows.md) |
+| `omg native-status` / `capabilities` | Public-only host observations and independent configured→verified tiers |
+| `omg parity run` / `parity release-readback` | Exact W0 manifest delegation and prebuilt release-bundle verification |
 | `omg wiki` / `hud` / `lsp` | Local markdown wiki · statusline pack · optional language-tool probe |
 | `omg interview …` | Deep-interview requirements gate |
 | `omg goal …` | Hash-chained ultragoal ledger + tail repair (**no host `/goal`** on Grok — repo ledger only) |
 | `omg ulw` / `ralph` / `ralplan` | Parallel / persist / plan-only modes |
 | `omg worker own\|prepare\|seal\|join` | ULW ownership + worktree + envelopes |
 | `omg worker seal --all [--force]` | Leader batch-seals every prepared worktree with a real `head_sha` (fail-closed; nonzero if any task failed) |
+| `omg team start\|run\|scale\|resume\|status\|collect\|stop` | Experimental tmux team plane; Grok-only by default, explicit provider routing optional |
 | `omg integrate` | Cherry-pick ULW envelopes (does **not** set verified alone) |
 | `omg review` / `omg qa` | Hash-bound review · UltraQA (**QA clean ≠ verified**) |
 | `omg autopilot …` | Strict phases; `start` / `transition` / `status` / `complete` — [skills](docs/skills.md#omg-autopilot--full-lifecycle-in-session) · [guide](docs/autopilot.md) |
@@ -417,7 +430,10 @@ User / Grok session  →  skills + agents
 .omg/artifacts/               proposals + ULW envelopes
 .omg/ultragoal/               goal ledger (when used)
 .omg/wiki/                    project markdown wiki
-.omg/state/RESUME.md          one-shot continuity pack (SessionStart / omg resume)
+.omg/state/RESUME.md          one-shot continuity pack written by `omg resume`
+.omg/workflows/registry/      immutable repository workflow definitions
+.omg/memory/facts.json        redacted deterministic project facts
+.omg/state/recovery/          immutable bounded recovery packs
 ```
 
 ---
@@ -474,6 +490,7 @@ Do not claim production isolation from unit green alone. See [`docs/research/tes
 | Path | Contents |
 |------|----------|
 | [`docs/security-model.md`](docs/security-model.md) | Isolation layers |
+| [`docs/workflows.md`](docs/workflows.md) | Repository workflow contract, receipts, permissions, ship gates |
 | [`docs/research/core-parity-matrix-2026-07-20.md`](docs/research/core-parity-matrix-2026-07-20.md) | HAVE / NEVER scope |
 | [`docs/research/omc-parity-council/`](docs/research/omc-parity-council/) | Parity council + STATUS |
 | [`docs/research/live/`](docs/research/live/) | How to regenerate live suite evidence (logs gitignored) |
@@ -488,6 +505,7 @@ Full dual-review ship bar (C1–C9) is complete. Recent lines:
 - **v0.2.x:** acceptance policy, run mutex, ULW integrate, ralplan FSM, worker prepare/seal, pipeline order, live suite.
 - **2026-07-20 core-purpose parity:** evidence stamps, session lease, interview, goal ledger + repair, ULW ownership/join, hash-bound review, UltraQA, strict autopilot; destination gates; CLI acceptance authority for `verified`.
 - **v0.2.6:** `omg --madmax` full-open host launch in tmux; OSS install dual-track + release protocol; CI smoke.
+- **v0.6.0:** versioned repository workflows; exact session routes and bounded recovery; project memory, tracker, compaction and outbound notifications; plugin MCP/LSP manifests; immutable GitHub-release installation and release readback.
 - **v0.5.0:** fail-closed gate and global-hook hardening; experimental gated multi-CLI tmux team plane with integration isolation; in-session MCP server; local LSP probe; editable packaging.
 - **v0.4.2:** `omg worker seal --all` — leader batch seal (fail-closed; valid `head_sha`); local-path installer force-refresh (uninstall+reinstall).
 - **v0.4.1:** backlog polish (`omg note --prune`, installed-snapshot capabilities lock, docs-drift guard) + command_policy break-glass floor hardening (fail-closed region boundary).

@@ -100,6 +100,13 @@ def test_docs_all_subcommands_are_real() -> None:
         "lsp",
         "autopilot",
         "qa",
+        "session",
+        "memory",
+        "tracker",
+        "compact",
+        "notify",
+        "workflow",
+        "parity",
     ):
         assert expected in cmds, f"missing expected sub-actioned command: {expected}"
 
@@ -114,3 +121,16 @@ def test_docs_all_subcommands_are_real() -> None:
                 f"{doc.name} documents non-existent `omg {cmd}` subcommands: "
                 f"{sorted(unknown)} (real choices: {sorted(choices)})"
             )
+
+
+def test_docs_describe_host_owned_lsp_without_semantic_proxy() -> None:
+    """The LSP guide must not revive the removed AST/pyright proxy contract."""
+    for doc in DOCS:
+        text = doc.read_text(encoding="utf-8")
+        assert "semantic_proxy_count: 0" in text
+        assert "semantic_proxy_unsupported" in text
+        assert "exit code 1" in text
+        assert "host-owned" in text
+        assert "omg_lsp_symbols" not in text
+        assert "omg_lsp_diagnostics" not in text
+        assert "stdlib `ast`" not in text

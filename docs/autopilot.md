@@ -3,7 +3,7 @@
 English | [繁體中文](./autopilot.zh-Hant.md)
 
 **Audience:** humans driving Grok Build + maintainers writing skills.  
-**Plugin version:** matches [`plugin.json`](../plugin.json) (currently **0.3.2+**).  
+**Plugin version:** matches [`plugin.json`](../plugin.json) (currently **0.6.0**).
 **Skill source:** [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md)  
 **All skills catalog:** [`skills.md`](./skills.md) · [zh-Hant](./skills.zh-Hant.md) · [docs index](./README.md)
 
@@ -154,6 +154,18 @@ omg autopilot status --run "$RUN"
 ```
 
 ---
+
+## Repository workflows are a separate layer
+
+Use `omg workflow install|list|show|plan|run` when the team wants a reviewed,
+versioned stage graph with deterministic task IDs, explicit permissions, and
+independent verifier/skeptic receipts. Autopilot may execute such a plan through
+Grok-native `spawn_subagent`, but it must not rewrite the workflow contract or
+invent receipts. A workflow `ship` result also does not replace `omg accept` or
+the release state machine. See [workflows.md](./workflows.md).
+
+Grok `/create-workflow` and Rhai projection remain `optional_unclaimed`; do not
+market help text or a local `.rhai` file as a verified native integration.
 
 ## Related skills
 

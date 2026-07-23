@@ -10,7 +10,6 @@ import hashlib
 import json
 import os
 import subprocess
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -361,7 +360,6 @@ def run_qa_cycle(
         for c in cycles[:-1]
         for f in (c.get("failures") or [])
     ]
-    repeats = sum(1 for fp in fps if prior.count(fp) >= 1)
     if any(prior.count(fp) >= 2 for fp in fps):
         state["status"] = "blocked"
         state["clean"] = False

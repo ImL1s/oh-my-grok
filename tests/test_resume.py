@@ -1,15 +1,17 @@
 """omg resume + RESUME.md routing."""
 from __future__ import annotations
 
-import json
+import pytest
+
+from omg_cli.contracts.state_schemas import ContractValidationError
 
 from omg_cli.resume import (
     build_resume_pack,
     clear_resume_md,
     recommend_commands,
+    resolve_resume_selection,
     resume_md_path,
     route_resume,
-    write_resume_md,
 )
 from omg_cli.state import create_run, write_status
 
@@ -68,3 +70,101 @@ def test_cli_resume_json(tmp_path, monkeypatch):
     create_run(tmp_path, mode="ulw", goal="fanout")
     rc = main(["resume", "--json", "--no-write"])
     assert rc == 0
+
+
+def _candidate(**overrides):
+    row = {
+        "repository_id": "OMG",
+        "host": "grok",
+        "run_id": "run-1",
+        "native_session_id": "session-1",
+        "recovery_manifest_sha256": "a" * 64,
+        "signed_handoff_sha256": "b" * 64,
+        "cwd_hash": "c" * 64,
+        "generation": 3,
+        "parent_hash": "d" * 64,
+        "parent_valid": True,
+        "live_lease": True,
+        "expires_at": "2099-01-01T00:00:00Z",
+    }
+    row.update(overrides)
+    return row
+
+
+@pytest.mark.parametrize(
+    ("selectors", "expected"),
+    [
+        ({"recovery_manifest": {"sha256": "a" * 64}}, "recovery_manifest"),
+        ({"run_id": "run-1"}, "run_id"),
+        ({"native_session_id": "session-1"}, "native_session_id"),
+        ({"current_process_run": "run-1"}, "current_process_run"),
+        ({"signed_handoff": {"sha256": "b" * 64}}, "signed_handoff"),
+        ({"best_effort_cwd": True}, "best_effort_cwd"),
+    ],
+)
+def test_exact_six_rank_resume_selector(selectors, expected) -> None:
+    selected = resolve_resume_selection(
+        selectors,
+        [_candidate()],
+        expected_repository_id="OMG",
+        expected_host="grok",
+        expected_cwd_hash="c" * 64,
+        current_generation=3,
+        best_effort=expected == "best_effort_cwd",
+    )
+    assert selected["selector"] == expected
+    assert selected["verified"] is (expected != "best_effort_cwd")
+
+
+def test_higher_selector_conflict_or_invalidity_never_falls_through() -> None:
+    with pytest.raises(ContractValidationError, match="E_RESUME_SELECTOR_CONFLICT"):
+        resolve_resume_selection(
+            {"recovery_manifest": {"sha256": "f" * 64}, "run_id": "run-1"},
+            [_candidate()],
+            expected_repository_id="OMG",
+            expected_host="grok",
+            expected_cwd_hash="c" * 64,
+            current_generation=3,
+        )
+
+    with pytest.raises(ContractValidationError, match="E_RESUME_NOT_FOUND"):
+        resolve_resume_selection(
+            {"run_id": "run-1"},
+            [_candidate(generation=2)],
+            expected_repository_id="OMG",
+            expected_host="grok",
+            expected_cwd_hash="c" * 64,
+            current_generation=3,
+        )
+    with pytest.raises(ContractValidationError, match="E_RESUME_NOT_FOUND"):
+        resolve_resume_selection(
+            {"native_session_id": "missing"},
+            [_candidate()],
+            expected_repository_id="OMG",
+            expected_host="grok",
+            expected_cwd_hash="c" * 64,
+            current_generation=3,
+        )
+
+
+def test_best_effort_tie_or_broken_parent_is_ambiguous() -> None:
+    with pytest.raises(ContractValidationError, match="E_RESUME_AMBIGUOUS"):
+        resolve_resume_selection(
+            {"best_effort_cwd": True},
+            [_candidate(), _candidate(run_id="run-2")],
+            expected_repository_id="OMG",
+            expected_host="grok",
+            expected_cwd_hash="c" * 64,
+            current_generation=3,
+            best_effort=True,
+        )
+    with pytest.raises(ContractValidationError, match="E_RESUME_AMBIGUOUS"):
+        resolve_resume_selection(
+            {"best_effort_cwd": True},
+            [_candidate(parent_valid=False)],
+            expected_repository_id="OMG",
+            expected_host="grok",
+            expected_cwd_hash="c" * 64,
+            current_generation=3,
+            best_effort=True,
+        )

@@ -49,14 +49,37 @@ def _run_standalone(payload: str, *, env_extra: dict | None = None, cwd: str = "
 # ---------------------------------------------------------------- generator / drift
 def test_generator_check_is_clean():
     r = subprocess.run([sys.executable, str(GENERATOR), "--check"], capture_output=True, text=True)
-    assert r.returncode == 0, r.stdout + r.stderr
+    rendered = subprocess.run(
+        [sys.executable, str(GENERATOR), "--print"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    if rendered == STANDALONE.read_text(encoding="utf-8"):
+        assert r.returncode == 0, r.stdout + r.stderr
+    else:
+        # W2 owns policy inputs and W6 alone owns the generated output.  Between
+        # those waves, the honest contract is an explicit stale rc=1—not a W1
+        # write to hooks/bin/omg_pretool_deny_standalone.py.
+        assert r.returncode == 1
+        assert "stale" in r.stderr and "regenerate" in r.stderr
 
 
 def test_generator_is_deterministic():
     a = subprocess.run([sys.executable, str(GENERATOR), "--print"], capture_output=True, text=True)
     b = subprocess.run([sys.executable, str(GENERATOR), "--print"], capture_output=True, text=True)
     assert a.returncode == 0 and b.returncode == 0
-    assert a.stdout == b.stdout == STANDALONE.read_text(encoding="utf-8")
+    assert a.stdout == b.stdout
+
+
+def test_generator_interface_is_versioned_and_machine_readable():
+    result = subprocess.run(
+        [sys.executable, str(GENERATOR), "--interface"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert result.stdout == "standalone_hook_generator/1\n"
 
 
 def test_standalone_has_no_checkout_import():

@@ -14,10 +14,12 @@ import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import Any, Literal, Sequence
 
 # Providers supported in v0.2.1
 PROVIDERS = frozenset({"codex", "claude", "gemini"})
+STRUCTURED_VERDICT_PROVIDERS = frozenset({"codex", "claude"})
+ADVISOR_SKILLS = frozenset({"omg-ask", "omg-dual-review", "omg-ralplan"})
 ALIASES: dict[str, str] = {
     "fable": "claude",
     # Intentionally NO "agy" → gemini: agy is Antigravity (different binary,
@@ -66,6 +68,32 @@ class ProviderSpec:
     optional: bool = False
 
 
+@dataclass(frozen=True)
+class AdvisorRoute:
+    """Resolved skill/agent/provider route; always advisory and read-only."""
+
+    skill: str
+    requested_role: str | None
+    role_class: str | None
+    provider: str
+    posture: str = "read-only"
+    worker_eligible: bool = False
+    auto_apply: bool = False
+    authoritative: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "skill": self.skill,
+            "requested_role": self.requested_role,
+            "role_class": self.role_class,
+            "provider": self.provider,
+            "posture": self.posture,
+            "worker_eligible": self.worker_eligible,
+            "auto_apply": self.auto_apply,
+            "authoritative": self.authoritative,
+        }
+
+
 SPECS: dict[str, ProviderSpec] = {
     "codex": ProviderSpec(name="codex", binary="codex", optional=False),
     "claude": ProviderSpec(name="claude", binary="claude", optional=False),
@@ -83,6 +111,51 @@ def normalize_provider(name: str) -> str:
         known = ", ".join(sorted(PROVIDERS | set(ALIASES)))
         raise AskProviderError(f"unknown provider {name!r}; expected one of: {known}")
     return canon
+
+
+def resolve_advisor_route(
+    provider: str,
+    *,
+    skill: str = "omg-ask",
+    requested_role: str | None = None,
+) -> AdvisorRoute:
+    """Join session skill, agent taxonomy and external advisor policy.
+
+    External CLIs are never workers. Reviewer/verifier personas require a
+    provider with a structured-verdict lane; all routes remain read-only,
+    non-authoritative, and non-auto-applying.
+    """
+    canon = normalize_provider(provider)
+    skill_name = (skill or "").strip().lower()
+    if skill_name not in ADVISOR_SKILLS:
+        raise AskProviderError(
+            f"skill {skill!r} is not allowed to route external advisors"
+        )
+    role_name: str | None = None
+    role_kind: str | None = None
+    if requested_role is not None:
+        try:
+            from omg_cli.team.roles import normalize_role, role_class
+
+            role_name = normalize_role(requested_role)
+            role_kind = role_class(role_name)
+        except (ImportError, KeyError, ValueError) as exc:
+            raise AskProviderError(
+                f"invalid advisor role {requested_role!r}: {exc}"
+            ) from exc
+        if (
+            role_kind in {"reviewer", "verifier"}
+            and canon not in STRUCTURED_VERDICT_PROVIDERS
+        ):
+            raise AskProviderError(
+                f"provider {canon!r} is not eligible for structured {role_kind} verdicts"
+            )
+    return AdvisorRoute(
+        skill=skill_name,
+        requested_role=role_name,
+        role_class=role_kind,
+        provider=canon,
+    )
 
 
 def resolve_binary(provider: str) -> str:
@@ -310,10 +383,13 @@ def argv_contains_prompt(argv: Sequence[str], prompt: str) -> bool:
 
 
 __all__ = [
+    "ADVISOR_SKILLS",
     "ALIASES",
+    "AdvisorRoute",
     "AskProviderError",
     "AskProviderMissing",
     "PROVIDERS",
+    "STRUCTURED_VERDICT_PROVIDERS",
     "SPECS",
     "argv_claude",
     "argv_codex",
@@ -324,6 +400,7 @@ __all__ = [
     "extras_allowed",
     "normalize_provider",
     "resolve_binary",
+    "resolve_advisor_route",
     "validate_extra",
     "write_prompt_temp",
 ]

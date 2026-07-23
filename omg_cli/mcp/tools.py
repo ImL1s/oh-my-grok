@@ -1,587 +1,542 @@
-"""Curated MCP tool handlers for in-session omg ops.
+"""Exact, bounded MCP operations exposed by oh-my-grok.
 
-Security (all three mandatory):
-1. Allowlist only — never register accept / set_verified / state_write / …
-2. Structural refusal lives in acceptance (OMG_MCP_SERVER=1) — not here.
-3. Every write path is confined under allowed ``.omg`` subtrees (never state).
+The MCP surface is intentionally smaller than the CLI.  Eight operations are
+read-only; ``proposal.create`` may only create an immutable, non-authoritative
+proposal below ``.omg/artifacts/mcp-proposals``.  No operation can mutate run
+state, acceptance, ``passes`` or ``verified``.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
-from datetime import datetime, timezone
+import threading
+import time
+from collections import Counter
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from omg_cli.evidence import EvidenceError, validate_identifier
-from omg_cli.hud import hud_pack
-from omg_cli.lsp_tools import diagnostics_ast, symbols_ast
-from omg_cli.note import add_note, read_notes
-from omg_cli.resume import build_resume_pack, resume_md_path
+from omg_cli.contracts.path_keys import (
+    DATA_FILE_MODE,
+    atomic_write_bytes,
+    ensure_managed_dir,
+    exclusive_lock,
+)
+from omg_cli.contracts.state_schemas import ContractValidationError, require_safe_id
+from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
+from omg_cli.project_memory import search_memory
+from omg_cli.redaction import redact_value
+from omg_cli.resume import build_resume_pack
+from omg_cli.runtime_events import read_all_runtime_events
 from omg_cli.state import load_active_run, load_run, load_run_view
-from omg_cli.wiki import WikiError, ingest as wiki_ingest, list_pages, query as wiki_query
 
-# ---------------------------------------------------------------------------
-# Path confinement (#3) — write targets must stay under these subtrees
-# ---------------------------------------------------------------------------
 
-_PROJECT_MEMORY_NAME = "project-memory.json"
-_ARTIFACT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+EXACT_TOOL_NAMES: tuple[str, ...] = (
+    "run_status.read",
+    "trace.timeline",
+    "trace.summary",
+    "resume_metadata.read",
+    "project_memory.search",
+    "wiki.read",
+    "team_status.read",
+    "mailbox.list",
+    "proposal.create",
+)
 
-# Names that must NEVER appear in the registered tool set (registry test).
 FORBIDDEN_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "accept",
-        "omg_accept",
         "set_verified",
-        "omg_set_verified",
-        "register_cli_acceptance_token",
-        "omg_register_cli_acceptance_token",
-        "state_write",
-        "omg_state_write",
-        "state_clear",
-        "omg_state_clear",
-        "python_repl",
-        "omg_python_repl",
-        "ast_grep_replace",
-        "omg_ast_grep_replace",
-        "shared_memory",
-        "omg_shared_memory",
-        "session_search",
-        "omg_session_search",
-        "merge_readiness",
-        "omg_merge_readiness",
-        # semantic LSP bridge surface (OMC ships; OMG does not)
-        "lsp_goto",
-        "lsp_hover",
-        "lsp_rename",
-        "lsp_find_references",
-        "omg_lsp_goto",
-        "omg_lsp_hover",
-        "omg_lsp_rename",
-        "omg_lsp_find_references",
+        "state.write",
+        "state.clear",
+        "python.repl",
+        "shell.run",
+        "workflow.ship",
+        "lsp.hover",
+        "lsp.definition",
+        "lsp.references",
+        "lsp.symbols",
+        "lsp.diagnostics",
+        "lsp.actions",
+        "lsp.rename",
     }
 )
 
-
-class PathConfineError(ValueError):
-    """Write target escapes an allowed ``.omg`` subtree."""
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+MAX_OUTPUT_BYTES = 262_144
+MAX_PROPOSAL_BYTES = 131_072
+MAX_WIKI_PAGE_BYTES = 131_072
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,127}$")
 
 
-def _root(args: dict[str, Any] | None, default: Path | None) -> Path:
-    if default is not None:
-        return Path(default).resolve()
-    # Handlers never accept a caller-supplied absolute root into state; root is
-    # process cwd (or inject for tests). Optional relative "root" is refused.
-    return Path.cwd().resolve()
+class ToolError(RuntimeError):
+    """Stable structured MCP operation failure."""
+
+    def __init__(self, code: str, message: str, *, details: Any | None = None):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.details = details
+
+    def payload(self) -> dict[str, Any]:
+        error: dict[str, Any] = {"code": self.code, "message": self.message}
+        if self.details is not None:
+            error["details"] = self.details
+        return {"ok": False, "error": error}
 
 
-def assert_write_allowed(root: Path, target: Path, *, kind: str) -> Path:
-    """Resolve *target* and refuse ``.omg/state/**``, ``..``, and symlink escapes.
+class PathConfineError(ToolError):
+    """A caller attempted to address data outside the frozen project root."""
 
-    Allowed write subtrees (under project root):
-    - ``.omg/notepad.md``
-    - ``.omg/wiki/**``
-    - ``.omg/artifacts/**``
-    - ``.omg/project-memory*`` (json notes file)
-    """
-    root_r = Path(root).resolve()
-    candidate = Path(target)
-    if not candidate.is_absolute():
-        candidate = root_r / candidate
-
-    try:
-        rel = candidate.resolve(strict=False)
-    except (OSError, RuntimeError) as exc:
-        raise PathConfineError(f"{kind}: cannot resolve path: {exc}") from exc
-
-    try:
-        rel.relative_to(root_r)
-    except ValueError as exc:
-        raise PathConfineError(
-            f"{kind}: write target escapes project root: {rel}"
-        ) from exc
-
-    # Hard ban: anything under .omg/state
-    state_root = (root_r / ".omg" / "state").resolve()
-    try:
-        rel.relative_to(state_root)
-        raise PathConfineError(
-            f"{kind}: writes under .omg/state/ are forbidden (got {rel})"
-        )
-    except ValueError:
-        pass
-
-    # Symlink component scan on the unreolved path under root
-    probe = root_r
-    try:
-        parts = rel.relative_to(root_r).parts
-    except ValueError:
-        parts = ()
-    for part in parts:
-        probe = probe / part
-        if probe.is_symlink():
-            # After resolve we already checked landing zone; still refuse
-            # intermediate symlinks as defense in depth.
-            link_target = probe.resolve()
-            try:
-                link_target.relative_to(root_r)
-            except ValueError as exc:
-                raise PathConfineError(
-                    f"{kind}: symlink escapes project root: {probe}"
-                ) from exc
-            try:
-                link_target.relative_to(state_root)
-                raise PathConfineError(
-                    f"{kind}: symlink into .omg/state/ refused: {probe}"
-                )
-            except ValueError:
-                pass
-
-    allowed_checks: list[tuple[str, Callable[[Path], bool]]] = [
-        (
-            "notepad",
-            lambda p: p == (root_r / ".omg" / "notepad.md").resolve(),
-        ),
-        (
-            "wiki",
-            lambda p: _is_under(p, (root_r / ".omg" / "wiki").resolve()),
-        ),
-        (
-            "artifacts",
-            lambda p: _is_under(p, (root_r / ".omg" / "artifacts").resolve()),
-        ),
-        (
-            "project-memory",
-            lambda p: p.name.startswith("project-memory")
-            and p.parent.resolve() == (root_r / ".omg").resolve(),
-        ),
-    ]
-    for _label, check in allowed_checks:
-        if check(rel):
-            return rel
-    raise PathConfineError(
-        f"{kind}: write target not under allowed subtree "
-        f"(.omg/notepad.md|.omg/wiki/|.omg/artifacts/|.omg/project-memory*): {rel}"
-    )
+    def __init__(self, message: str):
+        super().__init__("E_PATH_ESCAPE", message)
 
 
-def _is_under(path: Path, base: Path) -> bool:
-    try:
-        path.relative_to(base)
-        return True
-    except ValueError:
-        return False
+class ToolContext:
+    """Cooperative cancellation/deadline context passed to handlers."""
+
+    def __init__(
+        self,
+        *,
+        cancel_event: threading.Event | None = None,
+        deadline: float | None = None,
+    ) -> None:
+        self.cancel_event = cancel_event
+        self.deadline = deadline
+
+    def checkpoint(self) -> None:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise ToolError("E_CANCELLED", "MCP operation cancelled")
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            raise ToolError("E_TIMEOUT", "MCP operation timed out")
 
 
-def project_memory_path(root: Path) -> Path:
-    return Path(root) / ".omg" / _PROJECT_MEMORY_NAME
-
-
-def _safe_artifact_name(name: str) -> str:
-    raw = (name or "").strip()
-    if not raw or not _ARTIFACT_NAME_RE.fullmatch(raw):
-        raise PathConfineError(
-            f"invalid artifact name {name!r}; expected safe basename "
-            "([A-Za-z0-9][A-Za-z0-9._-]{0,127}), no path separators"
-        )
-    if ".." in raw or "/" in raw or "\\" in raw:
-        raise PathConfineError(f"artifact name must not contain path elements: {name!r}")
-    # Block names that look like they escape into state
-    low = raw.lower()
-    if low in {"status.json", "active.json"} or low.startswith("acceptance"):
-        raise PathConfineError(
-            f"artifact name reserved / looks like state: {name!r}"
-        )
-    return raw
-
-
-# ---------------------------------------------------------------------------
-# Handlers (thin over omg_cli modules)
-# ---------------------------------------------------------------------------
-
-Handler = Callable[[dict[str, Any], Path], dict[str, Any]]
-
-
-def omg_state_status(args: dict[str, Any], root: Path) -> dict[str, Any]:
-    run_id = args.get("run_id")
-    rid = str(run_id).strip() if run_id else None
-    pack = hud_pack(root, rid)
-    return {"ok": True, "pack": pack}
-
-
-def omg_state_read(args: dict[str, Any], root: Path) -> dict[str, Any]:
-    run_id = str(args.get("run_id") or "").strip()
-    if not run_id:
-        return {"ok": False, "error": "run_id required"}
-    try:
-        validate_identifier(run_id, label="run_id")
-    except EvidenceError as exc:
-        return {"ok": False, "error": str(exc)}
-    data = load_run_view(root, run_id) or load_run(root, run_id)
-    if data is None:
-        return {"ok": False, "error": f"run not found: {run_id}"}
-    return {"ok": True, "run": data}
-
-
-def omg_state_list_active(args: dict[str, Any], root: Path) -> dict[str, Any]:
-    _ = args
-    active = load_active_run(root)
-    runs_dir = root / ".omg" / "state" / "runs"
-    listed: list[dict[str, Any]] = []
-    if runs_dir.is_dir():
-        for child in sorted(runs_dir.iterdir()):
-            if not child.is_dir():
-                continue
-            st = load_run(root, child.name)
-            if st is None:
-                continue
-            listed.append(
-                {
-                    "run_id": child.name,
-                    "status": st.get("status"),
-                    "mode": st.get("mode"),
-                    "verified": bool(st.get("verified")),
-                }
-            )
-    return {
-        "ok": True,
-        "active": active,
-        "runs": listed,
-    }
-
-
-def omg_note_read(args: dict[str, Any], root: Path) -> dict[str, Any]:
-    _ = args
-    return {"ok": True, "text": read_notes(root)}
-
-
-def omg_note_write(args: dict[str, Any], root: Path) -> dict[str, Any]:
-    text = str(args.get("text") or "")
-    if not text.strip():
-        return {"ok": False, "error": "text required"}
-    priority = bool(args.get("priority"))
-    # Fixed destination — never accept a path from the caller.
-    from omg_cli.note import notepad_path
-
-    dest = notepad_path(root)
-    assert_write_allowed(root, dest, kind="omg_note_write")
-    path = add_note(root, text, priority=priority)
-    # Re-check final path after write
-    assert_write_allowed(root, path, kind="omg_note_write")
-    return {
-        "ok": True,
-        "path": str(path),
-        "priority": priority,
-        "ttl": "permanent" if priority else "7d",
-    }
-
-
-def omg_wiki_query(args: dict[str, Any], root: Path) -> dict[str, Any]:
-    needle = str(args.get("needle") or args.get("q") or "").strip()
-    if not needle:
-        return {"ok": False, "error": "needle required"}
-    try:
-        hits = wiki_query(root, needle, limit=int(args.get("limit") or 20))
-    except WikiError as exc:
-        return {"ok": False, "error": str(exc)}
-    return {"ok": True, "hits": hits}
-
-
-def omg_wiki_list(args: dict[str, Any], root: Path) -> dict[str, Any]:
-    _ = args
-    return {"ok": True, "pages": list_pages(root)}
-
-
-def omg_wiki_ingest(args: dict[str, Any], root: Path) -> dict[str, Any]:
-    title = str(args.get("title") or "").strip()
-    body = str(args.get("body") or args.get("text") or "")
-    if not title or not body.strip():
-        return {"ok": False, "error": "title and body required"}
-    try:
-        result = wiki_ingest(root, title=title, body=body)
-    except WikiError as exc:
-        return {"ok": False, "error": str(exc)}
-    path = Path(result["path"])
-    assert_write_allowed(root, path, kind="omg_wiki_ingest")
-    return {"ok": True, **result}
-
-
-def omg_project_memory_read(args: dict[str, Any], root: Path) -> dict[str, Any]:
-    _ = args
-    path = project_memory_path(root)
-    if not path.is_file():
-        return {"ok": True, "exists": False, "notes": [], "text": ""}
-    try:
-        raw = path.read_text(encoding="utf-8")
-        data = json.loads(raw) if raw.strip() else {"notes": []}
-    except (OSError, json.JSONDecodeError) as exc:
-        return {"ok": False, "error": str(exc)}
-    notes = data.get("notes") if isinstance(data, dict) else []
-    if not isinstance(notes, list):
-        notes = []
-    return {
-        "ok": True,
-        "exists": True,
-        "path": str(path),
-        "notes": notes,
-        "text": raw,
-    }
-
-
-def omg_project_memory_add_note(args: dict[str, Any], root: Path) -> dict[str, Any]:
-    text = str(args.get("text") or "").strip()
-    if not text:
-        return {"ok": False, "error": "text required"}
-    path = project_memory_path(root)
-    assert_write_allowed(root, path, kind="omg_project_memory_add_note")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    notes: list[dict[str, Any]] = []
-    if path.is_file():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8") or "{}")
-            if isinstance(data, dict) and isinstance(data.get("notes"), list):
-                notes = list(data["notes"])
-        except (OSError, json.JSONDecodeError):
-            notes = []
-    notes.append({"text": text, "at": _utc_now()})
-    body = json.dumps({"notes": notes}, indent=2, ensure_ascii=False) + "\n"
-    # Final confinement before write
-    assert_write_allowed(root, path, kind="omg_project_memory_add_note")
-    path.write_text(body, encoding="utf-8")
-    return {"ok": True, "path": str(path), "count": len(notes)}
-
-
-def omg_artifact_write(args: dict[str, Any], root: Path) -> dict[str, Any]:
-    """Write a non-authoritative proposal under ``.omg/artifacts/`` only."""
-    name = _safe_artifact_name(str(args.get("name") or ""))
-    body = str(args.get("body") or "")
-    if not body:
-        return {"ok": False, "error": "body required"}
-    # Reject path-shaped names already handled by _safe_artifact_name; also
-    # refuse if the *resolved* path would leave artifacts/ (e.g. weird names).
-    dest = (root / ".omg" / "artifacts" / name).resolve()
-    try:
-        assert_write_allowed(root, dest, kind="omg_artifact_write")
-    except PathConfineError:
-        raise
-    # Double-check we are still under artifacts after resolve
-    art_root = (root / ".omg" / "artifacts").resolve()
-    if not _is_under(dest, art_root) and dest != art_root:
-        # dest is a file under art_root — _is_under works for files
-        if dest.parent != art_root and not _is_under(dest.parent, art_root):
-            raise PathConfineError(
-                f"omg_artifact_write: resolved path not under artifacts: {dest}"
-            )
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(body if body.endswith("\n") else body + "\n", encoding="utf-8")
-    assert_write_allowed(root, dest, kind="omg_artifact_write")
-    return {
-        "ok": True,
-        "path": str(dest),
-        "name": name,
-        "note": "proposal only — not authoritative state",
-    }
-
-
-def omg_lsp_symbols(args: dict[str, Any], root: Path) -> dict[str, Any]:
-    path_s = str(args.get("path") or "").strip()
-    if not path_s:
-        return {"ok": False, "error": "path required"}
-    path = Path(path_s)
-    if not path.is_absolute():
-        path = root / path
-    return symbols_ast(path)
-
-
-def omg_lsp_diagnostics(args: dict[str, Any], root: Path) -> dict[str, Any]:
-    path_s = str(args.get("path") or "").strip()
-    if not path_s:
-        return {"ok": False, "error": "path required"}
-    path = Path(path_s)
-    if not path.is_absolute():
-        path = root / path
-    return diagnostics_ast(path)
-
-
-def omg_resume_context(args: dict[str, Any], root: Path) -> dict[str, Any]:
-    run_id = args.get("run_id")
-    rid = str(run_id).strip() if run_id else None
-    pack = build_resume_pack(root, rid)
-    md_path = resume_md_path(root)
-    resume_md = ""
-    if md_path.is_file():
-        try:
-            resume_md = md_path.read_text(encoding="utf-8")
-        except OSError:
-            resume_md = ""
-    return {
-        "ok": bool(pack.get("ok")),
-        "pack": pack,
-        "resume_md_path": str(md_path),
-        "resume_md": resume_md,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Registry (allowlist is the source of truth for tools/list)
-# ---------------------------------------------------------------------------
-
-TOOL_HANDLERS: dict[str, Handler] = {
-    "omg_state_status": omg_state_status,
-    "omg_state_read": omg_state_read,
-    "omg_state_list_active": omg_state_list_active,
-    "omg_note_read": omg_note_read,
-    "omg_note_write": omg_note_write,
-    "omg_wiki_query": omg_wiki_query,
-    "omg_wiki_list": omg_wiki_list,
-    "omg_wiki_ingest": omg_wiki_ingest,
-    "omg_project_memory_read": omg_project_memory_read,
-    "omg_project_memory_add_note": omg_project_memory_add_note,
-    "omg_artifact_write": omg_artifact_write,
-    "omg_lsp_symbols": omg_lsp_symbols,
-    "omg_lsp_diagnostics": omg_lsp_diagnostics,
-    "omg_resume_context": omg_resume_context,
-}
-
-
-def _schema_props(**props: dict[str, Any]) -> dict[str, Any]:
-    required = [k for k, v in props.items() if v.pop("_required", False)]
+def _object_schema(
+    properties: dict[str, dict[str, Any]], *, required: tuple[str, ...] = ()
+) -> dict[str, Any]:
     return {
         "type": "object",
-        "properties": props,
-        "required": required,
+        "properties": properties,
+        "required": list(required),
         "additionalProperties": False,
     }
 
 
+_RUN_ID = {"type": "string", "minLength": 1, "maxLength": 128}
+_SAFE_ID = {"type": "string", "minLength": 1, "maxLength": 128}
+_LIMIT_256 = {"type": "integer", "minimum": 1, "maximum": 256}
+
 TOOL_SPECS: list[dict[str, Any]] = [
     {
-        "name": "omg_state_status",
-        "description": (
-            "Read HUD/status pack for the active or named run (side-effect-free)."
-        ),
-        "inputSchema": _schema_props(
-            run_id={"type": "string", "description": "optional run_id"},
+        "name": "run_status.read",
+        "description": "Read the active or named OMG run view; never mutates state.",
+        "inputSchema": _object_schema({"run_id": _RUN_ID}),
+    },
+    {
+        "name": "trace.timeline",
+        "description": "Read a bounded, redacted lifecycle-event timeline.",
+        "inputSchema": _object_schema(
+            {
+                "run_id": _RUN_ID,
+                "session_id": _SAFE_ID,
+                "cursor": {"type": "integer", "minimum": 0},
+                "limit": _LIMIT_256,
+            }
         ),
     },
     {
-        "name": "omg_state_read",
-        "description": "Load one run's status view (read-only).",
-        "inputSchema": _schema_props(
-            run_id={
-                "type": "string",
-                "description": "run_id",
-                "_required": True,
+        "name": "trace.summary",
+        "description": "Summarize bounded lifecycle events by type and source.",
+        "inputSchema": _object_schema({"run_id": _RUN_ID, "session_id": _SAFE_ID}),
+    },
+    {
+        "name": "resume_metadata.read",
+        "description": "Read bounded resume routing metadata without session transcript bodies.",
+        "inputSchema": _object_schema({"run_id": _RUN_ID}),
+    },
+    {
+        "name": "project_memory.search",
+        "description": "Search redacted project facts in the current repository.",
+        "inputSchema": _object_schema(
+            {
+                "query": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
             },
+            required=("query",),
         ),
     },
     {
-        "name": "omg_state_list_active",
-        "description": "List active pointer and known runs under .omg/state/runs (read-only).",
-        "inputSchema": _schema_props(),
-    },
-    {
-        "name": "omg_note_read",
-        "description": "Read .omg/notepad.md contents.",
-        "inputSchema": _schema_props(),
-    },
-    {
-        "name": "omg_note_write",
-        "description": (
-            "Append a non-authoritative note to .omg/notepad.md "
-            "(path-confined; never writes under .omg/state/)."
+        "name": "wiki.read",
+        "description": "List, read, or search local wiki pages without creating files.",
+        "inputSchema": _object_schema(
+            {
+                "slug": {"type": "string", "minLength": 1, "maxLength": 128},
+                "query": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            }
         ),
-        "inputSchema": _schema_props(
-            text={"type": "string", "description": "note text", "_required": True},
-            priority={
-                "type": "boolean",
-                "description": "permanent if true (else 7d TTL tag)",
+    },
+    {
+        "name": "team_status.read",
+        "description": "Read a bounded native-team or tmux-team status projection.",
+        "inputSchema": _object_schema({"run_id": _RUN_ID, "team_id": _SAFE_ID}),
+    },
+    {
+        "name": "mailbox.list",
+        "description": "List bounded mailbox metadata; message bodies are not exposed.",
+        "inputSchema": _object_schema(
+            {
+                "run_id": _RUN_ID,
+                "team_id": _SAFE_ID,
+                "recipient_id": _SAFE_ID,
+                "after": {
+                    "oneOf": [
+                        {"type": "string", "minLength": 1, "maxLength": 32},
+                        {"type": "integer", "minimum": -1},
+                    ]
+                },
+                "generation": {"type": "integer", "minimum": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 256},
             },
+            required=("run_id", "team_id", "recipient_id"),
         ),
     },
     {
-        "name": "omg_wiki_query",
-        "description": "Keyword search under .omg/wiki (read-only).",
-        "inputSchema": _schema_props(
-            needle={"type": "string", "description": "search string", "_required": True},
-            limit={"type": "integer", "description": "max hits (default 20)"},
-        ),
-    },
-    {
-        "name": "omg_wiki_list",
-        "description": "List wiki pages under .omg/wiki.",
-        "inputSchema": _schema_props(),
-    },
-    {
-        "name": "omg_wiki_ingest",
+        "name": "proposal.create",
         "description": (
-            "Ingest a wiki page under .omg/wiki/ (proposal knowledge; path-confined)."
+            "Create an immutable non-authoritative JSON proposal under "
+            ".omg/artifacts/mcp-proposals only."
         ),
-        "inputSchema": _schema_props(
-            title={"type": "string", "description": "page title", "_required": True},
-            body={"type": "string", "description": "page body", "_required": True},
-        ),
-    },
-    {
-        "name": "omg_project_memory_read",
-        "description": "Read .omg/project-memory.json if present.",
-        "inputSchema": _schema_props(),
-    },
-    {
-        "name": "omg_project_memory_add_note",
-        "description": (
-            "Append a note to .omg/project-memory.json (path-confined; not state)."
-        ),
-        "inputSchema": _schema_props(
-            text={"type": "string", "description": "memory note", "_required": True},
-        ),
-    },
-    {
-        "name": "omg_artifact_write",
-        "description": (
-            "Write a PROPOSAL file under .omg/artifacts/ only "
-            "(never .omg/state/; not authoritative)."
-        ),
-        "inputSchema": _schema_props(
-            name={
-                "type": "string",
-                "description": "safe basename under .omg/artifacts/",
-                "_required": True,
+        "inputSchema": _object_schema(
+            {
+                "proposal_id": _SAFE_ID,
+                "kind": _SAFE_ID,
+                "payload": {
+                    "type": ["object", "array", "string", "integer", "boolean", "null"]
+                },
             },
-            body={"type": "string", "description": "file contents", "_required": True},
-        ),
-    },
-    {
-        "name": "omg_lsp_symbols",
-        "description": (
-            "List Python symbols via stdlib ast (syntax-only probe; NOT a semantic LSP bridge)."
-        ),
-        "inputSchema": _schema_props(
-            path={"type": "string", "description": "Python file path", "_required": True},
-        ),
-    },
-    {
-        "name": "omg_lsp_diagnostics",
-        "description": (
-            "Syntax diagnostics via ast.parse (local probe; not type-checking)."
-        ),
-        "inputSchema": _schema_props(
-            path={"type": "string", "description": "Python file path", "_required": True},
-        ),
-    },
-    {
-        "name": "omg_resume_context",
-        "description": "Resolve resume pack + RESUME.md contents (read-only).",
-        "inputSchema": _schema_props(
-            run_id={"type": "string", "description": "optional run_id"},
+            required=("proposal_id", "kind", "payload"),
         ),
     },
 ]
+
+
+def _validate_value(value: Any, schema: Mapping[str, Any], label: str) -> None:
+    if "oneOf" in schema:
+        failures = 0
+        for option in schema["oneOf"]:
+            try:
+                _validate_value(value, option, label)
+                return
+            except ToolError:
+                failures += 1
+        raise ToolError("E_SCHEMA", f"{label} does not match any allowed type")
+    allowed = schema.get("type")
+    allowed_types = [allowed] if isinstance(allowed, str) else list(allowed or [])
+    type_map: dict[str, type | tuple[type, ...]] = {
+        "object": dict,
+        "array": list,
+        "string": str,
+        "integer": int,
+        "boolean": bool,
+        "null": type(None),
+    }
+    if allowed_types:
+        matches = any(
+            isinstance(value, type_map[item])
+            and not (item == "integer" and isinstance(value, bool))
+            for item in allowed_types
+        )
+        if not matches:
+            raise ToolError("E_SCHEMA", f"{label} has invalid type")
+    if isinstance(value, str):
+        if len(value) < int(schema.get("minLength", 0)):
+            raise ToolError("E_SCHEMA", f"{label} is too short")
+        if len(value) > int(schema.get("maxLength", len(value))):
+            raise ToolError("E_SCHEMA", f"{label} is too long")
+    if isinstance(value, int) and not isinstance(value, bool):
+        if "minimum" in schema and value < int(schema["minimum"]):
+            raise ToolError("E_SCHEMA", f"{label} is below minimum")
+        if "maximum" in schema and value > int(schema["maximum"]):
+            raise ToolError("E_SCHEMA", f"{label} exceeds maximum")
+
+
+def _validate_arguments(name: str, arguments: Any) -> dict[str, Any]:
+    if not isinstance(arguments, dict):
+        raise ToolError("E_SCHEMA", "arguments must be an object")
+    spec = next(item for item in TOOL_SPECS if item["name"] == name)
+    schema = spec["inputSchema"]
+    properties = schema["properties"]
+    unknown = sorted(set(arguments) - set(properties))
+    if unknown:
+        raise ToolError("E_SCHEMA", "unknown argument fields", details=unknown)
+    missing = sorted(set(schema["required"]) - set(arguments))
+    if missing:
+        raise ToolError("E_SCHEMA", "required argument fields missing", details=missing)
+    for key, value in arguments.items():
+        _validate_value(value, properties[key], key)
+    return dict(arguments)
+
+
+def _require_id(value: Any, *, label: str) -> str:
+    try:
+        return require_safe_id(value, label=label)
+    except ContractValidationError as exc:
+        raise ToolError("E_SCHEMA", str(exc)) from exc
+
+
+def _run_status(args: dict[str, Any], root: Path, ctx: ToolContext) -> dict[str, Any]:
+    ctx.checkpoint()
+    run_id = args.get("run_id")
+    if run_id is None:
+        run = load_active_run(root)
+    else:
+        rid = _require_id(run_id, label="run_id")
+        run = load_run_view(root, rid) or load_run(root, rid)
+    if run is None:
+        return {"ok": True, "found": False, "run": None}
+    safe = redact_value(run)
+    return {"ok": True, "found": True, "run": safe}
+
+
+def _filtered_events(args: dict[str, Any], root: Path, ctx: ToolContext) -> list[dict[str, Any]]:
+    ctx.checkpoint()
+    run_id = args.get("run_id")
+    session_id = args.get("session_id")
+    if run_id is not None:
+        run_id = _require_id(run_id, label="run_id")
+    if session_id is not None:
+        session_id = _require_id(session_id, label="session_id")
+    rows: list[dict[str, Any]] = []
+    for event in read_all_runtime_events(root):
+        ctx.checkpoint()
+        if run_id is not None and event["run_id"] != run_id:
+            continue
+        if session_id is not None and event["session_id"] != session_id:
+            continue
+        rows.append(event)
+    return rows
+
+
+def _trace_timeline(args: dict[str, Any], root: Path, ctx: ToolContext) -> dict[str, Any]:
+    rows = _filtered_events(args, root, ctx)
+    cursor = int(args.get("cursor", 0))
+    limit = int(args.get("limit", 100))
+    selected = rows[cursor : cursor + limit]
+    return {
+        "ok": True,
+        "cursor": cursor,
+        "next_cursor": cursor + len(selected),
+        "has_more": cursor + len(selected) < len(rows),
+        "events": redact_value(selected),
+    }
+
+
+def _trace_summary(args: dict[str, Any], root: Path, ctx: ToolContext) -> dict[str, Any]:
+    rows = _filtered_events(args, root, ctx)
+    return {
+        "ok": True,
+        "count": len(rows),
+        "by_type": dict(sorted(Counter(row["event_type"] for row in rows).items())),
+        "by_source": dict(sorted(Counter(row["source"] for row in rows).items())),
+        "first_observed_at": rows[0]["observed_at"] if rows else None,
+        "last_observed_at": rows[-1]["observed_at"] if rows else None,
+    }
+
+
+def _resume_metadata(args: dict[str, Any], root: Path, ctx: ToolContext) -> dict[str, Any]:
+    ctx.checkpoint()
+    run_id = args.get("run_id")
+    if run_id is not None:
+        run_id = _require_id(run_id, label="run_id")
+    pack = build_resume_pack(root, run_id)
+    # Deliberately omit transcript/path bodies.  This is routing metadata only.
+    allowed = {
+        "ok",
+        "reason",
+        "run_id",
+        "mode",
+        "status",
+        "stage",
+        "goal",
+        "verified",
+        "terminal",
+        "resumable",
+        "grok_session_id",
+        "commands",
+        "view_keys",
+        "hint",
+        "generated_at",
+    }
+    return {"ok": bool(pack.get("ok")), "metadata": redact_value({k: v for k, v in pack.items() if k in allowed})}
+
+
+def _project_memory_search(args: dict[str, Any], root: Path, ctx: ToolContext) -> dict[str, Any]:
+    ctx.checkpoint()
+    hits = search_memory(root, args["query"], limit=int(args.get("limit", 20)))
+    return {"ok": True, "hits": redact_value(hits)}
+
+
+def _wiki_read(args: dict[str, Any], root: Path, ctx: ToolContext) -> dict[str, Any]:
+    ctx.checkpoint()
+    wiki_root = root / ".omg" / "wiki"
+    slug = args.get("slug")
+    query = args.get("query")
+    if slug is not None and query is not None:
+        raise ToolError("E_SCHEMA", "wiki.read accepts slug or query, not both")
+    pages = sorted(wiki_root.glob("*.md")) if wiki_root.is_dir() else []
+    pages = [path for path in pages if path.name != "INDEX.md" and not path.is_symlink()]
+    if slug is not None:
+        if not _SLUG_RE.fullmatch(slug):
+            raise PathConfineError("wiki slug must be canonical lowercase kebab-case")
+        path = wiki_root / f"{slug}.md"
+        if not path.is_file() or path.is_symlink():
+            return {"ok": True, "found": False, "slug": slug}
+        body = path.read_bytes()
+        if len(body) > MAX_WIKI_PAGE_BYTES:
+            raise ToolError("E_OUTPUT_BOUND", "wiki page exceeds bounded read limit")
+        return {"ok": True, "found": True, "slug": slug, "text": body.decode("utf-8")}
+    limit = int(args.get("limit", 20))
+    if query is None:
+        return {"ok": True, "pages": [{"slug": path.stem} for path in pages[:limit]]}
+    needle = query.casefold()
+    hits: list[dict[str, str]] = []
+    for path in pages:
+        ctx.checkpoint()
+        body = path.read_bytes()
+        if len(body) > MAX_WIKI_PAGE_BYTES:
+            continue
+        text = body.decode("utf-8")
+        if needle not in text.casefold():
+            continue
+        line = next((line.strip()[:240] for line in text.splitlines() if needle in line.casefold()), "")
+        hits.append({"slug": path.stem, "snippet": line})
+        if len(hits) >= limit:
+            break
+    return {"ok": True, "hits": hits}
+
+
+def _team_status_read(args: dict[str, Any], root: Path, ctx: ToolContext) -> dict[str, Any]:
+    ctx.checkpoint()
+    run_id = args.get("run_id")
+    if run_id is None:
+        active = load_active_run(root)
+        if active is None:
+            return {"ok": True, "found": False, "team": None}
+        run_id = active.get("run_id")
+    rid = _require_id(run_id, label="run_id")
+    team_id = args.get("team_id")
+    try:
+        if team_id is not None:
+            from omg_cli.team.plane import native_team_status
+
+            status = native_team_status(root, run_id=rid, team_id=_require_id(team_id, label="team_id"))
+        else:
+            from omg_cli.team.plane import status_locked_view, team_status
+
+            status = status_locked_view(team_status(root, rid, probe_tmux=False))
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {"ok": True, "found": False, "team": None, "reason": str(exc)}
+    return {"ok": True, "found": True, "team": redact_value(status)}
+
+
+def _mailbox_list(args: dict[str, Any], root: Path, ctx: ToolContext) -> dict[str, Any]:
+    ctx.checkpoint()
+    from omg_cli.team.mailbox import list_messages
+
+    result = list_messages(
+        root,
+        run_id=_require_id(args["run_id"], label="run_id"),
+        team_id=_require_id(args["team_id"], label="team_id"),
+        recipient_id=_require_id(args["recipient_id"], label="recipient_id"),
+        after=args.get("after"),
+        generation=args.get("generation"),
+        limit=int(args.get("limit", 100)),
+    )
+    return {"ok": True, **redact_value(result)}
+
+
+def _proposal_path(root: Path, proposal_id: str) -> Path:
+    return root / ".omg" / "artifacts" / "mcp-proposals" / f"{proposal_id}.json"
+
+
+def assert_write_allowed(root: Path, target: Path, *, kind: str = "proposal.create") -> Path:
+    """Confine the sole MCP write to the proposal directory, rejecting symlinks."""
+    project = Path(root).resolve()
+    allowed = project / ".omg" / "artifacts" / "mcp-proposals"
+    candidate = Path(target)
+    if not candidate.is_absolute():
+        candidate = project / candidate
+    try:
+        resolved = candidate.resolve(strict=False)
+        resolved.relative_to(allowed.resolve(strict=False))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise PathConfineError(f"{kind}: target escapes mcp-proposals") from exc
+    probe = project
+    try:
+        relative_parts = candidate.absolute().relative_to(project).parts
+    except ValueError as exc:
+        raise PathConfineError(f"{kind}: target escapes project root") from exc
+    for part in relative_parts:
+        probe = probe / part
+        if probe.is_symlink():
+            raise PathConfineError(f"{kind}: symlink target refused")
+    return resolved
+
+
+def _proposal_create(args: dict[str, Any], root: Path, ctx: ToolContext) -> dict[str, Any]:
+    ctx.checkpoint()
+    proposal_id = _require_id(args["proposal_id"], label="proposal_id")
+    kind = _require_id(args["kind"], label="kind")
+    payload = redact_value(args["payload"])
+    proposal = {
+        "store_kind": "mcp_proposal",
+        "schema_version": 1,
+        "proposal_id": proposal_id,
+        "kind": kind,
+        "payload": payload,
+        "authoritative": False,
+    }
+    body = canonical_json_bytes(proposal)
+    if len(body) > MAX_PROPOSAL_BYTES:
+        raise ToolError("E_OUTPUT_BOUND", "proposal exceeds bounded byte limit")
+    path = assert_write_allowed(root, _proposal_path(root, proposal_id))
+    ensure_managed_dir(path.parent)
+    lock = path.with_suffix(".lock")
+    with exclusive_lock(lock):
+        ctx.checkpoint()
+        if path.exists():
+            current = path.read_bytes()
+            if current != body:
+                raise ToolError("E_IMMUTABLE_CONFLICT", "proposal_id already exists with different bytes")
+            duplicate = True
+        else:
+            atomic_write_bytes(path, body, mode=DATA_FILE_MODE, replace=False)
+            duplicate = False
+        os.chmod(path, DATA_FILE_MODE)
+    return {
+        "ok": True,
+        "proposal_id": proposal_id,
+        "kind": kind,
+        "path": path.relative_to(root).as_posix(),
+        "sha256": sha256_hex(body),
+        "duplicate": duplicate,
+        "authoritative": False,
+    }
+
+
+Handler = Callable[[dict[str, Any], Path, ToolContext], dict[str, Any]]
+TOOL_HANDLERS: dict[str, Handler] = {
+    "run_status.read": _run_status,
+    "trace.timeline": _trace_timeline,
+    "trace.summary": _trace_summary,
+    "resume_metadata.read": _resume_metadata,
+    "project_memory.search": _project_memory_search,
+    "wiki.read": _wiki_read,
+    "team_status.read": _team_status_read,
+    "mailbox.list": _mailbox_list,
+    "proposal.create": _proposal_create,
+}
 
 
 def list_tool_names() -> list[str]:
@@ -593,48 +548,47 @@ def dispatch_tool(
     arguments: dict[str, Any] | None,
     *,
     root: Path | None = None,
+    cancel_event: threading.Event | None = None,
+    deadline: float | None = None,
+    max_output_bytes: int = MAX_OUTPUT_BYTES,
 ) -> dict[str, Any]:
-    """Call an allowlisted handler. Unknown tools → error dict."""
-    if name in FORBIDDEN_TOOL_NAMES:
-        return {
-            "ok": False,
-            "error": f"tool {name!r} is forbidden (authoritative / excluded surface)",
-        }
-    handler = TOOL_HANDLERS.get(name)
-    if handler is None:
-        return {"ok": False, "error": f"unknown tool: {name}"}
-    args = arguments if isinstance(arguments, dict) else {}
-    project = Path(root).resolve() if root is not None else Path.cwd().resolve()
+    """Validate and execute one allowlisted operation with bounded output."""
+    if name not in TOOL_HANDLERS:
+        code = "E_FORBIDDEN_TOOL" if name in FORBIDDEN_TOOL_NAMES else "E_UNKNOWN_TOOL"
+        return ToolError(code, f"tool is not registered: {name}").payload()
+    context = ToolContext(cancel_event=cancel_event, deadline=deadline)
     try:
-        return handler(args, project)
-    except PathConfineError as exc:
-        return {"ok": False, "error": str(exc), "confined": True}
-    except EvidenceError as exc:
-        return {"ok": False, "error": str(exc)}
-    except (OSError, ValueError, TypeError) as exc:
-        return {"ok": False, "error": str(exc)}
+        context.checkpoint()
+        args = _validate_arguments(name, arguments)
+        project = Path(root).resolve() if root is not None else Path.cwd().resolve()
+        payload = TOOL_HANDLERS[name](args, project, context)
+        context.checkpoint()
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(encoded) > max_output_bytes:
+            raise ToolError("E_OUTPUT_BOUND", "MCP operation output exceeds bounded byte limit")
+        return payload
+    except ToolError as exc:
+        return exc.payload()
+    except (ContractValidationError, OSError, UnicodeError, ValueError, TypeError) as exc:
+        return ToolError("E_OPERATION", str(exc)).payload()
 
 
-# Fail-closed: registry must not contain forbidden names at import time.
-_reg = set(list_tool_names())
-_bad = _reg & FORBIDDEN_TOOL_NAMES
-if _bad:
-    raise RuntimeError(f"MCP tool registry contains forbidden names: {sorted(_bad)}")
-_handler_names = set(TOOL_HANDLERS)
-if _handler_names != _reg:
-    raise RuntimeError(
-        f"TOOL_HANDLERS/TOOL_SPECS mismatch: "
-        f"handlers={sorted(_handler_names)} specs={sorted(_reg)}"
-    )
+if tuple(list_tool_names()) != EXACT_TOOL_NAMES or set(TOOL_HANDLERS) != set(EXACT_TOOL_NAMES):
+    raise RuntimeError("MCP registry must expose exactly the frozen nine operations")
+if set(EXACT_TOOL_NAMES) & FORBIDDEN_TOOL_NAMES:
+    raise RuntimeError("MCP registry intersects forbidden surface")
 
 
 __all__ = [
+    "EXACT_TOOL_NAMES",
     "FORBIDDEN_TOOL_NAMES",
+    "MAX_OUTPUT_BYTES",
     "PathConfineError",
     "TOOL_HANDLERS",
     "TOOL_SPECS",
+    "ToolContext",
+    "ToolError",
     "assert_write_allowed",
     "dispatch_tool",
     "list_tool_names",
-    "project_memory_path",
 ]
