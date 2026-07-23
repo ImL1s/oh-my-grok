@@ -304,6 +304,12 @@ def test_pinned_connection_uses_resolved_address_and_hostname_sni(monkeypatch):
             calls["wrapped_closed"] = True
 
     class Context:
+        # http.client.HTTPSConnection.__init__ reads verify_mode / check_hostname
+        # before connect(); a bare mock must expose them or Linux CI fails with
+        # AttributeError even though wrap_socket is never reached in __init__.
+        verify_mode = http_adapter.ssl.CERT_REQUIRED
+        check_hostname = True
+
         def wrap_socket(self, raw, *, server_hostname):
             calls["raw"] = raw
             calls["server_hostname"] = server_hostname
