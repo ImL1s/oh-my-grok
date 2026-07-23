@@ -10,7 +10,7 @@
 
 **Out of scope (YAGNI):** PyPI/pipx package, xai-org/plugin-marketplace PR, history rewrite, live GHA jobs, rewriting global hooks to GROK_PLUGIN_ROOT (document only).
 
-**Repo root:** `/Users/iml1s/Documents/mine/oh-my-grok` · public `https://github.com/ImL1s/oh-my-grok` · current version **0.2.5**
+**Repo root:** `~/src/oh-my-grok` · public `https://github.com/ImL1s/oh-my-grok` · current version **0.2.5**
 
 ---
 
@@ -57,7 +57,7 @@ def test_version_flag_matches_plugin_json():
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/iml1s/Documents/mine/oh-my-grok
+cd ~/src/oh-my-grok
 .venv/bin/python -m pytest tests/test_cli_router.py::test_version_flag_matches_plugin_json -v
 ```
 

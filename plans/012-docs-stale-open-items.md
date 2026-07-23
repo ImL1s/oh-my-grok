@@ -27,7 +27,7 @@ Roadmap and verification docs still claim work is open or quote contradictory he
 
 | Purpose | Command | Expected |
 |---------|---------|----------|
-| Link sanity | manual read + `rg -n "/Users/iml1s" docs/` | no private home paths in tracked docs you edit |
+| Link sanity | manual read + `rg -n "~" docs/` | no private home paths in tracked docs you edit |
 | Version SoT | `python -c "import json; print(json.load(open('plugin.json'))['version'])"` | matches README/security headers you touch |
 
 ## Scope

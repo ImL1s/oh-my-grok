@@ -14,7 +14,7 @@
 ## Why this matters
 
 Untracked (or future-committed) `tests/report_validator/test_validate.py` hardcodes  
-`/Users/iml1s/teamwork_projects/omc_omx_research/omc_omx_mechanism_research.md` and **fails if missing**. Default `testpaths = tests` collects it. On author machine with the file present, suite stays green (439+); on CI/contributors it fails or silently differs. Product CLI suite must not depend on private absolute paths.
+`~/teamwork_projects/omc_omx_research/omc_omx_mechanism_research.md` and **fails if missing**. Default `testpaths = tests` collects it. On author machine with the file present, suite stays green (439+); on CI/contributors it fails or silently differs. Product CLI suite must not depend on private absolute paths.
 
 ## Current state
 
@@ -55,7 +55,7 @@ Recommend **B or C**. Do not keep hard-fail absolute path in default collection.
 
 ### Also
 
-- Ensure no absolute `/Users/iml1s/...` remains under tracked `tests/`.
+- Ensure no absolute `~/...` remains under tracked `tests/`.
 - If files are still untracked, either add to `.gitignore` (`PROJECT.md`, research harness) or document they must never be committed.
 
 ## Done criteria

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python `omg_cli/verdict.py`, tests, Markdown skills.
 
-**Research source:** `/Users/iml1s/teamwork_projects/omc_omx_research/omc_omx_mechanism_research.md`  
+**Research source:** `~/teamwork_projects/omc_omx_research/omc_omx_mechanism_research.md`  
 **Copy/link note:** Summarize under `docs/research/omc-omx-mechanism-research-pointer.md` (path only, no huge copy).
 
 **Out of scope this plan:** Full `omg resume` + RESUME.md injection (R2) — design pointer only; wiki/HUD/LSP (P2).
@@ -250,7 +250,7 @@ def test_omg_using_routes_ultragoal():
 
 Canonical deep research (external teamwork artifact):
 
-`/Users/iml1s/teamwork_projects/omc_omx_research/omc_omx_mechanism_research.md`
+`~/teamwork_projects/omc_omx_research/omc_omx_mechanism_research.md`
 
 OMG actions derived from R3/R4 P0:
 - Verdict false-green hardening → `omg_cli/verdict.py` (this plan)

@@ -2,7 +2,7 @@
 
 Canonical deep research (external teamwork artifact):
 
-`/Users/iml1s/teamwork_projects/omc_omx_research/omc_omx_mechanism_research.md`
+`~/teamwork_projects/omc_omx_research/omc_omx_mechanism_research.md`
 
 Summary themes: R1 feature inventory (skills/agents/hooks), R2 “don’t stop until
 done” + three continuity pillars, R3 false-APPROVE (negation/fences) + exit-code
