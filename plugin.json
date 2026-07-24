@@ -1,6 +1,6 @@
 {
   "name": "oh-my-grok",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Evidence-gated multi-agent orchestration for Grok Build: repository workflows, resumable sessions, bounded recovery, project memory, lifecycle tracking, notifications, MCP/LSP registration, and verified release contracts.",
   "author": {
     "name": "ImL1s",

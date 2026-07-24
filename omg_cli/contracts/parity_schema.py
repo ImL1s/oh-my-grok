@@ -321,6 +321,8 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "review.py",
                 "qa.py",
                 "guidance.py",
+                "host_launcher.py",
+                "madmax.py",
             ),
         )
         + [
@@ -337,9 +339,17 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             ".github/workflows/ci.yml",
             ".github/workflows/release.yml",
             "README.md",
+            # Historical root locale README retained for rename/delete ownership.
+            "README.zh-TW.md",
             "CHANGELOG.md",
             "CONTRIBUTING.md",
+            "CODE_OF_CONDUCT.md",
             "SECURITY.md",
+            "requirements-dev.txt",
+            "scripts/check_docs_links.py",
+            "docs/research/**",
+            "docs/superpowers/**",
+            "plans/**",
         ]
         + _paths(
             "docs/",
@@ -347,18 +357,22 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "README.md",
                 "README.zh.md",
                 "README.zh-TW.md",
+                # Historical zh-Hant filenames retained for rename/delete ownership.
+                "README.zh-Hant.md",
                 "RELEASE.md",
                 "RELEASE.zh.md",
                 "RELEASE.zh-TW.md",
                 "autopilot.md",
                 "autopilot.zh.md",
                 "autopilot.zh-TW.md",
+                "autopilot.zh-Hant.md",
                 "security-model.md",
                 "security-model.zh.md",
                 "security-model.zh-TW.md",
                 "skills.md",
                 "skills.zh.md",
                 "skills.zh-TW.md",
+                "skills.zh-Hant.md",
                 "workflows.md",
                 "workflows.zh.md",
                 "workflows.zh-TW.md",
@@ -385,6 +399,8 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "test_packaging.py",
                 "test_docs_cli_drift.py",
                 "test_release_readback.py",
+                "test_host_launcher.py",
+                "test_madmax.py",
             ),
         )
     ),

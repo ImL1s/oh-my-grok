@@ -19,6 +19,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Full OMC semantic LSP proxy (host-owned `.lsp.json` registration ships in 0.6.0;
   OMG does not claim host health or proxy hover/rename/goto operations).
 
+## [0.7.1] - 2026-07-24
+
+### Fixed
+- Release-verify writer-ownership gate: assign owners for host-launch/madmax
+  modules, `CODE_OF_CONDUCT.md`, docs research/superpowers trees, plans, and
+  historical zh-Hant/README rename paths so tag verification no longer fails
+  closed on unowned dirty records.
+
 ## [0.7.0] - 2026-07-24
 
 Host-launch parity with OMX (bare interactive + `--madmax` + launch policy).
