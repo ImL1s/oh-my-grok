@@ -9,6 +9,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Added
+- OMX-aligned bare host entry: `omg` / `omg "<prompt>"` launches interactive
+  Grok (tmux when available; falls back direct). `omg --madmax` remains the
+  full-open break-glass launcher.
+
 ### Planned
 - Optional PyPI/`pipx` CLI track — **shipped editable-only** (`pyproject.toml` +
   `pipx install --editable` / `pip install -e .`); non-editable wheel / PyPI

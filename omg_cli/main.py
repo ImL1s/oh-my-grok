@@ -3567,7 +3567,12 @@ KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     # Host launcher: only when --madmax present AND no known subcommand before it.
-    from omg_cli.madmax import has_madmax_flag, run_madmax
+    from omg_cli.madmax import (
+        has_madmax_flag,
+        run_interactive,
+        run_madmax,
+        should_host_launch,
+    )
 
     if has_madmax_flag(raw):
         madmax_idx = raw.index("--madmax")
@@ -3581,6 +3586,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 2
         return int(run_madmax(_project_root(), raw))
+
+    if should_host_launch(raw, KNOWN_SUBCOMMANDS):
+        return int(run_interactive(_project_root(), raw))
 
     parser = build_parser()
     args = parser.parse_args(raw)

@@ -213,6 +213,33 @@ def test_main_madmax_intercept_dispatches(monkeypatch, tmp_path: Path):
     assert seen and "--madmax" in seen[0]
 
 
+def test_main_bare_interactive_intercept(monkeypatch, tmp_path: Path):
+    seen: list[list[str]] = []
+
+    def fake_run(cwd, argv):
+        seen.append(list(argv))
+        return 0
+
+    monkeypatch.setattr("omg_cli.madmax.run_interactive", fake_run)
+    monkeypatch.chdir(tmp_path)
+    assert main([]) == 0
+    assert seen == [[]]
+    seen.clear()
+    assert main(["fix the bug"]) == 0
+    assert seen == [["fix the bug"]]
+
+
+def test_should_host_launch_matrix():
+    from omg_cli.madmax import should_host_launch
+
+    assert should_host_launch([], KNOWN_SUBCOMMANDS) is True
+    assert should_host_launch(["fix it"], KNOWN_SUBCOMMANDS) is True
+    assert should_host_launch(["doctor"], KNOWN_SUBCOMMANDS) is False
+    assert should_host_launch(["--help"], KNOWN_SUBCOMMANDS) is False
+    assert should_host_launch(["--madmax"], KNOWN_SUBCOMMANDS) is False
+    assert should_host_launch(["--safe"], KNOWN_SUBCOMMANDS) is False
+
+
 def test_subcommand_before_madmax_exits_2(monkeypatch, tmp_path: Path):
     monkeypatch.chdir(tmp_path)
     for sub in ("ulw", "ask", "ralph"):
