@@ -1,5 +1,7 @@
 # oh-my-grok 文件（繁體中文）
 
+English | [简体中文](./README.zh.md) | [繁體中文](./README.zh-TW.md)
+
 English index: [`README.md`](./README.md)
 
 Grok Build plugin + `omg` CLI 的使用者文件。  
@@ -9,16 +11,16 @@ Grok Build plugin + `omg` CLI 的使用者文件。
 
 | 文件 | 內容 |
 |------|------|
-| [../README.zh-TW.md](../README.zh-TW.md) | 安裝、心智模型、預設流程、skills 快捷表 |
+| [./readme/README.zh-TW.md](./readme/README.zh-TW.md) | 安裝、心智模型、預設流程、skills 快捷表 |
 | [../README.md](../README.md) | 英文完整 README（CLI 細節較全） |
-| [skills.zh-Hant.md](./skills.zh-Hant.md) | **全部 skills 用法**（觸發詞、CLI、範例） |
+| [skills.zh-TW.md](./skills.zh-TW.md) | **全部 skills 用法**（觸發詞、CLI、範例） |
 | [skills.md](./skills.md) | 英文 skills 目錄 |
-| [autopilot.zh-Hant.md](./autopilot.zh-Hant.md) | Autopilot 深講 |
+| [autopilot.zh-TW.md](./autopilot.zh-TW.md) | Autopilot 深講 |
 | [autopilot.md](./autopilot.md) | Autopilot（英文） |
-| [workflows.zh-Hant.md](./workflows.zh-Hant.md) | 版本化 repository workflows、receipt 與 ship gate |
+| [workflows.zh-TW.md](./workflows.zh-TW.md) | 版本化 repository workflows、receipt 與 ship gate |
 | [workflows.md](./workflows.md) | Repository workflows（英文） |
-| [security-model.md](./security-model.md) | 隔離誠實說明（英文） |
-| [RELEASE.md](./RELEASE.md) | 維護者發版流程（英文） |
+| [security-model.md](./security-model.md) · [security-model.zh.md](./security-model.zh.md) · [security-model.zh-TW.md](./security-model.zh-TW.md) | 隔離誠實說明（英文） |
+| [RELEASE.md](./RELEASE.md) · [RELEASE.zh.md](./RELEASE.zh.md) · [RELEASE.zh-TW.md](./RELEASE.zh-TW.md) | 維護者發版流程（英文） |
 
 ## Skills 快速對照
 
@@ -40,7 +42,7 @@ Grok Build plugin + `omg` CLI 的使用者文件。
 | 可重跑分階段審查 | repository workflow | `omg workflow install|list|show|plan|run` |
 | 恢復、記憶、觀測 | 產品服務 | `omg recover` / `memory` / `tracker` / `compact` |
 
-完整表格與可複製範例：**[skills.zh-Hant.md](./skills.zh-Hant.md)**。
+完整表格與可複製範例：**[skills.zh-TW.md](./skills.zh-TW.md)**。
 
 ## 研究文件（非日常）
 

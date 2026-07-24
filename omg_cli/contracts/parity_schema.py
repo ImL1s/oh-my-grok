@@ -337,7 +337,6 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             ".github/workflows/ci.yml",
             ".github/workflows/release.yml",
             "README.md",
-            "README.zh-TW.md",
             "CHANGELOG.md",
             "CONTRIBUTING.md",
             "SECURITY.md",
@@ -346,15 +345,31 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             "docs/",
             (
                 "README.md",
-                "README.zh-Hant.md",
+                "README.zh.md",
+                "README.zh-TW.md",
                 "RELEASE.md",
+                "RELEASE.zh.md",
+                "RELEASE.zh-TW.md",
                 "autopilot.md",
-                "autopilot.zh-Hant.md",
+                "autopilot.zh.md",
+                "autopilot.zh-TW.md",
                 "security-model.md",
+                "security-model.zh.md",
+                "security-model.zh-TW.md",
                 "skills.md",
-                "skills.zh-Hant.md",
+                "skills.zh.md",
+                "skills.zh-TW.md",
                 "workflows.md",
-                "workflows.zh-Hant.md",
+                "workflows.zh.md",
+                "workflows.zh-TW.md",
+            ),
+        )
+        + _paths(
+            "docs/readme/",
+            (
+                "README.md",
+                "README.zh.md",
+                "README.zh-TW.md",
             ),
         )
         + _paths(

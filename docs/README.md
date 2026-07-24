@@ -1,6 +1,6 @@
 # oh-my-grok documentation
 
-English | [繁體中文](./README.zh-Hant.md)
+English | [简体中文](./README.zh.md) | [繁體中文](./README.zh-TW.md)
 
 User-facing docs for the Grok Build plugin + `omg` CLI.  
 **Version:** see [`plugin.json`](../plugin.json) · **Changelog:** [`CHANGELOG.md`](../CHANGELOG.md)
@@ -9,12 +9,12 @@ User-facing docs for the Grok Build plugin + `omg` CLI.
 
 | Doc | What |
 |-----|------|
-| [../README.md](../README.md) · [../README.zh-TW.md](../README.zh-TW.md) | Install, mental model, default flow, CLI reference |
-| [skills.md](./skills.md) · [skills.zh-Hant.md](./skills.zh-Hant.md) | **All skills** — triggers, invoke, CLI twin, examples |
-| [autopilot.md](./autopilot.md) · [autopilot.zh-Hant.md](./autopilot.zh-Hant.md) | Deep dive: autopilot skill + phase machine |
-| [workflows.md](./workflows.md) · [workflows.zh-Hant.md](./workflows.zh-Hant.md) | Versioned repository workflows, receipt execution, and ship gates |
-| [security-model.md](./security-model.md) | Isolation honesty (capability_mode, allowlist, fail-open hooks) |
-| [RELEASE.md](./RELEASE.md) | Maintainer release protocol |
+| [../README.md](../README.md) · [./readme/README.zh.md](./readme/README.zh.md) · [./readme/README.zh-TW.md](./readme/README.zh-TW.md) | Install, mental model, default flow, CLI reference |
+| [skills.md](./skills.md) · [skills.zh.md](./skills.zh.md) · [skills.zh-TW.md](./skills.zh-TW.md) | **All skills** — triggers, invoke, CLI twin, examples |
+| [autopilot.md](./autopilot.md) · [autopilot.zh.md](./autopilot.zh.md) · [autopilot.zh-TW.md](./autopilot.zh-TW.md) | Deep dive: autopilot skill + phase machine |
+| [workflows.md](./workflows.md) · [workflows.zh.md](./workflows.zh.md) · [workflows.zh-TW.md](./workflows.zh-TW.md) | Versioned repository workflows, receipt execution, and ship gates |
+| [security-model.md](./security-model.md) · [security-model.zh.md](./security-model.zh.md) · [security-model.zh-TW.md](./security-model.zh-TW.md) | Isolation honesty (capability_mode, allowlist, fail-open hooks) |
+| [RELEASE.md](./RELEASE.md) · [RELEASE.zh.md](./RELEASE.zh.md) · [RELEASE.zh-TW.md](./RELEASE.zh-TW.md) | Maintainer release protocol |
 
 ## Skills (quick map)
 

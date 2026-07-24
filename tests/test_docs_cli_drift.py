@@ -16,7 +16,11 @@ from pathlib import Path
 from omg_cli.main import build_parser
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCS = (ROOT / "docs" / "skills.md", ROOT / "docs" / "skills.zh-Hant.md")
+DOCS = (
+    ROOT / "docs" / "skills.md",
+    ROOT / "docs" / "skills.zh.md",
+    ROOT / "docs" / "skills.zh-TW.md",
+)
 
 
 def _subparser_choices(parser: argparse.ArgumentParser, dest_cmd: str) -> set[str]:

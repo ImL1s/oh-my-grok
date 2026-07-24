@@ -1,5 +1,7 @@
 # Release protocol (maintainers)
 
+English | [简体中文](./RELEASE.zh.md) | [繁體中文](./RELEASE.zh-TW.md)
+
 ## Current product line
 
 | Field | Value |

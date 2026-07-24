@@ -1,5 +1,7 @@
 # Skills 目錄（oh-my-grok）
 
+English | [简体中文](./skills.zh.md) | [繁體中文](./skills.zh-TW.md)
+
 English: [`skills.md`](./skills.md)
 
 **15 個 in-session skills**，路徑：[`skills/omg-*/SKILL.md`](../skills/)。  
@@ -112,7 +114,7 @@ omg resume --clear   # 成功接續後清除
 | **何時** | 釐清→計畫→實作→審查→QA→verified |
 | **呼叫** | `autopilot …` · `full auto` · `/oh-my-grok:omg-autopilot` |
 | **CLI** | `omg autopilot start\|transition\|status\|complete` |
-| **深講** | [`autopilot.zh-Hant.md`](./autopilot.zh-Hant.md) · [EN](./autopilot.md) |
+| **深講** | [`autopilot.zh-TW.md`](./autopilot.zh-TW.md) · [EN](./autopilot.md) |
 | **SKILL** | [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md) |
 
 ```bash
@@ -443,7 +445,7 @@ find_references/symbols/diagnostics）、
 
 Workflow plan 不會啟動外部 CLI。Leader 應使用 Grok 原生 `spawn_subagent`、傳入
 精確 `capability_mode`，再把綁定 task ID 的 receipts 交給 `omg workflow run`。
-詳見 [workflows.zh-Hant.md](./workflows.zh-Hant.md)。
+詳見 [workflows.zh-TW.md](./workflows.zh-TW.md)。
 
 ## Agents（skills 會用到的角色）
 
@@ -489,8 +491,8 @@ Grok 內建（`explore`、`plan`、`general-purpose`）仍補臨時缺口。
 
 ## 相關文件
 
-- [README.zh-TW.md](../README.zh-TW.md) — 安裝與中文入門  
+- [README.zh-TW.md](./readme/README.zh-TW.md) — 安裝與中文入門  
 - [README.md](../README.md) — 英文主 README  
-- [autopilot.zh-Hant.md](./autopilot.zh-Hant.md) — Autopilot 深講  
+- [autopilot.zh-TW.md](./autopilot.zh-TW.md) — Autopilot 深講  
 - [security-model.md](./security-model.md) — 隔離誠實說明（英文）  
 - [research/](./research/) — 研究紀錄（非日常產品文件）  

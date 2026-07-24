@@ -56,7 +56,8 @@ SHIPPING_ROOTS = (
     "pyproject.toml",
     "omg_capabilities.lock.json",
     "README.md",
-    "README.zh-TW.md",
+    "docs/readme/README.zh.md",
+    "docs/readme/README.zh-TW.md",
     "LICENSE",
     "bin",
     "omg_cli",
@@ -280,7 +281,7 @@ def _iter_shipping_files(root: Path) -> list[tuple[str, Path]]:
         path = root / relative
         if not path.exists():
             # Documentation translations are optional; runtime identity is not.
-            if relative == "README.zh-TW.md":
+            if relative.startswith("docs/readme/README.zh"):
                 continue
             raise InstallError(f"required shipping path missing: {relative}")
         visit(path, relative)

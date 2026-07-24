@@ -16,7 +16,7 @@
   <img src="https://img.shields.io/badge/scope-core%20purpose%20parity-lightgrey" alt="core purpose parity">
 </p>
 
-English | [繁體中文](README.zh-TW.md)
+English | [简体中文](docs/readme/README.zh.md) | [繁體中文](docs/readme/README.zh-TW.md)
 
 **Multi-agent orchestration for [Grok Build](https://github.com/xai-org/grok-build).**  
 Sibling of [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) (OMC), [oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex) (OMX), and [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) (OmO) — same *orchestration idea*, **Grok-native** runtime.
@@ -26,7 +26,8 @@ _Unofficial community plugin — not affiliated with xAI or the OMC/OMX/OmO main
 _Don't learn every Grok flag. Use `omg` + skills: clarify → plan → execute → verify._
 
 **Docs (EN):** [Skills catalog](docs/skills.md) · [Autopilot](docs/autopilot.md) · [Security model](docs/security-model.md) · [Docs index](docs/README.md) · [Changelog](CHANGELOG.md)  
-**文件（繁中）:** [Skills 目錄](docs/skills.zh-Hant.md) · [Autopilot](docs/autopilot.zh-Hant.md) · [文件索引](docs/README.zh-Hant.md) · [README 繁中](README.zh-TW.md)
+**文件（繁中）:** [Skills 目錄](docs/skills.zh-TW.md) · [Autopilot](docs/autopilot.zh-TW.md) · [安全模型](docs/security-model.zh-TW.md) · [文件索引](docs/README.zh-TW.md) · [README 繁中](docs/readme/README.zh-TW.md)  
+**文档（简体）:** [Skills 目录](docs/skills.zh.md) · [Autopilot](docs/autopilot.zh.md) · [安全模型](docs/security-model.zh.md) · [文档索引](docs/README.zh.md) · [README 简体](docs/readme/README.zh.md)
 
 ---
 
@@ -517,6 +518,16 @@ Full dual-review ship bar (C1–C9) is complete. Recent lines:
 Details: [`CHANGELOG.md`](CHANGELOG.md) · `docs/research/`.
 
 ---
+
+## Languages
+
+| Language | README |
+| --- | --- |
+| English | [README.md](./README.md) |
+| 简体中文 | [docs/readme/README.zh.md](docs/readme/README.zh.md) |
+| 繁體中文 | [docs/readme/README.zh-TW.md](docs/readme/README.zh-TW.md) |
+
+Translation index and maintenance rules: [docs/readme/README.md](docs/readme/README.md).
 
 ## License
 

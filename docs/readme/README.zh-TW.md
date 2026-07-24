@@ -1,9 +1,9 @@
 # oh-my-grok (OMG)
 
-English: [README.md](./README.md) · 繁中 skills：[docs/skills.zh-Hant.md](./docs/skills.zh-Hant.md)
+English: [README.md](../../README.md) · [简体中文](./README.zh.md) · [繁體中文](./README.zh-TW.md)
 
 <p align="center">
-  <img src="assets/omg-character.png" alt="oh-my-grok character" width="300">
+  <img src="../../assets/omg-character.png" alt="oh-my-grok character" width="300">
   <br>
   <em>先把 Grok 拉起來 — 再交給 OMG 管流程、證據與 verified 完成。</em>
 </p>
@@ -12,7 +12,7 @@ English: [README.md](./README.md) · 繁中 skills：[docs/skills.zh-Hant.md](./
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-%3E%3D3.11-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/host-Grok%20Build-black" alt="Grok Build">
-  <img src="https://img.shields.io/badge/docs-繁體中文-informational" alt="zh-Hant docs">
+  <img src="https://img.shields.io/badge/docs-zh-TW-informational" alt="zh-TW docs">
 </p>
 
 **[Grok Build](https://github.com/xai-org/grok-build) 的多 agent 編排。**  
@@ -22,7 +22,7 @@ _非官方社群 plugin — 與 xAI / OMC 維護者無關。_
 
 _不必背完整 Grok flag。用 `omg` + skills：釐清 → 計畫 → 執行 → 驗證。_
 
-**文件：** [Skills 目錄](docs/skills.zh-Hant.md) · [Autopilot](docs/autopilot.zh-Hant.md) · [文件索引](docs/README.zh-Hant.md) · [安全模型（英）](docs/security-model.md) · [Changelog（英）](CHANGELOG.md)
+**文件：** [Skills 目錄](../skills.zh-TW.md) · [Autopilot](../autopilot.zh-TW.md) · [文件索引](../README.zh-TW.md) · [安全模型](../security-model.zh-TW.md) · [Changelog](../../CHANGELOG.md)
 
 ---
 
@@ -40,7 +40,7 @@ OMG **不取代** Grok Build。
 Workers 只經 Grok **`spawn_subagent`**（depth 1）。  
 **沒有** OMC 式 Stop hard-pin（chat 不會被強制釘住）。中斷就說 **繼續** 或再呼叫 skill。  
 **tmux team：** 已有實驗性 multi-CLI team plane（需設定 `OMG_EXPERIMENTAL_TMUX_TEAM=1`）；它只提供 worktree／seal／integrate 的**整合隔離**，不是執行 sandbox。
-**範圍誠實：** core purpose 編排對等子集 — 仍不是完整 OMC skill zoo，也不宣稱各 provider 有一致的執行 sandbox；詳見 [`docs/security-model.md`](docs/security-model.md)。
+**範圍誠實：** core purpose 編排對等子集 — 仍不是完整 OMC skill zoo，也不宣稱各 provider 有一致的執行 sandbox；詳見 [`docs/security-model.md`](../security-model.md)。
 
 版本：**0.6.0** · License: MIT
 
@@ -134,7 +134,7 @@ omg ulw "noop" --dry-run
 ## Skills（in-session）— 類似 OMC `/skill`
 
 完整 **15 個 skill** 的觸發詞、CLI、範例：  
-**→ [docs/skills.zh-Hant.md](docs/skills.zh-Hant.md)** · [英文版](docs/skills.md)
+**→ [docs/skills.zh-TW.md](../skills.zh-TW.md)** · [英文版](../skills.md)
 
 ### CLI vs skill
 
@@ -187,7 +187,7 @@ Grok: omg autopilot start "…" → … 各階段 … → omg autopilot complete
 interview → ralplan → implement → review → qa → acceptance → verified
 ```
 
-深講：[docs/autopilot.zh-Hant.md](docs/autopilot.zh-Hant.md)
+深講：[docs/autopilot.zh-TW.md](../autopilot.zh-TW.md)
 
 ---
 
@@ -198,7 +198,7 @@ interview → ralplan → implement → review → qa → acceptance → verifie
 3. **只有 `omg` CLI** 可設 `passes` / `verified`。  
 4. 取消用 **`omg cancel`** — 禁止會自殺的 `pkill -f`。  
 
-主隔離是 **`capability_mode`**；PreToolUse 是 **fail-open soft-gate**。詳見 [docs/security-model.md](docs/security-model.md)。
+主隔離是 **`capability_mode`**；PreToolUse 是 **fail-open soft-gate**。詳見 [docs/security-model.md](../security-model.md)。
 
 ---
 
@@ -237,7 +237,7 @@ omg state --human
 omg cancel
 ```
 
-Repository workflow 的 receipt、權限交集與 ship gate 見 [docs/workflows.zh-Hant.md](docs/workflows.zh-Hant.md)。更多 CLI 細節與 flags 見英文 [README.md](./README.md#commands)。
+Repository workflow 的 receipt、權限交集與 ship gate 見 [docs/workflows.zh-TW.md](../workflows.zh-TW.md)。更多 CLI 細節與 flags 見英文 [README.md](../../README.md#commands)。
 
 ---
 
@@ -255,6 +255,6 @@ PYTHONPATH=. python3 -m pytest -q -m "not live"
 
 ## License
 
-[MIT](LICENSE) · Copyright (c) 2026 ImL1s
+[MIT](../../LICENSE) · Copyright (c) 2026 ImL1s
 
-[CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) · [CHANGELOG.md](CHANGELOG.md)
+[CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) · [CHANGELOG.md](../../CHANGELOG.md)

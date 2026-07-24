@@ -1,6 +1,8 @@
 # Autopilot 用法（skill + CLI）
 
-English: [`autopilot.md`](./autopilot.md) · Skills 目錄: [`skills.zh-Hant.md`](./skills.zh-Hant.md)
+English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.md)
+
+English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.md)
 
 **對象：** 使用 Grok Build 的人 + 維護 skill 的人。  
 **版本：** 與 [`plugin.json`](../plugin.json) 一致（目前 **0.6.0**）。
@@ -150,7 +152,7 @@ omg autopilot status --run "$RUN"
 `omg workflow install|list|show|plan|run`。Autopilot 可以依 plan 用 Grok 原生
 `spawn_subagent` 執行，但不可改寫 contract 或捏造 receipt。Workflow 的
 `ship` 也不能取代 `omg accept` 或 release state machine。詳見
-[workflows.zh-Hant.md](./workflows.zh-Hant.md)。
+[workflows.zh-TW.md](./workflows.zh-TW.md)。
 
 Grok `/create-workflow` 與 Rhai projection 目前仍是 `optional_unclaimed`；只有
 help 文字或本地 `.rhai` 檔不能當成已驗證 native integration。
@@ -169,7 +171,7 @@ help 文字或本地 `.rhai` 檔不能當成已驗證 native integration。
 | `omg-ultragoal` | 多 story ledger |
 | `omg-cancel` | 中止 |
 
-完整 15 個 skill：[`skills.zh-Hant.md`](./skills.zh-Hant.md)。
+完整 15 個 skill：[`skills.zh-TW.md`](./skills.zh-TW.md)。
 
 ---
 

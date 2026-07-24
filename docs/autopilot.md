@@ -1,11 +1,11 @@
 # Autopilot usage (skill + CLI)
 
-English | [繁體中文](./autopilot.zh-Hant.md)
+English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.md)
 
 **Audience:** humans driving Grok Build + maintainers writing skills.  
 **Plugin version:** matches [`plugin.json`](../plugin.json) (currently **0.6.0**).
 **Skill source:** [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md)  
-**All skills catalog:** [`skills.md`](./skills.md) · [zh-Hant](./skills.zh-Hant.md) · [docs index](./README.md)
+**All skills catalog:** [`skills.md`](./skills.md) · [zh](./skills.zh.md) · [zh-TW](./skills.zh-TW.md) · [docs index](./README.md)
 
 ---
 

@@ -1,5 +1,7 @@
 # Repository Workflows
 
+English | [简体中文](./workflows.zh.md) | [繁體中文](./workflows.zh-TW.md)
+
 OMG 0.6.0 提供產品自行擁有、可版本化的 workflow contract。它不是保存 prompt，而是固定 stages、依賴、matrix、角色、`capability_mode`、權限、驗證命令，以及獨立 verifier / skeptic 的 ship 規則。
 
 ## 能力邊界

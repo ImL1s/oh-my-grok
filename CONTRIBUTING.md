@@ -53,6 +53,13 @@ are intentionally not runtime dependencies.
 6. Do not infer enabled/healthy/verified from `.mcp.json`, `.lsp.json`, local
    `.rhai` files, or help text. Preserve independent capability tiers.
 
+## Locale / translations
+
+- Canonical product docs are English (`README.md`, `docs/*.md`).
+- Localized README copies live under [`docs/readme/`](docs/readme/README.md) (`.zh.md` / `.zh-TW.md` only — never root translations or `.zh-Hant.md`).
+- Keep language switchers and the `## Languages` list in sync when adding a locale.
+- Prefer updating existing translations over alternate naming schemes.
+
 ## Pull requests
 
 - Run `pytest -m "not live"` before opening a PR.

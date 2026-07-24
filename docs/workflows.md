@@ -1,5 +1,7 @@
 # Repository Workflows
 
+English | [简体中文](./workflows.zh.md) | [繁體中文](./workflows.zh-TW.md)
+
 OMG 0.6.0 adds a product-owned, versioned workflow contract for repeatable multi-agent reviews. A workflow is not a saved prompt. It fixes stages, dependencies, matrices, roles, capability modes, permission requests, verification commands, and the independent verifier/skeptic ship rule.
 
 ## Capability boundary

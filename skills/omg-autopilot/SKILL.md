@@ -218,7 +218,7 @@ Still finish run acceptance via `omg accept` / `omg autopilot complete` before
 
 ## Related skills
 
-- Human-facing usage: `docs/autopilot.md` · `docs/autopilot.zh-Hant.md` · skills catalog `docs/skills.md` / `docs/skills.zh-Hant.md`
+- Human-facing usage: `docs/autopilot.md` · `docs/autopilot.zh.md` · `docs/autopilot.zh-TW.md` · skills catalog `docs/skills.md` / `docs/skills.zh.md` / `docs/skills.zh-TW.md`
 - `omg-using` — router
 - `omg-deep-interview`, `omg-ralplan`, `omg-ultrawork`, `omg-ralph`
 - `omg-ultragoal` — durable multi-story goal ledger (no host `/goal`)
