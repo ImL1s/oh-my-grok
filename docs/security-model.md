@@ -207,19 +207,19 @@ remains **fail-open** on hook timeout/crash; primary isolation is still
 `rm "${GROK_HOME:-$HOME/.grok}/hooks/omg-pretool-deny.json"` to disable the
 soft-gate, then restart grok.
 
-## Host launcher: `omg --madmax` (break-glass)
+## Host launcher: bare `omg` / `omg --madmax`
 
-**Operator-triggered** interactive Grok with full-open host permissions:
+OMX/Sol-aligned root entry (not a mode FSM; never stamps `verified`):
 
-- Injects `--always-approve` + `--permission-mode bypassPermissions` (exactly once).
-- Interactive + outside `$TMUX`: **requires tmux** — creates a **new** session each launch (`omg-<dir>-<digest>-<timestamp>`), then attaches. Missing tmux → exit 1 (no silent direct demotion).
-- Inside tmux / headless (`-p`, `--single`, …): runs `grok` in-process (no nested session).
+- **Bare / prompt:** launches interactive Grok at safe defaults (no authority inject).
+- **`--madmax`:** injects `--always-approve` + `--permission-mode bypassPermissions` (exactly once). Rejects incompatible `--safe` / permission modes in the pre-`--` head (`SAFE-01`).
+- **Transport policy:** `OMG_LAUNCH_POLICY` / `--direct` / `--tmux` (last CLI flag wins; values `auto|direct|tmux|detached-tmux`). Auto + TTY + tmux available → detached owned session then attach; auto without tmux warns once and falls back direct; explicit `--tmux` fails closed (`E_LAUNCH_TMUX_UNAVAILABLE` / `E_LAUNCH_TTY_REQUIRED`) **before** headless/print shortcuts. Inside `$TMUX` → direct in-process. Under **auto** (not explicit `--tmux`), headless (`-p`, `--single`, …) stays direct to preserve stdout.
+- **`--` boundary:** suffix after the first `--` is opaque and never scanned for wrapper flags.
 - Does **not** write `.omg/state`, does **not** touch `verified` / acceptance / ask deny lists.
 - Root `--yolo` remains **mode-subcommand elevation only** — not a madmax alias.
-- Detached full-open sessions keep running under tmux until you `tmux kill-session -t omg-…`.
-- **Env forward:** madmax passes allowlisted `GROK_*` / `XAI_*` / a few shell vars into the session via `tmux new-session -e KEY=value` (not embedded in the pane start-command string). Values may still appear in the **tmux server process** environment for the session lifetime — prefer host identity / profile secrets over one-off env dumps on multi-user machines.
+- **Env forward:** allowlisted `GROK_*` / `XAI_*` / a few shell vars via `tmux new-session -e KEY=value` when tmux is used. Prefer host identity / profile secrets over one-off env dumps on multi-user machines.
 
-This is intentional break-glass, not a sandbox. Document and name-prefix (`omg-`) are the mitigations — not PreToolUse.
+`--madmax` is intentional break-glass, not a sandbox. Document and name-prefix (`omg-`) are the mitigations — not PreToolUse.
 
 ## Experimental team plane: `omg team` (D1 zero-config + D3 multi-CLI + D2 staged driver + D4 scale/resume/ralph)
 

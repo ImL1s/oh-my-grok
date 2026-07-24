@@ -129,12 +129,12 @@ def test_dispatch_print_uses_direct(monkeypatch, tmp_path: Path):
         calls.append("direct")
         return 0
 
-    def fake_tmux(cwd, args):
+    def fake_tmux(cwd, args, *, required=False, label=""):
         calls.append("tmux")
         return 0
 
     monkeypatch.setattr(madmax, "_run_grok_direct", fake_direct)
-    monkeypatch.setattr(madmax, "_run_grok_in_tmux", fake_tmux)
+    monkeypatch.setattr("omg_cli.host_launcher._run_in_tmux", fake_tmux)
     monkeypatch.setattr(madmax, "grok_available", lambda: True)
     monkeypatch.delenv("TMUX", raising=False)
     rc = run_madmax(tmp_path, ["--madmax", "-p", "hi"])
@@ -148,7 +148,8 @@ def test_dispatch_inside_tmux_uses_direct(monkeypatch, tmp_path: Path):
         madmax, "_run_grok_direct", lambda c, a: calls.append("direct") or 0
     )
     monkeypatch.setattr(
-        madmax, "_run_grok_in_tmux", lambda c, a: calls.append("tmux") or 0
+        "omg_cli.host_launcher._run_in_tmux",
+        lambda c, a, *, required=False, label="": calls.append("tmux") or 0,
     )
     monkeypatch.setattr(madmax, "grok_available", lambda: True)
     monkeypatch.setenv("TMUX", "/tmp/tmux-1")
@@ -163,13 +164,32 @@ def test_dispatch_outside_uses_tmux(monkeypatch, tmp_path: Path):
         madmax, "_run_grok_direct", lambda c, a: calls.append("direct") or 0
     )
     monkeypatch.setattr(
-        madmax, "_run_grok_in_tmux", lambda c, a: calls.append("tmux") or 0
+        "omg_cli.host_launcher._run_in_tmux",
+        lambda c, a, *, required=False, label="": calls.append("tmux") or 0,
     )
     monkeypatch.setattr(madmax, "grok_available", lambda: True)
+    monkeypatch.setattr("omg_cli.host_launcher._is_interactive_tty", lambda: True)
     monkeypatch.delenv("TMUX", raising=False)
     rc = run_madmax(tmp_path, ["--madmax"])
     assert rc == 0
     assert calls == ["tmux"]
+
+
+def test_dispatch_auto_non_tty_uses_direct(monkeypatch, tmp_path: Path):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        madmax, "_run_grok_direct", lambda c, a: calls.append("direct") or 0
+    )
+    monkeypatch.setattr(
+        "omg_cli.host_launcher._run_in_tmux",
+        lambda c, a, *, required=False, label="": calls.append("tmux") or 0,
+    )
+    monkeypatch.setattr(madmax, "grok_available", lambda: True)
+    monkeypatch.setattr("omg_cli.host_launcher._is_interactive_tty", lambda: False)
+    monkeypatch.delenv("TMUX", raising=False)
+    rc = run_madmax(tmp_path, ["--madmax"])
+    assert rc == 0
+    assert calls == ["direct"]
 
 
 def test_dispatch_missing_grok(monkeypatch, tmp_path: Path):
@@ -206,7 +226,7 @@ def test_main_madmax_intercept_dispatches(monkeypatch, tmp_path: Path):
         seen.append(list(argv))
         return 0
 
-    monkeypatch.setattr("omg_cli.madmax.run_madmax", fake_run)
+    monkeypatch.setattr("omg_cli.host_launcher.run_madmax_host", fake_run)
     monkeypatch.chdir(tmp_path)
     rc = main(["--madmax", "hello"])
     assert rc == 0
@@ -220,7 +240,7 @@ def test_main_bare_interactive_intercept(monkeypatch, tmp_path: Path):
         seen.append(list(argv))
         return 0
 
-    monkeypatch.setattr("omg_cli.madmax.run_interactive", fake_run)
+    monkeypatch.setattr("omg_cli.host_launcher.run_interactive", fake_run)
     monkeypatch.chdir(tmp_path)
     assert main([]) == 0
     assert seen == [[]]
@@ -230,7 +250,7 @@ def test_main_bare_interactive_intercept(monkeypatch, tmp_path: Path):
 
 
 def test_should_host_launch_matrix():
-    from omg_cli.madmax import should_host_launch
+    from omg_cli.host_launcher import should_host_launch
 
     assert should_host_launch([], KNOWN_SUBCOMMANDS) is True
     assert should_host_launch(["fix it"], KNOWN_SUBCOMMANDS) is True
@@ -249,7 +269,7 @@ def test_subcommand_before_madmax_exits_2(monkeypatch, tmp_path: Path):
             called.append(1)
             return 0
 
-        monkeypatch.setattr("omg_cli.madmax.run_madmax", boom)
+        monkeypatch.setattr("omg_cli.host_launcher.run_madmax_host", boom)
         rc = main([sub, "goal", "--madmax"])
         assert rc == 2, sub
         assert called == []
@@ -263,7 +283,7 @@ def test_madmax_before_prompt_token_intercepts(monkeypatch, tmp_path: Path):
         seen.append(argv)
         return 0
 
-    monkeypatch.setattr("omg_cli.madmax.run_madmax", fake_run)
+    monkeypatch.setattr("omg_cli.host_launcher.run_madmax_host", fake_run)
     monkeypatch.chdir(tmp_path)
     rc = main(["--madmax", "ralph"])
     assert rc == 0

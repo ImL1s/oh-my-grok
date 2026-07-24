@@ -3566,26 +3566,24 @@ KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
 
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
-    # Host launcher: only when --madmax present AND no known subcommand before it.
-    from omg_cli.madmax import (
-        has_madmax_flag,
+    from omg_cli.host_launcher import (
+        HostLaunchUsageError,
+        reject_launcher_flags_after_subcommand,
         run_interactive,
-        run_madmax,
+        run_madmax_host,
         should_host_launch,
     )
+    from omg_cli.madmax import has_madmax_flag
+
+    try:
+        reject_launcher_flags_after_subcommand(raw, KNOWN_SUBCOMMANDS)
+    except HostLaunchUsageError as exc:
+        print(str(exc), file=sys.stderr)
+        return int(exc.exit_code)
 
     if has_madmax_flag(raw):
-        madmax_idx = raw.index("--madmax")
-        prior = raw[:madmax_idx]
-        for tok in prior:
-            if tok in KNOWN_SUBCOMMANDS:
-                print(
-                    f"omg: --madmax is a host launcher and cannot be combined "
-                    f"with subcommand {tok!r}",
-                    file=sys.stderr,
-                )
-                return 2
-        return int(run_madmax(_project_root(), raw))
+        # Delimiter-aware; GRAM-05 only cares about a recognized *first* token.
+        return int(run_madmax_host(_project_root(), raw))
 
     if should_host_launch(raw, KNOWN_SUBCOMMANDS):
         return int(run_interactive(_project_root(), raw))

@@ -143,19 +143,19 @@ python3 scripts/canary_pretool.py --live
 
 **帶外恢復**（已被舊 hook 弄磚的 session 無法透過被擋的終端跑 `omg`）：從任何一般 shell 跑 `python3 -m omg_cli.hook_install`（修復），或最後手段 `rm "${GROK_HOME:-$HOME/.grok}/hooks/omg-pretool-deny.json"` 停用 soft-gate，然後重開 grok。
 
-## Host launcher：`omg --madmax`（break-glass）
+## Host launcher：裸 `omg`／`omg --madmax`
 
-**操作者觸發**的互動式 Grok，帶全開 host 權限：
+OMX/Sol 對齊的 root 入口（不是 mode FSM；永不蓋 `verified`）：
 
-- 注入 `--always-approve` + `--permission-mode bypassPermissions`（恰好一次）。
-- 互動式且不在 `$TMUX` 內：**需要 tmux** — 每次啟動建立**新** session（`omg-<dir>-<digest>-<timestamp>`），再 attach。缺少 tmux → exit 1（不會默默降級成直接跑）。
-- 在 tmux 內／headless（`-p`、`--single`，…）：in-process 跑 `grok`（不巢狀 session）。
+- **裸／prompt：**以安全預設值啟動互動 Grok（不注入 authority）。
+- **`--madmax`：**注入 `--always-approve` + `--permission-mode bypassPermissions`（恰好一次）。在 `--` 前 head 拒絕不相容的 `--safe`／permission modes（`SAFE-01`）。
+- **傳輸策略：**`OMG_LAUNCH_POLICY`／`--direct`／`--tmux`（最後 CLI flag 贏；值 `auto|direct|tmux|detached-tmux`）。auto + TTY + 有 tmux → detached 自有 session 再 attach；auto 無 tmux 警告一次並回退 direct；顯式 `--tmux` 在 headless／print 捷徑**之前** fail-closed（`E_LAUNCH_TMUX_UNAVAILABLE`／`E_LAUNCH_TTY_REQUIRED`）。在 `$TMUX` 內 → 直接 in-process。**auto**（非顯式 `--tmux`）下 headless（`-p`、`--single`，…）保持 direct 以保留 stdout。
+- **`--` 邊界：**第一個 `--` 之後的 suffix 不透明，絕不掃描 wrapper flags。
 - **不**寫 `.omg/state`，**不**碰 `verified`／acceptance／ask deny lists。
 - Root `--yolo` 仍**只**是 mode 子命令升格 — 不是 madmax 別名。
-- 脫離的全開 session 會在 tmux 下繼續跑，直到你 `tmux kill-session -t omg-…`。
-- **Env 轉送：** madmax 透過 `tmux new-session -e KEY=value` 把 allowlisted `GROK_*`／`XAI_*`／少數 shell 變數傳進 session（不嵌進 pane 啟動命令字串）。值仍可能出現在 session 生命期的 **tmux server process** 環境 — 在多使用者機器上，優先用 host 身分／profile 密鑰，而不是一次性 env dump。
+- **Env 轉送：**使用 tmux 時透過 `tmux new-session -e KEY=value` 轉送 allowlisted `GROK_*`／`XAI_*`／少數 shell 變數。多使用者機器上優先用 host 身分／profile 密鑰。
 
-這是刻意的 break-glass，不是 sandbox。緩解靠文件與名稱前綴（`omg-`）— 不是 PreToolUse。
+`--madmax` 是刻意的 break-glass，不是 sandbox。緩解靠文件與名稱前綴（`omg-`）— 不是 PreToolUse。
 
 ## 實驗性 team plane：`omg team`（D1 零設定 + D3 multi-CLI + D2 staged driver + D4 scale／resume／ralph）
 

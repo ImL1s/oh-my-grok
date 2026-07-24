@@ -52,12 +52,20 @@ class MadmaxUsageError(ValueError):
 
 
 def has_madmax_flag(argv: list[str]) -> bool:
-    return MADMAX_FLAG in argv
+    """True when ``--madmax`` appears before the first ``--`` (GRAM-04)."""
+    for a in argv:
+        if a == "--":
+            break
+        if a == MADMAX_FLAG:
+            return True
+    return False
 
 
 def is_print_mode(argv: list[str]) -> bool:
-    """Headless / stdout modes must not wrap tmux (preserve piping)."""
+    """Headless / stdout modes (pre-``--`` head only; GRAM-04)."""
     for a in argv:
+        if a == "--":
+            break
         if a in (
             "-p",
             "--single",
@@ -318,73 +326,20 @@ def _run_grok_in_tmux(cwd: Path, grok_args: list[str]) -> int:
 
 
 def run_madmax(cwd: Path | str | None, argv: list[str]) -> int:
-    """Launch Grok full-open; tmux required when interactive and outside tmux."""
-    root = Path(cwd) if cwd is not None else Path.cwd()
-    root = root.resolve()
-    try:
-        grok_args = normalize_grok_args(argv)
-    except MadmaxUsageError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
+    """Compatibility wrapper — transport + policy live in host_launcher."""
+    from omg_cli.host_launcher import run_madmax_host
 
-    if not grok_available():
-        print(
-            "omg madmax: grok not on PATH. "
-            "Install: curl -fsSL https://x.ai/cli/install.sh | bash",
-            file=sys.stderr,
-        )
-        return 127
-
-    # Honest banner: actual final argv, not a constant slogan only.
-    print(
-        f"omg madmax: full-open host launch → grok {shlex.join(grok_args)}",
-        file=sys.stderr,
-    )
-
-    if is_print_mode(grok_args):
-        return _run_grok_direct(root, grok_args)
-
-    if _inside_tmux():
-        return _run_grok_direct(root, grok_args)
-
-    return _run_grok_in_tmux(root, grok_args)
+    return int(run_madmax_host(cwd, argv))
 
 
 def should_host_launch(argv: list[str], known_subcommands: frozenset[str]) -> bool:
-    """OMX-aligned: bare / prompt argv launches interactive Grok (not madmax)."""
-    if has_madmax_flag(argv):
-        return False
-    if not argv:
-        return True
-    head = argv[0]
-    if head in {"-h", "--help", "-V", "--version"}:
-        return False
-    if head in known_subcommands:
-        return False
-    # Global CLI flags (--safe/--yolo/…) stay with argparse.
-    if head.startswith("-"):
-        return False
-    return True
+    from omg_cli.host_launcher import should_host_launch as _should
+
+    return bool(_should(argv, known_subcommands))
 
 
 def run_interactive(cwd: Path | str | None, argv: list[str]) -> int:
-    """Launch interactive Grok without permission bypass (OMX bare-entry analogue)."""
-    root = Path(cwd) if cwd is not None else Path.cwd()
-    root = root.resolve()
-    if not grok_available():
-        print(
-            "omg: grok not on PATH. "
-            "Install: curl -fsSL https://x.ai/cli/install.sh | bash",
-            file=sys.stderr,
-        )
-        return 127
-    grok_args = list(argv)
-    print(f"omg: interactive host launch → grok {shlex.join(grok_args) or '(no args)'}", file=sys.stderr)
-    if is_print_mode(grok_args):
-        return _run_grok_direct(root, grok_args)
-    if _inside_tmux():
-        return _run_grok_direct(root, grok_args)
-    if not tmux_available():
-        print("omg: tmux unavailable; falling back to direct launch", file=sys.stderr)
-        return _run_grok_direct(root, grok_args)
-    return _run_grok_in_tmux(root, grok_args)
+    from omg_cli.host_launcher import run_interactive as _run
+
+    return int(_run(cwd, argv))
+

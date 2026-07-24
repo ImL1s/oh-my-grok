@@ -6,9 +6,9 @@ English | [简体中文](./RELEASE.zh.md) | [繁體中文](./RELEASE.zh-TW.md)
 
 | Field | Value |
 |---|---|
-| Version | **0.6.0** |
-| Intended tag | `v0.6.0` |
-| Public assets | `oh-my-grok-0.6.0.tar.gz`, then `SHA256SUMS` |
+| Version | **0.7.0** |
+| Intended tag | `v0.7.0` |
+| Public assets | `oh-my-grok-0.7.0.tar.gz`, then `SHA256SUMS` |
 | Install | GitHub release transaction; no PyPI dependency |
 
 The release is not published merely because tests pass or a tag exists. Product
@@ -90,7 +90,7 @@ The manifest binds candidate commit/tree, toolchain, environment allowlist, sour
 omg parity release-readback \
   --manifest .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle-manifest.json
 python3 scripts/release_attest.py \
-  --asset .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle/oh-my-grok-0.6.0.tar.gz \
+  --asset .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle/oh-my-grok-0.7.0.tar.gz \
   --checksums .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle/SHA256SUMS
 ```
 
@@ -142,11 +142,11 @@ Pinned/manual GitHub-only:
 
 ```bash
 TAG=v0.6.0
-curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.6.0.tar.gz"
+curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.7.0.tar.gz"
 curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/SHA256SUMS"
 shasum -a 256 -c SHA256SUMS
 curl -fsSLo install.sh "https://raw.githubusercontent.com/ImL1s/oh-my-grok/${TAG}/scripts/install.sh"
-bash install.sh --offline --archive ./oh-my-grok-0.6.0.tar.gz \
+bash install.sh --offline --archive ./oh-my-grok-0.7.0.tar.gz \
   --checksums ./SHA256SUMS --source-tag "${TAG}"
 ```
 

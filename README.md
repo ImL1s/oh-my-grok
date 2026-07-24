@@ -43,7 +43,7 @@ OMG does **not** replace Grok Build.
 | **`.omg/`** | Plans, artifacts, run state (CLI is single-writer for `passes` / `verified`) |
 
 Workers fan out only via Grok **`spawn_subagent`** (depth 1). No Rust fork of grok-build.  
-**tmux:** host session shell for `omg --madmax` (break-glass full-open launch), plus an **experimental** team plane (`omg team`, gate `OMG_EXPERIMENTAL_TMUX_TEAM=1`). Zero-config panes are **grok only**; optional `--routing` enables **multi-CLI executor panes** (codex/agy/cursor/gemini) with role floors. Isolation is **integration** isolation (worktree ownership + seal + integrate), **not** an execution sandbox — see the per-provider posture table in [`docs/security-model.md`](docs/security-model.md).  
+**tmux:** host session shell for bare `omg` / `omg --madmax` (interactive and break-glass launch; `OMG_LAUNCH_POLICY` / `--direct` / `--tmux`), plus an **experimental** team plane (`omg team`, gate `OMG_EXPERIMENTAL_TMUX_TEAM=1`). Zero-config panes are **grok only**; optional `--routing` enables **multi-CLI executor panes** (codex/agy/cursor/gemini) with role floors. Isolation is **integration** isolation (worktree ownership + seal + integrate), **not** an execution sandbox — see the per-provider posture table in [`docs/security-model.md`](docs/security-model.md).  
 **Scope honesty:** OMG owns repository workflows, recovery, project services, and release contracts. Grok-native `/create-workflow`/Rhai and public dashboard integration remain `optional_unclaimed`; LSP/MCP registration is not host-health proof, and the team plane is integration isolation rather than an execution sandbox.
 
 | Component | Role |
@@ -337,19 +337,25 @@ omg {setup,doctor,update,uninstall,note,state,cancel,resume,wiki,hud,lsp,
 | `omg ask` | Trusted external advisor broker (not a worker) |
 | `omg pipeline` / `dual-review` | Scripted pipeline · interim critic→verifier |
 | `omg mcp-server` / `mcp-install` | Focused in-session MCP (reads + proposal writes only; **never** verified/accept) — [skills](docs/skills.md#in-session-mcp-omg-mcp-server--focused-ops-surface) · [security](docs/security-model.md#in-session-mcp-server-omg-mcp-server) |
-| `omg --madmax` | **Host launcher** (not a mode FSM): full-open Grok in a **new tmux session** each launch |
+| `omg` / `omg "<prompt>"` | **Host launcher:** safe interactive Grok (no authority inject) |
+| `omg --madmax` | **Host launcher** (not a mode FSM): full-open Grok (`--always-approve` + `--permission-mode bypassPermissions`) |
 
-### Host launcher: `omg --madmax`
+### Host launcher: bare `omg` / `omg --madmax`
 
-Break-glass interactive Grok with `--always-approve` + `--permission-mode bypassPermissions`.  
-Requires `grok` + **tmux** (hard fail if missing outside tmux). Continuity: `grok --continue` / `--resume`, not attach-old-session.
+OMX-aligned entry. Bare launch stays at safe defaults; `--madmax` is break-glass consent.
 
 ```bash
-omg --madmax                         # new tmux session + attach
+omg                                  # interactive grok (tmux when eligible)
+omg "fix the failing tests"
+omg --madmax                         # full-open + new tmux session + attach
 omg --madmax "fix the failing tests"
+omg --direct …                       # never wrap tmux
+omg --tmux …                         # require tmux (fail closed if missing)
+# OMG_LAUNCH_POLICY=auto|direct|tmux|detached-tmux  (CLI --direct/--tmux win)
 # already inside $TMUX → grok in current pane
-# headless (-p / --single / --prompt-file) → no tmux (stdout preserved)
-# Root --yolo is mode elevation only — not a madmax alias
+# auto policy: headless (-p / --single / --prompt-file) → no tmux (stdout preserved)
+# explicit --tmux is strict even for headless (fail closed if tmux/TTY unavailable)
+# Arguments after `--` are opaque. Root --yolo is mode elevation only — not a madmax alias.
 ```
 
 ### Shared flags

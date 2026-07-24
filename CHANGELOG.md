@@ -9,11 +9,6 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
-### Added
-- OMX-aligned bare host entry: `omg` / `omg "<prompt>"` launches interactive
-  Grok (tmux when available; falls back direct). `omg --madmax` remains the
-  full-open break-glass launcher.
-
 ### Planned
 - Optional PyPI/`pipx` CLI track — **shipped editable-only** (`pyproject.toml` +
   `pipx install --editable` / `pip install -e .`); non-editable wheel / PyPI
@@ -23,6 +18,17 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Host Stop veto (not feasible on Grok today).
 - Full OMC semantic LSP proxy (host-owned `.lsp.json` registration ships in 0.6.0;
   OMG does not claim host health or proxy hover/rename/goto operations).
+
+## [0.7.0] - 2026-07-24
+
+Host-launch parity with OMX (bare interactive + `--madmax` + launch policy).
+
+### Added
+- OMX-aligned host launch: bare `omg` / `omg "<prompt>"` launches interactive
+  Grok at safe defaults; `omg --madmax` remains full-open break-glass
+  (`--always-approve` + `--permission-mode bypassPermissions`). Shared transport
+  policy via `OMG_LAUNCH_POLICY` / `--direct` / `--tmux` (auto falls back;
+  explicit `--tmux` fails closed). First `--` suffix is opaque.
 
 ## [0.6.0] - 2026-07-23
 
