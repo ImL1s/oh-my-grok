@@ -145,19 +145,47 @@ def test_team_api_refuses_spawned_worker_context(
     assert "spawned-worker" in envelope["error"]["message"]
 
 
-def test_team_api_requires_control_plane(
+def test_team_api_rejects_forged_minimal_team_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """writer-only team.json must not unlock API state materialization."""
     _env_on(monkeypatch)
     _init_repo(tmp_path)
+    run_id = "forged-run"
+    team_dir = tmp_path / ".omg" / "state" / "runs" / run_id / "team"
+    team_dir.mkdir(parents=True)
+    path = team_dir / "team.json"
+    path.write_text(json.dumps({"writer": "omg-cli"}), encoding="utf-8")
+    path.chmod(0o600)
     code, envelope = execute_team_api(
         "create-task",
         {
-            "run_id": "no-such-run",
+            "run_id": run_id,
             "team_id": TEAM,
             "subject": "x",
             "description": "y",
         },
+        root=tmp_path,
+    )
+    assert code == 1
+    assert envelope["ok"] is False
+    assert envelope["error"]["details"]["error"] == "team_not_found"
+
+
+def test_team_api_rejects_mismatched_run_id_in_team_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    meta_path = (
+        tmp_path / ".omg" / "state" / "runs" / run_id / "team" / "team.json"
+    )
+    data = json.loads(meta_path.read_text(encoding="utf-8"))
+    data["run_id"] = "other-run"
+    meta_path.write_text(json.dumps(data), encoding="utf-8")
+    meta_path.chmod(0o600)
+    code, envelope = execute_team_api(
+        "mailbox-list",
+        {"run_id": run_id, "team_id": TEAM, "worker": "w1"},
         root=tmp_path,
     )
     assert code == 1

@@ -218,16 +218,64 @@ def _require_control_plane(root: Path, run_id: str) -> dict[str, Any]:
     """Fail closed unless CLI-stamped ``team.json`` exists for this run.
 
     Prevents detached fake mailbox/task stores that look authoritative without
-    an experimental team plane control-plane record.
+    an experimental team plane control-plane record. ``writer`` alone is not
+    enough — require schema/run binding fields that dry-run/live start write.
     """
     try:
-        return load_team_meta(root, run_id)
+        meta = load_team_meta(root, run_id)
     except TeamError as exc:
         raise TeamApiError(
             "E_TEAM_API_FAILED",
             f"team control plane missing for run {run_id}: {exc}",
             details={"error": "team_not_found", "run_id": run_id},
         ) from exc
+
+    required = ("schema_version", "run_id", "session", "tasks", "task_count", "writer")
+    missing = [key for key in required if key not in meta]
+    if missing:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            f"team.json missing required control-plane fields: {', '.join(missing)}",
+            details={"error": "team_not_found", "run_id": run_id, "missing": missing},
+        )
+    if meta.get("run_id") != run_id:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            f"team.json run_id mismatch (file={meta.get('run_id')!r} path={run_id!r})",
+            details={"error": "team_not_found", "run_id": run_id},
+        )
+    if meta.get("schema_version") != 1:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            f"team.json schema_version unsupported: {meta.get('schema_version')!r}",
+            details={"error": "team_not_found", "run_id": run_id},
+        )
+    session = meta.get("session")
+    if not isinstance(session, str) or not session.strip():
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            "team.json session must be a non-empty string",
+            details={"error": "team_not_found", "run_id": run_id},
+        )
+    tasks = meta.get("tasks")
+    if not isinstance(tasks, list) or len(tasks) < 1:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            "team.json tasks must be a non-empty list",
+            details={"error": "team_not_found", "run_id": run_id},
+        )
+    task_count = meta.get("task_count")
+    if (
+        isinstance(task_count, bool)
+        or not isinstance(task_count, int)
+        or task_count != len(tasks)
+    ):
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            "team.json task_count must equal len(tasks)",
+            details={"error": "team_not_found", "run_id": run_id},
+        )
+    return meta
 
 
 def _team_state_dir(root: Path, run_id: str, team_id: str) -> Path:
