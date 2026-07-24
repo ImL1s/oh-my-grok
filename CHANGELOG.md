@@ -9,6 +9,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Added
+- Experimental `omg team api <op> --input JSON [--json]`: OMX-shaped P0 façade
+  over mailbox + claim/transition task store (11 ops). Remaining OMX ops stay
+  `E_TEAM_API_UNIMPLEMENTED`; full 33-op parity is not claimed. Still gated by
+  `OMG_EXPERIMENTAL_TMUX_TEAM=1`. Fail-closed: refuses spawned-worker context
+  and requires CLI-stamped `team.json` control plane before materializing
+  mailbox/task stores.
+
 ### Planned
 - Optional PyPI/`pipx` CLI track — **shipped editable-only** (`pyproject.toml` +
   `pipx install --editable` / `pip install -e .`); non-editable wheel / PyPI

@@ -156,7 +156,7 @@ omg accept --yes
 |--|--|
 | **何时** | 选择性多 pane ULW + 真实 worktree；测试用 hermetic dry-run |
 | **闸门** | `OMG_EXPERIMENTAL_TMUX_TEAM=1`（未设则拒绝） |
-| **CLI** | `omg team start\|run\|scale\|resume\|status\|collect\|stop` |
+| **CLI** | `omg team start\|run\|scale\|resume\|status\|collect\|stop\|api` |
 | **诚实范围** | 零设定 = grok panes；`--routing` 启 multi-CLI（含角色地板）。**整合**隔离（ownership + seal + integrate）— **不是**执行沙箱。`collect` / `run` / `scale` / `resume` 永不写 `verified`。scale/resume/ralph 是**同一** team plane 的生命周期延伸（无新隔离宣称）。 |
 
 **`omg team run`** 是 team plane 上的**分阶段 DRIVER**（不是新的 planner/verifier）：

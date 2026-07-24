@@ -866,6 +866,46 @@ def cmd_team(args: argparse.Namespace) -> int:
             )
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0 if not result.get("errors") else 1
+        if action == "api":
+            from omg_cli.team.api import (
+                TeamApiError,
+                execute_team_api,
+                parse_input_json,
+            )
+
+            op = getattr(args, "api_op", None) or ""
+            raw_input = getattr(args, "api_input", None)
+            if not raw_input:
+                print("omg team api: --input JSON required", file=sys.stderr)
+                return 2
+            try:
+                payload = parse_input_json(raw_input)
+            except TeamApiError as exc:
+                print(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "operation": op or "unknown",
+                            "error": {
+                                "code": exc.code,
+                                "message": exc.message,
+                                **(
+                                    {"details": exc.details}
+                                    if exc.details
+                                    else {}
+                                ),
+                            },
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                )
+                return exc.exit_code
+            if getattr(args, "run_id", None) and "run_id" not in payload:
+                payload["run_id"] = args.run_id
+            code, envelope = execute_team_api(op, payload, root=root)
+            print(json.dumps(envelope, indent=2, ensure_ascii=False))
+            return code
         print(f"omg team: unknown action {action!r}", file=sys.stderr)
         return 2
     except TeamGateError as exc:
@@ -3091,6 +3131,44 @@ def build_parser() -> argparse.ArgumentParser:
         "--run", dest="run_id", default=None, help="run_id (default: active)"
     )
     p_t_stop.set_defaults(func=cmd_team, team_action="stop")
+
+    p_t_api = team_sub.add_parser(
+        "api",
+        parents=[common],
+        help=(
+            "OMX-shaped team api façade (P0 mailbox/task ops); "
+            "requires OMG_EXPERIMENTAL_TMUX_TEAM=1"
+        ),
+    )
+    p_t_api.add_argument(
+        "api_op",
+        metavar="OP",
+        help=(
+            "operation name (P0: send-message, mailbox-list, "
+            "mailbox-mark-delivered, create-task, list-tasks, claim-task, "
+            "transition-task-status, release-task-claim, get-summary, "
+            "read-config, write-worker-inbox)"
+        ),
+    )
+    p_t_api.add_argument(
+        "--input",
+        dest="api_input",
+        required=True,
+        help="JSON object input (OMX-shaped fields + run_id/team_id)",
+    )
+    p_t_api.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="run_id injected into --input when omitted there",
+    )
+    p_t_api.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="print JSON envelope (always on for api; kept for symmetry)",
+    )
+    p_t_api.set_defaults(func=cmd_team, team_action="api")
     p_team.set_defaults(func=cmd_team)
 
     p_review = sub.add_parser(

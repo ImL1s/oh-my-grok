@@ -225,6 +225,7 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             "omg_cli/team/",
             (
                 "__init__.py",
+                "api.py",
                 "plane.py",
                 "pipeline.py",
                 "providers.py",
@@ -250,6 +251,7 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "test_integrate.py",
                 "test_fanout.py",
                 "test_team_mailbox.py",
+                "test_team_api.py",
                 "test_team_heartbeat.py",
                 "test_team_recovery.py",
                 "test_team_worktree.py",
@@ -349,6 +351,7 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             "scripts/check_docs_links.py",
             "docs/research/**",
             "docs/superpowers/**",
+            "docs/plans/**",
             "plans/**",
         ]
         + _paths(

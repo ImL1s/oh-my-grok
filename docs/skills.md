@@ -162,7 +162,7 @@ omg accept --yes
 |--|--|
 | **When** | Opt-in multi-pane ULW with real worktrees; hermetic dry-run for tests |
 | **Gate** | `OMG_EXPERIMENTAL_TMUX_TEAM=1` (refused otherwise) |
-| **CLI** | `omg team start\|run\|scale\|resume\|status\|collect\|stop` |
+| **CLI** | `omg team start\|run\|scale\|resume\|status\|collect\|stop\|api` |
 | **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` / `scale` / `resume` never set `verified`. Scaling/resume/ralph are **lifecycle extensions** of the same team plane (no new isolation claims). |
 
 **`omg team run`** is a **staged DRIVER** over the team plane (not a new planner/verifier):
@@ -196,6 +196,8 @@ omg team resume --run RUN
 omg team status --run RUN --json
 omg team collect --run RUN   # seal_all_tasks + integrate; never verified
 omg team stop --run RUN      # kill recorded session + pgids only (no pkill -f)
+omg team api send-message --input '{"run_id":"RUN","team_id":"t","from_worker":"leader","to_worker":"w1","body":"hi"}' --json
+# P0 ops only (mailbox/task claim); not full OMX 33-op parity; gate OMG_EXPERIMENTAL_TMUX_TEAM=1
 ```
 
 ---
