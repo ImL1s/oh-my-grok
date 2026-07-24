@@ -9,7 +9,7 @@ English: [README.md](../../README.md) · [简体中文](./README.zh.md) · [繁�
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
+  <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-%3E%3D3.11-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/host-Grok%20Build-black" alt="Grok Build">
   <img src="https://img.shields.io/badge/docs-zh-TW-informational" alt="zh-TW docs">
@@ -253,8 +253,19 @@ PYTHONPATH=. python3 -m pytest -q -m "not live"
 
 ---
 
+
+## 語言
+
+| 語言 | README |
+| --- | --- |
+| English | [../../README.md](../../README.md) |
+| 简体中文 | [README.zh.md](./README.zh.md) |
+| 繁體中文 | [README.zh-TW.md](./README.zh-TW.md) |
+
+翻譯索引與維護規則：[README.md](./README.md)。
+
 ## License
 
 [MIT](../../LICENSE) · Copyright (c) 2026 ImL1s
 
-[CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) · [CHANGELOG.md](../../CHANGELOG.md)
+[CONTRIBUTING.md](../../CONTRIBUTING.md) · [SECURITY.md](../../SECURITY.md) · [CHANGELOG.md](../../CHANGELOG.md)

@@ -2,8 +2,6 @@
 
 English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.md)
 
-English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.md)
-
 **对象：** 使用 Grok Build 的人 + 维护 skill 的人。  
 **版本：** 与 [`plugin.json`](../plugin.json) 一致（目前 **0.6.0**）。
 **Skill 原文：** [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md)
@@ -152,7 +150,7 @@ omg autopilot status --run "$RUN"
 `omg workflow install|list|show|plan|run`。Autopilot 可以依 plan 用 Grok 原生
 `spawn_subagent` 执行，但不可改写 contract 或捏造 receipt。Workflow 的
 `ship` 也不能取代 `omg accept` 或 release state machine。详见
-[workflows.zh-TW.md](./workflows.zh-TW.md)。
+[workflows.zh.md](./workflows.zh.md)。
 
 Grok `/create-workflow` 与 Rhai projection 目前仍是 `optional_unclaimed`；只有
 help 文字或本地 `.rhai` 档不能当成已验证 native integration。
@@ -171,7 +169,7 @@ help 文字或本地 `.rhai` 档不能当成已验证 native integration。
 | `omg-ultragoal` | 多 story ledger |
 | `omg-cancel` | 中止 |
 
-完整 15 个 skill：[`skills.zh-TW.md`](./skills.zh-TW.md)。
+完整 15 个 skill：[`skills.zh.md`](./skills.zh.md)。
 
 ---
 
@@ -206,7 +204,7 @@ help 文字或本地 `.rhai` 档不能当成已验证 native integration。
 
 主隔离：`capability_mode` + agent disallowed tools。  
 Acceptance / QA：`command_policy`（操作者意图闸，不是 OS sandbox）。  
-详见：[`security-model.md`](./security-model.md)（英文）。
+详见：[`security-model.zh.md`](./security-model.zh.md) · [EN](./security-model.md)（英文）。
 
 ---
 

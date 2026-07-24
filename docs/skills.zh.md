@@ -114,7 +114,7 @@ omg resume --clear   # 成功接續後清除
 | **何时** | 厘清→计划→实作→审查→QA→verified |
 | **呼叫** | `autopilot …` · `full auto` · `/oh-my-grok:omg-autopilot` |
 | **CLI** | `omg autopilot start\|transition\|status\|complete` |
-| **深讲** | [`autopilot.zh-TW.md`](./autopilot.zh-TW.md) · [EN](./autopilot.md) |
+| **深讲** | [`autopilot.zh.md`](./autopilot.zh.md) · [EN](./autopilot.md) |
 | **SKILL** | [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md) |
 
 ```bash
@@ -445,7 +445,7 @@ find_references/symbols/diagnostics）、
 
 Workflow plan 不会启动外部 CLI。Leader 应使用 Grok 原生 `spawn_subagent`、传入
 精确 `capability_mode`，再把绑定 task ID 的 receipts 交给 `omg workflow run`。
-详见 [workflows.zh-TW.md](./workflows.zh-TW.md)。
+详见 [workflows.zh.md](./workflows.zh.md)。
 
 ## Agents（skills 会用到的角色）
 
@@ -491,8 +491,8 @@ Grok 内建（`explore`、`plan`、`general-purpose`）仍补临时缺口。
 
 ## 相关文件
 
-- [README.zh-TW.md](./readme/README.zh-TW.md) — 安装与中文入门  
+- [README.zh.md](./readme/README.zh.md) — 安装与中文入门  
 - [README.md](../README.md) — 英文主 README  
-- [autopilot.zh-TW.md](./autopilot.zh-TW.md) — Autopilot 深讲  
+- [autopilot.zh.md](./autopilot.zh.md) — Autopilot 深讲  
 - [security-model.md](./security-model.md) — 隔离诚实说明（英文）  
 - [research/](./research/) — 研究纪录（非日常产品文件）  
