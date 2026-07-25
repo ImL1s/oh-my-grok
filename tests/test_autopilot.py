@@ -502,7 +502,12 @@ def test_run_autopilot_pauses_when_awaiting(
     rc = run_autopilot(tmp_path, "", resume_run_id=rid)
     assert rc == 0
     assert not launched
-    assert f"omg autopilot run --resume {rid}" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert f"omg autopilot await --clear --run {rid}" in out
+    assert f"omg autopilot run --resume {rid}" in out
+    assert out.index(f"omg autopilot await --clear --run {rid}") < out.index(
+        f"omg autopilot run --resume {rid}"
+    )
     assert (tmp_path / ".omg" / "state" / "RESUME.md").is_file()
 
 

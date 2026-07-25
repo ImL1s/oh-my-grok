@@ -858,6 +858,12 @@ def run_autopilot(
         run_row = load_run(root_path, run_id) or {}
         if run_row.get("autopilot_awaiting"):
             write_resume_md(root_path, run_id)
+            clear_cmd = f"omg autopilot await --clear --run {run_id}"
+            reason = run_row.get("autopilot_awaiting_reason")
+            if isinstance(reason, str) and reason.strip():
+                print(f"{clear_cmd}  # reason: {reason.strip()}")
+            else:
+                print(clear_cmd)
             print(resume_cmd)
             return 0
         if phase == "verified":
