@@ -504,6 +504,45 @@ def complete_with_acceptance(
         )
 
 
+def set_awaiting_confirmation(
+    root: Path | str,
+    run_id: str,
+    value: bool,
+    *,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Mirror flag into status via merge_status_fields. Never touch verified."""
+    from omg_cli.state import merge_status_fields
+
+    root = Path(root).resolve()
+    run_id = validate_identifier(run_id, label="run_id")
+    run = load_run(root, run_id)
+    if run is None:
+        raise AutopilotError(f"run not found: {run_id}")
+    try:
+        schema = classify_run_schema(run)
+    except (TypeError, ValueError) as exc:
+        raise AutopilotError(f"refusing malformed/unknown schema: {exc}") from exc
+    if schema is not RunSchema.STRICT_V2:
+        raise AutopilotError(
+            f"autopilot v2 requires strict-v2 run (got {schema})"
+        )
+    if run.get("mode") != "autopilot":
+        raise AutopilotError(f"wrong mode: {run.get('mode')!r}")
+
+    awaiting = bool(value)
+    merge_status_fields(
+        root,
+        run_id,
+        {
+            "autopilot_awaiting": awaiting,
+            # Clearing always wipes reason so --clear --reason cannot leave a stale note.
+            "autopilot_awaiting_reason": (reason or "") if awaiting else "",
+        },
+    )
+    return status_autopilot(root, run_id)
+
+
 def status_autopilot(root: Path | str, run_id: str) -> dict[str, Any]:
     state = load_autopilot(root, run_id)
     run = load_run(root, run_id) or {}
@@ -527,6 +566,7 @@ __all__ = [
     "complete_with_acceptance",
     "invalidate_quality_stages",
     "load_autopilot",
+    "set_awaiting_confirmation",
     "stage_qa_is_clean",
     "stage_review_is_clean",
     "start_autopilot",

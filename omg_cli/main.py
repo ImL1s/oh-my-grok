@@ -1163,6 +1163,7 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
     from omg_cli.autopilot import (
         AutopilotError,
         complete_with_acceptance,
+        set_awaiting_confirmation,
         start_autopilot,
         status_autopilot,
         transition,
@@ -1194,10 +1195,17 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
             result = status_autopilot(root, args.run_id)
         elif action == "complete":
             result = complete_with_acceptance(root, args.run_id)
+        elif action == "await":
+            result = set_awaiting_confirmation(
+                root,
+                args.run_id,
+                not bool(getattr(args, "clear", False)),
+                reason=getattr(args, "reason", None),
+            )
         else:
             print("omg autopilot: action required", file=sys.stderr)
             return 2
-    except (AutopilotError, json.JSONDecodeError, RuntimeError) as exc:
+    except (AutopilotError, FileNotFoundError, json.JSONDecodeError, RuntimeError) as exc:
         print(f"omg autopilot: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -3403,6 +3411,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_ap_c.add_argument("--run", dest="run_id", required=True)
     p_ap_c.set_defaults(func=cmd_autopilot, autopilot_action="complete")
+    p_ap_await = ap_sub.add_parser(
+        "await",
+        parents=[common],
+        help="set/clear autopilot awaiting-confirmation pause",
+    )
+    p_ap_await.add_argument("--run", dest="run_id", required=True)
+    p_ap_await.add_argument("--reason", default=None, help="pause reason label")
+    p_ap_await.add_argument(
+        "--clear",
+        action="store_true",
+        help="clear awaiting flag (default sets awaiting=true)",
+    )
+    p_ap_await.set_defaults(func=cmd_autopilot, autopilot_action="await")
     p_ap.set_defaults(func=cmd_autopilot)
 
     for mode, help_text in (

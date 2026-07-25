@@ -11,10 +11,13 @@ from omg_cli.autopilot import (
     LEGAL_TRANSITIONS,
     assert_legal_transition,
     complete_with_acceptance,
+    set_awaiting_confirmation,
     start_autopilot,
     status_autopilot,
     transition,
 )
+from omg_cli.main import main
+from omg_cli.stop_gate import decide_stop
 from omg_cli.qa import freeze_scenarios, run_qa_cycle
 from omg_cli.review import run_structured_review
 from omg_cli.state import create_run, load_run
@@ -273,6 +276,68 @@ def test_blocked_implement_roundtrip_invalidates_stale_stamps(tmp_path: Path) ->
     # The qa gate must now reject: the review stamp was invalidated on implement.
     with pytest.raises(AutopilotError, match="review"):
         transition(tmp_path, rid, "qa")
+
+
+def test_set_awaiting_mirrors_flag_into_status(tmp_path: Path) -> None:
+    st = start_autopilot(tmp_path, "vague", skip_interview=False)
+    set_awaiting_confirmation(
+        tmp_path, st["run_id"], True, reason="interview:waiting_input"
+    )
+    run = load_run(tmp_path, st["run_id"])
+    assert run is not None
+    assert run["autopilot_awaiting"] is True
+    assert run["autopilot_awaiting_reason"] == "interview:waiting_input"
+
+
+def test_clear_awaiting(tmp_path: Path) -> None:
+    st = start_autopilot(tmp_path, "vague", skip_interview=False)
+    rid = st["run_id"]
+    set_awaiting_confirmation(tmp_path, rid, True, reason="interview:waiting_input")
+    set_awaiting_confirmation(tmp_path, rid, False)
+    run = load_run(tmp_path, rid)
+    assert run is not None
+    assert run.get("autopilot_awaiting") is False
+    assert run.get("autopilot_awaiting_reason") == ""
+
+
+def test_set_awaiting_never_touches_verified(tmp_path: Path) -> None:
+    st = start_autopilot(tmp_path, "vague", skip_interview=False)
+    rid = st["run_id"]
+    set_awaiting_confirmation(tmp_path, rid, True, reason="permission:destructive")
+    run = load_run(tmp_path, rid)
+    assert run is not None
+    assert run.get("verified") is not True
+    assert run.get("status") not in ("verified", "cancelled", "completed")
+    assert run.get("autopilot_phase") == "interview"
+
+
+def test_cli_autopilot_await_action(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    st = start_autopilot(tmp_path, "vague", skip_interview=False)
+    rid = st["run_id"]
+    monkeypatch.chdir(tmp_path)
+    rc = main(["autopilot", "await", "--run", rid, "--reason", "cli:pause"])
+    assert rc == 0
+    run = load_run(tmp_path, rid)
+    assert run is not None
+    assert run.get("autopilot_awaiting") is True
+    assert run.get("autopilot_awaiting_reason") == "cli:pause"
+    rc_clear = main(
+        ["autopilot", "await", "--run", rid, "--clear", "--reason", "should-ignore"]
+    )
+    assert rc_clear == 0
+    run2 = load_run(tmp_path, rid)
+    assert run2 is not None
+    assert run2.get("autopilot_awaiting") is False
+    assert run2.get("autopilot_awaiting_reason") == ""
+
+
+def test_set_awaiting_allows_stop_gate(tmp_path: Path) -> None:
+    st = start_autopilot(tmp_path, "vague", skip_interview=False)
+    rid = st["run_id"]
+    event = {"reason": "end_turn", "stopHookActive": False, "backgroundTasks": []}
+    assert decide_stop(tmp_path, event) is not None
+    set_awaiting_confirmation(tmp_path, rid, True, reason="interview:waiting_input")
+    assert decide_stop(tmp_path, event) is None
 
 
 def test_qa_blocked_review_roundtrip_invalidates_review_stamp(tmp_path: Path) -> None:
