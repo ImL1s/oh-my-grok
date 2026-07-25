@@ -236,8 +236,10 @@ Gated by **`OMG_EXPERIMENTAL_TMUX_TEAM=1`**. Lifecycle: `start` / `run` / `scale
 | Routing floors | Reviewer/verifier → structured-verdict providers only (`grok`/`codex`/`claude`/`gemini`; **cursor forbidden**); unknown roles fail closed; posture derived from role (never free-form) |
 | `omg team run` | **Staged DRIVER** only (`team-plan→team-prd→team-exec→team-verify→team-fix`). Does **not** reimplement ralplan/dual_review/planner/verifier — sequences the team plane + gates durable `stages/team-verifier.*` via POST-A2 `parse_verdict_file`. Decomposition is the leader’s / ralplan’s job (`--tasks-json` / `--tasks-path`). No autopilot parity beyond “sequences them.” |
 | `omg team scale` | Dynamic `--add N` / `--remove N` under a run-dir **scale lock**; bounded by `max_workers_cap()`; monotonic window indices; scale-down preserves worktrees and never goes below 1 active pane |
-| `omg team resume` | Idempotent liveness reconciliation into `team.json` after leader restart; fail-closed if not a team run |
+| `omg team resume` | Idempotent liveness reconciliation into `team.json` after leader restart; dead incomplete relaunch shares the same **scale lock** (refuse concurrent scale/resume double-spawn); fail-closed if not a team run |
 | `omg team run --ralph` | Bounded outer max_iter loop (ralph discipline) around the same staged driver; `linked_ralph` ↔ `linked_team`; complete only via real team-verify APPROVE — **not** a second isolation boundary |
+| Identity receipt chain | Binds session id, launch nonce, generation, and per-task pane/pid/pgid/pid-start. **Does not** hash `pane_command` or `worktree` paths — a same-UID writer who can already edit `team.json` could alter relaunch argv/cwd; that is outside the integration-isolation threat model (not an execution sandbox) |
+| `owner_token` | Shared `uuid4().hex` in `team.json` (`0o600`) + injected into each pane env (`OMG_TEAM_OWNER_TOKEN`). Same-UID processes can read it; it proves pane membership to the API, not cross-user isolation. Per-worker tokens are not claimed |
 
 ### Per-provider posture enforcement (NOT uniform)
 

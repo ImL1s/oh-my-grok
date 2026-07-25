@@ -10,12 +10,17 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Fixed
+- Live `omg team resume` relaunch now acquires the same run-dir scale lock as
+  `omg team scale`, refusing concurrent scale/resume that could double-spawn
+  panes or last-writer-wins `team.json`.
 - `omg team api transition-task-status` now requires `worker` and binds it to
   claim/task owner (same floor as `release-task-claim`), blocking cross-worker
   token completion. Worker panes also drop client-supplied `owner_token` when
   pane env has none.
 
 ### Added
+- Identity-matrix hermetic coverage for worker-env mailbox/claim/transition/
+  release impersonation + `owner_token` strip when pane env has none.
 - Inside-tmux shorthand launch opens a dedicated team window + split panes in
   the current session (`attach_mode=inside`); stop kills only that window/panes
   — never the shared session or leader pane. Outside TTY creates a detached
@@ -38,6 +43,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   control plane before materializing mailbox/task stores.
 
 ### Changed
+- `docs/security-model.md`: document that identity receipts omit `pane_command`/
+  `worktree`, and that `owner_token` is a same-UID shared secret (not
+  cross-user isolation).
 - Hardened `scripts/live_team_smoke.py --live` as the team promotion gate:
   asserts `dry_run=false`, pane count, grok (not fixture) pane commands,
   owned worktrees, ≥N ACKs, claim→completed, and stop clears only the owned

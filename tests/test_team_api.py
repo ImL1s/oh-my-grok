@@ -257,6 +257,193 @@ def test_team_worker_without_run_id_env_fails_closed(
     assert envelope["error"]["code"] == "E_TEAM_API_GATE"
 
 
+def _bind_worker_env(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    run_id: str,
+    worker_id: str = "worker-1",
+    owner_token: str | None = None,
+) -> None:
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    monkeypatch.setenv("OMG_TEAM_WORKER_ID", worker_id)
+    monkeypatch.setenv("OMG_TEAM_RUN_ID", run_id)
+    monkeypatch.setenv("OMG_TEAM_ID", TEAM)
+    if owner_token is None:
+        monkeypatch.delenv("OMG_TEAM_OWNER_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("OMG_TEAM_OWNER_TOKEN", owner_token)
+
+
+def test_worker_mailbox_list_forged_worker_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _bind_worker_env(monkeypatch, run_id=run_id, worker_id="worker-1")
+    code, envelope = execute_team_api(
+        "mailbox-list",
+        {"run_id": run_id, "team_id": TEAM, "worker": "worker-2"},
+        root=tmp_path,
+    )
+    assert code == 2
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "E_TEAM_API_GATE"
+    assert envelope["error"]["details"]["error"] == "identity_mismatch"
+
+
+def test_worker_claim_task_forged_worker_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _exec(
+        tmp_path,
+        "create-task",
+        {
+            "subject": "claim me",
+            "description": "x",
+            "workers": ["worker-1", "worker-2"],
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    _bind_worker_env(monkeypatch, run_id=run_id, worker_id="worker-1")
+    code, envelope = execute_team_api(
+        "claim-task",
+        {"run_id": run_id, "team_id": TEAM, "task_id": "1", "worker": "worker-2"},
+        root=tmp_path,
+    )
+    assert code == 2
+    assert envelope["ok"] is False
+    assert envelope["error"]["details"]["error"] == "identity_mismatch"
+
+
+def test_worker_env_transition_binds_worker_and_completes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Matrix-level binding: worker env (not leader) owns claim + transition."""
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _exec(
+        tmp_path,
+        "create-task",
+        {
+            "subject": "owned",
+            "description": "x",
+            "workers": ["worker-1", "worker-2"],
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    _bind_worker_env(monkeypatch, run_id=run_id, worker_id="worker-1")
+    code, claimed = execute_team_api(
+        "claim-task",
+        # Forged worker must be overwritten to env identity, not accepted.
+        {"run_id": run_id, "team_id": TEAM, "task_id": "1"},
+        root=tmp_path,
+    )
+    assert code == 0
+    token = claimed["data"]["claimToken"]
+    assert claimed["data"]["task"]["owner"] == "worker-1"
+
+    code, done = execute_team_api(
+        "transition-task-status",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "task_id": "1",
+            "from": "in_progress",
+            "to": "completed",
+            "claim_token": token,
+            "result": "ok",
+        },
+        root=tmp_path,
+    )
+    assert code == 0
+    assert done["data"]["ok"] is True
+    assert done["data"]["task"]["status"] == "completed"
+
+
+def test_worker_owner_token_stripped_when_env_has_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    meta_path = (
+        tmp_path / ".omg" / "state" / "runs" / run_id / "team" / "team.json"
+    )
+    data = json.loads(meta_path.read_text(encoding="utf-8"))
+    real_token = str(data.get("owner_token") or "")
+    assert real_token
+    _exec(
+        tmp_path,
+        "create-task",
+        {
+            "subject": "seed",
+            "description": "seed",
+            "workers": ["worker-1"],
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    _bind_worker_env(monkeypatch, run_id=run_id, worker_id="worker-1", owner_token=None)
+    # Inject forged owner_token in payload; matrix must strip it (env has none).
+    code, envelope = execute_team_api(
+        "send-message",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "from_worker": "worker-1",
+            "to_worker": "leader-fixed",
+            "body": "ACK",
+            "owner_token": real_token,
+        },
+        root=tmp_path,
+    )
+    # send-message succeeds without trusting payload owner_token; strip is the gate.
+    assert code == 0
+    assert envelope["ok"] is True
+    # Forged token must not leak into the stored message payload.
+    msg = envelope["data"]["message"]
+    assert "owner_token" not in msg
+
+
+def test_worker_release_claim_forged_worker_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _exec(
+        tmp_path,
+        "create-task",
+        {
+            "subject": "release me",
+            "description": "x",
+            "workers": ["worker-1", "worker-2"],
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    code, claimed = _exec(
+        tmp_path,
+        "claim-task",
+        {"task_id": "1", "worker": "worker-1"},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0
+    token = claimed["data"]["claimToken"]
+    _bind_worker_env(monkeypatch, run_id=run_id, worker_id="worker-1")
+    code, forged = execute_team_api(
+        "release-task-claim",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "task_id": "1",
+            "claim_token": token,
+            "worker": "worker-2",
+        },
+        root=tmp_path,
+    )
+    assert code == 2
+    assert forged["error"]["details"]["error"] == "identity_mismatch"
+
+
 def test_team_api_rejects_forged_minimal_team_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

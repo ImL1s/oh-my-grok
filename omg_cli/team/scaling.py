@@ -1192,15 +1192,46 @@ def relaunch_dead_incomplete_workers(
     Call after :func:`resume_team` reconciliation. Clean worktrees with matching
     launch identity are respawned; dirty / identity-drift trees are left alone
     and reported as ``blocked``.
-    """
-    from omg_cli.team.tmux import TmuxTeamError, pane_alive, respawn_worker_pane
 
+    Live (non-dry) relaunch shares the run-dir :func:`acquire_scale_lock` with
+    ``omg team scale`` so concurrent scale/resume cannot double-spawn panes or
+    last-writer-wins ``team.json``.
+    """
     root_path = Path(root) if root is not None else Path.cwd().resolve()
     root_path = root_path.resolve()
     _assert_team_gates(env=env)
     rid = _resolve_run_id(root_path, run_id)
     meta = _require_team_run(root_path, rid)
 
+    if bool(meta.get("dry_run")):
+        return {
+            "writer": CLI_WRITER,
+            "run_id": rid,
+            "relaunched": [],
+            "blocked": [],
+            "skipped": [],
+            "identity_generation": int(meta.get("identity_generation") or 0),
+            "verified": False,
+            "note": "dry_run resume skips worker relaunch",
+        }
+
+    with acquire_scale_lock(root_path, rid):
+        # Re-read under the lock so scale/resume cannot race a stale snapshot.
+        return _relaunch_dead_incomplete_workers_locked(
+            root_path, rid, env=env
+        )
+
+
+def _relaunch_dead_incomplete_workers_locked(
+    root_path: Path,
+    rid: str,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Body of relaunch; caller must hold :func:`acquire_scale_lock`."""
+    from omg_cli.team.tmux import TmuxTeamError, pane_alive, respawn_worker_pane
+
+    meta = _require_team_run(root_path, rid)
     if bool(meta.get("dry_run")):
         return {
             "writer": CLI_WRITER,

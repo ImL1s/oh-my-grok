@@ -861,9 +861,8 @@ def cmd_team(args: argparse.Namespace) -> int:
                 args, "run_id", None
             )
             result = resume_for_identity(root, identity)
-            if getattr(args, "as_json", False) or True:
-                # Always JSON (operator machine-readable); --json kept for symmetry
-                print(json.dumps(result, indent=2, ensure_ascii=False))
+            # Always JSON (operator machine-readable); --json kept for symmetry.
+            print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0
         if action == "status":
             from omg_cli.team.runtime import status_for_identity
