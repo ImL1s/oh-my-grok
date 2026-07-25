@@ -51,6 +51,38 @@ def test_resume_terminal_not_resumable(tmp_path):
     assert pack.get("resumable") is False
 
 
+def test_recommend_commands_includes_autopilot_run_resume() -> None:
+    run = {
+        "mode": "autopilot",
+        "run_id": "r1",
+        "status": "running",
+        "autopilot_phase": "review",
+    }
+    assert any(
+        c.startswith("omg autopilot run --resume") for c in recommend_commands(run)
+    )
+
+
+def test_recommend_commands_awaiting_puts_clear_before_resume() -> None:
+    run = {
+        "mode": "autopilot",
+        "run_id": "r1",
+        "status": "running",
+        "autopilot_phase": "review",
+        "autopilot_awaiting": True,
+        "autopilot_awaiting_reason": "cli:pause",
+    }
+    cmds = recommend_commands(run)
+    clear_idx = next(
+        i for i, c in enumerate(cmds) if c.startswith("omg autopilot await --clear")
+    )
+    resume_idx = next(
+        i for i, c in enumerate(cmds) if c.startswith("omg autopilot run --resume")
+    )
+    assert clear_idx < resume_idx
+    assert "reason: cli:pause" in cmds[clear_idx]
+
+
 def test_recommend_ralph_includes_session(tmp_path):
     status = {
         "run_id": "r1",

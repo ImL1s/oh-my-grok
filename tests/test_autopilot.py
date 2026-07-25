@@ -1,6 +1,7 @@
 """U-11 strict Autopilot v2 transitions."""
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,17 +11,42 @@ from omg_cli.autopilot import (
     AutopilotError,
     LEGAL_TRANSITIONS,
     assert_legal_transition,
+    autopilot_context_pack,
+    build_phase_prompt,
     complete_with_acceptance,
+    run_autopilot,
     set_awaiting_confirmation,
     start_autopilot,
     status_autopilot,
     transition,
 )
 from omg_cli.main import main
+from omg_cli.state import create_run, load_active_run, load_run, merge_status_fields
 from omg_cli.stop_gate import decide_stop
 from omg_cli.qa import freeze_scenarios, run_qa_cycle
 from omg_cli.review import run_structured_review
-from omg_cli.state import create_run, load_run
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _goal_bound_prd(tmp_path: Path, goal: str) -> dict:
+    test_file = tmp_path / "tests" / "test_ok.py"
+    test_file.parent.mkdir(parents=True, exist_ok=True)
+    test_file.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    return {
+        "version": 1,
+        "goal": goal,
+        "stories": [
+            {
+                "id": "s1",
+                "title": "ok",
+                "commands": [
+                    [sys.executable, "-m", "pytest", str(test_file), "-q"]
+                ],
+            }
+        ],
+        "global_commands": [],
+    }
 
 
 def _stamp_review_clean(root: Path, run_id: str, diff: str = "diff body") -> None:
@@ -33,23 +59,45 @@ def _stamp_review_clean(root: Path, run_id: str, diff: str = "diff body") -> Non
     )
 
 
-def _stamp_qa_clean(root: Path, run_id: str) -> None:
-    freeze_scenarios(
-        root,
-        run_id,
-        [{"id": "s1", "check": "always_pass"}],
-        allow_always_pass=True,
-    )
+def _stamp_qa_clean(root: Path, run_id: str, *, tmp_path: Path | None = None) -> None:
+    if tmp_path is not None:
+        test_file = tmp_path / "tests" / "test_ok.py"
+        test_file.parent.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+        freeze_scenarios(
+            root,
+            run_id,
+            [
+                {
+                    "id": "s1",
+                    "check": "command",
+                    "command": [
+                        sys.executable,
+                        "-m",
+                        "pytest",
+                        str(test_file),
+                        "-q",
+                    ],
+                }
+            ],
+        )
+    else:
+        freeze_scenarios(
+            root,
+            run_id,
+            [{"id": "s1", "check": "always_pass"}],
+            allow_always_pass=True,
+        )
     out = run_qa_cycle(root, run_id)
     assert out["clean"] is True
 
 
-def _walk_to_acceptance(root: Path, rid: str) -> None:
+def _walk_to_acceptance(root: Path, rid: str, *, tmp_path: Path | None = None) -> None:
     transition(root, rid, "implement", evidence={"consensus": True})
     transition(root, rid, "review")
     _stamp_review_clean(root, rid)
     transition(root, rid, "qa")
-    _stamp_qa_clean(root, rid)
+    _stamp_qa_clean(root, rid, tmp_path=tmp_path)
     transition(root, rid, "acceptance")
 
 
@@ -122,7 +170,7 @@ def test_complete_without_prd_materializes_from_ultraqa(tmp_path: Path) -> None:
     clear_cli_acceptance_tokens()
     st = start_autopilot(tmp_path, "verify path", skip_interview=True)
     rid = st["run_id"]
-    _walk_to_acceptance(tmp_path, rid)
+    _walk_to_acceptance(tmp_path, rid, tmp_path=tmp_path)
     out = complete_with_acceptance(tmp_path, rid)
     assert out["phase"] == "verified"
     assert out["verified"] is True
@@ -159,16 +207,9 @@ def test_complete_happy_path_same_process_acceptance(tmp_path: Path) -> None:
     clear_cli_acceptance_tokens()
     st = start_autopilot(tmp_path, "happy accept", skip_interview=True)
     rid = st["run_id"]
-    _walk_to_acceptance(tmp_path, rid)
+    _walk_to_acceptance(tmp_path, rid, tmp_path=tmp_path)
 
-    prd = {
-        "version": 1,
-        "goal": "happy accept",
-        "stories": [
-            {"id": "s1", "title": "ok", "commands": [["true"]]}
-        ],
-        "global_commands": [],
-    }
+    prd = _goal_bound_prd(tmp_path, "happy accept")
     out = complete_with_acceptance(tmp_path, rid, prd=prd)
     assert out["phase"] == "verified"
     assert out["verified"] is True
@@ -187,13 +228,8 @@ def test_complete_short_circuit_when_already_verified(tmp_path: Path) -> None:
 
     st = start_autopilot(tmp_path, "short circuit", skip_interview=True)
     rid = st["run_id"]
-    _walk_to_acceptance(tmp_path, rid)
-    prd = {
-        "version": 1,
-        "goal": "short circuit",
-        "stories": [{"id": "s1", "title": "ok", "commands": [["true"]]}],
-        "global_commands": [],
-    }
+    _walk_to_acceptance(tmp_path, rid, tmp_path=tmp_path)
+    prd = _goal_bound_prd(tmp_path, "short circuit")
     assert freeze_and_run(tmp_path, rid, prd) is True
     set_verified(tmp_path, rid, force=False)
     run = load_run(tmp_path, rid)
@@ -211,6 +247,27 @@ def test_complete_short_circuit_when_already_verified(tmp_path: Path) -> None:
     # Second complete is idempotent
     out2 = complete_with_acceptance(tmp_path, rid)
     assert out2["phase"] == "verified"
+
+
+def test_autopilot_complete_rejects_analyze_only_acceptance(tmp_path: Path) -> None:
+    clear_cli_acceptance_tokens()
+    st = start_autopilot(tmp_path, "analyze only", skip_interview=True)
+    rid = st["run_id"]
+    _walk_to_acceptance(tmp_path, rid)
+    prd = {
+        "version": 1,
+        "goal": "analyze only",
+        "stories": [
+            {
+                "id": "s1",
+                "title": "lint",
+                "commands": [["flutter", "analyze", "lib"]],
+            }
+        ],
+        "global_commands": [],
+    }
+    with pytest.raises(AutopilotError, match="analyze-only|goal-bound"):
+        complete_with_acceptance(tmp_path, rid, prd=prd)
 
 
 def test_blocked_to_qa_still_requires_review(tmp_path: Path) -> None:
@@ -363,3 +420,123 @@ def test_qa_blocked_review_roundtrip_invalidates_review_stamp(tmp_path: Path) ->
     # Fresh stamp required after invalidation.
     _stamp_review_clean(tmp_path, rid, diff="new-diff-after-blocked-review")
     transition(tmp_path, rid, "qa")
+
+
+def _rid(root: Path) -> str:
+    run = load_active_run(root)
+    assert run is not None
+    return str(run["run_id"])
+
+
+def _stamp_gate_for(root: Path, kw: dict) -> int:
+    """Simulate grok completing the current phase gate (test helper)."""
+    run_dir = kw["run_dir"]
+    run_id = run_dir.name
+    phase = status_autopilot(root, run_id)["phase"]
+    if phase == "ralplan":
+        merge_status_fields(root, run_id, {"ralplan_consensus": True})
+    elif phase == "review":
+        _stamp_review_clean(root, run_id)
+    elif phase == "qa":
+        _stamp_qa_clean(root, run_id, tmp_path=root)
+    return 0
+
+
+def test_autopilot_context_pack_names_phase_and_gate() -> None:
+    pack = autopilot_context_pack(
+        run_id="r1",
+        phase="review",
+        goal="g",
+        next_gate="CLI stages/structured_review.json clean",
+    )
+    assert "phase=review" in pack and "structured_review.json" in pack
+
+
+def test_build_phase_prompt_maps_skill_and_forbids_questions(tmp_path: Path) -> None:
+    text = build_phase_prompt("implement", root=tmp_path, goal="g", run_id="r1")
+    assert "ultrawork" in text.lower() or "implement" in text.lower()
+    assert "do not ask" in text.lower()
+
+
+def test_run_autopilot_walks_to_verified_with_mocked_launches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clear_cli_acceptance_tokens()
+    launches: list[dict] = []
+
+    def _fake_launch(argv, **kw):
+        launches.append({**kw, "argv": argv})
+        _stamp_gate_for(tmp_path, kw)
+        return 0
+
+    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    rc = run_autopilot(
+        tmp_path, "add pure add(a,b) with test", skip_interview=True
+    )
+    assert rc == 0
+    assert status_autopilot(tmp_path, _rid(tmp_path))["phase"] == "verified"
+    assert launches
+
+
+def test_run_autopilot_pauses_at_interview(tmp_path: Path) -> None:
+    rc = run_autopilot(tmp_path, "vague idea")
+    assert rc == 0
+    assert status_autopilot(tmp_path, _rid(tmp_path))["phase"] == "interview"
+
+
+def test_run_autopilot_pauses_when_awaiting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    st = start_autopilot(tmp_path, "ship it", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "review")
+    set_awaiting_confirmation(tmp_path, rid, True, reason="cli:pause")
+    launched: list[bool] = []
+
+    def _fake_launch(argv, **kw):
+        launched.append(True)
+        return 0
+
+    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    rc = run_autopilot(tmp_path, "", resume_run_id=rid)
+    assert rc == 0
+    assert not launched
+    out = capsys.readouterr().out
+    assert f"omg autopilot await --clear --run {rid}" in out
+    assert f"omg autopilot run --resume {rid}" in out
+    assert out.index(f"omg autopilot await --clear --run {rid}") < out.index(
+        f"omg autopilot run --resume {rid}"
+    )
+    assert (tmp_path / ".omg" / "state" / "RESUME.md").is_file()
+
+
+def test_run_resume_reenters_current_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    st = start_autopilot(tmp_path, "resume goal", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "review")
+    phases_seen: list[str] = []
+
+    def _fake_launch(argv, **kw):
+        run_id = kw["run_dir"].name
+        phases_seen.append(status_autopilot(tmp_path, run_id)["phase"])
+        return 0
+
+    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    rc = run_autopilot(tmp_path, "", resume_run_id=rid)
+    assert rc == 0
+    assert phases_seen == ["review"]
+    assert status_autopilot(tmp_path, rid)["phase"] == "review"
+
+    phases_seen.clear()
+    rc2 = run_autopilot(tmp_path, "", resume_run_id=rid)
+    assert rc2 == 0
+    assert phases_seen == ["review"]
+    assert status_autopilot(tmp_path, rid)["phase"] == "review"
+
+
+def test_cli_autopilot_run_listed_in_skills_md() -> None:
+    assert "omg autopilot run" in (ROOT / "docs" / "skills.md").read_text()

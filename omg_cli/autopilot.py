@@ -375,6 +375,7 @@ def complete_with_acceptance(
     run_id: str,
     *,
     prd: Mapping[str, Any] | None = None,
+    allow_soft_accept: bool = False,
 ) -> dict[str, Any]:
     """Terminal path: freeze+run acceptance in this process, then set_verified.
 
@@ -467,7 +468,12 @@ def complete_with_acceptance(
 
         # Same-process freeze + run (registers process-local acceptance token)
         try:
-            passed = freeze_and_run(root, run_id, prd_obj)
+            passed = freeze_and_run(
+                root,
+                run_id,
+                prd_obj,
+                allow_soft_accept=allow_soft_accept,
+            )
         except Exception as exc:
             raise AutopilotError(
                 f"same-process freeze_and_run failed: {exc}"
@@ -558,14 +564,354 @@ def status_autopilot(root: Path | str, run_id: str) -> dict[str, Any]:
     }
 
 
+# Phase → skill body for outer-driver prompt injection
+_PHASE_SKILL_REL: dict[str, str] = {
+    "interview": "skills/omg-deep-interview/SKILL.md",
+    "ralplan": "skills/omg-ralplan/SKILL.md",
+    "implement": "skills/omg-ultrawork/SKILL.md",
+    "rework": "skills/omg-ultrawork/SKILL.md",
+    "review": "skills/omg-dual-review/SKILL.md",
+    "qa": "skills/omg-ultraqa/SKILL.md",
+    "acceptance": "skills/omg-autopilot/SKILL.md",
+    "blocked": "skills/omg-autopilot/SKILL.md",
+}
+
+
+def _plugin_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _load_phase_skill(phase: str, *, root: Path | None = None) -> str:
+    rel = _PHASE_SKILL_REL.get(phase) or _PHASE_SKILL_REL["acceptance"]
+    base = root if root is not None else _plugin_root()
+    path = base / rel
+    if not path.is_file():
+        path = _plugin_root() / rel
+    if not path.is_file():
+        return f"(skill missing for phase {phase!r}: {rel})"
+    return path.read_text(encoding="utf-8")
+
+
+def autopilot_context_pack(
+    *,
+    run_id: str,
+    phase: str,
+    goal: str,
+    next_gate: str,
+) -> str:
+    """Build autopilot phase context block for prompt injection."""
+    lines = [
+        "## Autopilot context pack (CLI injection — fresh each phase)",
+        f"- run_id: {run_id}",
+        f"- phase={phase}",
+        f"- goal: {(goal or '').strip() or '(unspecified)'}",
+        f"- next_gate: {next_gate}",
+        "- Do **not** ask the user mid-phase; record uncertainty under "
+        "`.omg/artifacts/` or `omg autopilot transition --phase blocked`.",
+        "- Only the omg CLI sets verified; use `omg autopilot complete` at acceptance.",
+    ]
+    return "\n".join(lines)
+
+
+def build_phase_prompt(
+    phase: str,
+    *,
+    root: Path | str,
+    goal: str,
+    run_id: str,
+) -> str:
+    """Compose grok prompt for one autopilot phase (skill + pack + no-ask rule)."""
+    from omg_cli.modes import HARD_RULES_REMINDER
+    from omg_cli.stop_gate import continuation_reason
+
+    root_path = Path(root).resolve()
+    phase_key = (phase or "").strip() or "unknown"
+    reason = continuation_reason(phase_key, goal=goal, run_id=run_id)
+    # Extract next gate clause from continuation_reason for the pack header.
+    next_gate = "see continuation block"
+    if "Next gate:" in reason:
+        next_gate = reason.split("Next gate:", 1)[1].split(".", 1)[0].strip()
+
+    skill = _load_phase_skill(phase_key, root=root_path)
+    parts = [
+        skill,
+        "",
+        HARD_RULES_REMINDER,
+        "",
+        autopilot_context_pack(
+            run_id=run_id,
+            phase=phase_key,
+            goal=goal,
+            next_gate=next_gate,
+        ),
+        "",
+        "## Phase continuation (hard)",
+        reason,
+        "",
+        "## Goal",
+        (goal or "").strip() or "(no goal provided)",
+        "",
+        "Follow the phase skill above. Do not ask the user mid-phase.",
+    ]
+    return "\n".join(parts)
+
+
+def _interview_complete(root: Path, run_id: str) -> bool:
+    from omg_cli.stop_gate import _read_interview_status
+
+    status = _read_interview_status(root, run_id)
+    return status == "complete"
+
+
+def _consensus_ready(root: Path, run_id: str) -> bool:
+    run = load_run(root, run_id) or {}
+    if run.get("ralplan_consensus") is True:
+        return True
+    from omg_cli.ralplan import ralplan_state_path
+
+    data = _read_stage_json(ralplan_state_path(root, run_id))
+    if data and data.get("accepted") is True:
+        return True
+    marker = (
+        Path(root)
+        / ".omg"
+        / "artifacts"
+        / f"ralplan-consensus-{run_id}.json"
+    )
+    return marker.is_file()
+
+
+def _try_advance_after_launch(root: Path, run_id: str, phase: str) -> str:
+    """Inspect stamps after a grok launch; transition when gates are satisfied."""
+    phase = str(phase)
+    try:
+        if phase == "interview" and _interview_complete(root, run_id):
+            transition(
+                root,
+                run_id,
+                "ralplan",
+                evidence={"interview_complete": True},
+                reason="interview complete",
+            )
+            return "ralplan"
+        if phase == "ralplan" and _consensus_ready(root, run_id):
+            transition(
+                root,
+                run_id,
+                "implement",
+                evidence={"consensus": True},
+                reason="ralplan consensus",
+            )
+            return "implement"
+        if phase == "implement":
+            transition(
+                root,
+                run_id,
+                "review",
+                reason="implementation ready for review",
+            )
+            return "review"
+        if phase == "review" and stage_review_is_clean(root, run_id):
+            transition(root, run_id, "qa", reason="structured review clean")
+            return "qa"
+        if phase == "qa" and stage_qa_is_clean(root, run_id):
+            transition(
+                root,
+                run_id,
+                "acceptance",
+                reason="ultraqa clean",
+            )
+            return "acceptance"
+        if phase == "acceptance":
+            out = complete_with_acceptance(root, run_id)
+            if out.get("phase") == "verified":
+                return "verified"
+    except AutopilotError:
+        pass
+    return phase
+
+
+def run_autopilot(
+    root: Path | str,
+    goal: str,
+    *,
+    skip_interview: bool = False,
+    resume_run_id: str | None = None,
+    max_phase_cycles: int = 5,
+    dry_run: bool = False,
+    timeout: float | None = None,
+    yolo: bool = False,
+    safe: bool = False,
+    force: bool = False,
+    **launch_kw: Any,
+) -> int:
+    """Outer CLI driver: launch grok per phase until verified or pause/terminal.
+
+    Tertiary cross-turn persistence (beyond in-session Stop pin). Writes RESUME.md
+    each phase; pauses at incomplete interview with resume hint.
+    """
+    import sys
+
+    from omg_cli.modes import (
+        _launch_grok,
+        _run_dir,
+        build_grok_argv,
+        resolve_launch_timeout,
+    )
+    from omg_cli.resume import write_resume_md
+    from omg_cli.state import load_active_run
+
+    root_path = Path(root).resolve()
+    assert_safe_supervised_parent()
+    requested_goal = (goal or "").strip()
+    run_id: str
+
+    if resume_run_id is not None:
+        if resume_run_id == "__active__":
+            run = load_active_run(root_path)
+            if run is None:
+                print("omg autopilot run: no active run to resume", file=sys.stderr)
+                return 1
+            resume_run_id = str(run["run_id"])
+        else:
+            run = load_run(root_path, str(resume_run_id))
+        if run is None:
+            print(
+                f"omg autopilot run: no run found: {resume_run_id!r}",
+                file=sys.stderr,
+            )
+            return 1
+        if str(run.get("mode") or "") != "autopilot":
+            print(
+                f"omg autopilot run: run {resume_run_id!r} is mode="
+                f"{run.get('mode')!r}",
+                file=sys.stderr,
+            )
+            return 1
+        run_id = str(run["run_id"])
+        frozen_goal = str(run.get("goal") or "").strip()
+        if requested_goal and requested_goal != frozen_goal:
+            print(
+                "omg autopilot run: conflicting goal on resume; omit goal text",
+                file=sys.stderr,
+            )
+            return 2
+        goal = frozen_goal or requested_goal
+    else:
+        if not requested_goal:
+            print("omg autopilot run: goal text required", file=sys.stderr)
+            return 2
+        st = start_autopilot(
+            root_path,
+            requested_goal,
+            force=force,
+            skip_interview=skip_interview,
+        )
+        run_id = str(st["run_id"])
+        goal = requested_goal
+
+    launch_timeout = resolve_launch_timeout(timeout, dry_run=dry_run)
+    run_dir = _run_dir(root_path, run_id)
+    phase_cycles: dict[str, int] = {}
+    resume_cmd = f"omg autopilot run --resume {run_id}"
+
+    while True:
+        st = status_autopilot(root_path, run_id)
+        phase = str(st.get("phase") or "")
+        run_row = load_run(root_path, run_id) or {}
+        if run_row.get("autopilot_awaiting"):
+            write_resume_md(root_path, run_id)
+            clear_cmd = f"omg autopilot await --clear --run {run_id}"
+            reason = run_row.get("autopilot_awaiting_reason")
+            if isinstance(reason, str) and reason.strip():
+                print(f"{clear_cmd}  # reason: {reason.strip()}")
+            else:
+                print(clear_cmd)
+            print(resume_cmd)
+            return 0
+        if phase == "verified":
+            write_resume_md(root_path, run_id)
+            return 0
+        if phase in ("blocked", "cancelled"):
+            write_resume_md(root_path, run_id)
+            return 1
+        if phase == "interview" and not _interview_complete(root_path, run_id):
+            write_resume_md(root_path, run_id)
+            print(resume_cmd)
+            return 0
+
+        phase_cycles[phase] = int(phase_cycles.get(phase, 0)) + 1
+        if phase_cycles[phase] > max(1, int(max_phase_cycles)):
+            try:
+                transition(
+                    root_path,
+                    run_id,
+                    "blocked",
+                    reason=f"max_phase_cycles={max_phase_cycles}",
+                )
+            except AutopilotError:
+                pass
+            write_resume_md(root_path, run_id)
+            return 1
+
+        write_resume_md(root_path, run_id)
+
+        prompt = build_phase_prompt(phase, root=root_path, goal=goal, run_id=run_id)
+        argv = build_grok_argv(
+            "ralplan",
+            goal,
+            yolo=yolo,
+            safe=safe,
+            cwd=root_path,
+            project_root=root_path,
+            run_id=run_id,
+            prompt=prompt,
+            skill_root=_plugin_root(),
+            **{
+                k: v
+                for k, v in launch_kw.items()
+                if k
+                in (
+                    "extra",
+                    "output_format",
+                    "disallow_shell",
+                    "new_session_id",
+                    "resume_session_id",
+                )
+            },
+        )
+        rc = _launch_grok(
+            argv,
+            cwd=root_path,
+            run_dir=run_dir,
+            timeout=launch_timeout,
+            dry_run=dry_run,
+        )
+        if rc != 0:
+            write_resume_md(root_path, run_id)
+            return int(rc)
+
+        new_phase = _try_advance_after_launch(root_path, run_id, phase)
+        if dry_run:
+            return 0
+        if new_phase == phase:
+            # No gate progress this launch — stop for cross-turn resume.
+            write_resume_md(root_path, run_id)
+            print(resume_cmd)
+            return 0
+
+
 __all__ = [
     "LEGAL_TRANSITIONS",
     "AutopilotError",
     "assert_legal_transition",
+    "autopilot_context_pack",
     "autopilot_state_path",
+    "build_phase_prompt",
     "complete_with_acceptance",
     "invalidate_quality_stages",
     "load_autopilot",
+    "run_autopilot",
     "set_awaiting_confirmation",
     "stage_qa_is_clean",
     "stage_review_is_clean",

@@ -1,7 +1,8 @@
 """Cross-session resume routing + RESUME.md workspace side-effect (research R2).
 
-Grok Stop and SessionStart are passive — they cannot write workspace state or
-veto chat end. Continuity uses:
+Grok Stop is passive — it cannot write workspace state or veto chat end.
+SessionStart may passively refresh RESUME.md for active autopilot; CLI remains
+authoritative. Continuity uses:
 1. ``omg resume`` smart routing from active / named run
 2. explicit CLI writing of ``.omg/state/RESUME.md`` (one-shot pack)
 3. louder context pack text for agents (status + next command)
@@ -73,10 +74,24 @@ def recommend_commands(status: dict[str, Any]) -> list[str]:
         if isinstance(sid, str) and sid.strip():
             cmds.append(f"grok --resume {sid.strip()}")
     elif mode == "autopilot":
+        phase = str(
+            status.get("autopilot_phase")
+            or status.get("stage")
+            or stage
+            or ""
+        )
+        if status.get("autopilot_awaiting"):
+            clear_cmd = f"omg autopilot await --clear --run {rid}"
+            reason = status.get("autopilot_awaiting_reason")
+            if isinstance(reason, str) and reason.strip():
+                cmds.append(f"{clear_cmd}  # reason: {reason.strip()}")
+            else:
+                cmds.append(clear_cmd)
+        cmds.append(f"omg autopilot run --resume {rid}")
         cmds.append(f"omg autopilot status --run {rid}")
-        if stage:
+        if phase:
             cmds.append(
-                f"# continue playbook phase={stage!r}; "
+                f"# continue playbook phase={phase!r}; "
                 f"omg autopilot transition --run {rid} --phase <next>"
             )
         cmds.append(f"omg state --run {rid} --human")

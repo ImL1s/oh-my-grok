@@ -16,6 +16,14 @@ def main() -> None:
         root = ensure_omg_dirs()
         ev = read_hook_event()
         append_hook_observation(root, "SessionStart", ev)
+        from omg_cli.resume import write_resume_md
+        from omg_cli.state import load_active_run
+
+        active = load_active_run(root)
+        if active and str(active.get("mode") or "") == "autopilot":
+            phase = str(active.get("autopilot_phase") or "")
+            if phase not in ("verified", "cancelled"):
+                write_resume_md(root, str(active.get("run_id") or "") or None)
     except Exception:
         # Fail-open: never crash SessionStart on I/O or unexpected errors
         sys.exit(0)

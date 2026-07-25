@@ -72,12 +72,20 @@ def test_inventory_remains_exact_4_baseline_5_eligible_5_unavailable() -> None:
     assert [row["group"] for row in rows].count("unavailable") == 5
 
 
-def test_session_start_is_passive_and_does_not_write_mutable_resume_pointer(tmp_path) -> None:
+def test_session_start_is_passive_without_active_autopilot(tmp_path) -> None:
     proc = _run_hook("session_start.py", tmp_path, '{"event_id":"session-start-1"}')
     assert proc.returncode == 0
     assert not (tmp_path / ".omg" / "state" / "RESUME.md").exists()
     events = read_all_runtime_events(tmp_path)
     assert any(row["event_type"] == "session_started" for row in events)
+
+
+def test_session_start_refreshes_resume_for_active_autopilot(tmp_path) -> None:
+    _seed_active_autopilot(tmp_path, phase="review")
+    proc = _run_hook("session_start.py", tmp_path, '{"event_id":"s1"}')
+    assert proc.returncode == 0
+    assert (tmp_path / ".omg" / "state" / "RESUME.md").is_file()
+    assert proc.stdout.strip() == ""
 
 
 def test_stop_blocks_active_incomplete_autopilot(tmp_path) -> None:

@@ -1171,6 +1171,7 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
     from omg_cli.autopilot import (
         AutopilotError,
         complete_with_acceptance,
+        run_autopilot,
         set_awaiting_confirmation,
         start_autopilot,
         status_autopilot,
@@ -1180,6 +1181,23 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
     root = _project_root()
     action = getattr(args, "autopilot_action", None)
     try:
+        if action == "run":
+            goal = " ".join(args.goal or []).strip()
+            timeout = getattr(args, "timeout", None)
+            if timeout is not None:
+                timeout = float(timeout)
+            return run_autopilot(
+                root,
+                goal,
+                skip_interview=bool(getattr(args, "skip_interview", False)),
+                resume_run_id=getattr(args, "resume", None),
+                max_phase_cycles=int(getattr(args, "max_phase_cycles", 5)),
+                dry_run=bool(getattr(args, "dry_run", False)),
+                timeout=timeout,
+                yolo=bool(getattr(args, "yolo", False)),
+                safe=bool(getattr(args, "safe", False)),
+                force=bool(getattr(args, "force", False)),
+            )
         if action == "start":
             goal = " ".join(args.goal or []).strip()
             result = start_autopilot(
@@ -3445,6 +3463,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="clear awaiting flag (default sets awaiting=true)",
     )
     p_ap_await.set_defaults(func=cmd_autopilot, autopilot_action="await")
+    p_ap_run = ap_sub.add_parser(
+        "run",
+        parents=[common],
+        help="outer CLI driver (cross-turn/headless persistence)",
+    )
+    p_ap_run.add_argument("goal", nargs="*", help="goal text (omit when resuming)")
+    p_ap_run.add_argument("--force", action="store_true")
+    p_ap_run.add_argument(
+        "--skip-interview",
+        action="store_true",
+        help="start at ralplan when creating a new run",
+    )
+    p_ap_run.add_argument(
+        "--resume",
+        dest="resume",
+        nargs="?",
+        const="__active__",
+        default=None,
+        metavar="RUN",
+        help="resume active or explicit autopilot run",
+    )
+    p_ap_run.add_argument(
+        "--max-phase-cycles",
+        dest="max_phase_cycles",
+        type=int,
+        default=5,
+        help="max grok launches per phase before blocked (default 5)",
+    )
+    p_ap_run.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="create run + argv only; do not exec grok",
+    )
+    p_ap_run.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=float,
+        default=None,
+        help="seconds per grok launch (default 3600); 0 = unlimited",
+    )
+    p_ap_run.set_defaults(func=cmd_autopilot, autopilot_action="run")
     p_ap.set_defaults(func=cmd_autopilot)
 
     for mode, help_text in (
