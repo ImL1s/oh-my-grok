@@ -24,6 +24,10 @@ plan is approved is expected, not an obstacle.
 Long or autonomous runs: `omg autopilot`, `omg ralph`, or `omg pipeline`. These
 are outer CLI loops that re-invoke `grok` with `--rules` (so this contract
 survives every headless turn) and `--session-id` / `--resume` between turns.
+Durable multi-story goals: `omg-ultragoal` / `omg goal *` (ledger under
+`.omg/ultragoal/`). To arm host session pressure, run
+`omg goal set-host --goal GOAL` and send the printed `/goal …` line as a prompt
+turn — the CLI never mutates host `/goal`.
 For a reviewed, reusable stage graph use `omg workflow plan` and execute its
 tasks only through native `spawn_subagent`; return task-ID-bound receipts to
 `omg workflow run`. Do not launch foreign CLI workers or invent receipts.
@@ -35,6 +39,8 @@ asks for tmux workers): run canonical `omg team [N[:role]] "<goal>"` with
 rework / acceptance: **do not ask the user**. Record uncertainty under
 `.omg/artifacts/` and keep working, or `omg autopilot transition --phase blocked`.
 The Stop gate will reinject this rule if you try to stop mid-phase.
+Host slash `/goal` while Active bypasses the Stop gate; hooks cannot read or
+mutate host goal state — do not invent `/goal` status from hook output.
 </workflow_routing>
 
 <subagents>

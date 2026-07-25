@@ -24,12 +24,14 @@ English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.m
 | OMC 期望 | OMG 對應 | 說明 |
 |----------|----------|------|
 | 不離開 session（Stop block） | **Stop pin（主要）** | grok ≥0.2.107；每 turn 上限 8 |
-| 不依賴 Stop 的 turn 內繼續 | **`/goal`（次要）** | 宿主原生；在 Stop 閘門前 |
+| 不依賴 Stop 的 turn 內繼續 | **`/goal`（次要）** | 宿主原生；Active 時繞過 Stop 閘門 |
 | 跨 turn / 無頭 / 超 cap | **`/loop` / `omg ralph`（第三；forthcoming `run --resume`）** | 新 turn；計數重置 |
 | 人類暫停（需求不清） | **`ask_user_question` + interview** | 閘門讓步；非 mid-phase 閒聊 |
 | 破壞性 / 憑證暫停 | **`omg autopilot await`** | 設定 `autopilot_awaiting` |
 | 取消粘性模式 | **`omg cancel`** | 不是「解開 Stop」 |
 | Verified 完成 | **`omg accept` / `omg autopilot complete`** | 僅 CLI |
+
+**執行時優先序：** 當 host `/goal` 為 **Active** 時，它主導 continuation，Stop 閘門在 goal 釋放前不會被諮詢；goal 釋放後 Stop pin 再執行剩餘 autopilot 閘門。
 
 ### Stop pin 誠實說明
 

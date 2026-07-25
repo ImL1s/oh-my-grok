@@ -26,6 +26,7 @@ from omg_cli.goals import (
     link_run,
     repair_goal,
     resume_story,
+    set_host_goal_handoff,
     snapshot_path,
     start_story,
     verify_goal,
@@ -429,3 +430,71 @@ def test_cli_goal_init_status_and_repair(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     repaired = json.loads(proc.stdout)
     assert repaired["action"] == "repaired"
+
+
+def test_set_host_goal_handoff(tmp_path: Path) -> None:
+    init_goal(tmp_path, "g-host", _stories(), title="Host handoff")
+    result = set_host_goal_handoff(tmp_path, "g-host")
+    md = result["handoff_markdown"]
+    assert result["goal_id"] == "g-host"
+    assert result["suggested_slash"].startswith("/goal ")
+    assert ".omg/ultragoal/goals/g-host/snapshot.json" in md
+    assert ".omg/ultragoal/goals/g-host/snapshot.json" in result["suggested_slash"]
+    assert "/goal status" in md
+    assert "replaces any active goal" in md
+    assert "/goal resume" in md
+    assert "did not" in md.lower() or "does not" in md.lower()
+    assert "hooks cannot" in md.lower()
+    assert "BackOffPaused" in md
+    assert "omg goal block-story" in md
+    assert "s1 tests pass" in result["suggested_slash"]
+    assert result["active_story_id"] == "s1"
+
+    start_story(tmp_path, "g-host", "s1")
+    in_prog = set_host_goal_handoff(tmp_path, "g-host")
+    assert in_prog["active_story_id"] == "s1"
+    assert "s1 tests pass" in in_prog["suggested_slash"]
+
+    with pytest.raises(GoalError, match="not found"):
+        set_host_goal_handoff(tmp_path, "missing-goal")
+
+
+def test_cli_goal_set_host(tmp_path: Path) -> None:
+    stories = json.dumps(
+        [{"id": "s1", "depends_on": [], "acceptance": "cli handoff ok"}],
+        ensure_ascii=False,
+    )
+    proc = _run_omg(
+        "goal",
+        "init",
+        "--goal",
+        "cli-host",
+        "--stories-json",
+        stories,
+        cwd=tmp_path,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    proc = _run_omg("goal", "set-host", "--goal", "cli-host", cwd=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    assert "/goal " in out
+    assert ".omg/ultragoal/goals/cli-host/snapshot.json" in out
+    assert "replaces any active goal" in out
+    # default is markdown, not JSON
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(out)
+
+    proc_json = _run_omg(
+        "goal",
+        "set-host",
+        "--goal",
+        "cli-host",
+        "--json",
+        cwd=tmp_path,
+    )
+    assert proc_json.returncode == 0
+    payload = json.loads(proc_json.stdout)
+    assert payload["goal_id"] == "cli-host"
+    assert "handoff_markdown" in payload
+    assert "cli handoff ok" in payload["suggested_slash"]

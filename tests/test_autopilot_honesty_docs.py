@@ -38,3 +38,27 @@ def test_skills_hard_rule_stop_honesty():
         body = (ROOT / rel).read_text(encoding="utf-8")
         assert "No OMC Stop hard-pin" not in body
         assert "OMC 式 Stop hard-pin" not in body
+
+
+def test_ultragoal_skill_host_goal_honesty():
+    body = (ROOT / "skills/omg-ultragoal/SKILL.md").read_text(encoding="utf-8")
+    low = body.lower()
+    assert "no host `/goal` api" not in low
+    assert "grok has no host" not in low
+    assert "/goal" in body
+    assert "session-scoped" in low or "slash `/goal`" in low
+
+
+def test_autopilot_docs_goal_stop_precedence():
+    for rel in ("docs/autopilot.md", "docs/autopilot.zh.md", "docs/autopilot.zh-TW.md"):
+        body = (ROOT / rel).read_text(encoding="utf-8")
+        assert "Active" in body
+        assert "Stop" in body
+        assert "/goal" in body
+
+
+def test_rules_goal_stop_bypass_note():
+    rules = (ROOT / "templates/omg-rules.md").read_text(encoding="utf-8")
+    assert "/goal" in rules
+    assert "bypasses" in rules.lower()
+    assert "do not invent" in rules.lower()

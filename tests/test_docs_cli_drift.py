@@ -56,6 +56,7 @@ def test_goal_subcommands_exist() -> None:
     choices = _subparser_choices(build_parser(), "goal")
     assert "start-story" in choices
     assert "complete-story" in choices
+    assert "set-host" in choices
     # the historical doc drift referenced these non-existent actions:
     assert "start" not in choices
     assert "complete" not in choices

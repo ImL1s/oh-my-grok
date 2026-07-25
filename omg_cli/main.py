@@ -339,6 +339,7 @@ def cmd_goal(args: argparse.Namespace) -> int:
         list_goals,
         repair_goal,
         resume_story,
+        set_host_goal_handoff,
         start_story,
         goal_status,
         verify_goal,
@@ -403,6 +404,13 @@ def cmd_goal(args: argparse.Namespace) -> int:
                 or not bool(getattr(args, "yes", False)),
                 yes=bool(getattr(args, "yes", False)),
             )
+        elif action == "set-host":
+            result = set_host_goal_handoff(root, args.goal_id)
+            if getattr(args, "json", False):
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            else:
+                print(result["handoff_markdown"])
+            return 0
         else:
             print("omg goal: action required", file=sys.stderr)
             return 2
@@ -2764,6 +2772,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="confirm repair after byte-for-byte hash-named backup",
     )
     p_g_repair.set_defaults(func=cmd_goal, goal_action="repair")
+
+    p_g_set_host = goal_sub.add_parser(
+        "set-host",
+        help="print host /goal handoff text (does not mutate host goal)",
+    )
+    p_g_set_host.add_argument("--goal", dest="goal_id", required=True)
+    p_g_set_host.add_argument(
+        "--json",
+        action="store_true",
+        help="print full JSON payload instead of handoff markdown",
+    )
+    p_g_set_host.set_defaults(func=cmd_goal, goal_action="set-host")
+
     p_goal.set_defaults(func=cmd_goal)
 
     p_accept = sub.add_parser(

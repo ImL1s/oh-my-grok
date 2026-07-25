@@ -43,7 +43,7 @@ Same *idea* as OMC’s skill zoo, **Grok-native** runtime: playbooks + `omg` CLI
 | `ralph`, don’t stop, keep going | `omg-ralph` | `omg ralph` | One-story outer loop |
 | `ralplan`, plan consensus | `omg-ralplan` | `omg ralplan` | Plan → critic → verifier (no code) |
 | `deep interview`, clarify | `omg-deep-interview` | `omg interview *` | Requirements gate |
-| `ultragoal`, multi-story, goal ledger | `omg-ultragoal` | `omg goal *` | Durable story ledger (no host `/goal`) |
+| `ultragoal`, multi-story, goal ledger | `omg-ultragoal` | `omg goal *` | Durable story ledger + host `/goal` session pressure |
 | `ultraqa`, fix tests, retest | `omg-ultraqa` | `omg qa *` | Freeze → run → repair (**≠ verified**) |
 | `dual-review`, don’t self-approve | `omg-dual-review` | `omg dual-review` · `omg review` | Critic → verifier |
 | `pipeline` | `omg-pipeline` | `omg pipeline` | plan→implement→review→accept FSM |
@@ -289,10 +289,13 @@ omg interview close --run RUN
 |--|--|
 | **When** | Several durable stories, depends_on, cross-session resume |
 | **Invoke** | `ultragoal` · `goal ledger` · `/oh-my-grok:omg-ultragoal` |
-| **CLI** | `omg goal init\|status\|link-run\|start-story\|checkpoint\|block-story\|resume-story\|complete-story\|verify\|repair` |
+| **CLI** | `omg goal init\|status\|set-host\|link-run\|start-story\|checkpoint\|block-story\|resume-story\|complete-story\|verify\|repair` |
 | **SKILL** | [`skills/omg-ultragoal/SKILL.md`](../skills/omg-ultragoal/SKILL.md) |
 
-Grok has **no host `/goal`** — ledger is only under `.omg/ultragoal/`.  
+Grok **has** slash `/goal` (session-scoped, single goal, replace-on-set; Active
+bypasses Stop; restart → paused, use `/goal resume`). Multi-story ledger is
+under `.omg/ultragoal/` via `omg goal *` (no OMX `get_goal`/`create_goal` tool API).  
+`omg goal set-host --goal GOAL` prints a `/goal …` handoff (prompt turn only).  
 `omg goal verify` needs linked run already **verified** via accept/complete.
 
 ---

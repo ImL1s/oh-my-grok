@@ -4,8 +4,8 @@ description: >
   In-session durable multi-story goal ledger for oh-my-grok. Use when user says
   ultragoal, goal ledger, multi-story durable, durable goals, resume goal,
   omg goal, hash-chained stories, or needs multi-story work that survives process
-  and run boundaries. CLI owns snapshot/ledger and verified; this skill is the
-  session playbook (Grok has no host /goal).
+  and run boundaries. CLI owns snapshot/ledger and verified; host slash /goal
+  is complementary session pressure (Active bypasses Stop; ledger is omg goal *).
 ---
 
 # omg-ultragoal — In-session durable multi-story goal ledger
@@ -14,24 +14,35 @@ You are running **inside a Grok Build session**. Ultragoal means **you** drive t
 `omg goal *` CLI ledger and Grok-native workers across multiple stories until the
 goal is CLI-verified — not that the host Stop-hook forces the chat to continue.
 
-## Honesty: no host `/goal` (OMC/OMX vs OMG)
+## Honesty: host `/goal` vs ledger (OMC/OMX vs OMG)
 
-| Platform | Durable goal surface |
-|----------|----------------------|
-| **OMC / OMX** | Host `/goal` or `get_goal` / `create_goal` + repo ledger under `.omc/ultragoal` |
-| **Grok Build / OMG** | **No host `/goal` API** — **repo ledger only** under `.omg/ultragoal/` |
+| Platform | Durable goal surface | Host session pressure |
+|----------|----------------------|----------------------|
+| **OMC / OMX** | Repo ledger under `.omc/ultragoal` | Host `/goal` or `get_goal` / `create_goal` tool API |
+| **Grok Build / OMG** | **Repo ledger** under `.omg/ultragoal/` (`omg goal *`) | **Slash `/goal`** — session-scoped, single goal, replace-on-set |
+
+Grok **has** host slash `/goal` (≥0.2.94). It is session-scoped: one active goal,
+setting replaces any existing goal; restart demotes Active → paused (use
+`/goal resume`). While `/goal` is **Active**, it bypasses the Stop gate; after
+the goal releases, OMG's Stop pin enforces autopilot gates. Grok lacks OMX's
+multi-goal **tool** API (`get_goal` / `create_goal`) — hooks cannot read or
+mutate host goal state.
 
 Session continuity:
 
 1. Re-invoke this skill (or user says “continue” / “resume goal”).
 2. Run `omg goal status --goal GOAL` and resume the next ready story.
 3. Optional outer “don’t stop until verified” on a **linked run**: `omg ralph "…"`.
+4. Optional host session pressure: `/goal <objective>` (prompt turn only; hooks
+   do not set it).
 
-**R2 three pillars (research):** OMC uses Stop veto + boulder state. OMG cannot
-Stop-block the chat. Use (a) **`omg resume`** smart routing, (b) SessionStart
-**`.omg/state/RESUME.md`** inject, (c) louder pack in resume/hud output. For
-goals specifically also re-invoke this skill + `omg goal status`. Do **not**
-invent host `/goal` or claim Stop pins the session.
+**R2 three pillars (research):** OMC uses Stop veto + boulder state. OMG has a
+**Stop pin** for autopilot (≥0.2.107, cap 8/turn, fail-open) plus host `/goal`
+as complementary session pressure. Use (a) **`omg resume`** smart routing,
+(b) SessionStart **`.omg/state/RESUME.md`** inject, (c) louder pack in
+resume/hud output. For goals specifically also re-invoke this skill +
+`omg goal status`. Do **not** invent host goal state from hooks or claim hooks
+arm `/goal`.
 
 **Authority split**
 
@@ -52,7 +63,10 @@ invent host `/goal` or claim Stop pins the session.
 5. Grok tool names: `read_file`, `search_replace`, `run_terminal_command`, `spawn_subagent`, `grep`, `list_dir`.
 6. **Never write the goal ledger by hand.** Do not edit `.omg/ultragoal/goals/*/snapshot.json` or `ledger.jsonl` from the agent. Only `omg goal *` is authoritative.
 7. **Never set `verified`** on goals or runs from agent prose. Goal verify requires a **linked CLI-verified run**.
-8. **No Stop hard-pin.** PreToolUse is fail-open soft-guard. Do not claim OMC-style “chat cannot end until done.”
+8. **Stop / `/goal` honesty:** OMG Stop pin exists for autopilot (≥0.2.107, cap
+   8/turn, fail-open). Host `/goal` while Active bypasses Stop; they are
+   complementary. Do not claim infinite OMC-style stickiness or that hooks arm
+   `/goal`.
 9. Cancel with `omg cancel` — never self-matching `pkill -f`.
 
 ## Use when
@@ -88,7 +102,12 @@ invent host `/goal` or claim Stop pins the session.
 omg doctor
 omg setup    # if .omg/ missing
 omg goal status --goal GOAL   # if resuming
+omg goal set-host --goal GOAL # print /goal handoff; send suggested line as prompt
 ```
+
+After `set-host`, read the handoff: check `/goal status` first (setting
+**replaces** any active goal); after restart use `/goal resume`. The CLI does
+**not** arm the host goal — hooks cannot mutate `/goal`.
 
 Prefer `run_terminal_command` for all `omg` invocations. Record `goal_id` (and any `run_id` you will link).
 
@@ -185,8 +204,8 @@ Do not hand-edit hash chains. Mid-chain corruption → restore backup / human fo
 - Hand-editing `snapshot.json` / `ledger.jsonl` “to fix” state
 - Fake `verified` in prose or agent-written state files
 - Checkpoint without a real evidence file
-- Claiming host `/goal` exists on Grok
-- Claiming Stop hooks keep the session alive
+- Inventing host `/goal` state from hooks (hooks cannot read or set it)
+- Claiming infinite Stop stickiness or that hooks arm `/goal`
 - Completing all stories then calling goal verified without **link-run** to a CLI-verified run
 - Mid-chain truncate instead of `omg goal repair`
 - External agent CLIs as workers
@@ -207,6 +226,7 @@ Do not hand-edit hash chains. Mid-chain corruption → restore backup / human fo
 ```bash
 omg goal init --goal GOAL --stories-json '[{"id":"s1","depends_on":[],"acceptance":"..."}]'
 omg goal status --goal GOAL
+omg goal set-host --goal GOAL
 omg goal link-run --goal GOAL --run RUN
 omg goal start-story --goal GOAL --story s1
 omg goal checkpoint --goal GOAL --story s1 --evidence PATH --message "..."

@@ -1265,6 +1265,89 @@ def _rebuild_snapshot_from_events(
     return snapshot
 
 
+def _active_story_for_handoff(
+    stories: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Pick in_progress story first, else first ready story."""
+    in_progress = [
+        s for s in stories.values() if s.get("status") == "in_progress"
+    ]
+    if in_progress:
+        return in_progress[0]
+    ready = [s for s in stories.values() if s.get("status") == "ready"]
+    if ready:
+        return ready[0]
+    return None
+
+
+def set_host_goal_handoff(root: Path | str, goal_id: str) -> dict[str, Any]:
+    """Build model-facing handoff text for Grok host slash `/goal`.
+
+    Does not mutate host goal state — only the prompt channel can set `/goal`.
+    """
+    root = Path(root).resolve()
+    goal_id = validate_identifier(goal_id, label="goal_id")
+    if not snapshot_path(root, goal_id).is_file():
+        raise GoalError(f"goal not found: {goal_id}")
+    status = goal_status(root, goal_id)
+    if status.get("error"):
+        raise GoalError(str(status["error"]))
+    if status.get("ok") is False and not status.get("stories"):
+        raise GoalError(f"goal not readable: {goal_id}")
+
+    snap_rel = f".omg/ultragoal/goals/{goal_id}/snapshot.json"
+    stories = status.get("stories") or {}
+    active = _active_story_for_handoff(stories)
+
+    pointer = (
+        f"Complete ultragoal {goal_id} per {snap_rel}, including later added "
+        f"stories; evidence under .omg/artifacts/; done when "
+        f"`omg goal status --goal {goal_id}` shows verified."
+    )
+    if active:
+        acceptance = str(active.get("acceptance") or "").strip()
+        story_id = str(active.get("id") or "")
+        if acceptance and story_id:
+            pointer += f" Current story {story_id} acceptance: {acceptance}."
+
+    suggested_slash = f"/goal {pointer}"
+
+    handoff_lines = [
+        "## Host `/goal` handoff (OMG ultragoal)",
+        "",
+        "This CLI command **did not** set the host goal. Grok hooks cannot read "
+        "or mutate `/goal` — send the suggested line as a **prompt turn**.",
+        "",
+        "1. Run `/goal status` first.",
+        "2. If another goal is active, `/goal clear` or finish it first — "
+        "**setting `/goal` replaces any active goal.**",
+        "3. After a session restart the goal resumes **paused** — run "
+        "`/goal resume` (do not assume Active).",
+        "",
+        "Suggested prompt turn:",
+        "",
+        suggested_slash,
+        "",
+        f"Ledger snapshot: `{snap_rel}`",
+        f"Check ledger: `omg goal status --goal {goal_id}`",
+        "",
+        "If `/goal status` shows **BackOffPaused**, **NoProgressPaused**, or "
+        "**Blocked**, bridge to the ledger with "
+        f"`omg goal block-story --goal {goal_id} --story STORY_ID --reason "
+        "\"<host gaps>\"` (use the host's gap text), then "
+        "`omg goal resume-story` when unblocked.",
+    ]
+    handoff_markdown = "\n".join(handoff_lines)
+
+    return {
+        "goal_id": goal_id,
+        "suggested_slash": suggested_slash,
+        "handoff_markdown": handoff_markdown,
+        "snapshot_path": snap_rel,
+        "active_story_id": active.get("id") if active else None,
+    }
+
+
 def list_goals(root: Path | str) -> list[dict[str, Any]]:
     root = Path(root).resolve()
     base = ultragoal_root(root) / "goals"
@@ -1297,6 +1380,7 @@ __all__ = [
     "list_goals",
     "repair_goal",
     "resume_story",
+    "set_host_goal_handoff",
     "snapshot_path",
     "start_story",
     "verify_goal",

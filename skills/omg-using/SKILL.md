@@ -30,7 +30,7 @@ Route users and sessions into the correct oh-my-grok workflow. This skill does *
 |---|---|---|
 | `autopilot`, `auto pilot`, `full auto`, `autonomous`, `build me`, `create me`, `make me`, `handle it all`, end-to-end lifecycle | `omg-autopilot` | Session playbook driving CLI phases interview→…→verified |
 | `resume`, `continue run`, `RESUME.md`, mid-session continuity | `omg-using` + **`omg resume`** | Read RESUME.md; CLI smart route |
-| `ultragoal`, `goal ledger`, `multi-story durable`, `resume goal`, `omg goal` (multi-story) | `omg-ultragoal` | Durable multi-story ledger; CLI `omg goal *`; no host `/goal` |
+| `ultragoal`, `goal ledger`, `multi-story durable`, `resume goal`, `omg goal` (multi-story) | `omg-ultragoal` | Durable multi-story ledger; CLI `omg goal *`; host slash `/goal` for session pressure |
 | `deep interview`, `clarify requirements`, `ambiguity` | `omg-deep-interview` | Socratic CLI interview gate |
 | `ultraqa`, `QA loop`, `fix failing tests`, retest | `omg-ultraqa` | Bounded QA freeze→run→repair |
 | `wiki`, project memory, capture decision | `omg-wiki` | `.omg/wiki` markdown knowledge |
@@ -54,7 +54,7 @@ On Grok Build, **only `PreToolUse` can block**; `Stop` is passive (observe/log o
 | Don’t stop until verified | **`omg ralph "goal"`** (CLI outer loop owns max-iter) |
 | Continue after chat ended | **`omg resume`** (+ read `.omg/state/RESUME.md`) then mode CLI |
 | Full phase coordinator **in-session** | **`omg-autopilot` skill** + `omg autopilot *` CLI (re-invoke / “continue” if turn ends) |
-| Durable multi-story ledger (no host `/goal`) | **`omg-ultragoal` skill** + `omg goal *` (status → next story → link-run → verify) |
+| Durable multi-story ledger + host `/goal` handoff | **`omg-ultragoal` skill** + `omg goal *` (status → next story → link-run → verify) |
 | Clarify vague requirements | **`omg-deep-interview`** / `omg interview *` |
 | Bounded test-fix loop | **`omg-ultraqa`** / `omg qa *` |
 | Full plan→implement→accept (CLI FSM) | **`omg pipeline "goal"`** |
