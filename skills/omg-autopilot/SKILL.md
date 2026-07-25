@@ -10,8 +10,12 @@ description: >
 # omg-autopilot — In-session end-to-end coordinator
 
 You are running **inside a Grok Build session**. Autopilot means **you** drive the
-strict CLI phase machine and Grok-native workers until acceptance — not that the
-host Stop-hook forces the chat to continue (it cannot).
+strict CLI phase machine and Grok-native workers until acceptance. While autopilot
+is incomplete, the **Stop gate pins the turn** (host-honored **≥0.2.107**): honest
+caps — **8 continuations/turn** then the turn ends; fail-open on hook crash;
+Esc/Ctrl+C skip Stop. Pause only for interview (`ask_user_question`) or destructive
+confirmation via `omg autopilot await`. Beyond the cap: `/loop` or outer `omg ralph`
+(forthcoming `omg autopilot run --resume`).
 
 **Authority split**
 
@@ -19,7 +23,7 @@ host Stop-hook forces the chat to continue (it cannot).
 |---------|--------|
 | Phase legality, stamps, `verified` | **`omg` CLI only** |
 | Spec / plan / code proposals | Session + `spawn_subagent` |
-| Outer “don’t stop” across many turns | Re-invoke this skill / user “continue” / optional `omg ralph` outer loop |
+| Outer “don’t stop” across many turns | Stop pin (same turn, cap 8) + `/loop` / `omg ralph` (forthcoming `run --resume`) |
 
 ## HARD RULES (non-negotiable)
 
@@ -31,7 +35,7 @@ host Stop-hook forces the chat to continue (it cannot).
 4. **Never** invoke `claude` / `codex` / `omc team` / `agy` / `cursor-agent` as default workers.
 5. Grok tool names: `read_file`, `search_replace`, `run_terminal_command`, `spawn_subagent`, `grep`, `list_dir`.
 6. **Never** write `passes` / `verified` under `.omg/state/`. Only CLI after acceptance.
-7. **No Stop hard-pin:** PreToolUse is fail-open soft-guard. Do not claim OMC-style “chat cannot end until done.”
+7. **Stop gate honesty:** The Stop pin is real on grok ≥0.2.107 but **capped** (8/turn), fail-open, and skippable (Esc/Ctrl+C). Do not claim infinite OMC-style stickiness.
 8. Cancel with `omg cancel` — never self-matching `pkill -f`.
 
 ## Use when
@@ -54,7 +58,7 @@ host Stop-hook forces the chat to continue (it cannot).
 |------|-------------------|
 | Strict phases + destination gates | This skill + `omg autopilot *` |
 | Outer retry until verified | `omg ralph "…"` **or** user re-invokes this skill after each turn |
-| Host-forced continuation on Stop | **Not available** — see `docs/research/stop-continuation/` |
+| Host-forced continuation on Stop | **Available ≥0.2.107 (cap 8/turn)** — see `docs/research/stop-continuation/` |
 
 If the session ends mid-phase: run `omg autopilot status --run RUN` and resume the playbook from the current phase.
 
@@ -205,7 +209,7 @@ omg cancel
 - Self-approve after implement (skip dual-review)
 - Infinite self-loop without CLI status (burn tokens; prefer status + continue)
 - External agent CLIs as workers
-- Claiming Stop hooks keep the session alive
+- Claiming the Stop pin is infinite or works on grok <0.2.107
 
 ## Optional durable multi-story
 
@@ -232,6 +236,7 @@ omg autopilot start "goal"
 omg autopilot start "goal" --skip-interview
 omg autopilot transition --run RUN --phase PHASE --evidence-json '{…}' --reason "…"
 omg autopilot status --run RUN
+omg autopilot await --run RUN --set
 omg accept --run RUN --yes
 omg autopilot complete --run RUN
 omg cancel

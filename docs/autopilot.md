@@ -17,8 +17,29 @@ English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.m
 | **CLI `omg autopilot *`** | Strict phase machine + destination gates; owns run state under `.omg/state/runs/<run_id>/` |
 | **Workers** | Only Grok `spawn_subagent` (depth 1); implementers `capability_mode=read-write` (no shell) |
 
-**Not available on Grok:** OMC-style Stop `decision:block` (chat cannot be force-pinned open).  
-**Persistence:** re-invoke the skill / say “continue”, or outer `omg ralph "…"`.
+**Not OMC-identical:** Stop pin is real on grok **≥0.2.107** but **capped** (8 continuations/turn), fail-open, and skippable (Esc/Ctrl+C).  
+**Persistence beyond one turn:** `/loop`, outer `omg ralph "…"`, or forthcoming `omg autopilot run --resume`.
+
+### OMC feel → OMG equivalent
+
+| OMC expectation | OMG equivalent | Notes |
+|-----------------|----------------|-------|
+| Stay in session until done (Stop block) | **Stop pin (primary)** | grok ≥0.2.107; cap 8/turn; fail-open |
+| In-turn “keep going” without Stop | **`/goal` (secondary)** | Host-native; runs before Stop gate |
+| Cross-turn / headless / beyond cap | **`/loop` / `omg ralph` (tertiary; forthcoming `run --resume`)** | Fresh turn; counter resets |
+| Human pause (requirements unclear) | **`ask_user_question` + interview** | Gate yields; not mid-phase chat |
+| Destructive / credential pause | **`omg autopilot await`** | Sets `autopilot_awaiting`; gate yields |
+| Cancel sticky mode | **`omg cancel`** | Not “unblock Stop” |
+| Verified done | **`omg accept` / `omg autopilot complete`** | CLI only |
+
+### Stop pin honesty
+
+- **Works:** incomplete autopilot + `reason=end_turn` → hook may `decision:block` with a phase continuation prompt (same turn).
+- **Cap:** after **8** continuations in one turn, the host ends the turn regardless.
+- **Fail-open:** hook crash/timeout → turn may end (do not assume pin survived).
+- **Skips:** Esc, Ctrl+C, refusal, max-turns — Stop not consulted.
+- **Not used:** `TurnControl::ForceContinue` (stubbed in host; D17).
+- **Beyond cap:** `/loop 5m omg autopilot status --run RUN` (forthcoming `omg autopilot run --resume RUN`).
 
 ---
 
@@ -194,7 +215,7 @@ Agents (plugin): `omg-orchestrator`, `omg-executor`, `omg-critic`, `omg-verifier
 - Self-approve after implement (skip dual-review / structured review)
 - Infinite skill self-loop without status (prefer status + user “continue”)
 - External agent CLIs as workers
-- Claiming Stop hooks keep the session alive
+- Claiming the Stop pin is infinite or works on grok <0.2.107
 - Freezing UltraQA with `grep` / `python -c` / `omg doctor` as argv0 (use project `.py` / pytest)
 
 ---
@@ -228,6 +249,7 @@ omg autopilot start "goal"
 omg autopilot start "goal" --skip-interview
 omg autopilot transition --run RUN --phase PHASE --evidence-json '{…}' --reason "…"
 omg autopilot status --run RUN
+omg autopilot await --run RUN --set   # pause for destructive/credential confirm
 omg accept --run RUN --yes
 omg autopilot complete --run RUN
 omg cancel
