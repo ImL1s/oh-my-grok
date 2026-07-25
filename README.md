@@ -325,7 +325,7 @@ omg {setup,doctor,update,uninstall,note,state,cancel,resume,wiki,hud,lsp,
 | `omg parity run` / `parity release-readback` | Exact W0 manifest delegation and prebuilt release-bundle verification |
 | `omg wiki` / `hud` / `lsp` | Local markdown wiki · statusline pack · optional language-tool probe |
 | `omg interview …` | Deep-interview requirements gate |
-| `omg goal …` | Hash-chained ultragoal ledger + tail repair (**no host `/goal`** on Grok — repo ledger only) |
+| `omg goal …` | Hash-chained ultragoal ledger + tail repair (pair with host slash `/goal` for session pressure) |
 | `omg ulw` / `ralph` / `ralplan` | Parallel / persist / plan-only modes |
 | `omg worker own\|prepare\|seal\|join` | ULW ownership + worktree + envelopes |
 | `omg worker seal --all [--force]` | Leader batch-seals every prepared worktree with a real `head_sha` (fail-closed; nonzero if any task failed) |

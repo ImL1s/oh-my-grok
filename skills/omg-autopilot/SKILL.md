@@ -216,7 +216,8 @@ omg cancel
 When implement/QA spans **more than one story** that must survive process or run
 boundaries (depends_on, checkpoints, cross-session resume), load **`omg-ultragoal`**
 and drive `omg goal *` ledger in parallel with (or after) autopilot phases.
-Grok has **no host `/goal`** — only the repo ledger under `.omg/ultragoal/`.
+Grok **has** host slash `/goal` (session pressure; Active bypasses Stop). Ultragoal
+adds the **repo ledger** under `.omg/ultragoal/` — complementary, not a substitute.
 Still finish run acceptance via `omg accept` / `omg autopilot complete` before
 `omg goal link-run` + `omg goal verify`.
 
@@ -225,7 +226,7 @@ Still finish run acceptance via `omg accept` / `omg autopilot complete` before
 - Human-facing usage: `docs/autopilot.md` · `docs/autopilot.zh.md` · `docs/autopilot.zh-TW.md` · skills catalog `docs/skills.md` / `docs/skills.zh.md` / `docs/skills.zh-TW.md`
 - `omg-using` — router
 - `omg-deep-interview`, `omg-ralplan`, `omg-ultrawork`, `omg-ralph`
-- `omg-ultragoal` — durable multi-story goal ledger (no host `/goal`)
+- `omg-ultragoal` — durable multi-story goal ledger + host `/goal` handoff
 - `omg-dual-review`, `omg-ultraqa`, `omg-cancel`
 - Security: `docs/security-model.md`
 
