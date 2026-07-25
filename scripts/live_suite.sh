@@ -298,6 +298,7 @@ python3 "$ROOT/scripts/live_team_smoke.py" --workers 2 --goal $'1. a\n2. b' \
 tail -n 1 "$EVIDENCE/team-smoke-dry-$TS.log" | grep -qx 'DRY_TEAM_SMOKE_OK' \
   || fail "L-TEAM-SMOKE dry missing DRY_TEAM_SMOKE_OK"
 echo "L-TEAM-SMOKE dry OK"
+team_live_status="skipped"
 
 if [[ "${OMG_LIVE_TEAM:-0}" == "1" || "$MODE" == "quota-heavy" ]]; then
   echo "== L-TEAM-SMOKE (live) =="
@@ -312,8 +313,10 @@ if [[ "${OMG_LIVE_TEAM:-0}" == "1" || "$MODE" == "quota-heavy" ]]; then
   set -e
   if tail -n 1 "$EVIDENCE/team-smoke-live-$TS.log" | grep -qx 'LIVE_TEAM_SMOKE_OK'; then
     echo "L-TEAM-SMOKE live OK"
+    team_live_status="ok"
   else
     echo "WARN: L-TEAM-SMOKE live did not print LIVE_TEAM_SMOKE_OK (rc=$team_live_rc); not claiming promotion"
+    team_live_status="miss"
     if [[ "${OMG_LIVE_TEAM_REQUIRE:-0}" == "1" ]]; then
       fail "L-TEAM-SMOKE live required but missing LIVE_TEAM_SMOKE_OK"
     fi
@@ -329,6 +332,8 @@ p.write_text(json.dumps({
   "mode": "$MODE",
   "log": "$LOG",
   "status": "ok",
+  "team_live_status": "$team_live_status",
+  "promotion_claimed": False,
 }, indent=2) + "\n", encoding="utf-8")
 print("wrote", p)
 PY
