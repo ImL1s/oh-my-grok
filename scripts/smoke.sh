@@ -68,6 +68,15 @@ mkdir -p "$tmp"
     fail "ralplan dry-run unexpected exit $ralplan_rc"
   fi
   "${OMG[@]}" cancel --grace 0 >/dev/null 2>&1 || true
+  # autopilot outer driver dry-run (Task 10/14)
+  set +e
+  "${OMG[@]}" autopilot run "smoke autopilot" --skip-interview --dry-run --max-phase-cycles 1
+  ap_rc=$?
+  set -e
+  if [[ "$ap_rc" -ne 0 && "$ap_rc" -ne 1 ]]; then
+    fail "autopilot run --dry-run unexpected exit $ap_rc"
+  fi
+  "${OMG[@]}" cancel --grace 0 >/dev/null 2>&1 || true
 ) || fail "mode dry-run matrix failed"
 
 echo "== plugin validate =="
