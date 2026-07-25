@@ -7,8 +7,6 @@ Does not write verified except via same-process set_verified after acceptance.
 from __future__ import annotations
 
 import json
-import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
