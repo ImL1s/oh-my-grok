@@ -909,7 +909,9 @@ def cmd_team(args: argparse.Namespace) -> int:
                 args, "run_id", None
             )
             rid = resolve_team_ref(root, identity)
-            result = stop_team(root, rid)
+            result = stop_team(
+                root, rid, force=bool(getattr(args, "force", False))
+            )
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0 if not result.get("errors") else 1
         if action == "api":
@@ -3262,6 +3264,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_t_stop.add_argument(
         "--run", dest="run_id", default=None, help="run_id (default: active)"
+    )
+    p_t_stop.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help=(
+            "tear down even when API tasks are in_progress "
+            "(default: fail closed and write shutdown-request.json)"
+        ),
     )
     p_t_stop.set_defaults(func=cmd_team, team_action="stop")
 

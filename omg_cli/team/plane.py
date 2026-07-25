@@ -2158,16 +2158,87 @@ def _wait_process_group_disappearance(
         time.sleep(0.01)
 
 
+def team_shutdown_request_path(root: Path | str, run_id: str) -> Path:
+    return team_dir(root, run_id) / "shutdown-request.json"
+
+
+def _list_in_progress_api_tasks(
+    root: Path, run_id: str, team_id: str
+) -> list[dict[str, Any]]:
+    """Return API board tasks currently ``in_progress`` (active claims)."""
+    from omg_cli.team.api import _list_tasks
+
+    try:
+        tasks = _list_tasks(root, run_id, team_id)
+    except Exception as exc:
+        # Fail closed: unreadable board is treated as unknown active claims.
+        raise TeamError(
+            f"cannot read team api tasks for stop gate (run={run_id} team={team_id})"
+        ) from exc
+    active: list[dict[str, Any]] = []
+    for task in tasks:
+        if not isinstance(task, Mapping):
+            continue
+        if str(task.get("status") or "") == "in_progress":
+            active.append(dict(task))
+    return active
+
+
+def _write_shutdown_request(
+    root: Path,
+    run_id: str,
+    *,
+    team_id: str,
+    force: bool,
+    in_progress: Sequence[Mapping[str, Any]],
+) -> Path:
+    """Persist a durable shutdown request under the team dir (CLI-stamped)."""
+    path = team_shutdown_request_path(root, run_id)
+    owners: list[str] = []
+    for task in in_progress:
+        owner = task.get("owner")
+        if not owner and isinstance(task.get("claim"), Mapping):
+            owner = (task.get("claim") or {}).get("owner")
+        owners.append(str(owner or ""))
+    payload = {
+        "store_kind": "team_shutdown_request",
+        "schema_version": 1,
+        "writer": CLI_WRITER,
+        "run_id": run_id,
+        "team_id": team_id,
+        "requested_at": _utc_now(),
+        "force": bool(force),
+        "in_progress_task_ids": [
+            str(t.get("id")) for t in in_progress if t.get("id") is not None
+        ],
+        "in_progress_owners": owners,
+        "note": (
+            "graceful shutdown requested; workers should release or complete "
+            "claims before teardown"
+            if not force
+            else "forced shutdown; exact pane/session teardown proceeds"
+        ),
+    }
+    _atomic_write_json(path, payload)
+    return path
+
+
 def stop_team(
     root: Path | str | None = None,
     run_id: str | None = None,
     *,
+    force: bool = False,
     kill_grace_s: float = 0.0,
 ) -> dict[str, Any]:
     """Stop only an exact nonce-bound immutable launch identity.
 
     ``team.json`` alone is never process authority.  The immutable receipt,
     live tmux session/pane identity, pane PID and OS PGID must all agree.
+
+    Always writes a durable ``shutdown-request.json`` first.  When API board
+    tasks are ``in_progress``, non-``force`` stops fail closed (no teardown).
+    ``force=True`` proceeds with exact pane/session teardown only — never
+    ``pkill -f``.  State and worktrees are preserved.
     """
     root_path = Path(root) if root is not None else Path.cwd().resolve()
     root_path = root_path.resolve()
@@ -2180,6 +2251,29 @@ def stop_team(
     meta = load_team_meta(root_path, run_id)
     session = str(meta.get("session") or "")
     dry = bool(meta.get("dry_run"))
+    team_id = str(meta.get("team_id") or "team")
+    in_progress = _list_in_progress_api_tasks(root_path, run_id, team_id)
+    _write_shutdown_request(
+        root_path,
+        run_id,
+        team_id=team_id,
+        force=bool(force),
+        in_progress=in_progress,
+    )
+    if in_progress and not force:
+        ids = [str(t.get("id")) for t in in_progress]
+        owners: list[str] = []
+        for task in in_progress:
+            owner = task.get("owner")
+            if not owner and isinstance(task.get("claim"), Mapping):
+                owner = (task.get("claim") or {}).get("owner")
+            owners.append(str(owner or "?"))
+        raise TeamError(
+            "stop refused: in_progress claims active "
+            f"(task_ids={ids}, owners={owners}); "
+            "pass --force to tear down anyway"
+        )
+
     actions: list[str] = []
     errors: list[str] = []
 
@@ -3726,6 +3820,7 @@ __all__ = [
     "stop_team",
     "team_dir",
     "team_meta_path",
+    "team_shutdown_request_path",
     "team_status",
     "NATIVE_TEAM_STATES",
     "NATIVE_TERMINAL_STATES",

@@ -14,9 +14,11 @@ from omg_cli.team.plane import (
     EXPERIMENTAL_ENV,
     STATUS_TOP_KEYS,
     WORKER_ENV_MARKERS,
+    TeamError,
     load_team_meta,
     status_locked_view,
     stop_team,
+    team_dir,
 )
 from omg_cli.team.runtime import launch_team, resume_for_identity, status_for_identity
 
@@ -189,7 +191,70 @@ def test_resume_restarts_dead_fixture_worker(
     finally:
         if run_id:
             try:
-                stop_team(tmp_path, run_id)
+                stop_team(tmp_path, run_id, force=True)
             except Exception:
                 pass
         _cleanup_session(session)
+
+
+def test_stop_without_force_fails_on_in_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-force stop fails closed when API claims are in_progress."""
+    monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
+    for key in WORKER_ENV_MARKERS:
+        monkeypatch.delenv(key, raising=False)
+    _init_repo(tmp_path)
+
+    meta = launch_team(
+        "1. lane one\n2. lane two",
+        workers=2,
+        role="executor",
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        env={EXPERIMENTAL_ENV: "1"},
+        team_id=TEAM_ID,
+    )
+    run_id = str(meta["run_id"])
+
+    code, listed = execute_team_api(
+        "list-tasks",
+        {"run_id": run_id, "team_id": TEAM_ID},
+        root=tmp_path,
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    assert code == 0 and listed.get("ok")
+    tasks = (listed.get("data") or {}).get("tasks") or []
+    assert tasks
+    task_id = str(tasks[0]["id"])
+
+    code, claimed = execute_team_api(
+        "claim-task",
+        {
+            "run_id": run_id,
+            "team_id": TEAM_ID,
+            "task_id": task_id,
+            "worker": "w1",
+        },
+        root=tmp_path,
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    assert code == 0 and claimed.get("ok")
+    assert claimed["data"]["ok"] is True
+    assert claimed["data"]["task"]["status"] == "in_progress"
+
+    with pytest.raises(TeamError, match="in_progress"):
+        stop_team(tmp_path, run_id)
+
+    shutdown_path = team_dir(tmp_path, run_id) / "shutdown-request.json"
+    assert shutdown_path.is_file()
+    disk = load_team_meta(tmp_path, run_id)
+    assert disk.get("stop_state") != "stopped"
+    assert disk.get("stopped_at") is None
+
+    forced = stop_team(tmp_path, run_id, force=True)
+    assert forced.get("stop_completed") is True
+    assert forced.get("errors") == []
+    after = load_team_meta(tmp_path, run_id)
+    assert after.get("stop_state") == "stopped"
