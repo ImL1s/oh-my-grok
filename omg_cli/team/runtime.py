@@ -534,3 +534,44 @@ def status_for_identity(
             "has_more": False,
         }
     return st
+
+def resume_for_identity(
+    root: Path | str,
+    identity: str | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Thin resume wrapper: reconcile liveness, then relaunch dead incomplete workers.
+
+    Combines :func:`omg_cli.team.scaling.resume_team` with
+    :func:`omg_cli.team.scaling.relaunch_dead_incomplete_workers`. Generation
+    increments only when at least one worker is safely respawned.
+    """
+    from omg_cli.team.scaling import (
+        relaunch_dead_incomplete_workers,
+        resume_team,
+    )
+
+    root_path = Path(root).resolve()
+    run_id = resolve_team_ref(root_path, identity)
+    reconciled = resume_team(root_path, run_id, env=env)
+    relaunch = relaunch_dead_incomplete_workers(root_path, run_id, env=env)
+    out = dict(reconciled)
+    out.update(
+        {
+            "relaunched": relaunch.get("relaunched") or [],
+            "blocked": relaunch.get("blocked") or [],
+            "skipped": relaunch.get("skipped") or [],
+            "identity_generation": relaunch.get(
+                "identity_generation",
+                reconciled.get("identity_generation"),
+            ),
+            "relaunch_note": relaunch.get("note"),
+        }
+    )
+    # Prefer combined note when workers were touched.
+    if relaunch.get("relaunched") or relaunch.get("blocked"):
+        out["note"] = (
+            f"{reconciled.get('note')}; {relaunch.get('note')}"
+        ).strip("; ")
+    return out

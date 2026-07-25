@@ -739,7 +739,7 @@ def cmd_team(args: argparse.Namespace) -> int:
     )
     from omg_cli.team.roles import UnknownRoleError
     from omg_cli.team.routing import RoutingError, parse_routing_json
-    from omg_cli.team.scaling import resume_team, scale_team
+    from omg_cli.team.scaling import scale_team
 
     root = _project_root()
     action = getattr(args, "team_action", None)
@@ -856,13 +856,12 @@ def cmd_team(args: argparse.Namespace) -> int:
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0
         if action == "resume":
-            from omg_cli.team.runtime import resolve_team_ref
+            from omg_cli.team.runtime import resume_for_identity
 
             identity = getattr(args, "team_identity", None) or getattr(
                 args, "run_id", None
             )
-            rid = resolve_team_ref(root, identity)
-            result = resume_team(root, rid)
+            result = resume_for_identity(root, identity)
             if getattr(args, "as_json", False) or True:
                 # Always JSON (operator machine-readable); --json kept for symmetry
                 print(json.dumps(result, indent=2, ensure_ascii=False))

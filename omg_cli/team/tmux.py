@@ -60,6 +60,60 @@ def _kill_panes(pane_ids: Sequence[str]) -> str | None:
     return "; ".join(errors) if errors else None
 
 
+def pane_alive(pane_id: str) -> bool | None:
+    """True/False when tmux available; None when tmux unavailable."""
+    if not tmux_available():
+        return None
+    if not isinstance(pane_id, str) or _TMUX_PANE_ID.fullmatch(pane_id) is None:
+        return False
+    probe = _tmux_run(["display-message", "-p", "-t", pane_id, "#{pane_id}"])
+    if probe.returncode != 0:
+        return False
+    return (probe.stdout or "").strip() == pane_id
+
+
+def respawn_worker_pane(
+    *,
+    target: str,
+    worktree: str,
+    pane_command: str,
+    env_pairs: Sequence[tuple[str, str]] | None = None,
+) -> str:
+    """Split a replacement worker pane into ``target``; return new ``pane_id``.
+
+    Used by resume when a worker pane died but the team session/window remains.
+    Never kills the leader pane or the whole session.
+    """
+    if not tmux_available():
+        raise TmuxTeamError("tmux is required to respawn a team worker pane")
+    if not target or not str(target).strip():
+        raise TmuxTeamError("respawn target (session/window id) required")
+    if not worktree or not pane_command:
+        raise TmuxTeamError("respawn requires worktree and pane_command")
+    task_env = tmux_env_args(list(env_pairs or []))
+    split = _tmux_run(
+        [
+            "split-window",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-t",
+            str(target),
+            "-c",
+            str(worktree),
+            *task_env,
+            str(pane_command),
+        ]
+    )
+    if split.returncode != 0:
+        err = (split.stderr or split.stdout or "").strip()
+        raise TmuxTeamError(f"failed to respawn worker pane: {err}")
+    pane_id = (split.stdout or "").strip()
+    if _TMUX_PANE_ID.fullmatch(pane_id) is None:
+        raise TmuxTeamError("respawn split-window did not return pane id")
+    return pane_id
+
+
 def _kill_window(window_id: str) -> str | None:
     if _TMUX_WINDOW_ID.fullmatch(window_id) is None:
         return f"refused kill-window for non-window id {window_id!r}"

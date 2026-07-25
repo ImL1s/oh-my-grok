@@ -1060,7 +1060,7 @@ def _persist_team_identity_receipt(
     if generation <= 0:
         raise TeamError("scaled identity generation must be positive")
     require_sha256(previous_receipt_sha256, label="previous_receipt_sha256")
-    if operation not in {"add", "remove"}:
+    if operation not in {"add", "remove", "relaunch"}:
         raise TeamError("scaled identity receipt operation mismatch")
     receipt = {
         "store_kind": "team_identity_receipt",
@@ -1194,7 +1194,7 @@ def _load_team_identity_chain(
             or parsed["launch_nonce"] != launch["launch_nonce"]
             or parsed["generation"] != expected_generation
             or parsed["previous_receipt_sha256"] != previous_hash
-            or parsed["operation"] not in {"add", "remove"}
+            or parsed["operation"] not in {"add", "remove", "relaunch"}
             or not isinstance(parsed["receipt_nonce"], str)
             or len(parsed["receipt_nonce"]) != 32
             or not isinstance(parsed["tasks_before"], list)
