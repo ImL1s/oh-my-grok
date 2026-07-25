@@ -28,7 +28,7 @@ Same *idea* as OMC’s skill zoo, **Grok-native** runtime: playbooks + `omg` CLI
 2. Always set `capability_mode` (`read-write` implementers / `read-only` review).
 3. Only **`omg` CLI** may set `verified` / `passes` under `.omg/state/`.
 4. Cancel with `omg cancel` — never self-matching `pkill -f`.
-5. No OMC Stop hard-pin — re-invoke skill or say **continue** if the turn ends.
+5. Stop pin on grok **≥0.2.107** (cap **8**/turn, fail-open) pins incomplete autopilot — beyond cap or after turn end, re-invoke skill, `/loop`, or say **continue**.
 
 ---
 

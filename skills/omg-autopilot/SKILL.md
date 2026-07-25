@@ -14,8 +14,8 @@ strict CLI phase machine and Grok-native workers until acceptance. While autopil
 is incomplete, the **Stop gate pins the turn** (host-honored **≥0.2.107**): honest
 caps — **8 continuations/turn** then the turn ends; fail-open on hook crash;
 Esc/Ctrl+C skip Stop. Pause only for interview (`ask_user_question`) or destructive
-confirmation via `omg autopilot await`. Beyond the cap: `omg autopilot run --resume`
-or `/loop`.
+confirmation via `omg autopilot await`. Beyond the cap: `/loop` or outer `omg ralph`
+(forthcoming `omg autopilot run --resume`).
 
 **Authority split**
 
@@ -23,7 +23,7 @@ or `/loop`.
 |---------|--------|
 | Phase legality, stamps, `verified` | **`omg` CLI only** |
 | Spec / plan / code proposals | Session + `spawn_subagent` |
-| Outer “don’t stop” across many turns | Stop pin (same turn, cap 8) + `omg autopilot run --resume` / `/loop` / `omg ralph` |
+| Outer “don’t stop” across many turns | Stop pin (same turn, cap 8) + `/loop` / `omg ralph` (forthcoming `run --resume`) |
 
 ## HARD RULES (non-negotiable)
 

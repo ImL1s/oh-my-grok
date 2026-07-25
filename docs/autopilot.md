@@ -18,7 +18,7 @@ English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.m
 | **Workers** | Only Grok `spawn_subagent` (depth 1); implementers `capability_mode=read-write` (no shell) |
 
 **Not OMC-identical:** Stop pin is real on grok **≥0.2.107** but **capped** (8 continuations/turn), fail-open, and skippable (Esc/Ctrl+C).  
-**Persistence beyond one turn:** `omg autopilot run --resume`, `/loop`, or outer `omg ralph "…"`.
+**Persistence beyond one turn:** `/loop`, outer `omg ralph "…"`, or forthcoming `omg autopilot run --resume`.
 
 ### OMC feel → OMG equivalent
 
@@ -26,7 +26,7 @@ English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.m
 |-----------------|----------------|-------|
 | Stay in session until done (Stop block) | **Stop pin (primary)** | grok ≥0.2.107; cap 8/turn; fail-open |
 | In-turn “keep going” without Stop | **`/goal` (secondary)** | Host-native; runs before Stop gate |
-| Cross-turn / headless / beyond cap | **`omg autopilot run --resume` / `/loop` (tertiary)** | Fresh turn; counter resets |
+| Cross-turn / headless / beyond cap | **`/loop` / `omg ralph` (tertiary; forthcoming `run --resume`)** | Fresh turn; counter resets |
 | Human pause (requirements unclear) | **`ask_user_question` + interview** | Gate yields; not mid-phase chat |
 | Destructive / credential pause | **`omg autopilot await`** | Sets `autopilot_awaiting`; gate yields |
 | Cancel sticky mode | **`omg cancel`** | Not “unblock Stop” |
@@ -39,7 +39,7 @@ English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.m
 - **Fail-open:** hook crash/timeout → turn may end (do not assume pin survived).
 - **Skips:** Esc, Ctrl+C, refusal, max-turns — Stop not consulted.
 - **Not used:** `TurnControl::ForceContinue` (stubbed in host; D17).
-- **Beyond cap:** `omg autopilot run --resume RUN` or `/loop 5m omg autopilot status --run RUN`.
+- **Beyond cap:** `/loop 5m omg autopilot status --run RUN` (forthcoming `omg autopilot run --resume RUN`).
 
 ---
 

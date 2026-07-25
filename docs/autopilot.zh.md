@@ -17,7 +17,7 @@ English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.m
 | **Workers** | 只透过 Grok `spawn_subagent`（depth 1）；实作者 `capability_mode=read-write`（无 shell） |
 
 **与 OMC 不同：** Stop pin 在 grok **≥0.2.107** 真实存在，但有 **上限**（每 turn 8 次）、fail-open、可被 Esc/Ctrl+C 跳过。  
-**跨 turn 持久化：** `omg autopilot run --resume`、`/loop`，或外层 `omg ralph "…"`。
+**跨 turn 持久化：** `/loop`、外层 `omg ralph "…"`，或 forthcoming `omg autopilot run --resume`。
 
 ### OMC 体验 → OMG 对应
 
@@ -25,7 +25,7 @@ English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.m
 |----------|----------|------|
 | 不离开 session（Stop block） | **Stop pin（主要）** | grok ≥0.2.107；每 turn 上限 8 |
 | 不依赖 Stop 的 turn 内继续 | **`/goal`（次要）** | 宿主原生；在 Stop 闸门前 |
-| 跨 turn / 无头 / 超 cap | **`omg autopilot run --resume` / `/loop`（第三）** | 新 turn；计数重置 |
+| 跨 turn / 无头 / 超 cap | **`/loop` / `omg ralph`（第三；forthcoming `run --resume`）** | 新 turn；计数重置 |
 | 人类暂停（需求不清） | **`ask_user_question` + interview** | 闸门让步；非 mid-phase 闲聊 |
 | 破坏性 / 凭证暂停 | **`omg autopilot await`** | 设置 `autopilot_awaiting` |
 | 取消粘性模式 | **`omg cancel`** | 不是「解开 Stop」 |
@@ -38,7 +38,7 @@ English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.m
 - **Fail-open：** hook 崩溃/超时 → turn 可能结束。
 - **跳过：** Esc、Ctrl+C、拒绝、max-turns — 不咨询 Stop。
 - **不用：** `TurnControl::ForceContinue`（宿主 stub；D17）。
-- **超 cap：** `omg autopilot run --resume RUN` 或 `/loop 5m omg autopilot status --run RUN`。
+- **超 cap：** `/loop 5m omg autopilot status --run RUN`（forthcoming `omg autopilot run --resume RUN`）。
 
 ---
 
@@ -202,7 +202,7 @@ help 文字或本地 `.rhai` 档不能当成已验证 native integration。
 - 实作完 self-approve  
 - 无限 skill 自循环（先 status + 让使用者 continue）  
 - 把外部 agent CLI 当 worker  
-- 宣称 Stop hook 会锁住 session  
+- 宣称 Stop pin 无限或适用于 grok <0.2.107  
 - freeze 用 `grep` / `python -c` / `omg` 当 argv0  
 
 ---

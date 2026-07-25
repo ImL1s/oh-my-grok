@@ -15,7 +15,7 @@
     "agents/omg-verifier.md": "8f410b7d8b43b0bef32f27b05d9cce2d7409f638babc396d4e1f4926be10816c",
     "agents/omg-writer.md": "4609b70f3e027f71d6cd93ddd1036dbdd10ca7e82216e5607361479fdba751f9",
     "skills/omg-ask/SKILL.md": "652560e94b22e32f438cbe29cd8db875f254c12b76a1e5556a5fb550da339ba3",
-    "skills/omg-autopilot/SKILL.md": "9c7c93d8c11f37e6f12cc8bb329f79ba00854027414249ce45b89dd3b93bd6a8",
+    "skills/omg-autopilot/SKILL.md": "b831c2a1a05b4114e2aa7d58d349def3bd0ec5184eab088f7df52eaf342af231",
     "skills/omg-cancel/SKILL.md": "cc60cbe53fceac3bdbda0df29743c51f464e35c61f74ec150a8aa4a2bfa8a93f",
     "skills/omg-deep-interview/SKILL.md": "4a9c414bed13559a264c5bbc20c6bdc04456cb767300c02578c870117c158daf",
     "skills/omg-dual-review/SKILL.md": "f19c495df050a6b38660a20754312541c963081c08d875ee558a29b183bc6fbe",
@@ -31,7 +31,7 @@
     "skills/omg-using/SKILL.md": "9f76d8088f561837edc0df84f777ed2112de87046f7142c654ffcc4b6c00c938",
     "skills/omg-wiki/SKILL.md": "bd8f8f4fd809ffc1bde337ab4ec81c5d81eb90adea9dd4dfb83861afa79c6ac9"
   },
-  "aggregate": "f4f93cabb9651504bfed8c0914ede01bc3bd4c8960184a20c5bd1c0a1d6fba20",
+  "aggregate": "0f1c2063fcdcb53c0c7d9fefba9c3473a77300cc15522b01e26edf1816913d06",
   "session_surface": {
     "schema": "omg-plugin-session-surface/v1",
     "skills": [
@@ -44,7 +44,7 @@
       {
         "name": "omg-autopilot",
         "path": "skills/omg-autopilot/SKILL.md",
-        "sha256": "9c7c93d8c11f37e6f12cc8bb329f79ba00854027414249ce45b89dd3b93bd6a8",
+        "sha256": "b831c2a1a05b4114e2aa7d58d349def3bd0ec5184eab088f7df52eaf342af231",
         "metadata_status": "valid"
       },
       {
@@ -375,5 +375,5 @@
     },
     "issues": []
   },
-  "session_surface_aggregate": "dc96aae5178f3c740f1154be6bc921031769d0456040b96434907cead49a9182"
+  "session_surface_aggregate": "fda5b60869fa0de5730b0c31f8e5cd72239aba2075f0e7e6a7b9827e57112317"
 }

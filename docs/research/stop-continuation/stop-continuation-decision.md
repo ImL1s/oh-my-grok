@@ -13,7 +13,7 @@
 | Fail-open on hook crash/timeout/malformed stdout; Esc/Ctrl+C/refusal skip Stop | `10-hooks.md` + `test_stop_hook_e2e.rs` |
 | `TurnControl::ForceContinue` (tool protocol) | **Stubbed/unused (D17)** — not relied upon |
 
-**Honesty bounds (not infinite):** the pin keeps the turn alive while autopilot is incomplete, but only up to **8 continuations/turn**; then the turn ends. Hook errors fail-open. User abort (Esc/Ctrl+C) bypasses Stop. Beyond the cap or across turns: `omg autopilot run --resume` or `/loop` (tertiary). Pause only for interview (`ask_user_question`) or destructive confirmation (`omg autopilot await`).
+**Honesty bounds (not infinite):** the pin keeps the turn alive while autopilot is incomplete, but only up to **8 continuations/turn**; then the turn ends. Hook errors fail-open. User abort (Esc/Ctrl+C) bypasses Stop. Beyond the cap or across turns: `/loop` or outer `omg ralph` (forthcoming `omg autopilot run --resume`). Pause only for interview (`ask_user_question`) or destructive confirmation (`omg autopilot await`).
 
 **Implementation:** `hooks/bin/stop.py` → `omg_cli.stop_gate.decide_stop()`; see `docs/plans/2026-07-26-omg-autopilot-full-auto-ux.md`.
 

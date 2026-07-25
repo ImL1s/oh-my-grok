@@ -23,3 +23,18 @@ def test_adr_is_superseded():
 def test_rules_forbid_midphase_questions():
     rules = (ROOT / "templates/omg-rules.md").read_text(encoding="utf-8")
     assert "do not ask" in rules.lower()
+
+
+def test_claude_md_stop_honesty():
+    body = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "Stop is passive" not in body
+    assert "No OMC-style Stop hard-pin" not in body
+    assert "stop.py is passive" not in body
+    assert "≥0.2.107" in body
+
+
+def test_skills_hard_rule_stop_honesty():
+    for rel in ("docs/skills.md", "docs/skills.zh.md", "docs/skills.zh-TW.md"):
+        body = (ROOT / rel).read_text(encoding="utf-8")
+        assert "No OMC Stop hard-pin" not in body
+        assert "OMC 式 Stop hard-pin" not in body

@@ -30,7 +30,7 @@ English: [`skills.md`](./skills.md)
 2. 一律設 `capability_mode`（實作 `read-write` / 審查 `read-only`）。
 3. 只有 **`omg` CLI** 可以寫 `.omg/state/` 下的 `verified` / `passes`。
 4. 中止用 `omg cancel` — 禁止會自我匹配的 `pkill -f`。
-5. **沒有** OMC 式 Stop hard-pin — 對話中斷就再呼叫 skill 或說 **繼續 / continue**。
+5. grok **≥0.2.107** 有 Stop pin（每 turn 上限 **8**，fail-open）— 超 cap 或 turn 結束後，再呼叫 skill、`/loop`，或說 **繼續 / continue**。
 
 ---
 
