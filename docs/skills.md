@@ -119,20 +119,22 @@ omg resume --clear   # after successfully continuing
 |--|--|
 | **When** | End-to-end: clarify → plan → implement → review → QA → verified |
 | **Invoke** | `autopilot …` · `full auto` · `/oh-my-grok:omg-autopilot` |
-| **CLI** | `omg autopilot start\|transition\|status\|await\|complete` |
+| **CLI** | `omg autopilot start\|transition\|status\|await\|complete\|run` |
 | **Deep guide** | [`autopilot.md`](./autopilot.md) |
 | **SKILL** | [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md) |
 
 ```bash
 omg autopilot start "ship feature X with tests"
 # or: omg autopilot start "…" --skip-interview
+omg autopilot run "ship feature X with tests"          # outer cross-turn driver
+omg autopilot run --resume RUN                         # resume after cap / crash
 omg autopilot status --run RUN
 omg autopilot await --run RUN --set   # pause for destructive/credential confirm
 omg autopilot complete --run RUN
 ```
 
 Phases: `interview → ralplan → implement → review → (rework) → qa → acceptance → verified`  
-Stop pin on grok **≥0.2.107** (cap **8**/turn, fail-open) — beyond cap see [autopilot.md](./autopilot.md#stop-pin-honesty) (`/loop`, outer `omg ralph`, forthcoming `run --resume`).
+Stop pin on grok **≥0.2.107** (cap **8**/turn, fail-open) — beyond cap see [autopilot.md](./autopilot.md#stop-pin-honesty) (`/loop`, outer `omg ralph`, `omg autopilot run --resume`).
 
 ---
 

@@ -10,17 +10,22 @@ from omg_cli.autopilot import (
     AutopilotError,
     LEGAL_TRANSITIONS,
     assert_legal_transition,
+    autopilot_context_pack,
+    build_phase_prompt,
     complete_with_acceptance,
+    run_autopilot,
     set_awaiting_confirmation,
     start_autopilot,
     status_autopilot,
     transition,
 )
 from omg_cli.main import main
+from omg_cli.state import create_run, load_active_run, load_run, merge_status_fields
 from omg_cli.stop_gate import decide_stop
 from omg_cli.qa import freeze_scenarios, run_qa_cycle
 from omg_cli.review import run_structured_review
-from omg_cli.state import create_run, load_run
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _stamp_review_clean(root: Path, run_id: str, diff: str = "diff body") -> None:
@@ -363,3 +368,69 @@ def test_qa_blocked_review_roundtrip_invalidates_review_stamp(tmp_path: Path) ->
     # Fresh stamp required after invalidation.
     _stamp_review_clean(tmp_path, rid, diff="new-diff-after-blocked-review")
     transition(tmp_path, rid, "qa")
+
+
+def _rid(root: Path) -> str:
+    run = load_active_run(root)
+    assert run is not None
+    return str(run["run_id"])
+
+
+def _stamp_gate_for(root: Path, kw: dict) -> int:
+    """Simulate grok completing the current phase gate (test helper)."""
+    run_dir = kw["run_dir"]
+    run_id = run_dir.name
+    phase = status_autopilot(root, run_id)["phase"]
+    if phase == "ralplan":
+        merge_status_fields(root, run_id, {"ralplan_consensus": True})
+    elif phase == "review":
+        _stamp_review_clean(root, run_id)
+    elif phase == "qa":
+        _stamp_qa_clean(root, run_id)
+    return 0
+
+
+def test_autopilot_context_pack_names_phase_and_gate() -> None:
+    pack = autopilot_context_pack(
+        run_id="r1",
+        phase="review",
+        goal="g",
+        next_gate="CLI stages/structured_review.json clean",
+    )
+    assert "phase=review" in pack and "structured_review.json" in pack
+
+
+def test_build_phase_prompt_maps_skill_and_forbids_questions(tmp_path: Path) -> None:
+    text = build_phase_prompt("implement", root=tmp_path, goal="g", run_id="r1")
+    assert "ultrawork" in text.lower() or "implement" in text.lower()
+    assert "do not ask" in text.lower()
+
+
+def test_run_autopilot_walks_to_verified_with_mocked_launches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clear_cli_acceptance_tokens()
+    launches: list[dict] = []
+
+    def _fake_launch(argv, **kw):
+        launches.append({**kw, "argv": argv})
+        _stamp_gate_for(tmp_path, kw)
+        return 0
+
+    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    rc = run_autopilot(
+        tmp_path, "add pure add(a,b) with test", skip_interview=True
+    )
+    assert rc == 0
+    assert status_autopilot(tmp_path, _rid(tmp_path))["phase"] == "verified"
+    assert launches
+
+
+def test_run_autopilot_pauses_at_interview(tmp_path: Path) -> None:
+    rc = run_autopilot(tmp_path, "vague idea")
+    assert rc == 0
+    assert status_autopilot(tmp_path, _rid(tmp_path))["phase"] == "interview"
+
+
+def test_cli_autopilot_run_listed_in_skills_md() -> None:
+    assert "omg autopilot run" in (ROOT / "docs" / "skills.md").read_text()

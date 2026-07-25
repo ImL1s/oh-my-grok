@@ -114,20 +114,22 @@ omg resume --clear   # 成功接續後清除
 |--|--|
 | **何时** | 厘清→计划→实作→审查→QA→verified |
 | **呼叫** | `autopilot …` · `full auto` · `/oh-my-grok:omg-autopilot` |
-| **CLI** | `omg autopilot start\|transition\|status\|await\|complete` |
+| **CLI** | `omg autopilot start\|transition\|status\|await\|complete\|run` |
 | **深讲** | [`autopilot.zh.md`](./autopilot.zh.md) · [EN](./autopilot.md) |
 | **SKILL** | [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md) |
 
 ```bash
 omg autopilot start "完成功能 X 並含測試"
 # 或：omg autopilot start "…" --skip-interview
+omg autopilot run "完成功能 X 並含測試"          # 跨 turn 外層驅動
+omg autopilot run --resume RUN                   # cap / 崩潰後恢復
 omg autopilot status --run RUN
 omg autopilot await --run RUN --set   # 破坏性/凭证确认时暂停
 omg autopilot complete --run RUN
 ```
 
 阶段：`interview → ralplan → implement → review → (rework) → qa → acceptance → verified`  
-grok **≥0.2.107** 有 Stop pin（每 turn 上限 **8**，fail-open）— 超 cap 见 [autopilot.zh.md](./autopilot.zh.md#stop-pin-诚实说明)（`/loop`、外层 `omg ralph`、 forthcoming `run --resume`）。
+grok **≥0.2.107** 有 Stop pin（每 turn 上限 **8**，fail-open）— 超 cap 见 [autopilot.zh.md](./autopilot.zh.md#stop-pin-诚实说明)（`/loop`、外层 `omg ralph`、`omg autopilot run --resume`）。
 
 ---
 
