@@ -24,13 +24,14 @@
     "skills/omg-pipeline/SKILL.md": "cebeac3f1c8af94286af5c0ecde336ab02feca476f9ce5a8af915614796bc223",
     "skills/omg-ralph/SKILL.md": "6beb5510a2fa35c31d4d974e46b96bf4eae2bb984662f3686c17046ccc7a57ea",
     "skills/omg-ralplan/SKILL.md": "b060511de9d1c39b384366b6d5f1e88b618dbc437e23226b807edd308a1fe5f2",
+    "skills/omg-team/SKILL.md": "13b8a9f5764ac16d88333bc66c07b0b5907e24d98c212fbd957be58221148c94",
     "skills/omg-ultragoal/SKILL.md": "72438d9ec1d9640431cfb0837795aafa7036108079e0ccc9e00d09764a43bf07",
     "skills/omg-ultraqa/SKILL.md": "8e2c3cd4c9f8f40685e9ca278a9837cfe8aff12e46dca00c60ea598e5f957748",
     "skills/omg-ultrawork/SKILL.md": "31ad59fd89d01fcdddadcb2eb8c6d62cc1ddc836cf64f1eeded2f10fd66fc123",
-    "skills/omg-using/SKILL.md": "633907fe944901e26425766b4945c4649d0df48aff58a3f37eae133d3140b5b0",
+    "skills/omg-using/SKILL.md": "9f76d8088f561837edc0df84f777ed2112de87046f7142c654ffcc4b6c00c938",
     "skills/omg-wiki/SKILL.md": "bd8f8f4fd809ffc1bde337ab4ec81c5d81eb90adea9dd4dfb83861afa79c6ac9"
   },
-  "aggregate": "46636bd7761dfb1a69c40a4a3f8578bd75e36769da572fe472719fa94faa3e48",
+  "aggregate": "768995f5bd03f8f6b03cf57b68840911b988b2b3e8959a07faa97b5ab999dd28",
   "session_surface": {
     "schema": "omg-plugin-session-surface/v1",
     "skills": [
@@ -95,6 +96,12 @@
         "metadata_status": "valid"
       },
       {
+        "name": "omg-team",
+        "path": "skills/omg-team/SKILL.md",
+        "sha256": "13b8a9f5764ac16d88333bc66c07b0b5907e24d98c212fbd957be58221148c94",
+        "metadata_status": "valid"
+      },
+      {
         "name": "omg-ultragoal",
         "path": "skills/omg-ultragoal/SKILL.md",
         "sha256": "72438d9ec1d9640431cfb0837795aafa7036108079e0ccc9e00d09764a43bf07",
@@ -115,7 +122,7 @@
       {
         "name": "omg-using",
         "path": "skills/omg-using/SKILL.md",
-        "sha256": "633907fe944901e26425766b4945c4649d0df48aff58a3f37eae133d3140b5b0",
+        "sha256": "9f76d8088f561837edc0df84f777ed2112de87046f7142c654ffcc4b6c00c938",
         "metadata_status": "valid"
       },
       {
@@ -368,5 +375,5 @@
     },
     "issues": []
   },
-  "session_surface_aggregate": "7b3fef41824f5dc82f23a5f5c351cec73ef97be9564629fd90f8333046edbcf1"
+  "session_surface_aggregate": "5801ff8020fbb1b091f453815fc322ce2ca09e6da3c2d4ce2cc975df2e4f92b1"
 }

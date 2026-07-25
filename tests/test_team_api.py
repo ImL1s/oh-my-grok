@@ -16,7 +16,6 @@ from omg_cli.team.api import (
 )
 from omg_cli.team.plane import (
     EXPERIMENTAL_ENV,
-    TEAM_WORKER_ENV,
     WORKER_ENV_MARKERS,
     start_team,
 )
@@ -133,7 +132,7 @@ def test_team_api_refuses_spawned_worker_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_id = _seed_control_plane(tmp_path, monkeypatch)
-    monkeypatch.setenv(TEAM_WORKER_ENV, "1")
+    monkeypatch.setenv("OMG_SPAWNED_WORKER", "1")
     code, envelope = execute_team_api(
         "mailbox-list",
         {"run_id": run_id, "team_id": TEAM, "worker": "w1"},
@@ -143,6 +142,52 @@ def test_team_api_refuses_spawned_worker_context(
     assert envelope["ok"] is False
     assert envelope["error"]["code"] == "E_TEAM_API_GATE"
     assert "spawned-worker" in envelope["error"]["message"]
+
+
+def test_team_worker_can_ack_but_not_create_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    # Register worker-1 on the board first (leader).
+    _exec(
+        tmp_path,
+        "create-task",
+        {
+            "subject": "seed",
+            "description": "seed",
+            "workers": ["worker-1"],
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    monkeypatch.setenv("OMG_TEAM_WORKER_ID", "worker-1")
+    code, sent = execute_team_api(
+        "send-message",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "from_worker": "worker-1",
+            "to_worker": "leader-fixed",
+            "body": "ACK",
+        },
+        root=tmp_path,
+    )
+    assert code == 0
+    assert sent["ok"] is True
+    code, denied = execute_team_api(
+        "create-task",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "subject": "nope",
+            "description": "nope",
+        },
+        root=tmp_path,
+    )
+    assert code == 2
+    assert denied["ok"] is False
+    assert denied["error"]["code"] == "E_TEAM_API_GATE"
 
 
 def test_team_api_rejects_forged_minimal_team_json(

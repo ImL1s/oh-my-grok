@@ -66,10 +66,10 @@ def main() -> int:
         text = p.read_text(encoding="utf-8")
         if needle not in text:
             errors.append(f"{rel}: missing marker {needle!r}")
-    # 15 skills
+    # 16 skills
     skills = sorted(p.name for p in (ROOT / "skills").iterdir() if p.is_dir())
-    if len(skills) != 15:
-        errors.append(f"expected 15 skills, got {len(skills)}: {skills}")
+    if len(skills) != 16:
+        errors.append(f"expected 16 skills, got {len(skills)}: {skills}")
     # No legacy zh-Hant *filenames*; mention in policy prose is OK.
     for path in ROOT.rglob("*.md"):
         rel = path.relative_to(ROOT).as_posix()

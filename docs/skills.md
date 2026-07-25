@@ -162,8 +162,21 @@ omg accept --yes
 |--|--|
 | **When** | Opt-in multi-pane ULW with real worktrees; hermetic dry-run for tests |
 | **Gate** | `OMG_EXPERIMENTAL_TMUX_TEAM=1` (refused otherwise) |
-| **CLI** | `omg team start\|run\|scale\|resume\|status\|collect\|stop\|api` |
-| **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` / `scale` / `resume` never set `verified`. Scaling/resume/ralph are **lifecycle extensions** of the same team plane (no new isolation claims). |
+| **Skill** | `omg-team` (`/oh-my-grok:omg-team`; natural `team N …`) |
+| **CLI** | `omg team launch` (argv shorthand `N`/`N:role`+goal → launch); also `start\|run\|scale\|resume\|status\|collect\|stop\|api` |
+| **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` / `scale` / `resume` never set `verified`. Scaling/resume/ralph are **lifecycle extensions** of the same team plane (no new isolation claims). Shorthand uses **split-pane** topology + seeds P0 `team api`; still experimental until live Grok promotion. |
+
+**Canonical shorthand (OMX-like):** `omg team` accepts `N` / `N:role` before the
+goal and normalizes to `launch` (not a separate argparse choice named `3`).
+
+```bash
+export OMG_EXPERIMENTAL_TMUX_TEAM=1
+omg team launch --workers 3 --role executor --goal "fix flaky tests"
+# argv shorthand (same launch path): omg team <N[:role]> "<goal>"
+omg team launch --workers 2 --role executor --goal "map A and B" --dry-run
+omg team status --run RUN --json
+omg team stop --run RUN
+```
 
 **`omg team run`** is a **staged DRIVER** over the team plane (not a new planner/verifier):
 

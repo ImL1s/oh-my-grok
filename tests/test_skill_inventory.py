@@ -24,8 +24,17 @@ def test_required_skills_exist():
         "omg-wiki",
         "omg-hud",
         "omg-lsp",
+        "omg-team",
     ):
         assert (SKILLS / name / "SKILL.md").is_file(), name
+
+
+def test_omg_team_skill_points_at_cli_not_spawn():
+    text = _skill("omg-team")
+    assert "name: omg-team" in text
+    assert "omg team" in text
+    assert "spawn_subagent" in text
+    assert "OMG_EXPERIMENTAL_TMUX_TEAM" in text
 
 
 def test_omg_autopilot_is_session_playbook_not_stub():

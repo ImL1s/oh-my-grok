@@ -94,6 +94,17 @@ WORKER_ENV_MARKERS: tuple[str, ...] = (
     "OMG_SPAWNED_WORKER",
 )
 TEAM_WORKER_ENV = "OMG_TEAM_WORKER"
+TEAM_RUN_ID_ENV = "OMG_TEAM_RUN_ID"
+TEAM_ID_ENV = "OMG_TEAM_ID"
+TEAM_WORKER_ID_ENV = "OMG_TEAM_WORKER_ID"
+TEAM_STATE_ROOT_ENV = "OMG_TEAM_STATE_ROOT"
+TEAM_LEADER_ROOT_ENV = "OMG_TEAM_LEADER_ROOT"
+TEAM_OWNER_TOKEN_ENV = "OMG_TEAM_OWNER_TOKEN"
+# Markers that still mean "non-team depth-1 spawn" for team-api denial.
+SPAWN_DENY_API_MARKERS: tuple[str, ...] = (
+    "OMG_PROCESS_FANOUT_WORKER",
+    "OMG_SPAWNED_WORKER",
+)
 WORKSPACE_MODE = "worktree"
 SCHEMA_VERSION = 1
 LAUNCH_RECEIPT_SCHEMA_VERSION = 1
@@ -155,6 +166,24 @@ def in_spawned_worker_context(env: Mapping[str, str] | None = None) -> bool:
         if _truthy_env(source.get(key)):
             return True
     return False
+
+
+def in_non_team_spawn_context(env: Mapping[str, str] | None = None) -> bool:
+    """True for process-fanout / spawned-subagent workers (not team panes)."""
+    source = env if env is not None else os.environ
+    for key in SPAWN_DENY_API_MARKERS:
+        if _truthy_env(source.get(key)):
+            return True
+    return False
+
+
+def team_worker_identity(env: Mapping[str, str] | None = None) -> str | None:
+    """Return team worker id when ``OMG_TEAM_WORKER`` + identity env are set."""
+    source = env if env is not None else os.environ
+    if not _truthy_env(source.get(TEAM_WORKER_ENV)):
+        return None
+    wid = (source.get(TEAM_WORKER_ID_ENV) or "").strip()
+    return wid or None
 
 
 def team_dir(root: Path | str, run_id: str) -> Path:
@@ -344,13 +373,25 @@ def build_team_task_prompt(
             "- Isolation is **integration** isolation (ownership + seal), "
             "not an execution sandbox.",
             "",
+            "## Coordination (CLI-first)",
+            f"- Your worker id is `{task_id}` (also in `OMG_TEAM_WORKER_ID`).",
+            "- Read your inbox under the team api worker dir when present.",
+            "- First action: ACK the leader via team api, e.g.",
+            "  `OMG_EXPERIMENTAL_TMUX_TEAM=1 omg team api send-message --input "
+            f"'{{\"run_id\":\"{run_id}\",\"team_id\":\"team\",\"from_worker\":\"{task_id}\","
+            "\"to_worker\":\"leader-fixed\",\"body\":\"ACK\"}'`",
+            "- Then `claim-task` for your board task, work, commit, and "
+            "`transition-task-status` to completed.",
+            "- Do **not** forge another worker's identity; the CLI binds "
+            "`from_worker` / claim owner to your env identity.",
+            "",
             "## Owned files",
             owned,
             "",
             "## Goal (shared)",
             goal.strip() or "(no goal provided)",
             "",
-            f"Task index {task_index} of {task_count}. Coordinate via artifacts only.",
+            f"Task index {task_index} of {task_count}.",
         ]
     )
     return "\n".join(lines)
@@ -541,7 +582,15 @@ def _materialize_task_prompt(
     return path
 
 
-def _pane_env_pairs() -> list[tuple[str, str]]:
+def _pane_env_pairs(
+    *,
+    run_id: str | None = None,
+    team_id: str | None = None,
+    worker_id: str | None = None,
+    leader_root: Path | str | None = None,
+    state_root: Path | str | None = None,
+    owner_token: str | None = None,
+) -> list[tuple[str, str]]:
     """Allowlisted env + worker depth marker (secrets via -e, never pane argv)."""
     pairs = list(forwarded_env())
     # Strip lifecycle escape hatches, then force team-worker marker.
@@ -550,8 +599,23 @@ def _pane_env_pairs() -> list[tuple[str, str]]:
     # Ensure marker wins even if parent had a falsey value.
     out = [(k, v) for k, v in out if k not in WORKER_ENV_MARKERS]
     out.append((TEAM_WORKER_ENV, "1"))
-    out.sort(key=lambda kv: kv[0])
-    return out
+    if run_id:
+        out.append((TEAM_RUN_ID_ENV, str(run_id)))
+    if team_id:
+        out.append((TEAM_ID_ENV, str(team_id)))
+    if worker_id:
+        out.append((TEAM_WORKER_ID_ENV, str(worker_id)))
+    if leader_root is not None:
+        out.append((TEAM_LEADER_ROOT_ENV, str(Path(leader_root).resolve())))
+    if state_root is not None:
+        out.append((TEAM_STATE_ROOT_ENV, str(Path(state_root).resolve())))
+    if owner_token:
+        out.append((TEAM_OWNER_TOKEN_ENV, str(owner_token)))
+    # Deduplicate by key (last wins).
+    merged: dict[str, str] = {}
+    for key, value in out:
+        merged[key] = value
+    return sorted(merged.items(), key=lambda kv: kv[0])
 
 
 # ---------------------------------------------------------------------------
@@ -1187,6 +1251,9 @@ def start_team(
     routing: Mapping[str, Any] | None = None,
     available_providers: Collection[str] | None = None,
     check_binary: bool = True,
+    topology: str = "windows",
+    team_id: str = "team",
+    owner_token: str | None = None,
 ) -> dict[str, Any]:
     """Create ownership + worktrees + team.json (+ live tmux unless dry_run).
 
@@ -1200,6 +1267,13 @@ def start_team(
         Optional hermetic provider set for routing binary checks (tests).
     check_binary:
         When False, skip PATH probes (still apply FLOOR 1/2/3).
+    topology:
+        ``windows`` (legacy ``new-window`` per task) or ``split`` (same-window
+        ``split-window`` tiles for OMX-like shorthand launch).
+    team_id:
+        Stable team api id recorded into pane env / prompts.
+    owner_token:
+        Optional launch owner token injected into worker env.
 
     Returns the written team.json payload.
     """
@@ -1208,6 +1282,10 @@ def start_team(
     goal = (goal or "").strip() or "(no goal)"
     tasks = _parse_tasks_json(tasks_json)
     n = _assert_start_gates(tasks, env=env)
+    if topology not in ("windows", "split"):
+        raise TeamError(f"unsupported team topology {topology!r}")
+    tid_plane = (team_id or "team").strip() or "team"
+    token = owner_token or uuid.uuid4().hex
 
     multi_cli = routing is not None
     resolved: ResolvedRouting | None = None
@@ -1278,7 +1356,13 @@ def start_team(
     tdir.mkdir(parents=True, exist_ok=True)
 
     session = session_name_for_cwd(root_path)
-    env_pairs = _pane_env_pairs()
+    env_pairs = _pane_env_pairs(
+        run_id=rid,
+        team_id=tid_plane,
+        leader_root=root_path,
+        state_root=root_path / ".omg" / "state",
+        owner_token=token,
+    )
 
     # Original task dicts by task_id (for role lookup; manifest may drop fields).
     tasks_by_id: dict[str, dict[str, Any]] = {}
@@ -1372,10 +1456,25 @@ def start_team(
             "pgid": None,
             "pid_start": None,
             "status": "dry_run" if dry_run else "pending",
+            "_env_pairs": _pane_env_pairs(
+                run_id=rid,
+                team_id=tid_plane,
+                worker_id=tid,
+                leader_root=root_path,
+                state_root=root_path / ".omg" / "state",
+                owner_token=token,
+            ),
         }
         task_records.append(rec)
 
     routing_payload = resolved.to_dict() if resolved is not None else None
+
+    def _public_tasks() -> list[dict[str, Any]]:
+        cleaned: list[dict[str, Any]] = []
+        for item in task_records:
+            row = {k: v for k, v in item.items() if k != "_env_pairs"}
+            cleaned.append(row)
+        return cleaned
 
     if dry_run:
         # HERMETIC: never call tmux_available() / subprocess
@@ -1395,10 +1494,13 @@ def start_team(
             "task_count": n,
             "next_worker_index": n,
             "created_at": _utc_now(),
-            "tasks": task_records,
+            "tasks": _public_tasks(),
             "multi_cli": multi_cli,
             "routing": routing_payload,
             "linked_ralph": None,
+            "topology": topology,
+            "team_id": tid_plane,
+            "owner_token": token,
             "note": note,
         }
         _atomic_write_json(team_meta_path(root_path, rid), meta)
@@ -1426,11 +1528,23 @@ def start_team(
     snapshots = _snapshot_live_start_files(transaction_paths)
     created_handle: tuple[str, str] | None = None
     try:
-        created_handle = _create_tmux_session(
-            session=session,
-            tasks=task_records,
-            env_pairs=env_pairs,
-        )
+        if topology == "split":
+            from omg_cli.team.tmux import TmuxTeamError, create_split_team_session
+
+            try:
+                created_handle = create_split_team_session(
+                    session=session,
+                    tasks=task_records,
+                    env_pairs=env_pairs,
+                )
+            except TmuxTeamError as exc:
+                raise TeamError(str(exc)) from exc
+        else:
+            created_handle = _create_tmux_session(
+                session=session,
+                tasks=task_records,
+                env_pairs=env_pairs,
+            )
         option = _tmux_run(
             [
                 "set-option",
@@ -1490,10 +1604,13 @@ def start_team(
             "task_count": n,
             "next_worker_index": n,
             "created_at": _utc_now(),
-            "tasks": task_records,
+            "tasks": _public_tasks(),
             "multi_cli": multi_cli,
             "routing": routing_payload,
             "linked_ralph": None,
+            "topology": topology,
+            "team_id": tid_plane,
+            "owner_token": token,
             "note": (
                 "experimental multi-CLI tmux team; stop via immutable launch identity"
                 if multi_cli

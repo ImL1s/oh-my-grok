@@ -187,7 +187,7 @@ When the task is non-trivial, prefer this spine (OMX-style, Grok-native):
 
 ## Skills (in-session) — like OMC `/skill`
 
-OMG has **15 skills**. Full catalog with triggers, examples, and CLI twins:  
+OMG has **16 skills**. Full catalog with triggers, examples, and CLI twins:  
 **→ [`docs/skills.md`](docs/skills.md)** · index: [`docs/README.md`](docs/README.md)
 
 ### CLI vs skills

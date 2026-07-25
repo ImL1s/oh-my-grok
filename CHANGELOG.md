@@ -10,14 +10,21 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- OMX-like team launch shorthand: `omg team [N[:role]] "<goal>"` → `launch`
+  (split-pane topology, goal decomposition, team-name ref index, P0 api board
+  seed, `skills/omg-team`). Still gated by `OMG_EXPERIMENTAL_TMUX_TEAM=1`;
+  not promoted to full live OMX `$team` parity yet.
+- Team pane workers may use identity-bound `omg team api` (ACK/claim/mailbox
+  self); process-fanout / spawned-subagent contexts stay denied.
 - Experimental `omg team api <op> --input JSON [--json]`: OMX-shaped P0 façade
   over mailbox + claim/transition task store (11 ops). Remaining OMX ops stay
   `E_TEAM_API_UNIMPLEMENTED`; full 33-op parity is not claimed. Still gated by
-  `OMG_EXPERIMENTAL_TMUX_TEAM=1`. Fail-closed: refuses spawned-worker context
-  and requires CLI-stamped `team.json` control plane before materializing
-  mailbox/task stores.
+  `OMG_EXPERIMENTAL_TMUX_TEAM=1`. Fail-closed: requires CLI-stamped `team.json`
+  control plane before materializing mailbox/task stores.
 
 ### Planned
+- Live Grok smoke promotion (`scripts/live_team_smoke.py --live`) before
+  removing the experimental gate for shorthand launch.
 - Optional PyPI/`pipx` CLI track — **shipped editable-only** (`pyproject.toml` +
   `pipx install --editable` / `pip install -e .`); non-editable wheel / PyPI
   publish still deferred (`plugin_root()` needs checkout siblings).
@@ -32,7 +39,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ### Fixed
 - Release-verify writer-ownership gate: assign owners for host-launch/madmax
   modules, `CODE_OF_CONDUCT.md`, docs research/superpowers trees, plans, and
-  historical zh-Hant/README rename paths so tag verification no longer fails
+  historical locale/README rename paths so tag verification no longer fails
   closed on unowned dirty records.
 
 ## [0.7.0] - 2026-07-24
