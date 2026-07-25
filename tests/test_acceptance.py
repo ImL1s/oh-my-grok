@@ -605,3 +605,37 @@ def test_collect_commands_analyze_only_vs_goal_bound():
         )
     )
     assert is_analyze_only(bound) is False
+
+
+def test_accept_refuses_analyze_only_autopilot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.acceptance import CommandPolicyError
+    from omg_cli.autopilot import start_autopilot
+    from omg_cli.main import main
+
+    monkeypatch.chdir(tmp_path)
+    clear_cli_acceptance_tokens()
+    st = start_autopilot(tmp_path, "analyze only", skip_interview=True)
+    rid = st["run_id"]
+    prd = {
+        "version": 1,
+        "goal": "analyze only",
+        "stories": [
+            {
+                "id": "s1",
+                "title": "lint",
+                "commands": [["flutter", "analyze", "lib"]],
+            }
+        ],
+        "global_commands": [],
+    }
+    prd_path = tmp_path / ".omg" / "state" / "runs" / rid / "prd.json"
+    prd_path.parent.mkdir(parents=True, exist_ok=True)
+    prd_path.write_text(json.dumps(prd), encoding="utf-8")
+
+    with pytest.raises(CommandPolicyError, match="analyze-only|goal-bound"):
+        freeze_and_run(tmp_path, rid, prd)
+
+    rc = main(["accept", "--run", rid, "--yes"])
+    assert rc != 0

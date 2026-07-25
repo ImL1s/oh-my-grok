@@ -18,6 +18,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -31,6 +32,8 @@ from omg_cli.command_policy import (
     check_commands_policy,
     coalesce_pytest_marker_expr,
     command_basename,
+    GOAL_BOUND_ACCEPT_TIP,
+    is_analyze_only,
     is_python_bin,
     resolve_allowlist,
     _basename_allowed,
@@ -106,6 +109,7 @@ __all__ = [
     "prd_path",
     "read_manifest_sha256",
     "register_cli_acceptance_token",
+    "refuse_analyze_only_autopilot_acceptance",
     "refuse_if_mcp_server",
     "resolve_allowlist",
     "result_path",
@@ -874,6 +878,42 @@ def is_cli_acceptance_result(
     return True
 
 
+def _soft_accept_break_glass(*, allow_soft_accept: bool = False) -> bool:
+    if allow_soft_accept:
+        return True
+    if os.environ.get("OMG_ALLOW_SOFT_ACCEPT") != "1":
+        return False
+    return sys.stdin.isatty() if hasattr(sys.stdin, "isatty") else False
+
+
+def refuse_analyze_only_autopilot_acceptance(
+    root: Path | str,
+    run_id: str,
+    prd: dict[str, Any] | None = None,
+    *,
+    allow_soft_accept: bool = False,
+) -> None:
+    """Autopilot runs require goal-bound acceptance (not lint-only false-green)."""
+    from omg_cli.state import load_run
+
+    root = Path(root)
+    run = load_run(root, run_id) or {}
+    if str(run.get("mode") or "") != "autopilot":
+        return
+    prd_obj = prd if prd is not None else load_prd(root, run_id)
+    if prd_obj is None:
+        return
+    if not is_analyze_only(collect_commands(prd_obj)):
+        return
+    if _soft_accept_break_glass(allow_soft_accept=allow_soft_accept):
+        return
+    raise CommandPolicyError(
+        "autopilot verified refused: acceptance manifest is analyze-only "
+        f"(lint/format/static checks without a goal-bound test run). "
+        f"{GOAL_BOUND_ACCEPT_TIP}"
+    )
+
+
 def is_trusted_acceptance(root: Path | str, run_id: str) -> bool:
     """True only when CLI acceptance result is on disk *and* token is in-process.
 
@@ -896,6 +936,7 @@ def freeze_and_run(
     allowlist: Iterable[str] | None = None,
     extra_allow: Iterable[str] | None = None,
     no_allowlist: bool = False,
+    allow_soft_accept: bool = False,
 ) -> bool:
     """Convenience: freeze (if prd available) then run_acceptance."""
     root = Path(root)
@@ -903,6 +944,12 @@ def freeze_and_run(
         prd = load_prd(root, run_id)
     if prd is None and not manifest_path(root, run_id).is_file():
         raise FileNotFoundError(f"no prd or frozen manifest for run_id={run_id!r}")
+    refuse_analyze_only_autopilot_acceptance(
+        root,
+        run_id,
+        prd,
+        allow_soft_accept=allow_soft_accept,
+    )
     if prd is not None:
         freeze_acceptance(
             root,
