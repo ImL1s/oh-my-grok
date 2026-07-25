@@ -1,6 +1,7 @@
 """U-11 strict Autopilot v2 transitions."""
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,26 @@ from omg_cli.review import run_structured_review
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _goal_bound_prd(tmp_path: Path, goal: str) -> dict:
+    test_file = tmp_path / "tests" / "test_ok.py"
+    test_file.parent.mkdir(parents=True, exist_ok=True)
+    test_file.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    return {
+        "version": 1,
+        "goal": goal,
+        "stories": [
+            {
+                "id": "s1",
+                "title": "ok",
+                "commands": [
+                    [sys.executable, "-m", "pytest", str(test_file), "-q"]
+                ],
+            }
+        ],
+        "global_commands": [],
+    }
+
+
 def _stamp_review_clean(root: Path, run_id: str, diff: str = "diff body") -> None:
     run_structured_review(
         root,
@@ -38,23 +59,45 @@ def _stamp_review_clean(root: Path, run_id: str, diff: str = "diff body") -> Non
     )
 
 
-def _stamp_qa_clean(root: Path, run_id: str) -> None:
-    freeze_scenarios(
-        root,
-        run_id,
-        [{"id": "s1", "check": "always_pass"}],
-        allow_always_pass=True,
-    )
+def _stamp_qa_clean(root: Path, run_id: str, *, tmp_path: Path | None = None) -> None:
+    if tmp_path is not None:
+        test_file = tmp_path / "tests" / "test_ok.py"
+        test_file.parent.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+        freeze_scenarios(
+            root,
+            run_id,
+            [
+                {
+                    "id": "s1",
+                    "check": "command",
+                    "command": [
+                        sys.executable,
+                        "-m",
+                        "pytest",
+                        str(test_file),
+                        "-q",
+                    ],
+                }
+            ],
+        )
+    else:
+        freeze_scenarios(
+            root,
+            run_id,
+            [{"id": "s1", "check": "always_pass"}],
+            allow_always_pass=True,
+        )
     out = run_qa_cycle(root, run_id)
     assert out["clean"] is True
 
 
-def _walk_to_acceptance(root: Path, rid: str) -> None:
+def _walk_to_acceptance(root: Path, rid: str, *, tmp_path: Path | None = None) -> None:
     transition(root, rid, "implement", evidence={"consensus": True})
     transition(root, rid, "review")
     _stamp_review_clean(root, rid)
     transition(root, rid, "qa")
-    _stamp_qa_clean(root, rid)
+    _stamp_qa_clean(root, rid, tmp_path=tmp_path)
     transition(root, rid, "acceptance")
 
 
@@ -127,7 +170,7 @@ def test_complete_without_prd_materializes_from_ultraqa(tmp_path: Path) -> None:
     clear_cli_acceptance_tokens()
     st = start_autopilot(tmp_path, "verify path", skip_interview=True)
     rid = st["run_id"]
-    _walk_to_acceptance(tmp_path, rid)
+    _walk_to_acceptance(tmp_path, rid, tmp_path=tmp_path)
     out = complete_with_acceptance(tmp_path, rid)
     assert out["phase"] == "verified"
     assert out["verified"] is True
@@ -164,16 +207,9 @@ def test_complete_happy_path_same_process_acceptance(tmp_path: Path) -> None:
     clear_cli_acceptance_tokens()
     st = start_autopilot(tmp_path, "happy accept", skip_interview=True)
     rid = st["run_id"]
-    _walk_to_acceptance(tmp_path, rid)
+    _walk_to_acceptance(tmp_path, rid, tmp_path=tmp_path)
 
-    prd = {
-        "version": 1,
-        "goal": "happy accept",
-        "stories": [
-            {"id": "s1", "title": "ok", "commands": [["true"]]}
-        ],
-        "global_commands": [],
-    }
+    prd = _goal_bound_prd(tmp_path, "happy accept")
     out = complete_with_acceptance(tmp_path, rid, prd=prd)
     assert out["phase"] == "verified"
     assert out["verified"] is True
@@ -192,13 +228,8 @@ def test_complete_short_circuit_when_already_verified(tmp_path: Path) -> None:
 
     st = start_autopilot(tmp_path, "short circuit", skip_interview=True)
     rid = st["run_id"]
-    _walk_to_acceptance(tmp_path, rid)
-    prd = {
-        "version": 1,
-        "goal": "short circuit",
-        "stories": [{"id": "s1", "title": "ok", "commands": [["true"]]}],
-        "global_commands": [],
-    }
+    _walk_to_acceptance(tmp_path, rid, tmp_path=tmp_path)
+    prd = _goal_bound_prd(tmp_path, "short circuit")
     assert freeze_and_run(tmp_path, rid, prd) is True
     set_verified(tmp_path, rid, force=False)
     run = load_run(tmp_path, rid)
@@ -216,6 +247,27 @@ def test_complete_short_circuit_when_already_verified(tmp_path: Path) -> None:
     # Second complete is idempotent
     out2 = complete_with_acceptance(tmp_path, rid)
     assert out2["phase"] == "verified"
+
+
+def test_autopilot_complete_rejects_analyze_only_acceptance(tmp_path: Path) -> None:
+    clear_cli_acceptance_tokens()
+    st = start_autopilot(tmp_path, "analyze only", skip_interview=True)
+    rid = st["run_id"]
+    _walk_to_acceptance(tmp_path, rid)
+    prd = {
+        "version": 1,
+        "goal": "analyze only",
+        "stories": [
+            {
+                "id": "s1",
+                "title": "lint",
+                "commands": [["flutter", "analyze", "lib"]],
+            }
+        ],
+        "global_commands": [],
+    }
+    with pytest.raises(AutopilotError, match="analyze-only|goal-bound"):
+        complete_with_acceptance(tmp_path, rid, prd=prd)
 
 
 def test_blocked_to_qa_still_requires_review(tmp_path: Path) -> None:
@@ -386,7 +438,7 @@ def _stamp_gate_for(root: Path, kw: dict) -> int:
     elif phase == "review":
         _stamp_review_clean(root, run_id)
     elif phase == "qa":
-        _stamp_qa_clean(root, run_id)
+        _stamp_qa_clean(root, run_id, tmp_path=root)
     return 0
 
 

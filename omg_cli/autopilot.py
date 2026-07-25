@@ -7,6 +7,8 @@ Does not write verified except via same-process set_verified after acceptance.
 from __future__ import annotations
 
 import json
+import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -370,11 +372,45 @@ def _sync_autopilot_verified(
     return status_autopilot(root, run_id)
 
 
+def _soft_accept_break_glass(*, allow_soft_accept: bool = False) -> bool:
+    if allow_soft_accept:
+        return True
+    if os.environ.get("OMG_ALLOW_SOFT_ACCEPT") != "1":
+        return False
+    return sys.stdin.isatty() if hasattr(sys.stdin, "isatty") else False
+
+
+def _refuse_analyze_only_autopilot_acceptance(
+    root: Path,
+    run_id: str,
+    prd_obj: dict[str, Any],
+    *,
+    allow_soft_accept: bool = False,
+) -> None:
+    """Autopilot runs require goal-bound acceptance (not lint-only false-green)."""
+    run = load_run(root, run_id) or {}
+    if str(run.get("mode") or "") != "autopilot":
+        return
+    from omg_cli.acceptance import collect_commands
+    from omg_cli.command_policy import GOAL_BOUND_ACCEPT_TIP, is_analyze_only
+
+    if not is_analyze_only(collect_commands(prd_obj)):
+        return
+    if _soft_accept_break_glass(allow_soft_accept=allow_soft_accept):
+        return
+    raise AutopilotError(
+        "autopilot verified refused: acceptance manifest is analyze-only "
+        f"(lint/format/static checks without a goal-bound test run). "
+        f"{GOAL_BOUND_ACCEPT_TIP}"
+    )
+
+
 def complete_with_acceptance(
     root: Path | str,
     run_id: str,
     *,
     prd: Mapping[str, Any] | None = None,
+    allow_soft_accept: bool = False,
 ) -> dict[str, Any]:
     """Terminal path: freeze+run acceptance in this process, then set_verified.
 
@@ -464,6 +500,13 @@ def complete_with_acceptance(
                     "complete_with_acceptance requires prd.json or prd= "
                     f"(or clean ultraqa to materialize): {exc}"
                 ) from exc
+
+        _refuse_analyze_only_autopilot_acceptance(
+            root,
+            run_id,
+            prd_obj,
+            allow_soft_accept=allow_soft_accept,
+        )
 
         # Same-process freeze + run (registers process-local acceptance token)
         try:

@@ -871,6 +871,66 @@ def check_commands_policy(
         )
 
 
+# make targets that run real verification (not lint-only).
+_MAKE_GOAL_BOUND_TARGETS: frozenset[str] = frozenset(
+    {"test", "unit", "units", "pytest", "ci", "verify"}
+)
+
+GOAL_BOUND_ACCEPT_TIP = (
+    "Add a goal-bound acceptance command to prd.json "
+    "(e.g. python3 -m pytest -q, cargo test, go test, npm test) — "
+    "analyze/lint-only manifests cannot set verified on autopilot runs. "
+    "Break-glass (TTY): OMG_ALLOW_SOFT_ACCEPT=1"
+)
+
+
+def _is_goal_bound_command(cmd: Sequence[str]) -> bool:
+    """True when *cmd* runs goal-bound tests/build verification (not lint-only)."""
+    if not cmd:
+        return False
+    base = command_basename(cmd[0])
+    argv = [str(x) for x in cmd]
+
+    if base == "pytest":
+        return True
+
+    if is_python_bin(base):
+        for i in range(1, len(argv) - 1):
+            if argv[i] == "-m":
+                mod = argv[i + 1].split(".", 1)[0]
+                if mod in _PYTHON_M_ALLOWED:
+                    return True
+        return False
+
+    if base == "cargo" and len(argv) > 1 and argv[1] == "test":
+        return True
+    if base == "go" and len(argv) > 1 and argv[1] == "test":
+        return True
+    if base == "dart" and len(argv) > 1 and argv[1] == "test":
+        return True
+    # flutter test is intentionally soft (single-file smoke); not goal-bound.
+
+    if base == "npm":
+        if len(argv) > 1 and argv[1] == "test":
+            return True
+        if len(argv) > 2 and argv[1] == "run" and argv[2] in _NPM_RUN_SCRIPTS:
+            return True
+        return False
+
+    if base == "make":
+        targets = [t for t in argv[1:] if not t.startswith("-")]
+        return any(t in _MAKE_GOAL_BOUND_TARGETS for t in targets)
+
+    return False
+
+
+def is_analyze_only(commands: list[list[str]]) -> bool:
+    """True when every command is lint/analyze/format-only (no goal-bound test)."""
+    if not commands:
+        return False
+    return not any(_is_goal_bound_command(cmd) for cmd in commands)
+
+
 # Back-compat aliases used by older imports / tests during migration.
 CommandAllowlistError = CommandPolicyError
 check_command_allowlist = check_command_policy

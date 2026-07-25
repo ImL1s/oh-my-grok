@@ -11,6 +11,7 @@ from omg_cli.command_policy import (
     CommandPolicyError,
     check_command_policy,
     coalesce_pytest_marker_expr,
+    is_analyze_only,
     is_python_bin,
     resolve_allowlist,
     _basename_allowed,
@@ -521,3 +522,15 @@ def test_floor_fail_closed_unknown_arg_options_before_eval():
         ["python3", "scripts/check_docs_links.py", "-vc"],
         project_root=root,
     )
+
+
+def test_is_analyze_only_detects_analyze_plus_unit():
+    assert is_analyze_only(
+        [["flutter", "analyze", "lib"], ["flutter", "test", "test/foo_test.dart"]]
+    ) is True
+    assert is_analyze_only(
+        [
+            ["flutter", "test", "test/foo_test.dart"],
+            ["python3", "-m", "pytest", "-q"],
+        ]
+    ) is False

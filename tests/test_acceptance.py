@@ -585,3 +585,23 @@ def test_register_token_and_set_verified_ok_without_mcp_marker(
     register_cli_acceptance_token(tmp_path, "run-ok", "abc123")
     assert has_cli_acceptance_token(tmp_path, "run-ok", "abc123")
     clear_cli_acceptance_tokens()
+
+
+def test_collect_commands_analyze_only_vs_goal_bound():
+    from omg_cli.acceptance import collect_commands
+    from omg_cli.command_policy import is_analyze_only
+
+    soft = collect_commands(_valid_prd())
+    assert is_analyze_only(soft) is True
+    bound = collect_commands(
+        _valid_prd(
+            stories=[
+                {
+                    "id": "s1",
+                    "title": "pytest",
+                    "commands": [["python3", "-m", "pytest", "-q"]],
+                }
+            ]
+        )
+    )
+    assert is_analyze_only(bound) is False
