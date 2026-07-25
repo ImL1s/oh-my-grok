@@ -731,7 +731,6 @@ def cmd_team(args: argparse.Namespace) -> int:
         start_team,
         status_locked_view,
         stop_team,
-        team_status,
     )
     from omg_cli.team.pipeline import (
         TeamPipelineError,
