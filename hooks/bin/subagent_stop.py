@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""SubagentStop: observe-only by policy.
+
+Leaf workers must return to the parent; only the parent Stop gate pins
+incomplete autopilot. Never emit decision:block JSON here.
+"""
 import sys
 from pathlib import Path
 

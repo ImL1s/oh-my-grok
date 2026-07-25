@@ -104,6 +104,18 @@ def test_stop_fail_open_on_malformed_and_crash(tmp_path) -> None:
     assert proc.returncode == 0
 
 
+def test_subagent_stop_never_emits_block_even_when_autopilot_active(tmp_path) -> None:
+    """Lock: leaf workers may stop; only parent Stop gate pins autopilot."""
+    _seed_active_autopilot(tmp_path, phase="implement")
+    proc = _run_hook(
+        "subagent_stop.py",
+        tmp_path,
+        '{"reason":"end_turn","phase":"gate","subagentType":"omg-executor"}',
+    )
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == ""
+
+
 def test_stop_and_subagent_alias_are_fail_open_bounded_and_non_authoritative(tmp_path) -> None:
     assert _run_hook("stop.py", tmp_path, "not-json{" * 200_000).returncode == 0
     payload = json.dumps(
