@@ -4,7 +4,7 @@ English | [简体中文](./skills.zh.md) | [繁體中文](./skills.zh-TW.md)
 
 English: [`skills.md`](./skills.md)
 
-**15 个 in-session skills**，路径：[`skills/omg-*/SKILL.md`](../skills/)。  
+**16 个 in-session skills**，路径：[`skills/omg-*/SKILL.md`](../skills/)。  
 概念类似 OMC skill zoo，执行面是 **Grok-native**：playbook + `omg` CLI 盖章。
 
 > **两种表面（类似 OMC 的 CLI vs `/skill`）**  
@@ -41,6 +41,7 @@ English: [`skills.md`](./skills.md)
 | omg 怎么用、第一次 | `omg-using` | `omg doctor` · `omg setup` · `omg resume` | 路由 + 健康检查 |
 | autopilot、full auto、帮我做完 | `omg-autopilot` | `omg autopilot *` | interview→…→verified |
 | ulw、ultrawork、平行 | `omg-ultrawork` | `omg ulw` + worker + integrate | 平行 fan-out |
+| team N、tmux team、多 pane | `omg-team` | `omg team …` | 持久 tmux panes — slash **仅** `/oh-my-grok:omg-team`（无裸 `/team`） |
 | ralph、不要停、做到完 | `omg-ralph` | `omg ralph` | 单 story 外层循环 |
 | ralplan、plan 共识 | `omg-ralplan` | `omg ralplan` | 计划→critic→verifier（不写码） |
 | deep interview、厘清需求 | `omg-deep-interview` | `omg interview *` | 需求闸门 |
@@ -156,8 +157,9 @@ omg accept --yes
 |--|--|
 | **何时** | 选择性多 pane ULW + 真实 worktree；测试用 hermetic dry-run |
 | **闸门** | `OMG_EXPERIMENTAL_TMUX_TEAM=1`（未设则拒绝） |
-| **CLI** | `omg team start\|run\|scale\|resume\|status\|collect\|stop\|api` |
-| **诚实范围** | 零设定 = grok panes；`--routing` 启 multi-CLI（含角色地板）。**整合**隔离（ownership + seal + integrate）— **不是**执行沙箱。`collect` / `run` / `scale` / `resume` 永不写 `verified`。scale/resume/ralph 是**同一** team plane 的生命周期延伸（无新隔离宣称）。 |
+| **Skill** | `omg-team` — session slash **仅** `/oh-my-grok:omg-team`；自然语言 `team N …` |
+| **CLI** | `omg team launch`（argv 简写 `N`/`N:role`+goal → launch）；亦 `start\|run\|scale\|resume\|status\|collect\|stop\|api` |
+| **诚实范围** | 零设定 = grok panes；`--routing` 启 multi-CLI（含角色地板）。**整合**隔离（ownership + seal + integrate）— **不是**执行沙箱。`collect` / `run` / `scale` / `resume` 永不写 `verified`。scale/resume/ralph 是**同一** team plane 的生命周期延伸（无新隔离宣称）。**无裸 `/team` slash alias** — 2026-07-25 host 探测：plugin skill 为 `/name` 或 `/plugin:name`，无 frontmatter 可为 `omg-team` 注册 unnamespaced `/team`；其他 plugin 已占用 `team` skill 名。 |
 
 **`omg team run`** 是 team plane 上的**分阶段 DRIVER**（不是新的 planner/verifier）：
 
@@ -475,6 +477,7 @@ Grok 内建（`explore`、`plan`、`general-purpose`）仍补临时缺口。
 | omg-using | doctor / setup / resume | 否 |
 | omg-autopilot | `autopilot *` + accept/complete | 仅经 complete/accept |
 | omg-ultrawork | `ulw` / worker / integrate | 否（要 accept） |
+| omg-team | `team` / launch / status / stop / api | 否（要 accept） |
 | omg-ralph | `ralph` | 经外层 accept |
 | omg-ralplan | `ralplan` | 否 |
 | omg-deep-interview | `interview *` | 否 |

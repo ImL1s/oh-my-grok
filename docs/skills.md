@@ -2,7 +2,7 @@
 
 English | [简体中文](./skills.zh.md) | [繁體中文](./skills.zh-TW.md)
 
-**15 in-session skills** under [`skills/omg-*/SKILL.md`](../skills/).  
+**16 in-session skills** under [`skills/omg-*/SKILL.md`](../skills/).  
 Same *idea* as OMC’s skill zoo, **Grok-native** runtime: playbooks + `omg` CLI stamps.
 
 > **Two surfaces (like OMC CLI vs `/skill`)**  
@@ -39,6 +39,7 @@ Same *idea* as OMC’s skill zoo, **Grok-native** runtime: playbooks + `omg` CLI
 | `how to use omg`, first session | `omg-using` | `omg doctor` · `omg setup` · `omg resume` | Router + install health |
 | `autopilot`, `full auto`, `build me`, `handle it all` | `omg-autopilot` | `omg autopilot *` | interview→…→verified playbook |
 | `ulw`, `ultrawork`, parallel | `omg-ultrawork` | `omg ulw` + `worker` + `integrate` | Parallel fan-out |
+| `team N`, tmux team, parallel panes | `omg-team` | `omg team …` | Durable tmux panes — slash **`/oh-my-grok:omg-team` only** (no bare `/team`) |
 | `ralph`, don’t stop, keep going | `omg-ralph` | `omg ralph` | One-story outer loop |
 | `ralplan`, plan consensus | `omg-ralplan` | `omg ralplan` | Plan → critic → verifier (no code) |
 | `deep interview`, clarify | `omg-deep-interview` | `omg interview *` | Requirements gate |
@@ -162,8 +163,34 @@ omg accept --yes
 |--|--|
 | **When** | Opt-in multi-pane ULW with real worktrees; hermetic dry-run for tests |
 | **Gate** | `OMG_EXPERIMENTAL_TMUX_TEAM=1` (refused otherwise) |
-| **CLI** | `omg team start\|run\|scale\|resume\|status\|collect\|stop\|api` |
-| **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` / `scale` / `resume` never set `verified`. Scaling/resume/ralph are **lifecycle extensions** of the same team plane (no new isolation claims). |
+| **Skill** | `omg-team` — in-session slash **`/oh-my-grok:omg-team` only**; natural `team N …` |
+| **CLI** | `omg team launch` (argv shorthand `N`/`N:role`+goal → launch); also `start\|run\|scale\|resume\|status\|collect\|stop\|api` |
+| **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` / `scale` / `resume` never set `verified`. Scaling/resume/ralph are **lifecycle extensions** of the same team plane (no new isolation claims). Shorthand uses **split-pane** topology + seeds P0 `team api`; still experimental until live Grok promotion. **No bare `/team` slash alias** — 2026-07-25 host probe (`grok inspect` / plugin skill docs): skills are `/name` or `/plugin:name`; no frontmatter to register an unnamespaced `/team` for `omg-team`, and other plugins already expose `team` skills. |
+
+**Canonical shorthand (OMX-like):** `omg team` accepts `N` / `N:role` before the
+goal and normalizes to `launch` (not a separate argparse choice named `3`).
+
+```bash
+export OMG_EXPERIMENTAL_TMUX_TEAM=1
+omg team launch --workers 3 --role executor --goal "fix flaky tests"
+# argv shorthand (same launch path): omg team <N[:role]> "<goal>"
+omg team launch --workers 2 --role executor --goal "map A and B" --dry-run
+# Live launch waits for worker ACK (body=ACK → leader-fixed) before success.
+# Timeout knob: OMG_TEAM_READY_TIMEOUT_MS (default 45000). Partial/zero ACK
+# leaves state for diagnosis and exits non-zero (no silent dry-run fallback).
+# Attach: inside tmux → new window + split (shared session; stop never
+# kill-session). Outside TTY → new session + `tmux attach -t …` hint.
+# Non-interactive without --detach fails closed.
+# status (shorthand identity or --run): human table includes aggregate
+# extras — topology/startup_acks, mailbox metadata (leader-fixed; no
+# bodies — use startup_acks for ACK counts), api_summary, worktrees[].
+# --json keeps the LOCKED field set (status_locked_view). --full / --json
+# --full dumps the full aggregate for operators/scripts.
+omg team status --run RUN --json
+omg team status --run RUN --full
+omg team status TEAM_NAME
+omg team stop --run RUN
+```
 
 **`omg team run`** is a **staged DRIVER** over the team plane (not a new planner/verifier):
 
@@ -503,6 +530,7 @@ Grok built-ins (`explore`, `plan`, `general-purpose`) still fill ad-hoc gaps.
 | omg-using | doctor / setup / resume | no |
 | omg-autopilot | `autopilot *` + accept/complete | via complete/accept only |
 | omg-ultrawork | `ulw` / worker / integrate | no (need accept) |
+| omg-team | `team` / launch / status / stop / api | no (need accept) |
 | omg-ralph | `ralph` | via outer accept path |
 | omg-ralplan | `ralplan` | no |
 | omg-deep-interview | `interview *` | no |

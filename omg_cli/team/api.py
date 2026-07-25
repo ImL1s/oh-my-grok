@@ -11,6 +11,7 @@ P0 ops match OMX names; remaining ``TEAM_API_OPERATIONS`` return
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import uuid
 from collections.abc import Callable, Mapping
@@ -43,12 +44,16 @@ from omg_cli.team.mailbox import (
 )
 from omg_cli.team.plane import (
     EXPERIMENTAL_ENV,
-    WORKER_ENV_MARKERS,
+    TEAM_ID_ENV,
+    TEAM_OWNER_TOKEN_ENV,
+    TEAM_RUN_ID_ENV,
     TeamError,
     TeamGateError,
     experimental_enabled,
+    in_non_team_spawn_context,
     in_spawned_worker_context,
     load_team_meta,
+    team_worker_identity,
 )
 
 
@@ -895,6 +900,7 @@ def _op_transition_task_status(
     src = _require_str(payload, "from")
     dst = _require_str(payload, "to")
     claim_token = _require_str(payload, "claim_token")
+    worker = require_safe_id(_require_str(payload, "worker"), label="worker")
     if src not in TEAM_TASK_STATUSES or dst not in TEAM_TASK_STATUSES:
         raise TeamApiError(
             "E_TEAM_API_INVALID_INPUT",
@@ -950,6 +956,8 @@ def _op_transition_task_status(
             or not claim
             or claim.get("owner") != task.get("owner")
             or claim.get("token") != claim_token
+            or claim.get("owner") != worker
+            or task.get("owner") != worker
         ):
             raise TeamApiError(
                 "E_TEAM_API_FAILED",
@@ -1128,6 +1136,137 @@ _HANDLERS: dict[str, Handler] = {
 }
 
 
+WORKER_ALLOWED_OPS: frozenset[str] = frozenset(
+    {
+        "send-message",
+        "mailbox-list",
+        "mailbox-mark-delivered",
+        "list-tasks",
+        "claim-task",
+        "transition-task-status",
+        "release-task-claim",
+        "get-summary",
+        "read-config",
+    }
+)
+WORKER_DENIED_OPS: frozenset[str] = frozenset(
+    {
+        "create-task",
+        "write-worker-inbox",
+    }
+)
+
+
+def _bind_worker_env_field(
+    out: dict[str, Any],
+    *,
+    field: str,
+    env_value: str,
+    label: str,
+) -> None:
+    """Fail closed on payload/env mismatch; otherwise inject env value."""
+    claimed = out.get(field)
+    if claimed is not None and str(claimed).strip() and str(claimed).strip() != env_value:
+        raise TeamApiError(
+            "E_TEAM_API_GATE",
+            f"{label} must equal worker env identity {env_value!r}",
+            exit_code=2,
+            details={"error": "identity_mismatch", "field": field},
+        )
+    out[field] = env_value
+
+
+def _apply_worker_identity_matrix(
+    operation: str,
+    payload: dict[str, Any],
+    *,
+    identity: str,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Bind / restrict payload fields for a team-pane worker identity."""
+    if operation in WORKER_DENIED_OPS or operation not in WORKER_ALLOWED_OPS:
+        raise TeamApiError(
+            "E_TEAM_API_GATE",
+            f"worker {identity!r} is not allowed to run {operation!r}",
+            exit_code=2,
+            details={"error": "worker_op_denied", "worker": identity, "operation": operation},
+        )
+    source = env if env is not None else os.environ
+    out = dict(payload)
+    env_run = (source.get(TEAM_RUN_ID_ENV) or "").strip()
+    env_team = (source.get(TEAM_ID_ENV) or "").strip()
+    env_owner = (source.get(TEAM_OWNER_TOKEN_ENV) or "").strip()
+    # Fail closed: worker identity matrix requires immutable run/team env.
+    # Owner token stays optional (injected only when present).
+    if not env_run or not env_team:
+        missing = [
+            name
+            for name, value in (
+                (TEAM_RUN_ID_ENV, env_run),
+                (TEAM_ID_ENV, env_team),
+            )
+            if not value
+        ]
+        raise TeamApiError(
+            "E_TEAM_API_GATE",
+            "omg team api refused: worker identity requires "
+            f"{TEAM_RUN_ID_ENV} and {TEAM_ID_ENV} "
+            f"(missing: {', '.join(missing)})",
+            exit_code=2,
+            details={"error": "worker_env_incomplete", "missing": missing},
+        )
+    _bind_worker_env_field(out, field="run_id", env_value=env_run, label="run_id")
+    _bind_worker_env_field(out, field="team_id", env_value=env_team, label="team_id")
+    if env_owner:
+        _bind_worker_env_field(
+            out, field="owner_token", env_value=env_owner, label="owner_token"
+        )
+    else:
+        # Do not trust client-supplied owner_token when pane env has none.
+        out.pop("owner_token", None)
+    if operation == "send-message":
+        claimed = out.get("from_worker")
+        if claimed is not None and str(claimed).strip() and str(claimed).strip() != identity:
+            raise TeamApiError(
+                "E_TEAM_API_GATE",
+                f"from_worker must equal worker identity {identity!r}",
+                exit_code=2,
+                details={"error": "identity_mismatch"},
+            )
+        out["from_worker"] = identity
+    if operation in ("mailbox-list", "mailbox-mark-delivered"):
+        claimed = out.get("worker")
+        if claimed is not None and str(claimed).strip() and str(claimed).strip() != identity:
+            raise TeamApiError(
+                "E_TEAM_API_GATE",
+                f"mailbox worker must equal identity {identity!r}",
+                exit_code=2,
+                details={"error": "identity_mismatch"},
+            )
+        out["worker"] = identity
+    if operation == "claim-task":
+        claimed = out.get("worker")
+        if claimed is not None and str(claimed).strip() and str(claimed).strip() != identity:
+            raise TeamApiError(
+                "E_TEAM_API_GATE",
+                f"claim worker must equal identity {identity!r}",
+                exit_code=2,
+                details={"error": "identity_mismatch"},
+            )
+        out["worker"] = identity
+    if operation in ("transition-task-status", "release-task-claim"):
+        claimed = out.get("worker")
+        if claimed is not None and str(claimed).strip() and str(claimed).strip() != identity:
+            raise TeamApiError(
+                "E_TEAM_API_GATE",
+                f"worker must equal identity {identity!r}",
+                exit_code=2,
+                details={"error": "identity_mismatch"},
+            )
+        out["worker"] = identity
+    return out
+
+
 def execute_team_api(
     operation: str,
     input_payload: Mapping[str, Any] | None,
@@ -1148,13 +1287,35 @@ def execute_team_api(
             f"omg team api requires {EXPERIMENTAL_ENV}=1",
         )
 
-    if in_spawned_worker_context(env):
+    # Process-fanout / spawned-subagent workers remain denied. Team panes may
+    # use an identity-bound P0 subset (ACK/claim/transition/mailbox self).
+    if in_non_team_spawn_context(env):
         return 2, _fail(
             op or "unknown",
             "E_TEAM_API_GATE",
             "omg team api refused: already inside a spawned-worker context "
-            f"(depth-1; one of {', '.join(WORKER_ENV_MARKERS)} is set). "
-            "Workers must not mutate team mailbox/task stores via team api.",
+            f"(depth-1; one of {', '.join(('OMG_PROCESS_FANOUT_WORKER', 'OMG_SPAWNED_WORKER'))} is set).",
+        )
+
+    identity = team_worker_identity(env)
+    if identity is not None:
+        try:
+            payload = _apply_worker_identity_matrix(
+                op, payload, identity=identity, env=env
+            )
+        except TeamApiError as exc:
+            return exc.exit_code, _fail(
+                op or "unknown",
+                exc.code,
+                exc.message,
+                details=exc.details or None,
+            )
+    elif in_spawned_worker_context(env):
+        # OMG_TEAM_WORKER without identity — fail closed.
+        return 2, _fail(
+            op or "unknown",
+            "E_TEAM_API_GATE",
+            "omg team api refused: OMG_TEAM_WORKER set without OMG_TEAM_WORKER_ID",
         )
 
     if not op:

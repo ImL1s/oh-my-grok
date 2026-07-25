@@ -16,7 +16,6 @@ from omg_cli.team.api import (
 )
 from omg_cli.team.plane import (
     EXPERIMENTAL_ENV,
-    TEAM_WORKER_ENV,
     WORKER_ENV_MARKERS,
     start_team,
 )
@@ -133,7 +132,7 @@ def test_team_api_refuses_spawned_worker_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_id = _seed_control_plane(tmp_path, monkeypatch)
-    monkeypatch.setenv(TEAM_WORKER_ENV, "1")
+    monkeypatch.setenv("OMG_SPAWNED_WORKER", "1")
     code, envelope = execute_team_api(
         "mailbox-list",
         {"run_id": run_id, "team_id": TEAM, "worker": "w1"},
@@ -143,6 +142,119 @@ def test_team_api_refuses_spawned_worker_context(
     assert envelope["ok"] is False
     assert envelope["error"]["code"] == "E_TEAM_API_GATE"
     assert "spawned-worker" in envelope["error"]["message"]
+
+
+def test_team_worker_can_ack_but_not_create_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    # Register worker-1 on the board first (leader).
+    _exec(
+        tmp_path,
+        "create-task",
+        {
+            "subject": "seed",
+            "description": "seed",
+            "workers": ["worker-1"],
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    monkeypatch.setenv("OMG_TEAM_WORKER_ID", "worker-1")
+    monkeypatch.setenv("OMG_TEAM_RUN_ID", run_id)
+    monkeypatch.setenv("OMG_TEAM_ID", TEAM)
+    code, sent = execute_team_api(
+        "send-message",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "from_worker": "worker-1",
+            "to_worker": "leader-fixed",
+            "body": "ACK",
+        },
+        root=tmp_path,
+    )
+    assert code == 0
+    assert sent["ok"] is True
+    code, denied = execute_team_api(
+        "create-task",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "subject": "nope",
+            "description": "nope",
+        },
+        root=tmp_path,
+    )
+    assert code == 2
+    assert denied["ok"] is False
+    assert denied["error"]["code"] == "E_TEAM_API_GATE"
+
+
+def test_team_worker_payload_bound_to_env_run_and_team(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _exec(
+        tmp_path,
+        "create-task",
+        {"subject": "seed", "description": "seed", "workers": ["worker-1"]},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    monkeypatch.setenv("OMG_TEAM_WORKER_ID", "worker-1")
+    monkeypatch.setenv("OMG_TEAM_RUN_ID", run_id)
+    monkeypatch.setenv("OMG_TEAM_ID", TEAM)
+    # Wrong run_id in payload must be overwritten or rejected
+    code, envelope = execute_team_api(
+        "send-message",
+        {
+            "run_id": "other-run",
+            "team_id": TEAM,
+            "from_worker": "worker-1",
+            "to_worker": "leader-fixed",
+            "body": "ACK",
+        },
+        root=tmp_path,
+    )
+    assert code != 0 or envelope["data"]["message"]["sender_id"] == "worker-1"
+    # Prefer fail-closed on mismatch:
+    assert code == 2
+    assert envelope["error"]["code"] == "E_TEAM_API_GATE"
+
+
+def test_team_worker_without_run_id_env_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Worker identity matrix requires OMG_TEAM_RUN_ID (no soft-open on payload)."""
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _exec(
+        tmp_path,
+        "create-task",
+        {"subject": "seed", "description": "seed", "workers": ["worker-1"]},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    monkeypatch.setenv("OMG_TEAM_WORKER_ID", "worker-1")
+    monkeypatch.setenv("OMG_TEAM_ID", TEAM)
+    monkeypatch.delenv("OMG_TEAM_RUN_ID", raising=False)
+    code, envelope = execute_team_api(
+        "send-message",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "from_worker": "worker-1",
+            "to_worker": "leader-fixed",
+            "body": "ACK",
+        },
+        root=tmp_path,
+    )
+    assert code == 2
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "E_TEAM_API_GATE"
 
 
 def test_team_api_rejects_forged_minimal_team_json(
@@ -301,6 +413,7 @@ def test_claim_task_requires_token_for_transition(
             "from": "in_progress",
             "to": "completed",
             "claim_token": "wrong-token",
+            "worker": "worker-1",
         },
         run_id=run_id,
         monkeypatch=monkeypatch,
@@ -318,6 +431,7 @@ def test_claim_task_requires_token_for_transition(
             "from": "in_progress",
             "to": "completed",
             "claim_token": token,
+            "worker": "worker-1",
             "result": "done",
         },
         run_id=run_id,
@@ -333,6 +447,68 @@ def test_claim_task_requires_token_for_transition(
     assert code == 0
     assert listed["data"]["count"] == 2
     assert any(t["status"] == "completed" for t in listed["data"]["tasks"])
+
+
+def test_transition_requires_worker_match_claim_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cross-worker token theft must not complete another worker's claim."""
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _exec(
+        tmp_path,
+        "create-task",
+        {
+            "subject": "owned by w1",
+            "description": "x",
+            "workers": ["worker-1", "worker-2"],
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    code, claimed = _exec(
+        tmp_path,
+        "claim-task",
+        {"task_id": "1", "worker": "worker-1"},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0
+    token = claimed["data"]["claimToken"]
+
+    # worker-2 presents the stolen token → claim_conflict
+    code, stolen = _exec(
+        tmp_path,
+        "transition-task-status",
+        {
+            "task_id": "1",
+            "from": "in_progress",
+            "to": "completed",
+            "claim_token": token,
+            "worker": "worker-2",
+            "result": "hijack",
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 1
+    assert stolen["ok"] is False
+    assert stolen["error"].get("details", {}).get("error") == "claim_conflict"
+
+    # Missing worker → invalid input
+    code, missing = _exec(
+        tmp_path,
+        "transition-task-status",
+        {
+            "task_id": "1",
+            "from": "in_progress",
+            "to": "completed",
+            "claim_token": token,
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 2
+    assert missing["ok"] is False
 
 
 def test_claim_without_config_reports_team_not_found(

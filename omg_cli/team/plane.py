@@ -94,6 +94,17 @@ WORKER_ENV_MARKERS: tuple[str, ...] = (
     "OMG_SPAWNED_WORKER",
 )
 TEAM_WORKER_ENV = "OMG_TEAM_WORKER"
+TEAM_RUN_ID_ENV = "OMG_TEAM_RUN_ID"
+TEAM_ID_ENV = "OMG_TEAM_ID"
+TEAM_WORKER_ID_ENV = "OMG_TEAM_WORKER_ID"
+TEAM_STATE_ROOT_ENV = "OMG_TEAM_STATE_ROOT"
+TEAM_LEADER_ROOT_ENV = "OMG_TEAM_LEADER_ROOT"
+TEAM_OWNER_TOKEN_ENV = "OMG_TEAM_OWNER_TOKEN"
+# Markers that still mean "non-team depth-1 spawn" for team-api denial.
+SPAWN_DENY_API_MARKERS: tuple[str, ...] = (
+    "OMG_PROCESS_FANOUT_WORKER",
+    "OMG_SPAWNED_WORKER",
+)
 WORKSPACE_MODE = "worktree"
 SCHEMA_VERSION = 1
 LAUNCH_RECEIPT_SCHEMA_VERSION = 1
@@ -155,6 +166,24 @@ def in_spawned_worker_context(env: Mapping[str, str] | None = None) -> bool:
         if _truthy_env(source.get(key)):
             return True
     return False
+
+
+def in_non_team_spawn_context(env: Mapping[str, str] | None = None) -> bool:
+    """True for process-fanout / spawned-subagent workers (not team panes)."""
+    source = env if env is not None else os.environ
+    for key in SPAWN_DENY_API_MARKERS:
+        if _truthy_env(source.get(key)):
+            return True
+    return False
+
+
+def team_worker_identity(env: Mapping[str, str] | None = None) -> str | None:
+    """Return team worker id when ``OMG_TEAM_WORKER`` + identity env are set."""
+    source = env if env is not None else os.environ
+    if not _truthy_env(source.get(TEAM_WORKER_ENV)):
+        return None
+    wid = (source.get(TEAM_WORKER_ID_ENV) or "").strip()
+    return wid or None
 
 
 def team_dir(root: Path | str, run_id: str) -> Path:
@@ -344,13 +373,26 @@ def build_team_task_prompt(
             "- Isolation is **integration** isolation (ownership + seal), "
             "not an execution sandbox.",
             "",
+            "## Coordination (CLI-first)",
+            f"- Your worker id is `{task_id}` (also in `OMG_TEAM_WORKER_ID`).",
+            "- Read your inbox under the team api worker dir when present.",
+            "- First action: ACK the leader via team api, e.g.",
+            "  `OMG_EXPERIMENTAL_TMUX_TEAM=1 omg team api send-message --input "
+            f"'{{\"run_id\":\"{run_id}\",\"team_id\":\"team\",\"from_worker\":\"{task_id}\","
+            "\"to_worker\":\"leader-fixed\",\"body\":\"ACK\"}'`",
+            "- Then `claim-task` for your board task, work, commit, and "
+            "`transition-task-status` (include `worker` matching your id + "
+            "claim_token) to completed.",
+            "- Do **not** forge another worker's identity; the CLI binds "
+            "`from_worker` / claim owner / transition worker to your env identity.",
+            "",
             "## Owned files",
             owned,
             "",
             "## Goal (shared)",
             goal.strip() or "(no goal provided)",
             "",
-            f"Task index {task_index} of {task_count}. Coordinate via artifacts only.",
+            f"Task index {task_index} of {task_count}.",
         ]
     )
     return "\n".join(lines)
@@ -541,7 +583,15 @@ def _materialize_task_prompt(
     return path
 
 
-def _pane_env_pairs() -> list[tuple[str, str]]:
+def _pane_env_pairs(
+    *,
+    run_id: str | None = None,
+    team_id: str | None = None,
+    worker_id: str | None = None,
+    leader_root: Path | str | None = None,
+    state_root: Path | str | None = None,
+    owner_token: str | None = None,
+) -> list[tuple[str, str]]:
     """Allowlisted env + worker depth marker (secrets via -e, never pane argv)."""
     pairs = list(forwarded_env())
     # Strip lifecycle escape hatches, then force team-worker marker.
@@ -550,8 +600,49 @@ def _pane_env_pairs() -> list[tuple[str, str]]:
     # Ensure marker wins even if parent had a falsey value.
     out = [(k, v) for k, v in out if k not in WORKER_ENV_MARKERS]
     out.append((TEAM_WORKER_ENV, "1"))
-    out.sort(key=lambda kv: kv[0])
-    return out
+    # Workers call ``omg team api`` from panes; gate must be present via -e
+    # (not in madmax forwarded_env allowlist).
+    out.append((EXPERIMENTAL_ENV, "1"))
+    if run_id:
+        out.append((TEAM_RUN_ID_ENV, str(run_id)))
+    if team_id:
+        out.append((TEAM_ID_ENV, str(team_id)))
+    if worker_id:
+        out.append((TEAM_WORKER_ID_ENV, str(worker_id)))
+    if leader_root is not None:
+        out.append((TEAM_LEADER_ROOT_ENV, str(Path(leader_root).resolve())))
+    if state_root is not None:
+        out.append((TEAM_STATE_ROOT_ENV, str(Path(state_root).resolve())))
+    if owner_token:
+        out.append((TEAM_OWNER_TOKEN_ENV, str(owner_token)))
+    # Deduplicate by key (last wins).
+    merged: dict[str, str] = {}
+    for key, value in out:
+        merged[key] = value
+    return sorted(merged.items(), key=lambda kv: kv[0])
+
+
+def build_fixture_pane_command() -> str:
+    """Pane command for hermetic transport smoke (ACK fixture; no grok).
+
+    Resolves ``tests/fixtures/team_worker_fixture.py`` relative to the repo
+    checkout that contains ``omg_cli/``. Production grok path is unchanged when
+    ``executor`` is omitted.
+    """
+    import shlex
+    import sys
+
+    fixture = (
+        Path(__file__).resolve().parents[2]
+        / "tests"
+        / "fixtures"
+        / "team_worker_fixture.py"
+    )
+    if not fixture.is_file():
+        raise TeamError(
+            f"fixture executor requested but missing fixture script: {fixture}"
+        )
+    return shlex.join([sys.executable, str(fixture)])
 
 
 # ---------------------------------------------------------------------------
@@ -672,7 +763,18 @@ def _cleanup_created_tmux_session(handle: tuple[str, str]) -> str | None:
 
 
 def _list_pane_identities(session: str) -> dict[int, tuple[str, int]]:
-    """Map window index to exact tmux pane identity and pane PID."""
+    """Map slot index to exact tmux pane identity and pane PID.
+
+    *Windows* topology: one pane per window — slot equals ``window_index``.
+    *Split* topology: multiple panes share one window — slot equals
+    ``pane_index`` (creation order), matching task ``window_index`` slots.
+    Ambiguous multi-window multi-pane layouts fail closed (empty map).
+
+    Accepts list-panes rows as either::
+
+        window_index\\tpane_index\\tpane_id\\tpane_pid   (preferred)
+        window_index\\tpane_id\\tpane_pid                 (legacy windows mocks)
+    """
     r = _tmux_run(
         [
             "list-panes",
@@ -680,25 +782,60 @@ def _list_pane_identities(session: str) -> dict[int, tuple[str, int]]:
             "-t",
             session,
             "-F",
-            "#{window_index}\t#{pane_id}\t#{pane_pid}",
+            "#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_pid}",
         ]
     )
     if r.returncode != 0:
         return {}
-    out: dict[int, tuple[str, int]] = {}
+    rows: list[tuple[int, int | None, str, int]] = []
     for line in (r.stdout or "").splitlines():
         parts = line.strip().split("\t")
-        if len(parts) != 3 or _TMUX_PANE_ID.fullmatch(parts[1]) is None:
+        if len(parts) == 4 and _TMUX_PANE_ID.fullmatch(parts[2]) is not None:
+            try:
+                window_index = int(parts[0])
+                pane_index = int(parts[1])
+                pane_pid = int(parts[3])
+            except ValueError:
+                continue
+            pane_id = parts[2]
+        elif len(parts) == 3 and _TMUX_PANE_ID.fullmatch(parts[1]) is not None:
+            # Legacy 3-field rows (windows topology / hermetic mocks).
+            try:
+                window_index = int(parts[0])
+                pane_pid = int(parts[2])
+            except ValueError:
+                continue
+            pane_index = None
+            pane_id = parts[1]
+        else:
             continue
-        try:
-            window_index = int(parts[0])
-            pane_pid = int(parts[2])
-        except ValueError:
-            continue
-        if window_index in out or pane_pid <= 0:
+        if pane_pid <= 0:
             return {}
-        out[window_index] = (parts[1], pane_pid)
-    return out
+        rows.append((window_index, pane_index, pane_id, pane_pid))
+    if not rows:
+        return {}
+    windows = {row[0] for row in rows}
+    if len(rows) == len(windows):
+        # One pane per window (legacy windows topology).
+        out: dict[int, tuple[str, int]] = {}
+        for window_index, _pane_index, pane_id, pane_pid in rows:
+            if window_index in out:
+                return {}
+            out[window_index] = (pane_id, pane_pid)
+        return out
+    if len(windows) == 1 and all(row[1] is not None for row in rows):
+        # Split topology: key by pane_index within the single window.
+        out = {}
+        for _window_index, pane_index, pane_id, pane_pid in sorted(
+            rows, key=lambda row: int(row[1] or 0)
+        ):
+            assert pane_index is not None
+            if pane_index in out:
+                return {}
+            out[pane_index] = (pane_id, pane_pid)
+        return out
+    # Mixed multi-window multi-pane — refuse ambiguous identity.
+    return {}
 
 
 def _list_pane_pids(session: str) -> dict[int, int]:
@@ -924,7 +1061,7 @@ def _persist_team_identity_receipt(
     if generation <= 0:
         raise TeamError("scaled identity generation must be positive")
     require_sha256(previous_receipt_sha256, label="previous_receipt_sha256")
-    if operation not in {"add", "remove"}:
+    if operation not in {"add", "remove", "relaunch"}:
         raise TeamError("scaled identity receipt operation mismatch")
     receipt = {
         "store_kind": "team_identity_receipt",
@@ -1058,7 +1195,7 @@ def _load_team_identity_chain(
             or parsed["launch_nonce"] != launch["launch_nonce"]
             or parsed["generation"] != expected_generation
             or parsed["previous_receipt_sha256"] != previous_hash
-            or parsed["operation"] not in {"add", "remove"}
+            or parsed["operation"] not in {"add", "remove", "relaunch"}
             or not isinstance(parsed["receipt_nonce"], str)
             or len(parsed["receipt_nonce"]) != 32
             or not isinstance(parsed["tasks_before"], list)
@@ -1187,6 +1324,11 @@ def start_team(
     routing: Mapping[str, Any] | None = None,
     available_providers: Collection[str] | None = None,
     check_binary: bool = True,
+    topology: str = "windows",
+    team_id: str = "team",
+    owner_token: str | None = None,
+    executor: str | None = None,
+    detach: bool = False,
 ) -> dict[str, Any]:
     """Create ownership + worktrees + team.json (+ live tmux unless dry_run).
 
@@ -1200,6 +1342,17 @@ def start_team(
         Optional hermetic provider set for routing binary checks (tests).
     check_binary:
         When False, skip PATH probes (still apply FLOOR 1/2/3).
+    topology:
+        ``windows`` (legacy ``new-window`` per task) or ``split`` (same-window
+        ``split-window`` tiles for OMX-like shorthand launch).
+    team_id:
+        Stable team api id recorded into pane env / prompts.
+    owner_token:
+        Optional launch owner token injected into worker env.
+    executor:
+        When ``\"fixture\"``, replace every pane_command with the hermetic
+        ACK fixture (transport smoke only — not Grok live parity). Default
+        ``None`` keeps the production grok / routing pane path.
 
     Returns the written team.json payload.
     """
@@ -1208,6 +1361,19 @@ def start_team(
     goal = (goal or "").strip() or "(no goal)"
     tasks = _parse_tasks_json(tasks_json)
     n = _assert_start_gates(tasks, env=env)
+    if topology not in ("windows", "split"):
+        raise TeamError(f"unsupported team topology {topology!r}")
+    executor_norm = (executor or "").strip().lower() or None
+    if executor_norm is not None and executor_norm != "fixture":
+        raise TeamError(
+            f"unsupported team executor {executor!r} "
+            "(supported: None / 'fixture')"
+        )
+    tid_plane = (team_id or "team").strip() or "team"
+    token = owner_token or uuid.uuid4().hex
+    fixture_pane_cmd = (
+        build_fixture_pane_command() if executor_norm == "fixture" else None
+    )
 
     multi_cli = routing is not None
     resolved: ResolvedRouting | None = None
@@ -1278,7 +1444,13 @@ def start_team(
     tdir.mkdir(parents=True, exist_ok=True)
 
     session = session_name_for_cwd(root_path)
-    env_pairs = _pane_env_pairs()
+    env_pairs = _pane_env_pairs(
+        run_id=rid,
+        team_id=tid_plane,
+        leader_root=root_path,
+        state_root=root_path / ".omg" / "state",
+        owner_token=token,
+    )
 
     # Original task dicts by task_id (for role lookup; manifest may drop fields).
     tasks_by_id: dict[str, dict[str, Any]] = {}
@@ -1350,6 +1522,11 @@ def start_team(
             prompt_delivery = PROMPT_DELIVERY_PROMPT_FILE
             pane_cmd = build_pane_command(_grok_args_for_pane(argv))
 
+        if fixture_pane_cmd is not None:
+            # Hermetic transport override — keep argv record for diagnostics.
+            pane_cmd = fixture_pane_cmd
+            provider = "fixture"
+
         # Persist per-task argv under team/ (mirrors fanout workers/*.argv.json)
         argv_path = tdir / f"{tid}.argv.json"
         argv_path.write_text(
@@ -1372,10 +1549,29 @@ def start_team(
             "pgid": None,
             "pid_start": None,
             "status": "dry_run" if dry_run else "pending",
+            "_env_pairs": _pane_env_pairs(
+                run_id=rid,
+                team_id=tid_plane,
+                worker_id=tid,
+                leader_root=root_path,
+                state_root=root_path / ".omg" / "state",
+                owner_token=token,
+            ),
         }
         task_records.append(rec)
 
     routing_payload = resolved.to_dict() if resolved is not None else None
+
+    def _public_tasks() -> list[dict[str, Any]]:
+        cleaned: list[dict[str, Any]] = []
+        for item in task_records:
+            row = {
+                k: v
+                for k, v in item.items()
+                if k not in ("_env_pairs", "_tmux_launch")
+            }
+            cleaned.append(row)
+        return cleaned
 
     if dry_run:
         # HERMETIC: never call tmux_available() / subprocess
@@ -1395,10 +1591,14 @@ def start_team(
             "task_count": n,
             "next_worker_index": n,
             "created_at": _utc_now(),
-            "tasks": task_records,
+            "tasks": _public_tasks(),
             "multi_cli": multi_cli,
             "routing": routing_payload,
             "linked_ralph": None,
+            "topology": topology,
+            "team_id": tid_plane,
+            "owner_token": token,
+            "executor": executor_norm,
             "note": note,
         }
         _atomic_write_json(team_meta_path(root_path, rid), meta)
@@ -1425,12 +1625,38 @@ def start_team(
     )
     snapshots = _snapshot_live_start_files(transaction_paths)
     created_handle: tuple[str, str] | None = None
+    tmux_launch: dict[str, Any] = {
+        "attach_mode": "detached",
+        "session_owned": True,
+        "leader_pane_id": None,
+        "window_id": None,
+        "attach_hint": None,
+    }
     try:
-        created_handle = _create_tmux_session(
-            session=session,
-            tasks=task_records,
-            env_pairs=env_pairs,
-        )
+        if topology == "split":
+            from omg_cli.team.tmux import TmuxTeamError, create_split_team_session
+
+            try:
+                created_handle = create_split_team_session(
+                    session=session,
+                    tasks=task_records,
+                    env_pairs=env_pairs,
+                    detach=detach,
+                    env=env,
+                )
+            except TmuxTeamError as exc:
+                raise TeamError(str(exc)) from exc
+            raw_launch = task_records[0].pop("_tmux_launch", None)
+            if isinstance(raw_launch, Mapping):
+                tmux_launch = {**tmux_launch, **dict(raw_launch)}
+            # Inside mode joins the live session (name may differ from plan).
+            session = created_handle[0]
+        else:
+            created_handle = _create_tmux_session(
+                session=session,
+                tasks=task_records,
+                env_pairs=env_pairs,
+            )
         option = _tmux_run(
             [
                 "set-option",
@@ -1444,17 +1670,31 @@ def start_team(
             raise TeamError("failed to bind tmux launch nonce")
 
         session_identity = _read_tmux_session_identity(session)
-        pane_identities = _list_pane_identities(created_handle[1])
-        if session_identity != created_handle or len(pane_identities) != len(
-            task_records
-        ):
+        if session_identity != created_handle:
             raise TeamError("tmux launch identity readback failed")
-        for rec in task_records:
-            widx = int(rec["window_index"])
-            pane_identity = pane_identities.get(widx)
-            if pane_identity is not None:
-                pane_id, pid = pane_identity
-                rec["pane_id"] = pane_id
+
+        if topology == "split" and all(
+            isinstance(rec.get("pane_id"), str)
+            and _TMUX_PANE_ID.fullmatch(str(rec.get("pane_id"))) is not None
+            for rec in task_records
+        ):
+            # Prefer exact pane ids from new-session/split-window -P (required
+            # for inside-tmux where the session already has extra panes).
+            for rec in task_records:
+                pane_id = str(rec["pane_id"])
+                pid_probe = _tmux_run(
+                    ["display-message", "-p", "-t", pane_id, "#{pane_pid}"]
+                )
+                if pid_probe.returncode != 0:
+                    raise TeamError(f"tmux pane pid readback failed for {pane_id}")
+                try:
+                    pid = int((pid_probe.stdout or "").strip())
+                except ValueError as exc:
+                    raise TeamError(
+                        f"tmux pane pid invalid for {pane_id}"
+                    ) from exc
+                if pid <= 0:
+                    raise TeamError(f"tmux pane pid non-positive for {pane_id}")
                 rec["pid"] = pid
                 rec["pgid"] = _pgid_for_pid(pid)
                 rec["pid_start"] = _pid_start_identity(pid)
@@ -1463,8 +1703,26 @@ def start_team(
                     if rec["pgid"] is not None and rec["pid_start"] is not None
                     else "launched"
                 )
-            else:
-                rec["status"] = "launched"  # session created; pid unknown
+        else:
+            pane_identities = _list_pane_identities(created_handle[1])
+            if len(pane_identities) != len(task_records):
+                raise TeamError("tmux launch identity readback failed")
+            for rec in task_records:
+                widx = int(rec["window_index"])
+                pane_identity = pane_identities.get(widx)
+                if pane_identity is not None:
+                    pane_id, pid = pane_identity
+                    rec["pane_id"] = pane_id
+                    rec["pid"] = pid
+                    rec["pgid"] = _pgid_for_pid(pid)
+                    rec["pid_start"] = _pid_start_identity(pid)
+                    rec["status"] = (
+                        "running"
+                        if rec["pgid"] is not None and rec["pid_start"] is not None
+                        else "launched"
+                    )
+                else:
+                    rec["status"] = "launched"  # session created; pid unknown
 
         _receipt, launch_receipt_sha256 = _persist_team_launch_receipt(
             root_path,
@@ -1490,14 +1748,28 @@ def start_team(
             "task_count": n,
             "next_worker_index": n,
             "created_at": _utc_now(),
-            "tasks": task_records,
+            "tasks": _public_tasks(),
             "multi_cli": multi_cli,
             "routing": routing_payload,
             "linked_ralph": None,
+            "topology": topology,
+            "team_id": tid_plane,
+            "owner_token": token,
+            "executor": executor_norm,
+            "attach_mode": tmux_launch.get("attach_mode"),
+            "session_owned": bool(tmux_launch.get("session_owned", True)),
+            "leader_pane_id": tmux_launch.get("leader_pane_id"),
+            "window_id": tmux_launch.get("window_id"),
+            "attach_hint": tmux_launch.get("attach_hint"),
             "note": (
-                "experimental multi-CLI tmux team; stop via immutable launch identity"
-                if multi_cli
-                else "experimental grok-only tmux team; stop via immutable launch identity"
+                "experimental fixture tmux team; hermetic ACK transport "
+                "(not Grok live parity); stop via immutable launch identity"
+                if executor_norm == "fixture"
+                else (
+                    "experimental multi-CLI tmux team; stop via immutable launch identity"
+                    if multi_cli
+                    else "experimental grok-only tmux team; stop via immutable launch identity"
+                )
             ),
         }
         _atomic_write_json(team_meta_path(root_path, rid), meta)
@@ -1515,11 +1787,23 @@ def start_team(
         )
         return meta
     except Exception as exc:
-        cleanup_error = (
-            _cleanup_created_tmux_session(created_handle)
-            if created_handle is not None
-            else None
-        )
+        cleanup_error = None
+        if created_handle is not None:
+            if topology == "split" and not bool(tmux_launch.get("session_owned", True)):
+                from omg_cli.team.tmux import _kill_panes, _kill_window
+
+                window_id = tmux_launch.get("window_id")
+                if isinstance(window_id, str) and window_id:
+                    cleanup_error = _kill_window(window_id)
+                else:
+                    pane_ids = [
+                        str(rec.get("pane_id"))
+                        for rec in task_records
+                        if isinstance(rec.get("pane_id"), str)
+                    ]
+                    cleanup_error = _kill_panes(pane_ids)
+            else:
+                cleanup_error = _cleanup_created_tmux_session(created_handle)
         restore_errors = _restore_live_start_files(snapshots)
         details = [str(exc)]
         if cleanup_error:
@@ -1799,8 +2083,30 @@ def _live_signal_target_matches(
         return False
     if _read_tmux_launch_nonce(session) != receipt.get("launch_nonce"):
         return False
-    if _list_pane_identities(session).get(window_index) != (pane_id, pid):
-        return False
+    # Prefer exact pane target when the probe returns pane_id\tpid (inside-tmux
+    # shared sessions make session-wide list-panes ambiguous). Otherwise fall
+    # back to the slot map used by legacy windows topology mocks/tests.
+    pane_probe = _tmux_run(
+        ["display-message", "-p", "-t", pane_id, "#{pane_id}\t#{pane_pid}"]
+    )
+    pane_exact = False
+    if pane_probe.returncode == 0:
+        parts = (pane_probe.stdout or "").strip().split("\t")
+        if (
+            len(parts) == 2
+            and _TMUX_PANE_ID.fullmatch(parts[0]) is not None
+            and parts[0] == pane_id
+        ):
+            pane_exact = True
+            try:
+                live_pid = int(parts[1])
+            except ValueError:
+                return False
+            if live_pid != pid:
+                return False
+    if not pane_exact:
+        if _list_pane_identities(session).get(window_index) != (pane_id, pid):
+            return False
     return _pgid_for_pid(pid) == pgid and _pid_start_identity(pid) == pid_start
 
 
@@ -1853,16 +2159,87 @@ def _wait_process_group_disappearance(
         time.sleep(0.01)
 
 
+def team_shutdown_request_path(root: Path | str, run_id: str) -> Path:
+    return team_dir(root, run_id) / "shutdown-request.json"
+
+
+def _list_in_progress_api_tasks(
+    root: Path, run_id: str, team_id: str
+) -> list[dict[str, Any]]:
+    """Return API board tasks currently ``in_progress`` (active claims)."""
+    from omg_cli.team.api import _list_tasks
+
+    try:
+        tasks = _list_tasks(root, run_id, team_id)
+    except Exception as exc:
+        # Fail closed: unreadable board is treated as unknown active claims.
+        raise TeamError(
+            f"cannot read team api tasks for stop gate (run={run_id} team={team_id})"
+        ) from exc
+    active: list[dict[str, Any]] = []
+    for task in tasks:
+        if not isinstance(task, Mapping):
+            continue
+        if str(task.get("status") or "") == "in_progress":
+            active.append(dict(task))
+    return active
+
+
+def _write_shutdown_request(
+    root: Path,
+    run_id: str,
+    *,
+    team_id: str,
+    force: bool,
+    in_progress: Sequence[Mapping[str, Any]],
+) -> Path:
+    """Persist a durable shutdown request under the team dir (CLI-stamped)."""
+    path = team_shutdown_request_path(root, run_id)
+    owners: list[str] = []
+    for task in in_progress:
+        owner = task.get("owner")
+        if not owner and isinstance(task.get("claim"), Mapping):
+            owner = (task.get("claim") or {}).get("owner")
+        owners.append(str(owner or ""))
+    payload = {
+        "store_kind": "team_shutdown_request",
+        "schema_version": 1,
+        "writer": CLI_WRITER,
+        "run_id": run_id,
+        "team_id": team_id,
+        "requested_at": _utc_now(),
+        "force": bool(force),
+        "in_progress_task_ids": [
+            str(t.get("id")) for t in in_progress if t.get("id") is not None
+        ],
+        "in_progress_owners": owners,
+        "note": (
+            "graceful shutdown requested; workers should release or complete "
+            "claims before teardown"
+            if not force
+            else "forced shutdown; exact pane/session teardown proceeds"
+        ),
+    }
+    _atomic_write_json(path, payload)
+    return path
+
+
 def stop_team(
     root: Path | str | None = None,
     run_id: str | None = None,
     *,
+    force: bool = False,
     kill_grace_s: float = 0.0,
 ) -> dict[str, Any]:
     """Stop only an exact nonce-bound immutable launch identity.
 
     ``team.json`` alone is never process authority.  The immutable receipt,
     live tmux session/pane identity, pane PID and OS PGID must all agree.
+
+    Always writes a durable ``shutdown-request.json`` first.  When API board
+    tasks are ``in_progress``, non-``force`` stops fail closed (no teardown).
+    ``force=True`` proceeds with exact pane/session teardown only — never
+    ``pkill -f``.  State and worktrees are preserved.
     """
     root_path = Path(root) if root is not None else Path.cwd().resolve()
     root_path = root_path.resolve()
@@ -1875,6 +2252,29 @@ def stop_team(
     meta = load_team_meta(root_path, run_id)
     session = str(meta.get("session") or "")
     dry = bool(meta.get("dry_run"))
+    team_id = str(meta.get("team_id") or "team")
+    in_progress = _list_in_progress_api_tasks(root_path, run_id, team_id)
+    _write_shutdown_request(
+        root_path,
+        run_id,
+        team_id=team_id,
+        force=bool(force),
+        in_progress=in_progress,
+    )
+    if in_progress and not force:
+        ids = [str(t.get("id")) for t in in_progress]
+        owners: list[str] = []
+        for task in in_progress:
+            owner = task.get("owner")
+            if not owner and isinstance(task.get("claim"), Mapping):
+                owner = (task.get("claim") or {}).get("owner")
+            owners.append(str(owner or "?"))
+        raise TeamError(
+            "stop refused: in_progress claims active "
+            f"(task_ids={ids}, owners={owners}); "
+            "pass --force to tear down anyway"
+        )
+
     actions: list[str] = []
     errors: list[str] = []
 
@@ -2029,10 +2429,13 @@ def stop_team(
             process_disappearance_verified = False
             errors.append(f"signal task={tid} target={target}: {exc}")
 
-    # 2) Only after process-group signalling, kill the exact immutable tmux
-    # session ID.  Session/nonce must still match; pane liveness may disappear
-    # because TERM already succeeded.
+    # 2) Only after process-group signalling, tear down tmux transport.
+    # Owned sessions: kill exact immutable session ID.
+    # Inside-tmux (session_owned=False): kill only the team window / panes —
+    # never the leader's shared session.
     session_disappearance_verified = bool(dry)
+    session_owned = bool(meta.get("session_owned", True))
+    window_id = meta.get("window_id")
     if session and not dry:
         try:
             session_still_exact = bool(
@@ -2049,23 +2452,80 @@ def stop_team(
         if session_still_exact and receipt is not None:
             session_id = str(receipt["session_id"])
             try:
-                r = _tmux_run(["kill-session", "-t", session_id])
-                probe = _tmux_run(["has-session", "-t", session_id])
-                if r.returncode == 0 and probe.returncode == 1:
-                    session_disappearance_verified = True
-                    actions.append(f"tmux kill-session -t {session_id}")
-                    actions.append(f"tmux disappearance verified {session_id}")
-                elif r.returncode != 0:
-                    errors.append(
-                        f"tmux kill-session failed for {session_id}: exit {r.returncode}"
-                    )
+                if session_owned:
+                    r = _tmux_run(["kill-session", "-t", session_id])
+                    probe = _tmux_run(["has-session", "-t", session_id])
+                    if r.returncode == 0 and probe.returncode == 1:
+                        session_disappearance_verified = True
+                        actions.append(f"tmux kill-session -t {session_id}")
+                        actions.append(f"tmux disappearance verified {session_id}")
+                    elif r.returncode != 0:
+                        errors.append(
+                            f"tmux kill-session failed for {session_id}: "
+                            f"exit {r.returncode}"
+                        )
+                    else:
+                        errors.append(
+                            "tmux session disappearance unproved "
+                            f"for {session_id}: has-session exit {probe.returncode}"
+                        )
                 else:
-                    errors.append(
-                        "tmux session disappearance unproved "
-                        f"for {session_id}: has-session exit {probe.returncode}"
-                    )
+                    # Shared session: remove only the team window (or panes).
+                    from omg_cli.team.tmux import _kill_panes, _kill_window
+
+                    if isinstance(window_id, str) and window_id:
+                        win_err = _kill_window(window_id)
+                        if win_err:
+                            errors.append(win_err)
+                        else:
+                            actions.append(f"tmux kill-window -t {window_id}")
+                    pane_ids = [
+                        str(rec.get("pane_id"))
+                        for rec in (meta.get("tasks") or [])
+                        if isinstance(rec, Mapping)
+                        and isinstance(rec.get("pane_id"), str)
+                    ]
+                    # Prove worker panes are gone (session may still exist).
+                    remaining = []
+                    for pane_id in pane_ids:
+                        probe = _tmux_run(
+                            ["display-message", "-p", "-t", pane_id, "#{pane_id}"]
+                        )
+                        if probe.returncode == 0 and (probe.stdout or "").strip() == pane_id:
+                            remaining.append(pane_id)
+                    if remaining and not (
+                        isinstance(window_id, str) and window_id
+                    ):
+                        pane_err = _kill_panes(remaining)
+                        if pane_err:
+                            errors.append(pane_err)
+                        remaining = [
+                            pane_id
+                            for pane_id in remaining
+                            if _tmux_run(
+                                [
+                                    "display-message",
+                                    "-p",
+                                    "-t",
+                                    pane_id,
+                                    "#{pane_id}",
+                                ]
+                            ).returncode
+                            == 0
+                        ]
+                    if not remaining:
+                        session_disappearance_verified = True
+                        actions.append(
+                            "tmux inside-mode worker panes/window removed "
+                            "(shared session kept)"
+                        )
+                    else:
+                        errors.append(
+                            "tmux inside-mode worker panes still live: "
+                            + ",".join(remaining)
+                        )
             except OSError as exc:
-                errors.append(f"tmux kill-session: {exc}")
+                errors.append(f"tmux teardown: {exc}")
         else:
             actions.append("identity mismatch: skipped tmux kill-session")
     elif dry:
@@ -2166,10 +2626,51 @@ def format_status_table(status: Mapping[str, Any]) -> str:
         f"session:        {status.get('session')}",
         f"dry_run:        {status.get('dry_run')}",
         f"workspace_mode: {status.get('workspace_mode')}",
-        "",
-        f"{'task_id':<20} {'win':>4} {'alive':<6} {'status':<12} worktree",
-        "-" * 72,
     ]
+    # Shorthand / aggregate extras (not part of status_locked_view).
+    if status.get("team_name") is not None:
+        lines.append(f"team_name:      {status.get('team_name')}")
+    if status.get("topology") is not None:
+        lines.append(f"topology:       {status.get('topology')}")
+    if status.get("launch_mode") is not None:
+        lines.append(f"launch_mode:    {status.get('launch_mode')}")
+    if status.get("startup_status") is not None or status.get("startup_acks") is not None:
+        lines.append(
+            f"startup_acks:   {status.get('startup_acks')}/"
+            f"{status.get('startup_expected')} "
+            f"status={status.get('startup_status')}"
+        )
+    mailbox = status.get("mailbox")
+    if isinstance(mailbox, Mapping):
+        msgs = mailbox.get("messages") or []
+        lines.append(
+            f"mailbox:        leader-fixed count={len(msgs)} "
+            f"(metadata only; ACK bodies via startup_acks)"
+        )
+    summary = status.get("api_summary")
+    if isinstance(summary, Mapping):
+        lines.append(
+            f"api_summary:    workers={summary.get('workerCount')} "
+            f"tasks={summary.get('taskCount')} "
+            f"open={summary.get('openTaskCount')}"
+        )
+    worktrees = status.get("worktrees")
+    if isinstance(worktrees, list) and worktrees:
+        lines.append(f"worktrees:      {len(worktrees)}")
+        for row in worktrees:
+            if not isinstance(row, Mapping):
+                continue
+            lines.append(
+                f"  - {row.get('task_id')}: {row.get('worktree')} "
+                f"[{row.get('status')}]"
+            )
+    lines.extend(
+        [
+            "",
+            f"{'task_id':<20} {'win':>4} {'alive':<6} {'status':<12} worktree",
+            "-" * 72,
+        ]
+    )
     for t in status.get("tasks") or []:
         lines.append(
             f"{str(t.get('task_id') or ''):<20} "
@@ -3308,6 +3809,7 @@ __all__ = [
     "WORKER_ENV_MARKERS",
     "WORKSPACE_MODE",
     "build_executor_pane_command",
+    "build_fixture_pane_command",
     "build_team_task_prompt",
     "collect_team",
     "experimental_enabled",
@@ -3319,6 +3821,7 @@ __all__ = [
     "stop_team",
     "team_dir",
     "team_meta_path",
+    "team_shutdown_request_path",
     "team_status",
     "NATIVE_TEAM_STATES",
     "NATIVE_TERMINAL_STATES",

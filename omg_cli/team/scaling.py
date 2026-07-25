@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
@@ -39,6 +40,7 @@ from omg_cli.team.plane import (
     _list_pane_identities,
     _load_team_identity_chain,
     _materialize_task_prompt,
+    _pane_env_pairs,
     _pgid_for_pid,
     _pid_start_identity,
     _persist_team_identity_receipt,
@@ -75,6 +77,7 @@ STATUS_SCALED_DOWN = "scaled_down"
 STATUS_NEEDS_COLLECT = "needs_collect"
 STATUS_FAILED = "failed"
 STATUS_RUNNING = "running"
+STATUS_BLOCKED = "blocked"
 ACTIVE_STATUSES = frozenset(
     {
         "running",
@@ -83,7 +86,11 @@ ACTIVE_STATUSES = frozenset(
         "dry_run",
         STATUS_NEEDS_COLLECT,
         "idle",
+        STATUS_BLOCKED,
     }
+)
+TERMINAL_PANE_STATUSES = frozenset(
+    {STATUS_SCALED_DOWN, "stopped", STATUS_FAILED, "completed"}
 )
 
 
@@ -942,6 +949,9 @@ def resume_team(
 
     Idempotent: only status reconciliation writes (CLI_WRITER-stamped).
     Never sets verified. Fail-closed if not a team run / team.json missing.
+
+    Prefer pane-id liveness when recorded (split topology); fall back to
+    window-index probes for legacy windows topology / hermetic mocks.
     """
     root_path = Path(root) if root is not None else Path.cwd().resolve()
     root_path = root_path.resolve()
@@ -976,13 +986,19 @@ def resume_team(
             tasks_out.append(rec)
             continue
 
-        win = _window_alive(session, widx)
+        pane_id = rec.get("pane_id")
+        if isinstance(pane_id, str) and pane_id:
+            from omg_cli.team.tmux import pane_alive
+
+            win = pane_alive(pane_id)
+        else:
+            win = _window_alive(session, widx)
         if win is True:
             new_st = STATUS_RUNNING
             alive = True
         elif win is False:
-            # Dead window: unsealed work → needs-collect; stopped stays stopped
-            if prev in ("stopped", STATUS_FAILED):
+            # Dead pane/window: unsealed work → needs-collect; stopped stays stopped
+            if prev in ("stopped", STATUS_FAILED, STATUS_BLOCKED):
                 new_st = prev
             else:
                 new_st = STATUS_NEEDS_COLLECT
@@ -1050,6 +1066,333 @@ def resume_team(
     }
 
 
+def _worktree_dirty(worktree: Path) -> bool:
+    """True when the worktree has meaningful uncommitted changes.
+
+    Untracked ``.omg/`` under the worktree is ignored (control-plane noise from
+    worker env / shared layout). Any other porcelain entry fails closed as dirty.
+    """
+    if not worktree.is_dir():
+        return True
+    try:
+        proc = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if proc.returncode != 0:
+        return True
+    for raw in (proc.stdout or "").splitlines():
+        line = raw.rstrip("\n")
+        if not line.strip():
+            continue
+        path = line[3:].strip() if len(line) >= 4 else line.strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[-1].strip()
+        path = path.strip().strip('"')
+        if path == ".omg" or path.startswith(".omg/"):
+            continue
+        return True
+    return False
+
+
+def _worker_api_tasks_terminal(
+    root: Path,
+    *,
+    run_id: str,
+    team_id: str,
+    worker_id: str,
+    env: Mapping[str, str] | None,
+) -> bool | None:
+    """Return True when every owned API task is terminal; None if unknown."""
+    from omg_cli.team.api import TERMINAL_TASK_STATUSES, execute_team_api
+
+    api_env = dict(env or {})
+    api_env.setdefault(EXPERIMENTAL_ENV, "1")
+    for key in (
+        "OMG_TEAM_WORKER",
+        "OMG_PROCESS_FANOUT_WORKER",
+        "OMG_SPAWNED_WORKER",
+    ):
+        api_env.pop(key, None)
+    code, envelope = execute_team_api(
+        "list-tasks",
+        {"run_id": run_id, "team_id": team_id},
+        root=root,
+        env=api_env,
+    )
+    if code != 0 or not envelope.get("ok"):
+        return None
+    tasks = (envelope.get("data") or {}).get("tasks") or []
+    owned = [
+        t
+        for t in tasks
+        if isinstance(t, Mapping)
+        and (
+            str(t.get("owner") or "") == worker_id
+            or (
+                isinstance(t.get("claim"), Mapping)
+                and str((t.get("claim") or {}).get("owner") or "") == worker_id
+            )
+        )
+    ]
+    if not owned:
+        # Seeded shorthand tasks often have no owner yet — treat as incomplete
+        # unless every board task is already terminal.
+        if not tasks:
+            return False
+        return all(
+            isinstance(t, Mapping)
+            and str(t.get("status") or "") in TERMINAL_TASK_STATUSES
+            for t in tasks
+        )
+    return all(str(t.get("status") or "") in TERMINAL_TASK_STATUSES for t in owned)
+
+
+def _bind_pane_process(rec: dict[str, Any], pane_id: str) -> None:
+    from omg_cli.team.tmux import _bind_pane_pid
+
+    pid = _bind_pane_pid(pane_id)
+    rec["pane_id"] = pane_id
+    rec["pid"] = pid
+    rec["pgid"] = _pgid_for_pid(pid)
+    rec["pid_start"] = _pid_start_identity(pid)
+    rec["status"] = (
+        STATUS_RUNNING
+        if rec["pgid"] is not None and rec["pid_start"] is not None
+        else "launched"
+    )
+
+
+def _resync_window_indices(
+    session: str, tasks: Sequence[dict[str, Any]]
+) -> None:
+    """Align logical window_index slots with live pane_index after respawn."""
+    observed = _list_pane_identities(session)
+    by_pane = {pane_id: idx for idx, (pane_id, _pid) in observed.items()}
+    for rec in tasks:
+        pane_id = rec.get("pane_id")
+        if isinstance(pane_id, str) and pane_id in by_pane:
+            rec["window_index"] = by_pane[pane_id]
+
+
+def relaunch_dead_incomplete_workers(
+    root: Path | str | None = None,
+    run_id: str | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Respawn dead panes for non-terminal tasks (generation +1) or mark blocked.
+
+    Call after :func:`resume_team` reconciliation. Clean worktrees with matching
+    launch identity are respawned; dirty / identity-drift trees are left alone
+    and reported as ``blocked``.
+    """
+    from omg_cli.team.tmux import TmuxTeamError, pane_alive, respawn_worker_pane
+
+    root_path = Path(root) if root is not None else Path.cwd().resolve()
+    root_path = root_path.resolve()
+    _assert_team_gates(env=env)
+    rid = _resolve_run_id(root_path, run_id)
+    meta = _require_team_run(root_path, rid)
+
+    if bool(meta.get("dry_run")):
+        return {
+            "writer": CLI_WRITER,
+            "run_id": rid,
+            "relaunched": [],
+            "blocked": [],
+            "skipped": [],
+            "identity_generation": int(meta.get("identity_generation") or 0),
+            "verified": False,
+            "note": "dry_run resume skips worker relaunch",
+        }
+
+    session = str(meta.get("session") or "")
+    team_id = str(meta.get("team_id") or "team")
+    owner_token = meta.get("owner_token")
+    relaunched: list[dict[str, Any]] = []
+    blocked: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+
+    tasks_all: list[dict[str, Any]] = []
+    for raw in meta.get("tasks") or []:
+        if isinstance(raw, Mapping):
+            tasks_all.append(dict(raw))
+
+    candidates: list[dict[str, Any]] = []
+    for rec in tasks_all:
+        tid = str(rec.get("task_id") or "")
+        status = str(rec.get("status") or "")
+        if status in TERMINAL_PANE_STATUSES or status == STATUS_SCALED_DOWN:
+            skipped.append({"task_id": tid, "reason": "terminal_or_scaled_down"})
+            continue
+        pane_id = rec.get("pane_id")
+        if not isinstance(pane_id, str) or not pane_id:
+            skipped.append({"task_id": tid, "reason": "no_pane_id"})
+            continue
+        alive = pane_alive(pane_id)
+        if alive is True:
+            skipped.append({"task_id": tid, "reason": "alive"})
+            continue
+        if alive is None:
+            skipped.append({"task_id": tid, "reason": "tmux_unavailable"})
+            continue
+        # Dead pane.
+        terminal = _worker_api_tasks_terminal(
+            root_path,
+            run_id=rid,
+            team_id=team_id,
+            worker_id=tid,
+            env=env,
+        )
+        if terminal is True:
+            skipped.append({"task_id": tid, "reason": "api_tasks_terminal"})
+            continue
+        candidates.append(rec)
+
+    if not candidates:
+        return {
+            "writer": CLI_WRITER,
+            "run_id": rid,
+            "relaunched": [],
+            "blocked": [],
+            "skipped": skipped,
+            "identity_generation": int(meta.get("identity_generation") or 0),
+            "verified": False,
+            "note": "no dead incomplete workers to relaunch",
+        }
+
+    if not session or not _session_alive(session):
+        raise TeamError(
+            f"tmux session {session!r} is not alive; cannot relaunch workers"
+        )
+
+    # Validate launch identity chain before mutating panes.
+    chain = _load_team_identity_chain(root_path, rid, meta)
+    authority = chain[0]
+    if _read_tmux_session_identity(session) != (
+        session,
+        authority.get("session_id"),
+    ):
+        raise TeamError("live tmux session identity mismatch; refuse relaunch")
+    if _read_tmux_launch_nonce(session) != authority.get("launch_nonce"):
+        raise TeamError("live tmux launch nonce mismatch; refuse relaunch")
+
+    target = str(meta.get("window_id") or session)
+    tasks_before = _active_tasks(tasks_all)
+    to_relaunch: list[dict[str, Any]] = []
+
+    for rec in candidates:
+        tid = str(rec.get("task_id") or "")
+        wt = Path(str(rec.get("worktree") or ""))
+        if _worktree_dirty(wt):
+            rec["status"] = STATUS_BLOCKED
+            rec["resume_blocked_at"] = _utc_now()
+            rec["resume_block_reason"] = "dirty_worktree"
+            blocked.append(
+                {
+                    "task_id": tid,
+                    "reason": "dirty_worktree",
+                    "worktree": str(wt),
+                }
+            )
+            continue
+        to_relaunch.append(rec)
+
+    for rec in to_relaunch:
+        tid = str(rec["task_id"])
+        env_pairs = _pane_env_pairs(
+            run_id=rid,
+            team_id=team_id,
+            worker_id=tid,
+            leader_root=root_path,
+            state_root=root_path / ".omg" / "state",
+            owner_token=str(owner_token) if owner_token else None,
+        )
+        try:
+            new_pane = respawn_worker_pane(
+                target=target,
+                worktree=str(rec["worktree"]),
+                pane_command=str(rec["pane_command"]),
+                env_pairs=env_pairs,
+            )
+        except TmuxTeamError as exc:
+            raise TeamError(f"failed to relaunch worker {tid!r}: {exc}") from exc
+        old_pane = rec.get("pane_id")
+        _bind_pane_process(rec, new_pane)
+        rec["resumed_at"] = _utc_now()
+        rec["status_before_resume"] = STATUS_NEEDS_COLLECT
+        rec.pop("resume_block_reason", None)
+        rec.pop("resume_blocked_at", None)
+        relaunched.append(
+            {
+                "task_id": tid,
+                "from_pane_id": old_pane,
+                "pane_id": new_pane,
+                "pid": rec.get("pid"),
+            }
+        )
+
+    if relaunched:
+        _resync_window_indices(session, tasks_all)
+        active_after = _active_tasks(tasks_all)
+        generation = int(meta.get("identity_generation", 0)) + 1
+        _receipt, receipt_hash = _persist_team_identity_receipt(
+            root_path,
+            rid,
+            session=session,
+            session_id=str(authority["session_id"]),
+            launch_nonce=str(authority["launch_nonce"]),
+            generation=generation,
+            previous_receipt_sha256=str(
+                meta.get("identity_receipt_sha256")
+                or meta.get("launch_receipt_sha256")
+            ),
+            operation="relaunch",
+            tasks_before=tasks_before,
+            tasks_after=active_after,
+        )
+        meta = dict(meta)
+        meta["identity_generation"] = generation
+        meta["identity_receipt_sha256"] = receipt_hash
+    else:
+        generation = int(meta.get("identity_generation") or 0)
+        meta = dict(meta)
+
+    meta["writer"] = CLI_WRITER
+    meta["tasks"] = tasks_all
+    meta["task_count"] = len(_active_tasks(tasks_all))
+    meta["resumed_at"] = _utc_now()
+    meta["last_relaunch"] = {
+        "relaunched": [r["task_id"] for r in relaunched],
+        "blocked": [b["task_id"] for b in blocked],
+        "at": _utc_now(),
+    }
+    meta.pop("verified", None)
+    meta.pop("passes", None)
+    _atomic_write_json(team_meta_path(root_path, rid), meta)
+
+    return {
+        "writer": CLI_WRITER,
+        "run_id": rid,
+        "relaunched": relaunched,
+        "blocked": blocked,
+        "skipped": skipped,
+        "identity_generation": generation,
+        "verified": False,
+        "note": (
+            "relaunch respawns dead incomplete workers at generation+1 when "
+            "worktree is clean; dirty/identity drift reported as blocked"
+        ),
+    }
+
+
 def native_dispatch_plan(
     root: Path | str,
     *,
@@ -1104,9 +1447,11 @@ def native_dispatch_plan(
 
 __all__ = [
     "SCALE_LOCK_NAME",
+    "STATUS_BLOCKED",
     "STATUS_NEEDS_COLLECT",
     "STATUS_SCALED_DOWN",
     "acquire_scale_lock",
+    "relaunch_dead_incomplete_workers",
     "resume_team",
     "native_dispatch_plan",
     "scale_lock_path",

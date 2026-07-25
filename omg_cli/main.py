@@ -731,7 +731,6 @@ def cmd_team(args: argparse.Namespace) -> int:
         start_team,
         status_locked_view,
         stop_team,
-        team_status,
     )
     from omg_cli.team.pipeline import (
         TeamPipelineError,
@@ -739,12 +738,48 @@ def cmd_team(args: argparse.Namespace) -> int:
     )
     from omg_cli.team.roles import UnknownRoleError
     from omg_cli.team.routing import RoutingError, parse_routing_json
-    from omg_cli.team.scaling import resume_team, scale_team
+    from omg_cli.team.scaling import scale_team
 
     root = _project_root()
     action = getattr(args, "team_action", None)
 
     try:
+        if action == "launch":
+            from omg_cli.team.runtime import launch_team
+
+            routing_raw = getattr(args, "routing", None)
+            routing = parse_routing_json(routing_raw) if routing_raw else None
+            meta = launch_team(
+                getattr(args, "goal", None) or "",
+                workers=int(getattr(args, "workers", 0) or 0),
+                role=str(getattr(args, "role", None) or "executor"),
+                root=root,
+                dry_run=bool(getattr(args, "dry_run", False)),
+                force=bool(getattr(args, "force", False)),
+                routing=routing,
+                yolo=bool(getattr(args, "yolo", False)),
+                safe=bool(getattr(args, "safe", False)),
+                run_id=getattr(args, "run_id", None),
+                detach=bool(getattr(args, "detach", False)),
+            )
+            print(json.dumps(meta, indent=2, ensure_ascii=False))
+            hint = meta.get("attach_hint")
+            if hint and not meta.get("dry_run"):
+                print(f"omg team launch: {hint}", file=sys.stderr)
+            # Bounded ACK wait: partial/zero ACKs leave state for diagnosis
+            # but must not report success (no silent dry-run / ULW fallback).
+            startup = meta.get("startup_status")
+            if startup in ("failed_start", "degraded"):
+                print(
+                    f"omg team launch: startup {startup} "
+                    f"(acks={meta.get('startup_acks')}/"
+                    f"{meta.get('startup_expected')})",
+                    file=sys.stderr,
+                )
+                return 1
+            if startup == "running" or meta.get("dry_run"):
+                print("Team started", file=sys.stderr)
+            return 0
         if action == "start":
             goal = getattr(args, "goal", None) or ""
             tasks_json = getattr(args, "tasks_json", None)
@@ -820,27 +855,34 @@ def cmd_team(args: argparse.Namespace) -> int:
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0
         if action == "resume":
-            result = resume_team(
-                root,
-                getattr(args, "run_id", None),
+            from omg_cli.team.runtime import resume_for_identity
+
+            identity = getattr(args, "team_identity", None) or getattr(
+                args, "run_id", None
             )
+            result = resume_for_identity(root, identity)
             if getattr(args, "as_json", False) or True:
                 # Always JSON (operator machine-readable); --json kept for symmetry
                 print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0
         if action == "status":
-            st = team_status(
-                root,
-                getattr(args, "run_id", None),
+            from omg_cli.team.runtime import status_for_identity
+
+            identity = getattr(args, "team_identity", None) or getattr(
+                args, "run_id", None
             )
+            st = status_for_identity(root, identity)
             if getattr(args, "as_json", False):
-                print(
-                    json.dumps(
-                        status_locked_view(st),
-                        indent=2,
-                        ensure_ascii=False,
-                    )
+                # Default --json stays LOCKED for machine consumers.
+                # --full dumps the aggregate (mailbox/api_summary/worktrees/…).
+                payload = (
+                    st
+                    if getattr(args, "full_status", False)
+                    else status_locked_view(st)
                 )
+                print(json.dumps(payload, indent=2, ensure_ascii=False))
+            elif getattr(args, "full_status", False):
+                print(json.dumps(st, indent=2, ensure_ascii=False))
             else:
                 print(format_status_table(st))
             return 0
@@ -860,9 +902,14 @@ def cmd_team(args: argparse.Namespace) -> int:
                 return 1
             return 1
         if action == "stop":
+            from omg_cli.team.runtime import resolve_team_ref
+
+            identity = getattr(args, "team_identity", None) or getattr(
+                args, "run_id", None
+            )
+            rid = resolve_team_ref(root, identity)
             result = stop_team(
-                root,
-                getattr(args, "run_id", None),
+                root, rid, force=bool(getattr(args, "force", False))
             )
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0 if not result.get("errors") else 1
@@ -2891,11 +2938,70 @@ def build_parser() -> argparse.ArgumentParser:
         "team",
         parents=[common],
         help=(
-            "experimental tmux team plane (grok-only zero-config; multi-CLI "
-            "via --routing; requires OMG_EXPERIMENTAL_TMUX_TEAM=1)"
+            'experimental tmux team: omg team [N[:role]] "<goal>" '
+            "(requires OMG_EXPERIMENTAL_TMUX_TEAM=1); also start|run|api|…"
         ),
     )
     team_sub = p_team.add_subparsers(dest="team_action")
+    p_t_launch = team_sub.add_parser(
+        "launch",
+        parents=[common],
+        help=(
+            'OMX-like shorthand launch (also: omg team N[:role] "<goal>"); '
+            "split-pane topology; seeds team api board"
+        ),
+    )
+    p_t_launch.add_argument(
+        "--workers",
+        dest="workers",
+        type=int,
+        required=True,
+        help="number of worker panes (N)",
+    )
+    p_t_launch.add_argument(
+        "--role",
+        dest="role",
+        default="executor",
+        help="canonical team role (default: executor)",
+    )
+    p_t_launch.add_argument(
+        "--goal",
+        dest="goal",
+        required=True,
+        help="shared goal text",
+    )
+    p_t_launch.add_argument(
+        "--routing",
+        dest="routing",
+        default=None,
+        help='optional role→{provider,model?} JSON (same as team start)',
+    )
+    p_t_launch.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="existing run_id (default: create a new ulw/team run)",
+    )
+    p_t_launch.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="write team.json + api board; never call tmux/subprocess",
+    )
+    p_t_launch.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="supersede active run when creating a new run",
+    )
+    p_t_launch.add_argument(
+        "--detach",
+        dest="detach",
+        action="store_true",
+        help="allow detached live launch outside an interactive TTY",
+    )
+    p_t_launch.set_defaults(func=cmd_team, team_action="launch")
+
     p_t_start = team_sub.add_parser(
         "start",
         parents=[common],
@@ -3080,7 +3186,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_t_resume.add_argument(
-        "--run", dest="run_id", required=True, help="team run_id"
+        "team_identity",
+        nargs="?",
+        default=None,
+        help="team name or run_id (optional if --run set)",
+    )
+    p_t_resume.add_argument(
+        "--run", dest="run_id", default=None, help="team run_id"
     )
     p_t_resume.add_argument(
         "--json",
@@ -3096,6 +3208,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="read team.json + ownership + optional pane liveness (no state write)",
     )
     p_t_status.add_argument(
+        "team_identity",
+        nargs="?",
+        default=None,
+        help="team name or run_id (optional; default active / --run)",
+    )
+    p_t_status.add_argument(
         "--run", dest="run_id", default=None, help="run_id (default: active)"
     )
     p_t_status.add_argument(
@@ -3103,6 +3221,16 @@ def build_parser() -> argparse.ArgumentParser:
         dest="as_json",
         action="store_true",
         help="print LOCKED field set as JSON",
+    )
+    p_t_status.add_argument(
+        "--full",
+        dest="full_status",
+        action="store_true",
+        help=(
+            "include aggregate extras (topology/startup_acks/mailbox/"
+            "api_summary/worktrees); with --json prints full JSON instead "
+            "of the locked set"
+        ),
     )
     p_t_status.set_defaults(func=cmd_team, team_action="status")
 
@@ -3128,7 +3256,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="kill recorded tmux session + killpg recorded pgids (no pkill -f)",
     )
     p_t_stop.add_argument(
+        "team_identity",
+        nargs="?",
+        default=None,
+        help="team name or run_id (optional if --run set)",
+    )
+    p_t_stop.add_argument(
         "--run", dest="run_id", default=None, help="run_id (default: active)"
+    )
+    p_t_stop.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help=(
+            "tear down even when API tasks are in_progress "
+            "(default: fail closed and write shutdown-request.json)"
+        ),
     )
     p_t_stop.set_defaults(func=cmd_team, team_action="stop")
 
@@ -3665,6 +3808,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if should_host_launch(raw, KNOWN_SUBCOMMANDS):
         return int(run_interactive(_project_root(), raw))
+
+    from omg_cli.team.cli import TeamCliError, normalize_team_argv
+
+    try:
+        raw = normalize_team_argv(raw)
+    except TeamCliError as exc:
+        print(f"omg team: {exc}", file=sys.stderr)
+        return int(exc.exit_code)
 
     parser = build_parser()
     args = parser.parse_args(raw)

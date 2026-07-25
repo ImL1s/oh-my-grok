@@ -9,15 +9,47 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Fixed
+- `omg team api transition-task-status` now requires `worker` and binds it to
+  claim/task owner (same floor as `release-task-claim`), blocking cross-worker
+  token completion. Worker panes also drop client-supplied `owner_token` when
+  pane env has none.
+
 ### Added
+- Inside-tmux shorthand launch opens a dedicated team window + split panes in
+  the current session (`attach_mode=inside`); stop kills only that window/panes
+  — never the shared session or leader pane. Outside TTY creates a detached
+  session and prints an attach hint; non-interactive live launch requires
+  `--detach` (fail-closed).
+- Shorthand `omg team launch` waits for worker mailbox ACKs (body `ACK` to
+  `leader-fixed`) before reporting success. Knob: `OMG_TEAM_READY_TIMEOUT_MS`
+  (default 45000). Partial ACK → `startup_status=degraded`; zero →
+  `failed_start`; both exit non-zero and leave state for diagnosis.
+- OMX-like team launch shorthand: `omg team [N[:role]] "<goal>"` → `launch`
+  (split-pane topology, goal decomposition, team-name ref index, P0 api board
+  seed, `skills/omg-team`). Still gated by `OMG_EXPERIMENTAL_TMUX_TEAM=1`;
+  not promoted to full live OMX `$team` parity yet.
+- Team pane workers may use identity-bound `omg team api` (ACK/claim/mailbox
+  self); process-fanout / spawned-subagent contexts stay denied.
 - Experimental `omg team api <op> --input JSON [--json]`: OMX-shaped P0 façade
   over mailbox + claim/transition task store (11 ops). Remaining OMX ops stay
   `E_TEAM_API_UNIMPLEMENTED`; full 33-op parity is not claimed. Still gated by
-  `OMG_EXPERIMENTAL_TMUX_TEAM=1`. Fail-closed: refuses spawned-worker context
-  and requires CLI-stamped `team.json` control plane before materializing
-  mailbox/task stores.
+  `OMG_EXPERIMENTAL_TMUX_TEAM=1`. Fail-closed: requires CLI-stamped `team.json`
+  control plane before materializing mailbox/task stores.
+
+### Changed
+- Hardened `scripts/live_team_smoke.py --live` as the team promotion gate:
+  asserts `dry_run=false`, pane count, grok (not fixture) pane commands,
+  owned worktrees, ≥N ACKs, claim→completed, and stop clears only the owned
+  session; prints `LIVE_TEAM_SMOKE_OK` only if all pass. Dry path still prints
+  `DRY_TEAM_SMOKE_OK`. Live attempt on 2026-07-25 exited non-zero
+  (`startup_status=failed_start`, ACKs=0) — **not** promoted; experimental
+  gate `OMG_EXPERIMENTAL_TMUX_TEAM=1` remains. Optional wire in
+  `scripts/live_suite.sh` (`OMG_LIVE_TEAM=1` / quota-heavy).
 
 ### Planned
+- Live Grok smoke promotion (`LIVE_TEAM_SMOKE_OK` evidence) before removing
+  the experimental gate for shorthand launch.
 - Optional PyPI/`pipx` CLI track — **shipped editable-only** (`pyproject.toml` +
   `pipx install --editable` / `pip install -e .`); non-editable wheel / PyPI
   publish still deferred (`plugin_root()` needs checkout siblings).
@@ -32,7 +64,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ### Fixed
 - Release-verify writer-ownership gate: assign owners for host-launch/madmax
   modules, `CODE_OF_CONDUCT.md`, docs research/superpowers trees, plans, and
-  historical zh-Hant/README rename paths so tag verification no longer fails
+  historical locale/README rename paths so tag verification no longer fails
   closed on unowned dirty records.
 
 ## [0.7.0] - 2026-07-24
