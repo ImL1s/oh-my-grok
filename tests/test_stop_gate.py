@@ -106,9 +106,32 @@ def test_active_incomplete_blocks_with_phase_reason(tmp_path):
 
 
 def test_stop_hook_active_escalates_message(tmp_path):
-    d = decide_stop(tmp_path, _mk(tmp_path, "implement", stop_hook_active=True))
+    base = decide_stop(tmp_path, _mk(tmp_path, "implement", stop_hook_active=False))
+    escalated = decide_stop(tmp_path, _mk(tmp_path, "implement", stop_hook_active=True))
+    assert base is not None and escalated is not None
+    assert "already" not in base["reason"].lower()
+    assert "already" in escalated["reason"].lower()
+
+
+def test_shutdown_reason_allows_stop(tmp_path):
+    assert decide_stop(tmp_path, _mk(tmp_path, "implement", reason="shutdown")) is None
+
+
+def test_interview_not_waiting_blocks(tmp_path):
+    ev = _mk(tmp_path, "interview")
+    run_dir = tmp_path / ".omg" / "state" / "runs" / RUN_ID
+    (run_dir / "interview.json").write_text(
+        json.dumps({"run_id": RUN_ID, "status": "in_progress"}),
+        encoding="utf-8",
+    )
+    d = decide_stop(tmp_path, ev)
     assert d is not None
-    assert "already" in d["reason"].lower() or "blocked" in d["reason"].lower()
+    assert d["decision"] == "block"
+
+
+def test_garbage_event_never_raises(tmp_path):
+    assert decide_stop(tmp_path, None) is None  # type: ignore[arg-type]
+    assert decide_stop(tmp_path, {"reason": "end_turn", "backgroundTasks": "bad"}) is None
 
 
 def test_continuation_reason_names_next_gate():
