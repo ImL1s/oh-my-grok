@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -137,3 +138,50 @@ def test_garbage_event_never_raises(tmp_path):
 def test_continuation_reason_names_next_gate():
     assert "structured_review.json" in continuation_reason("review", goal="g", run_id="r1")
     assert "ultraqa.json" in continuation_reason("qa", goal="g", run_id="r1")
+
+
+def test_drift_guard_off_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("OMG_STOP_DRIFT_GUARD", raising=False)
+    ev = {"reason": "end_turn", "lastAssistantMessage": "Want me to keep going?"}
+    assert decide_stop(tmp_path, ev, env=os.environ) is None
+
+
+def test_drift_guard_blocks_chatty_question_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMG_STOP_DRIFT_GUARD", "1")
+    ev = _mk(
+        tmp_path,
+        "implement",
+        last_msg="Should I continue with the tests?",
+        stop_hook_active=False,
+    )
+    d = decide_stop(tmp_path, ev, env=os.environ)
+    assert d is not None
+    assert d["decision"] == "block"
+    assert "do not ask" in d["reason"].lower()
+
+
+def test_drift_guard_does_not_refire_when_stop_hook_active(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMG_STOP_DRIFT_GUARD", "1")
+    ev = _mk(
+        tmp_path,
+        "implement",
+        last_msg="Shall I proceed?",
+        stop_hook_active=True,
+    )
+    d = decide_stop(tmp_path, ev, env=os.environ)
+    assert d is not None
+    assert "already" in d["reason"].lower()
+
+
+def test_drift_guard_blocks_without_autopilot(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMG_STOP_DRIFT_GUARD", "1")
+    ev = {
+        "reason": "end_turn",
+        "stopHookActive": False,
+        "lastAssistantMessage": "Should I run the tests now?",
+    }
+    d = decide_stop(tmp_path, ev, env=os.environ)
+    assert d is not None
+    assert d["decision"] == "block"
+    assert "do not ask" in d["reason"].lower()
+    assert "keep working" in d["reason"].lower()
