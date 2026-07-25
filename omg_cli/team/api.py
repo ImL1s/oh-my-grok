@@ -1193,10 +1193,27 @@ def _apply_worker_identity_matrix(
     env_run = (source.get(TEAM_RUN_ID_ENV) or "").strip()
     env_team = (source.get(TEAM_ID_ENV) or "").strip()
     env_owner = (source.get(TEAM_OWNER_TOKEN_ENV) or "").strip()
-    if env_run:
-        _bind_worker_env_field(out, field="run_id", env_value=env_run, label="run_id")
-    if env_team:
-        _bind_worker_env_field(out, field="team_id", env_value=env_team, label="team_id")
+    # Fail closed: worker identity matrix requires immutable run/team env.
+    # Owner token stays optional (injected only when present).
+    if not env_run or not env_team:
+        missing = [
+            name
+            for name, value in (
+                (TEAM_RUN_ID_ENV, env_run),
+                (TEAM_ID_ENV, env_team),
+            )
+            if not value
+        ]
+        raise TeamApiError(
+            "E_TEAM_API_GATE",
+            "omg team api refused: worker identity requires "
+            f"{TEAM_RUN_ID_ENV} and {TEAM_ID_ENV} "
+            f"(missing: {', '.join(missing)})",
+            exit_code=2,
+            details={"error": "worker_env_incomplete", "missing": missing},
+        )
+    _bind_worker_env_field(out, field="run_id", env_value=env_run, label="run_id")
+    _bind_worker_env_field(out, field="team_id", env_value=env_team, label="team_id")
     if env_owner:
         _bind_worker_env_field(
             out, field="owner_token", env_value=env_owner, label="owner_token"
