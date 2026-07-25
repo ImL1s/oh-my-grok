@@ -73,10 +73,17 @@ def recommend_commands(status: dict[str, Any]) -> list[str]:
         if isinstance(sid, str) and sid.strip():
             cmds.append(f"grok --resume {sid.strip()}")
     elif mode == "autopilot":
+        phase = str(
+            status.get("autopilot_phase")
+            or status.get("stage")
+            or stage
+            or ""
+        )
+        cmds.append(f"omg autopilot run --resume {rid}")
         cmds.append(f"omg autopilot status --run {rid}")
-        if stage:
+        if phase:
             cmds.append(
-                f"# continue playbook phase={stage!r}; "
+                f"# continue playbook phase={phase!r}; "
                 f"omg autopilot transition --run {rid} --phase <next>"
             )
         cmds.append(f"omg state --run {rid} --human")

@@ -454,5 +454,32 @@ def test_run_autopilot_pauses_when_awaiting(
     assert (tmp_path / ".omg" / "state" / "RESUME.md").is_file()
 
 
+def test_run_resume_reenters_current_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    st = start_autopilot(tmp_path, "resume goal", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "review")
+    phases_seen: list[str] = []
+
+    def _fake_launch(argv, **kw):
+        run_id = kw["run_dir"].name
+        phases_seen.append(status_autopilot(tmp_path, run_id)["phase"])
+        return 0
+
+    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    rc = run_autopilot(tmp_path, "", resume_run_id=rid)
+    assert rc == 0
+    assert phases_seen == ["review"]
+    assert status_autopilot(tmp_path, rid)["phase"] == "review"
+
+    phases_seen.clear()
+    rc2 = run_autopilot(tmp_path, "", resume_run_id=rid)
+    assert rc2 == 0
+    assert phases_seen == ["review"]
+    assert status_autopilot(tmp_path, rid)["phase"] == "review"
+
+
 def test_cli_autopilot_run_listed_in_skills_md() -> None:
     assert "omg autopilot run" in (ROOT / "docs" / "skills.md").read_text()

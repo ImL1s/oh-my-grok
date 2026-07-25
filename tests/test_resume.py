@@ -51,6 +51,18 @@ def test_resume_terminal_not_resumable(tmp_path):
     assert pack.get("resumable") is False
 
 
+def test_recommend_commands_includes_autopilot_run_resume() -> None:
+    run = {
+        "mode": "autopilot",
+        "run_id": "r1",
+        "status": "running",
+        "autopilot_phase": "review",
+    }
+    assert any(
+        c.startswith("omg autopilot run --resume") for c in recommend_commands(run)
+    )
+
+
 def test_recommend_ralph_includes_session(tmp_path):
     status = {
         "run_id": "r1",
