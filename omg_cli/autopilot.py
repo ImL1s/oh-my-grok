@@ -812,6 +812,11 @@ def run_autopilot(
     while True:
         st = status_autopilot(root_path, run_id)
         phase = str(st.get("phase") or "")
+        run_row = load_run(root_path, run_id) or {}
+        if run_row.get("autopilot_awaiting"):
+            write_resume_md(root_path, run_id)
+            print(resume_cmd)
+            return 0
         if phase == "verified":
             write_resume_md(root_path, run_id)
             return 0

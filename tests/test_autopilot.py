@@ -432,5 +432,27 @@ def test_run_autopilot_pauses_at_interview(tmp_path: Path) -> None:
     assert status_autopilot(tmp_path, _rid(tmp_path))["phase"] == "interview"
 
 
+def test_run_autopilot_pauses_when_awaiting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    st = start_autopilot(tmp_path, "ship it", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "review")
+    set_awaiting_confirmation(tmp_path, rid, True, reason="cli:pause")
+    launched: list[bool] = []
+
+    def _fake_launch(argv, **kw):
+        launched.append(True)
+        return 0
+
+    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    rc = run_autopilot(tmp_path, "", resume_run_id=rid)
+    assert rc == 0
+    assert not launched
+    assert f"omg autopilot run --resume {rid}" in capsys.readouterr().out
+    assert (tmp_path / ".omg" / "state" / "RESUME.md").is_file()
+
+
 def test_cli_autopilot_run_listed_in_skills_md() -> None:
     assert "omg autopilot run" in (ROOT / "docs" / "skills.md").read_text()
