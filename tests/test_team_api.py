@@ -190,6 +190,39 @@ def test_team_worker_can_ack_but_not_create_task(
     assert denied["error"]["code"] == "E_TEAM_API_GATE"
 
 
+def test_team_worker_payload_bound_to_env_run_and_team(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _exec(
+        tmp_path,
+        "create-task",
+        {"subject": "seed", "description": "seed", "workers": ["worker-1"]},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    monkeypatch.setenv("OMG_TEAM_WORKER_ID", "worker-1")
+    monkeypatch.setenv("OMG_TEAM_RUN_ID", run_id)
+    monkeypatch.setenv("OMG_TEAM_ID", TEAM)
+    # Wrong run_id in payload must be overwritten or rejected
+    code, envelope = execute_team_api(
+        "send-message",
+        {
+            "run_id": "other-run",
+            "team_id": TEAM,
+            "from_worker": "worker-1",
+            "to_worker": "leader-fixed",
+            "body": "ACK",
+        },
+        root=tmp_path,
+    )
+    assert code != 0 or envelope["data"]["message"]["sender_id"] == "worker-1"
+    # Prefer fail-closed on mismatch:
+    assert code == 2
+    assert envelope["error"]["code"] == "E_TEAM_API_GATE"
+
+
 def test_team_api_rejects_forged_minimal_team_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

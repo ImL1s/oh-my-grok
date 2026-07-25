@@ -11,6 +11,7 @@ P0 ops match OMX names; remaining ``TEAM_API_OPERATIONS`` return
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import uuid
 from collections.abc import Callable, Mapping
@@ -43,6 +44,9 @@ from omg_cli.team.mailbox import (
 )
 from omg_cli.team.plane import (
     EXPERIMENTAL_ENV,
+    TEAM_ID_ENV,
+    TEAM_OWNER_TOKEN_ENV,
+    TEAM_RUN_ID_ENV,
     TeamError,
     TeamGateError,
     experimental_enabled,
@@ -1150,11 +1154,31 @@ WORKER_DENIED_OPS: frozenset[str] = frozenset(
 )
 
 
+def _bind_worker_env_field(
+    out: dict[str, Any],
+    *,
+    field: str,
+    env_value: str,
+    label: str,
+) -> None:
+    """Fail closed on payload/env mismatch; otherwise inject env value."""
+    claimed = out.get(field)
+    if claimed is not None and str(claimed).strip() and str(claimed).strip() != env_value:
+        raise TeamApiError(
+            "E_TEAM_API_GATE",
+            f"{label} must equal worker env identity {env_value!r}",
+            exit_code=2,
+            details={"error": "identity_mismatch", "field": field},
+        )
+    out[field] = env_value
+
+
 def _apply_worker_identity_matrix(
     operation: str,
     payload: dict[str, Any],
     *,
     identity: str,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Bind / restrict payload fields for a team-pane worker identity."""
     if operation in WORKER_DENIED_OPS or operation not in WORKER_ALLOWED_OPS:
@@ -1164,7 +1188,19 @@ def _apply_worker_identity_matrix(
             exit_code=2,
             details={"error": "worker_op_denied", "worker": identity, "operation": operation},
         )
+    source = env if env is not None else os.environ
     out = dict(payload)
+    env_run = (source.get(TEAM_RUN_ID_ENV) or "").strip()
+    env_team = (source.get(TEAM_ID_ENV) or "").strip()
+    env_owner = (source.get(TEAM_OWNER_TOKEN_ENV) or "").strip()
+    if env_run:
+        _bind_worker_env_field(out, field="run_id", env_value=env_run, label="run_id")
+    if env_team:
+        _bind_worker_env_field(out, field="team_id", env_value=env_team, label="team_id")
+    if env_owner:
+        _bind_worker_env_field(
+            out, field="owner_token", env_value=env_owner, label="owner_token"
+        )
     if operation == "send-message":
         claimed = out.get("from_worker")
         if claimed is not None and str(claimed).strip() and str(claimed).strip() != identity:
@@ -1241,7 +1277,9 @@ def execute_team_api(
     identity = team_worker_identity(env)
     if identity is not None:
         try:
-            payload = _apply_worker_identity_matrix(op, payload, identity=identity)
+            payload = _apply_worker_identity_matrix(
+                op, payload, identity=identity, env=env
+            )
         except TeamApiError as exc:
             return exc.exit_code, _fail(
                 op or "unknown",
