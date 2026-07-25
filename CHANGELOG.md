@@ -9,6 +9,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Fixed
+- `omg team api transition-task-status` now requires `worker` and binds it to
+  claim/task owner (same floor as `release-task-claim`), blocking cross-worker
+  token completion. Worker panes also drop client-supplied `owner_token` when
+  pane env has none.
+
 ### Added
 - Inside-tmux shorthand launch opens a dedicated team window + split panes in
   the current session (`attach_mode=inside`); stop kills only that window/panes

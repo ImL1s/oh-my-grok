@@ -381,9 +381,10 @@ def build_team_task_prompt(
             f"'{{\"run_id\":\"{run_id}\",\"team_id\":\"team\",\"from_worker\":\"{task_id}\","
             "\"to_worker\":\"leader-fixed\",\"body\":\"ACK\"}'`",
             "- Then `claim-task` for your board task, work, commit, and "
-            "`transition-task-status` to completed.",
+            "`transition-task-status` (include `worker` matching your id + "
+            "claim_token) to completed.",
             "- Do **not** forge another worker's identity; the CLI binds "
-            "`from_worker` / claim owner to your env identity.",
+            "`from_worker` / claim owner / transition worker to your env identity.",
             "",
             "## Owned files",
             owned,

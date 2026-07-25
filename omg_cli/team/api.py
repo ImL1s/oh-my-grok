@@ -900,6 +900,7 @@ def _op_transition_task_status(
     src = _require_str(payload, "from")
     dst = _require_str(payload, "to")
     claim_token = _require_str(payload, "claim_token")
+    worker = require_safe_id(_require_str(payload, "worker"), label="worker")
     if src not in TEAM_TASK_STATUSES or dst not in TEAM_TASK_STATUSES:
         raise TeamApiError(
             "E_TEAM_API_INVALID_INPUT",
@@ -955,6 +956,8 @@ def _op_transition_task_status(
             or not claim
             or claim.get("owner") != task.get("owner")
             or claim.get("token") != claim_token
+            or claim.get("owner") != worker
+            or task.get("owner") != worker
         ):
             raise TeamApiError(
                 "E_TEAM_API_FAILED",
@@ -1218,6 +1221,9 @@ def _apply_worker_identity_matrix(
         _bind_worker_env_field(
             out, field="owner_token", env_value=env_owner, label="owner_token"
         )
+    else:
+        # Do not trust client-supplied owner_token when pane env has none.
+        out.pop("owner_token", None)
     if operation == "send-message":
         claimed = out.get("from_worker")
         if claimed is not None and str(claimed).strip() and str(claimed).strip() != identity:

@@ -413,6 +413,7 @@ def test_claim_task_requires_token_for_transition(
             "from": "in_progress",
             "to": "completed",
             "claim_token": "wrong-token",
+            "worker": "worker-1",
         },
         run_id=run_id,
         monkeypatch=monkeypatch,
@@ -430,6 +431,7 @@ def test_claim_task_requires_token_for_transition(
             "from": "in_progress",
             "to": "completed",
             "claim_token": token,
+            "worker": "worker-1",
             "result": "done",
         },
         run_id=run_id,
@@ -445,6 +447,68 @@ def test_claim_task_requires_token_for_transition(
     assert code == 0
     assert listed["data"]["count"] == 2
     assert any(t["status"] == "completed" for t in listed["data"]["tasks"])
+
+
+def test_transition_requires_worker_match_claim_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cross-worker token theft must not complete another worker's claim."""
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _exec(
+        tmp_path,
+        "create-task",
+        {
+            "subject": "owned by w1",
+            "description": "x",
+            "workers": ["worker-1", "worker-2"],
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    code, claimed = _exec(
+        tmp_path,
+        "claim-task",
+        {"task_id": "1", "worker": "worker-1"},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0
+    token = claimed["data"]["claimToken"]
+
+    # worker-2 presents the stolen token → claim_conflict
+    code, stolen = _exec(
+        tmp_path,
+        "transition-task-status",
+        {
+            "task_id": "1",
+            "from": "in_progress",
+            "to": "completed",
+            "claim_token": token,
+            "worker": "worker-2",
+            "result": "hijack",
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 1
+    assert stolen["ok"] is False
+    assert stolen["error"].get("details", {}).get("error") == "claim_conflict"
+
+    # Missing worker → invalid input
+    code, missing = _exec(
+        tmp_path,
+        "transition-task-status",
+        {
+            "task_id": "1",
+            "from": "in_progress",
+            "to": "completed",
+            "claim_token": token,
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 2
+    assert missing["ok"] is False
 
 
 def test_claim_without_config_reports_team_not_found(
