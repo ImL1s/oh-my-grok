@@ -75,3 +75,11 @@ def test_status_includes_acks_and_topology(
     assert "api_summary" not in locked
     assert "worktrees" not in locked
     assert "topology" not in locked
+
+    from omg_cli.team.plane import format_status_table
+
+    table = format_status_table(st)
+    assert "topology:" in table
+    assert "mailbox:" in table
+    assert "api_summary:" in table
+    assert "worktrees:" in table

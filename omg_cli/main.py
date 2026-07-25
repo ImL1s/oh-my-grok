@@ -875,13 +875,16 @@ def cmd_team(args: argparse.Namespace) -> int:
             )
             st = status_for_identity(root, identity)
             if getattr(args, "as_json", False):
-                print(
-                    json.dumps(
-                        status_locked_view(st),
-                        indent=2,
-                        ensure_ascii=False,
-                    )
+                # Default --json stays LOCKED for machine consumers.
+                # --full dumps the aggregate (mailbox/api_summary/worktrees/…).
+                payload = (
+                    st
+                    if getattr(args, "full_status", False)
+                    else status_locked_view(st)
                 )
+                print(json.dumps(payload, indent=2, ensure_ascii=False))
+            elif getattr(args, "full_status", False):
+                print(json.dumps(st, indent=2, ensure_ascii=False))
             else:
                 print(format_status_table(st))
             return 0
@@ -3218,6 +3221,16 @@ def build_parser() -> argparse.ArgumentParser:
         dest="as_json",
         action="store_true",
         help="print LOCKED field set as JSON",
+    )
+    p_t_status.add_argument(
+        "--full",
+        dest="full_status",
+        action="store_true",
+        help=(
+            "include aggregate extras (topology/startup_acks/mailbox/"
+            "api_summary/worktrees); with --json prints full JSON instead "
+            "of the locked set"
+        ),
     )
     p_t_status.set_defaults(func=cmd_team, team_action="status")
 

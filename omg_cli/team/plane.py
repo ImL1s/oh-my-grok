@@ -2531,10 +2531,51 @@ def format_status_table(status: Mapping[str, Any]) -> str:
         f"session:        {status.get('session')}",
         f"dry_run:        {status.get('dry_run')}",
         f"workspace_mode: {status.get('workspace_mode')}",
-        "",
-        f"{'task_id':<20} {'win':>4} {'alive':<6} {'status':<12} worktree",
-        "-" * 72,
     ]
+    # Shorthand / aggregate extras (not part of status_locked_view).
+    if status.get("team_name") is not None:
+        lines.append(f"team_name:      {status.get('team_name')}")
+    if status.get("topology") is not None:
+        lines.append(f"topology:       {status.get('topology')}")
+    if status.get("launch_mode") is not None:
+        lines.append(f"launch_mode:    {status.get('launch_mode')}")
+    if status.get("startup_status") is not None or status.get("startup_acks") is not None:
+        lines.append(
+            f"startup_acks:   {status.get('startup_acks')}/"
+            f"{status.get('startup_expected')} "
+            f"status={status.get('startup_status')}"
+        )
+    mailbox = status.get("mailbox")
+    if isinstance(mailbox, Mapping):
+        msgs = mailbox.get("messages") or []
+        lines.append(
+            f"mailbox:        leader-fixed count={len(msgs)} "
+            f"(metadata only; ACK bodies via startup_acks)"
+        )
+    summary = status.get("api_summary")
+    if isinstance(summary, Mapping):
+        lines.append(
+            f"api_summary:    workers={summary.get('workerCount')} "
+            f"tasks={summary.get('taskCount')} "
+            f"open={summary.get('openTaskCount')}"
+        )
+    worktrees = status.get("worktrees")
+    if isinstance(worktrees, list) and worktrees:
+        lines.append(f"worktrees:      {len(worktrees)}")
+        for row in worktrees:
+            if not isinstance(row, Mapping):
+                continue
+            lines.append(
+                f"  - {row.get('task_id')}: {row.get('worktree')} "
+                f"[{row.get('status')}]"
+            )
+    lines.extend(
+        [
+            "",
+            f"{'task_id':<20} {'win':>4} {'alive':<6} {'status':<12} worktree",
+            "-" * 72,
+        ]
+    )
     for t in status.get("tasks") or []:
         lines.append(
             f"{str(t.get('task_id') or ''):<20} "
