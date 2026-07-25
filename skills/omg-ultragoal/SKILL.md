@@ -102,7 +102,12 @@ arm `/goal`.
 omg doctor
 omg setup    # if .omg/ missing
 omg goal status --goal GOAL   # if resuming
+omg goal set-host --goal GOAL # print /goal handoff; send suggested line as prompt
 ```
+
+After `set-host`, read the handoff: check `/goal status` first (setting
+**replaces** any active goal); after restart use `/goal resume`. The CLI does
+**not** arm the host goal — hooks cannot mutate `/goal`.
 
 Prefer `run_terminal_command` for all `omg` invocations. Record `goal_id` (and any `run_id` you will link).
 
@@ -221,6 +226,7 @@ Do not hand-edit hash chains. Mid-chain corruption → restore backup / human fo
 ```bash
 omg goal init --goal GOAL --stories-json '[{"id":"s1","depends_on":[],"acceptance":"..."}]'
 omg goal status --goal GOAL
+omg goal set-host --goal GOAL
 omg goal link-run --goal GOAL --run RUN
 omg goal start-story --goal GOAL --story s1
 omg goal checkpoint --goal GOAL --story s1 --evidence PATH --message "..."

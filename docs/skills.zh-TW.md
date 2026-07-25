@@ -251,12 +251,13 @@ omg interview close --run RUN
 |--|--|
 | **何時** | 多個持久 story、depends_on、跨 session |
 | **呼叫** | `ultragoal` · `goal ledger` · `/oh-my-grok:omg-ultragoal` |
-| **CLI** | `omg goal init\|status\|link-run\|start-story\|checkpoint\|block-story\|resume-story\|complete-story\|verify\|repair` |
+| **CLI** | `omg goal init\|status\|set-host\|link-run\|start-story\|checkpoint\|block-story\|resume-story\|complete-story\|verify\|repair` |
 | **SKILL** | [`skills/omg-ultragoal/SKILL.md`](../skills/omg-ultragoal/SKILL.md) |
 
 Grok **有** slash `/goal`（session 範圍、單 goal、設定即替換；Active 繞過 Stop；
 重啟後降為 paused，用 `/goal resume`）。多 story ledger 在 `.omg/ultragoal/`
 經 `omg goal *`（無 OMX `get_goal`/`create_goal` tool API）。  
+`omg goal set-host --goal GOAL` 列印 `/goal …` handoff（僅 prompt turn）。  
 `omg goal verify` 需要已透過 accept/complete **verified** 的 linked run。
 
 ---

@@ -104,6 +104,7 @@ def test_omg_ultragoal_is_session_playbook_not_stub():
         "Use when",
         "Do not use when",
         "omg goal init",
+        "omg goal set-host",
         "checkpoint",
         "link-run",
         "verify",
