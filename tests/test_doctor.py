@@ -15,6 +15,24 @@ def test_soft_gate_footer_constant():
     assert "soft-gate" in doctor.SOFT_GATE_FOOTER or "soft-gate" in doctor.SOFT_GATE_FOOTER.lower()
 
 
+def test_parse_grok_version():
+    assert doctor.parse_grok_version("grok 0.2.112 (abc)") == (0, 2, 112)
+    assert doctor.parse_grok_version('{"currentVersion":"0.2.107"}') == (0, 2, 107)
+    assert doctor.parse_grok_version('{"version":"0.2.107"}') == (0, 2, 107)
+    assert doctor.parse_grok_version("garbage") is None
+
+
+def test_check_grok_version_fails_below_min(monkeypatch):
+    monkeypatch.setattr("omg_cli.doctor._probe_grok_version", lambda: (0, 2, 99))
+    name, ok, detail = doctor.check_grok_version()
+    assert ok is False and "0.2.107" in detail
+
+
+def test_check_grok_version_ok_at_min(monkeypatch):
+    monkeypatch.setattr("omg_cli.doctor._probe_grok_version", lambda: (0, 2, 112))
+    assert doctor.check_grok_version()[1] is True
+
+
 def test_check_plugin_trust_unavailable_when_no_grok(monkeypatch):
     monkeypatch.setattr(doctor.shutil, "which", lambda _name: None)
     name, level, detail = doctor.check_plugin_trust()

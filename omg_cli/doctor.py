@@ -64,6 +64,77 @@ def check_grok_on_path() -> tuple[str, bool, str]:
     return _check("grok on PATH", False, "grok not found (install Grok Build CLI)")
 
 
+MIN_GROK_VERSION_FOR_STOP = (0, 2, 107)
+_GROK_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+
+
+def parse_grok_version(text: str) -> tuple[int, int, int] | None:
+    """Parse a grok semver from CLI text or JSON (currentVersion/version keys)."""
+    if not text or not text.strip():
+        return None
+    stripped = text.strip()
+    if stripped.startswith("{"):
+        try:
+            data = json.loads(stripped)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            raw = data.get("currentVersion") or data.get("version")
+            if raw is not None:
+                nested = parse_grok_version(str(raw))
+                if nested is not None:
+                    return nested
+    m = _GROK_VERSION_RE.search(stripped)
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+
+def _probe_grok_version() -> tuple[int, int, int] | None:
+    """Best-effort grok semver via `grok version --json`, then `grok --version`."""
+    data = _run_grok_json(("grok", "version", "--json"))
+    if isinstance(data, dict):
+        raw = data.get("currentVersion") or data.get("version")
+        if raw is not None:
+            parsed = parse_grok_version(str(raw))
+            if parsed is not None:
+                return parsed
+    try:
+        proc = subprocess.run(
+            ["grok", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=8.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    out = (proc.stdout or proc.stderr or "").strip()
+    return parse_grok_version(out)
+
+
+def check_grok_version() -> tuple[str, bool, str]:
+    """Hard check: grok must be ≥0.2.107 for the Stop gate."""
+    name = "grok version (Stop gate)"
+    ver = _probe_grok_version()
+    if ver is None:
+        return _check(
+            name,
+            True,
+            "WARN: cannot parse grok version; Stop gate needs ≥0.2.107",
+        )
+    installed = f"{ver[0]}.{ver[1]}.{ver[2]}"
+    if ver < MIN_GROK_VERSION_FOR_STOP:
+        return _check(
+            name,
+            False,
+            f"Stop gate requires grok ≥0.2.107; installed {installed}",
+        )
+    return _check(name, True, f"{installed} (≥0.2.107 for Stop gate)")
+
+
 def check_plugin_json() -> tuple[str, bool, str]:
     path = plugin_root() / "plugin.json"
     if not path.is_file():
@@ -1098,6 +1169,7 @@ def check_installed_release_identity() -> SoftResult:
 def run_checks() -> list[tuple[str, bool, str]]:
     return [
         check_grok_on_path(),
+        check_grok_version(),
         check_plugin_json(),
         check_hooks_scripts(),
         check_pre_tool_use(),
