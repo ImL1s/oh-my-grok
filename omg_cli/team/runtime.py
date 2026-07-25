@@ -196,8 +196,13 @@ def launch_team(
     env: Mapping[str, str] | None = None,
     team_id: str = "team",
     check_binary: bool = True,
+    executor: str | None = None,
 ) -> dict[str, Any]:
-    """OMX-like shorthand launch: decompose → start_team(split) → seed api/ref."""
+    """OMX-like shorthand launch: decompose → start_team(split) → seed api/ref.
+
+    ``executor=\"fixture\"`` swaps pane commands for the hermetic ACK fixture
+    (transport smoke only — not Grok live parity).
+    """
     root_path = Path(root).resolve() if root is not None else Path.cwd().resolve()
     role_n = normalize_role(role)
     role_meta(role_n)  # fail closed
@@ -221,6 +226,7 @@ def launch_team(
         check_binary=check_binary,
         topology="split",
         team_id=team_id,
+        executor=executor,
     )
     rid = str(meta["run_id"])
     name = _slug_team_name(goal, rid)

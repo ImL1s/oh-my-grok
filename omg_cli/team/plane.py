@@ -599,6 +599,9 @@ def _pane_env_pairs(
     # Ensure marker wins even if parent had a falsey value.
     out = [(k, v) for k, v in out if k not in WORKER_ENV_MARKERS]
     out.append((TEAM_WORKER_ENV, "1"))
+    # Workers call ``omg team api`` from panes; gate must be present via -e
+    # (not in madmax forwarded_env allowlist).
+    out.append((EXPERIMENTAL_ENV, "1"))
     if run_id:
         out.append((TEAM_RUN_ID_ENV, str(run_id)))
     if team_id:
@@ -616,6 +619,29 @@ def _pane_env_pairs(
     for key, value in out:
         merged[key] = value
     return sorted(merged.items(), key=lambda kv: kv[0])
+
+
+def build_fixture_pane_command() -> str:
+    """Pane command for hermetic transport smoke (ACK fixture; no grok).
+
+    Resolves ``tests/fixtures/team_worker_fixture.py`` relative to the repo
+    checkout that contains ``omg_cli/``. Production grok path is unchanged when
+    ``executor`` is omitted.
+    """
+    import shlex
+    import sys
+
+    fixture = (
+        Path(__file__).resolve().parents[2]
+        / "tests"
+        / "fixtures"
+        / "team_worker_fixture.py"
+    )
+    if not fixture.is_file():
+        raise TeamError(
+            f"fixture executor requested but missing fixture script: {fixture}"
+        )
+    return shlex.join([sys.executable, str(fixture)])
 
 
 # ---------------------------------------------------------------------------
@@ -736,7 +762,18 @@ def _cleanup_created_tmux_session(handle: tuple[str, str]) -> str | None:
 
 
 def _list_pane_identities(session: str) -> dict[int, tuple[str, int]]:
-    """Map window index to exact tmux pane identity and pane PID."""
+    """Map slot index to exact tmux pane identity and pane PID.
+
+    *Windows* topology: one pane per window — slot equals ``window_index``.
+    *Split* topology: multiple panes share one window — slot equals
+    ``pane_index`` (creation order), matching task ``window_index`` slots.
+    Ambiguous multi-window multi-pane layouts fail closed (empty map).
+
+    Accepts list-panes rows as either::
+
+        window_index\\tpane_index\\tpane_id\\tpane_pid   (preferred)
+        window_index\\tpane_id\\tpane_pid                 (legacy windows mocks)
+    """
     r = _tmux_run(
         [
             "list-panes",
@@ -744,25 +781,60 @@ def _list_pane_identities(session: str) -> dict[int, tuple[str, int]]:
             "-t",
             session,
             "-F",
-            "#{window_index}\t#{pane_id}\t#{pane_pid}",
+            "#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_pid}",
         ]
     )
     if r.returncode != 0:
         return {}
-    out: dict[int, tuple[str, int]] = {}
+    rows: list[tuple[int, int | None, str, int]] = []
     for line in (r.stdout or "").splitlines():
         parts = line.strip().split("\t")
-        if len(parts) != 3 or _TMUX_PANE_ID.fullmatch(parts[1]) is None:
+        if len(parts) == 4 and _TMUX_PANE_ID.fullmatch(parts[2]) is not None:
+            try:
+                window_index = int(parts[0])
+                pane_index = int(parts[1])
+                pane_pid = int(parts[3])
+            except ValueError:
+                continue
+            pane_id = parts[2]
+        elif len(parts) == 3 and _TMUX_PANE_ID.fullmatch(parts[1]) is not None:
+            # Legacy 3-field rows (windows topology / hermetic mocks).
+            try:
+                window_index = int(parts[0])
+                pane_pid = int(parts[2])
+            except ValueError:
+                continue
+            pane_index = None
+            pane_id = parts[1]
+        else:
             continue
-        try:
-            window_index = int(parts[0])
-            pane_pid = int(parts[2])
-        except ValueError:
-            continue
-        if window_index in out or pane_pid <= 0:
+        if pane_pid <= 0:
             return {}
-        out[window_index] = (parts[1], pane_pid)
-    return out
+        rows.append((window_index, pane_index, pane_id, pane_pid))
+    if not rows:
+        return {}
+    windows = {row[0] for row in rows}
+    if len(rows) == len(windows):
+        # One pane per window (legacy windows topology).
+        out: dict[int, tuple[str, int]] = {}
+        for window_index, _pane_index, pane_id, pane_pid in rows:
+            if window_index in out:
+                return {}
+            out[window_index] = (pane_id, pane_pid)
+        return out
+    if len(windows) == 1 and all(row[1] is not None for row in rows):
+        # Split topology: key by pane_index within the single window.
+        out = {}
+        for _window_index, pane_index, pane_id, pane_pid in sorted(
+            rows, key=lambda row: int(row[1] or 0)
+        ):
+            assert pane_index is not None
+            if pane_index in out:
+                return {}
+            out[pane_index] = (pane_id, pane_pid)
+        return out
+    # Mixed multi-window multi-pane — refuse ambiguous identity.
+    return {}
 
 
 def _list_pane_pids(session: str) -> dict[int, int]:
@@ -1254,6 +1326,7 @@ def start_team(
     topology: str = "windows",
     team_id: str = "team",
     owner_token: str | None = None,
+    executor: str | None = None,
 ) -> dict[str, Any]:
     """Create ownership + worktrees + team.json (+ live tmux unless dry_run).
 
@@ -1274,6 +1347,10 @@ def start_team(
         Stable team api id recorded into pane env / prompts.
     owner_token:
         Optional launch owner token injected into worker env.
+    executor:
+        When ``\"fixture\"``, replace every pane_command with the hermetic
+        ACK fixture (transport smoke only — not Grok live parity). Default
+        ``None`` keeps the production grok / routing pane path.
 
     Returns the written team.json payload.
     """
@@ -1284,8 +1361,17 @@ def start_team(
     n = _assert_start_gates(tasks, env=env)
     if topology not in ("windows", "split"):
         raise TeamError(f"unsupported team topology {topology!r}")
+    executor_norm = (executor or "").strip().lower() or None
+    if executor_norm is not None and executor_norm != "fixture":
+        raise TeamError(
+            f"unsupported team executor {executor!r} "
+            "(supported: None / 'fixture')"
+        )
     tid_plane = (team_id or "team").strip() or "team"
     token = owner_token or uuid.uuid4().hex
+    fixture_pane_cmd = (
+        build_fixture_pane_command() if executor_norm == "fixture" else None
+    )
 
     multi_cli = routing is not None
     resolved: ResolvedRouting | None = None
@@ -1434,6 +1520,11 @@ def start_team(
             prompt_delivery = PROMPT_DELIVERY_PROMPT_FILE
             pane_cmd = build_pane_command(_grok_args_for_pane(argv))
 
+        if fixture_pane_cmd is not None:
+            # Hermetic transport override — keep argv record for diagnostics.
+            pane_cmd = fixture_pane_cmd
+            provider = "fixture"
+
         # Persist per-task argv under team/ (mirrors fanout workers/*.argv.json)
         argv_path = tdir / f"{tid}.argv.json"
         argv_path.write_text(
@@ -1501,6 +1592,7 @@ def start_team(
             "topology": topology,
             "team_id": tid_plane,
             "owner_token": token,
+            "executor": executor_norm,
             "note": note,
         }
         _atomic_write_json(team_meta_path(root_path, rid), meta)
@@ -1611,10 +1703,16 @@ def start_team(
             "topology": topology,
             "team_id": tid_plane,
             "owner_token": token,
+            "executor": executor_norm,
             "note": (
-                "experimental multi-CLI tmux team; stop via immutable launch identity"
-                if multi_cli
-                else "experimental grok-only tmux team; stop via immutable launch identity"
+                "experimental fixture tmux team; hermetic ACK transport "
+                "(not Grok live parity); stop via immutable launch identity"
+                if executor_norm == "fixture"
+                else (
+                    "experimental multi-CLI tmux team; stop via immutable launch identity"
+                    if multi_cli
+                    else "experimental grok-only tmux team; stop via immutable launch identity"
+                )
             ),
         }
         _atomic_write_json(team_meta_path(root_path, rid), meta)
@@ -3425,6 +3523,7 @@ __all__ = [
     "WORKER_ENV_MARKERS",
     "WORKSPACE_MODE",
     "build_executor_pane_command",
+    "build_fixture_pane_command",
     "build_team_task_prompt",
     "collect_team",
     "experimental_enabled",
