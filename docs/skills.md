@@ -119,7 +119,7 @@ omg resume --clear   # after successfully continuing
 |--|--|
 | **When** | End-to-end: clarify → plan → implement → review → QA → verified |
 | **Invoke** | `autopilot …` · `full auto` · `/oh-my-grok:omg-autopilot` |
-| **CLI** | `omg autopilot start\|transition\|status\|complete` |
+| **CLI** | `omg autopilot start\|transition\|status\|await\|complete` |
 | **Deep guide** | [`autopilot.md`](./autopilot.md) |
 | **SKILL** | [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md) |
 
@@ -127,11 +127,12 @@ omg resume --clear   # after successfully continuing
 omg autopilot start "ship feature X with tests"
 # or: omg autopilot start "…" --skip-interview
 omg autopilot status --run RUN
+omg autopilot await --run RUN --set   # pause for destructive/credential confirm
 omg autopilot complete --run RUN
 ```
 
 Phases: `interview → ralplan → implement → review → (rework) → qa → acceptance → verified`  
-No Stop pin — say **continue** if the chat ends mid-run.
+Stop pin on grok **≥0.2.107** (cap **8**/turn, fail-open) — beyond cap see [autopilot.md](./autopilot.md#stop-pin-honesty) (`/loop`, outer `omg ralph`, forthcoming `run --resume`).
 
 ---
 

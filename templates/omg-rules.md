@@ -31,6 +31,10 @@ Durable tmux team panes (user says `team`, `team N`, `/oh-my-grok:omg-team`, or
 asks for tmux workers): run canonical `omg team [N[:role]] "<goal>"` with
 `OMG_EXPERIMENTAL_TMUX_TEAM=1`. Do **not** substitute `spawn_subagent` /
 `omg ulw` for that request. Team remains experimental until live promotion.
+**HARD RULE — autopilot mid-phase:** Inside ralplan / implement / review / qa /
+rework / acceptance: **do not ask the user**. Record uncertainty under
+`.omg/artifacts/` and keep working, or `omg autopilot transition --phase blocked`.
+The Stop gate will reinject this rule if you try to stop mid-phase.
 </workflow_routing>
 
 <subagents>

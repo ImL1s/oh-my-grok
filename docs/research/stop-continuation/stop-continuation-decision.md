@@ -1,7 +1,28 @@
 # Decision Record — In-session Stop continuation like OMC?
 
+## SUPERSEDED (2026-07-26)
+
+**Status:** **SUPERSEDED** — new decision below. Historical 2026-07-20 text retained for audit.
+
+**New decision:** **BUILD Stop pin (primary)** for oh-my-grok autopilot on Grok Build **≥ 0.2.107**.
+
+| Fact | Source |
+|------|--------|
+| Stop `decision:block` + `reason` reinjects as a user message and continues the **same turn** | grok-build `10-hooks.md` (“Stop Decision Control”) |
+| Hard cap **8** Stop-hook continuations **per turn**; at cap the hook is not consulted | `stop_gate.rs` `MAX_STOP_HOOK_CONTINUATIONS_PER_TURN = 8` |
+| Fail-open on hook crash/timeout/malformed stdout; Esc/Ctrl+C/refusal skip Stop | `10-hooks.md` + `test_stop_hook_e2e.rs` |
+| `TurnControl::ForceContinue` (tool protocol) | **Stubbed/unused (D17)** — not relied upon |
+
+**Honesty bounds (not infinite):** the pin keeps the turn alive while autopilot is incomplete, but only up to **8 continuations/turn**; then the turn ends. Hook errors fail-open. User abort (Esc/Ctrl+C) bypasses Stop. Beyond the cap or across turns: `omg autopilot run --resume` or `/loop` (tertiary). Pause only for interview (`ask_user_question`) or destructive confirmation (`omg autopilot await`).
+
+**Implementation:** `hooks/bin/stop.py` → `omg_cli.stop_gate.decide_stop()`; see `docs/plans/2026-07-26-omg-autopilot-full-auto-ux.md`.
+
+---
+
+## Historical record (2026-07-20 — DO NOT BUILD)
+
 **Date:** 2026-07-20  
-**Status:** **DECIDED — DO NOT BUILD** (0.3.x; revisit only if Grok host adds blocking Stop)  
+**Status:** **DECIDED — DO NOT BUILD** (0.3.x; superseded 2026-07-26 when Grok ≥0.2.107 honored blocking Stop)  
 **Product baseline:** oh-my-grok **Option B** (plugin + `omg` CLI; Grok-native `spawn_subagent`; outer loops CLI-owned)  
 **Audience:** maintainers · research notes (not a product surface) · generous Grok quota  
 **Related:**  

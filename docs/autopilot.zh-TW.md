@@ -16,8 +16,29 @@ English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.m
 | **CLI `omg autopilot *`** | 嚴格 phase 狀態機 + 目的地閘門；run 狀態在 `.omg/state/runs/<run_id>/` |
 | **Workers** | 只透過 Grok `spawn_subagent`（depth 1）；實作者 `capability_mode=read-write`（無 shell） |
 
-**Grok 上沒有：** OMC 式 Stop `decision:block`（無法強制 chat 不結束）。  
-**持久化：** 再呼叫 skill / 說「繼續」，或外層 `omg ralph "…"`。
+**與 OMC 不同：** Stop pin 在 grok **≥0.2.107** 真實存在，但有 **上限**（每 turn 8 次）、fail-open、可被 Esc/Ctrl+C 跳過。  
+**跨 turn 持久化：** `omg autopilot run --resume`、`/loop`，或外層 `omg ralph "…"`。
+
+### OMC 體驗 → OMG 對應
+
+| OMC 期望 | OMG 對應 | 說明 |
+|----------|----------|------|
+| 不離開 session（Stop block） | **Stop pin（主要）** | grok ≥0.2.107；每 turn 上限 8 |
+| 不依賴 Stop 的 turn 內繼續 | **`/goal`（次要）** | 宿主原生；在 Stop 閘門前 |
+| 跨 turn / 無頭 / 超 cap | **`omg autopilot run --resume` / `/loop`（第三）** | 新 turn；計數重置 |
+| 人類暫停（需求不清） | **`ask_user_question` + interview** | 閘門讓步；非 mid-phase 閒聊 |
+| 破壞性 / 憑證暫停 | **`omg autopilot await`** | 設定 `autopilot_awaiting` |
+| 取消粘性模式 | **`omg cancel`** | 不是「解開 Stop」 |
+| Verified 完成 | **`omg accept` / `omg autopilot complete`** | 僅 CLI |
+
+### Stop pin 誠實說明
+
+- **有效：** autopilot 未完成 + `reason=end_turn` → hook 可 `decision:block` 並注入階段繼續提示（同一 turn）。
+- **上限：** 單 turn **8** 次後繼續，宿主結束 turn。
+- **Fail-open：** hook 崩潰/超時 → turn 可能結束。
+- **跳過：** Esc、Ctrl+C、拒絕、max-turns — 不諮詢 Stop。
+- **不用：** `TurnControl::ForceContinue`（宿主 stub；D17）。
+- **超 cap：** `omg autopilot run --resume RUN` 或 `/loop 5m omg autopilot status --run RUN`。
 
 ---
 
