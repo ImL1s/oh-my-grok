@@ -10,6 +10,8 @@ from typing import Any, Mapping
 from omg_cli.state import load_active_run
 
 _DRIFT_GUARD_ENV = "OMG_STOP_DRIFT_GUARD"
+_GRACEFUL_CAP_ENV = "OMG_STOP_GRACEFUL_CAP"
+_SESSION_ID_ENV = "GROK_SESSION_ID"
 _CHATTY_RE = re.compile(
     r"\b(should i|shall i|would you like|do you want me|want me to|may i)\b.*\?",
     re.IGNORECASE,
@@ -47,6 +49,80 @@ def _truthy_env(raw: str | None) -> bool:
 
 def _drift_guard_enabled(env: Mapping[str, str]) -> bool:
     return _truthy_env(env.get(_DRIFT_GUARD_ENV))
+
+
+def _graceful_cap(env: Mapping[str, str]) -> int | None:
+    raw = (env.get(_GRACEFUL_CAP_ENV) or "").strip()
+    if not raw:
+        return None
+    try:
+        cap = int(raw)
+    except ValueError:
+        return None
+    return cap if cap > 0 else None
+
+
+def _stop_gate_session_id(env: Mapping[str, str]) -> str:
+    return (env.get(_SESSION_ID_ENV) or "").strip() or "default"
+
+
+def _stop_gate_counter_path(root: Path, session: str) -> Path:
+    return root / ".omg" / "state" / "stop_gate" / f"{session}.json"
+
+
+def _read_stop_counter(path: Path) -> int:
+    if not path.is_file():
+        return 0
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        return 0
+    count = data.get("count", 0)
+    try:
+        return max(0, int(count))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _write_stop_counter(path: Path, count: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"count": count}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _graceful_cap_decision(
+    root: Path,
+    *,
+    env: Mapping[str, str],
+    stop_hook_active: bool,
+    run_id: str,
+) -> dict[str, Any] | None:
+    """Increment diagnostic counter; at cap return graceful force-stop shape."""
+    cap = _graceful_cap(env)
+    if cap is None:
+        return None
+    session = _stop_gate_session_id(env)
+    counter_path = _stop_gate_counter_path(root, session)
+    try:
+        if not stop_hook_active:
+            count = 0
+        else:
+            count = _read_stop_counter(counter_path)
+        count += 1
+        _write_stop_counter(counter_path, count)
+        if count > cap:
+            return {
+                "continue": False,
+                "stopReason": (
+                    f"Stop-pin reached {cap} continuations this turn; "
+                    f"continue cross-turn: omg autopilot run --resume {run_id} "
+                    "(or /loop …)"
+                ),
+            }
+        return None
+    except Exception:
+        return None
 
 
 def _is_chatty_question(message: str) -> bool:
@@ -151,6 +227,14 @@ def decide_stop(
 
         goal = str(active.get("goal") or "")
         run_id = str(active.get("run_id") or "")
+        graceful = _graceful_cap_decision(
+            root_path,
+            env=env_map,
+            stop_hook_active=stop_hook_active,
+            run_id=run_id,
+        )
+        if graceful is not None:
+            return graceful
         return {
             "decision": "block",
             "reason": continuation_reason(

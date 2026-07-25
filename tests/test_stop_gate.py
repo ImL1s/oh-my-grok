@@ -185,3 +185,47 @@ def test_drift_guard_blocks_without_autopilot(tmp_path, monkeypatch):
     assert d["decision"] == "block"
     assert "do not ask" in d["reason"].lower()
     assert "keep working" in d["reason"].lower()
+
+
+def _seed_stop_counter(tmp_path: Path, session: str, n: int) -> None:
+    gate_dir = tmp_path / ".omg" / "state" / "stop_gate"
+    gate_dir.mkdir(parents=True, exist_ok=True)
+    (gate_dir / f"{session}.json").write_text(
+        json.dumps({"count": n}),
+        encoding="utf-8",
+    )
+
+
+def test_graceful_force_stop_at_cap(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMG_STOP_GRACEFUL_CAP", "6")
+    monkeypatch.setenv("GROK_SESSION_ID", "session-1")
+    ev = _mk(tmp_path, "implement", stop_hook_active=True)
+    _seed_stop_counter(tmp_path, session="session-1", n=6)
+    d = decide_stop(tmp_path, ev, env=os.environ)
+    assert d is not None
+    assert d["continue"] is False
+    assert "autopilot run --resume" in d["stopReason"]
+
+
+def test_graceful_cap_below_limit_still_blocks(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMG_STOP_GRACEFUL_CAP", "6")
+    monkeypatch.setenv("GROK_SESSION_ID", "session-1")
+    ev = _mk(tmp_path, "implement", stop_hook_active=True)
+    _seed_stop_counter(tmp_path, session="session-1", n=5)
+    d = decide_stop(tmp_path, ev, env=os.environ)
+    assert d is not None
+    assert d["decision"] == "block"
+    assert d.get("continue") is not True
+    counter = json.loads(
+        (tmp_path / ".omg" / "state" / "stop_gate" / "session-1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert counter["count"] == 6
+
+
+def test_no_counter_write_when_disabled(tmp_path, monkeypatch):
+    monkeypatch.delenv("OMG_STOP_GRACEFUL_CAP", raising=False)
+    ev = _mk(tmp_path, "implement")
+    decide_stop(tmp_path, ev, env=os.environ)
+    assert not (tmp_path / ".omg" / "state" / "stop_gate").exists()
