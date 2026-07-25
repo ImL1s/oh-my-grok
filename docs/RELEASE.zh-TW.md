@@ -48,6 +48,8 @@ OMG_E2E=1 OMG_SMOKE_STRICT=0 ./scripts/smoke.sh
 
 Live Grok 閘門只在「依賴目前 host 行為」的宣稱時才需要。設定檔或 help probe **不能**把能力升格為 observed／healthy／verified。
 
+實驗性 `omg team` 簡寫仍受 `OMG_EXPERIMENTAL_TMUX_TEAM=1` 閘控。升格閘門是 `scripts/live_team_smoke.py --live`：僅在非 dry panes、worktrees、ACK、claim→completed 與 stop 清 session 全部通過後才列印 `LIVE_TEAM_SMOKE_OK`；dry 路徑的 `DRY_TEAM_SMOKE_OK` 是隔離證明，不構成升格。在 live smoke 變綠之前，不得宣稱 OMX 式 live team 啟動，也不得移除實驗閘門。
+
 ## 凍結的 run manifest
 
 `omg parity run` 委託 `omg_cli.contracts.run_manifest` 裡的精確契約引擎；它**不是**第二套實作。

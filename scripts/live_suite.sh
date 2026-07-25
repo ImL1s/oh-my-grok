@@ -288,6 +288,38 @@ if [[ "$MODE" == "quota-heavy" ]]; then
   )
 fi
 
+# Optional team plane smoke (experimental). Dry path is cheap; --live only when
+# OMG_LIVE_TEAM=1 (or quota-heavy). Never treats a live miss as suite success
+# promotion — LIVE_TEAM_SMOKE_OK is required for a live claim.
+echo "== L-TEAM-SMOKE (dry) =="
+python3 "$ROOT/scripts/live_team_smoke.py" --workers 2 --goal $'1. a\n2. b' \
+  | tee "$EVIDENCE/team-smoke-dry-$TS.log" \
+  >/dev/null
+tail -n 1 "$EVIDENCE/team-smoke-dry-$TS.log" | grep -qx 'DRY_TEAM_SMOKE_OK' \
+  || fail "L-TEAM-SMOKE dry missing DRY_TEAM_SMOKE_OK"
+echo "L-TEAM-SMOKE dry OK"
+
+if [[ "${OMG_LIVE_TEAM:-0}" == "1" || "$MODE" == "quota-heavy" ]]; then
+  echo "== L-TEAM-SMOKE (live) =="
+  set +e
+  OMG_EXPERIMENTAL_TMUX_TEAM=1 OMG_LIVE_EVIDENCE_DIR="$EVIDENCE" \
+    python3 "$ROOT/scripts/live_team_smoke.py" --live \
+      --workers 2 --role executor \
+      --goal "worker 1 and worker 2 each complete an assigned marker change and test" \
+      --timeout "${OMG_LIVE_TEAM_TIMEOUT_S:-600}" \
+    | tee "$EVIDENCE/team-smoke-live-$TS.log"
+  team_live_rc=$?
+  set -e
+  if tail -n 1 "$EVIDENCE/team-smoke-live-$TS.log" | grep -qx 'LIVE_TEAM_SMOKE_OK'; then
+    echo "L-TEAM-SMOKE live OK"
+  else
+    echo "WARN: L-TEAM-SMOKE live did not print LIVE_TEAM_SMOKE_OK (rc=$team_live_rc); not claiming promotion"
+    if [[ "${OMG_LIVE_TEAM_REQUIRE:-0}" == "1" ]]; then
+      fail "L-TEAM-SMOKE live required but missing LIVE_TEAM_SMOKE_OK"
+    fi
+  fi
+fi
+
 python3 - <<PY
 import json
 from pathlib import Path

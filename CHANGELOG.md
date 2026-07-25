@@ -31,9 +31,19 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `OMG_EXPERIMENTAL_TMUX_TEAM=1`. Fail-closed: requires CLI-stamped `team.json`
   control plane before materializing mailbox/task stores.
 
+### Changed
+- Hardened `scripts/live_team_smoke.py --live` as the team promotion gate:
+  asserts `dry_run=false`, pane count, grok (not fixture) pane commands,
+  owned worktrees, ≥N ACKs, claim→completed, and stop clears only the owned
+  session; prints `LIVE_TEAM_SMOKE_OK` only if all pass. Dry path still prints
+  `DRY_TEAM_SMOKE_OK`. Live attempt on 2026-07-25 exited non-zero
+  (`startup_status=failed_start`, ACKs=0) — **not** promoted; experimental
+  gate `OMG_EXPERIMENTAL_TMUX_TEAM=1` remains. Optional wire in
+  `scripts/live_suite.sh` (`OMG_LIVE_TEAM=1` / quota-heavy).
+
 ### Planned
-- Live Grok smoke promotion (`scripts/live_team_smoke.py --live`) before
-  removing the experimental gate for shorthand launch.
+- Live Grok smoke promotion (`LIVE_TEAM_SMOKE_OK` evidence) before removing
+  the experimental gate for shorthand launch.
 - Optional PyPI/`pipx` CLI track — **shipped editable-only** (`pyproject.toml` +
   `pipx install --editable` / `pip install -e .`); non-editable wheel / PyPI
   publish still deferred (`plugin_root()` needs checkout siblings).
