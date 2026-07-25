@@ -758,6 +758,40 @@ def check_plugin_version_drift() -> SoftResult:
     return (name, "ok", f"installed == local ({local})")
 
 
+def check_stop_gate_timeout() -> SoftResult:
+    """Soft: WARN if Stop hook timeout < 60s (gate may fail-open on slow IO)."""
+    name = "stop gate timeout"
+    path = plugin_root() / "hooks" / "hooks.json"
+    if not path.is_file():
+        return (name, "warn", f"missing {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        return (name, "warn", f"cannot read hooks.json ({e})")
+    hooks = (data.get("hooks") or {}) if isinstance(data, dict) else {}
+    stop_entries = hooks.get("Stop")
+    if not stop_entries:
+        return (name, "warn", "Stop key missing in hooks.json")
+    try:
+        stop_hook = stop_entries[0]["hooks"][0]
+        timeout = stop_hook.get("timeout")
+    except (IndexError, KeyError, TypeError):
+        return (name, "warn", "Stop hook structure invalid")
+    if timeout is None:
+        return (name, "warn", "Stop timeout missing")
+    try:
+        timeout_val = int(timeout)
+    except (TypeError, ValueError):
+        return (name, "warn", f"Stop timeout not numeric ({timeout!r})")
+    if timeout_val < 60:
+        return (
+            name,
+            "warn",
+            f"Stop timeout {timeout_val}s < 60s — gate may fail-open on slow IO",
+        )
+    return (name, "ok", f"Stop timeout {timeout_val}s >= 60s")
+
+
 def check_plugin_enabled() -> SoftResult:
     """Soft: oh-my-grok present in GROK_HOME/config.toml [plugins].enabled."""
     name = "plugin enabled ([plugins].enabled)"
@@ -1082,6 +1116,7 @@ def run_soft_checks() -> list[SoftResult]:
         check_global_rules(),
         check_global_pretool_hook_freshness(),
         check_plugin_version_drift(),
+        check_stop_gate_timeout(),
         check_plugin_enabled(),
         check_capabilities_lock(),
         check_installed_capabilities_lock(),

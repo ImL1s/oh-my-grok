@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
 from omg_cli import doctor
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_soft_gate_footer_constant():
@@ -572,6 +575,101 @@ def test_check_installed_release_identity_absent_is_honest_warning(tmp_path, mon
     assert name == "immutable install identity"
     assert level == "warn"
     assert "development/source" in detail
+
+
+def test_stop_hook_timeout_is_gate_adequate():
+    data = json.loads((ROOT / "hooks/hooks.json").read_text(encoding="utf-8"))
+    stop = data["hooks"]["Stop"][0]["hooks"][0]
+    assert stop["timeout"] >= 60
+
+
+def test_doctor_flags_low_stop_timeout(tmp_path, monkeypatch):
+    fake_root = tmp_path / "plugin"
+    hooks_dir = fake_root / "hooks"
+    hooks_dir.mkdir(parents=True)
+    hooks_json = {
+        "hooks": {
+            "Stop": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "python3 stop.py",
+                            "timeout": 10,
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    (hooks_dir / "hooks.json").write_text(
+        json.dumps(hooks_json), encoding="utf-8"
+    )
+    monkeypatch.setattr(doctor, "plugin_root", lambda: fake_root)
+    name, level, detail = doctor.check_stop_gate_timeout()
+    assert name == "stop gate timeout"
+    assert level == "warn"
+    assert "10" in detail
+    assert "< 60" in detail
+
+
+def test_check_stop_gate_timeout_ok():
+    name, level, detail = doctor.check_stop_gate_timeout()
+    assert name == "stop gate timeout"
+    assert level == "ok"
+    assert ">= 60" in detail
+
+
+def test_run_soft_checks_includes_stop_gate_timeout(monkeypatch):
+    monkeypatch.setattr(
+        doctor,
+        "check_plugin_trust",
+        lambda: ("plugin trust/inventory", "ok", "stub"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "check_effective_discovery_foreign",
+        lambda: ("foreign plugins in discovery", "ok", "stub"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "check_global_rules",
+        lambda: ("global rules", "ok", "stub"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "check_global_pretool_hook_freshness",
+        lambda: ("global soft-gate freshness", "ok", "stub"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "check_plugin_version_drift",
+        lambda: ("plugin version drift", "ok", "stub"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "check_plugin_enabled",
+        lambda: ("plugin enabled", "ok", "stub"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "check_capabilities_lock",
+        lambda: ("capabilities lock (local checkout)", "ok", "stub"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "check_installed_capabilities_lock",
+        lambda: ("installed capabilities lock", "ok", "stub"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "check_installed_release_identity",
+        lambda: ("immutable install identity", "ok", "stub"),
+    )
+    soft = doctor.run_soft_checks()
+    names = [n for n, _, _ in soft]
+    assert "stop gate timeout" in names
+    assert names.index("stop gate timeout") > names.index("plugin version drift")
 
 
 def test_check_installed_release_identity_corrupt_pointer_is_hard_failure(tmp_path, monkeypatch):
