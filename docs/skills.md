@@ -180,7 +180,12 @@ omg team launch --workers 2 --role executor --goal "map A and B" --dry-run
 # Attach: inside tmux → new window + split (shared session; stop never
 # kill-session). Outside TTY → new session + `tmux attach -t …` hint.
 # Non-interactive without --detach fails closed.
+# status (shorthand identity or --run): aggregates locked pane table +
+# explicit extras — topology/startup_acks, mailbox (leader-fixed),
+# api_summary (get-summary), worktrees[]. --json still prints only the
+# LOCKED field set (status_locked_view); richer keys are human/table path.
 omg team status --run RUN --json
+omg team status TEAM_NAME
 omg team stop --run RUN
 ```
 

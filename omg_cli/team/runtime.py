@@ -455,16 +455,82 @@ def launch_team(
 def status_for_identity(
     root: Path | str, identity: str | None = None
 ) -> dict[str, Any]:
-    run_id = resolve_team_ref(root, identity)
-    st = team_status(root, run_id)
+    """Aggregate shorthand status: locked team_status + mailbox/summary/worktrees.
+
+    Extra keys (``mailbox``, ``api_summary``, ``worktrees``, topology/ACK
+    annotations) are explicit and **not** part of ``status_locked_view`` /
+    ``--json`` freeze.
+    """
+    root_path = Path(root).resolve()
+    run_id = resolve_team_ref(root_path, identity)
+    st = team_status(root_path, run_id)
+    team_id = "team"
     try:
-        meta = load_team_meta(root, run_id)
+        meta = load_team_meta(root_path, run_id)
         st["team_name"] = meta.get("team_name")
         st["team_id"] = meta.get("team_id")
         st["launch_mode"] = meta.get("launch_mode")
         st["topology"] = meta.get("topology")
         st["startup_acks"] = meta.get("startup_acks")
+        st["startup_ack_workers"] = meta.get("startup_ack_workers")
         st["startup_status"] = meta.get("startup_status")
+        st["startup_expected"] = meta.get("startup_expected")
+        if meta.get("team_id"):
+            team_id = str(meta["team_id"])
+        worktrees: list[dict[str, Any]] = []
+        for raw in meta.get("tasks") or []:
+            if not isinstance(raw, Mapping):
+                continue
+            wt = raw.get("worktree")
+            tid = raw.get("task_id")
+            if not wt and not tid:
+                continue
+            worktrees.append(
+                {
+                    "task_id": tid,
+                    "worktree": wt,
+                    "status": raw.get("status"),
+                    "window_index": raw.get("window_index"),
+                }
+            )
+        st["worktrees"] = worktrees
     except TeamError:
-        pass
+        st.setdefault("worktrees", [])
+
+    api_env = {EXPERIMENTAL_ENV: "1"}
+    code, envelope = execute_team_api(
+        "get-summary",
+        {"run_id": run_id, "team_id": team_id},
+        root=root_path,
+        env=api_env,
+    )
+    if code == 0 and envelope.get("ok"):
+        data = envelope.get("data") or {}
+        st["api_summary"] = data.get("summary") if isinstance(data, Mapping) else None
+    else:
+        st["api_summary"] = None
+
+    try:
+        listing = list_messages(
+            root_path,
+            run_id=run_id,
+            team_id=team_id,
+            recipient_id=_LEADER_ID,
+            limit=512,
+        )
+        st["mailbox"] = {
+            "recipient_id": _LEADER_ID,
+            "messages": listing.get("messages") or [],
+            "ack_cursor": listing.get("ack_cursor"),
+            "next_cursor": listing.get("next_cursor"),
+            "has_more": bool(listing.get("has_more")),
+        }
+    except (MailboxError, OSError, ValueError, TeamError):
+        st["mailbox"] = {
+            "recipient_id": _LEADER_ID,
+            "messages": [],
+            "ack_cursor": None,
+            "next_cursor": None,
+            "has_more": False,
+        }
     return st
