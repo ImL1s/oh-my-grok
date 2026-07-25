@@ -187,6 +187,30 @@ def test_drift_guard_blocks_without_autopilot(tmp_path, monkeypatch):
     assert "keep working" in d["reason"].lower()
 
 
+def test_drift_guard_does_not_override_awaiting_yield(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMG_STOP_DRIFT_GUARD", "1")
+    ev = _mk(
+        tmp_path,
+        "implement",
+        awaiting=True,
+        last_msg="Should I continue?",
+        stop_hook_active=False,
+    )
+    assert decide_stop(tmp_path, ev, env=os.environ) is None
+
+
+def test_drift_guard_does_not_override_background_tasks(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMG_STOP_DRIFT_GUARD", "1")
+    ev = _mk(
+        tmp_path,
+        "implement",
+        last_msg="Should I continue?",
+        stop_hook_active=False,
+        bg=[{"id": "t1", "status": "running"}],
+    )
+    assert decide_stop(tmp_path, ev, env=os.environ) is None
+
+
 def _seed_stop_counter(tmp_path: Path, session: str, n: int) -> None:
     gate_dir = tmp_path / ".omg" / "state" / "stop_gate"
     gate_dir.mkdir(parents=True, exist_ok=True)

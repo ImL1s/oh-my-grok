@@ -187,62 +187,65 @@ def decide_stop(
         stop_hook_active = bool(
             _event_get(event, "stopHookActive", "stop_hook_active", default=False)
         )
+        last_msg = str(
+            _event_get(
+                event,
+                "lastAssistantMessage",
+                "last_assistant_message",
+                default="",
+            )
+            or ""
+        )
 
+        active = load_active_run(root_path)
+        if active and active.get("mode") == "autopilot":
+            phase = str(active.get("autopilot_phase") or "")
+            if phase not in TERMINAL_PHASES:
+                # Yield predicates first — drift must not trap human pause / bg work.
+                if active.get("autopilot_awaiting"):
+                    return None
+
+                if phase == "interview":
+                    run_id = str(active.get("run_id") or "")
+                    if (
+                        run_id
+                        and _read_interview_status(root_path, run_id) == "waiting_input"
+                    ):
+                        return None
+
+                bg_tasks = _event_get(
+                    event, "backgroundTasks", "background_tasks", default=[]
+                )
+                if bg_tasks:
+                    return None
+
+                goal = str(active.get("goal") or "")
+                run_id = str(active.get("run_id") or "")
+                graceful = _graceful_cap_decision(
+                    root_path,
+                    env=env_map,
+                    stop_hook_active=stop_hook_active,
+                    run_id=run_id,
+                )
+                if graceful is not None:
+                    return graceful
+                return {
+                    "decision": "block",
+                    "reason": continuation_reason(
+                        phase,
+                        goal=goal,
+                        run_id=run_id,
+                        stop_hook_active=stop_hook_active,
+                    ),
+                }
+
+        # No incomplete autopilot: optional chatty drift guard (never overrides yields).
         if (
             not stop_hook_active
             and _drift_guard_enabled(env_map)
-            and _is_chatty_question(
-                str(
-                    _event_get(
-                        event,
-                        "lastAssistantMessage",
-                        "last_assistant_message",
-                        default="",
-                    )
-                    or ""
-                )
-            )
+            and _is_chatty_question(last_msg)
         ):
             return {"decision": "block", "reason": _DRIFT_BLOCK_REASON}
-
-        active = load_active_run(root_path)
-        if not active or active.get("mode") != "autopilot":
-            return None
-
-        phase = str(active.get("autopilot_phase") or "")
-        if phase in TERMINAL_PHASES:
-            return None
-
-        if active.get("autopilot_awaiting"):
-            return None
-
-        if phase == "interview":
-            run_id = str(active.get("run_id") or "")
-            if run_id and _read_interview_status(root_path, run_id) == "waiting_input":
-                return None
-
-        bg_tasks = _event_get(event, "backgroundTasks", "background_tasks", default=[])
-        if bg_tasks:
-            return None
-
-        goal = str(active.get("goal") or "")
-        run_id = str(active.get("run_id") or "")
-        graceful = _graceful_cap_decision(
-            root_path,
-            env=env_map,
-            stop_hook_active=stop_hook_active,
-            run_id=run_id,
-        )
-        if graceful is not None:
-            return graceful
-        return {
-            "decision": "block",
-            "reason": continuation_reason(
-                phase,
-                goal=goal,
-                run_id=run_id,
-                stop_hook_active=stop_hook_active,
-            ),
-        }
+        return None
     except Exception:
         return None
