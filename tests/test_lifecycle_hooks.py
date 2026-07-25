@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 
 from omg_cli.capability_discovery import hook_capability_inventory
@@ -15,6 +16,34 @@ from omg_cli.runtime_events import read_all_runtime_events
 
 ROOT = Path(__file__).resolve().parents[1]
 HOOKS = ROOT / "hooks" / "bin"
+RUN_ID = "run-1"
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _seed_active_autopilot(tmp_path: Path, *, phase: str = "implement") -> None:
+    state_dir = tmp_path / ".omg" / "state"
+    run_dir = state_dir / "runs" / RUN_ID
+    run_dir.mkdir(parents=True, exist_ok=True)
+    now = _utc_now()
+    status = {
+        "run_id": RUN_ID,
+        "mode": "autopilot",
+        "goal": "test goal",
+        "status": "running",
+        "verified": False,
+        "passes": 0,
+        "created_at": now,
+        "updated_at": now,
+        "autopilot_phase": phase,
+    }
+    (state_dir / "active.json").write_text(
+        json.dumps({"run_id": RUN_ID, "updated_at": now}),
+        encoding="utf-8",
+    )
+    (run_dir / "status.json").write_text(json.dumps(status), encoding="utf-8")
 
 
 def _run_hook(name: str, tmp_path: Path, payload: str = "{}") -> subprocess.CompletedProcess[str]:
@@ -49,6 +78,30 @@ def test_session_start_is_passive_and_does_not_write_mutable_resume_pointer(tmp_
     assert not (tmp_path / ".omg" / "state" / "RESUME.md").exists()
     events = read_all_runtime_events(tmp_path)
     assert any(row["event_type"] == "session_started" for row in events)
+
+
+def test_stop_blocks_active_incomplete_autopilot(tmp_path) -> None:
+    _seed_active_autopilot(tmp_path, phase="implement")
+    proc = _run_hook("stop.py", tmp_path, '{"reason":"end_turn","stopHookActive":false}')
+    assert proc.returncode == 0
+    assert json.loads(proc.stdout)["decision"] == "block"
+
+
+def test_stop_allows_session_end_fire(tmp_path) -> None:
+    _seed_active_autopilot(tmp_path, phase="implement")
+    proc = _run_hook("stop.py", tmp_path, '{"reason":"shutdown"}')
+    assert proc.returncode == 0 and proc.stdout.strip() == ""
+
+
+def test_stop_allows_verified(tmp_path) -> None:
+    _seed_active_autopilot(tmp_path, phase="verified")
+    proc = _run_hook("stop.py", tmp_path, '{"reason":"end_turn"}')
+    assert proc.stdout.strip() == ""
+
+
+def test_stop_fail_open_on_malformed_and_crash(tmp_path) -> None:
+    proc = _run_hook("stop.py", tmp_path, "not-json{")
+    assert proc.returncode == 0
 
 
 def test_stop_and_subagent_alias_are_fail_open_bounded_and_non_authoritative(tmp_path) -> None:
