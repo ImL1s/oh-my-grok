@@ -10,6 +10,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- Shorthand `omg team launch` waits for worker mailbox ACKs (body `ACK` to
+  `leader-fixed`) before reporting success. Knob: `OMG_TEAM_READY_TIMEOUT_MS`
+  (default 45000). Partial ACK → `startup_status=degraded`; zero →
+  `failed_start`; both exit non-zero and leave state for diagnosis.
 - OMX-like team launch shorthand: `omg team [N[:role]] "<goal>"` → `launch`
   (split-pane topology, goal decomposition, team-name ref index, P0 api board
   seed, `skills/omg-team`). Still gated by `OMG_EXPERIMENTAL_TMUX_TEAM=1`;

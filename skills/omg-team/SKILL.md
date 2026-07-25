@@ -11,6 +11,10 @@ Launch **real tmux worker panes** coordinated by the `omg` CLI. This is **not**
 Requires `OMG_EXPERIMENTAL_TMUX_TEAM=1`. Still experimental until live Grok smoke
 promotion; do not claim full OMX `$team` parity.
 
+Live launch polls worker ACKs (`body=ACK` → `leader-fixed`) before success.
+Timeout: `OMG_TEAM_READY_TIMEOUT_MS` (default 45000). Partial/zero ACK exits
+non-zero and leaves state for diagnosis — never silent dry-run/ULW fallback.
+
 ## HARD RULES
 - Launch authority is **only** the `omg team …` CLI. Do not fake team with
   `spawn_subagent`, and do not hand-write `passes` / `verified`.

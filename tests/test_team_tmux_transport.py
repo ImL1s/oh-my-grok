@@ -127,6 +127,7 @@ def test_split_transport_two_panes_and_acks(
     """Real tmux split + fixture ACK — hermetic transport only, not Grok parity."""
     monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
     monkeypatch.setenv("OMG_TEAM_FIXTURE_HOLD_S", "20")
+    monkeypatch.setenv("OMG_TEAM_READY_TIMEOUT_MS", "20000")
     for key in WORKER_ENV_MARKERS:
         monkeypatch.delenv(key, raising=False)
     _init_repo(tmp_path)
@@ -159,9 +160,12 @@ def test_split_transport_two_panes_and_acks(
         run_id = str(meta["run_id"])
         assert session
         assert _pane_count(session) == 2
+        assert meta.get("startup_acks") == 2
+        assert meta.get("startup_status") == "running"
+        assert set(meta.get("startup_ack_workers") or []) == {"w1", "w2"}
 
         acks = _wait_acks(
-            tmp_path, run_id=run_id, team_id=TEAM_ID, expected=2, timeout_s=20.0
+            tmp_path, run_id=run_id, team_id=TEAM_ID, expected=2, timeout_s=5.0
         )
         assert len(acks) == 2, f"expected 2 ACK messages, got {acks!r}"
         senders = {str(m.get("sender_id") or "") for m in acks}
@@ -173,3 +177,47 @@ def test_split_transport_two_panes_and_acks(
             except Exception:
                 pass
         _cleanup_session(session)
+
+
+def test_list_pane_identities_split_vs_windows_vs_mixed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hermetic mapping for pane_index split (no real tmux)."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import plane
+
+    def _ok(stdout: str) -> SimpleNamespace:
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    # Windows topology: one pane per window (legacy 3-field).
+    monkeypatch.setattr(
+        plane,
+        "_tmux_run",
+        lambda args, **kw: _ok("0\t%0\t1001\n1\t%1\t1002\n"),
+    )
+    assert plane._list_pane_identities("s") == {
+        0: ("%0", 1001),
+        1: ("%1", 1002),
+    }
+
+    # Split topology: single window, key by pane_index (4-field).
+    monkeypatch.setattr(
+        plane,
+        "_tmux_run",
+        lambda args, **kw: _ok("0\t0\t%10\t2001\n0\t1\t%11\t2002\n"),
+    )
+    assert plane._list_pane_identities("s") == {
+        0: ("%10", 2001),
+        1: ("%11", 2002),
+    }
+
+    # Mixed multi-window multi-pane → fail closed.
+    monkeypatch.setattr(
+        plane,
+        "_tmux_run",
+        lambda args, **kw: _ok(
+            "0\t0\t%20\t3001\n0\t1\t%21\t3002\n1\t0\t%22\t3003\n"
+        ),
+    )
+    assert plane._list_pane_identities("s") == {}

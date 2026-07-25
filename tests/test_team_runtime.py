@@ -78,3 +78,91 @@ def test_launch_team_dry_run_seeds_ref_and_board(
     )
     assert team_json["writer"] == "omg-cli"
     assert team_json["topology"] == "split"
+    assert team_json.get("startup_acks") is None
+    assert team_json.get("startup_status") is None
+    assert meta.get("startup_acks") is None
+    assert meta.get("startup_status") is None
+    assert "dry_run skipped ACK wait" in str(meta.get("startup_note") or "")
+
+
+def test_wait_for_startup_acks_full_partial_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.mailbox import send_message
+    from omg_cli.team.runtime import wait_for_startup_acks
+
+    run_id = "run-ack-wait"
+    team_id = "team"
+    # Seed empty mailbox via first send is enough once control plane exists —
+    # wait_for_startup_acks only reads mailbox; inject ACKs directly.
+    monkeypatch.setenv("OMG_TEAM_READY_TIMEOUT_MS", "200")
+
+    # Zero ACKs → failed_start
+    zero = wait_for_startup_acks(
+        tmp_path,
+        run_id=run_id,
+        team_id=team_id,
+        expected_workers=["w1", "w2"],
+        timeout_ms=50,
+        poll_s=0.01,
+    )
+    assert zero["startup_status"] == "failed_start"
+    assert zero["startup_acks"] == 0
+
+    send_message(
+        tmp_path,
+        run_id=run_id,
+        team_id=team_id,
+        sender_id="w1",
+        recipient_id="leader-fixed",
+        body="ACK",
+        generation=0,
+        kind="ack",
+        dedupe_key="ack-w1",
+    )
+    partial = wait_for_startup_acks(
+        tmp_path,
+        run_id=run_id,
+        team_id=team_id,
+        expected_workers=["w1", "w2"],
+        timeout_ms=50,
+        poll_s=0.01,
+    )
+    assert partial["startup_status"] == "degraded"
+    assert partial["startup_acks"] == 1
+    assert partial["startup_ack_workers"] == ["w1"]
+
+    send_message(
+        tmp_path,
+        run_id=run_id,
+        team_id=team_id,
+        sender_id="w2",
+        recipient_id="leader-fixed",
+        body="ACK",
+        generation=0,
+        kind="ack",
+        dedupe_key="ack-w2",
+    )
+    full = wait_for_startup_acks(
+        tmp_path,
+        run_id=run_id,
+        team_id=team_id,
+        expected_workers=["w1", "w2"],
+        timeout_ms=200,
+        poll_s=0.01,
+    )
+    assert full["startup_status"] == "running"
+    assert full["startup_acks"] == 2
+    assert full["startup_ack_workers"] == ["w1", "w2"]
+
+
+def test_ready_timeout_ms_rejects_junk(monkeypatch: pytest.MonkeyPatch) -> None:
+    from omg_cli.team.plane import TeamGateError
+    from omg_cli.team.runtime import ready_timeout_ms
+
+    monkeypatch.delenv("OMG_TEAM_READY_TIMEOUT_MS", raising=False)
+    assert ready_timeout_ms() == 45_000
+    assert ready_timeout_ms({"OMG_TEAM_READY_TIMEOUT_MS": "1000"}) == 1000
+    with pytest.raises(TeamGateError):
+        ready_timeout_ms({"OMG_TEAM_READY_TIMEOUT_MS": "nope"})
+

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
+import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -13,6 +15,7 @@ from omg_cli.contracts.state_schemas import require_safe_id
 from omg_cli.evidence import CLI_WRITER
 from omg_cli.team.api import execute_team_api
 from omg_cli.team.decomposition import decompose_goal
+from omg_cli.team.mailbox import MailboxError, list_messages, read_message
 from omg_cli.team.plane import (
     EXPERIMENTAL_ENV,
     SCHEMA_VERSION,
@@ -26,6 +29,13 @@ from omg_cli.team.plane import (
 from omg_cli.team.roles import normalize_role, role_meta
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+# Bounded wait for worker ACK messages before reporting launch as running.
+READY_TIMEOUT_ENV = "OMG_TEAM_READY_TIMEOUT_MS"
+DEFAULT_READY_TIMEOUT_MS = 45_000
+_LEADER_ID = "leader-fixed"
+_ACK_BODY = "ACK"
+_ACK_POLL_S = 0.25
 
 
 def _slug_team_name(goal: str, run_id: str) -> str:
@@ -123,6 +133,121 @@ def _ensure_lane_dirs(root: Path, tasks: Sequence[Mapping[str, Any]]) -> None:
                 ensure_managed_dir(path.parent)
                 if not path.exists():
                     path.write_text("", encoding="utf-8")
+
+
+def ready_timeout_ms(env: Mapping[str, str] | None = None) -> int:
+    """Resolve ``OMG_TEAM_READY_TIMEOUT_MS`` (default 45000). Fail closed on junk."""
+    raw = None
+    if env is not None and READY_TIMEOUT_ENV in env:
+        raw = env.get(READY_TIMEOUT_ENV)
+    else:
+        raw = os.environ.get(READY_TIMEOUT_ENV)
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_READY_TIMEOUT_MS
+    try:
+        value = int(str(raw).strip())
+    except ValueError as exc:
+        raise TeamGateError(
+            f"{READY_TIMEOUT_ENV} must be a non-negative integer (ms)"
+        ) from exc
+    if value < 0:
+        raise TeamGateError(f"{READY_TIMEOUT_ENV} must be >= 0")
+    return value
+
+
+def collect_startup_ack_workers(
+    root: Path | str,
+    *,
+    run_id: str,
+    team_id: str,
+) -> set[str]:
+    """Return worker ids that sent body=ACK to ``leader-fixed``."""
+    try:
+        listing = list_messages(
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            recipient_id=_LEADER_ID,
+            limit=512,
+        )
+    except (MailboxError, OSError, ValueError):
+        return set()
+    senders: set[str] = set()
+    for row in listing.get("messages") or []:
+        if not isinstance(row, Mapping):
+            continue
+        message_id = row.get("message_id")
+        if not isinstance(message_id, str) or not message_id:
+            continue
+        try:
+            msg = read_message(
+                root,
+                run_id=run_id,
+                team_id=team_id,
+                recipient_id=_LEADER_ID,
+                message_id=message_id,
+            )
+        except (MailboxError, OSError, ValueError):
+            continue
+        if msg.get("body") == _ACK_BODY:
+            sender = str(msg.get("sender_id") or "").strip()
+            if sender:
+                senders.add(sender)
+    return senders
+
+
+def wait_for_startup_acks(
+    root: Path | str,
+    *,
+    run_id: str,
+    team_id: str,
+    expected_workers: Sequence[str],
+    timeout_ms: int | None = None,
+    env: Mapping[str, str] | None = None,
+    poll_s: float = _ACK_POLL_S,
+) -> dict[str, Any]:
+    """Poll leader mailbox until all workers ACK or timeout.
+
+    Returns ``startup_acks``, ``startup_ack_workers``, ``startup_status``:
+    - ``running`` — every expected worker ACKed
+    - ``degraded`` — some but not all ACKed
+    - ``failed_start`` — zero ACKs
+    """
+    expected = [str(w).strip() for w in expected_workers if str(w).strip()]
+    expected_set = set(expected)
+    ms = ready_timeout_ms(env) if timeout_ms is None else int(timeout_ms)
+    if ms < 0:
+        raise TeamGateError("ready timeout_ms must be >= 0")
+    deadline = time.monotonic() + (ms / 1000.0)
+    acked: set[str] = set()
+    while True:
+        acked = collect_startup_ack_workers(root, run_id=run_id, team_id=team_id)
+        acked &= expected_set
+        if expected_set and acked >= expected_set:
+            break
+        if not expected:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(max(0.05, float(poll_s)))
+
+    ordered = [w for w in expected if w in acked]
+    count = len(ordered)
+    if not expected:
+        status = "running"
+    elif count == len(expected):
+        status = "running"
+    elif count == 0:
+        status = "failed_start"
+    else:
+        status = "degraded"
+    return {
+        "startup_acks": count,
+        "startup_ack_workers": ordered,
+        "startup_status": status,
+        "startup_expected": len(expected),
+        "ready_timeout_ms": ms,
+    }
 
 
 def _seed_api_board(
@@ -260,6 +385,48 @@ def launch_team(
     meta["launch_mode"] = "shorthand"
     meta["topology"] = "split"
     meta["schema_version"] = meta.get("schema_version", SCHEMA_VERSION)
+
+    if dry_run:
+        startup = {
+            "startup_acks": None,
+            "startup_ack_workers": None,
+            "startup_status": None,
+            "startup_expected": len(tasks),
+            "ready_timeout_ms": None,
+            "startup_note": (
+                f"dry_run skipped ACK wait ({READY_TIMEOUT_ENV} unused)"
+            ),
+        }
+    else:
+        expected_workers = [str(t["task_id"]) for t in tasks]
+        startup = wait_for_startup_acks(
+            root_path,
+            run_id=rid,
+            team_id=team_id,
+            expected_workers=expected_workers,
+            env=api_env,
+        )
+        status = str(startup["startup_status"])
+        if status == "running":
+            startup["startup_note"] = (
+                f"all {startup['startup_acks']} workers ACK'd within "
+                f"{startup['ready_timeout_ms']}ms"
+            )
+        elif status == "degraded":
+            startup["startup_note"] = (
+                f"partial ACK {startup['startup_acks']}/"
+                f"{startup['startup_expected']} within "
+                f"{startup['ready_timeout_ms']}ms "
+                f"(knob {READY_TIMEOUT_ENV}); state left for diagnosis"
+            )
+        else:
+            startup["startup_note"] = (
+                f"zero ACKs within {startup['ready_timeout_ms']}ms "
+                f"(knob {READY_TIMEOUT_ENV}); state left for diagnosis"
+            )
+
+    meta.update(startup)
+
     # Persist annotations onto team.json compatibility view
     path = team_meta_path(root_path, rid)
     if path.is_file():
@@ -270,8 +437,13 @@ def launch_team(
                 "team_id": team_id,
                 "launch_mode": "shorthand",
                 "topology": "split",
+                **startup,
             }
         )
+        note = str(current.get("note") or "").rstrip()
+        extra_note = str(startup.get("startup_note") or "")
+        if extra_note and extra_note not in note:
+            current["note"] = (note + "; " + extra_note).strip("; ").strip()
         path.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
         path.chmod(0o600)
         meta = current
@@ -289,6 +461,8 @@ def status_for_identity(
         st["team_id"] = meta.get("team_id")
         st["launch_mode"] = meta.get("launch_mode")
         st["topology"] = meta.get("topology")
+        st["startup_acks"] = meta.get("startup_acks")
+        st["startup_status"] = meta.get("startup_status")
     except TeamError:
         pass
     return st

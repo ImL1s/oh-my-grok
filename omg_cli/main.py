@@ -763,6 +763,19 @@ def cmd_team(args: argparse.Namespace) -> int:
                 run_id=getattr(args, "run_id", None),
             )
             print(json.dumps(meta, indent=2, ensure_ascii=False))
+            # Bounded ACK wait: partial/zero ACKs leave state for diagnosis
+            # but must not report success (no silent dry-run / ULW fallback).
+            startup = meta.get("startup_status")
+            if startup in ("failed_start", "degraded"):
+                print(
+                    f"omg team launch: startup {startup} "
+                    f"(acks={meta.get('startup_acks')}/"
+                    f"{meta.get('startup_expected')})",
+                    file=sys.stderr,
+                )
+                return 1
+            if startup == "running" or meta.get("dry_run"):
+                print("Team started", file=sys.stderr)
             return 0
         if action == "start":
             goal = getattr(args, "goal", None) or ""

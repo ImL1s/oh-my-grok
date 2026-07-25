@@ -174,6 +174,9 @@ export OMG_EXPERIMENTAL_TMUX_TEAM=1
 omg team launch --workers 3 --role executor --goal "fix flaky tests"
 # argv shorthand (same launch path): omg team <N[:role]> "<goal>"
 omg team launch --workers 2 --role executor --goal "map A and B" --dry-run
+# Live launch waits for worker ACK (body=ACK → leader-fixed) before success.
+# Timeout knob: OMG_TEAM_READY_TIMEOUT_MS (default 45000). Partial/zero ACK
+# leaves state for diagnosis and exits non-zero (no silent dry-run fallback).
 omg team status --run RUN --json
 omg team stop --run RUN
 ```
