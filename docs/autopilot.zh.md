@@ -24,15 +24,14 @@ English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.m
 | OMC 期望 | OMG 对应 | 说明 |
 |----------|----------|------|
 | 不离开 session（Stop block） | **Stop pin（主要）** | grok ≥0.2.107；每 turn 上限 8 |
-| 不依赖 Stop 的 turn 内继续 | **`/goal`（次要）** | 宿主原生；在 Stop 闸门前 |
-
-当 host `/goal` 为 **Active** 时，它主导 continuation，Stop 闸门在 goal 释放前
-不会被咨询；goal 释放后 Stop pin 再执行剩余 autopilot 闸门。
+| 不依赖 Stop 的 turn 内继续 | **`/goal`（次要）** | 宿主原生；Active 时绕过 Stop 闸门 |
 | 跨 turn / 无头 / 超 cap | **`/loop` / `omg ralph`（第三；forthcoming `run --resume`）** | 新 turn；计数重置 |
 | 人类暂停（需求不清） | **`ask_user_question` + interview** | 闸门让步；非 mid-phase 闲聊 |
 | 破坏性 / 凭证暂停 | **`omg autopilot await`** | 设置 `autopilot_awaiting` |
 | 取消粘性模式 | **`omg cancel`** | 不是「解开 Stop」 |
 | Verified 完成 | **`omg accept` / `omg autopilot complete`** | 仅 CLI |
+
+**运行时优先序：** 当 host `/goal` 为 **Active** 时，它主导 continuation，Stop 闸门在 goal 释放前不会被咨询；goal 释放后 Stop pin 再执行剩余 autopilot 闸门。
 
 ### Stop pin 诚实说明
 

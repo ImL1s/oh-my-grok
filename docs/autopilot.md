@@ -25,16 +25,14 @@ English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.m
 | OMC expectation | OMG equivalent | Notes |
 |-----------------|----------------|-------|
 | Stay in session until done (Stop block) | **Stop pin (primary)** | grok ≥0.2.107; cap 8/turn; fail-open |
-| In-turn “keep going” without Stop | **`/goal` (secondary)** | Host-native; runs before Stop gate |
-
-When a host `/goal` is **Active**, it dominates continuation and the Stop gate
-is not consulted until the goal releases; the Stop pin then enforces remaining
-autopilot gates.
+| In-turn “keep going” without Stop | **`/goal` (secondary)** | Host-native; Active bypasses Stop gate |
 | Cross-turn / headless / beyond cap | **`/loop` / `omg ralph` (tertiary; forthcoming `run --resume`)** | Fresh turn; counter resets |
 | Human pause (requirements unclear) | **`ask_user_question` + interview** | Gate yields; not mid-phase chat |
 | Destructive / credential pause | **`omg autopilot await`** | Sets `autopilot_awaiting`; gate yields |
 | Cancel sticky mode | **`omg cancel`** | Not “unblock Stop” |
 | Verified done | **`omg accept` / `omg autopilot complete`** | CLI only |
+
+**Runtime precedence:** When a host `/goal` is **Active**, it dominates continuation and the Stop gate is not consulted until the goal releases; the Stop pin then enforces remaining autopilot gates.
 
 ### Stop pin honesty
 
