@@ -45,7 +45,7 @@ English: [`skills.md`](./skills.md)
 | ralph、不要停、做到完 | `omg-ralph` | `omg ralph` | 單 story 外層迴圈 |
 | ralplan、plan 共識 | `omg-ralplan` | `omg ralplan` | 計畫→critic→verifier（不寫碼） |
 | deep interview、釐清需求 | `omg-deep-interview` | `omg interview *` | 需求閘門 |
-| ultragoal、多 story、goal ledger | `omg-ultragoal` | `omg goal *` | 持久 ledger（無 host `/goal`） |
+| ultragoal、多 story、goal ledger | `omg-ultragoal` | `omg goal *` | 持久 ledger + host `/goal` session 壓力 |
 | ultraqa、修測試、重跑 | `omg-ultraqa` | `omg qa *` | freeze→run→repair（**≠ verified**） |
 | dual-review、不要 self-approve | `omg-dual-review` | `omg dual-review` · `omg review` | critic→verifier |
 | pipeline | `omg-pipeline` | `omg pipeline` | plan→implement→accept FSM |
@@ -254,7 +254,9 @@ omg interview close --run RUN
 | **CLI** | `omg goal init\|status\|link-run\|start-story\|checkpoint\|block-story\|resume-story\|complete-story\|verify\|repair` |
 | **SKILL** | [`skills/omg-ultragoal/SKILL.md`](../skills/omg-ultragoal/SKILL.md) |
 
-Grok **沒有** host `/goal` — ledger 只在 `.omg/ultragoal/`。  
+Grok **有** slash `/goal`（session 範圍、單 goal、設定即替換；Active 繞過 Stop；
+重啟後降為 paused，用 `/goal resume`）。多 story ledger 在 `.omg/ultragoal/`
+經 `omg goal *`（無 OMX `get_goal`/`create_goal` tool API）。  
 `omg goal verify` 需要已透過 accept/complete **verified** 的 linked run。
 
 ---

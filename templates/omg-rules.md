@@ -35,6 +35,8 @@ asks for tmux workers): run canonical `omg team [N[:role]] "<goal>"` with
 rework / acceptance: **do not ask the user**. Record uncertainty under
 `.omg/artifacts/` and keep working, or `omg autopilot transition --phase blocked`.
 The Stop gate will reinject this rule if you try to stop mid-phase.
+Host slash `/goal` while Active bypasses the Stop gate; hooks cannot read or
+mutate host goal state — do not invent `/goal` status from hook output.
 </workflow_routing>
 
 <subagents>

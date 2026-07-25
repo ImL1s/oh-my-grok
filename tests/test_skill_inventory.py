@@ -98,6 +98,7 @@ def test_omg_ultragoal_is_session_playbook_not_stub():
     text = _skill("omg-ultragoal")
     assert "name: omg-ultragoal" in text
     assert text.count("\n") >= 100
+    low = text.lower()
     for needle in (
         "HARD RULES",
         "Use when",
@@ -107,10 +108,21 @@ def test_omg_ultragoal_is_session_playbook_not_stub():
         "link-run",
         "verify",
         "spawn_subagent",
-        "no host",
         "/goal",
     ):
-        assert needle.lower() in text.lower() or needle in text, f"missing {needle!r}"
+        assert needle.lower() in low or needle in text, f"missing {needle!r}"
+    # Honest host /goal wording (G1): mention slash goal, not "no host /goal API"
+    assert "no host `/goal` api" not in low
+    assert "grok has no host" not in low
+    assert any(
+        phrase in low
+        for phrase in (
+            "session-scoped",
+            "slash `/goal`",
+            "host slash `/goal`",
+            "host `/goal`",
+        )
+    ), "skill should describe host /goal honestly"
 
 
 def test_omg_using_routes_ultragoal():

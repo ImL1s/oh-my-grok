@@ -25,6 +25,9 @@ English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.m
 |----------|----------|------|
 | 不離開 session（Stop block） | **Stop pin（主要）** | grok ≥0.2.107；每 turn 上限 8 |
 | 不依賴 Stop 的 turn 內繼續 | **`/goal`（次要）** | 宿主原生；在 Stop 閘門前 |
+
+當 host `/goal` 為 **Active** 時，它主導 continuation，Stop 閘門在 goal 釋放前
+不會被諮詢；goal 釋放後 Stop pin 再執行剩餘 autopilot 閘門。
 | 跨 turn / 無頭 / 超 cap | **`/loop` / `omg ralph`（第三；forthcoming `run --resume`）** | 新 turn；計數重置 |
 | 人類暫停（需求不清） | **`ask_user_question` + interview** | 閘門讓步；非 mid-phase 閒聊 |
 | 破壞性 / 憑證暫停 | **`omg autopilot await`** | 設定 `autopilot_awaiting` |
