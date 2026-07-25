@@ -761,8 +761,12 @@ def cmd_team(args: argparse.Namespace) -> int:
                 yolo=bool(getattr(args, "yolo", False)),
                 safe=bool(getattr(args, "safe", False)),
                 run_id=getattr(args, "run_id", None),
+                detach=bool(getattr(args, "detach", False)),
             )
             print(json.dumps(meta, indent=2, ensure_ascii=False))
+            hint = meta.get("attach_hint")
+            if hint and not meta.get("dry_run"):
+                print(f"omg team launch: {hint}", file=sys.stderr)
             # Bounded ACK wait: partial/zero ACKs leave state for diagnosis
             # but must not report success (no silent dry-run / ULW fallback).
             startup = meta.get("startup_status")

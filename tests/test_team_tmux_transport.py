@@ -145,10 +145,13 @@ def test_split_transport_two_panes_and_acks(
             env={EXPERIMENTAL_ENV: "1"},
             team_id=TEAM_ID,
             executor="fixture",
+            detach=True,
         )
         assert meta.get("dry_run") is False
         assert meta.get("topology") == "split"
         assert meta.get("executor") == "fixture"
+        assert meta.get("attach_mode") == "detached"
+        assert meta.get("session_owned") is True
         assert meta.get("task_count") == 2
         # Honesty: fixture path must not look like a grok live claim.
         for task in meta.get("tasks") or []:
@@ -221,3 +224,83 @@ def test_list_pane_identities_split_vs_windows_vs_mixed(
         ),
     )
     assert plane._list_pane_identities("s") == {}
+
+
+def test_resolve_attach_mode_inside_detached_and_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.team.tmux import TmuxTeamError, resolve_attach_mode
+
+    monkeypatch.delenv("TMUX", raising=False)
+    assert resolve_attach_mode(detach=True, env={}, isatty=lambda: False) == "detached"
+    assert resolve_attach_mode(detach=False, env={}, isatty=lambda: True) == "detached"
+    assert (
+        resolve_attach_mode(
+            detach=False, env={"TMUX": "/tmp/tmux-1000/default,123,0"}, isatty=lambda: False
+        )
+        == "inside"
+    )
+    with pytest.raises(TmuxTeamError, match="--detach"):
+        resolve_attach_mode(detach=False, env={}, isatty=lambda: False)
+
+
+def test_inside_tmux_splits_current_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When TMUX is set, create uses new-window + split-window (not new-session)."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    calls: list[list[str]] = []
+
+    def fake_tmux(args: list[str]) -> SimpleNamespace:
+        calls.append(list(args))
+        cmd = args[0]
+        if cmd == "display-message" and "#{session_name}" in " ".join(args):
+            return SimpleNamespace(returncode=0, stdout="leader\t$42\n", stderr="")
+        if cmd == "display-message" and "#{pane_id}" in " ".join(args) and "-t" not in args:
+            return SimpleNamespace(returncode=0, stdout="%9\n", stderr="")
+        if cmd == "new-window":
+            return SimpleNamespace(returncode=0, stdout="@7\t%10\n", stderr="")
+        if cmd == "split-window":
+            return SimpleNamespace(returncode=0, stdout="%11\n", stderr="")
+        if cmd in ("select-layout", "set-option"):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "kill-window":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
+
+    tasks = [
+        {
+            "task_id": "w1",
+            "worktree": "/tmp/w1",
+            "pane_command": "true",
+            "_env_pairs": [],
+        },
+        {
+            "task_id": "w2",
+            "worktree": "/tmp/w2",
+            "pane_command": "true",
+            "_env_pairs": [],
+        },
+    ]
+    handle = tmux_mod.create_split_team_session(
+        session="planned-name",
+        tasks=tasks,
+        env_pairs=[],
+        attach_mode="inside",
+    )
+    assert handle == ("leader", "$42")
+    assert tasks[0]["pane_id"] == "%10"
+    assert tasks[1]["pane_id"] == "%11"
+    assert tasks[0]["_tmux_launch"]["attach_mode"] == "inside"
+    assert tasks[0]["_tmux_launch"]["session_owned"] is False
+    assert tasks[0]["_tmux_launch"]["leader_pane_id"] == "%9"
+    assert tasks[0]["_tmux_launch"]["window_id"] == "@7"
+    assert any(c[0] == "new-window" for c in calls)
+    assert any(c[0] == "split-window" for c in calls)
+    assert not any(c[0] == "new-session" for c in calls)
+    assert not any(c[0] == "kill-session" for c in calls)

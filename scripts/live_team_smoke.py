@@ -132,6 +132,7 @@ def main() -> int:
                     check_binary=False,
                     env={"OMG_EXPERIMENTAL_TMUX_TEAM": "1"},
                     executor="fixture",
+                    detach=True,
                 )
                 print(json.dumps(meta, indent=2, ensure_ascii=False))
                 assert meta.get("dry_run") is False

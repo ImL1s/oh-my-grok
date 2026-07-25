@@ -1327,6 +1327,7 @@ def start_team(
     team_id: str = "team",
     owner_token: str | None = None,
     executor: str | None = None,
+    detach: bool = False,
 ) -> dict[str, Any]:
     """Create ownership + worktrees + team.json (+ live tmux unless dry_run).
 
@@ -1563,7 +1564,11 @@ def start_team(
     def _public_tasks() -> list[dict[str, Any]]:
         cleaned: list[dict[str, Any]] = []
         for item in task_records:
-            row = {k: v for k, v in item.items() if k != "_env_pairs"}
+            row = {
+                k: v
+                for k, v in item.items()
+                if k not in ("_env_pairs", "_tmux_launch")
+            }
             cleaned.append(row)
         return cleaned
 
@@ -1619,6 +1624,13 @@ def start_team(
     )
     snapshots = _snapshot_live_start_files(transaction_paths)
     created_handle: tuple[str, str] | None = None
+    tmux_launch: dict[str, Any] = {
+        "attach_mode": "detached",
+        "session_owned": True,
+        "leader_pane_id": None,
+        "window_id": None,
+        "attach_hint": None,
+    }
     try:
         if topology == "split":
             from omg_cli.team.tmux import TmuxTeamError, create_split_team_session
@@ -1628,9 +1640,16 @@ def start_team(
                     session=session,
                     tasks=task_records,
                     env_pairs=env_pairs,
+                    detach=detach,
+                    env=env,
                 )
             except TmuxTeamError as exc:
                 raise TeamError(str(exc)) from exc
+            raw_launch = task_records[0].pop("_tmux_launch", None)
+            if isinstance(raw_launch, Mapping):
+                tmux_launch = {**tmux_launch, **dict(raw_launch)}
+            # Inside mode joins the live session (name may differ from plan).
+            session = created_handle[0]
         else:
             created_handle = _create_tmux_session(
                 session=session,
@@ -1650,17 +1669,31 @@ def start_team(
             raise TeamError("failed to bind tmux launch nonce")
 
         session_identity = _read_tmux_session_identity(session)
-        pane_identities = _list_pane_identities(created_handle[1])
-        if session_identity != created_handle or len(pane_identities) != len(
-            task_records
-        ):
+        if session_identity != created_handle:
             raise TeamError("tmux launch identity readback failed")
-        for rec in task_records:
-            widx = int(rec["window_index"])
-            pane_identity = pane_identities.get(widx)
-            if pane_identity is not None:
-                pane_id, pid = pane_identity
-                rec["pane_id"] = pane_id
+
+        if topology == "split" and all(
+            isinstance(rec.get("pane_id"), str)
+            and _TMUX_PANE_ID.fullmatch(str(rec.get("pane_id"))) is not None
+            for rec in task_records
+        ):
+            # Prefer exact pane ids from new-session/split-window -P (required
+            # for inside-tmux where the session already has extra panes).
+            for rec in task_records:
+                pane_id = str(rec["pane_id"])
+                pid_probe = _tmux_run(
+                    ["display-message", "-p", "-t", pane_id, "#{pane_pid}"]
+                )
+                if pid_probe.returncode != 0:
+                    raise TeamError(f"tmux pane pid readback failed for {pane_id}")
+                try:
+                    pid = int((pid_probe.stdout or "").strip())
+                except ValueError as exc:
+                    raise TeamError(
+                        f"tmux pane pid invalid for {pane_id}"
+                    ) from exc
+                if pid <= 0:
+                    raise TeamError(f"tmux pane pid non-positive for {pane_id}")
                 rec["pid"] = pid
                 rec["pgid"] = _pgid_for_pid(pid)
                 rec["pid_start"] = _pid_start_identity(pid)
@@ -1669,8 +1702,26 @@ def start_team(
                     if rec["pgid"] is not None and rec["pid_start"] is not None
                     else "launched"
                 )
-            else:
-                rec["status"] = "launched"  # session created; pid unknown
+        else:
+            pane_identities = _list_pane_identities(created_handle[1])
+            if len(pane_identities) != len(task_records):
+                raise TeamError("tmux launch identity readback failed")
+            for rec in task_records:
+                widx = int(rec["window_index"])
+                pane_identity = pane_identities.get(widx)
+                if pane_identity is not None:
+                    pane_id, pid = pane_identity
+                    rec["pane_id"] = pane_id
+                    rec["pid"] = pid
+                    rec["pgid"] = _pgid_for_pid(pid)
+                    rec["pid_start"] = _pid_start_identity(pid)
+                    rec["status"] = (
+                        "running"
+                        if rec["pgid"] is not None and rec["pid_start"] is not None
+                        else "launched"
+                    )
+                else:
+                    rec["status"] = "launched"  # session created; pid unknown
 
         _receipt, launch_receipt_sha256 = _persist_team_launch_receipt(
             root_path,
@@ -1704,6 +1755,11 @@ def start_team(
             "team_id": tid_plane,
             "owner_token": token,
             "executor": executor_norm,
+            "attach_mode": tmux_launch.get("attach_mode"),
+            "session_owned": bool(tmux_launch.get("session_owned", True)),
+            "leader_pane_id": tmux_launch.get("leader_pane_id"),
+            "window_id": tmux_launch.get("window_id"),
+            "attach_hint": tmux_launch.get("attach_hint"),
             "note": (
                 "experimental fixture tmux team; hermetic ACK transport "
                 "(not Grok live parity); stop via immutable launch identity"
@@ -1730,11 +1786,23 @@ def start_team(
         )
         return meta
     except Exception as exc:
-        cleanup_error = (
-            _cleanup_created_tmux_session(created_handle)
-            if created_handle is not None
-            else None
-        )
+        cleanup_error = None
+        if created_handle is not None:
+            if topology == "split" and not bool(tmux_launch.get("session_owned", True)):
+                from omg_cli.team.tmux import _kill_panes, _kill_window
+
+                window_id = tmux_launch.get("window_id")
+                if isinstance(window_id, str) and window_id:
+                    cleanup_error = _kill_window(window_id)
+                else:
+                    pane_ids = [
+                        str(rec.get("pane_id"))
+                        for rec in task_records
+                        if isinstance(rec.get("pane_id"), str)
+                    ]
+                    cleanup_error = _kill_panes(pane_ids)
+            else:
+                cleanup_error = _cleanup_created_tmux_session(created_handle)
         restore_errors = _restore_live_start_files(snapshots)
         details = [str(exc)]
         if cleanup_error:
@@ -2014,8 +2082,30 @@ def _live_signal_target_matches(
         return False
     if _read_tmux_launch_nonce(session) != receipt.get("launch_nonce"):
         return False
-    if _list_pane_identities(session).get(window_index) != (pane_id, pid):
-        return False
+    # Prefer exact pane target when the probe returns pane_id\tpid (inside-tmux
+    # shared sessions make session-wide list-panes ambiguous). Otherwise fall
+    # back to the slot map used by legacy windows topology mocks/tests.
+    pane_probe = _tmux_run(
+        ["display-message", "-p", "-t", pane_id, "#{pane_id}\t#{pane_pid}"]
+    )
+    pane_exact = False
+    if pane_probe.returncode == 0:
+        parts = (pane_probe.stdout or "").strip().split("\t")
+        if (
+            len(parts) == 2
+            and _TMUX_PANE_ID.fullmatch(parts[0]) is not None
+            and parts[0] == pane_id
+        ):
+            pane_exact = True
+            try:
+                live_pid = int(parts[1])
+            except ValueError:
+                return False
+            if live_pid != pid:
+                return False
+    if not pane_exact:
+        if _list_pane_identities(session).get(window_index) != (pane_id, pid):
+            return False
     return _pgid_for_pid(pid) == pgid and _pid_start_identity(pid) == pid_start
 
 
@@ -2244,10 +2334,13 @@ def stop_team(
             process_disappearance_verified = False
             errors.append(f"signal task={tid} target={target}: {exc}")
 
-    # 2) Only after process-group signalling, kill the exact immutable tmux
-    # session ID.  Session/nonce must still match; pane liveness may disappear
-    # because TERM already succeeded.
+    # 2) Only after process-group signalling, tear down tmux transport.
+    # Owned sessions: kill exact immutable session ID.
+    # Inside-tmux (session_owned=False): kill only the team window / panes —
+    # never the leader's shared session.
     session_disappearance_verified = bool(dry)
+    session_owned = bool(meta.get("session_owned", True))
+    window_id = meta.get("window_id")
     if session and not dry:
         try:
             session_still_exact = bool(
@@ -2264,23 +2357,80 @@ def stop_team(
         if session_still_exact and receipt is not None:
             session_id = str(receipt["session_id"])
             try:
-                r = _tmux_run(["kill-session", "-t", session_id])
-                probe = _tmux_run(["has-session", "-t", session_id])
-                if r.returncode == 0 and probe.returncode == 1:
-                    session_disappearance_verified = True
-                    actions.append(f"tmux kill-session -t {session_id}")
-                    actions.append(f"tmux disappearance verified {session_id}")
-                elif r.returncode != 0:
-                    errors.append(
-                        f"tmux kill-session failed for {session_id}: exit {r.returncode}"
-                    )
+                if session_owned:
+                    r = _tmux_run(["kill-session", "-t", session_id])
+                    probe = _tmux_run(["has-session", "-t", session_id])
+                    if r.returncode == 0 and probe.returncode == 1:
+                        session_disappearance_verified = True
+                        actions.append(f"tmux kill-session -t {session_id}")
+                        actions.append(f"tmux disappearance verified {session_id}")
+                    elif r.returncode != 0:
+                        errors.append(
+                            f"tmux kill-session failed for {session_id}: "
+                            f"exit {r.returncode}"
+                        )
+                    else:
+                        errors.append(
+                            "tmux session disappearance unproved "
+                            f"for {session_id}: has-session exit {probe.returncode}"
+                        )
                 else:
-                    errors.append(
-                        "tmux session disappearance unproved "
-                        f"for {session_id}: has-session exit {probe.returncode}"
-                    )
+                    # Shared session: remove only the team window (or panes).
+                    from omg_cli.team.tmux import _kill_panes, _kill_window
+
+                    if isinstance(window_id, str) and window_id:
+                        win_err = _kill_window(window_id)
+                        if win_err:
+                            errors.append(win_err)
+                        else:
+                            actions.append(f"tmux kill-window -t {window_id}")
+                    pane_ids = [
+                        str(rec.get("pane_id"))
+                        for rec in (meta.get("tasks") or [])
+                        if isinstance(rec, Mapping)
+                        and isinstance(rec.get("pane_id"), str)
+                    ]
+                    # Prove worker panes are gone (session may still exist).
+                    remaining = []
+                    for pane_id in pane_ids:
+                        probe = _tmux_run(
+                            ["display-message", "-p", "-t", pane_id, "#{pane_id}"]
+                        )
+                        if probe.returncode == 0 and (probe.stdout or "").strip() == pane_id:
+                            remaining.append(pane_id)
+                    if remaining and not (
+                        isinstance(window_id, str) and window_id
+                    ):
+                        pane_err = _kill_panes(remaining)
+                        if pane_err:
+                            errors.append(pane_err)
+                        remaining = [
+                            pane_id
+                            for pane_id in remaining
+                            if _tmux_run(
+                                [
+                                    "display-message",
+                                    "-p",
+                                    "-t",
+                                    pane_id,
+                                    "#{pane_id}",
+                                ]
+                            ).returncode
+                            == 0
+                        ]
+                    if not remaining:
+                        session_disappearance_verified = True
+                        actions.append(
+                            "tmux inside-mode worker panes/window removed "
+                            "(shared session kept)"
+                        )
+                    else:
+                        errors.append(
+                            "tmux inside-mode worker panes still live: "
+                            + ",".join(remaining)
+                        )
             except OSError as exc:
-                errors.append(f"tmux kill-session: {exc}")
+                errors.append(f"tmux teardown: {exc}")
         else:
             actions.append("identity mismatch: skipped tmux kill-session")
     elif dry:

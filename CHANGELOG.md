@@ -10,6 +10,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- Inside-tmux shorthand launch opens a dedicated team window + split panes in
+  the current session (`attach_mode=inside`); stop kills only that window/panes
+  — never the shared session or leader pane. Outside TTY creates a detached
+  session and prints an attach hint; non-interactive live launch requires
+  `--detach` (fail-closed).
 - Shorthand `omg team launch` waits for worker mailbox ACKs (body `ACK` to
   `leader-fixed`) before reporting success. Knob: `OMG_TEAM_READY_TIMEOUT_MS`
   (default 45000). Partial ACK → `startup_status=degraded`; zero →

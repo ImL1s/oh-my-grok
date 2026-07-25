@@ -177,6 +177,9 @@ omg team launch --workers 2 --role executor --goal "map A and B" --dry-run
 # Live launch waits for worker ACK (body=ACK → leader-fixed) before success.
 # Timeout knob: OMG_TEAM_READY_TIMEOUT_MS (default 45000). Partial/zero ACK
 # leaves state for diagnosis and exits non-zero (no silent dry-run fallback).
+# Attach: inside tmux → new window + split (shared session; stop never
+# kill-session). Outside TTY → new session + `tmux attach -t …` hint.
+# Non-interactive without --detach fails closed.
 omg team status --run RUN --json
 omg team stop --run RUN
 ```

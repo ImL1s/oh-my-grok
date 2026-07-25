@@ -322,6 +322,7 @@ def launch_team(
     team_id: str = "team",
     check_binary: bool = True,
     executor: str | None = None,
+    detach: bool = False,
 ) -> dict[str, Any]:
     """OMX-like shorthand launch: decompose → start_team(split) → seed api/ref.
 
@@ -352,6 +353,7 @@ def launch_team(
         topology="split",
         team_id=team_id,
         executor=executor,
+        detach=detach,
     )
     rid = str(meta["run_id"])
     name = _slug_team_name(goal, rid)
