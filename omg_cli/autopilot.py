@@ -530,12 +530,14 @@ def set_awaiting_confirmation(
     if run.get("mode") != "autopilot":
         raise AutopilotError(f"wrong mode: {run.get('mode')!r}")
 
+    awaiting = bool(value)
     merge_status_fields(
         root,
         run_id,
         {
-            "autopilot_awaiting": bool(value),
-            "autopilot_awaiting_reason": reason or "",
+            "autopilot_awaiting": awaiting,
+            # Clearing always wipes reason so --clear --reason cannot leave a stale note.
+            "autopilot_awaiting_reason": (reason or "") if awaiting else "",
         },
     )
     return status_autopilot(root, run_id)

@@ -321,7 +321,9 @@ def test_cli_autopilot_await_action(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert run is not None
     assert run.get("autopilot_awaiting") is True
     assert run.get("autopilot_awaiting_reason") == "cli:pause"
-    rc_clear = main(["autopilot", "await", "--run", rid, "--clear"])
+    rc_clear = main(
+        ["autopilot", "await", "--run", rid, "--clear", "--reason", "should-ignore"]
+    )
     assert rc_clear == 0
     run2 = load_run(tmp_path, rid)
     assert run2 is not None
