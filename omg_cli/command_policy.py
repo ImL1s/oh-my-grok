@@ -876,12 +876,57 @@ _MAKE_GOAL_BOUND_TARGETS: frozenset[str] = frozenset(
     {"test", "unit", "units", "pytest", "ci", "verify"}
 )
 
+# flutter test options that consume the next argv token as a value (not a path).
+_FLUTTER_TEST_VALUE_OPTS: frozenset[str] = frozenset(
+    {
+        "-r",
+        "--reporter",
+        "-n",
+        "--name",
+        "-t",
+        "--plain-name",
+        "-j",
+        "--concurrency",
+        "-d",
+        "--device-id",
+        "--timeout",
+        "--coverage-path",
+        "--dart-define",
+        "--dart-define-from-file",
+        "--flavor",
+        "--test-randomization-seed",
+        "--file-reporter",
+        "--shard-index",
+        "--total-shards",
+    }
+)
+
 GOAL_BOUND_ACCEPT_TIP = (
     "Add a goal-bound acceptance command to prd.json "
     "(e.g. python3 -m pytest -q, cargo test, go test, npm test) — "
     "analyze/lint-only manifests cannot set verified on autopilot runs. "
     "Break-glass (TTY): OMG_ALLOW_SOFT_ACCEPT=1"
 )
+
+
+def _flutter_test_path_operands(argv: Sequence[str]) -> list[str]:
+    """Path-like operands after ``flutter test``, skipping flags and option values."""
+    out: list[str] = []
+    i = 2
+    while i < len(argv):
+        tok = str(argv[i])
+        if tok in _FLUTTER_TEST_VALUE_OPTS:
+            i += 2
+            continue
+        if tok.startswith("-") and "=" in tok:
+            i += 1
+            continue
+        if tok.startswith("-"):
+            i += 1
+            continue
+        out.append(tok)
+        i += 1
+    return out
 
 
 def _is_goal_bound_command(cmd: Sequence[str]) -> bool:
@@ -911,7 +956,7 @@ def _is_goal_bound_command(cmd: Sequence[str]) -> bool:
     if base == "flutter" and len(argv) > 1 and argv[1] == "test":
         # bare `flutter test` [flags…] = full suite → goal-bound.
         # single `.dart` path = smoke soft (not goal-bound); dirs / multi = bound.
-        path_args = [a for a in argv[2:] if not a.startswith("-")]
+        path_args = _flutter_test_path_operands(argv)
         if not path_args:
             return True
         if len(path_args) == 1 and path_args[0].endswith(".dart"):

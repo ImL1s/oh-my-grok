@@ -44,6 +44,10 @@ V2_MAX_ROUNDS = 5
 READ_ONLY_STAGES = frozenset({"critic", "verifier"})
 V2_READ_ONLY_STAGES = frozenset({"planner", "architect", "critic"})
 
+# Modes allowed for `omg ralplan --run` / existing_run_id embedding.
+# Never attach the ralplan FSM onto ralph/ulw/… runs (would rewrite their status).
+_EMBEDDABLE_RALPLAN_MODES = frozenset({"autopilot", "pipeline", "ralplan"})
+
 STAGE_ORDER_NOTE = "draft → critic → revise → verifier → (accept | revise)*"
 V2_STAGE_ORDER_NOTE = (
     "planner → architect → critic → "
@@ -1083,6 +1087,16 @@ def run_ralplan(
     run = load_run(root_path, existing_run_id)
     if run is None:
         print(f"omg ralplan: no run found: {existing_run_id!r}", file=sys.stderr)
+        return 1
+    mode = str(run.get("mode") or "")
+    # --run is for pipeline/autopilot (or same-mode ralplan) embedding only.
+    # Never rewrite ralph/ulw/… status into a ralplan FSM.
+    if mode not in _EMBEDDABLE_RALPLAN_MODES:
+        print(
+            f"omg ralplan: --run {existing_run_id!r} has mode={mode!r}; "
+            f"only embeddable for {sorted(_EMBEDDABLE_RALPLAN_MODES)}",
+            file=sys.stderr,
+        )
         return 1
     try:
         schema = classify_run_schema(run)

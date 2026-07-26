@@ -462,8 +462,23 @@ def test_build_phase_prompt_ralplan_binds_to_autopilot_run(tmp_path: Path) -> No
     text = build_phase_prompt("ralplan", root=tmp_path, goal="g", run_id="ap-run-9")
     assert "Autopilot-bound ralplan" in text
     assert "--run ap-run-9" in text
-    assert "ralplan-consensus-ap-run-9.json" in text
+    assert "Do **not** edit `.omg/state/`" in text
+    assert "accepted: true" in text  # forbidden forge called out
+    assert "ralplan-consensus-ap-run-9.json" not in text
     assert "Do **not** start a standalone" in text or "do **not** start a standalone" in text.lower()
+
+
+def test_consensus_ready_ignores_artifact_marker(tmp_path: Path) -> None:
+    from omg_cli.autopilot import _consensus_ready
+
+    st = start_autopilot(tmp_path, "artifact alone", skip_interview=True)
+    rid = st["run_id"]
+    marker = tmp_path / ".omg" / "artifacts" / f"ralplan-consensus-{rid}.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("{}", encoding="utf-8")
+    assert _consensus_ready(tmp_path, rid) is False
+    merge_status_fields(tmp_path, rid, {"ralplan_consensus": True})
+    assert _consensus_ready(tmp_path, rid) is True
 
 
 def test_try_advance_after_launch_skips_when_implement_became_blocked(

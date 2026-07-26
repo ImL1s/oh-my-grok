@@ -470,3 +470,49 @@ def test_cli_ralplan_dry_run(tmp_path):
     data = json.loads(runs[0].read_text(encoding="utf-8"))
     assert data["status"] == "failed"
     assert data["accepted"] is False
+
+
+def test_ralplan_run_rejects_non_embeddable_mode(tmp_path, capsys):
+    """`--run` must not rewrite ralph/ulw status into a ralplan FSM."""
+    from omg_cli.state import create_run, load_run
+
+    ralph = create_run(tmp_path, mode="ralph", goal="unrelated ralph")
+    rid = ralph["run_id"]
+    before = load_run(tmp_path, rid)
+    assert before is not None
+    rc = run_ralplan(
+        "should not attach",
+        root=tmp_path,
+        dry_run=True,
+        max_rounds=1,
+        existing_run_id=rid,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "only embeddable" in err
+    assert "ralph" in err
+    after = load_run(tmp_path, rid)
+    assert after is not None
+    assert after.get("mode") == "ralph"
+    assert not (tmp_path / ".omg" / "state" / "runs" / rid / "ralplan.json").is_file()
+
+
+def test_ralplan_run_allows_autopilot_embed(tmp_path):
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "embed me", skip_interview=True)
+    rid = st["run_id"]
+    rc = run_ralplan(
+        "embed me",
+        root=tmp_path,
+        dry_run=True,
+        max_rounds=1,
+        existing_run_id=rid,
+    )
+    # dry-run without verifier APPROVE → failed (1), but FSM attached
+    assert rc == 1
+    assert (tmp_path / ".omg" / "state" / "runs" / rid / "ralplan.json").is_file()
+    active = load_active_run(tmp_path)
+    assert active is not None
+    assert active["run_id"] == rid
+    assert active.get("mode") == "autopilot"
