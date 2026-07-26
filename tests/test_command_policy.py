@@ -534,3 +534,15 @@ def test_is_analyze_only_detects_analyze_plus_unit():
             ["python3", "-m", "pytest", "-q"],
         ]
     ) is False
+
+
+def test_bare_flutter_test_is_goal_bound():
+    """Suite `flutter test` (no single .dart path) must not false-green as analyze-only."""
+    assert is_analyze_only([["flutter", "test"]]) is False
+    assert is_analyze_only([["flutter", "test", "-r", "expanded"]]) is False
+    assert is_analyze_only([["flutter", "test", "test/"]]) is False
+    # single-file smoke stays soft
+    assert is_analyze_only([["flutter", "test", "test/foo_test.dart"]]) is True
+    assert is_analyze_only(
+        [["flutter", "analyze"], ["flutter", "test"]]
+    ) is False

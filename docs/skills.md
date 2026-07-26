@@ -260,6 +260,7 @@ Skill = **one iteration** playbook; **CLI outer loop** owns max-iter + re-launch
 
 ```bash
 omg ralplan "consensus plan for auth refactor" --safe
+omg ralplan "…" --run <existing-run-id>   # reuse run (autopilot/pipeline embed)
 # FSM: draft → critic → revise → verifier → APPROVE
 # then: omg ulw / omg ralph / omg autopilot
 ```
