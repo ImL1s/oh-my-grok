@@ -664,7 +664,7 @@ def build_phase_prompt(
                 f"- Run: `omg ralplan \"…\" --run {run_id}` — the CLI owns "
                 "consensus on this run (`ralplan.json` / `ralplan_consensus`).",
                 "- Do **not** edit `.omg/state/` yourself (including forging "
-                f"`accepted: true` in `ralplan.json` or `ralplan_consensus`).",
+                "`accepted: true` in `ralplan.json` or `ralplan_consensus`).",
                 "- Proposal drafts may go under `.omg/artifacts/` but do **not** "
                 "unlock implement by themselves.",
                 "- `_consensus_ready` only inspects **this** run_id — a sibling "
