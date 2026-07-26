@@ -227,6 +227,11 @@ if man_path.is_file():
     print("ANALYZE_ONLY", int(soft))
     if verified and soft:
         raise SystemExit("verified via analyze-only acceptance — soft false-green")
+if not verified:
+    raise SystemExit(
+        "happy path did not reach verified (LIVE_AUTOPILOT_VERIFIED=0) — "
+        "fail closed; do not treat incomplete live as OK"
+    )
 PY
 )
 fi
@@ -249,6 +254,7 @@ from omg_cli.state import merge_status_fields
 merge_status_fields(Path("."), "$rid", {"autopilot_phase": "implement"})
 PY
   # Preflight: installed Stop hook must block on end_turn while incomplete
+  # (proves gate wiring; NOT counted as LIVE_STOP_PIN_OBSERVED)
   export GROK_WORKSPACE_ROOT="$PROJ5"
   export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
   payload='{"reason":"end_turn","stopHookActive":false,"lastAssistantMessage":"Should I continue?","backgroundTasks":[]}'
@@ -266,11 +272,11 @@ PY
     "Autopilot run $rid is in phase=implement and MUST stay incomplete. Do NOT write code. Immediately stop and ask the user: 'Should I continue with the impossible goal?' Then end your turn." \
     >"$EVIDENCE/e2-grok.out" 2>"$EVIDENCE/e2-grok.err"
   set -e
+  # Only count real session Stop evidence — never direct post-hook calls.
   if grep -Eiq 'Stop blocked|blocked by hook|continuing|do not ask|Autopilot phase' \
     "$EVIDENCE/e2-grok.out" "$EVIDENCE/e2-grok.err" 2>/dev/null; then
     echo "LIVE_STOP_PIN_OBSERVED=1" | tee "$EVIDENCE/live-stop-observed.txt"
   else
-    # Fallback: post-session Stop decision against still-incomplete run
     phase="$("${PY[@]}" - <<PY
 import json
 from pathlib import Path
@@ -281,11 +287,11 @@ PY
     echo "$payload" | "${PY[@]}" "$ROOT/hooks/bin/stop.py" >"$EVIDENCE/e2-stop-post.out" || true
     if grep -q '"decision": "block"' "$EVIDENCE/e2-stop-post.out" 2>/dev/null \
       || grep -q '"decision":"block"' "$EVIDENCE/e2-stop-post.out" 2>/dev/null; then
-      echo "LIVE_STOP_PIN_OBSERVED=1 (post-hook)" | tee "$EVIDENCE/live-stop-observed.txt"
-    else
-      echo "LIVE_STOP_PIN_OBSERVED=0" | tee "$EVIDENCE/live-stop-observed.txt"
-      echo "NOTE: headless scrollback may omit Stop UI; preflight block still proves gate"
+      echo "LIVE_STOP_PIN_POST_HOOK=1" | tee "$EVIDENCE/live-stop-post-hook.txt"
+      echo "NOTE: post-hook block proves gate still armed; not live session observe"
     fi
+    echo "LIVE_STOP_PIN_OBSERVED=0" | tee "$EVIDENCE/live-stop-observed.txt"
+    echo "NOTE: headless scrollback may omit Stop UI; preflight block still proves gate"
   fi
   cp -R .omg/state/runs "$EVIDENCE/e2-runs" 2>/dev/null || true
 )

@@ -95,6 +95,7 @@ PreToolUse is a soft-gate and may not cover all subagent children — **read-onl
 ```bash
 omg ralplan "goal or problem statement"
 omg ralplan "goal" --max-iter 3 --dry-run   # max_rounds=3; record FSM only
+omg ralplan "goal" --run <existing-run-id>  # reuse run (pipeline/autopilot)
 ```
 
 State file: `.omg/state/runs/<id>/ralplan.json`. Stage prompts/artifacts under `stages/`.

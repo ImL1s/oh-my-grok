@@ -653,6 +653,23 @@ def build_phase_prompt(
         "",
         "Follow the phase skill above. Do not ask the user mid-phase.",
     ]
+    if phase_key == "ralplan":
+        parts.extend(
+            [
+                "",
+                "## Autopilot-bound ralplan (hard — overrides Launch via CLI)",
+                f"- Stay on this autopilot run_id=`{run_id}`. Do **not** start a "
+                "standalone `omg ralplan` that creates a new active run / wrong "
+                "active pointer.",
+                f"- Prefer: `omg ralplan \"…\" --run {run_id}` (reuses this run).",
+                "- Or stamp consensus on **this** run after verifier APPROVE: "
+                f"write `.omg/artifacts/ralplan-consensus-{run_id}.json`, or "
+                f"ensure `.omg/state/runs/{run_id}/ralplan.json` has "
+                "`accepted: true`.",
+                "- `_consensus_ready` only inspects **this** run_id — a sibling "
+                "ralplan run will never unblock implement.",
+            ]
+        )
     return "\n".join(parts)
 
 
@@ -704,6 +721,12 @@ def _try_advance_after_launch(root: Path, run_id: str, phase: str) -> str:
             )
             return "implement"
         if phase == "implement":
+            # Recheck live phase: launch/side-effects may have moved to
+            # blocked (or elsewhere). Never advance from a stale phase arg.
+            current = load_run(root, run_id) or {}
+            live = str(current.get("autopilot_phase") or "")
+            if live and live != "implement":
+                return live
             transition(
                 root,
                 run_id,

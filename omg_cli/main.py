@@ -484,6 +484,10 @@ def cmd_mode(args: argparse.Namespace) -> int:
             force=bool(getattr(args, "force", False)),
         )
 
+    existing_run_id = None
+    if mode == "ralplan":
+        existing_run_id = getattr(args, "run_id", None)
+
     return run_mode(
         mode,
         goal,
@@ -495,6 +499,7 @@ def cmd_mode(args: argparse.Namespace) -> int:
         timeout=timeout,
         require_acceptance=require_acceptance,
         resume_run_id=resume,
+        existing_run_id=existing_run_id,
     )
 
 
@@ -3565,6 +3570,17 @@ def build_parser() -> argparse.ArgumentParser:
                 help=(
                     "resume active Ralph run, or explicit RUN, with its "
                     "persisted Grok session and cumulative ceiling"
+                ),
+            )
+        if mode == "ralplan":
+            p.add_argument(
+                "--run",
+                dest="run_id",
+                default=None,
+                metavar="RUN",
+                help=(
+                    "reuse an existing run_id (pipeline/autopilot embedding); "
+                    "skips create_run so active pointer stays on that run"
                 ),
             )
         if mode == "ulw":

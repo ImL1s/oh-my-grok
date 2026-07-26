@@ -908,7 +908,15 @@ def _is_goal_bound_command(cmd: Sequence[str]) -> bool:
         return True
     if base == "dart" and len(argv) > 1 and argv[1] == "test":
         return True
-    # flutter test is intentionally soft (single-file smoke); not goal-bound.
+    if base == "flutter" and len(argv) > 1 and argv[1] == "test":
+        # bare `flutter test` [flags…] = full suite → goal-bound.
+        # single `.dart` path = smoke soft (not goal-bound); dirs / multi = bound.
+        path_args = [a for a in argv[2:] if not a.startswith("-")]
+        if not path_args:
+            return True
+        if len(path_args) == 1 and path_args[0].endswith(".dart"):
+            return False
+        return True
 
     if base == "npm":
         if len(argv) > 1 and argv[1] == "test":
