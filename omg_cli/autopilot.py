@@ -661,11 +661,12 @@ def build_phase_prompt(
                 f"- Stay on this autopilot run_id=`{run_id}`. Do **not** start a "
                 "standalone `omg ralplan` that creates a new active run / wrong "
                 "active pointer.",
-                f"- Prefer: `omg ralplan \"…\" --run {run_id}` (reuses this run).",
-                "- Or stamp consensus on **this** run after verifier APPROVE: "
-                f"write `.omg/artifacts/ralplan-consensus-{run_id}.json`, or "
-                f"ensure `.omg/state/runs/{run_id}/ralplan.json` has "
-                "`accepted: true`.",
+                f"- Run: `omg ralplan \"…\" --run {run_id}` — the CLI owns "
+                "consensus on this run (`ralplan.json` / `ralplan_consensus`).",
+                "- Do **not** edit `.omg/state/` yourself (including forging "
+                "`accepted: true` in `ralplan.json` or `ralplan_consensus`).",
+                "- Proposal drafts may go under `.omg/artifacts/` but do **not** "
+                "unlock implement by themselves.",
                 "- `_consensus_ready` only inspects **this** run_id — a sibling "
                 "ralplan run will never unblock implement.",
             ]
@@ -681,21 +682,19 @@ def _interview_complete(root: Path, run_id: str) -> bool:
 
 
 def _consensus_ready(root: Path, run_id: str) -> bool:
+    """True when CLI-owned consensus is present for *this* run_id.
+
+    Workers may write proposal artifacts under ``.omg/artifacts/``; those do
+    **not** unlock implement. Acceptance comes from ``omg ralplan --run``
+    (status ``ralplan_consensus`` or CLI-written ``ralplan.json`` accepted).
+    """
     run = load_run(root, run_id) or {}
     if run.get("ralplan_consensus") is True:
         return True
     from omg_cli.ralplan import ralplan_state_path
 
     data = _read_stage_json(ralplan_state_path(root, run_id))
-    if data and data.get("accepted") is True:
-        return True
-    marker = (
-        Path(root)
-        / ".omg"
-        / "artifacts"
-        / f"ralplan-consensus-{run_id}.json"
-    )
-    return marker.is_file()
+    return bool(data and data.get("accepted") is True)
 
 
 def _try_advance_after_launch(root: Path, run_id: str, phase: str) -> str:

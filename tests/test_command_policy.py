@@ -541,8 +541,14 @@ def test_bare_flutter_test_is_goal_bound():
     assert is_analyze_only([["flutter", "test"]]) is False
     assert is_analyze_only([["flutter", "test", "-r", "expanded"]]) is False
     assert is_analyze_only([["flutter", "test", "test/"]]) is False
-    # single-file smoke stays soft
+    # single-file smoke stays soft (including valued reporter options)
     assert is_analyze_only([["flutter", "test", "test/foo_test.dart"]]) is True
+    assert is_analyze_only(
+        [["flutter", "test", "test/foo_test.dart", "-r", "expanded"]]
+    ) is True
+    assert is_analyze_only(
+        [["flutter", "test", "-r", "expanded", "test/foo_test.dart"]]
+    ) is True
     assert is_analyze_only(
         [["flutter", "analyze"], ["flutter", "test"]]
     ) is False
