@@ -177,6 +177,35 @@ MATRIX = [
         ),
         "allow",
     ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": "cat <<$'E\\x4fF'\nsafe\nEOF\ncodex exec x"
+                },
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": 'bash -c "$(printf codex)"'},
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": "bash -c 'echo $(printf codex)'"},
+            }
+        ),
+        "allow",
+    ),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore"}}', "deny"),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore","capability_mode":"read-only"}}', "allow"),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"general-purpose","capability_mode":"read-write"}}', "allow"),

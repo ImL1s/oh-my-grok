@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "cfae7c660f652c27fd3c02c8aeabaf2310e37dd3c8f246c49bf27982fe9c0df9"
+_OMG_GENERATED_FROM_SHA = "ef140605016f44e486a7d9216fa924aa7e37338caeb69480f337eb03a86ecc62"
 _OMG_PLUGIN_VERSION = "0.7.1"
 
 
@@ -92,6 +92,10 @@ _DECODED_COMMAND_HEAD = re.compile(
     rf"(?P<word>{_SHELL_WORD})",
     re.IGNORECASE,
 )
+_DYNAMIC_COMMAND_PREFIX = re.compile(
+    rf"{_CMD_POS}\s*{_COMMAND_LEAD}{_ENV_ASSIGNS}{_WRAPPERS}",
+    re.IGNORECASE,
+)
 _CASE_HEAD = re.compile(
     rf"(?:{_CMD_POS}|\))\s*{_COMMAND_LEAD}case\b",
     re.IGNORECASE,
@@ -137,6 +141,112 @@ _SHELL_C_HEAD = re.compile(
 )
 
 
+def _decode_ansi_c_string(value: str) -> str | None:
+    """Decode Bash ANSI-C quoting, returning ``None`` for unusable NUL data."""
+
+    simple_escapes = {
+        "a": "\a",
+        "b": "\b",
+        "e": "\x1b",
+        "E": "\x1b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+        "v": "\v",
+        "\\": "\\",
+        "'": "'",
+        '"': '"',
+        "?": "?",
+    }
+    decoded: list[str] = []
+    index = 0
+    while index < len(value):
+        if value[index] != "\\":
+            decoded.append(value[index])
+            index += 1
+            continue
+        if index + 1 >= len(value):
+            decoded.append("\\")
+            break
+
+        escape = value[index + 1]
+        if escape in simple_escapes:
+            decoded.append(simple_escapes[escape])
+            index += 2
+            continue
+        if escape in "\r\n":
+            index += 2
+            if escape == "\r" and index < len(value) and value[index] == "\n":
+                index += 1
+            continue
+        if escape == "c" and index + 2 < len(value):
+            control = ord(value[index + 2].upper()) ^ 0x40
+            if control == 0:
+                return None
+            decoded.append(chr(control))
+            index += 3
+            continue
+        if escape == "x":
+            cursor = index + 2
+            while (
+                cursor < len(value)
+                and cursor < index + 4
+                and value[cursor] in "0123456789abcdefABCDEF"
+            ):
+                cursor += 1
+            if cursor == index + 2:
+                decoded.append("\\x")
+                index += 2
+                continue
+            codepoint = int(value[index + 2 : cursor], 16)
+            if codepoint == 0:
+                return None
+            decoded.append(chr(codepoint))
+            index = cursor
+            continue
+        if escape in {"u", "U"}:
+            limit = index + (6 if escape == "u" else 10)
+            cursor = index + 2
+            while (
+                cursor < len(value)
+                and cursor < limit
+                and value[cursor] in "0123456789abcdefABCDEF"
+            ):
+                cursor += 1
+            if cursor == index + 2:
+                decoded.append("\\" + escape)
+                index += 2
+                continue
+            codepoint = int(value[index + 2 : cursor], 16)
+            if codepoint == 0 or codepoint > 0x10FFFF:
+                return None
+            decoded.append(chr(codepoint))
+            index = cursor
+            continue
+        if escape in "01234567":
+            cursor = index + 1
+            digit_limit = index + (5 if escape == "0" else 4)
+            while (
+                cursor < len(value)
+                and cursor < digit_limit
+                and value[cursor] in "01234567"
+            ):
+                cursor += 1
+            codepoint = int(value[index + 1 : cursor], 8) & 0xFF
+            if codepoint == 0:
+                return None
+            decoded.append(chr(codepoint))
+            index = cursor
+            continue
+
+        # Bash preserves the backslash for an unknown ANSI-C escape.
+        decoded.extend(("\\", escape))
+        index += 2
+
+    return "".join(decoded)
+
+
 def _parse_heredoc(
     command: str,
     position: int,
@@ -165,7 +275,6 @@ def _parse_heredoc(
 
     delimiter: list[str] = []
     quoted = False
-    delimiter_reliable = True
     while cursor < len(command):
         char = command[cursor]
         following = command[cursor + 1] if cursor + 1 < len(command) else ""
@@ -174,9 +283,9 @@ def _parse_heredoc(
         if ansi_c_quote or locale_quote:
             quoted = True
             if locale_quote:
-                # The runtime locale may translate $"..."; treat its body as
-                # fail-closed if our untranslated delimiter does not match.
-                delimiter_reliable = False
+                # The runtime locale may translate $"...". Without the exact
+                # delimiter, do not mask any subsequent command as heredoc data.
+                return None
             cursor += 1
             char = command[cursor]
             following = command[cursor + 1] if cursor + 1 < len(command) else ""
@@ -186,19 +295,23 @@ def _parse_heredoc(
             quoted = True
             if ansi_c_quote:
                 cursor += 1
+                raw_ansi_c: list[str] = []
                 while cursor < len(command) and command[cursor] != "'":
                     following = (
                         command[cursor + 1] if cursor + 1 < len(command) else ""
                     )
                     if command[cursor] == "\\" and following:
-                        delimiter_reliable = False
-                        delimiter.append(following)
+                        raw_ansi_c.extend(("\\", following))
                         cursor += 2
                     else:
-                        delimiter.append(command[cursor])
+                        raw_ansi_c.append(command[cursor])
                         cursor += 1
                 if cursor >= len(command):
                     return None
+                decoded_ansi_c = _decode_ansi_c_string("".join(raw_ansi_c))
+                if decoded_ansi_c is None:
+                    return None
+                delimiter.append(decoded_ansi_c)
                 cursor += 1
                 continue
             closing = command.find("'", cursor + 1)
@@ -253,7 +366,7 @@ def _parse_heredoc(
 
     if not delimiter:
         return None
-    return "".join(delimiter), strip_tabs, quoted and delimiter_reliable, cursor
+    return "".join(delimiter), strip_tabs, quoted, cursor
 
 
 def _line_break(command: str, start: int) -> tuple[int, int]:
@@ -956,6 +1069,103 @@ def _decoded_shell_word_is_denied(raw_word: str) -> bool:
     return executable in _DENIED_BIN_NAMES
 
 
+def _starts_shell_expansion(char: str) -> bool:
+    return bool(
+        char
+        and (
+            char.isalnum()
+            or char == "_"
+            or char in "({*@#?$!-"
+        )
+    )
+
+
+def _shell_word_has_dynamic_expansion(command: str, start: int = 0) -> bool:
+    """Return whether one shell word contains an active runtime expansion."""
+
+    index = start
+    while index < len(command) and command[index].isspace():
+        index += 1
+    context = "normal"
+    while index < len(command):
+        char = command[index]
+        following = command[index + 1] if index + 1 < len(command) else ""
+        if context == "single":
+            if char == "'":
+                context = "normal"
+            index += 1
+            continue
+        if context == "ansi_c_single":
+            if char == "\\" and following:
+                index += 2
+                continue
+            if char == "'":
+                context = "normal"
+            index += 1
+            continue
+        if context == "double":
+            if char == "\\" and following in {'$', '`', '"', "\\", "\r", "\n"}:
+                index += 2
+                if (
+                    following == "\r"
+                    and index < len(command)
+                    and command[index] == "\n"
+                ):
+                    index += 1
+                continue
+            if char == '"':
+                context = "normal"
+                index += 1
+                continue
+            if char == "`" or (
+                char == "$" and _starts_shell_expansion(following)
+            ):
+                return True
+            index += 1
+            continue
+
+        if char.isspace() or char in ";&|()<>":
+            return False
+        if char == "\\" and following:
+            index += 2
+            continue
+        if char == "$" and following == "'":
+            context = "ansi_c_single"
+            index += 2
+            continue
+        if char == "$" and following == '"':
+            # Locale translation can alter a command word at runtime.
+            return True
+        if char == "'":
+            context = "single"
+            index += 1
+            continue
+        if char == '"':
+            context = "double"
+            index += 1
+            continue
+        if char == "`" or (
+            char == "$" and _starts_shell_expansion(following)
+        ):
+            return True
+        index += 1
+    return False
+
+
+def _has_dynamic_command_head(command: str) -> bool:
+    """Fail closed when an executable word is synthesized at runtime."""
+
+    search_position = 0
+    while match := _DYNAMIC_COMMAND_PREFIX.search(command, search_position):
+        if (
+            _shell_context_is_executable(command, match.start()) is True
+            and _shell_word_has_dynamic_expansion(command, match.end())
+        ):
+            return True
+        search_position = match.start() + 1
+    return False
+
+
 def _has_denied_decoded_command_head(command: str) -> bool:
     """Deny quoted or concatenated spellings of a blocked executable word."""
 
@@ -1090,6 +1300,8 @@ def _has_denied_eval_body(command: str, depth: int) -> bool:
         if _shell_context_is_executable(command, match.start()) is True:
             body = _decode_eval_body(_eval_argument_tail(command, match.end()))
             if body:
+                if _has_dynamic_command_head(body):
+                    return True
                 if depth >= 8:
                     if re.search(rf"\b{_DENY_BINS}\b", body, re.IGNORECASE):
                         return True
@@ -1103,9 +1315,12 @@ def _has_denied_shell_c_body(command: str, depth: int) -> bool:
     search_position = 0
     while match := _SHELL_C_HEAD.search(command, search_position):
         if _shell_context_is_executable(command, match.start()) is True:
-            words = _decode_shell_words(_eval_argument_tail(command, match.end()))
+            raw_arguments = _eval_argument_tail(command, match.end())
+            words = _decode_shell_words(raw_arguments)
             body = words[0] if words else ""
             if body:
+                if _has_dynamic_command_head(body):
+                    return True
                 if depth >= 8:
                     if re.search(rf"\b{_DENY_BINS}\b", body, re.IGNORECASE):
                         return True

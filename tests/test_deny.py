@@ -163,6 +163,14 @@ def test_deny_cli_execution_from_shell_substitutions(cmd):
         '[[ x == $("codex" exec x) ]]',
         "cat <<EOF\n'$(codex exec x)'\nEOF",
         "cat <<EOF\n$(case x in x) co\"dex\" exec x;; esac)\nEOF",
+        "cat <<$'E\\x4fF'\nsafe\nEOF\ncodex exec x",
+        "cat <<$'E\\117F'\nsafe\nEOF\ncodex exec x",
+        'bash -c "$(printf codex)"',
+        "bash -c '$(printf codex)'",
+        "bash -c 'if $(printf codex); then :; fi'",
+        "bash -c 'co$(printf dex) exec x'",
+        'eval "$(printf codex)"',
+        "eval '$(printf codex)'",
     ],
 )
 def test_deny_cli_after_inert_shell_text(cmd):
@@ -204,6 +212,10 @@ def test_deny_cli_after_inert_shell_text(cmd):
         'cat <<EOF\n"codex" exec x\nEOF',
         'cat <<EOF\nco"dex" exec x\nEOF',
         'cat <<EOF\n$(case x in x) echo "codex";; esac)\nEOF',
+        "cat <<$'E\\x4fF'\n\"codex\" exec x\nEOF",
+        "bash -c 'echo $(printf codex)'",
+        'bash -c "echo $(printf codex)"',
+        "eval 'echo $(printf codex)'",
     ],
 )
 def test_allow_denied_cli_names_inside_inert_shell_text(cmd):
