@@ -234,6 +234,15 @@ def test_many_literal_cli_mentions_do_not_stall_hook():
     assert perf_counter() - started < 2.0
 
 
+def test_many_case_branches_do_not_stall_hook():
+    command = "case x in " + " ".join(
+        f"p{index}) echo safe;;" for index in range(2000)
+    ) + " esac"
+    started = perf_counter()
+    assert should_deny_command(command) is False
+    assert perf_counter() - started < 2.0
+
+
 def test_process_env_allow_only_when_set(monkeypatch):
     monkeypatch.delenv("OMG_ALLOW_EXTERNAL_CLI", raising=False)
     d = decide_pre_tool_use({"toolName": "run_terminal_command", "toolInput": {"command": "claude -p x"}})

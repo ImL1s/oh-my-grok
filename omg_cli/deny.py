@@ -349,6 +349,7 @@ def _command_substitution_close(
 
     body = command[open_position + 1 : limit]
     body_contexts = _shell_context_map(body)
+    case_pattern_closes = _case_pattern_close_positions(body)
     depth = 1
     for offset, char in enumerate(body):
         if body_contexts[offset] != _EXECUTABLE_CONTEXT:
@@ -356,7 +357,7 @@ def _command_substitution_close(
         if char == "(":
             depth += 1
         elif char == ")":
-            if _case_pattern_is_active(body, offset):
+            if offset in case_pattern_closes:
                 continue
             depth -= 1
             if depth == 0:
@@ -1204,97 +1205,86 @@ def _has_denied_decoded_command_head(command: str) -> bool:
     return False
 
 
-def _case_pattern_is_active(command: str, position: int) -> bool:
-    """Return whether ``position`` closes a pattern in an open case block."""
+@lru_cache(maxsize=128)
+def _case_pattern_close_positions(command: str) -> frozenset[int]:
+    """Compute real case-pattern terminators once for the whole command."""
 
     contexts = _shell_context_map(command)
     case_heads: list[re.Match[str]] = []
     search_position = 0
-    while match := _CASE_HEAD.search(command, search_position, position):
+    while match := _CASE_HEAD.search(command, search_position):
         if contexts[match.start()] == _EXECUTABLE_CONTEXT:
             case_heads.append(match)
         search_position = match.start() + 1
     if not case_heads:
-        return False
+        return frozenset()
 
     case_ends: list[re.Match[str]] = []
     search_position = 0
-    while match := _CASE_END.search(command, search_position, position):
+    while match := _CASE_END.search(command, search_position):
         if contexts[match.start()] == _EXECUTABLE_CONTEXT:
             case_ends.append(match)
         search_position = match.start() + 1
 
-    events = sorted(
-        [(match.start(), 1, match) for match in case_heads]
-        + [(match.start(), -1, match) for match in case_ends],
-        key=lambda item: (item[0], -item[1]),
-    )
-    active_cases: list[re.Match[str]] = []
-    for _, kind, match in events:
-        if kind == 1:
-            active_cases.append(match)
-        elif active_cases:
-            active_cases.pop()
-    if not active_cases:
-        return False
-    latest_case = active_cases[-1]
+    case_in_ends: dict[int, int] = {}
+    for head in case_heads:
+        search_position = head.end()
+        while match := _CASE_IN.search(command, search_position):
+            if contexts[match.start()] == _EXECUTABLE_CONTEXT:
+                case_in_ends[head.end()] = match.end()
+                break
+            search_position = match.start() + 1
 
-    case_in: re.Match[str] | None = None
-    search_position = latest_case.end()
-    while match := _CASE_IN.search(command, search_position, position):
-        if _shell_context_is_executable(command, match.start()) is True:
-            case_in = match
+    heads_by_end: dict[int, list[re.Match[str]]] = {}
+    for head in case_heads:
+        heads_by_end.setdefault(head.end(), []).append(head)
+    end_counts: dict[int, int] = {}
+    for case_end in case_ends:
+        end_counts[case_end.end()] = end_counts.get(case_end.end(), 0) + 1
+
+    # Entries are (position after the matching `in`, expects_pattern_close).
+    case_stack: list[tuple[int, bool]] = []
+    pattern_closes: set[int] = set()
+    index = 0
+    while index <= len(command):
+        for _ in range(end_counts.get(index, 0)):
+            if case_stack:
+                case_stack.pop()
+
+        for head in heads_by_end.get(index, []):
+            # A word `case` while the parent is awaiting its next pattern is
+            # pattern data, not a nested case command.
+            if case_stack:
+                parent_in_end, parent_expects_close = case_stack[-1]
+                if index >= parent_in_end and parent_expects_close:
+                    continue
+            case_stack.append(
+                (case_in_ends.get(head.end(), len(command) + 1), True)
+            )
+
+        if index == len(command):
             break
-        search_position = match.start() + 1
-    if case_in is None:
-        return False
-
-    nested_heads = {
-        match.start(): match
-        for match in case_heads
-        if latest_case.start() < match.start() < position
-    }
-    nested_ends = {
-        match.start(): match
-        for match in case_ends
-        if latest_case.start() < match.start() < position
-    }
-    expects_pattern_close = True
-    nested_case_depth = 0
-    index = case_in.end()
-    while index <= position:
-        if contexts[index] != _EXECUTABLE_CONTEXT:
+        if not case_stack or contexts[index] != _EXECUTABLE_CONTEXT:
             index += 1
             continue
-        nested_head = nested_heads.get(index)
-        if nested_head is not None:
-            if command[index] == ")" and expects_pattern_close:
-                expects_pattern_close = False
-            nested_case_depth += 1
-            index = nested_head.end()
-            continue
-        nested_end = nested_ends.get(index)
-        if nested_end is not None and nested_case_depth:
-            nested_case_depth -= 1
-            index = nested_end.end()
-            continue
-        if nested_case_depth:
+
+        case_in_end, expects_pattern_close = case_stack[-1]
+        if index < case_in_end:
             index += 1
             continue
         if command.startswith(";;&", index):
-            expects_pattern_close = True
+            case_stack[-1] = (case_in_end, True)
             index += 3
             continue
         if command.startswith((";;", ";&"), index):
-            expects_pattern_close = True
+            case_stack[-1] = (case_in_end, True)
             index += 2
             continue
         if command[index] == ")" and expects_pattern_close:
-            if index == position:
-                return True
-            expects_pattern_close = False
+            pattern_closes.add(index)
+            case_stack[-1] = (case_in_end, False)
         index += 1
-    return False
+    return frozenset(pattern_closes)
 
 
 def _has_denied_case_command_head(command: str) -> bool:
@@ -1302,11 +1292,12 @@ def _has_denied_case_command_head(command: str) -> bool:
 
     if not _has_executable_match(_CASE_HEAD, command):
         return False
+    case_pattern_closes = _case_pattern_close_positions(command)
     search_position = 0
     while match := _CASE_PATTERN_COMMAND_HEAD.search(command, search_position):
         if (
             _shell_context_is_executable(command, match.start()) is True
-            and _case_pattern_is_active(command, match.start())
+            and match.start() in case_pattern_closes
             and (
                 _decoded_shell_word_is_denied(match.group("word"))
                 or _shell_word_has_dynamic_expansion(
