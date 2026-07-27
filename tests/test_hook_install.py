@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from time import perf_counter
 
 import pytest
 
@@ -25,6 +26,325 @@ MATRIX = [
     ('{"tool_name":"run_terminal_command","tool_input":{"command":"echo x; codex exec y"}}', "deny"),
     ('{"tool_name":"run_terminal_command","tool_input":{"command":"omg team start"}}', "deny"),
     ('{"tool_name":"run_terminal_command","tool_input":{"command":"bash -c \'claude\'"}}', "deny"),
+    ('{"tool_name":"run_terminal_command","tool_input":{"command":"git commit -m \\"fix(kimi): stream\\""}}', "allow"),
+    ('{"tool_name":"run_terminal_command","tool_input":{"command":"echo \\"$(kimi --version)\\""}}', "deny"),
+    ('{"tool_name":"run_terminal_command","tool_input":{"command":"echo ok # \'\\nkimi --version"}}', "deny"),
+    ('{"tool_name":"run_terminal_command","tool_input":{"command":"echo \\"; bash -c \'claude\'\\"; bash -c \'codex exec x\'"}}', "deny"),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": r"echo $'abc\''; codex exec x"},
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": "cat <<'EOF'\n\"\nEOF\ncodex exec x"},
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": "\\" + "\n" + "codex exec x"},
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": "cat <<\"E\\OF\"\n\"\nE\\OF\ncodex exec x"},
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": "eval 'echo ok; kimi --version'"},
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": "eval 'git commit -m \"fix(kimi)\"'"},
+            }
+        ),
+        "allow",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": "bash -c 'echo ok\ncodex exec x'"},
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": '((1 << "EOF"))\ncodex exec x'},
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": "bash -c 'echo safe'\necho kimi"},
+            }
+        ),
+        "allow",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": "bash -c '\"codex\" exec foo'"},
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": "bash -c 'if true; then \"codex\" exec foo; fi'"
+                },
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": 'array=("codex")'},
+            }
+        ),
+        "allow",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": '[[ foo && "codex" ]]'},
+            }
+        ),
+        "allow",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": "bash -c '{ \"codex\" exec foo; }'"},
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": 'cat <<EOF\n"codex" exec foo\nEOF'},
+            }
+        ),
+        "allow",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": 'case x in x) echo $(true) "codex";; esac'
+                },
+            }
+        ),
+        "allow",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": "cat <<$'E\\x4fF'\nsafe\nEOF\ncodex exec x"
+                },
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": 'bash -c "$(printf codex)"'},
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": "bash -c 'echo $(printf codex)'"},
+            }
+        ),
+        "allow",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": "bash -c $'echo \\'x\\'; codex exec x'"
+                },
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": (
+                        'echo "$(case x in x) echo safe; '
+                        'codex exec x;; esac)"'
+                    )
+                },
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": 'echo "$(case x in x) echo codex;; esac)"'
+                },
+            }
+        ),
+        "allow",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": "cat <<$(tag)\npayload\n$(tag)\ncodex exec x"
+                },
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": "cat <<$(tag)\ncodex exec x\n$(tag)"
+                },
+            }
+        ),
+        "allow",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": "cat <<EOF\n$(codex exec x)"},
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": "cat <<'EOF'\n$(codex exec x)"},
+            }
+        ),
+        "allow",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": "trap 'echo safe; codex exec x' EXIT"
+                },
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": "trap 'echo codex' EXIT"},
+            }
+        ),
+        "allow",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": "x='$(codex exec x)'; echo \"${x@P}\""
+                },
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": "git commit -m '${x@P}'"},
+            }
+        ),
+        "allow",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": "echo ${x:-<<EOF}\ncodex exec x\nEOF"
+                },
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": "echo '${x:-<<EOF}\ncodex exec x\nEOF'"
+                },
+            }
+        ),
+        "allow",
+    ),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore"}}', "deny"),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore","capability_mode":"read-only"}}', "allow"),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"general-purpose","capability_mode":"read-write"}}', "allow"),
@@ -111,6 +431,33 @@ def test_standalone_matches_canonical_deny(payload, expected):
     canonical = decide_pre_tool_use(event)["decision"]
     _, out = _run_standalone(payload)
     assert json.loads(out)["decision"] == canonical == expected
+
+
+def test_standalone_bounds_many_unquoted_heredoc_substitutions():
+    body = " ".join(["$(echo safe)"] * 700 + ["$(codex exec x)"])
+    payload = json.dumps(
+        {
+            "tool_name": "run_terminal_command",
+            "tool_input": {"command": f"cat <<EOF\n{body}\nEOF"},
+        }
+    )
+    started = perf_counter()
+    rc, out = _run_standalone(payload)
+    assert rc == 0 and json.loads(out)["decision"] == "deny"
+    assert perf_counter() - started < 2.0
+
+
+def test_standalone_budget_ignores_single_quoted_commit_message():
+    fragment = "case x in x) echo $(echo safe);; esac fix(kimi)"
+    command = "git commit -m '" + " ".join([fragment] * 66) + "'"
+    payload = json.dumps(
+        {
+            "tool_name": "run_terminal_command",
+            "tool_input": {"command": command},
+        }
+    )
+    rc, out = _run_standalone(payload)
+    assert rc == 0 and json.loads(out)["decision"] == "allow"
 
 
 def test_standalone_disable_kill_switch(monkeypatch):

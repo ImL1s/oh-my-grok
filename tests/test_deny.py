@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from time import perf_counter
 
 import pytest
 from omg_cli.deny import (
@@ -78,6 +79,226 @@ def test_deny_external_cli(cmd):
 ])
 def test_allow_benign(cmd):
     assert should_deny_command(cmd) is False
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "git commit -m 'fix(kimi): stream large histories'",
+        'git commit -m "fix(kimi): stream large histories"',
+        "git commit -m 'docs: mention claude; kimi; codex'",
+        'git commit -m "fix: mention (kimi) and omg team"',
+        'git commit -m "fix:\\nkimi remains supported"',
+        "echo '$(kimi --version)'",
+        'echo "\\$(kimi --version)"',
+        'echo "(bash -c \'kimi --version\')"',
+    ],
+)
+def test_allow_denied_cli_names_in_literal_shell_arguments(cmd):
+    assert should_deny_command(cmd) is False
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "(kimi --version)",
+        'echo "$(kimi --version)"',
+        'echo "$(echo ok; kimi --version)"',
+        'git commit -m "test $(kimi --version)"',
+    ],
+)
+def test_deny_cli_execution_from_shell_substitutions(cmd):
+    assert should_deny_command(cmd) is True
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "echo ok # '\nkimi --version",
+        'echo ok # "\ncodex exec x',
+        "echo \"; bash -c 'claude'\"; bash -c 'codex exec x'",
+        r"echo $'abc\''; codex exec x",
+        "cat <<'EOF'\n\"\nEOF\ncodex exec x",
+        "cat <<EOF\n\"\nEOF\ncodex exec x",
+        "cat <<$'EOF'\n\"\nEOF\ncodex exec x",
+        "cat <<<\"'\"\ncodex exec x",
+        "cat <<EOF\n$(codex exec x)\nEOF",
+        "cat <<EOF\n$(codex exec x)",
+        "cat <<EOF\n`codex exec x`",
+        "\\" + "\n" + "codex exec x",
+        "echo ok; " + "\\" + "\n" + "codex exec x",
+        "env " + "\\" + "\n" + "codex exec x",
+        "bash -c " + "\\" + "\n" + "'codex exec x'",
+        "\\" + "\n" + "\\" + "\n" + "codex exec x",
+        "co" + "\\" + "\n" + "dex exec x",
+        "ba" + "\\" + "\n" + "sh -c 'codex exec x'",
+        "echo ok # " + "\\" + "\n" + "codex exec x",
+        "cat <<\"E\\OF\"\n\"\nE\\OF\ncodex exec x",
+        "eval 'echo ok; kimi --version'",
+        "eval '$(kimi --version)'",
+        "eval 'echo ok && codex exec x'",
+        'eval "echo ok; kimi --version"',
+        "eval echo ok \\; kimi --version",
+        "eval $'echo ok; kimi --version'",
+        "eval 'eval \"kimi --version\"'",
+        "trap 'echo safe; codex exec x' EXIT",
+        "trap -- $'echo safe; codex exec x' EXIT",
+        "echo \"$(eval 'echo ok; kimi --version')\"",
+        "bash -c 'echo ok\ncodex exec x'",
+        "cat <<EOF\n$(co" + "\\" + "\n" + "dex exec x)\nEOF",
+        "cat <<$(tag)\npayload\n$(tag)\ncodex exec x",
+        '((1 << "EOF"))\ncodex exec x',
+        "echo $((1 + $(kimi --version)))",
+        "bash -c '\"codex\" exec foo'",
+        "bash -c 'command \"codex\" exec foo'",
+        "bash -c 'co\"dex\" exec foo'",
+        '"codex" exec foo',
+        'command "codex" exec foo',
+        "bash -c 'if true; then codex exec x; fi'",
+        "bash -c 'for x in one; do \"codex\" exec x; done'",
+        "bash -c 'case x in x) co\"dex\" exec x;; esac'",
+        "bash -c '{ codex exec x; }'",
+        "bash -c '{ command \"codex\" exec x; }'",
+        "bash -c 'f() { \"codex\" exec x; }; f'",
+        "bash -c 'function f { codex exec x; }; f'",
+        "bash -c 'coproc codex exec x'",
+        "case y in x) echo safe;; y) co\"dex\" exec x;; esac",
+        'case o in o) case i in i) "codex" exec x;; esac;; esac',
+        'array=($("codex" exec x))',
+        '[[ x == $("codex" exec x) ]]',
+        "cat <<EOF\n'$(codex exec x)'\nEOF",
+        "cat <<EOF\n$(case x in x) co\"dex\" exec x;; esac)\nEOF",
+        "cat <<$'E\\x4fF'\nsafe\nEOF\ncodex exec x",
+        "cat <<$'E\\117F'\nsafe\nEOF\ncodex exec x",
+        'bash -c "$(printf codex)"',
+        "bash -c '$(printf codex)'",
+        "bash -c 'if $(printf codex); then :; fi'",
+        "bash -c 'co$(printf dex) exec x'",
+        'eval "$(printf codex)"',
+        "eval '$(printf codex)'",
+        "bash -c 'case x in x) $(printf codex);; esac'",
+        'echo "$(case x in x) echo safe; codex exec x;; esac)"',
+        'echo "$(case x in a) echo safe;; x) codex exec x;; esac)"',
+        "bash -c $'echo \\'x\\'; codex exec x'",
+        "bash -c $'co\\x64ex exec x'",
+        "eval $'echo \\'x\\'; codex exec x'",
+        "x='$(codex exec x)'; echo \"${x@P}\"",
+        "cat <<EOF\n${x@P}\nEOF",
+        "echo ${x:-<<EOF}\ncodex exec x\nEOF",
+        "echo ${x:-$(codex exec x)}",
+    ],
+)
+def test_deny_cli_after_inert_shell_text(cmd):
+    assert should_deny_command(cmd) is True
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "echo ok # ' kimi --version",
+        'echo ok # " codex exec x',
+        r"echo $'literal; codex exec x'",
+        "cat <<'EOF'\ncodex exec x\nEOF",
+        "cat <<'EOF'\n$(codex exec x)\nEOF",
+        "cat <<'EOF'\n$(codex exec x)",
+        "cat <<EOF\ncodex exec x",
+        "echo foo" + "\\" + "\n" + "codex exec x",
+        "echo " + "\\" + "\n" + "codex exec x",
+        "echo '" + "\\" + "\n" + "codex exec x'",
+        "echo \"foo" + "\\" + "\n" + "codex exec x\"",
+        "cat <<'EOF'\nE\\\nOF\ncodex exec x\nEOF",
+        "cat <<'EOF'\n$(co\\\ndex exec x)\nEOF",
+        "eval 'echo kimi is configured'",
+        "eval 'git commit -m \"fix(kimi)\"'",
+        "trap 'echo codex' EXIT",
+        "trap -p EXIT",
+        "echo \"trap 'codex exec x' EXIT\"",
+        "eval 'echo ok'; echo '(kimi)'",
+        "echo \"eval 'kimi --version'\"",
+        "bash -c 'echo safe'\necho kimi",
+        "bash -c 'echo codex'",
+        "((kimi << 1))",
+        "echo $((kimi << 1))",
+        'array=("codex")',
+        "array=(codex)",
+        'items=(co"dex")',
+        '[[ foo && "codex" ]]',
+        "[[ foo && codex ]]",
+        "bash -c 'array=(\"codex\")'",
+        "bash -c '[[ foo && \"codex\" ]]'",
+        'echo $(true) "codex"',
+        "case x in codex) echo safe;; esac",
+        'case x in x) echo $(true) "codex";; esac',
+        'echo "$(case x in x) echo codex;; esac)"',
+        "git commit -m '${x@P}'",
+        "cat <<'EOF'\n${x@P}\nEOF",
+        "echo '${x:-<<EOF}\ncodex exec x\nEOF'",
+        "echo ${x:-<<EOF}",
+        'cat <<EOF\n"codex" exec x\nEOF',
+        'cat <<EOF\nco"dex" exec x\nEOF',
+        'cat <<EOF\n$(case x in x) echo "codex";; esac)\nEOF',
+        "cat <<$(tag)\ncodex exec x\n$(tag)",
+        "cat <<$'E\\x4fF'\n\"codex\" exec x\nEOF",
+        "bash -c 'echo $(printf codex)'",
+        'bash -c "echo $(printf codex)"',
+        "eval 'echo $(printf codex)'",
+        "bash -c $'echo \\'codex\\''",
+    ],
+)
+def test_allow_denied_cli_names_inside_inert_shell_text(cmd):
+    assert should_deny_command(cmd) is False
+
+
+def test_many_literal_cli_mentions_do_not_stall_hook():
+    command = "git commit -m '" + " ".join(["(kimi)"] * 4000) + "'"
+    started = perf_counter()
+    assert should_deny_command(command) is False
+    assert perf_counter() - started < 2.0
+
+
+def test_many_case_branches_do_not_stall_hook():
+    command = "case x in " + " ".join(
+        f"p{index}) echo safe;;" for index in range(2000)
+    ) + " esac"
+    started = perf_counter()
+    assert should_deny_command(command) is False
+    assert perf_counter() - started < 2.0
+
+
+def test_many_command_substitutions_do_not_stall_hook():
+    command = "echo " + " ".join("$(echo safe)" for _ in range(2000))
+    started = perf_counter()
+    assert should_deny_command(command) is False
+    assert perf_counter() - started < 2.0
+
+
+def test_deep_case_substitutions_fail_closed_before_hook_timeout():
+    command = "codex exec x"
+    for _ in range(150):
+        command = f'echo "$(case x in x) {command};; esac)"'
+    started = perf_counter()
+    assert should_deny_command(command) is True
+    assert perf_counter() - started < 2.0
+
+
+def test_many_unquoted_heredoc_substitutions_fail_closed_before_timeout():
+    body = " ".join(["$(echo safe)"] * 700 + ["$(codex exec x)"])
+    command = f"cat <<EOF\n{body}\nEOF"
+    started = perf_counter()
+    assert should_deny_command(command) is True
+    assert perf_counter() - started < 2.0
+
+
+def test_case_budget_ignores_single_quoted_commit_message():
+    fragment = "case x in x) echo $(echo safe);; esac fix(kimi)"
+    command = "git commit -m '" + " ".join([fragment] * 66) + "'"
+    assert should_deny_command(command) is False
+
+
+def test_case_budget_ignores_quoted_heredoc_body():
+    fragment = "case x in x) echo $(echo safe);; esac codex"
+    command = "cat <<'EOF'\n" + "\n".join([fragment] * 65) + "\nEOF"
+    assert should_deny_command(command) is False
 
 
 def test_process_env_allow_only_when_set(monkeypatch):

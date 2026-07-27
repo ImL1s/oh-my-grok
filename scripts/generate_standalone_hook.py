@@ -40,11 +40,15 @@ from pathlib import Path
 # deny.py + _common.hook_disabled may only import from these stdlib modules; a
 # non-stdlib import would break the "self-contained, runs under ``python3 -I -S``
 # with no PYTHONPATH" guarantee. Enforced at generation time (fail-closed).
-STDLIB_IMPORT_ALLOWLIST = frozenset({"__future__", "os", "re", "sys", "json", "typing"})
+STDLIB_IMPORT_ALLOWLIST = frozenset(
+    {"__future__", "functools", "json", "os", "re", "shlex", "sys", "typing"}
+)
 # Runtime names the generated _HEADER binds. deny.py's stripped top-level imports must
 # bind ONLY these — otherwise the stripped body references an unbound name (NameError),
 # e.g. `from os import environ` binds `environ`, which the header does not provide.
-HEADER_PROVIDED_NAMES = frozenset({"json", "os", "re", "sys", "Any", "annotations"})
+HEADER_PROVIDED_NAMES = frozenset(
+    {"Any", "annotations", "json", "lru_cache", "os", "re", "shlex", "sys"}
+)
 STANDALONE_BASENAME = "omg_pretool_deny_standalone.py"
 INTERFACE_VERSION = "standalone_hook_generator/1"
 
@@ -207,7 +211,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sys
+from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True

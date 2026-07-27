@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
+from functools import lru_cache
 from typing import Any
 
 # Executable names that default workers must not invoke as external agent CLIs
@@ -21,10 +23,55 @@ _ENV_ASSIGNS = r"(?:(?:[A-Za-z_][\w]*=\S*\s+)*)"
 _WRAPPER_BIN = r"(?:(?:\S*/)?(?:env|command|xargs|nice|nohup|sudo|time|exec))"
 _WRAPPERS = rf"(?:{_WRAPPER_BIN}\s+(?:--\s+)*)*"
 _PATH_PREFIX = r"(?:\S*/)?"
+_SHELL_WORD = r"""(?:\\.|[^\s;&|()'"`\\]+|'[^']*'|"(?:\\.|[^"\\])*")+"""
+_CONTROL_COMMAND_WORD = r"(?:if|elif|while|until|then|else|do|coproc|!)"
+_FUNCTION_GROUP_LEAD = (
+    rf"(?:(?:function\s+)?{_SHELL_WORD}\s*\(\s*\)"
+    rf"|function\s+{_SHELL_WORD})\s*\{{\s+"
+)
+_COMMAND_LEAD = (
+    rf"(?:(?:{_CONTROL_COMMAND_WORD})\s+"
+    rf"|\{{\s+"
+    rf"|{_FUNCTION_GROUP_LEAD})*"
+)
+_DENIED_BIN_NAMES = frozenset(
+    {"claude", "codex", "omx", "agy", "cursor-agent", "kimi"}
+)
 
 _DENY_AT_CMD_POS = re.compile(
     rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}{_PATH_PREFIX}{_DENY_BINS}\b",
     re.IGNORECASE,
+)
+_DECODED_COMMAND_HEAD = re.compile(
+    rf"{_CMD_POS}\s*"
+    rf"{_COMMAND_LEAD}"
+    rf"{_ENV_ASSIGNS}{_WRAPPERS}"
+    rf"(?P<word>{_SHELL_WORD})",
+    re.IGNORECASE,
+)
+_DYNAMIC_COMMAND_PREFIX = re.compile(
+    rf"{_CMD_POS}\s*{_COMMAND_LEAD}{_ENV_ASSIGNS}{_WRAPPERS}",
+    re.IGNORECASE,
+)
+_CASE_HEAD = re.compile(
+    rf"(?:{_CMD_POS}|\))\s*{_COMMAND_LEAD}case\b",
+    re.IGNORECASE,
+)
+_CASE_IN = re.compile(r"\bin\b", re.IGNORECASE)
+_CASE_END = re.compile(rf"{_CMD_POS}\s*esac\b", re.IGNORECASE)
+_CASE_PATTERN_COMMAND_HEAD = re.compile(
+    rf"\)\s*{_ENV_ASSIGNS}{_WRAPPERS}(?P<word>{_SHELL_WORD})",
+    re.IGNORECASE,
+)
+_MAX_CASE_SUFFIX_SCAN_DEPTH = 64
+_MAX_HEREDOC_SUBSTITUTION_SCANS = 64
+_case_suffix_scan_depth = 0
+_CONDITIONAL_OPEN_AT_END = re.compile(
+    rf"{_CMD_POS}\s*{_COMMAND_LEAD}\[\[\Z",
+    re.IGNORECASE,
+)
+_ARRAY_ASSIGNMENT_AT_END = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\r\n]*\])?\+?=\Z"
 )
 _OMC_TEAM = re.compile(rf"{_CMD_POS}\s*omc\s+team\b", re.IGNORECASE)
 _OMG_TEAM = re.compile(rf"{_CMD_POS}\s*omg\s+team\b", re.IGNORECASE)
@@ -34,40 +81,1570 @@ _EVAL = re.compile(
     rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}(?:\S*/)?eval\s+(?:['\"]?){_PATH_PREFIX}{_DENY_BINS}\b",
     re.IGNORECASE,
 )
+_EVAL_HEAD = re.compile(
+    rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}(?:\S*/)?eval\b",
+    re.IGNORECASE,
+)
+_TRAP_HEAD = re.compile(
+    rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}(?:\S*/)?trap\b",
+    re.IGNORECASE,
+)
+_PROMPT_TRANSFORM = re.compile(
+    r"\$\{(?:[!#?$*@0-9-]|[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:\[[^\]\r\n]*\])?)@P\}"
+)
 
-# sh/bash/zsh -c / -lc (login+command) with quoted OR unquoted body containing a deny bin.
+# sh/bash/zsh -c / -lc (login+command) head. The first argument is decoded and
+# recursively inspected instead of using a greedy regex across later commands.
 # Path-prefixed shells: /bin/bash -c 'claude'
 # Requires short-flag cluster that includes `c` (so bare `bash -l` is not a hit).
-_SH_C = re.compile(
+_SHELL_C_HEAD = re.compile(
     rf"{_CMD_POS}\s*"
     rf"{_ENV_ASSIGNS}"
     rf"{_WRAPPERS}"
     rf"(?:\S*/)?(?:sh|bash|zsh)\s+-"
     rf"[A-Za-z]*c[A-Za-z]*"  # -c, -lc, -cl, any short-flag soup that includes c
-    rf"\s+"
-    rf"(?:"
-    rf"['\"].*\b{_DENY_BINS}\b"  # quoted body
-    rf"|"
-    rf"{_PATH_PREFIX}{_DENY_BINS}\b"  # unquoted: sh -c claude ...
-    rf")",
+    rf"\s+",
     re.IGNORECASE,
 )
 
 
-def should_deny_command(command: str) -> bool:
+class _ShellParseBudgetExceeded(RuntimeError):
+    """Raised when conservative shell parsing must fail closed."""
+
+
+def _decode_ansi_c_string(value: str) -> str | None:
+    """Decode Bash ANSI-C quoting, returning ``None`` for unusable NUL data."""
+
+    simple_escapes = {
+        "a": "\a",
+        "b": "\b",
+        "e": "\x1b",
+        "E": "\x1b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+        "v": "\v",
+        "\\": "\\",
+        "'": "'",
+        '"': '"',
+        "?": "?",
+    }
+    decoded: list[str] = []
+    index = 0
+    while index < len(value):
+        if value[index] != "\\":
+            decoded.append(value[index])
+            index += 1
+            continue
+        if index + 1 >= len(value):
+            decoded.append("\\")
+            break
+
+        escape = value[index + 1]
+        if escape in simple_escapes:
+            decoded.append(simple_escapes[escape])
+            index += 2
+            continue
+        if escape in "\r\n":
+            index += 2
+            if escape == "\r" and index < len(value) and value[index] == "\n":
+                index += 1
+            continue
+        if escape == "c" and index + 2 < len(value):
+            control = ord(value[index + 2].upper()) ^ 0x40
+            if control == 0:
+                return None
+            decoded.append(chr(control))
+            index += 3
+            continue
+        if escape == "x":
+            cursor = index + 2
+            while (
+                cursor < len(value)
+                and cursor < index + 4
+                and value[cursor] in "0123456789abcdefABCDEF"
+            ):
+                cursor += 1
+            if cursor == index + 2:
+                decoded.append("\\x")
+                index += 2
+                continue
+            codepoint = int(value[index + 2 : cursor], 16)
+            if codepoint == 0:
+                return None
+            decoded.append(chr(codepoint))
+            index = cursor
+            continue
+        if escape in {"u", "U"}:
+            limit = index + (6 if escape == "u" else 10)
+            cursor = index + 2
+            while (
+                cursor < len(value)
+                and cursor < limit
+                and value[cursor] in "0123456789abcdefABCDEF"
+            ):
+                cursor += 1
+            if cursor == index + 2:
+                decoded.append("\\" + escape)
+                index += 2
+                continue
+            codepoint = int(value[index + 2 : cursor], 16)
+            if codepoint == 0 or codepoint > 0x10FFFF:
+                return None
+            decoded.append(chr(codepoint))
+            index = cursor
+            continue
+        if escape in "01234567":
+            cursor = index + 1
+            digit_limit = index + (5 if escape == "0" else 4)
+            while (
+                cursor < len(value)
+                and cursor < digit_limit
+                and value[cursor] in "01234567"
+            ):
+                cursor += 1
+            codepoint = int(value[index + 1 : cursor], 8) & 0xFF
+            if codepoint == 0:
+                return None
+            decoded.append(chr(codepoint))
+            index = cursor
+            continue
+
+        # Bash preserves the backslash for an unknown ANSI-C escape.
+        decoded.extend(("\\", escape))
+        index += 2
+
+    return "".join(decoded)
+
+
+def _parse_heredoc(
+    command: str,
+    position: int,
+) -> tuple[str, bool, bool, int] | None:
+    """Parse a ``<<`` redirection at ``position``.
+
+    Return ``(delimiter, strip_tabs, quoted, end_position)``.  Here-strings
+    (``<<<``) are intentionally excluded.
+    """
+
+    if (
+        not command.startswith("<<", position)
+        or command.startswith("<<<", position)
+        or (position > 0 and command[position - 1] == "<")
+    ):
+        return None
+
+    cursor = position + 2
+    strip_tabs = cursor < len(command) and command[cursor] == "-"
+    if strip_tabs:
+        cursor += 1
+    while cursor < len(command) and command[cursor] in " \t":
+        cursor += 1
+    if cursor >= len(command) or command[cursor] in "\r\n":
+        return None
+
+    delimiter: list[str] = []
+    quoted = False
+    while cursor < len(command):
+        char = command[cursor]
+        following = command[cursor + 1] if cursor + 1 < len(command) else ""
+        ansi_c_quote = char == "$" and following == "'"
+        locale_quote = char == "$" and following == '"'
+        if ansi_c_quote or locale_quote:
+            quoted = True
+            if locale_quote:
+                # The runtime locale may translate $"...". Without the exact
+                # delimiter, do not mask any subsequent command as heredoc data.
+                return None
+            cursor += 1
+            char = command[cursor]
+            following = command[cursor + 1] if cursor + 1 < len(command) else ""
+        if char == "$" and following == "(":
+            closing = _command_substitution_close(
+                command,
+                cursor + 1,
+                len(command),
+            )
+            if closing is None:
+                return None
+            raw_substitution = command[cursor : closing + 1]
+            if any(
+                marker in raw_substitution
+                for marker in ("'", '"', "\\", "\r", "\n")
+            ):
+                # Exact quote removal inside a delimiter substitution is
+                # ambiguous here. Fail open instead of masking later commands.
+                return None
+            delimiter.append(raw_substitution)
+            cursor = closing + 1
+            continue
+        if char.isspace() or char in ";&|()<>":
+            break
+        if char == "'":
+            quoted = True
+            if ansi_c_quote:
+                cursor += 1
+                raw_ansi_c: list[str] = []
+                while cursor < len(command) and command[cursor] != "'":
+                    following = (
+                        command[cursor + 1] if cursor + 1 < len(command) else ""
+                    )
+                    if command[cursor] == "\\" and following:
+                        raw_ansi_c.extend(("\\", following))
+                        cursor += 2
+                    else:
+                        raw_ansi_c.append(command[cursor])
+                        cursor += 1
+                if cursor >= len(command):
+                    return None
+                decoded_ansi_c = _decode_ansi_c_string("".join(raw_ansi_c))
+                if decoded_ansi_c is None:
+                    return None
+                delimiter.append(decoded_ansi_c)
+                cursor += 1
+                continue
+            closing = command.find("'", cursor + 1)
+            if closing < 0:
+                return None
+            delimiter.append(command[cursor + 1 : closing])
+            cursor = closing + 1
+            continue
+        if char == '"':
+            quoted = True
+            cursor += 1
+            while cursor < len(command) and command[cursor] != '"':
+                following = command[cursor + 1] if cursor + 1 < len(command) else ""
+                if command[cursor] == "\\" and following:
+                    if following in {'$', "`", '"', "\\"}:
+                        delimiter.append(following)
+                        cursor += 2
+                    elif following in {"\n", "\r"}:
+                        cursor += 2
+                        if (
+                            following == "\r"
+                            and cursor < len(command)
+                            and command[cursor] == "\n"
+                        ):
+                            cursor += 1
+                    else:
+                        delimiter.append("\\")
+                        cursor += 1
+                else:
+                    delimiter.append(command[cursor])
+                    cursor += 1
+            if cursor >= len(command):
+                return None
+            cursor += 1
+            continue
+        if char == "\\" and following:
+            if following in {"\n", "\r"}:
+                cursor += 2
+                if (
+                    following == "\r"
+                    and cursor < len(command)
+                    and command[cursor] == "\n"
+                ):
+                    cursor += 1
+                continue
+            quoted = True
+            delimiter.append(following)
+            cursor += 2
+            continue
+        delimiter.append(char)
+        cursor += 1
+
+    if not delimiter:
+        return None
+    return "".join(delimiter), strip_tabs, quoted, cursor
+
+
+def _line_break(command: str, start: int) -> tuple[int, int]:
+    """Return ``(line_end, next_line_start)`` from ``start``."""
+
+    cursor = start
+    while cursor < len(command) and command[cursor] not in "\r\n":
+        cursor += 1
+    if cursor >= len(command):
+        return len(command), len(command)
+    next_line = cursor + 1
+    if command[cursor] == "\r" and next_line < len(command) and command[next_line] == "\n":
+        next_line += 1
+    return cursor, next_line
+
+
+def _command_substitution_close(
+    command: str,
+    open_position: int,
+    limit: int,
+) -> int | None:
+    """Find the ``)`` paired with a shell ``$(`` opener."""
+
+    body = command[open_position + 1 : limit]
+    body_contexts = _shell_context_map(body)
+    case_pattern_closes = _case_pattern_close_positions(body)
+    depth = 1
+    for offset, char in enumerate(body):
+        if body_contexts[offset] != _EXECUTABLE_CONTEXT:
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if offset in case_pattern_closes:
+                continue
+            depth -= 1
+            if depth == 0:
+                return open_position + 1 + offset
+    return None
+
+
+def _backtick_substitution_close(
+    command: str,
+    open_position: int,
+    limit: int,
+) -> int | None:
+    """Find an unescaped closing backtick in an expanding heredoc body."""
+
+    index = open_position + 1
+    while index < limit:
+        if command[index] == "\\" and index + 1 < limit:
+            index += 2
+            continue
+        if command[index] == "`":
+            return index
+        index += 1
+    return None
+
+
+def _heredoc_body_bounds(
+    command: str,
+    start: int,
+    end: int,
+    *,
+    terminated: bool,
+) -> tuple[int, int]:
+    """Exclude the leading and terminator lines from a heredoc range."""
+
+    _, body_start = _line_break(command, start)
+    if not terminated:
+        return body_start, end
+    last_cr = command.rfind("\r", body_start, end)
+    last_lf = command.rfind("\n", body_start, end)
+    terminator_break = max(last_cr, last_lf)
+    body_end = terminator_break if terminator_break >= body_start else body_start
+    return body_start, body_end
+
+
+def _heredoc_ranges(
+    command: str,
+    newline_position: int,
+    pending: list[tuple[str, bool, bool]],
+) -> tuple[list[tuple[int, int, bool, bool]], int]:
+    """Locate pending heredoc bodies and the final terminator newline.
+
+    Ranges begin at the preceding newline because deny regexes include that
+    newline in their command-position match.  The final terminator newline is
+    excluded so a real command on the following line remains executable.
+    """
+
+    _, cursor = _line_break(command, newline_position)
+    marker = newline_position
+    ranges: list[tuple[int, int, bool, bool]] = []
+    resume = len(command)
+
+    for delimiter, strip_tabs, quoted in pending:
+        while cursor <= len(command):
+            line_end, next_line = _line_break(command, cursor)
+            line = command[cursor:line_end]
+            candidate = line.lstrip("\t") if strip_tabs else line
+            if candidate == delimiter:
+                resume = line_end
+                ranges.append((marker, resume, quoted, True))
+                cursor = next_line
+                marker = resume
+                break
+            if line_end >= len(command):
+                ranges.append((marker, len(command), quoted, False))
+                return ranges, len(command)
+            cursor = next_line
+
+    return ranges, resume
+
+
+_LITERAL_CONTEXT = 0
+_EXECUTABLE_CONTEXT = 1
+_LINE_CONTINUATION = 2
+_EXECUTABLE_CONTEXTS = frozenset({"normal", "command_substitution", "backtick"})
+
+
+def _mark_unquoted_heredoc_continuations(
+    command: str,
+    start: int,
+    end: int,
+    contexts: list[int],
+) -> None:
+    """Mark active backslash-newline pairs inside an expanding heredoc."""
+
+    index = start
+    while index < end:
+        if command[index] not in "\r\n":
+            index += 1
+            continue
+        backslashes = 0
+        cursor = index - 1
+        while cursor >= start and command[cursor] == "\\":
+            backslashes += 1
+            cursor -= 1
+        if backslashes % 2:
+            contexts[index] = _LINE_CONTINUATION
+            if (
+                command[index] == "\r"
+                and index + 1 < end
+                and command[index + 1] == "\n"
+            ):
+                contexts[index + 1] = _LINE_CONTINUATION
+                index += 1
+        index += 1
+
+
+def _mark_unquoted_heredoc_expansions(
+    command: str,
+    start: int,
+    end: int,
+    contexts: list[int],
+    *,
+    terminated: bool,
+) -> None:
+    """Mark only command/backtick substitutions in unquoted heredoc data."""
+
+    body_start, body_end = _heredoc_body_bounds(
+        command,
+        start,
+        end,
+        terminated=terminated,
+    )
+    budget_index = body_start
+    substitution_count = 0
+    while budget_index < body_end:
+        following = (
+            command[budget_index + 1]
+            if budget_index + 1 < body_end
+            else ""
+        )
+        if (
+            command[budget_index] == "\\"
+            and following in {"\\", "$", "`", "\r", "\n"}
+        ):
+            budget_index += 2
+            continue
+        if (
+            command[budget_index] == "$"
+            and following == "("
+            and not command.startswith("$((", budget_index)
+        ):
+            substitution_count += 1
+            if substitution_count > _MAX_HEREDOC_SUBSTITUTION_SCANS:
+                raise _ShellParseBudgetExceeded
+            budget_index += 2
+            continue
+        budget_index += 1
+
+    index = body_start
+    while index < body_end:
+        char = command[index]
+        following = command[index + 1] if index + 1 < body_end else ""
+        if char == "\\" and following in {"\\", "$", "`", "\r", "\n"}:
+            index += 2
+            if (
+                following == "\r"
+                and index < body_end
+                and command[index] == "\n"
+            ):
+                index += 1
+            continue
+        prompt_transform = _PROMPT_TRANSFORM.match(command, index, body_end)
+        if prompt_transform is not None:
+            contexts[index] = _EXECUTABLE_CONTEXT
+            index = prompt_transform.end()
+            continue
+        if (
+            char == "$"
+            and following == "("
+            and not command.startswith("$((", index)
+        ):
+            close = _command_substitution_close(command, index + 1, body_end)
+            if close is None:
+                index += 2
+                continue
+            inner = command[index + 2 : close]
+            inner_contexts = _shell_context_map(inner)
+            contexts[index + 1] = _EXECUTABLE_CONTEXT
+            contexts[index + 2 : close] = inner_contexts[:-1]
+            index = close + 1
+            continue
+        if char == "`":
+            close = _backtick_substitution_close(command, index, body_end)
+            if close is None:
+                index += 1
+                continue
+            inner = command[index + 1 : close]
+            inner_contexts = _shell_context_map(inner)
+            contexts[index] = _EXECUTABLE_CONTEXT
+            contexts[index + 1 : close] = inner_contexts[:-1]
+            index = close + 1
+            continue
+        index += 1
+
+
+def _conditional_opens_at(command: str, position: int) -> bool:
+    """Recognize a command-position ``[[`` without rescanning the full input."""
+
+    segment_start = position
+    while (
+        segment_start > 0
+        and command[segment_start - 1] not in ";&|(`\n\r"
+    ):
+        segment_start -= 1
+    if segment_start > 0:
+        segment_start -= 1
+    return (
+        _CONDITIONAL_OPEN_AT_END.search(
+            command,
+            segment_start,
+            position + 2,
+        )
+        is not None
+    )
+
+
+def _array_assignment_opens_at(command: str, position: int) -> bool:
+    """Recognize the no-whitespace ``name=(`` array-assignment form."""
+
+    word_start = position
+    while (
+        word_start > 0
+        and command[word_start - 1] not in " \t\r\n;&|"
+    ):
+        word_start -= 1
+    return (
+        _ARRAY_ASSIGNMENT_AT_END.fullmatch(command, word_start, position)
+        is not None
+    )
+
+
+@lru_cache(maxsize=128)
+def _shell_context_map(command: str) -> tuple[int, ...]:
+    """Build shell-context classifications for every character in one pass."""
+
+    contexts = [_LITERAL_CONTEXT] * (len(command) + 1)
+    # Entries are (context, parenthesis_depth, at_word_start). Quote contexts
+    # return to the previous executable context when popped.
+    stack: list[tuple[str, int, bool]] = [("normal", 0, True)]
+    command_substitution_opens: dict[int, int] = {}
+    command_substitution_closes: dict[int, int | None] = {}
+    command_substitution_case_closes: dict[int, frozenset[int]] = {}
+    pending_heredocs: list[tuple[str, bool, bool]] = []
+    case_head_ends = tuple(match.end() for match in _CASE_HEAD.finditer(command))
+    index = 0
+
+    def push_command_substitution(open_position: int) -> None:
+        stack.append(("command_substitution", 1, True))
+        command_substitution_opens[len(stack) - 1] = open_position
+
+    def pop_command_substitution(frame_index: int) -> None:
+        command_substitution_opens.pop(frame_index, None)
+        command_substitution_closes.pop(frame_index, None)
+        command_substitution_case_closes.pop(frame_index, None)
+        stack.pop()
+
+    def substitution_prefix_has_case(
+        open_position: int,
+        close_candidate: int,
+    ) -> bool:
+        low = 0
+        high = len(case_head_ends)
+        while low < high:
+            middle = (low + high) // 2
+            if case_head_ends[middle] <= close_candidate + 1:
+                low = middle + 1
+            else:
+                high = middle
+        return low > 0 and case_head_ends[low - 1] > open_position + 1
+
+    while index < len(command):
+        context, depth, at_word_start = stack[-1]
+        executable = context in _EXECUTABLE_CONTEXTS
+        contexts[index] = (
+            _EXECUTABLE_CONTEXT if executable else _LITERAL_CONTEXT
+        )
+        char = command[index]
+        following = command[index + 1] if index + 1 < len(command) else ""
+
+        if context == "single":
+            if char == "'":
+                stack.pop()
+            index += 1
+            continue
+
+        if context == "ansi_c_single":
+            if char == "\\" and following:
+                index += 2
+                continue
+            if char == "'":
+                stack.pop()
+            index += 1
+            continue
+
+        if context == "double":
+            if char == "\\" and following in {'$', '`', '"', "\\", "\n", "\r"}:
+                contexts[index + 1] = (
+                    _LINE_CONTINUATION
+                    if following in {"\n", "\r"}
+                    else _LITERAL_CONTEXT
+                )
+                index += 2
+                if (
+                    following == "\r"
+                    and index < len(command)
+                    and command[index] == "\n"
+                ):
+                    contexts[index] = _LINE_CONTINUATION
+                    index += 1
+                continue
+            if char == '"':
+                stack.pop()
+                index += 1
+                continue
+            if _PROMPT_TRANSFORM.match(command, index):
+                contexts[index] = _EXECUTABLE_CONTEXT
+            if char == "$" and following == "{":
+                contexts[index + 1] = _LITERAL_CONTEXT
+                stack.append(("parameter", 1, False))
+                index += 2
+                continue
+            if char == "$" and following == "(":
+                if index + 2 < len(command) and command[index + 2] == "(":
+                    contexts[index + 1] = _LITERAL_CONTEXT
+                    contexts[index + 2] = _LITERAL_CONTEXT
+                    stack.append(("arithmetic", 2, False))
+                    index += 3
+                else:
+                    contexts[index + 1] = _EXECUTABLE_CONTEXT
+                    push_command_substitution(index + 1)
+                    index += 2
+                continue
+            if char == "`":
+                contexts[index] = _EXECUTABLE_CONTEXT
+                stack.append(("backtick", 0, True))
+                index += 1
+                continue
+            index += 1
+            continue
+
+        if context == "arithmetic":
+            if char == "\\" and following:
+                index += 2
+                continue
+            if _PROMPT_TRANSFORM.match(command, index):
+                contexts[index] = _EXECUTABLE_CONTEXT
+            if char == "$" and following == "{":
+                contexts[index + 1] = _LITERAL_CONTEXT
+                stack.append(("parameter", 1, False))
+                index += 2
+                continue
+            if char == "$" and following == "(":
+                if index + 2 < len(command) and command[index + 2] == "(":
+                    contexts[index + 1] = _LITERAL_CONTEXT
+                    contexts[index + 2] = _LITERAL_CONTEXT
+                    stack.append(("arithmetic", 2, False))
+                    index += 3
+                else:
+                    contexts[index + 1] = _EXECUTABLE_CONTEXT
+                    push_command_substitution(index + 1)
+                    index += 2
+                continue
+            if char == "`":
+                contexts[index] = _EXECUTABLE_CONTEXT
+                stack.append(("backtick", 0, True))
+                index += 1
+                continue
+            if char == "(":
+                stack[-1] = (context, depth + 1, False)
+            elif char == ")":
+                if depth == 1:
+                    stack.pop()
+                else:
+                    stack[-1] = (context, depth - 1, False)
+            index += 1
+            continue
+
+        if context == "parameter":
+            if char == "\\" and following:
+                index += 2
+                continue
+            if _PROMPT_TRANSFORM.match(command, index):
+                contexts[index] = _EXECUTABLE_CONTEXT
+            if char == "$" and following == "{":
+                contexts[index + 1] = _LITERAL_CONTEXT
+                stack[-1] = (context, depth + 1, False)
+                index += 2
+                continue
+            if char == "$" and following == "'":
+                stack.append(("ansi_c_single", 0, False))
+                index += 2
+                continue
+            if char == "'":
+                stack.append(("single", 0, False))
+                index += 1
+                continue
+            if char == '"':
+                stack.append(("double", 0, False))
+                index += 1
+                continue
+            if char == "$" and following == "(":
+                if index + 2 < len(command) and command[index + 2] == "(":
+                    contexts[index + 1] = _LITERAL_CONTEXT
+                    contexts[index + 2] = _LITERAL_CONTEXT
+                    stack.append(("arithmetic", 2, False))
+                    index += 3
+                else:
+                    contexts[index + 1] = _EXECUTABLE_CONTEXT
+                    push_command_substitution(index + 1)
+                    index += 2
+                continue
+            if char == "`":
+                contexts[index] = _EXECUTABLE_CONTEXT
+                stack.append(("backtick", 0, True))
+                index += 1
+                continue
+            if char == "}":
+                if depth == 1:
+                    stack.pop()
+                else:
+                    stack[-1] = (context, depth - 1, False)
+            index += 1
+            continue
+
+        if context in {"array", "conditional"}:
+            if char == "\\" and following:
+                index += 2
+                continue
+            if context == "conditional" and char == "]" and following == "]":
+                contexts[index + 1] = _LITERAL_CONTEXT
+                stack.pop()
+                index += 2
+                continue
+            if _PROMPT_TRANSFORM.match(command, index):
+                contexts[index] = _EXECUTABLE_CONTEXT
+            if char == "$" and following == "{":
+                contexts[index + 1] = _LITERAL_CONTEXT
+                stack.append(("parameter", 1, False))
+                index += 2
+                continue
+            if char == "$" and following == "'":
+                stack.append(("ansi_c_single", 0, False))
+                index += 2
+                continue
+            if char == "'":
+                stack.append(("single", 0, False))
+                index += 1
+                continue
+            if char == '"':
+                stack.append(("double", 0, False))
+                index += 1
+                continue
+            if char == "`":
+                contexts[index] = _EXECUTABLE_CONTEXT
+                stack.append(("backtick", 0, True))
+                index += 1
+                continue
+            if char == "$" and following == "(":
+                if index + 2 < len(command) and command[index + 2] == "(":
+                    contexts[index + 1] = _LITERAL_CONTEXT
+                    contexts[index + 2] = _LITERAL_CONTEXT
+                    stack.append(("arithmetic", 2, False))
+                    index += 3
+                else:
+                    contexts[index + 1] = _EXECUTABLE_CONTEXT
+                    push_command_substitution(index + 1)
+                    index += 2
+                continue
+            if char in "<>" and following == "(":
+                contexts[index + 1] = _EXECUTABLE_CONTEXT
+                push_command_substitution(index + 1)
+                index += 2
+                continue
+            if context == "array":
+                if char == "(":
+                    stack[-1] = (context, depth + 1, False)
+                elif char == ")":
+                    if depth == 1:
+                        stack.pop()
+                    else:
+                        stack[-1] = (context, depth - 1, False)
+            index += 1
+            continue
+
+        # normal, command substitution, and backtick bodies are executable
+        # shell contexts. Quotes nested inside them are literal until closed.
+        if char == "\\" and following:
+            contexts[index + 1] = (
+                _LINE_CONTINUATION
+                if following in {"\n", "\r"}
+                else _LITERAL_CONTEXT
+            )
+            if following not in {"\n", "\r"}:
+                stack[-1] = (context, depth, False)
+            index += 2
+            if (
+                following == "\r"
+                and index < len(command)
+                and command[index] == "\n"
+            ):
+                contexts[index] = _LINE_CONTINUATION
+                index += 1
+            continue
+        if context == "backtick" and char == "`":
+            stack.pop()
+            index += 1
+            continue
+        if char == "#" and at_word_start:
+            line_end, _ = _line_break(command, index)
+            contexts[index:line_end] = [_LITERAL_CONTEXT] * (line_end - index)
+            index = line_end
+            continue
+        if char in "\r\n" and pending_heredocs:
+            ranges, resume = _heredoc_ranges(command, index, pending_heredocs)
+            for start, end, quoted, terminated in ranges:
+                contexts[start:end] = [_LITERAL_CONTEXT] * (end - start)
+                if not quoted:
+                    _mark_unquoted_heredoc_continuations(
+                        command,
+                        start,
+                        end,
+                        contexts,
+                    )
+                    _mark_unquoted_heredoc_expansions(
+                        command,
+                        start,
+                        end,
+                        contexts,
+                        terminated=terminated,
+                    )
+            pending_heredocs.clear()
+            index = resume
+            continue
+        if char == "<" and following == "<":
+            heredoc = _parse_heredoc(command, index)
+            if heredoc is not None:
+                delimiter, strip_tabs, quoted, end_position = heredoc
+                pending_heredocs.append((delimiter, strip_tabs, quoted))
+                stack[-1] = (context, depth, False)
+                index = end_position
+                continue
+        if (
+            char == "["
+            and following == "["
+            and _conditional_opens_at(command, index)
+        ):
+            contexts[index] = _LITERAL_CONTEXT
+            contexts[index + 1] = _LITERAL_CONTEXT
+            stack[-1] = (context, depth, False)
+            stack.append(("conditional", 0, False))
+            index += 2
+            continue
+        if char == "$" and following == "{":
+            stack[-1] = (context, depth, False)
+            contexts[index + 1] = _LITERAL_CONTEXT
+            stack.append(("parameter", 1, False))
+            index += 2
+            continue
+        if char == "$" and following == "'":
+            stack[-1] = (context, depth, False)
+            stack.append(("ansi_c_single", 0, False))
+            index += 2
+            continue
+        if char == "'":
+            stack[-1] = (context, depth, False)
+            stack.append(("single", 0, False))
+            index += 1
+            continue
+        if char == '"':
+            stack[-1] = (context, depth, False)
+            stack.append(("double", 0, False))
+            index += 1
+            continue
+        if char == "`":
+            stack[-1] = (context, depth, False)
+            stack.append(("backtick", 0, True))
+            index += 1
+            continue
+        if char == "$" and following == "(":
+            stack[-1] = (context, depth, False)
+            if index + 2 < len(command) and command[index + 2] == "(":
+                contexts[index + 1] = _LITERAL_CONTEXT
+                contexts[index + 2] = _LITERAL_CONTEXT
+                stack.append(("arithmetic", 2, False))
+                index += 3
+            else:
+                contexts[index + 1] = _EXECUTABLE_CONTEXT
+                push_command_substitution(index + 1)
+                index += 2
+            continue
+        if char == "(" and _array_assignment_opens_at(command, index):
+            contexts[index] = _LITERAL_CONTEXT
+            stack[-1] = (context, depth, False)
+            stack.append(("array", 1, False))
+            index += 1
+            continue
+        if char == "(" and following == "(":
+            contexts[index + 1] = _LITERAL_CONTEXT
+            stack[-1] = (context, depth, False)
+            stack.append(("arithmetic", 2, False))
+            index += 2
+            continue
+        if context == "command_substitution":
+            if char == "(":
+                stack[-1] = (context, depth + 1, True)
+            elif char == ")":
+                frame_index = len(stack) - 1
+                expected_close = command_substitution_closes.get(frame_index)
+                case_closes = command_substitution_case_closes.get(
+                    frame_index,
+                    frozenset(),
+                )
+                if expected_close is None:
+                    open_position = command_substitution_opens[frame_index]
+                    if substitution_prefix_has_case(open_position, index):
+                        body_start = open_position + 1
+                        body = command[body_start:]
+                        case_closes = frozenset(
+                            body_start + position
+                            for position in _bounded_case_pattern_close_positions(
+                                body
+                            )
+                        )
+                        if index in case_closes:
+                            command_substitution_case_closes[frame_index] = (
+                                case_closes
+                            )
+                            expected_close = _command_substitution_close(
+                                command,
+                                open_position,
+                                len(command),
+                            )
+                            command_substitution_closes[frame_index] = (
+                                expected_close
+                            )
+                if index in case_closes:
+                    stack[-1] = (context, depth, True)
+                elif expected_close == index:
+                    pop_command_substitution(frame_index)
+                elif expected_close is not None:
+                    if depth > 1:
+                        stack[-1] = (context, depth - 1, False)
+                elif depth == 1:
+                    pop_command_substitution(frame_index)
+                else:
+                    stack[-1] = (context, depth - 1, False)
+            elif char.isspace() or char in ";&|<>":
+                stack[-1] = (context, depth, True)
+            else:
+                stack[-1] = (context, depth, False)
+        elif char.isspace() or char in ";&|()<>":
+            stack[-1] = (context, depth, True)
+        else:
+            stack[-1] = (context, depth, False)
+        index += 1
+
+    context = stack[-1][0]
+    contexts[len(command)] = (
+        _EXECUTABLE_CONTEXT
+        if context in _EXECUTABLE_CONTEXTS
+        else _LITERAL_CONTEXT
+    )
+    return tuple(contexts)
+
+
+def _shell_context_is_executable(command: str, position: int) -> bool | None:
+    """Classify ``position`` as executable, literal, or line-continuation."""
+
+    position = max(0, min(position, len(command)))
+    context = _shell_context_map(command)[position]
+    if context == _LINE_CONTINUATION:
+        return None
+    return context == _EXECUTABLE_CONTEXT
+
+
+def _has_executable_match(pattern: re.Pattern[str], command: str) -> bool:
+    search_position = 0
+    while match := pattern.search(command, search_position):
+        context = _shell_context_is_executable(command, match.start())
+        if context is True:
+            return True
+        if context is None:
+            marker = match.start()
+            end = marker + 1
+            if (
+                marker < len(command)
+                and command[marker] == "\r"
+                and end < len(command)
+                and command[end] == "\n"
+            ):
+                end += 1
+            collapsed = command[: marker - 1] + command[end:]
+            if _has_executable_match(pattern, collapsed):
+                return True
+        # A pattern such as ``sh -c '<body>'`` may greedily span from an inert
+        # quoted occurrence across a later real invocation. Resume one
+        # character after the rejected start so overlapping candidates remain
+        # visible instead of advancing to the greedy match's end.
+        search_position = match.start() + 1
+    return False
+
+
+def _collapse_line_continuations(command: str) -> str:
+    """Remove active backslash-newline pairs before regex matching."""
+
+    contexts = _shell_context_map(command)
+    collapsed: list[str] = []
+    index = 0
+    while index < len(command):
+        if (
+            command[index] == "\\"
+            and index + 1 < len(command)
+            and contexts[index + 1] == _LINE_CONTINUATION
+        ):
+            index += 2
+            if (
+                index < len(command)
+                and command[index - 1] == "\r"
+                and command[index] == "\n"
+            ):
+                index += 1
+            continue
+        collapsed.append(command[index])
+        index += 1
+    return "".join(collapsed)
+
+
+def _eval_argument_tail(command: str, start: int) -> str:
+    """Return the outer-shell argument text following an ``eval`` command."""
+
+    stack: list[tuple[str, int, bool]] = [("normal", 0, True)]
+    index = start
+    while index < len(command):
+        context, depth, at_word_start = stack[-1]
+        char = command[index]
+        following = command[index + 1] if index + 1 < len(command) else ""
+
+        if context == "single":
+            if char == "'":
+                stack.pop()
+            index += 1
+            continue
+        if context == "ansi_c_single":
+            if char == "\\" and following:
+                index += 2
+                continue
+            if char == "'":
+                stack.pop()
+            index += 1
+            continue
+        if context == "double":
+            if char == "\\" and following in {'$', '`', '"', "\\", "\n", "\r"}:
+                index += 2
+                continue
+            if char == '"':
+                stack.pop()
+                index += 1
+                continue
+            if char == "$" and following == "(":
+                stack.append(("command_substitution", 1, True))
+                index += 2
+                continue
+            if char == "`":
+                stack.append(("backtick", 0, True))
+                index += 1
+                continue
+            index += 1
+            continue
+
+        if char == "\\" and following:
+            stack[-1] = (context, depth, False)
+            index += 2
+            continue
+        if context == "backtick" and char == "`":
+            stack.pop()
+            index += 1
+            continue
+        if len(stack) == 1:
+            if char in ";&|\r\n)" or (char == "#" and at_word_start):
+                break
+        if char == "$" and following == "'":
+            stack[-1] = (context, depth, False)
+            stack.append(("ansi_c_single", 0, False))
+            index += 2
+            continue
+        if char == "'":
+            stack[-1] = (context, depth, False)
+            stack.append(("single", 0, False))
+            index += 1
+            continue
+        if char == '"':
+            stack[-1] = (context, depth, False)
+            stack.append(("double", 0, False))
+            index += 1
+            continue
+        if char == "`":
+            stack[-1] = (context, depth, False)
+            stack.append(("backtick", 0, True))
+            index += 1
+            continue
+        if char == "$" and following == "(":
+            stack[-1] = (context, depth, False)
+            stack.append(("command_substitution", 1, True))
+            index += 2
+            continue
+        if context == "command_substitution":
+            if char == "(":
+                stack[-1] = (context, depth + 1, True)
+            elif char == ")":
+                if depth == 1:
+                    stack.pop()
+                else:
+                    stack[-1] = (context, depth - 1, False)
+            elif char.isspace() or char in ";&|<>":
+                stack[-1] = (context, depth, True)
+            else:
+                stack[-1] = (context, depth, False)
+        elif char.isspace() or char in "<>":
+            stack[-1] = (context, depth, True)
+        else:
+            stack[-1] = (context, depth, False)
+        index += 1
+
+    return command[start:index]
+
+
+def _normalize_ansi_c_quotes(raw_body: str) -> str | None:
+    """Rewrite active ``$'...'`` segments into POSIX-shlex-safe quoting."""
+
+    normalized: list[str] = []
+    context = "normal"
+    index = 0
+    while index < len(raw_body):
+        char = raw_body[index]
+        following = raw_body[index + 1] if index + 1 < len(raw_body) else ""
+        if context == "single":
+            normalized.append(char)
+            if char == "'":
+                context = "normal"
+            index += 1
+            continue
+        if context == "double":
+            normalized.append(char)
+            if char == "\\" and following:
+                normalized.append(following)
+                index += 2
+                continue
+            if char == '"':
+                context = "normal"
+            index += 1
+            continue
+
+        if char == "\\" and following:
+            normalized.extend((char, following))
+            index += 2
+            continue
+        if char == "'":
+            normalized.append(char)
+            context = "single"
+            index += 1
+            continue
+        if char == '"':
+            normalized.append(char)
+            context = "double"
+            index += 1
+            continue
+        if char == "$" and following == "'":
+            cursor = index + 2
+            encoded: list[str] = []
+            while cursor < len(raw_body):
+                if raw_body[cursor] == "\\" and cursor + 1 < len(raw_body):
+                    encoded.extend((raw_body[cursor], raw_body[cursor + 1]))
+                    cursor += 2
+                    continue
+                if raw_body[cursor] == "'":
+                    break
+                encoded.append(raw_body[cursor])
+                cursor += 1
+            if cursor >= len(raw_body):
+                return None
+            decoded = _decode_ansi_c_string("".join(encoded))
+            if decoded is None:
+                return None
+            normalized.append(shlex.quote(decoded))
+            index = cursor + 1
+            continue
+        normalized.append(char)
+        index += 1
+    return "".join(normalized)
+
+
+def _decode_shell_words(raw_body: str) -> list[str]:
+    normalized = _normalize_ansi_c_quotes(raw_body)
+    shell_text = raw_body if normalized is None else normalized
+    try:
+        words = shlex.split(shell_text, comments=False, posix=True)
+    except ValueError:
+        return [raw_body]
+    if '$"' in raw_body:
+        words = [word[1:] if word.startswith("$") else word for word in words]
+    return words
+
+
+def _decoded_shell_word_is_denied(raw_word: str) -> bool:
+    words = _decode_shell_words(raw_word)
+    if len(words) != 1:
+        return False
+    executable = words[0].rsplit("/", 1)[-1].lower()
+    return executable in _DENIED_BIN_NAMES
+
+
+def _starts_shell_expansion(char: str) -> bool:
+    return bool(
+        char
+        and (
+            char.isalnum()
+            or char == "_"
+            or char in "({*@#?$!-"
+        )
+    )
+
+
+def _shell_word_has_dynamic_expansion(command: str, start: int = 0) -> bool:
+    """Return whether one shell word contains an active runtime expansion."""
+
+    index = start
+    while index < len(command) and command[index].isspace():
+        index += 1
+    context = "normal"
+    while index < len(command):
+        char = command[index]
+        following = command[index + 1] if index + 1 < len(command) else ""
+        if context == "single":
+            if char == "'":
+                context = "normal"
+            index += 1
+            continue
+        if context == "ansi_c_single":
+            if char == "\\" and following:
+                index += 2
+                continue
+            if char == "'":
+                context = "normal"
+            index += 1
+            continue
+        if context == "double":
+            if char == "\\" and following in {'$', '`', '"', "\\", "\r", "\n"}:
+                index += 2
+                if (
+                    following == "\r"
+                    and index < len(command)
+                    and command[index] == "\n"
+                ):
+                    index += 1
+                continue
+            if char == '"':
+                context = "normal"
+                index += 1
+                continue
+            if char == "`" or (
+                char == "$" and _starts_shell_expansion(following)
+            ):
+                return True
+            index += 1
+            continue
+
+        if char.isspace() or char in ";&|()<>":
+            return False
+        if char == "\\" and following:
+            index += 2
+            continue
+        if char == "$" and following == "'":
+            context = "ansi_c_single"
+            index += 2
+            continue
+        if char == "$" and following == '"':
+            # Locale translation can alter a command word at runtime.
+            return True
+        if char == "'":
+            context = "single"
+            index += 1
+            continue
+        if char == '"':
+            context = "double"
+            index += 1
+            continue
+        if char == "`" or (
+            char == "$" and _starts_shell_expansion(following)
+        ):
+            return True
+        index += 1
+    return False
+
+
+def _has_dynamic_command_head(command: str) -> bool:
+    """Fail closed when an executable word is synthesized at runtime."""
+
+    search_position = 0
+    while match := _DYNAMIC_COMMAND_PREFIX.search(command, search_position):
+        if (
+            _shell_context_is_executable(command, match.start()) is True
+            and _shell_word_has_dynamic_expansion(command, match.end())
+        ):
+            return True
+        search_position = match.start() + 1
+    return False
+
+
+def _has_denied_decoded_command_head(command: str) -> bool:
+    """Deny quoted or concatenated spellings of a blocked executable word."""
+
+    search_position = 0
+    while match := _DECODED_COMMAND_HEAD.search(command, search_position):
+        if (
+            _shell_context_is_executable(command, match.start()) is True
+            and _decoded_shell_word_is_denied(match.group("word"))
+        ):
+            return True
+        search_position = match.start() + 1
+    return False
+
+
+def _bounded_case_pattern_close_positions(command: str) -> frozenset[int]:
+    """Bound recursive suffix scans while preserving cached normal parsing."""
+
+    global _case_suffix_scan_depth
+    if _case_suffix_scan_depth >= _MAX_CASE_SUFFIX_SCAN_DEPTH:
+        raise _ShellParseBudgetExceeded
+    _case_suffix_scan_depth += 1
+    try:
+        return _case_pattern_close_positions(command)
+    finally:
+        _case_suffix_scan_depth -= 1
+
+
+@lru_cache(maxsize=128)
+def _case_pattern_close_positions(command: str) -> frozenset[int]:
+    """Compute real case-pattern terminators once for the whole command."""
+
+    contexts = _shell_context_map(command)
+    case_heads: list[re.Match[str]] = []
+    search_position = 0
+    while match := _CASE_HEAD.search(command, search_position):
+        if contexts[match.start()] == _EXECUTABLE_CONTEXT:
+            case_heads.append(match)
+        search_position = match.start() + 1
+    if not case_heads:
+        return frozenset()
+
+    case_ends: list[re.Match[str]] = []
+    search_position = 0
+    while match := _CASE_END.search(command, search_position):
+        if contexts[match.start()] == _EXECUTABLE_CONTEXT:
+            case_ends.append(match)
+        search_position = match.start() + 1
+
+    case_in_ends: dict[int, int] = {}
+    for head in case_heads:
+        search_position = head.end()
+        while match := _CASE_IN.search(command, search_position):
+            if contexts[match.start()] == _EXECUTABLE_CONTEXT:
+                case_in_ends[head.end()] = match.end()
+                break
+            search_position = match.start() + 1
+
+    heads_by_end: dict[int, list[re.Match[str]]] = {}
+    for head in case_heads:
+        heads_by_end.setdefault(head.end(), []).append(head)
+    end_counts: dict[int, int] = {}
+    for case_end in case_ends:
+        end_counts[case_end.end()] = end_counts.get(case_end.end(), 0) + 1
+
+    # Entries are (position after the matching `in`, expects_pattern_close).
+    case_stack: list[tuple[int, bool]] = []
+    pattern_closes: set[int] = set()
+    index = 0
+    while index <= len(command):
+        for _ in range(end_counts.get(index, 0)):
+            if case_stack:
+                case_stack.pop()
+
+        for head in heads_by_end.get(index, []):
+            # A word `case` while the parent is awaiting its next pattern is
+            # pattern data, not a nested case command.
+            if case_stack:
+                parent_in_end, parent_expects_close = case_stack[-1]
+                if index >= parent_in_end and parent_expects_close:
+                    continue
+            case_stack.append(
+                (case_in_ends.get(head.end(), len(command) + 1), True)
+            )
+
+        if index == len(command):
+            break
+        if not case_stack or contexts[index] != _EXECUTABLE_CONTEXT:
+            index += 1
+            continue
+
+        case_in_end, expects_pattern_close = case_stack[-1]
+        if index < case_in_end:
+            index += 1
+            continue
+        if command.startswith(";;&", index):
+            case_stack[-1] = (case_in_end, True)
+            index += 3
+            continue
+        if command.startswith((";;", ";&"), index):
+            case_stack[-1] = (case_in_end, True)
+            index += 2
+            continue
+        if command[index] == ")" and expects_pattern_close:
+            pattern_closes.add(index)
+            case_stack[-1] = (case_in_end, False)
+        index += 1
+    return frozenset(pattern_closes)
+
+
+def _has_denied_case_command_head(command: str) -> bool:
+    """Deny a blocked executable immediately after a case-pattern ``)``."""
+
+    if not _has_executable_match(_CASE_HEAD, command):
+        return False
+    case_pattern_closes = _case_pattern_close_positions(command)
+    search_position = 0
+    while match := _CASE_PATTERN_COMMAND_HEAD.search(command, search_position):
+        if (
+            _shell_context_is_executable(command, match.start()) is True
+            and match.start() in case_pattern_closes
+            and (
+                _decoded_shell_word_is_denied(match.group("word"))
+                or _shell_word_has_dynamic_expansion(
+                    command,
+                    match.start("word"),
+                )
+            )
+        ):
+            return True
+        search_position = match.start() + 1
+    return False
+
+
+def _decode_eval_body(raw_body: str) -> str:
+    return " ".join(_decode_shell_words(raw_body))
+
+
+def _has_denied_eval_body(command: str, depth: int) -> bool:
+    search_position = 0
+    while match := _EVAL_HEAD.search(command, search_position):
+        if _shell_context_is_executable(command, match.start()) is True:
+            body = _decode_eval_body(_eval_argument_tail(command, match.end()))
+            if body:
+                if _has_dynamic_command_head(body):
+                    return True
+                if depth >= 8:
+                    if re.search(rf"\b{_DENY_BINS}\b", body, re.IGNORECASE):
+                        return True
+                elif _should_deny_command(body, depth + 1):
+                    return True
+        search_position = match.start() + 1
+    return False
+
+
+def _has_denied_shell_c_body(command: str, depth: int) -> bool:
+    search_position = 0
+    while match := _SHELL_C_HEAD.search(command, search_position):
+        if _shell_context_is_executable(command, match.start()) is True:
+            raw_arguments = _eval_argument_tail(command, match.end())
+            words = _decode_shell_words(raw_arguments)
+            body = words[0] if words else ""
+            if body:
+                if _has_dynamic_command_head(body):
+                    return True
+                if depth >= 8:
+                    if re.search(rf"\b{_DENY_BINS}\b", body, re.IGNORECASE):
+                        return True
+                elif _should_deny_command(body, depth + 1):
+                    return True
+        search_position = match.start() + 1
+    return False
+
+
+def _has_denied_trap_body(command: str, depth: int) -> bool:
+    """Recursively inspect the action argument installed by ``trap``."""
+
+    search_position = 0
+    while match := _TRAP_HEAD.search(command, search_position):
+        if _shell_context_is_executable(command, match.start()) is True:
+            words = _decode_shell_words(
+                _eval_argument_tail(command, match.end())
+            )
+            if words and words[0] == "--":
+                words = words[1:]
+            if words and not words[0].startswith("-"):
+                action = words[0]
+                if _has_dynamic_command_head(action):
+                    return True
+                if depth >= 8:
+                    if re.search(
+                        rf"\b{_DENY_BINS}\b",
+                        action,
+                        re.IGNORECASE,
+                    ):
+                        return True
+                elif _should_deny_command(action, depth + 1):
+                    return True
+        search_position = match.start() + 1
+    return False
+
+
+def _should_deny_command(command: str, eval_depth: int) -> bool:
     if not command or not isinstance(command, str):
         return False
-    # Deny when a blocked bin appears in command position (not as a free word/arg)
-    if _DENY_AT_CMD_POS.search(command):
-        return True
-    if _OMC_TEAM.search(command) or _OMG_TEAM.search(command):
-        return True
-    # sh/bash/zsh -c/-lc '...claude...' (quoted or unquoted) and similar wrappers
-    if _SH_C.search(command):
-        return True
-    if _EVAL.search(command):
+    try:
+        command = _collapse_line_continuations(command)
+        # Deny when a blocked bin appears in command position, not as an arg.
+        if _has_executable_match(_PROMPT_TRANSFORM, command):
+            return True
+        if _has_executable_match(_DENY_AT_CMD_POS, command):
+            return True
+        if _has_denied_decoded_command_head(command):
+            return True
+        if _has_denied_case_command_head(command):
+            return True
+        if _has_executable_match(_OMC_TEAM, command) or _has_executable_match(
+            _OMG_TEAM, command
+        ):
+            return True
+        # sh/bash/zsh -c/-lc command strings are recursively inspected.
+        if _has_denied_shell_c_body(command, eval_depth):
+            return True
+        if _has_denied_trap_body(command, eval_depth):
+            return True
+        if _has_executable_match(_EVAL, command):
+            return True
+        if _has_denied_eval_body(command, eval_depth):
+            return True
+    except _ShellParseBudgetExceeded:
         return True
     return False
+
+
+def should_deny_command(command: str) -> bool:
+    return _should_deny_command(command, 0)
 
 
 # Role → required capability_mode for spawn_subagent fail-closed gate.

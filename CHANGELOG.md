@@ -10,6 +10,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Fixed
+- Global PreToolUse external-CLI detection now distinguishes quoted arguments,
+  comments, and heredoc data from executable shell syntax (for example
+  `git commit -m "fix(kimi): ..."`), while still denying real substitutions,
+  continued commands, shell/eval bodies, and external CLI execution.
 - Live `omg team resume` relaunch now acquires the same run-dir scale lock as
   `omg team scale`, refusing concurrent scale/resume that could double-spawn
   panes or last-writer-wins `team.json`.
