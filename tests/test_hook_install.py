@@ -119,6 +119,35 @@ MATRIX = [
         ),
         "deny",
     ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": "bash -c 'if true; then \"codex\" exec foo; fi'"
+                },
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": 'array=("codex")'},
+            }
+        ),
+        "allow",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": '[[ foo && "codex" ]]'},
+            }
+        ),
+        "allow",
+    ),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore"}}', "deny"),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore","capability_mode":"read-only"}}', "allow"),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"general-purpose","capability_mode":"read-write"}}', "allow"),

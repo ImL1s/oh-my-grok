@@ -24,6 +24,7 @@ _WRAPPER_BIN = r"(?:(?:\S*/)?(?:env|command|xargs|nice|nohup|sudo|time|exec))"
 _WRAPPERS = rf"(?:{_WRAPPER_BIN}\s+(?:--\s+)*)*"
 _PATH_PREFIX = r"(?:\S*/)?"
 _SHELL_WORD = r"""(?:\\.|[^\s;&|()'"`\\]+|'[^']*'|"(?:\\.|[^"\\])*")+"""
+_CONTROL_COMMAND_WORD = r"(?:if|elif|while|until|then|else|do|!)"
 _DENIED_BIN_NAMES = frozenset(
     {"claude", "codex", "omx", "agy", "cursor-agent", "kimi"}
 )
@@ -33,8 +34,28 @@ _DENY_AT_CMD_POS = re.compile(
     re.IGNORECASE,
 )
 _DECODED_COMMAND_HEAD = re.compile(
-    rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}(?P<word>{_SHELL_WORD})",
+    rf"{_CMD_POS}\s*"
+    rf"(?:{_CONTROL_COMMAND_WORD}\s+)*"
+    rf"{_ENV_ASSIGNS}{_WRAPPERS}"
+    rf"(?P<word>{_SHELL_WORD})",
     re.IGNORECASE,
+)
+_CASE_HEAD = re.compile(
+    rf"{_CMD_POS}\s*(?:{_CONTROL_COMMAND_WORD}\s+)*case\b",
+    re.IGNORECASE,
+)
+_CASE_IN = re.compile(r"\bin\b", re.IGNORECASE)
+_CASE_END = re.compile(rf"{_CMD_POS}\s*esac\b", re.IGNORECASE)
+_CASE_PATTERN_COMMAND_HEAD = re.compile(
+    rf"\)\s*{_ENV_ASSIGNS}{_WRAPPERS}(?P<word>{_SHELL_WORD})",
+    re.IGNORECASE,
+)
+_CONDITIONAL_OPEN_AT_END = re.compile(
+    rf"{_CMD_POS}\s*(?:{_CONTROL_COMMAND_WORD}\s+)*\[\[\Z",
+    re.IGNORECASE,
+)
+_ARRAY_ASSIGNMENT_AT_END = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\r\n]*\])?\+?=\Z"
 )
 _OMC_TEAM = re.compile(rf"{_CMD_POS}\s*omc\s+team\b", re.IGNORECASE)
 _OMG_TEAM = re.compile(rf"{_CMD_POS}\s*omg\s+team\b", re.IGNORECASE)
@@ -269,6 +290,42 @@ def _mark_unquoted_heredoc_continuations(
         index += 1
 
 
+def _conditional_opens_at(command: str, position: int) -> bool:
+    """Recognize a command-position ``[[`` without rescanning the full input."""
+
+    segment_start = position
+    while (
+        segment_start > 0
+        and command[segment_start - 1] not in ";&|(`\n\r"
+    ):
+        segment_start -= 1
+    if segment_start > 0:
+        segment_start -= 1
+    return (
+        _CONDITIONAL_OPEN_AT_END.search(
+            command,
+            segment_start,
+            position + 2,
+        )
+        is not None
+    )
+
+
+def _array_assignment_opens_at(command: str, position: int) -> bool:
+    """Recognize the no-whitespace ``name=(`` array-assignment form."""
+
+    word_start = position
+    while (
+        word_start > 0
+        and command[word_start - 1] not in " \t\r\n;&|"
+    ):
+        word_start -= 1
+    return (
+        _ARRAY_ASSIGNMENT_AT_END.fullmatch(command, word_start, position)
+        is not None
+    )
+
+
 @lru_cache(maxsize=128)
 def _shell_context_map(command: str) -> tuple[int, ...]:
     """Build shell-context classifications for every character in one pass."""
@@ -373,6 +430,59 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
             index += 1
             continue
 
+        if context in {"array", "conditional"}:
+            if char == "\\" and following:
+                index += 2
+                continue
+            if context == "conditional" and char == "]" and following == "]":
+                contexts[index + 1] = _LITERAL_CONTEXT
+                stack.pop()
+                index += 2
+                continue
+            if char == "$" and following == "'":
+                stack.append(("ansi_c_single", 0, False))
+                index += 2
+                continue
+            if char == "'":
+                stack.append(("single", 0, False))
+                index += 1
+                continue
+            if char == '"':
+                stack.append(("double", 0, False))
+                index += 1
+                continue
+            if char == "`":
+                contexts[index] = _EXECUTABLE_CONTEXT
+                stack.append(("backtick", 0, True))
+                index += 1
+                continue
+            if char == "$" and following == "(":
+                if index + 2 < len(command) and command[index + 2] == "(":
+                    contexts[index + 1] = _LITERAL_CONTEXT
+                    contexts[index + 2] = _LITERAL_CONTEXT
+                    stack.append(("arithmetic", 2, False))
+                    index += 3
+                else:
+                    contexts[index + 1] = _EXECUTABLE_CONTEXT
+                    stack.append(("command_substitution", 1, True))
+                    index += 2
+                continue
+            if char in "<>" and following == "(":
+                contexts[index + 1] = _EXECUTABLE_CONTEXT
+                stack.append(("command_substitution", 1, True))
+                index += 2
+                continue
+            if context == "array":
+                if char == "(":
+                    stack[-1] = (context, depth + 1, False)
+                elif char == ")":
+                    if depth == 1:
+                        stack.pop()
+                    else:
+                        stack[-1] = (context, depth - 1, False)
+            index += 1
+            continue
+
         # normal, command substitution, and backtick bodies are executable
         # shell contexts. Quotes nested inside them are literal until closed.
         if char == "\\" and following:
@@ -426,6 +536,17 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
                 stack[-1] = (context, depth, False)
                 index = end_position
                 continue
+        if (
+            char == "["
+            and following == "["
+            and _conditional_opens_at(command, index)
+        ):
+            contexts[index] = _LITERAL_CONTEXT
+            contexts[index + 1] = _LITERAL_CONTEXT
+            stack[-1] = (context, depth, False)
+            stack.append(("conditional", 0, False))
+            index += 2
+            continue
         if char == "$" and following == "'":
             stack[-1] = (context, depth, False)
             stack.append(("ansi_c_single", 0, False))
@@ -457,6 +578,12 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
                 contexts[index + 1] = _EXECUTABLE_CONTEXT
                 stack.append(("command_substitution", 1, True))
                 index += 2
+            continue
+        if char == "(" and _array_assignment_opens_at(command, index):
+            contexts[index] = _LITERAL_CONTEXT
+            stack[-1] = (context, depth, False)
+            stack.append(("array", 1, False))
+            index += 1
             continue
         if char == "(" and following == "(":
             contexts[index + 1] = _LITERAL_CONTEXT
@@ -662,17 +789,67 @@ def _decode_shell_words(raw_body: str) -> list[str]:
     return words
 
 
+def _decoded_shell_word_is_denied(raw_word: str) -> bool:
+    words = _decode_shell_words(raw_word)
+    if len(words) != 1:
+        return False
+    executable = words[0].rsplit("/", 1)[-1].lower()
+    return executable in _DENIED_BIN_NAMES
+
+
 def _has_denied_decoded_command_head(command: str) -> bool:
     """Deny quoted or concatenated spellings of a blocked executable word."""
 
     search_position = 0
     while match := _DECODED_COMMAND_HEAD.search(command, search_position):
+        if (
+            _shell_context_is_executable(command, match.start()) is True
+            and _decoded_shell_word_is_denied(match.group("word"))
+        ):
+            return True
+        search_position = match.start() + 1
+    return False
+
+
+def _case_pattern_is_active(command: str, position: int) -> bool:
+    """Return whether ``position`` closes a pattern in an open case block."""
+
+    latest_case: re.Match[str] | None = None
+    search_position = 0
+    while match := _CASE_HEAD.search(command, search_position, position):
         if _shell_context_is_executable(command, match.start()) is True:
-            words = _decode_shell_words(match.group("word"))
-            if len(words) == 1:
-                executable = words[0].rsplit("/", 1)[-1].lower()
-                if executable in _DENIED_BIN_NAMES:
-                    return True
+            latest_case = match
+        search_position = match.start() + 1
+    if latest_case is None:
+        return False
+
+    search_position = latest_case.end()
+    while match := _CASE_END.search(command, search_position, position):
+        if _shell_context_is_executable(command, match.start()) is True:
+            return False
+        search_position = match.start() + 1
+
+    search_position = latest_case.end()
+    while match := _CASE_IN.search(command, search_position, position):
+        if _shell_context_is_executable(command, match.start()) is True:
+            return True
+        search_position = match.start() + 1
+    return False
+
+
+def _has_denied_case_command_head(command: str) -> bool:
+    """Deny a blocked executable immediately after a case-pattern ``)``."""
+
+    if not _has_executable_match(_CASE_HEAD, command):
+        return False
+    search_position = 0
+    while match := _CASE_PATTERN_COMMAND_HEAD.search(command, search_position):
+        if (
+            _shell_context_is_executable(command, match.start()) is True
+            and _decoded_shell_word_is_denied(match.group("word"))
+            and _case_pattern_is_active(command, match.start())
+        ):
+            return True
         search_position = match.start() + 1
     return False
 
@@ -720,6 +897,8 @@ def _should_deny_command(command: str, eval_depth: int) -> bool:
     if _has_executable_match(_DENY_AT_CMD_POS, command):
         return True
     if _has_denied_decoded_command_head(command):
+        return True
+    if _has_denied_case_command_head(command):
         return True
     if _has_executable_match(_OMC_TEAM, command) or _has_executable_match(
         _OMG_TEAM, command

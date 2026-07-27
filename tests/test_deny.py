@@ -149,6 +149,11 @@ def test_deny_cli_execution_from_shell_substitutions(cmd):
         "bash -c 'co\"dex\" exec foo'",
         '"codex" exec foo',
         'command "codex" exec foo',
+        "bash -c 'if true; then codex exec x; fi'",
+        "bash -c 'for x in one; do \"codex\" exec x; done'",
+        "bash -c 'case x in x) co\"dex\" exec x;; esac'",
+        'array=($("codex" exec x))',
+        '[[ x == $("codex" exec x) ]]',
     ],
 )
 def test_deny_cli_after_inert_shell_text(cmd):
@@ -177,6 +182,15 @@ def test_deny_cli_after_inert_shell_text(cmd):
         "bash -c 'echo codex'",
         "((kimi << 1))",
         "echo $((kimi << 1))",
+        'array=("codex")',
+        "array=(codex)",
+        'items=(co"dex")',
+        '[[ foo && "codex" ]]',
+        "[[ foo && codex ]]",
+        "bash -c 'array=(\"codex\")'",
+        "bash -c '[[ foo && \"codex\" ]]'",
+        'echo $(true) "codex"',
+        "case x in codex) echo safe;; esac",
     ],
 )
 def test_allow_denied_cli_names_inside_inert_shell_text(cmd):
