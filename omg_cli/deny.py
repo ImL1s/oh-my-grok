@@ -63,7 +63,9 @@ _CASE_PATTERN_COMMAND_HEAD = re.compile(
     rf"\)\s*{_ENV_ASSIGNS}{_WRAPPERS}(?P<word>{_SHELL_WORD})",
     re.IGNORECASE,
 )
-_MAX_CASE_SUBSTITUTION_SCANS = 64
+_MAX_CASE_SUFFIX_SCAN_DEPTH = 64
+_MAX_HEREDOC_SUBSTITUTION_SCANS = 64
+_case_suffix_scan_depth = 0
 _CONDITIONAL_OPEN_AT_END = re.compile(
     rf"{_CMD_POS}\s*{_COMMAND_LEAD}\[\[\Z",
     re.IGNORECASE,
@@ -97,6 +99,10 @@ _SHELL_C_HEAD = re.compile(
     rf"\s+",
     re.IGNORECASE,
 )
+
+
+class _ShellParseBudgetExceeded(RuntimeError):
+    """Raised when conservative shell parsing must fail closed."""
 
 
 def _decode_ansi_c_string(value: str) -> str | None:
@@ -510,6 +516,32 @@ def _mark_unquoted_heredoc_expansions(
         end,
         terminated=terminated,
     )
+    budget_index = body_start
+    substitution_count = 0
+    while budget_index < body_end:
+        following = (
+            command[budget_index + 1]
+            if budget_index + 1 < body_end
+            else ""
+        )
+        if (
+            command[budget_index] == "\\"
+            and following in {"\\", "$", "`", "\r", "\n"}
+        ):
+            budget_index += 2
+            continue
+        if (
+            command[budget_index] == "$"
+            and following == "("
+            and not command.startswith("$((", budget_index)
+        ):
+            substitution_count += 1
+            if substitution_count > _MAX_HEREDOC_SUBSTITUTION_SCANS:
+                raise _ShellParseBudgetExceeded
+            budget_index += 2
+            continue
+        budget_index += 1
+
     index = body_start
     while index < body_end:
         char = command[index]
@@ -902,7 +934,9 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
                         body = command[body_start:]
                         case_closes = frozenset(
                             body_start + position
-                            for position in _case_pattern_close_positions(body)
+                            for position in _bounded_case_pattern_close_positions(
+                                body
+                            )
                         )
                         if index in case_closes:
                             command_substitution_case_closes[frame_index] = (
@@ -1303,6 +1337,19 @@ def _has_denied_decoded_command_head(command: str) -> bool:
     return False
 
 
+def _bounded_case_pattern_close_positions(command: str) -> frozenset[int]:
+    """Bound recursive suffix scans while preserving cached normal parsing."""
+
+    global _case_suffix_scan_depth
+    if _case_suffix_scan_depth >= _MAX_CASE_SUFFIX_SCAN_DEPTH:
+        raise _ShellParseBudgetExceeded
+    _case_suffix_scan_depth += 1
+    try:
+        return _case_pattern_close_positions(command)
+    finally:
+        _case_suffix_scan_depth -= 1
+
+
 @lru_cache(maxsize=128)
 def _case_pattern_close_positions(command: str) -> frozenset[int]:
     """Compute real case-pattern terminators once for the whole command."""
@@ -1449,42 +1496,30 @@ def _has_denied_shell_c_body(command: str, depth: int) -> bool:
     return False
 
 
-def _exceeds_case_substitution_budget(command: str) -> bool:
-    """Fail closed before nested case/substitution parsing can time out."""
-
-    if command.count("$(") <= _MAX_CASE_SUBSTITUTION_SCANS:
-        return False
-    case_count = 0
-    for _ in _CASE_HEAD.finditer(command):
-        case_count += 1
-        if case_count > _MAX_CASE_SUBSTITUTION_SCANS:
-            return True
-    return False
-
-
 def _should_deny_command(command: str, eval_depth: int) -> bool:
     if not command or not isinstance(command, str):
         return False
-    if _exceeds_case_substitution_budget(command):
-        return True
-    command = _collapse_line_continuations(command)
-    # Deny when a blocked bin appears in command position (not as a free word/arg)
-    if _has_executable_match(_DENY_AT_CMD_POS, command):
-        return True
-    if _has_denied_decoded_command_head(command):
-        return True
-    if _has_denied_case_command_head(command):
-        return True
-    if _has_executable_match(_OMC_TEAM, command) or _has_executable_match(
-        _OMG_TEAM, command
-    ):
-        return True
-    # sh/bash/zsh -c/-lc command strings are recursively inspected.
-    if _has_denied_shell_c_body(command, eval_depth):
-        return True
-    if _has_executable_match(_EVAL, command):
-        return True
-    if _has_denied_eval_body(command, eval_depth):
+    try:
+        command = _collapse_line_continuations(command)
+        # Deny when a blocked bin appears in command position, not as an arg.
+        if _has_executable_match(_DENY_AT_CMD_POS, command):
+            return True
+        if _has_denied_decoded_command_head(command):
+            return True
+        if _has_denied_case_command_head(command):
+            return True
+        if _has_executable_match(_OMC_TEAM, command) or _has_executable_match(
+            _OMG_TEAM, command
+        ):
+            return True
+        # sh/bash/zsh -c/-lc command strings are recursively inspected.
+        if _has_denied_shell_c_body(command, eval_depth):
+            return True
+        if _has_executable_match(_EVAL, command):
+            return True
+        if _has_denied_eval_body(command, eval_depth):
+            return True
+    except _ShellParseBudgetExceeded:
         return True
     return False
 

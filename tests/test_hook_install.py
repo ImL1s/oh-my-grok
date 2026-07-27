@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from time import perf_counter
 
 import pytest
 
@@ -368,6 +369,33 @@ def test_standalone_matches_canonical_deny(payload, expected):
     canonical = decide_pre_tool_use(event)["decision"]
     _, out = _run_standalone(payload)
     assert json.loads(out)["decision"] == canonical == expected
+
+
+def test_standalone_bounds_many_unquoted_heredoc_substitutions():
+    body = " ".join(["$(echo safe)"] * 700 + ["$(codex exec x)"])
+    payload = json.dumps(
+        {
+            "tool_name": "run_terminal_command",
+            "tool_input": {"command": f"cat <<EOF\n{body}\nEOF"},
+        }
+    )
+    started = perf_counter()
+    rc, out = _run_standalone(payload)
+    assert rc == 0 and json.loads(out)["decision"] == "deny"
+    assert perf_counter() - started < 2.0
+
+
+def test_standalone_budget_ignores_single_quoted_commit_message():
+    fragment = "case x in x) echo $(echo safe);; esac fix(kimi)"
+    command = "git commit -m '" + " ".join([fragment] * 66) + "'"
+    payload = json.dumps(
+        {
+            "tool_name": "run_terminal_command",
+            "tool_input": {"command": command},
+        }
+    )
+    rc, out = _run_standalone(payload)
+    assert rc == 0 and json.loads(out)["decision"] == "allow"
 
 
 def test_standalone_disable_kill_switch(monkeypatch):

@@ -268,6 +268,26 @@ def test_deep_case_substitutions_fail_closed_before_hook_timeout():
     assert perf_counter() - started < 2.0
 
 
+def test_many_unquoted_heredoc_substitutions_fail_closed_before_timeout():
+    body = " ".join(["$(echo safe)"] * 700 + ["$(codex exec x)"])
+    command = f"cat <<EOF\n{body}\nEOF"
+    started = perf_counter()
+    assert should_deny_command(command) is True
+    assert perf_counter() - started < 2.0
+
+
+def test_case_budget_ignores_single_quoted_commit_message():
+    fragment = "case x in x) echo $(echo safe);; esac fix(kimi)"
+    command = "git commit -m '" + " ".join([fragment] * 66) + "'"
+    assert should_deny_command(command) is False
+
+
+def test_case_budget_ignores_quoted_heredoc_body():
+    fragment = "case x in x) echo $(echo safe);; esac codex"
+    command = "cat <<'EOF'\n" + "\n".join([fragment] * 65) + "\nEOF"
+    assert should_deny_command(command) is False
+
+
 def test_process_env_allow_only_when_set(monkeypatch):
     monkeypatch.delenv("OMG_ALLOW_EXTERNAL_CLI", raising=False)
     d = decide_pre_tool_use({"toolName": "run_terminal_command", "toolInput": {"command": "claude -p x"}})
