@@ -85,6 +85,14 @@ _EVAL_HEAD = re.compile(
     rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}(?:\S*/)?eval\b",
     re.IGNORECASE,
 )
+_TRAP_HEAD = re.compile(
+    rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}(?:\S*/)?trap\b",
+    re.IGNORECASE,
+)
+_PROMPT_TRANSFORM = re.compile(
+    r"\$\{(?:[!#?$*@0-9-]|[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:\[[^\]\r\n]*\])?)@P\}"
+)
 
 # sh/bash/zsh -c / -lc (login+command) head. The first argument is decoded and
 # recursively inspected instead of using a greedy regex across later commands.
@@ -555,6 +563,11 @@ def _mark_unquoted_heredoc_expansions(
             ):
                 index += 1
             continue
+        prompt_transform = _PROMPT_TRANSFORM.match(command, index, body_end)
+        if prompt_transform is not None:
+            contexts[index] = _EXECUTABLE_CONTEXT
+            index = prompt_transform.end()
+            continue
         if (
             char == "$"
             and following == "("
@@ -703,6 +716,10 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
                 stack.pop()
                 index += 1
                 continue
+            if _PROMPT_TRANSFORM.match(command, index):
+                contexts[index] = _EXECUTABLE_CONTEXT
+                index += 1
+                continue
             if char == "$" and following == "(":
                 if index + 2 < len(command) and command[index + 2] == "(":
                     contexts[index + 1] = _LITERAL_CONTEXT
@@ -725,6 +742,10 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
         if context == "arithmetic":
             if char == "\\" and following:
                 index += 2
+                continue
+            if _PROMPT_TRANSFORM.match(command, index):
+                contexts[index] = _EXECUTABLE_CONTEXT
+                index += 1
                 continue
             if char == "$" and following == "(":
                 if index + 2 < len(command) and command[index + 2] == "(":
@@ -760,6 +781,10 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
                 contexts[index + 1] = _LITERAL_CONTEXT
                 stack.pop()
                 index += 2
+                continue
+            if _PROMPT_TRANSFORM.match(command, index):
+                contexts[index] = _EXECUTABLE_CONTEXT
+                index += 1
                 continue
             if char == "$" and following == "'":
                 stack.append(("ansi_c_single", 0, False))
@@ -1496,12 +1521,42 @@ def _has_denied_shell_c_body(command: str, depth: int) -> bool:
     return False
 
 
+def _has_denied_trap_body(command: str, depth: int) -> bool:
+    """Recursively inspect the action argument installed by ``trap``."""
+
+    search_position = 0
+    while match := _TRAP_HEAD.search(command, search_position):
+        if _shell_context_is_executable(command, match.start()) is True:
+            words = _decode_shell_words(
+                _eval_argument_tail(command, match.end())
+            )
+            if words and words[0] == "--":
+                words = words[1:]
+            if words and not words[0].startswith("-"):
+                action = words[0]
+                if _has_dynamic_command_head(action):
+                    return True
+                if depth >= 8:
+                    if re.search(
+                        rf"\b{_DENY_BINS}\b",
+                        action,
+                        re.IGNORECASE,
+                    ):
+                        return True
+                elif _should_deny_command(action, depth + 1):
+                    return True
+        search_position = match.start() + 1
+    return False
+
+
 def _should_deny_command(command: str, eval_depth: int) -> bool:
     if not command or not isinstance(command, str):
         return False
     try:
         command = _collapse_line_continuations(command)
         # Deny when a blocked bin appears in command position, not as an arg.
+        if _has_executable_match(_PROMPT_TRANSFORM, command):
+            return True
         if _has_executable_match(_DENY_AT_CMD_POS, command):
             return True
         if _has_denied_decoded_command_head(command):
@@ -1514,6 +1569,8 @@ def _should_deny_command(command: str, eval_depth: int) -> bool:
             return True
         # sh/bash/zsh -c/-lc command strings are recursively inspected.
         if _has_denied_shell_c_body(command, eval_depth):
+            return True
+        if _has_denied_trap_body(command, eval_depth):
             return True
         if _has_executable_match(_EVAL, command):
             return True
