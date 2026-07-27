@@ -6,9 +6,9 @@ English | [简体中文](./RELEASE.zh.md) | [繁體中文](./RELEASE.zh-TW.md)
 
 | 字段 | 值 |
 |---|---|
-| Version | **0.7.0** |
-| Intended tag | `v0.7.0` |
-| Public assets | `oh-my-grok-0.7.0.tar.gz`，再来是 `SHA256SUMS` |
+| Version | **0.7.2** |
+| Intended tag | `v0.7.2` |
+| Public assets | `oh-my-grok-0.7.2.tar.gz`，再来是 `SHA256SUMS` |
 | Install | GitHub release transaction；不依赖 PyPI |
 
 发布成功**不是**因为测试通过或 tag 存在就算数。产品成功条件是：不可变的 release transaction 状态为 `complete`，且 run manifest 在精确的 branch、commit、bundle、GitHub asset 与 latest-release readback 之后 finalized 为 `closed`。
@@ -89,7 +89,7 @@ manifest 绑定候选 commit／tree、toolchain、环境 allowlist、source date
 omg parity release-readback \
   --manifest .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle-manifest.json
 python3 scripts/release_attest.py \
-  --asset .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle/oh-my-grok-0.7.0.tar.gz \
+  --asset .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle/oh-my-grok-0.7.2.tar.gz \
   --checksums .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle/SHA256SUMS
 ```
 
@@ -132,12 +132,12 @@ curl -fsSL https://raw.githubusercontent.com/ImL1s/oh-my-grok/main/scripts/insta
 钉版／手动、仅 GitHub：
 
 ```bash
-TAG=v0.6.0
-curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.7.0.tar.gz"
+TAG=v0.7.2
+curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.7.2.tar.gz"
 curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/SHA256SUMS"
 shasum -a 256 -c SHA256SUMS
 curl -fsSLo install.sh "https://raw.githubusercontent.com/ImL1s/oh-my-grok/${TAG}/scripts/install.sh"
-bash install.sh --offline --archive ./oh-my-grok-0.7.0.tar.gz \
+bash install.sh --offline --archive ./oh-my-grok-0.7.2.tar.gz \
   --checksums ./SHA256SUMS --source-tag "${TAG}"
 ```
 
@@ -145,4 +145,4 @@ bash install.sh --offline --archive ./oh-my-grok-0.7.0.tar.gz \
 
 ## Plugin marketplace 与套件登录
 
-GitHub release 是 OMG 宣称的发布通道。xAI marketplace PR 仍属可选，且需要该登录当前 schema 加上精确 tag SHA。PyPI／非 editable wheel 与 npm 式套件登录**不是** OMG 0.6.0 宣称的发布通道。发布说明不要暗示否则。
+GitHub release 是 OMG 宣称的发布通道。xAI marketplace PR 仍属可选，且需要该登录当前 schema 加上精确 tag SHA。PyPI／非 editable wheel 与 npm 式套件登录**不是** OMG 0.7.2 宣称的发布通道。发布说明不要暗示否则。

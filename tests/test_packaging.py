@@ -43,7 +43,20 @@ def test_product_subpackages_importable() -> None:
 
 def test_import_safe_version_matches_plugin_manifest() -> None:
     plugin = json.loads((ROOT / "plugin.json").read_text(encoding="utf-8"))
-    assert omg_cli.__version__ == plugin["version"] == "0.7.1"
+    assert omg_cli.__version__ == plugin["version"] == "0.7.2"
+
+
+def test_readme_display_versions_match_plugin_manifest() -> None:
+    version = json.loads((ROOT / "plugin.json").read_text(encoding="utf-8"))[
+        "version"
+    ]
+    expected_rows = {
+        "README.md": f"Version: **{version}** · License: MIT",
+        "docs/readme/README.zh.md": f"版本：**{version}** · License: MIT",
+        "docs/readme/README.zh-TW.md": f"版本：**{version}** · License: MIT",
+    }
+    for relative, expected in expected_rows.items():
+        assert expected in (ROOT / relative).read_text(encoding="utf-8")
 
 
 def test_grok_plugin_mcp_and_lsp_manifests() -> None:

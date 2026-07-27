@@ -184,6 +184,8 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "state.py",
                 "host_session.py",
                 "resume.py",
+                "goals.py",
+                "stop_gate.py",
                 "note.py",
                 "wiki.py",
                 "runtime_events.py",
@@ -207,6 +209,8 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "test_v2_regression_locks.py",
                 "test_host_session.py",
                 "test_resume.py",
+                "test_goals.py",
+                "test_stop_gate.py",
                 "test_note.py",
                 "test_hooks_common.py",
                 "test_runtime_events.py",
@@ -217,6 +221,7 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "test_compaction.py",
                 "test_capability_discovery.py",
                 "test_redaction.py",
+                "test_deny.py",
             ),
         )
     ),
@@ -236,9 +241,14 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "liveness.py",
                 "recovery.py",
                 "worktree.py",
+                "cli.py",
+                "decomposition.py",
+                "runtime.py",
+                "tmux.py",
             ),
         )
         + _paths("omg_cli/", ("workers.py", "integrate.py", "fanout.py"))
+        + ["scripts/live_team_smoke.py", "tests/fixtures/team_worker_fixture.py"]
         + _paths(
             "tests/",
             (
@@ -255,6 +265,11 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "test_team_heartbeat.py",
                 "test_team_recovery.py",
                 "test_team_worktree.py",
+                "test_team_cli.py",
+                "test_team_decomposition.py",
+                "test_team_lifecycle.py",
+                "test_team_runtime.py",
+                "test_team_tmux_transport.py",
             ),
         )
     ),
@@ -325,10 +340,14 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "guidance.py",
                 "host_launcher.py",
                 "madmax.py",
+                "acceptance.py",
+                "command_policy.py",
             ),
         )
         + [
+            "CLAUDE.md",
             "pyproject.toml",
+            "pytest.ini",
             "plugin.json",
             "hooks/hooks.json",
             "hooks/bin/omg_pretool_deny_standalone.py",
@@ -348,7 +367,10 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             "CODE_OF_CONDUCT.md",
             "SECURITY.md",
             "requirements-dev.txt",
+            "tests/__init__.py",
+            "tests/fixtures/__init__.py",
             "scripts/check_docs_links.py",
+            "scripts/live_autopilot_smoke.sh",
             "docs/research/**",
             "docs/superpowers/**",
             "docs/plans/**",
@@ -404,6 +426,9 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "test_release_readback.py",
                 "test_host_launcher.py",
                 "test_madmax.py",
+                "test_acceptance.py",
+                "test_autopilot_honesty_docs.py",
+                "test_command_policy.py",
             ),
         )
     ),
