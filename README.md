@@ -92,13 +92,13 @@ in other workspaces — see `docs/security-model.md`).
 Use this when you want to choose and inspect exact GitHub bytes. Both public assets must come from the same tag.
 
 ```bash
-TAG=v0.6.0
-curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.6.0.tar.gz"
+TAG=v0.7.2
+curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.7.2.tar.gz"
 curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/SHA256SUMS"
 shasum -a 256 -c SHA256SUMS
 curl -fsSLo install.sh "https://raw.githubusercontent.com/ImL1s/oh-my-grok/${TAG}/scripts/install.sh"
 bash install.sh --offline \
-  --archive ./oh-my-grok-0.6.0.tar.gz --checksums ./SHA256SUMS \
+  --archive ./oh-my-grok-0.7.2.tar.gz --checksums ./SHA256SUMS \
   --source-tag "${TAG}"
 omg doctor --strict
 ```
@@ -109,7 +109,7 @@ Contributor checkout install remains available: clone a tag to a stable path, ru
 
 ```bash
 grok plugin install ImL1s/oh-my-grok --trust
-# better pin: grok plugin install ImL1s/oh-my-grok@v0.6.0 --trust
+# better pin: grok plugin install ImL1s/oh-my-grok@v0.7.2 --trust
 ```
 
 This installs skills/agents from GitHub. It does **not** put `omg` on PATH and does **not** guarantee the global soft-gate. **Every `omg …` command in this README (including `omg setup` / `omg doctor` in the smoke steps below) requires the Full install** — plugin-only gives you in-session skills only. Prefer **Full install** unless that is all you need.

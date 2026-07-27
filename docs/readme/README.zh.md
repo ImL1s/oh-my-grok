@@ -72,12 +72,12 @@ omg doctor --strict
 ### 手动 pin GitHub 版本
 
 ```bash
-TAG=v0.6.0
-curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.6.0.tar.gz"
+TAG=v0.7.2
+curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.7.2.tar.gz"
 curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/SHA256SUMS"
 shasum -a 256 -c SHA256SUMS
 curl -fsSLo install.sh "https://raw.githubusercontent.com/ImL1s/oh-my-grok/${TAG}/scripts/install.sh"
-bash install.sh --offline --archive ./oh-my-grok-0.6.0.tar.gz \
+bash install.sh --offline --archive ./oh-my-grok-0.7.2.tar.gz \
   --checksums ./SHA256SUMS --source-tag "${TAG}"
 omg doctor --strict
 ```
@@ -87,7 +87,7 @@ omg doctor --strict
 ### 只装 plugin（半套）
 
 ```bash
-grok plugin install ImL1s/oh-my-grok@v0.6.0 --trust
+grok plugin install ImL1s/oh-my-grok@v0.7.2 --trust
 ```
 
 不会自动把 `omg` 放上 PATH，也不保证 global PreToolUse soft-gate。日常请用完整安装。

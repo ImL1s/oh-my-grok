@@ -9,6 +9,20 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Planned
+- Live Grok smoke promotion (`LIVE_TEAM_SMOKE_OK` evidence) before removing
+  the experimental gate for shorthand launch.
+- Optional PyPI/`pipx` CLI track — **shipped editable-only** (`pyproject.toml` +
+  `pipx install --editable` / `pip install -e .`); non-editable wheel / PyPI
+  publish still deferred (`plugin_root()` needs checkout siblings).
+- Optional PR to xAI plugin-marketplace (sha-pinned) — **deferred / prep-only**
+  (document prerequisites in `docs/RELEASE.md`; do not submit).
+- Host Stop veto (not feasible on Grok today).
+- Full OMC semantic LSP proxy (host-owned `.lsp.json` registration ships in 0.6.0;
+  OMG does not claim host health or proxy hover/rename/goto operations).
+
+## [0.7.2] - 2026-07-28
+
 ### Fixed
 - Global PreToolUse external-CLI detection now distinguishes quoted arguments,
   comments, and heredoc data from executable shell syntax (for example
@@ -58,18 +72,6 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   (`startup_status=failed_start`, ACKs=0) — **not** promoted; experimental
   gate `OMG_EXPERIMENTAL_TMUX_TEAM=1` remains. Optional wire in
   `scripts/live_suite.sh` (`OMG_LIVE_TEAM=1` / quota-heavy).
-
-### Planned
-- Live Grok smoke promotion (`LIVE_TEAM_SMOKE_OK` evidence) before removing
-  the experimental gate for shorthand launch.
-- Optional PyPI/`pipx` CLI track — **shipped editable-only** (`pyproject.toml` +
-  `pipx install --editable` / `pip install -e .`); non-editable wheel / PyPI
-  publish still deferred (`plugin_root()` needs checkout siblings).
-- Optional PR to xAI plugin-marketplace (sha-pinned) — **deferred / prep-only**
-  (document prerequisites in `docs/RELEASE.md`; do not submit).
-- Host Stop veto (not feasible on Grok today).
-- Full OMC semantic LSP proxy (host-owned `.lsp.json` registration ships in 0.6.0;
-  OMG does not claim host health or proxy hover/rename/goto operations).
 
 ## [0.7.1] - 2026-07-24
 
