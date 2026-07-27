@@ -27,7 +27,7 @@ import sys
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "cc93a13f1b9f1846ce9d268227e51003ba433e8733e47e68abf08a479a148c4b"
+_OMG_GENERATED_FROM_SHA = "810fdaef0d62a36e94f5a2f5fe2a3413b1340066b0f96d248fc4564ef05c3c91"
 _OMG_PLUGIN_VERSION = "0.7.1"
 
 
@@ -111,14 +111,16 @@ def _shell_context_is_executable(command: str, position: int) -> bool:
     """
 
     limit = max(0, min(position, len(command)))
-    # Entries are (context, parenthesis_depth).  Quote contexts return to the
-    # previous executable context when popped.
-    stack: list[tuple[str, int]] = [("normal", 0)]
+    # Entries are (context, parenthesis_depth, at_word_start). Quote contexts
+    # return to the previous executable context when popped.  ``at_word_start``
+    # is required because an unquoted ``#`` starts a shell comment only where a
+    # new word may begin; ``value#fragment`` is ordinary token data.
+    stack: list[tuple[str, int, bool]] = [("normal", 0, True)]
     escaped_position = False
     index = 0
 
     while index < limit:
-        context, depth = stack[-1]
+        context, depth, at_word_start = stack[-1]
         char = command[index]
         following = command[index + 1] if index + 1 < len(command) else ""
 
@@ -139,11 +141,11 @@ def _shell_context_is_executable(command: str, position: int) -> bool:
                 index += 1
                 continue
             if char == "$" and following == "(":
-                stack.append(("command_substitution", 1))
+                stack.append(("command_substitution", 1, True))
                 index += 2
                 continue
             if char == "`":
-                stack.append(("backtick", 0))
+                stack.append(("backtick", 0, True))
                 index += 1
                 continue
             index += 1
@@ -154,36 +156,63 @@ def _shell_context_is_executable(command: str, position: int) -> bool:
         if char == "\\" and following:
             if index + 1 == position:
                 escaped_position = True
+            if following not in {"\n", "\r"}:
+                stack[-1] = (context, depth, False)
             index += 2
             continue
         if context == "backtick" and char == "`":
             stack.pop()
             index += 1
             continue
+        if char == "#" and at_word_start:
+            newline_positions = [
+                newline
+                for newline in (command.find("\n", index + 1), command.find("\r", index + 1))
+                if newline >= 0
+            ]
+            if not newline_positions:
+                return False
+            newline = min(newline_positions)
+            if newline > limit:
+                return False
+            index = newline
+            continue
         if char == "'":
-            stack.append(("single", 0))
+            stack[-1] = (context, depth, False)
+            stack.append(("single", 0, False))
             index += 1
             continue
         if char == '"':
-            stack.append(("double", 0))
+            stack[-1] = (context, depth, False)
+            stack.append(("double", 0, False))
             index += 1
             continue
         if char == "`":
-            stack.append(("backtick", 0))
+            stack[-1] = (context, depth, False)
+            stack.append(("backtick", 0, True))
             index += 1
             continue
         if char == "$" and following == "(":
-            stack.append(("command_substitution", 1))
+            stack[-1] = (context, depth, False)
+            stack.append(("command_substitution", 1, True))
             index += 2
             continue
         if context == "command_substitution":
             if char == "(":
-                stack[-1] = (context, depth + 1)
+                stack[-1] = (context, depth + 1, True)
             elif char == ")":
                 if depth == 1:
                     stack.pop()
                 else:
-                    stack[-1] = (context, depth - 1)
+                    stack[-1] = (context, depth - 1, False)
+            elif char.isspace() or char in ";&|<>":
+                stack[-1] = (context, depth, True)
+            else:
+                stack[-1] = (context, depth, False)
+        elif char.isspace() or char in ";&|()<>":
+            stack[-1] = (context, depth, True)
+        else:
+            stack[-1] = (context, depth, False)
         index += 1
 
     if escaped_position:
@@ -201,10 +230,16 @@ def _shell_context_is_executable(command: str, position: int) -> bool:
 
 
 def _has_executable_match(pattern: re.Pattern[str], command: str) -> bool:
-    return any(
-        _shell_context_is_executable(command, match.start())
-        for match in pattern.finditer(command)
-    )
+    search_position = 0
+    while match := pattern.search(command, search_position):
+        if _shell_context_is_executable(command, match.start()):
+            return True
+        # A pattern such as ``sh -c '<body>'`` may greedily span from an inert
+        # quoted occurrence across a later real invocation. Resume one
+        # character after the rejected start so overlapping candidates remain
+        # visible instead of advancing to the greedy match's end.
+        search_position = match.start() + 1
+    return False
 
 
 def should_deny_command(command: str) -> bool:

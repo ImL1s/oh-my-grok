@@ -110,6 +110,29 @@ def test_deny_cli_execution_from_shell_substitutions(cmd):
     assert should_deny_command(cmd) is True
 
 
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "echo ok # '\nkimi --version",
+        'echo ok # "\ncodex exec x',
+        "echo \"; bash -c 'claude'\"; bash -c 'codex exec x'",
+    ],
+)
+def test_deny_cli_after_inert_shell_text(cmd):
+    assert should_deny_command(cmd) is True
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "echo ok # ' kimi --version",
+        'echo ok # " codex exec x',
+    ],
+)
+def test_allow_denied_cli_names_inside_shell_comments(cmd):
+    assert should_deny_command(cmd) is False
+
+
 def test_process_env_allow_only_when_set(monkeypatch):
     monkeypatch.delenv("OMG_ALLOW_EXTERNAL_CLI", raising=False)
     d = decide_pre_tool_use({"toolName": "run_terminal_command", "toolInput": {"command": "claude -p x"}})
