@@ -144,6 +144,11 @@ def test_deny_cli_execution_from_shell_substitutions(cmd):
         "cat <<EOF\n$(co" + "\\" + "\n" + "dex exec x)\nEOF",
         '((1 << "EOF"))\ncodex exec x',
         "echo $((1 + $(kimi --version)))",
+        "bash -c '\"codex\" exec foo'",
+        "bash -c 'command \"codex\" exec foo'",
+        "bash -c 'co\"dex\" exec foo'",
+        '"codex" exec foo',
+        'command "codex" exec foo',
     ],
 )
 def test_deny_cli_after_inert_shell_text(cmd):

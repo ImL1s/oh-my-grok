@@ -23,9 +23,17 @@ _ENV_ASSIGNS = r"(?:(?:[A-Za-z_][\w]*=\S*\s+)*)"
 _WRAPPER_BIN = r"(?:(?:\S*/)?(?:env|command|xargs|nice|nohup|sudo|time|exec))"
 _WRAPPERS = rf"(?:{_WRAPPER_BIN}\s+(?:--\s+)*)*"
 _PATH_PREFIX = r"(?:\S*/)?"
+_SHELL_WORD = r"""(?:\\.|[^\s;&|()'"`\\]+|'[^']*'|"(?:\\.|[^"\\])*")+"""
+_DENIED_BIN_NAMES = frozenset(
+    {"claude", "codex", "omx", "agy", "cursor-agent", "kimi"}
+)
 
 _DENY_AT_CMD_POS = re.compile(
     rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}{_PATH_PREFIX}{_DENY_BINS}\b",
+    re.IGNORECASE,
+)
+_DECODED_COMMAND_HEAD = re.compile(
+    rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}(?P<word>{_SHELL_WORD})",
     re.IGNORECASE,
 )
 _OMC_TEAM = re.compile(rf"{_CMD_POS}\s*omc\s+team\b", re.IGNORECASE)
@@ -654,6 +662,21 @@ def _decode_shell_words(raw_body: str) -> list[str]:
     return words
 
 
+def _has_denied_decoded_command_head(command: str) -> bool:
+    """Deny quoted or concatenated spellings of a blocked executable word."""
+
+    search_position = 0
+    while match := _DECODED_COMMAND_HEAD.search(command, search_position):
+        if _shell_context_is_executable(command, match.start()) is True:
+            words = _decode_shell_words(match.group("word"))
+            if len(words) == 1:
+                executable = words[0].rsplit("/", 1)[-1].lower()
+                if executable in _DENIED_BIN_NAMES:
+                    return True
+        search_position = match.start() + 1
+    return False
+
+
 def _decode_eval_body(raw_body: str) -> str:
     return " ".join(_decode_shell_words(raw_body))
 
@@ -695,6 +718,8 @@ def _should_deny_command(command: str, eval_depth: int) -> bool:
     command = _collapse_line_continuations(command)
     # Deny when a blocked bin appears in command position (not as a free word/arg)
     if _has_executable_match(_DENY_AT_CMD_POS, command):
+        return True
+    if _has_denied_decoded_command_head(command):
         return True
     if _has_executable_match(_OMC_TEAM, command) or _has_executable_match(
         _OMG_TEAM, command
