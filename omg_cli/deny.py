@@ -54,6 +54,148 @@ _SH_C = re.compile(
 )
 
 
+def _parse_heredoc(
+    command: str,
+    position: int,
+) -> tuple[str, bool, bool, int] | None:
+    """Parse a ``<<`` redirection at ``position``.
+
+    Return ``(delimiter, strip_tabs, quoted, end_position)``.  Here-strings
+    (``<<<``) are intentionally excluded.
+    """
+
+    if (
+        not command.startswith("<<", position)
+        or command.startswith("<<<", position)
+        or (position > 0 and command[position - 1] == "<")
+    ):
+        return None
+
+    cursor = position + 2
+    strip_tabs = cursor < len(command) and command[cursor] == "-"
+    if strip_tabs:
+        cursor += 1
+    while cursor < len(command) and command[cursor] in " \t":
+        cursor += 1
+    if cursor >= len(command) or command[cursor] in "\r\n":
+        return None
+
+    delimiter: list[str] = []
+    quoted = False
+    while cursor < len(command):
+        char = command[cursor]
+        following = command[cursor + 1] if cursor + 1 < len(command) else ""
+        ansi_c_quote = char == "$" and following == "'"
+        locale_quote = char == "$" and following == '"'
+        if ansi_c_quote or locale_quote:
+            quoted = True
+            cursor += 1
+            char = command[cursor]
+            following = command[cursor + 1] if cursor + 1 < len(command) else ""
+        if char.isspace() or char in ";&|()<>":
+            break
+        if char == "'":
+            quoted = True
+            if ansi_c_quote:
+                cursor += 1
+                while cursor < len(command) and command[cursor] != "'":
+                    following = (
+                        command[cursor + 1] if cursor + 1 < len(command) else ""
+                    )
+                    if command[cursor] == "\\" and following:
+                        delimiter.append(following)
+                        cursor += 2
+                    else:
+                        delimiter.append(command[cursor])
+                        cursor += 1
+                if cursor >= len(command):
+                    return None
+                cursor += 1
+                continue
+            closing = command.find("'", cursor + 1)
+            if closing < 0:
+                return None
+            delimiter.append(command[cursor + 1 : closing])
+            cursor = closing + 1
+            continue
+        if char == '"':
+            quoted = True
+            cursor += 1
+            while cursor < len(command) and command[cursor] != '"':
+                following = command[cursor + 1] if cursor + 1 < len(command) else ""
+                if command[cursor] == "\\" and following:
+                    delimiter.append(following)
+                    cursor += 2
+                else:
+                    delimiter.append(command[cursor])
+                    cursor += 1
+            if cursor >= len(command):
+                return None
+            cursor += 1
+            continue
+        if char == "\\" and following:
+            quoted = True
+            delimiter.append(following)
+            cursor += 2
+            continue
+        delimiter.append(char)
+        cursor += 1
+
+    if not delimiter:
+        return None
+    return "".join(delimiter), strip_tabs, quoted, cursor
+
+
+def _line_break(command: str, start: int) -> tuple[int, int]:
+    """Return ``(line_end, next_line_start)`` from ``start``."""
+
+    cursor = start
+    while cursor < len(command) and command[cursor] not in "\r\n":
+        cursor += 1
+    if cursor >= len(command):
+        return len(command), len(command)
+    next_line = cursor + 1
+    if command[cursor] == "\r" and next_line < len(command) and command[next_line] == "\n":
+        next_line += 1
+    return cursor, next_line
+
+
+def _heredoc_ranges(
+    command: str,
+    newline_position: int,
+    pending: list[tuple[str, bool, bool]],
+) -> tuple[list[tuple[int, int, bool]], int]:
+    """Locate pending heredoc bodies and the final terminator newline.
+
+    Ranges begin at the preceding newline because deny regexes include that
+    newline in their command-position match.  The final terminator newline is
+    excluded so a real command on the following line remains executable.
+    """
+
+    _, cursor = _line_break(command, newline_position)
+    marker = newline_position
+    ranges: list[tuple[int, int, bool]] = []
+    resume = len(command)
+
+    for delimiter, strip_tabs, quoted in pending:
+        while cursor <= len(command):
+            line_end, next_line = _line_break(command, cursor)
+            line = command[cursor:line_end]
+            candidate = line.lstrip("\t") if strip_tabs else line
+            if candidate == delimiter:
+                resume = line_end
+                ranges.append((marker, resume, quoted))
+                cursor = next_line
+                marker = resume
+                break
+            if line_end >= len(command):
+                ranges.append((marker, len(command), quoted))
+                return ranges, len(command)
+            cursor = next_line
+
+    return ranges, resume
+
+
 def _shell_context_is_executable(command: str, position: int) -> bool:
     """Return whether ``position`` is shell syntax rather than quoted data.
 
@@ -73,6 +215,7 @@ def _shell_context_is_executable(command: str, position: int) -> bool:
     # is required because an unquoted ``#`` starts a shell comment only where a
     # new word may begin; ``value#fragment`` is ordinary token data.
     stack: list[tuple[str, int, bool]] = [("normal", 0, True)]
+    pending_heredocs: list[tuple[str, bool, bool]] = []
     escaped_position = False
     index = 0
 
@@ -82,6 +225,15 @@ def _shell_context_is_executable(command: str, position: int) -> bool:
         following = command[index + 1] if index + 1 < len(command) else ""
 
         if context == "single":
+            if char == "'":
+                stack.pop()
+            index += 1
+            continue
+
+        if context == "ansi_c_single":
+            if char == "\\" and following:
+                index += 2
+                continue
             if char == "'":
                 stack.pop()
             index += 1
@@ -134,6 +286,30 @@ def _shell_context_is_executable(command: str, position: int) -> bool:
                 return False
             index = newline
             continue
+        if char in "\r\n" and pending_heredocs:
+            ranges, resume = _heredoc_ranges(command, index, pending_heredocs)
+            for start, end, quoted in ranges:
+                if start <= position < end:
+                    # Expansions in unquoted heredocs can execute commands.
+                    # Keep the existing fail-closed behavior there; a quoted
+                    # delimiter makes the entire body literal.
+                    return not quoted
+            pending_heredocs.clear()
+            index = resume
+            continue
+        if char == "<" and following == "<":
+            heredoc = _parse_heredoc(command, index)
+            if heredoc is not None:
+                delimiter, strip_tabs, quoted, end_position = heredoc
+                pending_heredocs.append((delimiter, strip_tabs, quoted))
+                stack[-1] = (context, depth, False)
+                index = end_position
+                continue
+        if char == "$" and following == "'":
+            stack[-1] = (context, depth, False)
+            stack.append(("ansi_c_single", 0, False))
+            index += 2
+            continue
         if char == "'":
             stack[-1] = (context, depth, False)
             stack.append(("single", 0, False))
@@ -174,6 +350,15 @@ def _shell_context_is_executable(command: str, position: int) -> bool:
 
     if escaped_position:
         return False
+    if (
+        pending_heredocs
+        and position < len(command)
+        and command[position] in "\r\n"
+    ):
+        ranges, _ = _heredoc_ranges(command, position, pending_heredocs)
+        for start, end, quoted in ranges:
+            if start <= position < end:
+                return not quoted
     context = stack[-1][0]
     if context in {"normal", "command_substitution", "backtick"}:
         return True

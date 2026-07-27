@@ -29,6 +29,24 @@ MATRIX = [
     ('{"tool_name":"run_terminal_command","tool_input":{"command":"echo \\"$(kimi --version)\\""}}', "deny"),
     ('{"tool_name":"run_terminal_command","tool_input":{"command":"echo ok # \'\\nkimi --version"}}', "deny"),
     ('{"tool_name":"run_terminal_command","tool_input":{"command":"echo \\"; bash -c \'claude\'\\"; bash -c \'codex exec x\'"}}', "deny"),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": r"echo $'abc\''; codex exec x"},
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": "cat <<'EOF'\n\"\nEOF\ncodex exec x"},
+            }
+        ),
+        "deny",
+    ),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore"}}', "deny"),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore","capability_mode":"read-only"}}', "allow"),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"general-purpose","capability_mode":"read-write"}}', "allow"),

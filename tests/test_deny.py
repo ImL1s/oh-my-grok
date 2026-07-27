@@ -116,6 +116,12 @@ def test_deny_cli_execution_from_shell_substitutions(cmd):
         "echo ok # '\nkimi --version",
         'echo ok # "\ncodex exec x',
         "echo \"; bash -c 'claude'\"; bash -c 'codex exec x'",
+        r"echo $'abc\''; codex exec x",
+        "cat <<'EOF'\n\"\nEOF\ncodex exec x",
+        "cat <<EOF\n\"\nEOF\ncodex exec x",
+        "cat <<$'EOF'\n\"\nEOF\ncodex exec x",
+        "cat <<<\"'\"\ncodex exec x",
+        "cat <<EOF\n$(codex exec x)\nEOF",
     ],
 )
 def test_deny_cli_after_inert_shell_text(cmd):
@@ -127,9 +133,12 @@ def test_deny_cli_after_inert_shell_text(cmd):
     [
         "echo ok # ' kimi --version",
         'echo ok # " codex exec x',
+        r"echo $'literal; codex exec x'",
+        "cat <<'EOF'\ncodex exec x\nEOF",
+        "cat <<'EOF'\n$(codex exec x)\nEOF",
     ],
 )
-def test_allow_denied_cli_names_inside_shell_comments(cmd):
+def test_allow_denied_cli_names_inside_inert_shell_text(cmd):
     assert should_deny_command(cmd) is False
 
 
