@@ -25,6 +25,8 @@ MATRIX = [
     ('{"tool_name":"run_terminal_command","tool_input":{"command":"echo x; codex exec y"}}', "deny"),
     ('{"tool_name":"run_terminal_command","tool_input":{"command":"omg team start"}}', "deny"),
     ('{"tool_name":"run_terminal_command","tool_input":{"command":"bash -c \'claude\'"}}', "deny"),
+    ('{"tool_name":"run_terminal_command","tool_input":{"command":"git commit -m \\"fix(kimi): stream\\""}}', "allow"),
+    ('{"tool_name":"run_terminal_command","tool_input":{"command":"echo \\"$(kimi --version)\\""}}', "deny"),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore"}}', "deny"),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore","capability_mode":"read-only"}}', "allow"),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"general-purpose","capability_mode":"read-write"}}', "allow"),

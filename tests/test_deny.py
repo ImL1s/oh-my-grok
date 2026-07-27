@@ -80,6 +80,36 @@ def test_allow_benign(cmd):
     assert should_deny_command(cmd) is False
 
 
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "git commit -m 'fix(kimi): stream large histories'",
+        'git commit -m "fix(kimi): stream large histories"',
+        "git commit -m 'docs: mention claude; kimi; codex'",
+        'git commit -m "fix: mention (kimi) and omg team"',
+        'git commit -m "fix:\\nkimi remains supported"',
+        "echo '$(kimi --version)'",
+        'echo "\\$(kimi --version)"',
+        'echo "(bash -c \'kimi --version\')"',
+    ],
+)
+def test_allow_denied_cli_names_in_literal_shell_arguments(cmd):
+    assert should_deny_command(cmd) is False
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "(kimi --version)",
+        'echo "$(kimi --version)"',
+        'echo "$(echo ok; kimi --version)"',
+        'git commit -m "test $(kimi --version)"',
+    ],
+)
+def test_deny_cli_execution_from_shell_substitutions(cmd):
+    assert should_deny_command(cmd) is True
+
+
 def test_process_env_allow_only_when_set(monkeypatch):
     monkeypatch.delenv("OMG_ALLOW_EXTERNAL_CLI", raising=False)
     d = decide_pre_tool_use({"toolName": "run_terminal_command", "toolInput": {"command": "claude -p x"}})

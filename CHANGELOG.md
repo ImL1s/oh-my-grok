@@ -10,6 +10,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Fixed
+- Global PreToolUse external-CLI detection now ignores blocked CLI names inside
+  literal shell arguments (for example `git commit -m "fix(kimi): ..."`), while
+  still denying real subshell and command-substitution execution.
 - Live `omg team resume` relaunch now acquires the same run-dir scale lock as
   `omg team scale`, refusing concurrent scale/resume that could double-spawn
   panes or last-writer-wins `team.json`.

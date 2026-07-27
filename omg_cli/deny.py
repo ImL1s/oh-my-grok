@@ -54,18 +54,130 @@ _SH_C = re.compile(
 )
 
 
+def _shell_context_is_executable(command: str, position: int) -> bool:
+    """Return whether ``position`` is shell syntax rather than quoted data.
+
+    The deny regexes intentionally recognize command separators such as ``;``
+    and ``(``.  Those same characters are common in inert arguments (for
+    example ``git commit -m "fix(kimi): ..."``), so a regex match is actionable
+    only when its command-position marker is outside literal shell quotes.
+
+    Command substitutions inside double quotes remain executable.  Track
+    ``$()`` and backtick contexts so ``echo "$(kimi ...)"`` is still denied,
+    while single-quoted or escaped spellings remain ordinary data.
+    """
+
+    limit = max(0, min(position, len(command)))
+    # Entries are (context, parenthesis_depth).  Quote contexts return to the
+    # previous executable context when popped.
+    stack: list[tuple[str, int]] = [("normal", 0)]
+    escaped_position = False
+    index = 0
+
+    while index < limit:
+        context, depth = stack[-1]
+        char = command[index]
+        following = command[index + 1] if index + 1 < len(command) else ""
+
+        if context == "single":
+            if char == "'":
+                stack.pop()
+            index += 1
+            continue
+
+        if context == "double":
+            if char == "\\" and following in {'$', '`', '"', "\\", "\n"}:
+                if index + 1 == position:
+                    escaped_position = True
+                index += 2
+                continue
+            if char == '"':
+                stack.pop()
+                index += 1
+                continue
+            if char == "$" and following == "(":
+                stack.append(("command_substitution", 1))
+                index += 2
+                continue
+            if char == "`":
+                stack.append(("backtick", 0))
+                index += 1
+                continue
+            index += 1
+            continue
+
+        # normal, command substitution, and backtick bodies are executable
+        # shell contexts.  Quotes nested inside them are literal until closed.
+        if char == "\\" and following:
+            if index + 1 == position:
+                escaped_position = True
+            index += 2
+            continue
+        if context == "backtick" and char == "`":
+            stack.pop()
+            index += 1
+            continue
+        if char == "'":
+            stack.append(("single", 0))
+            index += 1
+            continue
+        if char == '"':
+            stack.append(("double", 0))
+            index += 1
+            continue
+        if char == "`":
+            stack.append(("backtick", 0))
+            index += 1
+            continue
+        if char == "$" and following == "(":
+            stack.append(("command_substitution", 1))
+            index += 2
+            continue
+        if context == "command_substitution":
+            if char == "(":
+                stack[-1] = (context, depth + 1)
+            elif char == ")":
+                if depth == 1:
+                    stack.pop()
+                else:
+                    stack[-1] = (context, depth - 1)
+        index += 1
+
+    if escaped_position:
+        return False
+    context = stack[-1][0]
+    if context in {"normal", "command_substitution", "backtick"}:
+        return True
+    # An opening backtick inside double quotes starts executable command
+    # substitution at exactly this position; it has not been consumed above.
+    return (
+        context == "double"
+        and position < len(command)
+        and command[position] == "`"
+    )
+
+
+def _has_executable_match(pattern: re.Pattern[str], command: str) -> bool:
+    return any(
+        _shell_context_is_executable(command, match.start())
+        for match in pattern.finditer(command)
+    )
+
+
 def should_deny_command(command: str) -> bool:
     if not command or not isinstance(command, str):
         return False
     # Deny when a blocked bin appears in command position (not as a free word/arg)
-    if _DENY_AT_CMD_POS.search(command):
+    if _has_executable_match(_DENY_AT_CMD_POS, command):
         return True
-    if _OMC_TEAM.search(command) or _OMG_TEAM.search(command):
+    if _has_executable_match(_OMC_TEAM, command) or _has_executable_match(
+        _OMG_TEAM, command
+    ):
         return True
     # sh/bash/zsh -c/-lc '...claude...' (quoted or unquoted) and similar wrappers
-    if _SH_C.search(command):
+    if _has_executable_match(_SH_C, command):
         return True
-    if _EVAL.search(command):
+    if _has_executable_match(_EVAL, command):
         return True
     return False
 
