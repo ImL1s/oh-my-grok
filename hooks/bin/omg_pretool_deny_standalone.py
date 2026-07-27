@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "00a953034869e1dc3240447a19bc0ffd3715f2bf4b182cf6597a0a68c3cbcf8f"
+_OMG_GENERATED_FROM_SHA = "4b8c9014afb787a7e71e1faf3e79adaba3e38d8987183060aa6ef710334231b1"
 _OMG_PLUGIN_VERSION = "0.7.1"
 
 
@@ -761,7 +761,10 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
                 continue
             if _PROMPT_TRANSFORM.match(command, index):
                 contexts[index] = _EXECUTABLE_CONTEXT
-                index += 1
+            if char == "$" and following == "{":
+                contexts[index + 1] = _LITERAL_CONTEXT
+                stack.append(("parameter", 1, False))
+                index += 2
                 continue
             if char == "$" and following == "(":
                 if index + 2 < len(command) and command[index + 2] == "(":
@@ -788,7 +791,10 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
                 continue
             if _PROMPT_TRANSFORM.match(command, index):
                 contexts[index] = _EXECUTABLE_CONTEXT
-                index += 1
+            if char == "$" and following == "{":
+                contexts[index + 1] = _LITERAL_CONTEXT
+                stack.append(("parameter", 1, False))
+                index += 2
                 continue
             if char == "$" and following == "(":
                 if index + 2 < len(command) and command[index + 2] == "(":
@@ -816,6 +822,53 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
             index += 1
             continue
 
+        if context == "parameter":
+            if char == "\\" and following:
+                index += 2
+                continue
+            if _PROMPT_TRANSFORM.match(command, index):
+                contexts[index] = _EXECUTABLE_CONTEXT
+            if char == "$" and following == "{":
+                contexts[index + 1] = _LITERAL_CONTEXT
+                stack[-1] = (context, depth + 1, False)
+                index += 2
+                continue
+            if char == "$" and following == "'":
+                stack.append(("ansi_c_single", 0, False))
+                index += 2
+                continue
+            if char == "'":
+                stack.append(("single", 0, False))
+                index += 1
+                continue
+            if char == '"':
+                stack.append(("double", 0, False))
+                index += 1
+                continue
+            if char == "$" and following == "(":
+                if index + 2 < len(command) and command[index + 2] == "(":
+                    contexts[index + 1] = _LITERAL_CONTEXT
+                    contexts[index + 2] = _LITERAL_CONTEXT
+                    stack.append(("arithmetic", 2, False))
+                    index += 3
+                else:
+                    contexts[index + 1] = _EXECUTABLE_CONTEXT
+                    push_command_substitution(index + 1)
+                    index += 2
+                continue
+            if char == "`":
+                contexts[index] = _EXECUTABLE_CONTEXT
+                stack.append(("backtick", 0, True))
+                index += 1
+                continue
+            if char == "}":
+                if depth == 1:
+                    stack.pop()
+                else:
+                    stack[-1] = (context, depth - 1, False)
+            index += 1
+            continue
+
         if context in {"array", "conditional"}:
             if char == "\\" and following:
                 index += 2
@@ -827,7 +880,10 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
                 continue
             if _PROMPT_TRANSFORM.match(command, index):
                 contexts[index] = _EXECUTABLE_CONTEXT
-                index += 1
+            if char == "$" and following == "{":
+                contexts[index + 1] = _LITERAL_CONTEXT
+                stack.append(("parameter", 1, False))
+                index += 2
                 continue
             if char == "$" and following == "'":
                 stack.append(("ansi_c_single", 0, False))
@@ -939,6 +995,12 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
             contexts[index + 1] = _LITERAL_CONTEXT
             stack[-1] = (context, depth, False)
             stack.append(("conditional", 0, False))
+            index += 2
+            continue
+        if char == "$" and following == "{":
+            stack[-1] = (context, depth, False)
+            contexts[index + 1] = _LITERAL_CONTEXT
+            stack.append(("parameter", 1, False))
             index += 2
             continue
         if char == "$" and following == "'":

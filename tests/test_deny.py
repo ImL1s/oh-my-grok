@@ -184,6 +184,8 @@ def test_deny_cli_execution_from_shell_substitutions(cmd):
         "eval $'echo \\'x\\'; codex exec x'",
         "x='$(codex exec x)'; echo \"${x@P}\"",
         "cat <<EOF\n${x@P}\nEOF",
+        "echo ${x:-<<EOF}\ncodex exec x\nEOF",
+        "echo ${x:-$(codex exec x)}",
     ],
 )
 def test_deny_cli_after_inert_shell_text(cmd):
@@ -230,6 +232,8 @@ def test_deny_cli_after_inert_shell_text(cmd):
         'echo "$(case x in x) echo codex;; esac)"',
         "git commit -m '${x@P}'",
         "cat <<'EOF'\n${x@P}\nEOF",
+        "echo '${x:-<<EOF}\ncodex exec x\nEOF'",
+        "echo ${x:-<<EOF}",
         'cat <<EOF\n"codex" exec x\nEOF',
         'cat <<EOF\nco"dex" exec x\nEOF',
         'cat <<EOF\n$(case x in x) echo "codex";; esac)\nEOF',
