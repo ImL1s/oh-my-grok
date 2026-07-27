@@ -23,11 +23,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sys
+from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "b3948500e7ab607af976d206e03cb41968c43786979cf1dd53e16444c7f01b47"
+_OMG_GENERATED_FROM_SHA = "cf3bf2d99adfc50a41cd9c991da34ebdcf5484ccdbe1ea3e333af0bd7b5cb316"
 _OMG_PLUGIN_VERSION = "0.7.1"
 
 
@@ -77,6 +79,10 @@ _EVAL = re.compile(
     rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}(?:\S*/)?eval\s+(?:['\"]?){_PATH_PREFIX}{_DENY_BINS}\b",
     re.IGNORECASE,
 )
+_EVAL_HEAD = re.compile(
+    rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}(?:\S*/)?eval\b",
+    re.IGNORECASE,
+)
 
 # sh/bash/zsh -c / -lc (login+command) with quoted OR unquoted body containing a deny bin.
 # Path-prefixed shells: /bin/bash -c 'claude'
@@ -93,7 +99,7 @@ _SH_C = re.compile(
     rf"|"
     rf"{_PATH_PREFIX}{_DENY_BINS}\b"  # unquoted: sh -c claude ...
     rf")",
-    re.IGNORECASE,
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -266,36 +272,59 @@ def _heredoc_ranges(
     return ranges, resume
 
 
-def _shell_context_is_executable(command: str, position: int) -> bool | None:
-    """Classify ``position`` as executable, literal, or line-continuation.
+_LITERAL_CONTEXT = 0
+_EXECUTABLE_CONTEXT = 1
+_LINE_CONTINUATION = 2
+_EXECUTABLE_CONTEXTS = frozenset({"normal", "command_substitution", "backtick"})
 
-    The deny regexes intentionally recognize command separators such as ``;``
-    and ``(``.  Those same characters are common in inert arguments (for
-    example ``git commit -m "fix(kimi): ..."``), so a regex match is actionable
-    only when its command-position marker is outside literal shell quotes.
 
-    Command substitutions inside double quotes remain executable.  Track
-    ``$()`` and backtick contexts so ``echo "$(kimi ...)"`` is still denied,
-    while single-quoted or escaped spellings remain ordinary data.
+def _mark_unquoted_heredoc_continuations(
+    command: str,
+    start: int,
+    end: int,
+    contexts: list[int],
+) -> None:
+    """Mark active backslash-newline pairs inside an expanding heredoc."""
 
-    ``None`` means the regex used an active backslash-newline pair as its
-    command marker. The caller must remove that continuation and rescan,
-    because the joined token may be either a command head or an argument.
-    """
+    index = start
+    while index < end:
+        if command[index] not in "\r\n":
+            index += 1
+            continue
+        backslashes = 0
+        cursor = index - 1
+        while cursor >= start and command[cursor] == "\\":
+            backslashes += 1
+            cursor -= 1
+        if backslashes % 2:
+            contexts[index] = _LINE_CONTINUATION
+            if (
+                command[index] == "\r"
+                and index + 1 < end
+                and command[index + 1] == "\n"
+            ):
+                contexts[index + 1] = _LINE_CONTINUATION
+                index += 1
+        index += 1
 
-    limit = max(0, min(position, len(command)))
+
+@lru_cache(maxsize=128)
+def _shell_context_map(command: str) -> tuple[int, ...]:
+    """Build shell-context classifications for every character in one pass."""
+
+    contexts = [_LITERAL_CONTEXT] * (len(command) + 1)
     # Entries are (context, parenthesis_depth, at_word_start). Quote contexts
-    # return to the previous executable context when popped.  ``at_word_start``
-    # is required because an unquoted ``#`` starts a shell comment only where a
-    # new word may begin; ``value#fragment`` is ordinary token data.
+    # return to the previous executable context when popped.
     stack: list[tuple[str, int, bool]] = [("normal", 0, True)]
     pending_heredocs: list[tuple[str, bool, bool]] = []
-    escaped_position = False
-    continued_newline_position = False
     index = 0
 
-    while index < limit:
+    while index < len(command):
         context, depth, at_word_start = stack[-1]
+        executable = context in _EXECUTABLE_CONTEXTS
+        contexts[index] = (
+            _EXECUTABLE_CONTEXT if executable else _LITERAL_CONTEXT
+        )
         char = command[index]
         following = command[index + 1] if index + 1 < len(command) else ""
 
@@ -316,11 +345,230 @@ def _shell_context_is_executable(command: str, position: int) -> bool | None:
 
         if context == "double":
             if char == "\\" and following in {'$', '`', '"', "\\", "\n", "\r"}:
-                if index + 1 == position:
-                    if following in {"\n", "\r"}:
-                        continued_newline_position = True
-                    else:
-                        escaped_position = True
+                contexts[index + 1] = (
+                    _LINE_CONTINUATION
+                    if following in {"\n", "\r"}
+                    else _LITERAL_CONTEXT
+                )
+                index += 2
+                if (
+                    following == "\r"
+                    and index < len(command)
+                    and command[index] == "\n"
+                ):
+                    contexts[index] = _LINE_CONTINUATION
+                    index += 1
+                continue
+            if char == '"':
+                stack.pop()
+                index += 1
+                continue
+            if char == "$" and following == "(":
+                contexts[index + 1] = _EXECUTABLE_CONTEXT
+                stack.append(("command_substitution", 1, True))
+                index += 2
+                continue
+            if char == "`":
+                contexts[index] = _EXECUTABLE_CONTEXT
+                stack.append(("backtick", 0, True))
+                index += 1
+                continue
+            index += 1
+            continue
+
+        # normal, command substitution, and backtick bodies are executable
+        # shell contexts. Quotes nested inside them are literal until closed.
+        if char == "\\" and following:
+            contexts[index + 1] = (
+                _LINE_CONTINUATION
+                if following in {"\n", "\r"}
+                else _LITERAL_CONTEXT
+            )
+            if following not in {"\n", "\r"}:
+                stack[-1] = (context, depth, False)
+            index += 2
+            if (
+                following == "\r"
+                and index < len(command)
+                and command[index] == "\n"
+            ):
+                contexts[index] = _LINE_CONTINUATION
+                index += 1
+            continue
+        if context == "backtick" and char == "`":
+            stack.pop()
+            index += 1
+            continue
+        if char == "#" and at_word_start:
+            line_end, _ = _line_break(command, index)
+            contexts[index:line_end] = [_LITERAL_CONTEXT] * (line_end - index)
+            index = line_end
+            continue
+        if char in "\r\n" and pending_heredocs:
+            ranges, resume = _heredoc_ranges(command, index, pending_heredocs)
+            for start, end, quoted in ranges:
+                classification = (
+                    _LITERAL_CONTEXT if quoted else _EXECUTABLE_CONTEXT
+                )
+                contexts[start:end] = [classification] * (end - start)
+                if not quoted:
+                    _mark_unquoted_heredoc_continuations(
+                        command,
+                        start,
+                        end,
+                        contexts,
+                    )
+            pending_heredocs.clear()
+            index = resume
+            continue
+        if char == "<" and following == "<":
+            heredoc = _parse_heredoc(command, index)
+            if heredoc is not None:
+                delimiter, strip_tabs, quoted, end_position = heredoc
+                pending_heredocs.append((delimiter, strip_tabs, quoted))
+                stack[-1] = (context, depth, False)
+                index = end_position
+                continue
+        if char == "$" and following == "'":
+            stack[-1] = (context, depth, False)
+            stack.append(("ansi_c_single", 0, False))
+            index += 2
+            continue
+        if char == "'":
+            stack[-1] = (context, depth, False)
+            stack.append(("single", 0, False))
+            index += 1
+            continue
+        if char == '"':
+            stack[-1] = (context, depth, False)
+            stack.append(("double", 0, False))
+            index += 1
+            continue
+        if char == "`":
+            stack[-1] = (context, depth, False)
+            stack.append(("backtick", 0, True))
+            index += 1
+            continue
+        if char == "$" and following == "(":
+            contexts[index + 1] = _EXECUTABLE_CONTEXT
+            stack[-1] = (context, depth, False)
+            stack.append(("command_substitution", 1, True))
+            index += 2
+            continue
+        if context == "command_substitution":
+            if char == "(":
+                stack[-1] = (context, depth + 1, True)
+            elif char == ")":
+                if depth == 1:
+                    stack.pop()
+                else:
+                    stack[-1] = (context, depth - 1, False)
+            elif char.isspace() or char in ";&|<>":
+                stack[-1] = (context, depth, True)
+            else:
+                stack[-1] = (context, depth, False)
+        elif char.isspace() or char in ";&|()<>":
+            stack[-1] = (context, depth, True)
+        else:
+            stack[-1] = (context, depth, False)
+        index += 1
+
+    context = stack[-1][0]
+    contexts[len(command)] = (
+        _EXECUTABLE_CONTEXT
+        if context in _EXECUTABLE_CONTEXTS
+        else _LITERAL_CONTEXT
+    )
+    return tuple(contexts)
+
+
+def _shell_context_is_executable(command: str, position: int) -> bool | None:
+    """Classify ``position`` as executable, literal, or line-continuation."""
+
+    position = max(0, min(position, len(command)))
+    context = _shell_context_map(command)[position]
+    if context == _LINE_CONTINUATION:
+        return None
+    return context == _EXECUTABLE_CONTEXT
+
+
+def _has_executable_match(pattern: re.Pattern[str], command: str) -> bool:
+    search_position = 0
+    while match := pattern.search(command, search_position):
+        context = _shell_context_is_executable(command, match.start())
+        if context is True:
+            return True
+        if context is None:
+            marker = match.start()
+            end = marker + 1
+            if (
+                marker < len(command)
+                and command[marker] == "\r"
+                and end < len(command)
+                and command[end] == "\n"
+            ):
+                end += 1
+            collapsed = command[: marker - 1] + command[end:]
+            if _has_executable_match(pattern, collapsed):
+                return True
+        # A pattern such as ``sh -c '<body>'`` may greedily span from an inert
+        # quoted occurrence across a later real invocation. Resume one
+        # character after the rejected start so overlapping candidates remain
+        # visible instead of advancing to the greedy match's end.
+        search_position = match.start() + 1
+    return False
+
+
+def _collapse_line_continuations(command: str) -> str:
+    """Remove active backslash-newline pairs before regex matching."""
+
+    contexts = _shell_context_map(command)
+    collapsed: list[str] = []
+    index = 0
+    while index < len(command):
+        if (
+            command[index] == "\\"
+            and index + 1 < len(command)
+            and contexts[index + 1] == _LINE_CONTINUATION
+        ):
+            index += 2
+            if (
+                index < len(command)
+                and command[index - 1] == "\r"
+                and command[index] == "\n"
+            ):
+                index += 1
+            continue
+        collapsed.append(command[index])
+        index += 1
+    return "".join(collapsed)
+
+
+def _eval_argument_tail(command: str, start: int) -> str:
+    """Return the outer-shell argument text following an ``eval`` command."""
+
+    stack: list[tuple[str, int, bool]] = [("normal", 0, True)]
+    index = start
+    while index < len(command):
+        context, depth, at_word_start = stack[-1]
+        char = command[index]
+        following = command[index + 1] if index + 1 < len(command) else ""
+
+        if context == "single":
+            if char == "'":
+                stack.pop()
+            index += 1
+            continue
+        if context == "ansi_c_single":
+            if char == "\\" and following:
+                index += 2
+                continue
+            if char == "'":
+                stack.pop()
+            index += 1
+            continue
+        if context == "double":
+            if char == "\\" and following in {'$', '`', '"', "\\", "\n", "\r"}:
                 index += 2
                 continue
             if char == '"':
@@ -338,54 +586,17 @@ def _shell_context_is_executable(command: str, position: int) -> bool | None:
             index += 1
             continue
 
-        # normal, command substitution, and backtick bodies are executable
-        # shell contexts.  Quotes nested inside them are literal until closed.
         if char == "\\" and following:
-            if index + 1 == position:
-                if following in {"\n", "\r"}:
-                    continued_newline_position = True
-                else:
-                    escaped_position = True
-            if following not in {"\n", "\r"}:
-                stack[-1] = (context, depth, False)
+            stack[-1] = (context, depth, False)
             index += 2
             continue
         if context == "backtick" and char == "`":
             stack.pop()
             index += 1
             continue
-        if char == "#" and at_word_start:
-            newline_positions = [
-                newline
-                for newline in (command.find("\n", index + 1), command.find("\r", index + 1))
-                if newline >= 0
-            ]
-            if not newline_positions:
-                return False
-            newline = min(newline_positions)
-            if newline > limit:
-                return False
-            index = newline
-            continue
-        if char in "\r\n" and pending_heredocs:
-            ranges, resume = _heredoc_ranges(command, index, pending_heredocs)
-            for start, end, quoted in ranges:
-                if start <= position < end:
-                    # Expansions in unquoted heredocs can execute commands.
-                    # Keep the existing fail-closed behavior there; a quoted
-                    # delimiter makes the entire body literal.
-                    return not quoted
-            pending_heredocs.clear()
-            index = resume
-            continue
-        if char == "<" and following == "<":
-            heredoc = _parse_heredoc(command, index)
-            if heredoc is not None:
-                delimiter, strip_tabs, quoted, end_position = heredoc
-                pending_heredocs.append((delimiter, strip_tabs, quoted))
-                stack[-1] = (context, depth, False)
-                index = end_position
-                continue
+        if len(stack) == 1:
+            if char in ";&|\r\n)" or (char == "#" and at_word_start):
+                break
         if char == "$" and following == "'":
             stack[-1] = (context, depth, False)
             stack.append(("ansi_c_single", 0, False))
@@ -423,93 +634,41 @@ def _shell_context_is_executable(command: str, position: int) -> bool | None:
                 stack[-1] = (context, depth, True)
             else:
                 stack[-1] = (context, depth, False)
-        elif char.isspace() or char in ";&|()<>":
+        elif char.isspace() or char in "<>":
             stack[-1] = (context, depth, True)
         else:
             stack[-1] = (context, depth, False)
         index += 1
 
-    if (
-        pending_heredocs
-        and position < len(command)
-        and command[position] in "\r\n"
-    ):
-        ranges, _ = _heredoc_ranges(command, position, pending_heredocs)
-        for start, end, quoted in ranges:
-            if start <= position < end:
-                return not quoted
-    context, _, _ = stack[-1]
-    if continued_newline_position:
-        return None
-    if escaped_position:
-        return False
-    if context in {"normal", "command_substitution", "backtick"}:
-        return True
-    # An opening backtick inside double quotes starts executable command
-    # substitution at exactly this position; it has not been consumed above.
-    return (
-        context == "double"
-        and position < len(command)
-        and command[position] == "`"
-    )
+    return command[start:index]
 
 
-def _has_executable_match(pattern: re.Pattern[str], command: str) -> bool:
+def _decode_eval_body(raw_body: str) -> str:
+    try:
+        words = shlex.split(raw_body, comments=False, posix=True)
+    except ValueError:
+        return raw_body
+    if "$'" in raw_body or '$"' in raw_body:
+        words = [word[1:] if word.startswith("$") else word for word in words]
+    return " ".join(words)
+
+
+def _has_denied_eval_body(command: str, depth: int) -> bool:
     search_position = 0
-    while match := pattern.search(command, search_position):
-        context = _shell_context_is_executable(command, match.start())
-        if context is True:
-            return True
-        if context is None:
-            marker = match.start()
-            end = marker + 1
-            if (
-                marker < len(command)
-                and command[marker] == "\r"
-                and end < len(command)
-                and command[end] == "\n"
-            ):
-                end += 1
-            collapsed = command[: marker - 1] + command[end:]
-            if _has_executable_match(pattern, collapsed):
-                return True
-        # A pattern such as ``sh -c '<body>'`` may greedily span from an inert
-        # quoted occurrence across a later real invocation. Resume one
-        # character after the rejected start so overlapping candidates remain
-        # visible instead of advancing to the greedy match's end.
+    while match := _EVAL_HEAD.search(command, search_position):
+        if _shell_context_is_executable(command, match.start()) is True:
+            body = _decode_eval_body(_eval_argument_tail(command, match.end()))
+            if body:
+                if depth >= 8:
+                    if re.search(rf"\b{_DENY_BINS}\b", body, re.IGNORECASE):
+                        return True
+                elif _should_deny_command(body, depth + 1):
+                    return True
         search_position = match.start() + 1
     return False
 
 
-def _collapse_line_continuations(command: str) -> str:
-    """Remove active backslash-newline pairs before regex matching."""
-
-    collapsed = command
-    search_position = 0
-    while search_position < len(collapsed):
-        backslash = collapsed.find("\\", search_position)
-        if backslash < 0 or backslash + 1 >= len(collapsed):
-            break
-        marker = backslash + 1
-        if collapsed[marker] not in {"\n", "\r"}:
-            search_position = marker + 1
-            continue
-        if _shell_context_is_executable(collapsed, marker) is not None:
-            search_position = marker + 1
-            continue
-        end = marker + 1
-        if (
-            collapsed[marker] == "\r"
-            and end < len(collapsed)
-            and collapsed[end] == "\n"
-        ):
-            end += 1
-        collapsed = collapsed[:backslash] + collapsed[end:]
-        search_position = max(0, backslash - 1)
-    return collapsed
-
-
-def should_deny_command(command: str) -> bool:
+def _should_deny_command(command: str, eval_depth: int) -> bool:
     if not command or not isinstance(command, str):
         return False
     command = _collapse_line_continuations(command)
@@ -525,7 +684,13 @@ def should_deny_command(command: str) -> bool:
         return True
     if _has_executable_match(_EVAL, command):
         return True
+    if _has_denied_eval_body(command, eval_depth):
+        return True
     return False
+
+
+def should_deny_command(command: str) -> bool:
+    return _should_deny_command(command, 0)
 
 
 # Role → required capability_mode for spawn_subagent fail-closed gate.

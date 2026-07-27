@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from time import perf_counter
 
 import pytest
 from omg_cli.deny import (
@@ -131,6 +132,16 @@ def test_deny_cli_execution_from_shell_substitutions(cmd):
         "ba" + "\\" + "\n" + "sh -c 'codex exec x'",
         "echo ok # " + "\\" + "\n" + "codex exec x",
         "cat <<\"E\\OF\"\n\"\nE\\OF\ncodex exec x",
+        "eval 'echo ok; kimi --version'",
+        "eval '$(kimi --version)'",
+        "eval 'echo ok && codex exec x'",
+        'eval "echo ok; kimi --version"',
+        "eval echo ok \\; kimi --version",
+        "eval $'echo ok; kimi --version'",
+        "eval 'eval \"kimi --version\"'",
+        "echo \"$(eval 'echo ok; kimi --version')\"",
+        "bash -c 'echo ok\ncodex exec x'",
+        "cat <<EOF\n$(co" + "\\" + "\n" + "dex exec x)\nEOF",
     ],
 )
 def test_deny_cli_after_inert_shell_text(cmd):
@@ -150,10 +161,22 @@ def test_deny_cli_after_inert_shell_text(cmd):
         "echo '" + "\\" + "\n" + "codex exec x'",
         "echo \"foo" + "\\" + "\n" + "codex exec x\"",
         "cat <<'EOF'\nE\\\nOF\ncodex exec x\nEOF",
+        "cat <<'EOF'\n$(co\\\ndex exec x)\nEOF",
+        "eval 'echo kimi is configured'",
+        "eval 'git commit -m \"fix(kimi)\"'",
+        "eval 'echo ok'; echo '(kimi)'",
+        "echo \"eval 'kimi --version'\"",
     ],
 )
 def test_allow_denied_cli_names_inside_inert_shell_text(cmd):
     assert should_deny_command(cmd) is False
+
+
+def test_many_literal_cli_mentions_do_not_stall_hook():
+    command = "git commit -m '" + " ".join(["(kimi)"] * 4000) + "'"
+    started = perf_counter()
+    assert should_deny_command(command) is False
+    assert perf_counter() - started < 2.0
 
 
 def test_process_env_allow_only_when_set(monkeypatch):
