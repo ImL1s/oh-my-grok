@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "2818016a6f86ccce0ab28cbb92459f73f4d13f93a705da61b9557ac4813acf0e"
+_OMG_GENERATED_FROM_SHA = "587dceed3370923ea9f149f8ec1743e642635574e0c7c54ffe427c64d4db580f"
 _OMG_PLUGIN_VERSION = "0.7.1"
 
 
@@ -446,10 +446,18 @@ def _backtick_substitution_close(
     return None
 
 
-def _heredoc_body_bounds(command: str, start: int, end: int) -> tuple[int, int]:
+def _heredoc_body_bounds(
+    command: str,
+    start: int,
+    end: int,
+    *,
+    terminated: bool,
+) -> tuple[int, int]:
     """Exclude the leading and terminator lines from a heredoc range."""
 
     _, body_start = _line_break(command, start)
+    if not terminated:
+        return body_start, end
     last_cr = command.rfind("\r", body_start, end)
     last_lf = command.rfind("\n", body_start, end)
     terminator_break = max(last_cr, last_lf)
@@ -461,7 +469,7 @@ def _heredoc_ranges(
     command: str,
     newline_position: int,
     pending: list[tuple[str, bool, bool]],
-) -> tuple[list[tuple[int, int, bool]], int]:
+) -> tuple[list[tuple[int, int, bool, bool]], int]:
     """Locate pending heredoc bodies and the final terminator newline.
 
     Ranges begin at the preceding newline because deny regexes include that
@@ -471,7 +479,7 @@ def _heredoc_ranges(
 
     _, cursor = _line_break(command, newline_position)
     marker = newline_position
-    ranges: list[tuple[int, int, bool]] = []
+    ranges: list[tuple[int, int, bool, bool]] = []
     resume = len(command)
 
     for delimiter, strip_tabs, quoted in pending:
@@ -481,12 +489,12 @@ def _heredoc_ranges(
             candidate = line.lstrip("\t") if strip_tabs else line
             if candidate == delimiter:
                 resume = line_end
-                ranges.append((marker, resume, quoted))
+                ranges.append((marker, resume, quoted, True))
                 cursor = next_line
                 marker = resume
                 break
             if line_end >= len(command):
-                ranges.append((marker, len(command), quoted))
+                ranges.append((marker, len(command), quoted, False))
                 return ranges, len(command)
             cursor = next_line
 
@@ -534,10 +542,17 @@ def _mark_unquoted_heredoc_expansions(
     start: int,
     end: int,
     contexts: list[int],
+    *,
+    terminated: bool,
 ) -> None:
     """Mark only command/backtick substitutions in unquoted heredoc data."""
 
-    body_start, body_end = _heredoc_body_bounds(command, start, end)
+    body_start, body_end = _heredoc_body_bounds(
+        command,
+        start,
+        end,
+        terminated=terminated,
+    )
     index = body_start
     while index < body_end:
         char = command[index]
@@ -831,7 +846,7 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
             continue
         if char in "\r\n" and pending_heredocs:
             ranges, resume = _heredoc_ranges(command, index, pending_heredocs)
-            for start, end, quoted in ranges:
+            for start, end, quoted, terminated in ranges:
                 contexts[start:end] = [_LITERAL_CONTEXT] * (end - start)
                 if not quoted:
                     _mark_unquoted_heredoc_continuations(
@@ -845,6 +860,7 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
                         start,
                         end,
                         contexts,
+                        terminated=terminated,
                     )
             pending_heredocs.clear()
             index = resume
