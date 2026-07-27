@@ -24,7 +24,16 @@ _WRAPPER_BIN = r"(?:(?:\S*/)?(?:env|command|xargs|nice|nohup|sudo|time|exec))"
 _WRAPPERS = rf"(?:{_WRAPPER_BIN}\s+(?:--\s+)*)*"
 _PATH_PREFIX = r"(?:\S*/)?"
 _SHELL_WORD = r"""(?:\\.|[^\s;&|()'"`\\]+|'[^']*'|"(?:\\.|[^"\\])*")+"""
-_CONTROL_COMMAND_WORD = r"(?:if|elif|while|until|then|else|do|!)"
+_CONTROL_COMMAND_WORD = r"(?:if|elif|while|until|then|else|do|coproc|!)"
+_FUNCTION_GROUP_LEAD = (
+    rf"(?:(?:function\s+)?{_SHELL_WORD}\s*\(\s*\)"
+    rf"|function\s+{_SHELL_WORD})\s*\{{\s+"
+)
+_COMMAND_LEAD = (
+    rf"(?:(?:{_CONTROL_COMMAND_WORD})\s+"
+    rf"|\{{\s+"
+    rf"|{_FUNCTION_GROUP_LEAD})*"
+)
 _DENIED_BIN_NAMES = frozenset(
     {"claude", "codex", "omx", "agy", "cursor-agent", "kimi"}
 )
@@ -35,13 +44,13 @@ _DENY_AT_CMD_POS = re.compile(
 )
 _DECODED_COMMAND_HEAD = re.compile(
     rf"{_CMD_POS}\s*"
-    rf"(?:{_CONTROL_COMMAND_WORD}\s+)*"
+    rf"{_COMMAND_LEAD}"
     rf"{_ENV_ASSIGNS}{_WRAPPERS}"
     rf"(?P<word>{_SHELL_WORD})",
     re.IGNORECASE,
 )
 _CASE_HEAD = re.compile(
-    rf"{_CMD_POS}\s*(?:{_CONTROL_COMMAND_WORD}\s+)*case\b",
+    rf"(?:{_CMD_POS}|\))\s*{_COMMAND_LEAD}case\b",
     re.IGNORECASE,
 )
 _CASE_IN = re.compile(r"\bin\b", re.IGNORECASE)
@@ -51,7 +60,7 @@ _CASE_PATTERN_COMMAND_HEAD = re.compile(
     re.IGNORECASE,
 )
 _CONDITIONAL_OPEN_AT_END = re.compile(
-    rf"{_CMD_POS}\s*(?:{_CONTROL_COMMAND_WORD}\s+)*\[\[\Z",
+    rf"{_CMD_POS}\s*{_COMMAND_LEAD}\[\[\Z",
     re.IGNORECASE,
 )
 _ARRAY_ASSIGNMENT_AT_END = re.compile(
@@ -218,6 +227,59 @@ def _line_break(command: str, start: int) -> tuple[int, int]:
     return cursor, next_line
 
 
+def _command_substitution_close(
+    command: str,
+    open_position: int,
+    limit: int,
+) -> int | None:
+    """Find the ``)`` paired with a heredoc-body ``$(`` opener."""
+
+    body = command[open_position + 1 : limit]
+    body_contexts = _shell_context_map(body)
+    depth = 1
+    for offset, char in enumerate(body):
+        if body_contexts[offset] != _EXECUTABLE_CONTEXT:
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if _case_pattern_is_active(body, offset):
+                continue
+            depth -= 1
+            if depth == 0:
+                return open_position + 1 + offset
+    return None
+
+
+def _backtick_substitution_close(
+    command: str,
+    open_position: int,
+    limit: int,
+) -> int | None:
+    """Find an unescaped closing backtick in an expanding heredoc body."""
+
+    index = open_position + 1
+    while index < limit:
+        if command[index] == "\\" and index + 1 < limit:
+            index += 2
+            continue
+        if command[index] == "`":
+            return index
+        index += 1
+    return None
+
+
+def _heredoc_body_bounds(command: str, start: int, end: int) -> tuple[int, int]:
+    """Exclude the leading and terminator lines from a heredoc range."""
+
+    _, body_start = _line_break(command, start)
+    last_cr = command.rfind("\r", body_start, end)
+    last_lf = command.rfind("\n", body_start, end)
+    terminator_break = max(last_cr, last_lf)
+    body_end = terminator_break if terminator_break >= body_start else body_start
+    return body_start, body_end
+
+
 def _heredoc_ranges(
     command: str,
     newline_position: int,
@@ -287,6 +349,57 @@ def _mark_unquoted_heredoc_continuations(
             ):
                 contexts[index + 1] = _LINE_CONTINUATION
                 index += 1
+        index += 1
+
+
+def _mark_unquoted_heredoc_expansions(
+    command: str,
+    start: int,
+    end: int,
+    contexts: list[int],
+) -> None:
+    """Mark only command/backtick substitutions in unquoted heredoc data."""
+
+    body_start, body_end = _heredoc_body_bounds(command, start, end)
+    index = body_start
+    while index < body_end:
+        char = command[index]
+        following = command[index + 1] if index + 1 < body_end else ""
+        if char == "\\" and following in {"\\", "$", "`", "\r", "\n"}:
+            index += 2
+            if (
+                following == "\r"
+                and index < body_end
+                and command[index] == "\n"
+            ):
+                index += 1
+            continue
+        if (
+            char == "$"
+            and following == "("
+            and not command.startswith("$((", index)
+        ):
+            close = _command_substitution_close(command, index + 1, body_end)
+            if close is None:
+                index += 2
+                continue
+            inner = command[index + 2 : close]
+            inner_contexts = _shell_context_map(inner)
+            contexts[index + 1] = _EXECUTABLE_CONTEXT
+            contexts[index + 2 : close] = inner_contexts[:-1]
+            index = close + 1
+            continue
+        if char == "`":
+            close = _backtick_substitution_close(command, index, body_end)
+            if close is None:
+                index += 1
+                continue
+            inner = command[index + 1 : close]
+            inner_contexts = _shell_context_map(inner)
+            contexts[index] = _EXECUTABLE_CONTEXT
+            contexts[index + 1 : close] = inner_contexts[:-1]
+            index = close + 1
+            continue
         index += 1
 
 
@@ -514,12 +627,15 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
         if char in "\r\n" and pending_heredocs:
             ranges, resume = _heredoc_ranges(command, index, pending_heredocs)
             for start, end, quoted in ranges:
-                classification = (
-                    _LITERAL_CONTEXT if quoted else _EXECUTABLE_CONTEXT
-                )
-                contexts[start:end] = [classification] * (end - start)
+                contexts[start:end] = [_LITERAL_CONTEXT] * (end - start)
                 if not quoted:
                     _mark_unquoted_heredoc_continuations(
+                        command,
+                        start,
+                        end,
+                        contexts,
+                    )
+                    _mark_unquoted_heredoc_expansions(
                         command,
                         start,
                         end,
@@ -814,26 +930,93 @@ def _has_denied_decoded_command_head(command: str) -> bool:
 def _case_pattern_is_active(command: str, position: int) -> bool:
     """Return whether ``position`` closes a pattern in an open case block."""
 
-    latest_case: re.Match[str] | None = None
+    contexts = _shell_context_map(command)
+    case_heads: list[re.Match[str]] = []
     search_position = 0
     while match := _CASE_HEAD.search(command, search_position, position):
-        if _shell_context_is_executable(command, match.start()) is True:
-            latest_case = match
+        if contexts[match.start()] == _EXECUTABLE_CONTEXT:
+            case_heads.append(match)
         search_position = match.start() + 1
-    if latest_case is None:
+    if not case_heads:
         return False
 
-    search_position = latest_case.end()
+    case_ends: list[re.Match[str]] = []
+    search_position = 0
     while match := _CASE_END.search(command, search_position, position):
-        if _shell_context_is_executable(command, match.start()) is True:
-            return False
+        if contexts[match.start()] == _EXECUTABLE_CONTEXT:
+            case_ends.append(match)
         search_position = match.start() + 1
 
+    events = sorted(
+        [(match.start(), 1, match) for match in case_heads]
+        + [(match.start(), -1, match) for match in case_ends],
+        key=lambda item: (item[0], -item[1]),
+    )
+    active_cases: list[re.Match[str]] = []
+    for _, kind, match in events:
+        if kind == 1:
+            active_cases.append(match)
+        elif active_cases:
+            active_cases.pop()
+    if not active_cases:
+        return False
+    latest_case = active_cases[-1]
+
+    case_in: re.Match[str] | None = None
     search_position = latest_case.end()
     while match := _CASE_IN.search(command, search_position, position):
         if _shell_context_is_executable(command, match.start()) is True:
-            return True
+            case_in = match
+            break
         search_position = match.start() + 1
+    if case_in is None:
+        return False
+
+    nested_heads = {
+        match.start(): match
+        for match in case_heads
+        if latest_case.start() < match.start() < position
+    }
+    nested_ends = {
+        match.start(): match
+        for match in case_ends
+        if latest_case.start() < match.start() < position
+    }
+    expects_pattern_close = True
+    nested_case_depth = 0
+    index = case_in.end()
+    while index <= position:
+        if contexts[index] != _EXECUTABLE_CONTEXT:
+            index += 1
+            continue
+        nested_head = nested_heads.get(index)
+        if nested_head is not None:
+            if command[index] == ")" and expects_pattern_close:
+                expects_pattern_close = False
+            nested_case_depth += 1
+            index = nested_head.end()
+            continue
+        nested_end = nested_ends.get(index)
+        if nested_end is not None and nested_case_depth:
+            nested_case_depth -= 1
+            index = nested_end.end()
+            continue
+        if nested_case_depth:
+            index += 1
+            continue
+        if command.startswith(";;&", index):
+            expects_pattern_close = True
+            index += 3
+            continue
+        if command.startswith((";;", ";&"), index):
+            expects_pattern_close = True
+            index += 2
+            continue
+        if command[index] == ")" and expects_pattern_close:
+            if index == position:
+                return True
+            expects_pattern_close = False
+        index += 1
     return False
 
 

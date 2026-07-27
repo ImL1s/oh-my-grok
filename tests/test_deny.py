@@ -152,8 +152,17 @@ def test_deny_cli_execution_from_shell_substitutions(cmd):
         "bash -c 'if true; then codex exec x; fi'",
         "bash -c 'for x in one; do \"codex\" exec x; done'",
         "bash -c 'case x in x) co\"dex\" exec x;; esac'",
+        "bash -c '{ codex exec x; }'",
+        "bash -c '{ command \"codex\" exec x; }'",
+        "bash -c 'f() { \"codex\" exec x; }; f'",
+        "bash -c 'function f { codex exec x; }; f'",
+        "bash -c 'coproc codex exec x'",
+        "case y in x) echo safe;; y) co\"dex\" exec x;; esac",
+        'case o in o) case i in i) "codex" exec x;; esac;; esac',
         'array=($("codex" exec x))',
         '[[ x == $("codex" exec x) ]]',
+        "cat <<EOF\n'$(codex exec x)'\nEOF",
+        "cat <<EOF\n$(case x in x) co\"dex\" exec x;; esac)\nEOF",
     ],
 )
 def test_deny_cli_after_inert_shell_text(cmd):
@@ -191,6 +200,10 @@ def test_deny_cli_after_inert_shell_text(cmd):
         "bash -c '[[ foo && \"codex\" ]]'",
         'echo $(true) "codex"',
         "case x in codex) echo safe;; esac",
+        'case x in x) echo $(true) "codex";; esac',
+        'cat <<EOF\n"codex" exec x\nEOF',
+        'cat <<EOF\nco"dex" exec x\nEOF',
+        'cat <<EOF\n$(case x in x) echo "codex";; esac)\nEOF',
     ],
 )
 def test_allow_denied_cli_names_inside_inert_shell_text(cmd):
