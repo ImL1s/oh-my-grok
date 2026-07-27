@@ -51,7 +51,7 @@ Workers fan out only via Grok **`spawn_subagent`** (depth 1). No Rust fork of gr
 | **Grok plugin** | `skills/omg-*`, `agents/omg-*`, hooks (event spool + PreToolUse soft-guard; SessionStart is passive-only) |
 | **`omg` CLI** | setup/doctor, modes, workflows, exact session routes, bounded recovery, memory/tracker/compaction, notifications, accept/release verification |
 
-Version: **0.6.0** · License: MIT
+Version: **0.7.2** · License: MIT
 
 ---
 

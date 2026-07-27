@@ -42,7 +42,7 @@ Workers 只经 Grok **`spawn_subagent`**（depth 1）。
 **tmux team：** 已有实验性 multi-CLI team plane（需设定 `OMG_EXPERIMENTAL_TMUX_TEAM=1`）；它只提供 worktree／seal／integrate 的**整合隔离**，不是执行 sandbox。
 **范围诚实：** core purpose 编排对等子集 — 仍不是完整 OMC skill zoo，也不宣称各 provider 有一致的执行 sandbox；详见 [`docs/security-model.md`](../security-model.md)。
 
-版本：**0.6.0** · License: MIT
+版本：**0.7.2** · License: MIT
 
 ---
 
