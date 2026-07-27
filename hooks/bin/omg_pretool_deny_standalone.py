@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "ef140605016f44e486a7d9216fa924aa7e37338caeb69480f337eb03a86ecc62"
+_OMG_GENERATED_FROM_SHA = "8cb0a093e9ba4192aff46538377f2407e385811bced353d86b1772f6c129667d"
 _OMG_PLUGIN_VERSION = "0.7.1"
 
 
@@ -1051,12 +1051,79 @@ def _eval_argument_tail(command: str, start: int) -> str:
     return command[start:index]
 
 
+def _normalize_ansi_c_quotes(raw_body: str) -> str | None:
+    """Rewrite active ``$'...'`` segments into POSIX-shlex-safe quoting."""
+
+    normalized: list[str] = []
+    context = "normal"
+    index = 0
+    while index < len(raw_body):
+        char = raw_body[index]
+        following = raw_body[index + 1] if index + 1 < len(raw_body) else ""
+        if context == "single":
+            normalized.append(char)
+            if char == "'":
+                context = "normal"
+            index += 1
+            continue
+        if context == "double":
+            normalized.append(char)
+            if char == "\\" and following:
+                normalized.append(following)
+                index += 2
+                continue
+            if char == '"':
+                context = "normal"
+            index += 1
+            continue
+
+        if char == "\\" and following:
+            normalized.extend((char, following))
+            index += 2
+            continue
+        if char == "'":
+            normalized.append(char)
+            context = "single"
+            index += 1
+            continue
+        if char == '"':
+            normalized.append(char)
+            context = "double"
+            index += 1
+            continue
+        if char == "$" and following == "'":
+            cursor = index + 2
+            encoded: list[str] = []
+            while cursor < len(raw_body):
+                if raw_body[cursor] == "\\" and cursor + 1 < len(raw_body):
+                    encoded.extend((raw_body[cursor], raw_body[cursor + 1]))
+                    cursor += 2
+                    continue
+                if raw_body[cursor] == "'":
+                    break
+                encoded.append(raw_body[cursor])
+                cursor += 1
+            if cursor >= len(raw_body):
+                return None
+            decoded = _decode_ansi_c_string("".join(encoded))
+            if decoded is None:
+                return None
+            normalized.append(shlex.quote(decoded))
+            index = cursor + 1
+            continue
+        normalized.append(char)
+        index += 1
+    return "".join(normalized)
+
+
 def _decode_shell_words(raw_body: str) -> list[str]:
+    normalized = _normalize_ansi_c_quotes(raw_body)
+    shell_text = raw_body if normalized is None else normalized
     try:
-        words = shlex.split(raw_body, comments=False, posix=True)
+        words = shlex.split(shell_text, comments=False, posix=True)
     except ValueError:
         return [raw_body]
-    if "$'" in raw_body or '$"' in raw_body:
+    if '$"' in raw_body:
         words = [word[1:] if word.startswith("$") else word for word in words]
     return words
 
@@ -1282,8 +1349,14 @@ def _has_denied_case_command_head(command: str) -> bool:
     while match := _CASE_PATTERN_COMMAND_HEAD.search(command, search_position):
         if (
             _shell_context_is_executable(command, match.start()) is True
-            and _decoded_shell_word_is_denied(match.group("word"))
             and _case_pattern_is_active(command, match.start())
+            and (
+                _decoded_shell_word_is_denied(match.group("word"))
+                or _shell_word_has_dynamic_expansion(
+                    command,
+                    match.start("word"),
+                )
+            )
         ):
             return True
         search_position = match.start() + 1

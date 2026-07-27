@@ -171,6 +171,10 @@ def test_deny_cli_execution_from_shell_substitutions(cmd):
         "bash -c 'co$(printf dex) exec x'",
         'eval "$(printf codex)"',
         "eval '$(printf codex)'",
+        "bash -c 'case x in x) $(printf codex);; esac'",
+        "bash -c $'echo \\'x\\'; codex exec x'",
+        "bash -c $'co\\x64ex exec x'",
+        "eval $'echo \\'x\\'; codex exec x'",
     ],
 )
 def test_deny_cli_after_inert_shell_text(cmd):
@@ -216,6 +220,7 @@ def test_deny_cli_after_inert_shell_text(cmd):
         "bash -c 'echo $(printf codex)'",
         'bash -c "echo $(printf codex)"',
         "eval 'echo $(printf codex)'",
+        "bash -c $'echo \\'codex\\''",
     ],
 )
 def test_allow_denied_cli_names_inside_inert_shell_text(cmd):
