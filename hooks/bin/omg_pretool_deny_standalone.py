@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "433e29586a8c26c3fed1760ef872c4b6be9f9285a4607395fb390768a376538f"
+_OMG_GENERATED_FROM_SHA = "2818016a6f86ccce0ab28cbb92459f73f4d13f93a705da61b9557ac4813acf0e"
 _OMG_PLUGIN_VERSION = "0.7.1"
 
 
@@ -106,6 +106,7 @@ _CASE_PATTERN_COMMAND_HEAD = re.compile(
     rf"\)\s*{_ENV_ASSIGNS}{_WRAPPERS}(?P<word>{_SHELL_WORD})",
     re.IGNORECASE,
 )
+_MAX_CASE_SUBSTITUTION_SCANS = 64
 _CONDITIONAL_OPEN_AT_END = re.compile(
     rf"{_CMD_POS}\s*{_COMMAND_LEAD}\[\[\Z",
     re.IGNORECASE,
@@ -1475,9 +1476,24 @@ def _has_denied_shell_c_body(command: str, depth: int) -> bool:
     return False
 
 
+def _exceeds_case_substitution_budget(command: str) -> bool:
+    """Fail closed before nested case/substitution parsing can time out."""
+
+    if command.count("$(") <= _MAX_CASE_SUBSTITUTION_SCANS:
+        return False
+    case_count = 0
+    for _ in _CASE_HEAD.finditer(command):
+        case_count += 1
+        if case_count > _MAX_CASE_SUBSTITUTION_SCANS:
+            return True
+    return False
+
+
 def _should_deny_command(command: str, eval_depth: int) -> bool:
     if not command or not isinstance(command, str):
         return False
+    if _exceeds_case_substitution_budget(command):
+        return True
     command = _collapse_line_continuations(command)
     # Deny when a blocked bin appears in command position (not as a free word/arg)
     if _has_executable_match(_DENY_AT_CMD_POS, command):

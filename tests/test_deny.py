@@ -255,6 +255,15 @@ def test_many_command_substitutions_do_not_stall_hook():
     assert perf_counter() - started < 2.0
 
 
+def test_deep_case_substitutions_fail_closed_before_hook_timeout():
+    command = "codex exec x"
+    for _ in range(150):
+        command = f'echo "$(case x in x) {command};; esac)"'
+    started = perf_counter()
+    assert should_deny_command(command) is True
+    assert perf_counter() - started < 2.0
+
+
 def test_process_env_allow_only_when_set(monkeypatch):
     monkeypatch.delenv("OMG_ALLOW_EXTERNAL_CLI", raising=False)
     d = decide_pre_tool_use({"toolName": "run_terminal_command", "toolInput": {"command": "claude -p x"}})
