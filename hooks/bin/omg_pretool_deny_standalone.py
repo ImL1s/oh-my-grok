@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "e118847353ad4914cbdabe24d08c985ed5b147ca21df49bc118d9be3bb2087fe"
+_OMG_GENERATED_FROM_SHA = "a602055229a864ee6858ac23be7560d3f020a77a8b386f96477c92a48696f0c3"
 _OMG_PLUGIN_VERSION = "0.7.1"
 
 
@@ -388,7 +388,7 @@ def _command_substitution_close(
     open_position: int,
     limit: int,
 ) -> int | None:
-    """Find the ``)`` paired with a heredoc-body ``$(`` opener."""
+    """Find the ``)`` paired with a shell ``$(`` opener."""
 
     body = command[open_position + 1 : limit]
     body_contexts = _shell_context_map(body)
@@ -604,8 +604,36 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
     # Entries are (context, parenthesis_depth, at_word_start). Quote contexts
     # return to the previous executable context when popped.
     stack: list[tuple[str, int, bool]] = [("normal", 0, True)]
+    command_substitution_opens: dict[int, int] = {}
+    command_substitution_closes: dict[int, int | None] = {}
+    command_substitution_case_closes: dict[int, frozenset[int]] = {}
     pending_heredocs: list[tuple[str, bool, bool]] = []
+    case_head_ends = tuple(match.end() for match in _CASE_HEAD.finditer(command))
     index = 0
+
+    def push_command_substitution(open_position: int) -> None:
+        stack.append(("command_substitution", 1, True))
+        command_substitution_opens[len(stack) - 1] = open_position
+
+    def pop_command_substitution(frame_index: int) -> None:
+        command_substitution_opens.pop(frame_index, None)
+        command_substitution_closes.pop(frame_index, None)
+        command_substitution_case_closes.pop(frame_index, None)
+        stack.pop()
+
+    def substitution_prefix_has_case(
+        open_position: int,
+        close_candidate: int,
+    ) -> bool:
+        low = 0
+        high = len(case_head_ends)
+        while low < high:
+            middle = (low + high) // 2
+            if case_head_ends[middle] <= close_candidate + 1:
+                low = middle + 1
+            else:
+                high = middle
+        return low > 0 and case_head_ends[low - 1] > open_position + 1
 
     while index < len(command):
         context, depth, at_word_start = stack[-1]
@@ -659,7 +687,7 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
                     index += 3
                 else:
                     contexts[index + 1] = _EXECUTABLE_CONTEXT
-                    stack.append(("command_substitution", 1, True))
+                    push_command_substitution(index + 1)
                     index += 2
                 continue
             if char == "`":
@@ -682,7 +710,7 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
                     index += 3
                 else:
                     contexts[index + 1] = _EXECUTABLE_CONTEXT
-                    stack.append(("command_substitution", 1, True))
+                    push_command_substitution(index + 1)
                     index += 2
                 continue
             if char == "`":
@@ -734,12 +762,12 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
                     index += 3
                 else:
                     contexts[index + 1] = _EXECUTABLE_CONTEXT
-                    stack.append(("command_substitution", 1, True))
+                    push_command_substitution(index + 1)
                     index += 2
                 continue
             if char in "<>" and following == "(":
                 contexts[index + 1] = _EXECUTABLE_CONTEXT
-                stack.append(("command_substitution", 1, True))
+                push_command_substitution(index + 1)
                 index += 2
                 continue
             if context == "array":
@@ -849,7 +877,7 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
                 index += 3
             else:
                 contexts[index + 1] = _EXECUTABLE_CONTEXT
-                stack.append(("command_substitution", 1, True))
+                push_command_substitution(index + 1)
                 index += 2
             continue
         if char == "(" and _array_assignment_opens_at(command, index):
@@ -868,8 +896,42 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
             if char == "(":
                 stack[-1] = (context, depth + 1, True)
             elif char == ")":
-                if depth == 1:
-                    stack.pop()
+                frame_index = len(stack) - 1
+                expected_close = command_substitution_closes.get(frame_index)
+                case_closes = command_substitution_case_closes.get(
+                    frame_index,
+                    frozenset(),
+                )
+                if expected_close is None:
+                    open_position = command_substitution_opens[frame_index]
+                    if substitution_prefix_has_case(open_position, index):
+                        body_start = open_position + 1
+                        body = command[body_start:]
+                        case_closes = frozenset(
+                            body_start + position
+                            for position in _case_pattern_close_positions(body)
+                        )
+                        if index in case_closes:
+                            command_substitution_case_closes[frame_index] = (
+                                case_closes
+                            )
+                            expected_close = _command_substitution_close(
+                                command,
+                                open_position,
+                                len(command),
+                            )
+                            command_substitution_closes[frame_index] = (
+                                expected_close
+                            )
+                if index in case_closes:
+                    stack[-1] = (context, depth, True)
+                elif expected_close == index:
+                    pop_command_substitution(frame_index)
+                elif expected_close is not None:
+                    if depth > 1:
+                        stack[-1] = (context, depth - 1, False)
+                elif depth == 1:
+                    pop_command_substitution(frame_index)
                 else:
                     stack[-1] = (context, depth - 1, False)
             elif char.isspace() or char in ";&|<>":

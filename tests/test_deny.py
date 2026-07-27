@@ -172,6 +172,8 @@ def test_deny_cli_execution_from_shell_substitutions(cmd):
         'eval "$(printf codex)"',
         "eval '$(printf codex)'",
         "bash -c 'case x in x) $(printf codex);; esac'",
+        'echo "$(case x in x) echo safe; codex exec x;; esac)"',
+        'echo "$(case x in a) echo safe;; x) codex exec x;; esac)"',
         "bash -c $'echo \\'x\\'; codex exec x'",
         "bash -c $'co\\x64ex exec x'",
         "eval $'echo \\'x\\'; codex exec x'",
@@ -213,6 +215,7 @@ def test_deny_cli_after_inert_shell_text(cmd):
         'echo $(true) "codex"',
         "case x in codex) echo safe;; esac",
         'case x in x) echo $(true) "codex";; esac',
+        'echo "$(case x in x) echo codex;; esac)"',
         'cat <<EOF\n"codex" exec x\nEOF',
         'cat <<EOF\nco"dex" exec x\nEOF',
         'cat <<EOF\n$(case x in x) echo "codex";; esac)\nEOF',
@@ -238,6 +241,13 @@ def test_many_case_branches_do_not_stall_hook():
     command = "case x in " + " ".join(
         f"p{index}) echo safe;;" for index in range(2000)
     ) + " esac"
+    started = perf_counter()
+    assert should_deny_command(command) is False
+    assert perf_counter() - started < 2.0
+
+
+def test_many_command_substitutions_do_not_stall_hook():
+    command = "echo " + " ".join("$(echo safe)" for _ in range(2000))
     started = perf_counter()
     assert should_deny_command(command) is False
     assert perf_counter() - started < 2.0

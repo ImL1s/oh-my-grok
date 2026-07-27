@@ -217,6 +217,31 @@ MATRIX = [
         ),
         "deny",
     ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": (
+                        'echo "$(case x in x) echo safe; '
+                        'codex exec x;; esac)"'
+                    )
+                },
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": 'echo "$(case x in x) echo codex;; esac)"'
+                },
+            }
+        ),
+        "allow",
+    ),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore"}}', "deny"),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore","capability_mode":"read-only"}}', "allow"),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"general-purpose","capability_mode":"read-write"}}', "allow"),
