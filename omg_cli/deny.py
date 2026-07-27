@@ -246,6 +246,25 @@ def _parse_heredoc(
             cursor += 1
             char = command[cursor]
             following = command[cursor + 1] if cursor + 1 < len(command) else ""
+        if char == "$" and following == "(":
+            closing = _command_substitution_close(
+                command,
+                cursor + 1,
+                len(command),
+            )
+            if closing is None:
+                return None
+            raw_substitution = command[cursor : closing + 1]
+            if any(
+                marker in raw_substitution
+                for marker in ("'", '"', "\\", "\r", "\n")
+            ):
+                # Exact quote removal inside a delimiter substitution is
+                # ambiguous here. Fail open instead of masking later commands.
+                return None
+            delimiter.append(raw_substitution)
+            cursor = closing + 1
+            continue
         if char.isspace() or char in ";&|()<>":
             break
         if char == "'":

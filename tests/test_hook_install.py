@@ -242,6 +242,28 @@ MATRIX = [
         ),
         "allow",
     ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": "cat <<$(tag)\npayload\n$(tag)\ncodex exec x"
+                },
+            }
+        ),
+        "deny",
+    ),
+    (
+        json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {
+                    "command": "cat <<$(tag)\ncodex exec x\n$(tag)"
+                },
+            }
+        ),
+        "allow",
+    ),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore"}}', "deny"),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore","capability_mode":"read-only"}}', "allow"),
     ('{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"general-purpose","capability_mode":"read-write"}}', "allow"),

@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "a602055229a864ee6858ac23be7560d3f020a77a8b386f96477c92a48696f0c3"
+_OMG_GENERATED_FROM_SHA = "433e29586a8c26c3fed1760ef872c4b6be9f9285a4607395fb390768a376538f"
 _OMG_PLUGIN_VERSION = "0.7.1"
 
 
@@ -289,6 +289,25 @@ def _parse_heredoc(
             cursor += 1
             char = command[cursor]
             following = command[cursor + 1] if cursor + 1 < len(command) else ""
+        if char == "$" and following == "(":
+            closing = _command_substitution_close(
+                command,
+                cursor + 1,
+                len(command),
+            )
+            if closing is None:
+                return None
+            raw_substitution = command[cursor : closing + 1]
+            if any(
+                marker in raw_substitution
+                for marker in ("'", '"', "\\", "\r", "\n")
+            ):
+                # Exact quote removal inside a delimiter substitution is
+                # ambiguous here. Fail open instead of masking later commands.
+                return None
+            delimiter.append(raw_substitution)
+            cursor = closing + 1
+            continue
         if char.isspace() or char in ";&|()<>":
             break
         if char == "'":
