@@ -27,7 +27,7 @@ import sys
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "5566d872de735dc59e8eecadba6c042ce5fa6bd854d86741e3a03405d463c04a"
+_OMG_GENERATED_FROM_SHA = "b3948500e7ab607af976d206e03cb41968c43786979cf1dd53e16444c7f01b47"
 _OMG_PLUGIN_VERSION = "0.7.1"
 
 
@@ -125,6 +125,7 @@ def _parse_heredoc(
 
     delimiter: list[str] = []
     quoted = False
+    delimiter_reliable = True
     while cursor < len(command):
         char = command[cursor]
         following = command[cursor + 1] if cursor + 1 < len(command) else ""
@@ -132,6 +133,10 @@ def _parse_heredoc(
         locale_quote = char == "$" and following == '"'
         if ansi_c_quote or locale_quote:
             quoted = True
+            if locale_quote:
+                # The runtime locale may translate $"..."; treat its body as
+                # fail-closed if our untranslated delimiter does not match.
+                delimiter_reliable = False
             cursor += 1
             char = command[cursor]
             following = command[cursor + 1] if cursor + 1 < len(command) else ""
@@ -146,6 +151,7 @@ def _parse_heredoc(
                         command[cursor + 1] if cursor + 1 < len(command) else ""
                     )
                     if command[cursor] == "\\" and following:
+                        delimiter_reliable = False
                         delimiter.append(following)
                         cursor += 2
                     else:
@@ -167,8 +173,20 @@ def _parse_heredoc(
             while cursor < len(command) and command[cursor] != '"':
                 following = command[cursor + 1] if cursor + 1 < len(command) else ""
                 if command[cursor] == "\\" and following:
-                    delimiter.append(following)
-                    cursor += 2
+                    if following in {'$', "`", '"', "\\"}:
+                        delimiter.append(following)
+                        cursor += 2
+                    elif following in {"\n", "\r"}:
+                        cursor += 2
+                        if (
+                            following == "\r"
+                            and cursor < len(command)
+                            and command[cursor] == "\n"
+                        ):
+                            cursor += 1
+                    else:
+                        delimiter.append("\\")
+                        cursor += 1
                 else:
                     delimiter.append(command[cursor])
                     cursor += 1
@@ -177,6 +195,15 @@ def _parse_heredoc(
             cursor += 1
             continue
         if char == "\\" and following:
+            if following in {"\n", "\r"}:
+                cursor += 2
+                if (
+                    following == "\r"
+                    and cursor < len(command)
+                    and command[cursor] == "\n"
+                ):
+                    cursor += 1
+                continue
             quoted = True
             delimiter.append(following)
             cursor += 2
@@ -186,7 +213,7 @@ def _parse_heredoc(
 
     if not delimiter:
         return None
-    return "".join(delimiter), strip_tabs, quoted, cursor
+    return "".join(delimiter), strip_tabs, quoted and delimiter_reliable, cursor
 
 
 def _line_break(command: str, start: int) -> tuple[int, int]:
@@ -239,8 +266,8 @@ def _heredoc_ranges(
     return ranges, resume
 
 
-def _shell_context_is_executable(command: str, position: int) -> bool:
-    """Return whether ``position`` is shell syntax rather than quoted data.
+def _shell_context_is_executable(command: str, position: int) -> bool | None:
+    """Classify ``position`` as executable, literal, or line-continuation.
 
     The deny regexes intentionally recognize command separators such as ``;``
     and ``(``.  Those same characters are common in inert arguments (for
@@ -250,6 +277,10 @@ def _shell_context_is_executable(command: str, position: int) -> bool:
     Command substitutions inside double quotes remain executable.  Track
     ``$()`` and backtick contexts so ``echo "$(kimi ...)"`` is still denied,
     while single-quoted or escaped spellings remain ordinary data.
+
+    ``None`` means the regex used an active backslash-newline pair as its
+    command marker. The caller must remove that continuation and rescan,
+    because the joined token may be either a command head or an argument.
     """
 
     limit = max(0, min(position, len(command)))
@@ -260,6 +291,7 @@ def _shell_context_is_executable(command: str, position: int) -> bool:
     stack: list[tuple[str, int, bool]] = [("normal", 0, True)]
     pending_heredocs: list[tuple[str, bool, bool]] = []
     escaped_position = False
+    continued_newline_position = False
     index = 0
 
     while index < limit:
@@ -283,9 +315,12 @@ def _shell_context_is_executable(command: str, position: int) -> bool:
             continue
 
         if context == "double":
-            if char == "\\" and following in {'$', '`', '"', "\\", "\n"}:
+            if char == "\\" and following in {'$', '`', '"', "\\", "\n", "\r"}:
                 if index + 1 == position:
-                    escaped_position = True
+                    if following in {"\n", "\r"}:
+                        continued_newline_position = True
+                    else:
+                        escaped_position = True
                 index += 2
                 continue
             if char == '"':
@@ -307,7 +342,10 @@ def _shell_context_is_executable(command: str, position: int) -> bool:
         # shell contexts.  Quotes nested inside them are literal until closed.
         if char == "\\" and following:
             if index + 1 == position:
-                escaped_position = True
+                if following in {"\n", "\r"}:
+                    continued_newline_position = True
+                else:
+                    escaped_position = True
             if following not in {"\n", "\r"}:
                 stack[-1] = (context, depth, False)
             index += 2
@@ -391,8 +429,6 @@ def _shell_context_is_executable(command: str, position: int) -> bool:
             stack[-1] = (context, depth, False)
         index += 1
 
-    if escaped_position:
-        return False
     if (
         pending_heredocs
         and position < len(command)
@@ -402,7 +438,11 @@ def _shell_context_is_executable(command: str, position: int) -> bool:
         for start, end, quoted in ranges:
             if start <= position < end:
                 return not quoted
-    context = stack[-1][0]
+    context, _, _ = stack[-1]
+    if continued_newline_position:
+        return None
+    if escaped_position:
+        return False
     if context in {"normal", "command_substitution", "backtick"}:
         return True
     # An opening backtick inside double quotes starts executable command
@@ -417,8 +457,22 @@ def _shell_context_is_executable(command: str, position: int) -> bool:
 def _has_executable_match(pattern: re.Pattern[str], command: str) -> bool:
     search_position = 0
     while match := pattern.search(command, search_position):
-        if _shell_context_is_executable(command, match.start()):
+        context = _shell_context_is_executable(command, match.start())
+        if context is True:
             return True
+        if context is None:
+            marker = match.start()
+            end = marker + 1
+            if (
+                marker < len(command)
+                and command[marker] == "\r"
+                and end < len(command)
+                and command[end] == "\n"
+            ):
+                end += 1
+            collapsed = command[: marker - 1] + command[end:]
+            if _has_executable_match(pattern, collapsed):
+                return True
         # A pattern such as ``sh -c '<body>'`` may greedily span from an inert
         # quoted occurrence across a later real invocation. Resume one
         # character after the rejected start so overlapping candidates remain
@@ -427,9 +481,38 @@ def _has_executable_match(pattern: re.Pattern[str], command: str) -> bool:
     return False
 
 
+def _collapse_line_continuations(command: str) -> str:
+    """Remove active backslash-newline pairs before regex matching."""
+
+    collapsed = command
+    search_position = 0
+    while search_position < len(collapsed):
+        backslash = collapsed.find("\\", search_position)
+        if backslash < 0 or backslash + 1 >= len(collapsed):
+            break
+        marker = backslash + 1
+        if collapsed[marker] not in {"\n", "\r"}:
+            search_position = marker + 1
+            continue
+        if _shell_context_is_executable(collapsed, marker) is not None:
+            search_position = marker + 1
+            continue
+        end = marker + 1
+        if (
+            collapsed[marker] == "\r"
+            and end < len(collapsed)
+            and collapsed[end] == "\n"
+        ):
+            end += 1
+        collapsed = collapsed[:backslash] + collapsed[end:]
+        search_position = max(0, backslash - 1)
+    return collapsed
+
+
 def should_deny_command(command: str) -> bool:
     if not command or not isinstance(command, str):
         return False
+    command = _collapse_line_continuations(command)
     # Deny when a blocked bin appears in command position (not as a free word/arg)
     if _has_executable_match(_DENY_AT_CMD_POS, command):
         return True

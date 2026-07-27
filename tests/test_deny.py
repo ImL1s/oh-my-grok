@@ -122,6 +122,15 @@ def test_deny_cli_execution_from_shell_substitutions(cmd):
         "cat <<$'EOF'\n\"\nEOF\ncodex exec x",
         "cat <<<\"'\"\ncodex exec x",
         "cat <<EOF\n$(codex exec x)\nEOF",
+        "\\" + "\n" + "codex exec x",
+        "echo ok; " + "\\" + "\n" + "codex exec x",
+        "env " + "\\" + "\n" + "codex exec x",
+        "bash -c " + "\\" + "\n" + "'codex exec x'",
+        "\\" + "\n" + "\\" + "\n" + "codex exec x",
+        "co" + "\\" + "\n" + "dex exec x",
+        "ba" + "\\" + "\n" + "sh -c 'codex exec x'",
+        "echo ok # " + "\\" + "\n" + "codex exec x",
+        "cat <<\"E\\OF\"\n\"\nE\\OF\ncodex exec x",
     ],
 )
 def test_deny_cli_after_inert_shell_text(cmd):
@@ -136,6 +145,11 @@ def test_deny_cli_after_inert_shell_text(cmd):
         r"echo $'literal; codex exec x'",
         "cat <<'EOF'\ncodex exec x\nEOF",
         "cat <<'EOF'\n$(codex exec x)\nEOF",
+        "echo foo" + "\\" + "\n" + "codex exec x",
+        "echo " + "\\" + "\n" + "codex exec x",
+        "echo '" + "\\" + "\n" + "codex exec x'",
+        "echo \"foo" + "\\" + "\n" + "codex exec x\"",
+        "cat <<'EOF'\nE\\\nOF\ncodex exec x\nEOF",
     ],
 )
 def test_allow_denied_cli_names_inside_inert_shell_text(cmd):
