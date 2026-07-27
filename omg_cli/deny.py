@@ -41,22 +41,18 @@ _EVAL_HEAD = re.compile(
     re.IGNORECASE,
 )
 
-# sh/bash/zsh -c / -lc (login+command) with quoted OR unquoted body containing a deny bin.
+# sh/bash/zsh -c / -lc (login+command) head. The first argument is decoded and
+# recursively inspected instead of using a greedy regex across later commands.
 # Path-prefixed shells: /bin/bash -c 'claude'
 # Requires short-flag cluster that includes `c` (so bare `bash -l` is not a hit).
-_SH_C = re.compile(
+_SHELL_C_HEAD = re.compile(
     rf"{_CMD_POS}\s*"
     rf"{_ENV_ASSIGNS}"
     rf"{_WRAPPERS}"
     rf"(?:\S*/)?(?:sh|bash|zsh)\s+-"
     rf"[A-Za-z]*c[A-Za-z]*"  # -c, -lc, -cl, any short-flag soup that includes c
-    rf"\s+"
-    rf"(?:"
-    rf"['\"].*\b{_DENY_BINS}\b"  # quoted body
-    rf"|"
-    rf"{_PATH_PREFIX}{_DENY_BINS}\b"  # unquoted: sh -c claude ...
-    rf")",
-    re.IGNORECASE | re.DOTALL,
+    rf"\s+",
+    re.IGNORECASE,
 )
 
 
@@ -321,15 +317,51 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
                 index += 1
                 continue
             if char == "$" and following == "(":
-                contexts[index + 1] = _EXECUTABLE_CONTEXT
-                stack.append(("command_substitution", 1, True))
-                index += 2
+                if index + 2 < len(command) and command[index + 2] == "(":
+                    contexts[index + 1] = _LITERAL_CONTEXT
+                    contexts[index + 2] = _LITERAL_CONTEXT
+                    stack.append(("arithmetic", 2, False))
+                    index += 3
+                else:
+                    contexts[index + 1] = _EXECUTABLE_CONTEXT
+                    stack.append(("command_substitution", 1, True))
+                    index += 2
                 continue
             if char == "`":
                 contexts[index] = _EXECUTABLE_CONTEXT
                 stack.append(("backtick", 0, True))
                 index += 1
                 continue
+            index += 1
+            continue
+
+        if context == "arithmetic":
+            if char == "\\" and following:
+                index += 2
+                continue
+            if char == "$" and following == "(":
+                if index + 2 < len(command) and command[index + 2] == "(":
+                    contexts[index + 1] = _LITERAL_CONTEXT
+                    contexts[index + 2] = _LITERAL_CONTEXT
+                    stack.append(("arithmetic", 2, False))
+                    index += 3
+                else:
+                    contexts[index + 1] = _EXECUTABLE_CONTEXT
+                    stack.append(("command_substitution", 1, True))
+                    index += 2
+                continue
+            if char == "`":
+                contexts[index] = _EXECUTABLE_CONTEXT
+                stack.append(("backtick", 0, True))
+                index += 1
+                continue
+            if char == "(":
+                stack[-1] = (context, depth + 1, False)
+            elif char == ")":
+                if depth == 1:
+                    stack.pop()
+                else:
+                    stack[-1] = (context, depth - 1, False)
             index += 1
             continue
 
@@ -407,9 +439,21 @@ def _shell_context_map(command: str) -> tuple[int, ...]:
             index += 1
             continue
         if char == "$" and following == "(":
-            contexts[index + 1] = _EXECUTABLE_CONTEXT
             stack[-1] = (context, depth, False)
-            stack.append(("command_substitution", 1, True))
+            if index + 2 < len(command) and command[index + 2] == "(":
+                contexts[index + 1] = _LITERAL_CONTEXT
+                contexts[index + 2] = _LITERAL_CONTEXT
+                stack.append(("arithmetic", 2, False))
+                index += 3
+            else:
+                contexts[index + 1] = _EXECUTABLE_CONTEXT
+                stack.append(("command_substitution", 1, True))
+                index += 2
+            continue
+        if char == "(" and following == "(":
+            contexts[index + 1] = _LITERAL_CONTEXT
+            stack[-1] = (context, depth, False)
+            stack.append(("arithmetic", 2, False))
             index += 2
             continue
         if context == "command_substitution":
@@ -600,14 +644,18 @@ def _eval_argument_tail(command: str, start: int) -> str:
     return command[start:index]
 
 
-def _decode_eval_body(raw_body: str) -> str:
+def _decode_shell_words(raw_body: str) -> list[str]:
     try:
         words = shlex.split(raw_body, comments=False, posix=True)
     except ValueError:
-        return raw_body
+        return [raw_body]
     if "$'" in raw_body or '$"' in raw_body:
         words = [word[1:] if word.startswith("$") else word for word in words]
-    return " ".join(words)
+    return words
+
+
+def _decode_eval_body(raw_body: str) -> str:
+    return " ".join(_decode_shell_words(raw_body))
 
 
 def _has_denied_eval_body(command: str, depth: int) -> bool:
@@ -615,6 +663,22 @@ def _has_denied_eval_body(command: str, depth: int) -> bool:
     while match := _EVAL_HEAD.search(command, search_position):
         if _shell_context_is_executable(command, match.start()) is True:
             body = _decode_eval_body(_eval_argument_tail(command, match.end()))
+            if body:
+                if depth >= 8:
+                    if re.search(rf"\b{_DENY_BINS}\b", body, re.IGNORECASE):
+                        return True
+                elif _should_deny_command(body, depth + 1):
+                    return True
+        search_position = match.start() + 1
+    return False
+
+
+def _has_denied_shell_c_body(command: str, depth: int) -> bool:
+    search_position = 0
+    while match := _SHELL_C_HEAD.search(command, search_position):
+        if _shell_context_is_executable(command, match.start()) is True:
+            words = _decode_shell_words(_eval_argument_tail(command, match.end()))
+            body = words[0] if words else ""
             if body:
                 if depth >= 8:
                     if re.search(rf"\b{_DENY_BINS}\b", body, re.IGNORECASE):
@@ -636,8 +700,8 @@ def _should_deny_command(command: str, eval_depth: int) -> bool:
         _OMG_TEAM, command
     ):
         return True
-    # sh/bash/zsh -c/-lc '...claude...' (quoted or unquoted) and similar wrappers
-    if _has_executable_match(_SH_C, command):
+    # sh/bash/zsh -c/-lc command strings are recursively inspected.
+    if _has_denied_shell_c_body(command, eval_depth):
         return True
     if _has_executable_match(_EVAL, command):
         return True

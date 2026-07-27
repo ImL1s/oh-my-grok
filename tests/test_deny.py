@@ -142,6 +142,8 @@ def test_deny_cli_execution_from_shell_substitutions(cmd):
         "echo \"$(eval 'echo ok; kimi --version')\"",
         "bash -c 'echo ok\ncodex exec x'",
         "cat <<EOF\n$(co" + "\\" + "\n" + "dex exec x)\nEOF",
+        '((1 << "EOF"))\ncodex exec x',
+        "echo $((1 + $(kimi --version)))",
     ],
 )
 def test_deny_cli_after_inert_shell_text(cmd):
@@ -166,6 +168,10 @@ def test_deny_cli_after_inert_shell_text(cmd):
         "eval 'git commit -m \"fix(kimi)\"'",
         "eval 'echo ok'; echo '(kimi)'",
         "echo \"eval 'kimi --version'\"",
+        "bash -c 'echo safe'\necho kimi",
+        "bash -c 'echo codex'",
+        "((kimi << 1))",
+        "echo $((kimi << 1))",
     ],
 )
 def test_allow_denied_cli_names_inside_inert_shell_text(cmd):
