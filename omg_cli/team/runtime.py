@@ -13,9 +13,10 @@ from typing import Any, Mapping, Sequence
 from omg_cli.contracts.path_keys import (
     DATA_FILE_MODE,
     ContractPathError,
-    atomic_write_bytes,
+    atomic_write_bytes_at,
     ensure_managed_dir,
-    exclusive_lock,
+    exclusive_lock_at,
+    open_managed_dir_fd,
     safe_path_key,
 )
 from omg_cli.contracts.state_schemas import require_safe_id
@@ -83,7 +84,6 @@ def write_team_ref(
     rid = require_safe_id(run_id, label="run_id")
     tid = require_safe_id(team_id, label="team_id")
     path = team_ref_path(root, name)
-    ensure_managed_dir(path.parent)
     payload = {
         "schema_version": 1,
         "writer": CLI_WRITER,
@@ -95,36 +95,65 @@ def write_team_ref(
     body = (
         json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
     ).encode("utf-8")
-    lock_path = path.parent / "ref.lock"
-    with exclusive_lock(lock_path):
-        if path.is_file():
+    try:
+        parent_fd = open_managed_dir_fd(path.parent)
+    except ContractPathError as exc:
+        raise TeamError(
+            f"secure team ref directory open refused for {name!r}: {exc}"
+        ) from exc
+    try:
+        # Lock, read, and publish share the pinned ref directory inode.
+        with exclusive_lock_at(parent_fd, "ref.lock"):
             try:
-                existing = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+                existing_fd = os.open(
+                    "ref.json",
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=parent_fd,
+                )
+            except FileNotFoundError:
+                existing_fd = None
+            except OSError as exc:
                 raise TeamError(
                     f"existing team ref unreadable for {name!r}: {exc}"
                 ) from exc
-            if not isinstance(existing, dict):
-                raise TeamError(f"existing team ref for {name!r} is not an object")
-            if existing.get("writer") == CLI_WRITER:
-                same = (
-                    existing.get("team_name") == name
-                    and existing.get("run_id") == rid
-                    and existing.get("team_id") == tid
-                )
-                if not same:
+            if existing_fd is not None:
+                try:
+                    with os.fdopen(
+                        existing_fd, "r", encoding="utf-8", closefd=True
+                    ) as handle:
+                        existing = json.load(handle)
+                except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
                     raise TeamError(
-                        f"team ref identity conflict for {name!r}: "
-                        f"existing run_id={existing.get('run_id')!r} "
-                        f"team_id={existing.get('team_id')!r}; "
-                        f"refusing overwrite with run_id={rid!r} team_id={tid!r}"
+                        f"existing team ref unreadable for {name!r}: {exc}"
+                    ) from exc
+                if not isinstance(existing, dict):
+                    raise TeamError(
+                        f"existing team ref for {name!r} is not an object"
                     )
-        try:
-            atomic_write_bytes(path, body, mode=DATA_FILE_MODE, replace=True)
-        except ContractPathError as exc:
-            raise TeamError(
-                f"secure team ref publication refused for {name!r}: {exc}"
-            ) from exc
+                if existing.get("writer") == CLI_WRITER:
+                    same = (
+                        existing.get("team_name") == name
+                        and existing.get("run_id") == rid
+                        and existing.get("team_id") == tid
+                    )
+                    if not same:
+                        raise TeamError(
+                            f"team ref identity conflict for {name!r}: "
+                            f"existing run_id={existing.get('run_id')!r} "
+                            f"team_id={existing.get('team_id')!r}; "
+                            f"refusing overwrite with run_id={rid!r} "
+                            f"team_id={tid!r}"
+                        )
+            try:
+                atomic_write_bytes_at(
+                    parent_fd, "ref.json", body, mode=DATA_FILE_MODE, replace=True
+                )
+            except ContractPathError as exc:
+                raise TeamError(
+                    f"secure team ref publication refused for {name!r}: {exc}"
+                ) from exc
+    finally:
+        os.close(parent_fd)
     return path
 
 

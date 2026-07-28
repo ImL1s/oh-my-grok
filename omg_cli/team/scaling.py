@@ -1051,20 +1051,49 @@ def resume_team(
         tasks_out.append(rec)
 
     resumed_at = _utc_now()
-    tasks_out_final = list(tasks_out)
-    task_count_final = len(_active_tasks(tasks_out_final))
+    # Map status reconciliations by task_id — applied under the meta lock so a
+    # concurrent scale/add cannot be wiped by a pre-lock task snapshot (Codex P1).
+    status_by_tid: dict[str, dict[str, Any]] = {}
+    for rec in tasks_out:
+        tid_key = str(rec.get("task_id") or "")
+        if tid_key:
+            status_by_tid[tid_key] = rec
+    resume_changes = changed
+    base_generation = int(meta.get("meta_generation") or 0)
 
     def _apply_resume(current: dict[str, Any]) -> dict[str, Any]:
         updated = dict(current)
-        updated["tasks"] = list(tasks_out_final)
-        updated["task_count"] = task_count_final
+        merged: list[dict[str, Any]] = []
+        for raw_task in list(current.get("tasks") or []):
+            if not isinstance(raw_task, Mapping):
+                continue
+            rec = dict(raw_task)
+            tid_key = str(rec.get("task_id") or "")
+            src = status_by_tid.get(tid_key)
+            if src is not None:
+                for key in ("status", "resumed_at", "status_before_resume"):
+                    if key in src:
+                        rec[key] = src[key]
+            merged.append(rec)
+        updated["tasks"] = merged
+        updated["task_count"] = len(_active_tasks(merged))
         updated["resumed_at"] = resumed_at
-        updated["resume_changes"] = changed
+        updated["resume_changes"] = resume_changes
         return updated
 
     # Always rewrite CLI stamp (idempotent; even when changed==0 so resume
-    # is recorded for operators). Pure-ish: only status reconciliation fields.
-    updated = mutate_team_meta(root_path, rid, _apply_resume)
+    # is recorded for operators). CAS on meta_generation; one retry on stale.
+    try:
+        updated = mutate_team_meta(
+            root_path,
+            rid,
+            _apply_resume,
+            expected_generation=base_generation,
+        )
+    except TeamError as exc:
+        if "stale team meta generation" not in str(exc):
+            raise
+        updated = mutate_team_meta(root_path, rid, _apply_resume)
 
     return {
         "writer": CLI_WRITER,
