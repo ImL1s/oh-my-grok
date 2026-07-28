@@ -1,0 +1,36 @@
+# Project root selection (#22)
+
+Project-scoped `omg` commands resolve **one** control-plane root for `.omg/`
+state. Nested working directories no longer invent a second tree by default.
+
+## Precedence (highest first)
+
+| Order | Source | Notes |
+|------:|--------|--------|
+| 1 | `--project-root PATH` | Must exist and be a directory. Exit **2** if invalid. |
+| 2 | `OMG_PROJECT_ROOT` | Same validation as explicit flag. |
+| 3 | Nearest ancestor with a real `.omg/` directory | Symlinked `.omg` is ignored for discovery. |
+| 4 | `git rev-parse --show-toplevel` | Linked worktrees use the worktree root. |
+| 5 | Current working directory | Only when none of the above apply. |
+
+## Special cases
+
+| Case | Behavior |
+|------|----------|
+| `omg setup --here` | Force cwd; skip discovery (intentional nested init). |
+| Nested `.omg` under a parent `.omg` | Nearest wins; stderr **warning** lists shadowed ancestors (no auto-merge/delete). |
+| Install / `install-hook` / global rules | Install-scoped; not driven by project-root discovery for their install target. |
+| Host launch (`omg --madmax`, interactive) | Uses the same discovery from cwd (no argv flag until parse). |
+
+## Diagnostics
+
+- `omg doctor` prints `project_root` and `source=…`.
+- Resolution API: `omg_cli.project_root.resolve_project_root`.
+
+## Migration
+
+If you already created a nested `.omg` by accident:
+
+1. Prefer the intended root: `omg --project-root /path/to/repo state`
+2. Or move/merge state manually; OMG does **not** delete nested trees automatically.
+3. Remove the nested `.omg` only after you have copied any needed runs/notes.

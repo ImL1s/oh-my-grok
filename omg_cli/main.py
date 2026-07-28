@@ -10,7 +10,10 @@ from pathlib import Path
 
 
 def _project_root() -> Path:
-    return Path.cwd().resolve()
+    """Canonical project root (#22). Prefer process resolution after argv parse."""
+    from omg_cli.project_root import project_root
+
+    return project_root()
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -32,7 +35,10 @@ def cmd_install_hook(args: argparse.Namespace) -> int:
 def cmd_doctor(args: argparse.Namespace) -> int:
     from omg_cli.doctor import run_doctor
 
-    return run_doctor(strict=bool(getattr(args, "strict", False)))
+    return run_doctor(
+        strict=bool(getattr(args, "strict", False)),
+        project_root=_project_root(),
+    )
 
 
 def cmd_note(args: argparse.Namespace) -> int:
@@ -40,6 +46,7 @@ def cmd_note(args: argparse.Namespace) -> int:
 
     return run_note(
         " ".join(args.text),
+        root=_project_root(),
         priority=bool(getattr(args, "priority", False)),
         show=bool(getattr(args, "show", False)),
         prune=bool(getattr(args, "prune", False)),
@@ -2160,6 +2167,16 @@ def build_parser() -> argparse.ArgumentParser:
             "mutually exclusive with --safe"
         ),
     )
+    common.add_argument(
+        "--project-root",
+        dest="project_root",
+        default=argparse.SUPPRESS,
+        metavar="PATH",
+        help=(
+            "explicit project root for .omg state (overrides OMG_PROJECT_ROOT "
+            "and discovery; see docs/project-root.md)"
+        ),
+    )
 
     from omg_cli import __version__
 
@@ -2196,6 +2213,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not install the global PreToolUse soft-gate ($GROK_HOME/hooks/); "
         "doctor will still report it missing",
+    )
+    p_setup.add_argument(
+        "--here",
+        dest="setup_here",
+        action="store_true",
+        help=(
+            "initialize .omg in the exact current directory (skip git/.omg "
+            "discovery; #22)"
+        ),
     )
     p_setup.set_defaults(func=cmd_setup)
 
@@ -3990,12 +4016,36 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return int(exc.exit_code)
 
+    from omg_cli.project_root import (
+        ProjectRootError,
+        clear_resolved_project_root,
+        resolve_project_root,
+        set_resolved_project_root,
+    )
+
+    def _host_launch_root() -> Path | int:
+        """Resolve cwd-based root for host launch; map ProjectRootError → exit 2."""
+        clear_resolved_project_root()
+        try:
+            resolution = resolve_project_root()
+        except ProjectRootError as exc:
+            print(f"omg: {exc}", file=sys.stderr)
+            return int(getattr(exc, "exit_code", 2) or 2)
+        set_resolved_project_root(resolution)
+        return resolution.root
+
     if has_madmax_flag(raw):
         # Delimiter-aware; GRAM-05 only cares about a recognized *first* token.
-        return int(run_madmax_host(_project_root(), raw))
+        host_root = _host_launch_root()
+        if isinstance(host_root, int):
+            return host_root
+        return int(run_madmax_host(host_root, raw))
 
     if should_host_launch(raw, KNOWN_SUBCOMMANDS):
-        return int(run_interactive(_project_root(), raw))
+        host_root = _host_launch_root()
+        if isinstance(host_root, int):
+            return host_root
+        return int(run_interactive(host_root, raw))
 
     from omg_cli.team.cli import TeamCliError, normalize_team_argv
 
@@ -4015,6 +4065,33 @@ def main(argv: list[str] | None = None) -> int:
     if func is None:
         parser.print_help()
         return 1
+
+    # Install / global surfaces do not consume project root — skip discovery so a
+    # stale OMG_PROJECT_ROOT cannot block hook install/update/uninstall (#22 P2).
+    _INSTALL_SCOPED = frozenset(
+        {
+            "install-hook",
+            "update",
+            "uninstall",
+            "mcp-install",
+            "version",  # not a command today; harmless
+        }
+    )
+    command = str(getattr(args, "command", "") or "")
+    clear_resolved_project_root()
+    if command not in _INSTALL_SCOPED:
+        try:
+            resolution = resolve_project_root(
+                explicit=getattr(args, "project_root", None),
+                here=bool(getattr(args, "setup_here", False)),
+            )
+        except ProjectRootError as exc:
+            print(f"omg: {exc}", file=sys.stderr)
+            return int(getattr(exc, "exit_code", 2) or 2)
+        set_resolved_project_root(resolution)
+        if resolution.note and resolution.shadowed_omg_ancestors:
+            print(f"omg: warning: {resolution.note}", file=sys.stderr)
+
     return int(func(args))
 
 
