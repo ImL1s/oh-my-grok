@@ -308,6 +308,7 @@ def wait_for_startup_acks(
         time.sleep(max(0.05, float(poll_s)))
 
     ordered = [w for w in expected if w in acked]
+    missing = [w for w in expected if w not in acked]
     count = len(ordered)
     if not expected:
         status = "running"
@@ -320,10 +321,162 @@ def wait_for_startup_acks(
     return {
         "startup_acks": count,
         "startup_ack_workers": ordered,
+        "startup_missing_workers": missing,
         "startup_status": status,
         "startup_expected": len(expected),
         "ready_timeout_ms": ms,
     }
+
+
+def startup_readiness_payload(
+    root: Path | str,
+    *,
+    run_id: str,
+    team_id: str,
+    expected_workers: Sequence[str],
+    dry_run: bool = False,
+    no_wait: bool = False,
+    timeout_ms: int | None = None,
+    env: Mapping[str, str] | None = None,
+    poll_s: float = _ACK_POLL_S,
+) -> dict[str, Any]:
+    """Shared readiness contract for ``team launch`` and ``team start`` (#20).
+
+    Status vocabulary:
+    - ``running`` — all expected workers ACKed
+    - ``degraded`` / ``failed_start`` — partial / zero ACKs (non-zero CLI exit)
+    - ``unverified_start`` — explicit ``--no-wait`` (no readiness proof)
+    - dry-run: ``startup_status=None`` with a skip note (not a live success claim)
+    """
+    expected = [str(w).strip() for w in expected_workers if str(w).strip()]
+    if dry_run:
+        return {
+            "startup_acks": None,
+            "startup_ack_workers": None,
+            "startup_missing_workers": None,
+            "startup_status": None,
+            "startup_expected": len(expected),
+            "ready_timeout_ms": None,
+            "startup_note": (
+                f"dry_run skipped ACK wait ({READY_TIMEOUT_ENV} unused)"
+            ),
+        }
+    if no_wait:
+        return {
+            "startup_acks": None,
+            "startup_ack_workers": None,
+            "startup_missing_workers": list(expected),
+            "startup_status": "unverified_start",
+            "startup_expected": len(expected),
+            "ready_timeout_ms": None,
+            "startup_note": (
+                "no-wait: readiness not collected; not a proven Team started"
+            ),
+        }
+    startup = wait_for_startup_acks(
+        root,
+        run_id=run_id,
+        team_id=team_id,
+        expected_workers=expected,
+        timeout_ms=timeout_ms,
+        env=env,
+        poll_s=poll_s,
+    )
+    status = str(startup["startup_status"])
+    if status == "running":
+        startup["startup_note"] = (
+            f"all {startup['startup_acks']} workers ACK'd within "
+            f"{startup['ready_timeout_ms']}ms"
+        )
+    elif status == "degraded":
+        startup["startup_note"] = (
+            f"partial ACK {startup['startup_acks']}/"
+            f"{startup['startup_expected']} within "
+            f"{startup['ready_timeout_ms']}ms "
+            f"(knob {READY_TIMEOUT_ENV}); state left for diagnosis"
+        )
+    else:
+        startup["startup_note"] = (
+            f"zero ACKs within {startup['ready_timeout_ms']}ms "
+            f"(knob {READY_TIMEOUT_ENV}); state left for diagnosis"
+        )
+    return startup
+
+
+def persist_startup_annotations(
+    root: Path | str,
+    run_id: str,
+    annotations: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Atomically merge startup / launch annotations into team.json (#21)."""
+    root_path = Path(root).resolve()
+    extra_note = str(annotations.get("startup_note") or "")
+    payload = dict(annotations)
+
+    def _apply(current: dict[str, Any]) -> dict[str, Any]:
+        current.update(payload)
+        note = str(current.get("note") or "").rstrip()
+        if extra_note and extra_note not in note:
+            current["note"] = (note + "; " + extra_note).strip("; ").strip()
+        return current
+
+    return mutate_team_meta(root_path, run_id, _apply)
+
+
+def apply_start_readiness(
+    root: Path | str,
+    meta: Mapping[str, Any],
+    *,
+    dry_run: bool = False,
+    no_wait: bool = False,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Attach shared readiness fields after a successful ``start_team`` (#20)."""
+    root_path = Path(root).resolve()
+    rid = str(meta.get("run_id") or "")
+    if not rid:
+        raise TeamError("start readiness requires meta.run_id")
+    team_id = str(meta.get("team_id") or "team")
+    expected: list[str] = []
+    for raw in meta.get("tasks") or []:
+        if isinstance(raw, Mapping) and raw.get("task_id"):
+            expected.append(str(raw["task_id"]))
+    startup = startup_readiness_payload(
+        root_path,
+        run_id=rid,
+        team_id=team_id,
+        expected_workers=expected,
+        dry_run=dry_run or bool(meta.get("dry_run")),
+        no_wait=no_wait,
+        env=env,
+    )
+    out = dict(meta)
+    out.update(startup)
+    persisted = persist_startup_annotations(
+        root_path,
+        rid,
+        {
+            "team_id": team_id,
+            "launch_mode": out.get("launch_mode") or "explicit",
+            **startup,
+        },
+    )
+    # Prefer locked meta as source of truth for returned fields.
+    for key in (
+        "startup_acks",
+        "startup_ack_workers",
+        "startup_missing_workers",
+        "startup_status",
+        "startup_expected",
+        "ready_timeout_ms",
+        "startup_note",
+        "team_id",
+        "launch_mode",
+        "note",
+    ):
+        if key in persisted:
+            out[key] = persisted[key]
+    return out
 
 
 def _seed_api_board(
@@ -485,66 +638,30 @@ def launch_team(
     meta["topology"] = "split"
     meta["schema_version"] = meta.get("schema_version", SCHEMA_VERSION)
 
-    if dry_run:
-        startup = {
-            "startup_acks": None,
-            "startup_ack_workers": None,
-            "startup_status": None,
-            "startup_expected": len(tasks),
-            "ready_timeout_ms": None,
-            "startup_note": (
-                f"dry_run skipped ACK wait ({READY_TIMEOUT_ENV} unused)"
-            ),
-        }
-    else:
-        expected_workers = [str(t["task_id"]) for t in tasks]
-        startup = wait_for_startup_acks(
-            root_path,
-            run_id=rid,
-            team_id=team_id,
-            expected_workers=expected_workers,
-            env=api_env,
-        )
-        status = str(startup["startup_status"])
-        if status == "running":
-            startup["startup_note"] = (
-                f"all {startup['startup_acks']} workers ACK'd within "
-                f"{startup['ready_timeout_ms']}ms"
-            )
-        elif status == "degraded":
-            startup["startup_note"] = (
-                f"partial ACK {startup['startup_acks']}/"
-                f"{startup['startup_expected']} within "
-                f"{startup['ready_timeout_ms']}ms "
-                f"(knob {READY_TIMEOUT_ENV}); state left for diagnosis"
-            )
-        else:
-            startup["startup_note"] = (
-                f"zero ACKs within {startup['ready_timeout_ms']}ms "
-                f"(knob {READY_TIMEOUT_ENV}); state left for diagnosis"
-            )
-
+    expected_workers = [str(t["task_id"]) for t in tasks]
+    startup = startup_readiness_payload(
+        root_path,
+        run_id=rid,
+        team_id=team_id,
+        expected_workers=expected_workers,
+        dry_run=dry_run,
+        env=api_env,
+    )
     meta.update(startup)
 
     # Persist annotations onto team.json via locked atomic mutate (#21).
-    annotations = {
-        "team_name": name,
-        "team_id": team_id,
-        "launch_mode": "shorthand",
-        "topology": "split",
-        **startup,
-    }
-    extra_note = str(startup.get("startup_note") or "")
-
-    def _apply_shorthand(current: dict[str, Any]) -> dict[str, Any]:
-        current.update(annotations)
-        note = str(current.get("note") or "").rstrip()
-        if extra_note and extra_note not in note:
-            current["note"] = (note + "; " + extra_note).strip("; ").strip()
-        return current
-
     try:
-        meta = mutate_team_meta(root_path, rid, _apply_shorthand)
+        meta = persist_startup_annotations(
+            root_path,
+            rid,
+            {
+                "team_name": name,
+                "team_id": team_id,
+                "launch_mode": "shorthand",
+                "topology": "split",
+                **startup,
+            },
+        )
     except TeamError:
         # start_team always writes team.json; surface as hard failure.
         raise

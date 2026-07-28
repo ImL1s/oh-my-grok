@@ -794,6 +794,8 @@ def cmd_team(args: argparse.Namespace) -> int:
                 print("Team started", file=sys.stderr)
             return 0
         if action == "start":
+            from omg_cli.team.runtime import apply_start_readiness
+
             goal = getattr(args, "goal", None) or ""
             tasks_json = getattr(args, "tasks_json", None)
             if not tasks_json:
@@ -803,18 +805,46 @@ def cmd_team(args: argparse.Namespace) -> int:
             routing = parse_routing_json(routing_raw) if routing_raw else None
             # parse_routing_json returns None for empty; keep None so zero-config
             # stays D1. Non-empty --routing enables multi-CLI floors.
+            dry_run = bool(getattr(args, "dry_run", False))
+            no_wait = bool(getattr(args, "no_wait", False))
             meta = start_team(
                 goal,
                 tasks_json,
                 root=root,
                 run_id=getattr(args, "run_id", None),
-                dry_run=bool(getattr(args, "dry_run", False)),
+                dry_run=dry_run,
                 yolo=bool(getattr(args, "yolo", False)),
                 safe=bool(getattr(args, "safe", False)),
                 force=bool(getattr(args, "force", False)),
                 routing=routing,
             )
+            # #20: same readiness contract as team launch (shared wait service).
+            meta = apply_start_readiness(
+                root,
+                meta,
+                dry_run=dry_run,
+                no_wait=no_wait,
+            )
             print(json.dumps(meta, indent=2, ensure_ascii=False))
+            startup = meta.get("startup_status")
+            if startup in ("failed_start", "degraded"):
+                print(
+                    f"omg team start: startup {startup} "
+                    f"(acks={meta.get('startup_acks')}/"
+                    f"{meta.get('startup_expected')}; "
+                    f"missing={meta.get('startup_missing_workers')})",
+                    file=sys.stderr,
+                )
+                return 1
+            if startup == "unverified_start":
+                print(
+                    "omg team start: unverified_start (--no-wait); "
+                    "readiness not proven",
+                    file=sys.stderr,
+                )
+                return 0
+            if startup == "running" or dry_run:
+                print("Team started", file=sys.stderr)
             return 0
         if action == "run":
             # Staged FSM driver (plan→prd→exec→verify→fix). Decomposition is
@@ -3129,6 +3159,15 @@ def build_parser() -> argparse.ArgumentParser:
         dest="force",
         action="store_true",
         help="supersede active run when creating a new run",
+    )
+    p_t_start.add_argument(
+        "--no-wait",
+        dest="no_wait",
+        action="store_true",
+        help=(
+            "skip readiness ACK wait; persist startup_status=unverified_start "
+            "and do not claim a proven Team started (#20)"
+        ),
     )
     p_t_start.set_defaults(func=cmd_team, team_action="start")
 
