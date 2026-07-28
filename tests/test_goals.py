@@ -333,7 +333,6 @@ def test_corrupt_tail_blocks_mutation_dry_run_and_repair(tmp_path: Path) -> None
     assert dry["action"] == "dry_run"
     # dry-run does not mutate
     assert path.read_bytes() != original  # still truncated
-    after_dry = path.read_bytes()
 
     repaired = repair_goal(tmp_path, "g5", dry_run=False, yes=True)
     assert repaired["ok"] is True

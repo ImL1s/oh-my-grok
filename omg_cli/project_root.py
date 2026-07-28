@@ -19,7 +19,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 
 ENV_PROJECT_ROOT = "OMG_PROJECT_ROOT"

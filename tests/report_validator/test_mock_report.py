@@ -1,6 +1,5 @@
 import os
 import tempfile
-import pytest
 from tests.report_validator.validate import validate_report
 
 def generate_valid_mock_markdown():

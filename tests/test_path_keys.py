@@ -7,8 +7,6 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.platform
-
 from omg_cli.contracts.path_keys import (
     ContractPathError,
     DATA_FILE_MODE,
@@ -24,6 +22,8 @@ from omg_cli.contracts.path_keys import (
 )
 from omg_cli.contracts.writer_chain import canonical_json_bytes
 from omg_cli import state as state_mod
+
+pytestmark = pytest.mark.platform
 
 
 def test_safe_path_keys_are_namespace_bound_and_reject_hostile_text() -> None:
@@ -247,7 +247,6 @@ def test_lock_open_never_falls_back_to_absolute_path(
 def test_journal_lock_and_append_share_pinned_parent(tmp_path: Path) -> None:
     """Journal lock must not re-resolve a swapped directory (Codex P1)."""
 
-    import os
     import shutil
 
     journal = tmp_path / ".omg" / "events" / "events.jsonl"
