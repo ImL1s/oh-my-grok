@@ -1227,6 +1227,27 @@ def run_doctor(
     soft_warns = 0
     print("oh-my-grok doctor")
     print("-" * 48)
+    # #22: surface selected project root (explicit / env / .omg / git / cwd).
+    root_for_display = (
+        Path(project_root).resolve()
+        if project_root is not None
+        else Path.cwd().resolve()
+    )
+    try:
+        from omg_cli.project_root import get_resolved_project_root
+
+        res = get_resolved_project_root()
+        if res is not None:
+            print(
+                f"project_root: {res.root} (source={res.source})"
+            )
+            if res.note:
+                print(f"project_root_note: {res.note}")
+        else:
+            print(f"project_root: {root_for_display}")
+    except Exception:
+        print(f"project_root: {root_for_display}")
+    print("-" * 48)
     for name, ok, detail in results:
         tag = "OK  " if ok else "FAIL"
         print(f"[{tag}] {name}: {detail}")
@@ -1247,7 +1268,7 @@ def run_doctor(
     # compat.claude isolation scan (always runs)
     print("-" * 48)
     print("compat.claude isolation")
-    root = Path(project_root) if project_root is not None else Path.cwd().resolve()
+    root = root_for_display
     report = scan_compat(project_root=root)
     for line in format_compat_lines(report, strict=strict):
         print(line)

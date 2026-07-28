@@ -10,7 +10,10 @@ from pathlib import Path
 
 
 def _project_root() -> Path:
-    return Path.cwd().resolve()
+    """Canonical project root (#22). Prefer process resolution after argv parse."""
+    from omg_cli.project_root import project_root
+
+    return project_root()
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -32,7 +35,10 @@ def cmd_install_hook(args: argparse.Namespace) -> int:
 def cmd_doctor(args: argparse.Namespace) -> int:
     from omg_cli.doctor import run_doctor
 
-    return run_doctor(strict=bool(getattr(args, "strict", False)))
+    return run_doctor(
+        strict=bool(getattr(args, "strict", False)),
+        project_root=_project_root(),
+    )
 
 
 def cmd_note(args: argparse.Namespace) -> int:
@@ -40,6 +46,7 @@ def cmd_note(args: argparse.Namespace) -> int:
 
     return run_note(
         " ".join(args.text),
+        root=_project_root(),
         priority=bool(getattr(args, "priority", False)),
         show=bool(getattr(args, "show", False)),
         prune=bool(getattr(args, "prune", False)),
@@ -2160,6 +2167,16 @@ def build_parser() -> argparse.ArgumentParser:
             "mutually exclusive with --safe"
         ),
     )
+    common.add_argument(
+        "--project-root",
+        dest="project_root",
+        default=argparse.SUPPRESS,
+        metavar="PATH",
+        help=(
+            "explicit project root for .omg state (overrides OMG_PROJECT_ROOT "
+            "and discovery; see docs/project-root.md)"
+        ),
+    )
 
     from omg_cli import __version__
 
@@ -2196,6 +2213,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not install the global PreToolUse soft-gate ($GROK_HOME/hooks/); "
         "doctor will still report it missing",
+    )
+    p_setup.add_argument(
+        "--here",
+        dest="setup_here",
+        action="store_true",
+        help=(
+            "initialize .omg in the exact current directory (skip git/.omg "
+            "discovery; #22)"
+        ),
     )
     p_setup.set_defaults(func=cmd_setup)
 
@@ -4015,6 +4041,28 @@ def main(argv: list[str] | None = None) -> int:
     if func is None:
         parser.print_help()
         return 1
+
+    # #22: resolve project root once per invocation (project-scoped commands).
+    from omg_cli.project_root import (
+        ProjectRootError,
+        clear_resolved_project_root,
+        resolve_project_root,
+        set_resolved_project_root,
+    )
+
+    clear_resolved_project_root()
+    try:
+        resolution = resolve_project_root(
+            explicit=getattr(args, "project_root", None),
+            here=bool(getattr(args, "setup_here", False)),
+        )
+    except ProjectRootError as exc:
+        print(f"omg: {exc}", file=sys.stderr)
+        return int(getattr(exc, "exit_code", 2) or 2)
+    set_resolved_project_root(resolution)
+    if resolution.note and resolution.shadowed_omg_ancestors:
+        print(f"omg: warning: {resolution.note}", file=sys.stderr)
+
     return int(func(args))
 
 
