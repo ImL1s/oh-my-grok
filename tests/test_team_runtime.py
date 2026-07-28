@@ -166,3 +166,87 @@ def test_ready_timeout_ms_rejects_junk(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(TeamGateError):
         ready_timeout_ms({"OMG_TEAM_READY_TIMEOUT_MS": "nope"})
 
+
+
+def test_startup_readiness_payload_no_wait_and_notes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.runtime import startup_readiness_payload
+
+    payload = startup_readiness_payload(
+        tmp_path,
+        run_id="r1",
+        team_id="team",
+        expected_workers=["t1", "t2"],
+        no_wait=True,
+    )
+    assert payload["startup_status"] == "unverified_start"
+    assert payload["startup_missing_workers"] == ["t1", "t2"]
+    assert "no-wait" in str(payload["startup_note"])
+
+    dry = startup_readiness_payload(
+        tmp_path,
+        run_id="r1",
+        team_id="team",
+        expected_workers=["t1"],
+        dry_run=True,
+    )
+    assert dry["startup_status"] is None
+    assert "dry_run skipped" in str(dry["startup_note"])
+
+
+def test_apply_start_readiness_failed_start_persists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Explicit start path: zero ACKs → failed_start on team.json (#20)."""
+    from omg_cli.team.plane import EXPERIMENTAL_ENV, start_team
+    from omg_cli.team.runtime import apply_start_readiness
+
+    monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
+    for key in WORKER_ENV_MARKERS:
+        monkeypatch.delenv(key, raising=False)
+    _init_repo(tmp_path)
+    monkeypatch.setenv("OMG_TEAM_READY_TIMEOUT_MS", "50")
+
+    tasks = [
+        {"task_id": "t1", "owned_files": ["README.md"]},
+        {"task_id": "t2", "owned_files": ["docs/x.md"]},
+    ]
+    meta = start_team(
+        "readiness",
+        tasks,
+        root=tmp_path,
+        dry_run=True,
+        force=True,
+    )
+    # dry_run still applies readiness skip notes
+    out = apply_start_readiness(tmp_path, meta, dry_run=True)
+    assert out.get("startup_status") is None
+    assert "dry_run skipped" in str(out.get("startup_note") or "")
+
+    # Live-shaped meta + short timeout + no ACKs → failed_start (no tmux).
+    live_meta = dict(meta)
+    live_meta["dry_run"] = False
+    failed = apply_start_readiness(
+        tmp_path,
+        live_meta,
+        dry_run=False,
+        no_wait=False,
+        env={"OMG_TEAM_READY_TIMEOUT_MS": "50"},
+    )
+    assert failed["startup_status"] == "failed_start"
+    assert failed["startup_acks"] == 0
+    assert set(failed.get("startup_missing_workers") or []) == {"t1", "t2"}
+    team_json = json.loads(
+        (
+            tmp_path
+            / ".omg"
+            / "state"
+            / "runs"
+            / meta["run_id"]
+            / "team"
+            / "team.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert team_json["startup_status"] == "failed_start"
+    assert team_json.get("launch_mode") == "explicit"
