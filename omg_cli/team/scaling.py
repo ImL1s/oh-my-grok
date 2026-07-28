@@ -109,8 +109,9 @@ def acquire_scale_lock(root: Path | str, run_id: str) -> Iterator[Path]:
     """Exclusive lifecycle lock under the run team dir (scale/stop/relaunch).
 
     Uses POSIX ``fcntl.flock`` so the kernel releases the lock if the holder
-    process dies (stale files are not exclusive forever). PID is best-effort
-    diagnostics only and never used for ownership decisions.
+    process dies (stale files are not exclusive forever). The lock file is
+    opened with ``O_NOFOLLOW`` under a managed parent descriptor so a symlink
+    cannot redirect truncation outside ``.omg``. PID text is diagnostic only.
     """
     try:
         import fcntl
@@ -119,11 +120,34 @@ def acquire_scale_lock(root: Path | str, run_id: str) -> Iterator[Path]:
             "scale/stop lifecycle lock requires POSIX fcntl.flock"
         ) from exc
 
+    from omg_cli.contracts.path_keys import (
+        ContractPathError,
+        open_managed_dir_fd,
+    )
+
     path = scale_lock_path(root, run_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o644)
     try:
+        parent_fd = open_managed_dir_fd(path.parent)
+    except ContractPathError as exc:
+        raise TeamError(f"scale lock parent open refused: {exc}") from exc
+    fd = -1
+    try:
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
         try:
+            fd = os.open(SCALE_LOCK_NAME, flags, 0o644, dir_fd=parent_fd)
+        except OSError as exc:
+            raise TeamError(
+                f"scale lock open refused for run {run_id} "
+                f"(symlink or non-regular?): {exc}"
+            ) from exc
+        try:
+            import stat as stat_mod
+
+            st = os.fstat(fd)
+            if not stat_mod.S_ISREG(st.st_mode):
+                raise TeamError(
+                    f"scale lock must be a regular file for run {run_id}"
+                )
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             holder = ""
@@ -152,7 +176,9 @@ def acquire_scale_lock(root: Path | str, run_id: str) -> Iterator[Path]:
             except OSError:
                 pass
     finally:
-        os.close(fd)
+        if fd >= 0:
+            os.close(fd)
+        os.close(parent_fd)
 
 
 def _assert_team_gates(*, env: Mapping[str, str] | None = None) -> None:
