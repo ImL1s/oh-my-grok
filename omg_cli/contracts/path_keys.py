@@ -527,6 +527,11 @@ def exclusive_lock_at(parent_fd: int, name: str) -> Iterator[None]:
         st = os.fstat(descriptor)
         if not stat.S_ISREG(st.st_mode):
             raise ContractPathError(f"lock file must be a regular file: {name}")
+        if st.st_nlink != 1:
+            raise ContractPathError(
+                f"lock file must not be hard-linked: {name} "
+                f"(nlink={st.st_nlink})"
+            )
         os.fchmod(descriptor, DATA_FILE_MODE)
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         yield
