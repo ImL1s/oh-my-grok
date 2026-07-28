@@ -1200,6 +1200,7 @@ def _rollback_partial_team_start(
     team_dir_path: Path | None,
     remove_ownership: bool = True,
     ownership_backup: bytes | None = None,
+    file_backups: Mapping[Path, bytes | None] | None = None,
 ) -> list[str]:
     """Undo pre-commit start debris (issue #17 all-or-nothing).
 
@@ -1208,8 +1209,9 @@ def _rollback_partial_team_start(
     - ``team_dir_path`` only when this start created the directory
     - ownership: restore ``ownership_backup`` when we overwrote a prior file;
       otherwise unlink only if ``remove_ownership`` (new write / new run)
+    - ``file_backups``: path → prior bytes (or None if this start created the file)
 
-    Reverse order: worktrees → team dir → ownership → active pointer.
+    Reverse order: worktrees → team dir (or file restore) → ownership → active.
     Never raises; returns actionable error strings for diagnostics.
     """
     from omg_cli.workers import ownership_manifest_path
@@ -1232,6 +1234,28 @@ def _rollback_partial_team_start(
                 shutil.rmtree(tdir, ignore_errors=True)
             except OSError as exc:
                 errors.append(f"team dir remove {tdir}: {exc}")
+    elif file_backups:
+        # Reused team dir: restore or remove files this start overwrote/created.
+        for fpath, prior in file_backups.items():
+            path = Path(fpath)
+            try:
+                if prior is None:
+                    if path.is_file() or path.is_symlink():
+                        path.unlink(missing_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    tmp = path.with_name(f".{path.name}.{os.getpid()}.rb.tmp")
+                    try:
+                        tmp.write_bytes(prior)
+                        os.replace(tmp, path)
+                    finally:
+                        if tmp.exists():
+                            try:
+                                tmp.unlink()
+                            except OSError:
+                                pass
+            except OSError as exc:
+                errors.append(f"file restore {path}: {exc}")
 
     try:
         mpath = ownership_manifest_path(root, rid)
@@ -1709,6 +1733,7 @@ def start_team(
     created_team_dir = False
     ownership_backup: bytes | None = None
     remove_ownership = True
+    file_backups: dict[Path, bytes | None] = {}
     tdir: Path | None = None
     # Resolve / create run
     if run_id:
@@ -1762,6 +1787,7 @@ def start_team(
             team_dir_path=tdir if created_team_dir else None,
             remove_ownership=remove_ownership,
             ownership_backup=ownership_backup,
+            file_backups=None if created_team_dir else file_backups,
         )
         details = [str(exc), *list(extra), *rb]
         return TeamError(
@@ -1804,17 +1830,27 @@ def start_team(
     _tx_failed_prefix = "team start transaction failed"
     try:
         manifest = build_ownership_manifest(root_path, rid, tasks)
-        # Prepare per-task so partial prepare still tracks created worktrees.
+        # Prepare per-task; register expected path *before* prepare so a
+        # create-then-raise inside prepare_task is still rolled back.
         for mtask in list(manifest.get("tasks") or []):
             tid_prep = str(mtask.get("task_id") or "")
             if not tid_prep:
                 continue
-            wt = prepare_task(root_path, rid, tid_prep)
+            wt_expected = worktree_dir(root_path, rid, tid_prep)
             try:
-                wt_resolved = wt.resolve()
+                wt_resolved = wt_expected.resolve()
             except OSError:
-                wt_resolved = wt
+                wt_resolved = wt_expected
+            tracked_new = False
             if wt_resolved not in pre_existing_worktrees:
+                created_worktrees.append(wt_expected)
+                tracked_new = True
+            try:
+                wt = prepare_task(root_path, rid, tid_prep)
+            except Exception:
+                raise
+            # Prefer the concrete path prepare returned (same location).
+            if tracked_new and wt not in created_worktrees:
                 created_worktrees.append(wt)
 
         tdir = team_dir(root_path, rid)
@@ -1907,6 +1943,15 @@ def start_team(
 
             # Persist per-task argv under team/ (mirrors fanout workers/*.argv.json)
             argv_path = tdir / f"{tid}.argv.json"
+            # When reusing a team dir, backup prior argv so rollback can restore.
+            if not created_team_dir and argv_path not in file_backups:
+                if argv_path.is_file() and not argv_path.is_symlink():
+                    try:
+                        file_backups[argv_path] = argv_path.read_bytes()
+                    except OSError:
+                        file_backups[argv_path] = None
+                else:
+                    file_backups[argv_path] = None
             argv_path.write_text(
                 json.dumps(argv, indent=2, ensure_ascii=False) + "\n",
                 encoding="utf-8",
