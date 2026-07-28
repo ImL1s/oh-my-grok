@@ -335,6 +335,82 @@ def confined_path(root: Path | str, *parts: str) -> Path:
     return candidate
 
 
+def atomic_write_bytes_at(
+    parent_fd: int,
+    name: str,
+    body: bytes,
+    *,
+    mode: int = DATA_FILE_MODE,
+    replace: bool = True,
+) -> None:
+    """Publish *name* under an already-open parent directory descriptor.
+
+    Does not close *parent_fd*. Callers that also hold a lock under the same
+    directory must use this so publication cannot re-resolve a swapped path.
+    """
+
+    _require_confinement_platform()
+    name = _validate_component(name)
+    temporary = f".{name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    _reject_symlink_at(parent_fd, name, label="destination")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(temporary, flags, mode, dir_fd=parent_fd)
+    except OSError as exc:
+        if _is_nofollow_error(exc):
+            raise ContractPathError(
+                f"temporary path may not be a symlink: {temporary}"
+            ) from exc
+        raise
+    try:
+        with os.fdopen(descriptor, "wb", closefd=True) as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        tfd = os.open(temporary, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            os.fchmod(tfd, mode)
+        finally:
+            os.close(tfd)
+        if replace:
+            _reject_symlink_at(parent_fd, name, label="destination")
+            os.rename(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            dfd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+            try:
+                st = os.fstat(dfd)
+                if not stat.S_ISREG(st.st_mode):
+                    raise ContractPathError(
+                        f"destination must be a regular file: {name}"
+                    )
+                os.fchmod(dfd, mode)
+            finally:
+                os.close(dfd)
+        else:
+            try:
+                os.link(
+                    temporary,
+                    name,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+            except FileExistsError:
+                raise
+            except OSError as exc:
+                if _is_nofollow_error(exc):
+                    raise ContractPathError(
+                        f"destination may not be a symlink: {name}"
+                    ) from exc
+                raise
+            os.unlink(temporary, dir_fd=parent_fd)
+        _fsync_fd(parent_fd)
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+
+
 def atomic_write_bytes(
     path: Path | str,
     body: bytes,
@@ -353,70 +429,31 @@ def atomic_write_bytes(
     _require_confinement_platform()
     destination = Path(path).absolute()
     parent_fd, name = _ensure_parent_dir_fd(destination)
-    temporary = f".{name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     try:
-        _reject_symlink_at(parent_fd, name, label="destination")
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-        try:
-            descriptor = os.open(temporary, flags, mode, dir_fd=parent_fd)
-        except OSError as exc:
-            if _is_nofollow_error(exc):
-                raise ContractPathError(
-                    f"temporary path may not be a symlink: {temporary}"
-                ) from exc
-            raise
-        try:
-            with os.fdopen(descriptor, "wb", closefd=True) as handle:
-                handle.write(body)
-                handle.flush()
-                os.fsync(handle.fileno())
-            # fchmod via re-open path relative to parent is racy; chmod through
-            # a no-follow open of the temp name instead.
-            tfd = os.open(temporary, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
-            try:
-                os.fchmod(tfd, mode)
-            finally:
-                os.close(tfd)
-            if replace:
-                _reject_symlink_at(parent_fd, name, label="destination")
-                os.rename(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-                dfd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
-                try:
-                    st = os.fstat(dfd)
-                    if not stat.S_ISREG(st.st_mode):
-                        raise ContractPathError(
-                            f"destination must be a regular file: {name}"
-                        )
-                    os.fchmod(dfd, mode)
-                finally:
-                    os.close(dfd)
-            else:
-                try:
-                    os.link(
-                        temporary,
-                        name,
-                        src_dir_fd=parent_fd,
-                        dst_dir_fd=parent_fd,
-                        follow_symlinks=False,
-                    )
-                except FileExistsError:
-                    raise
-                except OSError as exc:
-                    if _is_nofollow_error(exc):
-                        raise ContractPathError(
-                            f"destination may not be a symlink: {name}"
-                        ) from exc
-                    raise
-                os.unlink(temporary, dir_fd=parent_fd)
-            _fsync_fd(parent_fd)
-        finally:
-            try:
-                os.unlink(temporary, dir_fd=parent_fd)
-            except FileNotFoundError:
-                pass
+        atomic_write_bytes_at(
+            parent_fd, name, body, mode=mode, replace=replace
+        )
     finally:
         os.close(parent_fd)
     return destination
+
+
+def open_managed_dir_fd(path: Path | str) -> int:
+    """Open *path* as a managed directory and return an owned dir fd.
+
+    Creates missing managed components with no-follow semantics. Caller must
+    ``os.close`` the returned descriptor.
+    """
+
+    _require_confinement_platform()
+    target = Path(path).absolute()
+    ensure_managed_dir(target)
+    base, components = _split_base_and_components(target)
+    base_fd = _open_base_dir(base)
+    try:
+        return _walk_managed_dirs(base_fd, components, create=True)
+    finally:
+        os.close(base_fd)
 
 
 def _open_lock_descriptor_at(parent_fd: int, name: str) -> int:

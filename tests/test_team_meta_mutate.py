@@ -206,7 +206,8 @@ def test_mutate_team_meta_preserves_previous_on_publish_failure(
     def boom(*_a, **_k):
         raise plane.TeamError("secure team.json publication refused: simulated")
 
-    monkeypatch.setattr(plane, "_atomic_write_json", boom)
+    # mutate_team_meta publishes via the pinned-descriptor helper.
+    monkeypatch.setattr(plane, "_atomic_write_json_at", boom)
 
     with pytest.raises(TeamError, match="publication refused"):
         mutate_team_meta(tmp_path, run_id, lambda c: {**c, "note": "lost"})

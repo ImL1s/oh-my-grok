@@ -251,6 +251,59 @@ def _atomic_write_json(path: Path, data: Mapping[str, Any]) -> None:
         raise TeamError(f"secure team.json publication refused: {exc}") from exc
 
 
+def _atomic_write_json_at(parent_fd: int, name: str, data: Mapping[str, Any]) -> None:
+    from omg_cli.contracts.path_keys import (
+        DATA_FILE_MODE,
+        ContractPathError,
+        atomic_write_bytes_at,
+    )
+
+    body = (
+        json.dumps(dict(data), indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    try:
+        atomic_write_bytes_at(
+            parent_fd, name, body, mode=DATA_FILE_MODE, replace=True
+        )
+    except ContractPathError as exc:
+        raise TeamError(f"secure team.json publication refused: {exc}") from exc
+
+
+def _load_team_meta_from_fd(parent_fd: int, *, run_id: str) -> dict[str, Any]:
+    """Load ``team.json`` relative to a pinned team-directory descriptor."""
+
+    from omg_cli.contracts.path_keys import DATA_FILE_MODE
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open("team.json", flags, dir_fd=parent_fd)
+    except FileNotFoundError:
+        raise TeamError(f"team.json missing for run {run_id}")
+    except OSError as exc:
+        raise TeamError(f"team.json secure open refused: {exc}") from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise TeamError("team.json must be a regular non-symlink file")
+        with os.fdopen(descriptor, "r", encoding="utf-8", closefd=True) as handle:
+            descriptor = -1
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise TeamError(f"team.json unreadable: {exc}") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not isinstance(data, dict):
+        raise TeamError("team.json must be a JSON object")
+    _require_cli_writer(data, label="team.json")
+    if stat.S_IMODE(info.st_mode) != DATA_FILE_MODE:
+        raise TeamError(
+            f"team.json mode must be {DATA_FILE_MODE:04o}, "
+            f"got {stat.S_IMODE(info.st_mode):04o}"
+        )
+    return data
+
+
 def load_team_meta(root: Path | str, run_id: str) -> dict[str, Any]:
     path = team_meta_path(root, run_id)
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -340,68 +393,80 @@ def mutate_team_meta(
     mutate it in place and return ``None``/the same dict, or return a new
     mapping. On publication failure the previous valid document remains.
     """
-    from omg_cli.contracts.path_keys import ensure_managed_dir, exclusive_lock
+    from omg_cli.contracts.path_keys import (
+        ContractPathError,
+        exclusive_lock_at,
+        open_managed_dir_fd,
+    )
     from omg_cli.contracts.state_schemas import require_safe_id
 
     rid = require_safe_id(run_id, label="run_id")
     root_path = Path(root).resolve()
-    ensure_managed_dir(team_dir(root_path, rid))
-    lock_path = team_meta_lock_path(root_path, rid)
-
-    with exclusive_lock(lock_path):
-        current = load_team_meta(root_path, rid)
-        if current.get("run_id") is not None and current.get("run_id") != rid:
-            raise TeamError(
-                f"team.json run_id mismatch (file={current.get('run_id')!r} "
-                f"path={rid!r})"
-            )
-        # Prefer path-bound identity when historical docs omit run_id.
-        if current.get("run_id") is None:
-            current = dict(current)
-            current["run_id"] = rid
-
-        current_gen = _read_meta_generation(current)
-        if expected_generation is not None:
-            if (
-                isinstance(expected_generation, bool)
-                or not isinstance(expected_generation, int)
-                or expected_generation < 0
-            ):
+    team_path = team_dir(root_path, rid)
+    try:
+        parent_fd = open_managed_dir_fd(team_path)
+    except ContractPathError as exc:
+        raise TeamError(f"secure team directory open refused: {exc}") from exc
+    try:
+        # Lock, read, and publish all share this pinned team-dir inode.
+        with exclusive_lock_at(parent_fd, "team-meta.lock"):
+            current = _load_team_meta_from_fd(parent_fd, run_id=rid)
+            if current.get("run_id") is not None and current.get("run_id") != rid:
                 raise TeamError(
-                    "expected_generation must be a non-negative int, "
-                    f"got {expected_generation!r}"
+                    f"team.json run_id mismatch (file={current.get('run_id')!r} "
+                    f"path={rid!r})"
                 )
-            if expected_generation != current_gen:
-                raise TeamError(
-                    f"stale team meta generation: expected {expected_generation}, "
-                    f"have {current_gen}"
+            # Prefer path-bound identity when historical docs omit run_id.
+            if current.get("run_id") is None:
+                current = dict(current)
+                current["run_id"] = rid
+
+            current_gen = _read_meta_generation(current)
+            if expected_generation is not None:
+                if (
+                    isinstance(expected_generation, bool)
+                    or not isinstance(expected_generation, int)
+                    or expected_generation < 0
+                ):
+                    raise TeamError(
+                        "expected_generation must be a non-negative int, "
+                        f"got {expected_generation!r}"
+                    )
+                if expected_generation != current_gen:
+                    raise TeamError(
+                        f"stale team meta generation: expected {expected_generation}, "
+                        f"have {current_gen}"
+                    )
+
+            draft = copy.deepcopy(dict(current))
+            result = mutator(draft)
+            if result is None:
+                updated = draft
+            else:
+                if not isinstance(result, Mapping):
+                    raise TeamError("team.json mutator must return a mapping or None")
+                updated = dict(result)
+
+            if not isinstance(updated, dict):
+                raise TeamError("team.json mutator result must be a JSON object")
+
+            _assert_immutable_team_meta(current, updated, run_id=rid)
+            # Path identity wins; re-stamp CLI writer authority always.
+            updated["run_id"] = rid
+            updated["writer"] = CLI_WRITER
+            if "schema_version" not in updated:
+                updated["schema_version"] = current.get(
+                    "schema_version", SCHEMA_VERSION
                 )
+            updated["meta_generation"] = current_gen + 1
+            updated.pop("verified", None)
+            updated.pop("passes", None)
 
-        draft = copy.deepcopy(dict(current))
-        result = mutator(draft)
-        if result is None:
-            updated = draft
-        else:
-            if not isinstance(result, Mapping):
-                raise TeamError("team.json mutator must return a mapping or None")
-            updated = dict(result)
-
-        if not isinstance(updated, dict):
-            raise TeamError("team.json mutator result must be a JSON object")
-
-        _assert_immutable_team_meta(current, updated, run_id=rid)
-        # Path identity wins; re-stamp CLI writer authority always.
-        updated["run_id"] = rid
-        updated["writer"] = CLI_WRITER
-        if "schema_version" not in updated:
-            updated["schema_version"] = current.get("schema_version", SCHEMA_VERSION)
-        updated["meta_generation"] = current_gen + 1
-        updated.pop("verified", None)
-        updated.pop("passes", None)
-
-        _require_cli_writer(updated, label="team.json")
-        _atomic_write_json(team_meta_path(root_path, rid), updated)
-        return updated
+            _require_cli_writer(updated, label="team.json")
+            _atomic_write_json_at(parent_fd, "team.json", updated)
+            return updated
+    finally:
+        os.close(parent_fd)
 
 
 def _parse_tasks_json(
