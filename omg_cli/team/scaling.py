@@ -953,26 +953,12 @@ def _scale_down(
 # ---------------------------------------------------------------------------
 
 
-def resume_team(
-    root: Path | str | None = None,
-    run_id: str | None = None,
+def _reconcile_resume_tasks(
+    meta: Mapping[str, Any],
     *,
-    probe_tmux: bool = True,
-    env: Mapping[str, str] | None = None,
-) -> dict[str, Any]:
-    """Reconcile team.json pane statuses after leader restart.
-
-    Idempotent: only status reconciliation writes (CLI_WRITER-stamped).
-    Never sets verified. Fail-closed if not a team run / team.json missing.
-
-    Prefer pane-id liveness when recorded (split topology); fall back to
-    window-index probes for legacy windows topology / hermetic mocks.
-    """
-    root_path = Path(root) if root is not None else Path.cwd().resolve()
-    root_path = root_path.resolve()
-    _assert_team_gates(env=env)
-    rid = _resolve_run_id(root_path, run_id)
-    meta = _require_team_run(root_path, rid)
+    probe_tmux: bool,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], int]:
+    """Probe liveness for *meta* tasks; return (status_by_tid, reconciliations, changed)."""
 
     session = str(meta.get("session") or "")
     dry = bool(meta.get("dry_run"))
@@ -993,7 +979,6 @@ def resume_team(
             continue
 
         if dry or prev == "dry_run":
-            # dry-run skeleton: no live panes; leave as-is
             tasks_out.append(rec)
             continue
 
@@ -1012,14 +997,12 @@ def resume_team(
             new_st = STATUS_RUNNING
             alive = True
         elif win is False:
-            # Dead pane/window: unsealed work → needs-collect; stopped stays stopped
             if prev in ("stopped", STATUS_FAILED, STATUS_BLOCKED):
                 new_st = prev
             else:
                 new_st = STATUS_NEEDS_COLLECT
             alive = False
         else:
-            # tmux unavailable — do not invent death
             new_st = prev
             alive = None
 
@@ -1050,51 +1033,94 @@ def resume_team(
             )
         tasks_out.append(rec)
 
-    resumed_at = _utc_now()
-    # Map status reconciliations by task_id — applied under the meta lock so a
-    # concurrent scale/add cannot be wiped by a pre-lock task snapshot (Codex P1).
     status_by_tid: dict[str, dict[str, Any]] = {}
     for rec in tasks_out:
         tid_key = str(rec.get("task_id") or "")
         if tid_key:
             status_by_tid[tid_key] = rec
-    resume_changes = changed
-    base_generation = int(meta.get("meta_generation") or 0)
+    return status_by_tid, reconciliations, changed
 
-    def _apply_resume(current: dict[str, Any]) -> dict[str, Any]:
-        updated = dict(current)
-        merged: list[dict[str, Any]] = []
-        for raw_task in list(current.get("tasks") or []):
-            if not isinstance(raw_task, Mapping):
-                continue
-            rec = dict(raw_task)
-            tid_key = str(rec.get("task_id") or "")
-            src = status_by_tid.get(tid_key)
-            if src is not None:
-                for key in ("status", "resumed_at", "status_before_resume"):
-                    if key in src:
-                        rec[key] = src[key]
-            merged.append(rec)
-        updated["tasks"] = merged
-        updated["task_count"] = len(_active_tasks(merged))
-        updated["resumed_at"] = resumed_at
-        updated["resume_changes"] = resume_changes
-        return updated
 
-    # Always rewrite CLI stamp (idempotent; even when changed==0 so resume
-    # is recorded for operators). CAS on meta_generation; one retry on stale.
-    try:
-        updated = mutate_team_meta(
-            root_path,
-            rid,
-            _apply_resume,
-            expected_generation=base_generation,
+def resume_team(
+    root: Path | str | None = None,
+    run_id: str | None = None,
+    *,
+    probe_tmux: bool = True,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Reconcile team.json pane statuses after leader restart.
+
+    Idempotent: only status reconciliation writes (CLI_WRITER-stamped).
+    Never sets verified. Fail-closed if not a team run / team.json missing.
+
+    Prefer pane-id liveness when recorded (split topology); fall back to
+    window-index probes for legacy windows topology / hermetic mocks.
+    """
+    root_path = Path(root) if root is not None else Path.cwd().resolve()
+    root_path = root_path.resolve()
+    _assert_team_gates(env=env)
+    rid = _resolve_run_id(root_path, run_id)
+
+    # Up to two attempts: on stale meta_generation, re-load + re-probe so a
+    # concurrent stop/scale cannot be overwritten by a stale liveness snapshot.
+    updated: dict[str, Any] | None = None
+    session = ""
+    dry = False
+    changed = 0
+    reconciliations: list[dict[str, Any]] = []
+    for attempt in range(2):
+        meta = _require_team_run(root_path, rid)
+        session = str(meta.get("session") or "")
+        dry = bool(meta.get("dry_run"))
+        status_by_tid, reconciliations, changed = _reconcile_resume_tasks(
+            meta, probe_tmux=probe_tmux
         )
-    except TeamError as exc:
-        if "stale team meta generation" not in str(exc):
-            raise
-        updated = mutate_team_meta(root_path, rid, _apply_resume)
+        resumed_at = _utc_now()
+        resume_changes = changed
+        base_generation = int(meta.get("meta_generation") or 0)
 
+        def _apply_resume(
+            current: dict[str, Any],
+            *,
+            _status_by_tid: dict[str, dict[str, Any]] = status_by_tid,
+            _resume_changes: int = resume_changes,
+            _resumed_at: str = resumed_at,
+        ) -> dict[str, Any]:
+            # Merge probed status onto the locked task list by task_id so a
+            # concurrent scale-add worker is preserved (Codex P1).
+            next_doc = dict(current)
+            merged: list[dict[str, Any]] = []
+            for raw_task in list(current.get("tasks") or []):
+                if not isinstance(raw_task, Mapping):
+                    continue
+                rec = dict(raw_task)
+                tid_key = str(rec.get("task_id") or "")
+                src = _status_by_tid.get(tid_key)
+                if src is not None:
+                    for key in ("status", "resumed_at", "status_before_resume"):
+                        if key in src:
+                            rec[key] = src[key]
+                merged.append(rec)
+            next_doc["tasks"] = merged
+            next_doc["task_count"] = len(_active_tasks(merged))
+            next_doc["resumed_at"] = _resumed_at
+            next_doc["resume_changes"] = _resume_changes
+            return next_doc
+
+        try:
+            updated = mutate_team_meta(
+                root_path,
+                rid,
+                _apply_resume,
+                expected_generation=base_generation,
+            )
+            break
+        except TeamError as exc:
+            if attempt == 0 and "stale team meta generation" in str(exc):
+                continue
+            raise
+
+    assert updated is not None  # for type checkers; loop always sets or raises
     return {
         "writer": CLI_WRITER,
         "run_id": rid,
