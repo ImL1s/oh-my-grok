@@ -726,7 +726,16 @@ def _scale_up(
     identity_gen = generation if not effective_dry else None
     identity_hash = scale_receipt_hash if not effective_dry else None
 
+    base_generation = int(meta.get("meta_generation") or 0)
+
     def _apply_scale_up(current: dict[str, Any]) -> dict[str, Any]:
+        # Refuse to revive or extend a team that was stopped while we scaled.
+        stop_state = str(current.get("stop_state") or "")
+        if stop_state in {"stopped", "stop_refused"} or current.get("stopped_at"):
+            raise TeamError(
+                "scale-up refused: team is stopping/stopped "
+                f"(stop_state={stop_state!r}); re-check status"
+            )
         updated = dict(current)
         updated["schema_version"] = int(
             current.get("schema_version") or SCHEMA_VERSION
@@ -741,7 +750,12 @@ def _scale_up(
             updated["identity_receipt_sha256"] = identity_hash
         return updated
 
-    updated = mutate_team_meta(root, run_id, _apply_scale_up)
+    updated = mutate_team_meta(
+        root,
+        run_id,
+        _apply_scale_up,
+        expected_generation=base_generation,
+    )
 
     try:
         write_status(
@@ -899,7 +913,15 @@ def _scale_down(
     down_identity_gen = generation if not effective_dry else None
     down_identity_hash = scale_receipt_hash if not effective_dry else None
 
+    down_base_generation = int(meta.get("meta_generation") or 0)
+
     def _apply_scale_down(current: dict[str, Any]) -> dict[str, Any]:
+        stop_state = str(current.get("stop_state") or "")
+        if stop_state in {"stopped", "stop_refused"} or current.get("stopped_at"):
+            raise TeamError(
+                "scale-down refused: team is stopping/stopped "
+                f"(stop_state={stop_state!r}); re-check status"
+            )
         updated = dict(current)
         updated["tasks"] = list(down_task_list)
         updated["task_count"] = down_task_count
@@ -910,7 +932,12 @@ def _scale_down(
             updated["identity_receipt_sha256"] = down_identity_hash
         return updated
 
-    updated = mutate_team_meta(root, run_id, _apply_scale_down)
+    updated = mutate_team_meta(
+        root,
+        run_id,
+        _apply_scale_down,
+        expected_generation=down_base_generation,
+    )
 
     try:
         write_status(

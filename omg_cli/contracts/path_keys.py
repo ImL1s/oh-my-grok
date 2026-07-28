@@ -162,7 +162,9 @@ def _split_base_and_components(target: Path) -> tuple[Path, list[str]]:
         raise ContractPathError("empty managed path")
 
     if MANAGED_ROOT_MARKER in parts:
-        idx = parts.index(MANAGED_ROOT_MARKER)
+        # Project-local marker only: nested checkouts under an ancestor named
+        # ``.omg`` must not treat that ancestor as the managed root.
+        idx = len(parts) - 1 - parts[::-1].index(MANAGED_ROOT_MARKER)
         if idx == 0:
             raise ContractPathError("managed root marker cannot be filesystem root")
         base = Path(*parts[:idx])
