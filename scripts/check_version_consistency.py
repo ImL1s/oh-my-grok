@@ -154,6 +154,12 @@ _CURRENT_SNIPPETS: list[tuple[str, str, str]] = [
         "public asset name",
         "oh-my-grok-{v}.tar.gz",
     ),
+    ("docs/RELEASE.md", "Version row", "| Version | **{v}** |"),
+    ("docs/RELEASE.zh.md", "Version row", "| Version | **{v}** |"),
+    ("docs/RELEASE.zh-TW.md", "Version row", "| Version | **{v}** |"),
+    ("docs/RELEASE.md", "Intended tag row", "| Intended tag | `v{v}` |"),
+    ("docs/RELEASE.zh.md", "Intended tag row", "| Intended tag | `v{v}` |"),
+    ("docs/RELEASE.zh-TW.md", "Intended tag row", "| Intended tag | `v{v}` |"),
 ]
 
 
@@ -203,6 +209,7 @@ def check_snippets(root: Path, version: str) -> list[Finding]:
 def check_archive_docs(root: Path, version: str) -> list[Finding]:
     findings: list[Finding] = []
     needle = f"oh-my-grok-{version}.tar.gz"
+    archive_re = re.compile(r"oh-my-grok-(\d+\.\d+\.\d+)\.tar\.gz")
     for rel in _ARCHIVE_DOCS:
         path = root / rel
         if not path.is_file():
@@ -212,12 +219,23 @@ def check_archive_docs(root: Path, version: str) -> list[Finding]:
             continue
         text = path.read_text(encoding="utf-8")
         if needle not in text:
-            # Find any oh-my-grok-X.Y.Z.tar.gz as observed
-            m = re.search(r"oh-my-grok-(\d+\.\d+\.\d+)\.tar\.gz", text)
+            m = archive_re.search(text)
             observed = m.group(0) if m else "<none>"
             findings.append(
                 Finding(rel, "release archive example", needle, observed)
             )
+        # Every exact archive pin in current-facing docs must match canonical.
+        for m in archive_re.finditer(text):
+            if m.group(1) != version:
+                findings.append(
+                    Finding(
+                        rel,
+                        "stale archive pin",
+                        needle,
+                        m.group(0),
+                        f"offset={m.start()}",
+                    )
+                )
     return findings
 
 
@@ -364,7 +382,7 @@ def write_fixes(root: Path, version: str) -> list[str]:
             _write(root, path, n2)
             changed.append(path)
 
-    # RELEASE docs archives
+    # RELEASE docs: table rows + archives + tags
     for path in (
         "docs/RELEASE.md",
         "docs/RELEASE.zh.md",
@@ -377,6 +395,16 @@ def write_fixes(root: Path, version: str) -> list[str]:
             t,
         )
         n = re.sub(r"(TAG=v)\d+\.\d+\.\d+", rf"\g<1>{version}", n)
+        n = re.sub(
+            r"(\|\s*Version\s*\|\s*\*\*)\d+\.\d+\.\d+(\*\*\s*\|)",
+            rf"\g<1>{version}\2",
+            n,
+        )
+        n = re.sub(
+            r"(\|\s*Intended tag\s*\|\s*`v)\d+\.\d+\.\d+(`\s*\|)",
+            rf"\g<1>{version}\2",
+            n,
+        )
         if n != t:
             _write(root, path, n)
             changed.append(path)

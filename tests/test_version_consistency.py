@@ -173,14 +173,20 @@ def _seed_min_repo(
         ),
         (
             "docs/RELEASE.md",
+            f"| Version | **{plugin_ver}** |\n"
+            f"| Intended tag | `v{plugin_ver}` |\n"
             f"| Public assets | `oh-my-grok-{plugin_ver}.tar.gz` |\n",
         ),
         (
             "docs/RELEASE.zh.md",
+            f"| Version | **{plugin_ver}** |\n"
+            f"| Intended tag | `v{plugin_ver}` |\n"
             f"| Public assets | `oh-my-grok-{plugin_ver}.tar.gz` |\n",
         ),
         (
             "docs/RELEASE.zh-TW.md",
+            f"| Version | **{plugin_ver}** |\n"
+            f"| Intended tag | `v{plugin_ver}` |\n"
             f"| Public assets | `oh-my-grok-{plugin_ver}.tar.gz` |\n",
         ),
     ):
