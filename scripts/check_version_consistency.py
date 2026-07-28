@@ -20,6 +20,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Same grammar as omg_cli.setup_cmd / release_transaction (incl. prerelease).
+SEMVER_RE = re.compile(
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
+# Non-anchored token for scanning docs (no ^$).
+SEMVER_TOKEN_RE = re.compile(
+    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+)
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -40,8 +53,10 @@ class Finding:
 def load_canonical_version(root: Path = ROOT) -> str:
     plugin = json.loads((root / "plugin.json").read_text(encoding="utf-8"))
     ver = str(plugin.get("version") or "").strip()
-    if not re.fullmatch(r"\d+\.\d+\.\d+", ver):
-        raise SystemExit(f"plugin.json version is not semver X.Y.Z: {ver!r}")
+    if not SEMVER_RE.fullmatch(ver):
+        raise SystemExit(
+            f"plugin.json version is not a valid SemVer (incl. prerelease): {ver!r}"
+        )
     return ver
 
 
@@ -177,7 +192,8 @@ _ARCHIVE_DOCS: tuple[str, ...] = (
 
 # Offline installer comment: prefer version-neutral template.
 _INSTALL_SH_EXAMPLE_RE = re.compile(
-    r"(bash install\.sh --offline --archive \./oh-my-grok-)([0-9]+\.[0-9]+\.[0-9]+)(\.tar\.gz)"
+    rf"(bash install\.sh --offline --archive \./oh-my-grok-)"
+    rf"({SEMVER_TOKEN_RE.pattern}|<VERSION>)(\.tar\.gz)"
 )
 _INSTALL_SH_NEUTRAL = (
     "bash install.sh --offline --archive ./oh-my-grok-<VERSION>.tar.gz"
@@ -209,7 +225,7 @@ def check_snippets(root: Path, version: str) -> list[Finding]:
 def check_archive_docs(root: Path, version: str) -> list[Finding]:
     findings: list[Finding] = []
     needle = f"oh-my-grok-{version}.tar.gz"
-    archive_re = re.compile(r"oh-my-grok-(\d+\.\d+\.\d+)\.tar\.gz")
+    archive_re = re.compile(rf"oh-my-grok-({SEMVER_TOKEN_RE.pattern})\.tar\.gz")
     for rel in _ARCHIVE_DOCS:
         path = root / rel
         if not path.is_file():
@@ -232,6 +248,47 @@ def check_archive_docs(root: Path, version: str) -> list[Finding]:
                         rel,
                         "stale archive pin",
                         needle,
+                        m.group(0),
+                        f"offset={m.start()}",
+                    )
+                )
+    return findings
+
+
+def check_tag_pins(root: Path, version: str) -> list[Finding]:
+    """TAG=v… and oh-my-grok@v… pins in current-facing install docs."""
+    findings: list[Finding] = []
+    tag_re = re.compile(rf"TAG=v({SEMVER_TOKEN_RE.pattern})")
+    plugin_re = re.compile(rf"oh-my-grok@v({SEMVER_TOKEN_RE.pattern})")
+    expected_tag = f"v{version}"
+    for rel in _ARCHIVE_DOCS:
+        path = root / rel
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        tags = list(tag_re.finditer(text))
+        if not tags and rel.startswith("README"):
+            findings.append(
+                Finding(rel, "TAG= assignment", f"TAG={expected_tag}", "<none>")
+            )
+        for m in tags:
+            if m.group(1) != version:
+                findings.append(
+                    Finding(
+                        rel,
+                        "TAG= assignment",
+                        f"TAG={expected_tag}",
+                        m.group(0),
+                        f"offset={m.start()}",
+                    )
+                )
+        for m in plugin_re.finditer(text):
+            if m.group(1) != version:
+                findings.append(
+                    Finding(
+                        rel,
+                        "plugin pin @v",
+                        f"oh-my-grok@v{version}",
                         m.group(0),
                         f"offset={m.start()}",
                     )
@@ -280,6 +337,7 @@ def collect_findings(root: Path, version: str) -> list[Finding]:
     out.extend(check_changelog_heading(root, version))
     out.extend(check_snippets(root, version))
     out.extend(check_archive_docs(root, version))
+    out.extend(check_tag_pins(root, version))
     out.extend(check_install_sh(root, version))
     return out
 
