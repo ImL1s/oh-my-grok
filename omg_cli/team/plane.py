@@ -79,7 +79,6 @@ from omg_cli.workers import (
     build_ownership_manifest,
     load_ownership_manifest,
     ownership_manifest_path,
-    prepare_owned_tasks,
     prepare_task,
     seal_all_tasks,
     worktree_dir,
@@ -3108,7 +3107,7 @@ def _stop_team_locked(
         return updated
 
     try:
-        updated = mutate_team_meta(
+        mutate_team_meta(
             root_path,
             run_id,
             _apply_stop,
@@ -3120,7 +3119,7 @@ def _stop_team_locked(
         # reconcile onto latest doc while keeping the task-set fence.
         if "stale team meta generation" not in str(exc):
             raise
-        updated = mutate_team_meta(root_path, run_id, _apply_stop)
+        mutate_team_meta(root_path, run_id, _apply_stop)
 
     try:
         write_status(

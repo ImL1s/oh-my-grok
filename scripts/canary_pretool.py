@@ -85,11 +85,6 @@ def build_canary_plan(
         "whether shell tool existed, any marker evidence."
     )
 
-    env = {
-        "PATH": f"{path_prefix}{os.pathsep}{os.environ.get('PATH', '')}",
-        "OMG_CANARY_MARKER": str(marker),
-    }
-
     parent_argv = [
         "grok",
         "-p",

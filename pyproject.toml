@@ -26,3 +26,48 @@ version = { attr = "omg_cli.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["omg_cli*"]
+
+# --- static analysis (#24): single source of config for scripts/static_checks.sh ---
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["omg_cli", "tests", "scripts", "hooks"]
+extend-exclude = [
+  ".omg",
+  ".venv",
+  "**/__pycache__",
+  # Generated standalone hook snapshot (regenerated; not hand-edited product).
+  "hooks/bin/omg_pretool_deny_standalone.py",
+]
+
+[tool.ruff.lint]
+# Stage 1 (#24): full-package pyflakes + pycodestyle errors (prior CI default).
+# Expand select= (I/UP/B/…) in follow-up PRs once baselines are green.
+select = ["E4", "E7", "E9", "F"]
+ignore = [
+  "E501",  # line length: many long CLI help strings / prompts
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may keep local imports after pytestmark / fixtures.
+"tests/**" = ["E402"]
+# Scripts may reorder imports for bootstrap/path setup.
+"scripts/**" = ["E402"]
+"hooks/bin/**" = ["E402"]
+
+[tool.mypy]
+python_version = "3.11"
+pretty = true
+show_error_codes = true
+warn_unused_configs = true
+# Staged surface (expand over time). follow_imports=skip keeps the first
+# full-package ruff+compile gate honest without blocking on deep stubs.
+follow_imports = "skip"
+files = [
+  "omg_cli/__init__.py",
+  "omg_cli/main.py",
+  "omg_cli/project_root.py",
+  "tests/test_release_readback.py",
+  "tests/test_project_root.py",
+  "tests/test_version_consistency.py",
+]

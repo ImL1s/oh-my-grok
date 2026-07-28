@@ -20,7 +20,6 @@ import json
 import os
 import signal
 import subprocess
-import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence

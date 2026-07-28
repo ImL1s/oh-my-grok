@@ -41,7 +41,6 @@ from omg_cli.team.plane import (
     collect_team,
     experimental_enabled,
     in_spawned_worker_context,
-    load_team_meta,
     mutate_team_meta,
     start_team,
     team_meta_path,
