@@ -390,3 +390,56 @@ def test_launch_annotation_failure_compensates(
         )
     assert stopped == ["run-ann-1"]
     assert removed == ["yes"]
+
+
+def test_dry_run_reuse_run_compensate_preserves_active(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#17: dry-run --run failure must not clear a pre-existing active pointer."""
+    from omg_cli.modes import create_run
+    from omg_cli.state import load_active_run
+    from omg_cli.team import runtime
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    run = create_run(tmp_path, mode="ulw", goal="pre", force=True)
+    rid = str(run["run_id"])
+    assert load_active_run(tmp_path) is not None
+
+    monkeypatch.setattr(
+        runtime,
+        "start_team",
+        lambda *a, **k: {
+            "run_id": rid,
+            "schema_version": 1,
+            "tasks": [{"task_id": "t1"}],
+            "dry_run": True,
+        },
+    )
+    monkeypatch.setattr(runtime, "write_team_ref", lambda *a, **k: None)
+    monkeypatch.setattr(runtime, "_ensure_lane_dirs", lambda *a, **k: None)
+    monkeypatch.setattr(
+        runtime,
+        "decompose_goal",
+        lambda goal, workers, role: [
+            {"task_id": "t1", "title": "one", "owned_files": ["README.md"], "role": role}
+        ],
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_seed_api_board",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("seed boom")),
+    )
+
+    with pytest.raises(TeamError, match="api_board_seed|seed boom"):
+        runtime.launch_team(
+            "reuse dry",
+            workers=1,
+            role="executor",
+            root=tmp_path,
+            run_id=rid,
+            dry_run=True,
+        )
+    active = load_active_run(tmp_path)
+    assert active is not None
+    assert str(active.get("run_id")) == rid

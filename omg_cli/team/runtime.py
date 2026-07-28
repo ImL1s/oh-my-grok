@@ -536,13 +536,29 @@ def _seed_api_board(
 
 
 def remove_team_ref(root: Path | str, team_name: str) -> None:
-    """Best-effort delete a team-name lookup ref (transaction compensation)."""
-    path = team_ref_path(root, team_name)
+    """Best-effort delete a team-name lookup ref (transaction compensation).
+
+    Uses the same managed-dir open as :func:`write_team_ref` so a symlinked
+    team key directory cannot redirect unlink outside the project.
+    """
+    name = require_safe_id(team_name, label="team_name")
+    path = team_ref_path(root, name)
     try:
-        if path.is_file() or path.is_symlink():
-            path.unlink(missing_ok=True)
-    except OSError:
-        pass
+        parent_fd = open_managed_dir_fd(path.parent)
+    except (ContractPathError, OSError):
+        return
+    try:
+        try:
+            os.unlink("ref.json", dir_fd=parent_fd)
+        except FileNotFoundError:
+            return
+        except OSError:
+            return
+    finally:
+        try:
+            os.close(parent_fd)
+        except OSError:
+            pass
 
 
 def compensate_failed_launch(
@@ -551,11 +567,14 @@ def compensate_failed_launch(
     *,
     team_name: str | None = None,
     dry_run: bool = False,
+    created_run: bool = True,
     phase: str = "post-start",
 ) -> list[str]:
     """Reverse-order cleanup after start_team committed but launch aborts (#17).
 
     Order: stop live team (if any) → remove team ref written by this launch.
+    Dry-run clears the active pointer **only** when this launch created the run
+    (not when ``--run`` reuses an existing run).
     Returns diagnostic strings (never raises). Callers may promote incomplete
     stop into TeamError.
     """
@@ -575,8 +594,9 @@ def compensate_failed_launch(
                 errors.append(f"compensating stop incomplete: {detail}")
         except Exception as stop_exc:  # noqa: BLE001 — surface in caller
             errors.append(f"compensating stop also failed: {stop_exc}")
-    else:
-        # Dry-run start leaves active + skeleton; clear active so retries work.
+    elif created_run:
+        # Dry-run of a *new* run leaves active + skeleton; clear so retries work.
+        # Never clear active when --run reuses a pre-existing run.
         try:
             from omg_cli.state import clear_active
 
@@ -647,6 +667,8 @@ def launch_team(
         detach=detach,
     )
     rid = str(meta["run_id"])
+    # start_team creates a new run unless --run was supplied.
+    created_run = run_id is None
     name = _slug_team_name(goal, rid)
     ref_written = False
     phase = "write_team_ref"
@@ -657,6 +679,7 @@ def launch_team(
             rid,
             team_name=name if ref_written else None,
             dry_run=dry_run,
+            created_run=created_run,
             phase=label,
         )
         details = [str(exc), *rb]
