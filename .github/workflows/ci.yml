@@ -64,3 +64,28 @@ jobs:
         env:
           OMG_E2E: "1"
           OMG_SMOKE_STRICT: "0"
+
+  # Early #25 / P3A-25-MACOS-EARLY: one focused macOS job (not a full matrix).
+  # Validates OS-sensitive FS/lock/symlink/install contracts on a real host.
+  macos-platform:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Single supported version — keep cost bounded.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Install tmux (optional transport smoke)
+        run: brew install tmux || true
+      - name: Platform contracts
+        run: bash scripts/test_platform_contracts.sh
+        env:
+          HOME: ${{ runner.temp }}/omg-home
+          GROK_HOME: ${{ runner.temp }}/omg-grok-home

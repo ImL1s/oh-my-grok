@@ -55,6 +55,7 @@ from omg_cli.modes import (
 )
 from omg_cli.state import (
     _run_dir,
+    clear_active,
     create_run,
     load_active_run,
     load_run,
@@ -1158,6 +1159,87 @@ def _restore_live_start_files(
     return errors
 
 
+def _remove_team_worktree(root: Path, worktree: Path) -> str | None:
+    """Best-effort remove a prepared team worktree. Returns error text or None."""
+
+    root = Path(root).resolve()
+    wt = Path(worktree)
+    if not wt.exists():
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "worktree", "remove", "--force", str(wt)],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if proc.returncode == 0 and not wt.exists():
+            return None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        import shutil
+
+        if wt.is_dir() and not wt.is_symlink():
+            shutil.rmtree(wt, ignore_errors=True)
+        elif wt.exists():
+            wt.unlink(missing_ok=True)
+    except OSError as exc:
+        return f"worktree remove {wt}: {exc}"
+    return None if not wt.exists() else f"worktree still present: {wt}"
+
+
+def _rollback_partial_team_start(
+    root: Path,
+    run_id: str,
+    *,
+    created_run: bool,
+    worktrees: Sequence[Path],
+    team_dir_path: Path | None,
+) -> list[str]:
+    """Undo pre-commit start debris (issue #17 all-or-nothing).
+
+    Reverse order: worktrees → team dir → ownership manifest → active pointer.
+    Never raises; returns actionable error strings for diagnostics.
+    """
+    from omg_cli.workers import ownership_manifest_path
+
+    errors: list[str] = []
+    root = Path(root).resolve()
+    rid = str(run_id)
+
+    for wt in reversed(list(worktrees)):
+        err = _remove_team_worktree(root, Path(wt))
+        if err:
+            errors.append(err)
+
+    if team_dir_path is not None:
+        tdir = Path(team_dir_path)
+        if tdir.is_dir() and not tdir.is_symlink():
+            try:
+                import shutil
+
+                shutil.rmtree(tdir, ignore_errors=True)
+            except OSError as exc:
+                errors.append(f"team dir remove {tdir}: {exc}")
+
+    try:
+        mpath = ownership_manifest_path(root, rid)
+        if mpath.is_file() or mpath.is_symlink():
+            mpath.unlink(missing_ok=True)
+    except OSError as exc:
+        errors.append(f"ownership manifest remove: {exc}")
+
+    if created_run:
+        try:
+            clear_active(root, rid)
+        except OSError as exc:
+            errors.append(f"clear active: {exc}")
+        # Leave run directory for forensics; clearing active unblocks relaunch.
+    return errors
+
+
 def _load_team_launch_receipt(
     root: Path, run_id: str, meta: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -1594,6 +1676,10 @@ def start_team(
             raise TeamError(str(exc)) from exc
         # UnknownRoleError propagates (FLOOR 2) — do not swallow.
 
+    # Resolve / create run — track created_run for #17 rollback.
+    created_run = False
+    prepared_worktrees: list[Path] = []
+    tdir: Path | None = None
     # Resolve / create run
     if run_id:
         if load_run(root_path, run_id) is None:
@@ -1635,13 +1721,28 @@ def start_team(
         except RuntimeError as exc:
             raise TeamError(str(exc)) from exc
         rid = str(run["run_id"])
+        created_run = True
+
+    def _fail_start(exc: BaseException, *, extra: Sequence[str] = ()) -> TeamError:
+        rb = _rollback_partial_team_start(
+            root_path,
+            rid,
+            created_run=created_run,
+            worktrees=prepared_worktrees,
+            team_dir_path=tdir,
+        )
+        details = [str(exc), *list(extra), *rb]
+        return TeamError(
+            "team start transaction failed (rolled back partial state): "
+            + "; ".join(d for d in details if d)
+        )
 
     # Ownership + real worktrees (filesystem; dry_run still prepares)
     try:
         manifest = build_ownership_manifest(root_path, rid, tasks)
-        prepare_owned_tasks(root_path, rid)
+        prepared_worktrees = list(prepare_owned_tasks(root_path, rid))
     except WorkerError as exc:
-        raise TeamError(str(exc)) from exc
+        raise _fail_start(exc) from exc
 
     tdir = team_dir(root_path, rid)
     tdir.mkdir(parents=True, exist_ok=True)
@@ -2010,13 +2111,13 @@ def start_team(
             else:
                 cleanup_error = _cleanup_created_tmux_session(created_handle)
         restore_errors = _restore_live_start_files(snapshots)
-        details = [str(exc)]
+        # #17: also undo run/active/worktrees/team-dir created before the
+        # narrow file snapshot so a failed launch does not block retries.
+        extra = []
         if cleanup_error:
-            details.append(cleanup_error)
-        details.extend(restore_errors)
-        raise TeamError(
-            "tmux live start transaction failed: " + "; ".join(details)
-        ) from exc
+            extra.append(cleanup_error)
+        extra.extend(restore_errors)
+        raise _fail_start(exc, extra=extra) from exc
 
 
 def team_status(

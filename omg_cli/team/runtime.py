@@ -454,7 +454,18 @@ def launch_team(
             env=api_env,
         )
     except Exception as exc:
-        # State was already written by start_team; surface seed failure clearly.
+        # #17: compensate partial shorthand launch after start_team committed.
+        # Best-effort stop then surface seed failure.
+        if not dry_run:
+            try:
+                from omg_cli.team.plane import stop_team
+
+                stop_team(root_path, rid, force=True)
+            except Exception as stop_exc:  # noqa: BLE001 — surface both errors
+                raise TeamError(
+                    f"team api board seed failed: {exc}; "
+                    f"compensating stop also failed: {stop_exc}"
+                ) from exc
         raise TeamError(f"team api board seed failed: {exc}") from exc
 
     meta = dict(meta)
