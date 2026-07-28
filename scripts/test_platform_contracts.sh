@@ -12,8 +12,19 @@ if [[ -x "$ROOT/.venv/bin/python" ]]; then
 fi
 
 # Hermetic operator identity (CI sets HOME/GROK_HOME; reinforce locale/git).
-export LANG="${LANG:-C.UTF-8}"
-export LC_ALL="${LC_ALL:-C.UTF-8}"
+# Prefer C.UTF-8 on Linux; fall back for macOS which often lacks C.UTF-8 (#25).
+if [[ -z "${LANG:-}" || -z "${LC_ALL:-}" ]]; then
+  if locale -a 2>/dev/null | grep -qiE '^(C\.UTF-8|C\.utf8)$'; then
+    export LANG=C.UTF-8
+    export LC_ALL=C.UTF-8
+  elif locale -a 2>/dev/null | grep -qiE 'en_US\.UTF-8'; then
+    export LANG=en_US.UTF-8
+    export LC_ALL=en_US.UTF-8
+  else
+    export LANG=C
+    export LC_ALL=C
+  fi
+fi
 export GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-omg-platform-ci}"
 export GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-omg-platform-ci@example.com}"
 export GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-$GIT_AUTHOR_NAME}"

@@ -83,8 +83,7 @@ jobs:
         env:
           HOME: ${{ runner.temp }}/omg-home
           GROK_HOME: ${{ runner.temp }}/omg-grok-home
-          LANG: C.UTF-8
-          LC_ALL: C.UTF-8
+          # Script picks an available UTF-8 locale (macOS often lacks C.UTF-8).
           GIT_AUTHOR_NAME: omg-platform-ci
           GIT_AUTHOR_EMAIL: omg-platform-ci@example.com
           GIT_COMMITTER_NAME: omg-platform-ci

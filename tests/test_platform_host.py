@@ -7,7 +7,6 @@ start-time identity — mocks are intentionally avoided here.
 from __future__ import annotations
 
 import os
-import signal
 
 import pytest
 
