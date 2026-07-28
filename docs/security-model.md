@@ -96,6 +96,29 @@ Grok `/create-workflow`, `.grok/workflows/*.rhai`, and the native dashboard are
 `optional_unclaimed`. Help text or local files are not stable-schema or fresh
 invocation proof. OMG never probes undocumented localhost/private sidecars.
 
+## Managed `.omg` store confinement
+
+Authoritative local stores under `.omg` use the primitives in
+`omg_cli/contracts/path_keys.py`. On POSIX hosts those primitives:
+
+- open a pre-existing base directory, then walk/create every **managed**
+  component (from the `.omg` marker downward, or the missing suffix of a
+  non-marker path) with descriptor-relative `dir_fd` operations and
+  `O_NOFOLLOW`;
+- reject managed-component symlinks for directories, destinations, temporary
+  files, journals, and lock files — even when the symlink target remains inside
+  the project;
+- publish with exclusive create + descriptor-relative rename/link, and enforce
+  modes via `fchmod` on the opened descriptor;
+- fail closed with `ContractPathError` when equivalent no-follow/`dir_fd`
+  support is unavailable (no weaker path-based fallback).
+
+System path prefixes above the managed region (for example macOS `/tmp` →
+`/private/tmp`) may still contain platform symlinks; confinement is claimed for
+managed components, not for the entire absolute path from `/`. Issue #16
+closure still requires macOS CI evidence from the early #25 harness in addition
+to these unit gates.
+
 ## Recovery, memory, tracking, compaction, notifications
 
 - Recovery opens only a regular non-symlink source, copies a bounded suffix,

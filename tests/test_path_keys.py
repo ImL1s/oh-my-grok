@@ -13,11 +13,14 @@ from omg_cli.contracts.path_keys import (
     append_locked_jsonl,
     atomic_write_bytes,
     confined_path,
+    ensure_managed_dir,
+    exclusive_lock,
     mode_bits,
     safe_path_key,
     validate_safe_key,
 )
 from omg_cli.contracts.writer_chain import canonical_json_bytes
+from omg_cli import state as state_mod
 
 
 def test_safe_path_keys_are_namespace_bound_and_reject_hostile_text() -> None:
@@ -114,3 +117,100 @@ def test_locked_jsonl_uses_one_complete_canonical_line_per_record(tmp_path: Path
     assert mode_bits(journal) == DATA_FILE_MODE
     with pytest.raises(ValueError, match="physical line"):
         append_locked_jsonl(journal, b"{}\n{}")
+
+
+def _sentinel(outside: Path, body: bytes = b"sentinel-unchanged") -> tuple[bytes, int]:
+    outside.write_bytes(body)
+    mode = mode_bits(outside)
+    return body, mode
+
+
+def test_ensure_omg_dirs_rejects_dot_omg_symlink(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    body, mode = _sentinel(outside / "marker")
+    (project / ".omg").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ContractPathError, match="symlink"):
+        state_mod.ensure_omg_dirs(project)
+    assert (outside / "marker").read_bytes() == body
+    assert mode_bits(outside / "marker") == mode
+    # No state directory should appear inside the outside tree from a successful walk.
+    assert not (outside / "state").exists() or mode_bits(outside / "marker") == mode
+
+
+def test_nested_state_symlink_rejects_run_write(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    omg = project / ".omg"
+    omg.mkdir(parents=True)
+    outside = tmp_path / "outside-state"
+    outside.mkdir()
+    body, mode = _sentinel(outside / "payload", b"keep-me")
+    (omg / "state").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ContractPathError, match="symlink"):
+        ensure_managed_dir(omg / "state" / "runs")
+    with pytest.raises(ContractPathError, match="symlink"):
+        atomic_write_bytes(omg / "state" / "active.json", b'{"x":1}')
+    assert (outside / "payload").read_bytes() == body
+    assert mode_bits(outside / "payload") == mode
+
+
+def test_lock_file_symlink_rejects_journal_append(tmp_path: Path) -> None:
+    journal = tmp_path / ".omg" / "events" / "events.jsonl"
+    ensure_managed_dir(journal.parent)
+    outside = tmp_path / "outside-lock-target"
+    body, mode = _sentinel(outside, b"lock-target")
+    lock_path = journal.with_name(journal.name + ".lock")
+    lock_path.symlink_to(outside)
+    with pytest.raises(ContractPathError, match="symlink"):
+        append_locked_jsonl(journal, b'{"ok":true}')
+    with pytest.raises(ContractPathError, match="symlink"):
+        with exclusive_lock(lock_path):
+            pass  # pragma: no cover - must not enter
+    assert outside.read_bytes() == body
+    assert mode_bits(outside) == mode
+
+
+def test_component_swap_race_cannot_redirect_publication(tmp_path: Path) -> None:
+    """If a parent component becomes a symlink mid-flight, publication fails closed.
+
+    The parent descriptor is opened before the swap; rename/link stay inside the
+    original directory inode. A post-open path that re-enters via the swapped
+    name must not write the outside sentinel.
+    """
+
+    store = tmp_path / ".omg" / "state"
+    ensure_managed_dir(store)
+    destination = store / "record.json"
+    atomic_write_bytes(destination, b"original")
+
+    outside = tmp_path / "outside-swap"
+    outside.mkdir()
+    body, mode = _sentinel(outside / "record.json", b"outside-original")
+
+    # Swap the managed state directory for a symlink after the first publication.
+    import shutil
+
+    real_state = store.resolve()
+    backup = tmp_path / "state-backup"
+    shutil.move(str(real_state), str(backup))
+    store.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ContractPathError, match="symlink"):
+        atomic_write_bytes(destination, b"attacker")
+    assert (outside / "record.json").read_bytes() == body
+    assert mode_bits(outside / "record.json") == mode
+    # Original bytes remain in the real (moved) directory.
+    assert (backup / "record.json").read_bytes() == b"original"
+
+
+def test_regular_managed_store_modes_still_exact(tmp_path: Path) -> None:
+    path = tmp_path / ".omg" / "state" / "record.json"
+    atomic_write_bytes(path, b"payload")
+    assert path.read_bytes() == b"payload"
+    assert mode_bits(path.parent) == MANAGED_DIR_MODE
+    assert mode_bits(path) == DATA_FILE_MODE
+    ensure_managed_dir(tmp_path / ".omg" / "runs")
+    assert mode_bits(tmp_path / ".omg") == MANAGED_DIR_MODE
+    assert mode_bits(tmp_path / ".omg" / "runs") == MANAGED_DIR_MODE

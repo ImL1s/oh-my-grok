@@ -34,7 +34,6 @@ from omg_cli.team.plane import (
     TEAM_WORKER_ENV,
     TeamError,
     TeamGateError,
-    _atomic_write_json,
     _build_task_grok_argv,
     _grok_args_for_pane,
     _list_pane_identities,
@@ -55,6 +54,7 @@ from omg_cli.team.plane import (
     experimental_enabled,
     in_spawned_worker_context,
     load_team_meta,
+    mutate_team_meta,
     team_dir,
     team_meta_path,
 )
@@ -712,27 +712,36 @@ def _scale_up(
         except OSError as exc:
             raise TeamError(f"scale-up tmux launch failed: {exc}") from exc
 
-    updated = dict(meta)
-    updated["writer"] = CLI_WRITER
-    updated["schema_version"] = int(meta.get("schema_version") or SCHEMA_VERSION)
-    updated["tasks"] = list(tasks_all) + new_records
-    updated["task_count"] = len(_active_tasks(updated["tasks"]))
-    updated["next_worker_index"] = start_idx + n
-    updated["last_scale_at"] = _utc_now()
-    updated["last_scale"] = {
+    scale_at = _utc_now()
+    last_scale = {
         "op": "add",
         "n": n,
         "window_indices": [r["window_index"] for r in new_records],
         "task_ids": [r["task_id"] for r in new_records],
         "dry_run": effective_dry,
     }
-    if not effective_dry:
-        updated["identity_generation"] = generation
-        updated["identity_receipt_sha256"] = scale_receipt_hash
-    # Never copy forged verified
-    updated.pop("verified", None)
-    updated.pop("passes", None)
-    _atomic_write_json(team_meta_path(root, run_id), updated)
+    new_task_list = list(tasks_all) + new_records
+    new_task_count = len(_active_tasks(new_task_list))
+    next_idx = start_idx + n
+    identity_gen = generation if not effective_dry else None
+    identity_hash = scale_receipt_hash if not effective_dry else None
+
+    def _apply_scale_up(current: dict[str, Any]) -> dict[str, Any]:
+        updated = dict(current)
+        updated["schema_version"] = int(
+            current.get("schema_version") or SCHEMA_VERSION
+        )
+        updated["tasks"] = list(new_task_list)
+        updated["task_count"] = new_task_count
+        updated["next_worker_index"] = next_idx
+        updated["last_scale_at"] = scale_at
+        updated["last_scale"] = dict(last_scale)
+        if identity_gen is not None:
+            updated["identity_generation"] = identity_gen
+            updated["identity_receipt_sha256"] = identity_hash
+        return updated
+
+    updated = mutate_team_meta(root, run_id, _apply_scale_up)
 
     try:
         write_status(
@@ -877,12 +886,9 @@ def _scale_down(
             rec["pid"] = None
             rec["pgid"] = None
 
-    updated = dict(meta)
-    updated["writer"] = CLI_WRITER
-    updated["tasks"] = tasks_all
-    updated["task_count"] = len(_active_tasks(tasks_all))
-    updated["last_scale_at"] = now
-    updated["last_scale"] = {
+    down_task_list = list(tasks_all)
+    down_task_count = len(_active_tasks(down_task_list))
+    last_scale_down = {
         "op": "remove",
         "n": n,
         "task_ids": sorted(victim_ids),
@@ -890,12 +896,21 @@ def _scale_down(
         "actions": actions,
         "dry_run": effective_dry,
     }
-    if not effective_dry:
-        updated["identity_generation"] = generation
-        updated["identity_receipt_sha256"] = scale_receipt_hash
-    updated.pop("verified", None)
-    updated.pop("passes", None)
-    _atomic_write_json(team_meta_path(root, run_id), updated)
+    down_identity_gen = generation if not effective_dry else None
+    down_identity_hash = scale_receipt_hash if not effective_dry else None
+
+    def _apply_scale_down(current: dict[str, Any]) -> dict[str, Any]:
+        updated = dict(current)
+        updated["tasks"] = list(down_task_list)
+        updated["task_count"] = down_task_count
+        updated["last_scale_at"] = now
+        updated["last_scale"] = dict(last_scale_down)
+        if down_identity_gen is not None:
+            updated["identity_generation"] = down_identity_gen
+            updated["identity_receipt_sha256"] = down_identity_hash
+        return updated
+
+    updated = mutate_team_meta(root, run_id, _apply_scale_down)
 
     try:
         write_status(
@@ -1035,18 +1050,21 @@ def resume_team(
             )
         tasks_out.append(rec)
 
-    updated = dict(meta)
-    updated["writer"] = CLI_WRITER
-    updated["tasks"] = tasks_out
-    updated["task_count"] = len(_active_tasks(tasks_out))
-    updated["resumed_at"] = _utc_now()
-    updated["resume_changes"] = changed
-    updated.pop("verified", None)
-    updated.pop("passes", None)
+    resumed_at = _utc_now()
+    tasks_out_final = list(tasks_out)
+    task_count_final = len(_active_tasks(tasks_out_final))
+
+    def _apply_resume(current: dict[str, Any]) -> dict[str, Any]:
+        updated = dict(current)
+        updated["tasks"] = list(tasks_out_final)
+        updated["task_count"] = task_count_final
+        updated["resumed_at"] = resumed_at
+        updated["resume_changes"] = changed
+        return updated
 
     # Always rewrite CLI stamp (idempotent; even when changed==0 so resume
     # is recorded for operators). Pure-ish: only status reconciliation fields.
-    _atomic_write_json(team_meta_path(root_path, rid), updated)
+    updated = mutate_team_meta(root_path, rid, _apply_resume)
 
     return {
         "writer": CLI_WRITER,
@@ -1389,25 +1407,34 @@ def _relaunch_dead_incomplete_workers_locked(
             tasks_before=tasks_before,
             tasks_after=active_after,
         )
-        meta = dict(meta)
-        meta["identity_generation"] = generation
-        meta["identity_receipt_sha256"] = receipt_hash
+        identity_gen = generation
+        identity_hash = receipt_hash
     else:
         generation = int(meta.get("identity_generation") or 0)
-        meta = dict(meta)
+        identity_gen = None
+        identity_hash = None
 
-    meta["writer"] = CLI_WRITER
-    meta["tasks"] = tasks_all
-    meta["task_count"] = len(_active_tasks(tasks_all))
-    meta["resumed_at"] = _utc_now()
-    meta["last_relaunch"] = {
+    relaunch_tasks = list(tasks_all)
+    relaunch_count = len(_active_tasks(relaunch_tasks))
+    relaunch_at = _utc_now()
+    last_relaunch = {
         "relaunched": [r["task_id"] for r in relaunched],
         "blocked": [b["task_id"] for b in blocked],
-        "at": _utc_now(),
+        "at": relaunch_at,
     }
-    meta.pop("verified", None)
-    meta.pop("passes", None)
-    _atomic_write_json(team_meta_path(root_path, rid), meta)
+
+    def _apply_relaunch(current: dict[str, Any]) -> dict[str, Any]:
+        out = dict(current)
+        out["tasks"] = list(relaunch_tasks)
+        out["task_count"] = relaunch_count
+        out["resumed_at"] = relaunch_at
+        out["last_relaunch"] = dict(last_relaunch)
+        if identity_gen is not None:
+            out["identity_generation"] = identity_gen
+            out["identity_receipt_sha256"] = identity_hash
+        return out
+
+    mutate_team_meta(root_path, rid, _apply_relaunch)
 
     return {
         "writer": CLI_WRITER,

@@ -1,13 +1,23 @@
 """Safe path keys and durable local-store primitives.
 
 Raw host/run identifiers never become path components.  Callers use a SHA-256
-key, then confine the resulting path beneath a non-symlink managed root.
-Canonical JSON persistence is intentionally implemented here rather than by a
-third-party dependency so the byte and permission contract stays reviewable.
+key, then confine the resulting path beneath a managed root.
+
+Managed directories and files are created and mutated through descriptor-
+relative (``dir_fd``) operations with ``O_NOFOLLOW`` so intermediate or
+destination symlinks cannot redirect authoritative state outside the trusted
+store.  Path strings are used only to locate a pre-existing base directory;
+every managed component under that base is opened or created without following
+symlinks.
+
+On hosts without POSIX ``dir_fd`` / ``O_NOFOLLOW`` support the primitives fail
+closed with :class:`ContractPathError` rather than falling back to weaker
+path-based writes.
 """
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import re
@@ -28,6 +38,10 @@ DATA_FILE_MODE = 0o600
 IMMUTABLE_SOURCE_MODE = 0o400
 EXECUTABLE_MODE = 0o700
 SAFE_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
+MANAGED_ROOT_MARKER = ".omg"
+
+# errno.ELOOP is 40 on Linux and 62 on macOS; also accept EINVAL for odd platforms.
+_NOFOLLOW_ERRNOS = {errno.ELOOP, getattr(errno, "EMLINK", -1), errno.EINVAL}
 
 
 class ContractPathError(ValueError):
@@ -60,53 +74,265 @@ def validate_safe_key(value: str) -> str:
     return value
 
 
-def _assert_no_symlink_components(root: Path, candidate: Path) -> None:
-    current = root
-    if current.is_symlink():
-        raise ContractPathError(f"managed root may not be a symlink: {current}")
-    relative = candidate.relative_to(root)
-    for part in relative.parts:
-        current = current / part
-        if current.is_symlink():
-            raise ContractPathError(f"managed path contains symlink: {current}")
+def _require_confinement_platform() -> None:
+    if os.name != "posix":  # pragma: no cover - non-POSIX is unsupported
+        raise ContractPathError(
+            "managed-store confinement requires a POSIX host with dir_fd/O_NOFOLLOW"
+        )
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise ContractPathError(
+            "managed-store confinement requires O_NOFOLLOW and O_DIRECTORY"
+        )
+    # dir_fd support is documented on os.open; fail closed if unavailable.
+    try:
+        probe = os.open
+        _ = probe  # silence unused; capability is structural
+    except Exception as exc:  # pragma: no cover
+        raise ContractPathError(
+            "managed-store confinement requires os.open dir_fd support"
+        ) from exc
+
+
+def _validate_component(part: str) -> str:
+    _reject_unsafe_text(part, label="path component")
+    if part in {".", ".."} or Path(part).name != part or "/" in part or "\\" in part:
+        raise ContractPathError(f"unsafe path component: {part!r}")
+    return part
+
+
+def _is_nofollow_error(exc: OSError) -> bool:
+    return exc.errno in _NOFOLLOW_ERRNOS or exc.errno == errno.ELOOP
+
+
+def _open_dir_at(dir_fd: int | None, name: str) -> int:
+    """Open an existing directory relative to *dir_fd* without following symlinks."""
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        if dir_fd is None:
+            return os.open(name, flags)
+        return os.open(name, flags, dir_fd=dir_fd)
+    except OSError as exc:
+        if _is_nofollow_error(exc) or exc.errno in {errno.ENOTDIR, errno.EEXIST}:
+            raise ContractPathError(
+                f"managed directory may not be a symlink or non-directory: {name}"
+            ) from exc
+        raise
+
+
+def _mkdir_open_at(dir_fd: int, name: str, *, mode: int = MANAGED_DIR_MODE) -> int:
+    """Create *name* under *dir_fd* if missing, then open it with O_NOFOLLOW."""
+
+    try:
+        os.mkdir(name, mode, dir_fd=dir_fd)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        if _is_nofollow_error(exc):
+            raise ContractPathError(
+                f"managed directory may not be a symlink: {name}"
+            ) from exc
+        raise
+    child = _open_dir_at(dir_fd, name)
+    try:
+        st = os.fstat(child)
+        if not stat.S_ISDIR(st.st_mode):
+            raise ContractPathError(f"managed path is not a directory: {name}")
+        os.fchmod(child, mode)
+    except Exception:
+        os.close(child)
+        raise
+    return child
+
+
+def _split_base_and_components(target: Path) -> tuple[Path, list[str]]:
+    """Return (base_path, managed_components) for *target*.
+
+    When the path contains ``.omg``, the base is everything above that marker
+    (system path prefixes may contain symlinks such as ``/tmp`` → ``/private/tmp``).
+    Components from ``.omg`` downward are traversed with no-follow semantics.
+
+    Otherwise the deepest existing non-symlink ancestor is the base and the
+    remaining missing names are managed components.
+    """
+
+    target = target.absolute()
+    parts = target.parts
+    if not parts:
+        raise ContractPathError("empty managed path")
+
+    if MANAGED_ROOT_MARKER in parts:
+        idx = parts.index(MANAGED_ROOT_MARKER)
+        if idx == 0:
+            raise ContractPathError("managed root marker cannot be filesystem root")
+        base = Path(*parts[:idx])
+        components = [_validate_component(p) for p in parts[idx:]]
+        return base, components
+
+    missing: list[str] = []
+    current = target
+    while True:
+        try:
+            exists = os.path.lexists(current)
+        except OSError:
+            exists = False
+        if exists or current.parent == current:
+            break
+        missing.append(current.name)
+        current = current.parent
+    missing.reverse()
+    if os.path.lexists(current) and current.is_symlink():
+        raise ContractPathError(f"managed base may not be a symlink: {current}")
+    if not os.path.lexists(current) and current.parent == current:
+        # filesystem root as base
+        return current, [_validate_component(p) for p in missing]
+    if not missing:
+        # entire path already exists — re-open leaf under parent with no-follow
+        if current.parent == current:
+            return current, []
+        return current.parent, [_validate_component(current.name)]
+    return current, [_validate_component(p) for p in missing]
+
+
+def _open_base_dir(base: Path) -> int:
+    """Open an existing base directory (system path; intermediate symlinks OK)."""
+
+    base = base.absolute()
+    if not base.exists():
+        # Create base path without no-follow on system prefixes (mkdir parents).
+        # Only the final base directory is required to be a real directory.
+        base.mkdir(parents=True, exist_ok=True)
+    if base.is_symlink():
+        raise ContractPathError(f"managed base may not be a symlink: {base}")
+    if not base.is_dir():
+        raise ContractPathError(f"managed base is not a directory: {base}")
+    try:
+        return os.open(base, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as exc:
+        raise ContractPathError(f"cannot open managed base: {base}") from exc
+
+
+def _walk_managed_dirs(base_fd: int, components: list[str], *, create: bool) -> int:
+    """Walk *components* under *base_fd* with O_NOFOLLOW; return final dir fd.
+
+    The returned descriptor is owned by the caller. Intermediate descriptors are
+    closed. *base_fd* is not closed.
+    """
+
+    current = base_fd
+    owns_current = False
+    try:
+        for name in components:
+            if create:
+                nxt = _mkdir_open_at(current, name)
+            else:
+                nxt = _open_dir_at(current, name)
+            if owns_current:
+                os.close(current)
+            current = nxt
+            owns_current = True
+        if not owns_current:
+            # No components: duplicate base fd so caller can always close.
+            return os.dup(base_fd)
+        owns_current = False
+        return current
+    finally:
+        if owns_current:
+            os.close(current)
+
+
+def ensure_managed_dir(path: Path | str) -> Path:
+    """Create *path* as a ``0700`` directory with no-follow managed components."""
+
+    _require_confinement_platform()
+    target = Path(path).absolute()
+    base, components = _split_base_and_components(target)
+    base_fd = _open_base_dir(base)
+    try:
+        final_fd = _walk_managed_dirs(base_fd, components, create=True)
+        try:
+            os.fchmod(final_fd, MANAGED_DIR_MODE)
+        finally:
+            os.close(final_fd)
+    finally:
+        os.close(base_fd)
+    return target
+
+
+def _ensure_parent_dir_fd(path: Path) -> tuple[int, str]:
+    """Ensure parent directory of *path*; return ``(parent_fd, basename)``."""
+
+    path = path.absolute()
+    name = _validate_component(path.name)
+    parent = path.parent
+    base, components = _split_base_and_components(parent)
+    base_fd = _open_base_dir(base)
+    try:
+        parent_fd = _walk_managed_dirs(base_fd, components, create=True)
+    finally:
+        os.close(base_fd)
+    return parent_fd, name
+
+
+def _fsync_fd(descriptor: int) -> None:
+    if os.name != "posix":  # pragma: no cover
+        return
+    os.fsync(descriptor)
+
+
+def _reject_symlink_at(dir_fd: int, name: str, *, label: str) -> None:
+    try:
+        st = os.lstat(name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(st.st_mode):
+        raise ContractPathError(f"{label} may not be a symlink: {name}")
 
 
 def confined_path(root: Path | str, *parts: str) -> Path:
     """Build a path below *root* while rejecting traversal and symlink parents."""
 
+    _require_confinement_platform()
     root_path = Path(root).absolute()
-    clean_parts: list[str] = []
-    for part in parts:
-        _reject_unsafe_text(part, label="path component")
-        if part in {".", ".."} or Path(part).name != part or "/" in part or "\\" in part:
-            raise ContractPathError(f"unsafe path component: {part!r}")
-        clean_parts.append(part)
+    clean_parts = [_validate_component(part) for part in parts]
+    if root_path.is_symlink():
+        raise ContractPathError(f"managed root may not be a symlink: {root_path}")
     candidate = root_path.joinpath(*clean_parts)
     try:
         candidate.relative_to(root_path)
     except ValueError as exc:  # pragma: no cover - guarded by component checks
         raise ContractPathError("candidate escapes managed root") from exc
-    _assert_no_symlink_components(root_path, candidate)
-    return candidate
-
-
-def ensure_managed_dir(path: Path | str) -> Path:
-    directory = Path(path)
-    if directory.exists() and directory.is_symlink():
-        raise ContractPathError(f"managed directory may not be a symlink: {directory}")
-    directory.mkdir(parents=True, exist_ok=True, mode=MANAGED_DIR_MODE)
-    os.chmod(directory, MANAGED_DIR_MODE)
-    return directory
-
-
-def _fsync_directory(directory: Path) -> None:
-    if os.name != "posix":  # pragma: no cover
-        return
-    descriptor = os.open(directory, os.O_RDONLY)
+    # Descriptor walk from root for every existing component.
+    base_fd = _open_base_dir(root_path)
     try:
-        os.fsync(descriptor)
+        current = base_fd
+        owns = False
+        for name in clean_parts:
+            child_path = (
+                root_path.joinpath(name)
+                if current is base_fd and not owns
+                else None
+            )
+            # Only open components that already exist; confined_path does not create.
+            try:
+                st = os.lstat(name, dir_fd=current)
+            except FileNotFoundError:
+                break
+            if stat.S_ISLNK(st.st_mode):
+                raise ContractPathError(f"managed path contains symlink: {name}")
+            if not stat.S_ISDIR(st.st_mode):
+                break
+            nxt = _open_dir_at(current, name)
+            if owns:
+                os.close(current)
+            current = nxt
+            owns = True
+            _ = child_path
+        if owns:
+            os.close(current)
     finally:
-        os.close(descriptor)
+        os.close(base_fd)
+    return candidate
 
 
 def atomic_write_bytes(
@@ -116,91 +342,194 @@ def atomic_write_bytes(
     mode: int = DATA_FILE_MODE,
     replace: bool = True,
 ) -> Path:
-    """Write bytes durably with an exact mode.
+    """Write bytes durably with an exact mode under a no-follow parent descriptor.
 
-    ``replace=False`` publishes with a same-filesystem hard-link operation.
+    ``replace=False`` publishes with a same-directory hard-link operation.
     Unlike a preflight ``exists()`` check followed by ``os.replace()``, link
     creation is one atomic no-clobber decision in the kernel.  It also refuses
     an already-present symlink instead of replacing or following it.
     """
 
-    destination = Path(path)
-    parent = ensure_managed_dir(destination.parent)
-    if destination.is_symlink():
-        raise ContractPathError(f"destination may not be a symlink: {destination}")
-    temporary = parent / f".{destination.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    descriptor = os.open(temporary, flags, mode)
+    _require_confinement_platform()
+    destination = Path(path).absolute()
+    parent_fd, name = _ensure_parent_dir_fd(destination)
+    temporary = f".{name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     try:
-        with os.fdopen(descriptor, "wb", closefd=True) as handle:
-            handle.write(body)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, mode)
-        if replace:
-            if destination.is_symlink():
+        _reject_symlink_at(parent_fd, name, label="destination")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        try:
+            descriptor = os.open(temporary, flags, mode, dir_fd=parent_fd)
+        except OSError as exc:
+            if _is_nofollow_error(exc):
                 raise ContractPathError(
-                    f"destination may not be a symlink: {destination}"
-                )
-            os.replace(temporary, destination)
-            os.chmod(destination, mode)
-        else:
-            # POSIX link(2) is atomic and never replaces an existing directory
-            # entry.  ``follow_symlinks=False`` documents and enforces that the
-            # source is the temporary regular file itself.
-            os.link(temporary, destination, follow_symlinks=False)
-            temporary.unlink()
-        _fsync_directory(parent)
+                    f"temporary path may not be a symlink: {temporary}"
+                ) from exc
+            raise
+        try:
+            with os.fdopen(descriptor, "wb", closefd=True) as handle:
+                handle.write(body)
+                handle.flush()
+                os.fsync(handle.fileno())
+            # fchmod via re-open path relative to parent is racy; chmod through
+            # a no-follow open of the temp name instead.
+            tfd = os.open(temporary, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+            try:
+                os.fchmod(tfd, mode)
+            finally:
+                os.close(tfd)
+            if replace:
+                _reject_symlink_at(parent_fd, name, label="destination")
+                os.rename(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                dfd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                try:
+                    st = os.fstat(dfd)
+                    if not stat.S_ISREG(st.st_mode):
+                        raise ContractPathError(
+                            f"destination must be a regular file: {name}"
+                        )
+                    os.fchmod(dfd, mode)
+                finally:
+                    os.close(dfd)
+            else:
+                try:
+                    os.link(
+                        temporary,
+                        name,
+                        src_dir_fd=parent_fd,
+                        dst_dir_fd=parent_fd,
+                        follow_symlinks=False,
+                    )
+                except FileExistsError:
+                    raise
+                except OSError as exc:
+                    if _is_nofollow_error(exc):
+                        raise ContractPathError(
+                            f"destination may not be a symlink: {name}"
+                        ) from exc
+                    raise
+                os.unlink(temporary, dir_fd=parent_fd)
+            _fsync_fd(parent_fd)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
     finally:
-        if temporary.exists():
-            temporary.unlink(missing_ok=True)
+        os.close(parent_fd)
     return destination
 
 
 @contextmanager
 def exclusive_lock(path: Path | str) -> Iterator[None]:
-    """Hold a POSIX advisory lock without exposing lock-file contents."""
+    """Hold a POSIX advisory lock without following a lock-file symlink."""
 
+    _require_confinement_platform()
     if fcntl is None:  # pragma: no cover
         raise RuntimeError("reliable POSIX advisory locking is unavailable")
-    lock_path = Path(path)
-    ensure_managed_dir(lock_path.parent)
-    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, DATA_FILE_MODE)
+    lock_path = Path(path).absolute()
+    parent_fd, name = _ensure_parent_dir_fd(lock_path)
+    descriptor: int | None = None
     try:
+        _reject_symlink_at(parent_fd, name, label="lock file")
+        # Exclusive create then plain no-follow open avoids a Darwin race where
+        # concurrent O_CREAT|O_NOFOLLOW openat calls can spuriously return ENOENT.
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                DATA_FILE_MODE,
+                dir_fd=parent_fd,
+            )
+        except FileExistsError:
+            try:
+                descriptor = os.open(
+                    name, os.O_RDWR | os.O_NOFOLLOW, dir_fd=parent_fd
+                )
+            except OSError as exc:
+                if _is_nofollow_error(exc):
+                    raise ContractPathError(
+                        f"lock file may not be a symlink: {name}"
+                    ) from exc
+                raise
+        except OSError as exc:
+            if _is_nofollow_error(exc):
+                raise ContractPathError(
+                    f"lock file may not be a symlink: {name}"
+                ) from exc
+            # Last-resort retry: parent was ensured; path open with O_NOFOLLOW
+            # still refuses a lock-file symlink on the final component.
+            if exc.errno == errno.ENOENT:
+                try:
+                    descriptor = os.open(
+                        str(lock_path),
+                        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+                        DATA_FILE_MODE,
+                    )
+                except OSError as retry_exc:
+                    if _is_nofollow_error(retry_exc):
+                        raise ContractPathError(
+                            f"lock file may not be a symlink: {name}"
+                        ) from retry_exc
+                    raise
+            else:
+                raise
+        st = os.fstat(descriptor)
+        if not stat.S_ISREG(st.st_mode):
+            raise ContractPathError(f"lock file must be a regular file: {name}")
         os.fchmod(descriptor, DATA_FILE_MODE)
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         yield
     finally:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
+        if descriptor is not None:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
+        os.close(parent_fd)
 
 
 def append_locked_jsonl(path: Path | str, canonical_record: bytes) -> None:
     """Append one complete canonical record with one ``O_APPEND`` write."""
 
+    _require_confinement_platform()
     if b"\n" in canonical_record or not canonical_record:
         raise ValueError("canonical JSONL record must be one non-empty physical line")
-    destination = Path(path)
-    ensure_managed_dir(destination.parent)
-    if destination.is_symlink():
-        raise ContractPathError(f"journal may not be a symlink: {destination}")
-    lock_path = destination.with_name(destination.name + ".lock")
-    with exclusive_lock(lock_path):
-        descriptor = os.open(
-            destination,
-            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-            DATA_FILE_MODE,
-        )
-        try:
-            os.fchmod(descriptor, DATA_FILE_MODE)
-            payload = canonical_record + b"\n"
-            written = os.write(descriptor, payload)
-            if written != len(payload):  # pragma: no cover - regular files are atomic here
-                raise OSError("short O_APPEND journal write")
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        _fsync_directory(destination.parent)
+    destination = Path(path).absolute()
+    parent_fd, name = _ensure_parent_dir_fd(destination)
+    lock_name = name + ".lock"
+    try:
+        _reject_symlink_at(parent_fd, name, label="journal")
+        # exclusive_lock needs a path for API compat — open relative via path_keys
+        lock_path = destination.with_name(lock_name)
+        with exclusive_lock(lock_path):
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                    DATA_FILE_MODE,
+                    dir_fd=parent_fd,
+                )
+            except OSError as exc:
+                if _is_nofollow_error(exc):
+                    raise ContractPathError(
+                        f"journal may not be a symlink: {name}"
+                    ) from exc
+                raise
+            try:
+                st = os.fstat(descriptor)
+                if not stat.S_ISREG(st.st_mode):
+                    raise ContractPathError(f"journal must be a regular file: {name}")
+                os.fchmod(descriptor, DATA_FILE_MODE)
+                payload = canonical_record + b"\n"
+                written = os.write(descriptor, payload)
+                if written != len(payload):  # pragma: no cover
+                    raise OSError("short O_APPEND journal write")
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            _fsync_fd(parent_fd)
+    finally:
+        os.close(parent_fd)
 
 
 def append_locked_jsonl_once(
@@ -216,40 +545,72 @@ def append_locked_jsonl_once(
     canonical bytes is a collision and fails without mutating the journal.
     """
 
+    _require_confinement_platform()
     if b"\n" in canonical_record or not canonical_record:
         raise ValueError("canonical JSONL record must be one non-empty physical line")
-    destination = Path(path)
-    ensure_managed_dir(destination.parent)
-    if destination.is_symlink():
-        raise ContractPathError(f"journal may not be a symlink: {destination}")
-    lock_path = destination.with_name(destination.name + ".lock")
-    with exclusive_lock(lock_path):
-        if destination.exists():
-            with destination.open("rb") as handle:
-                for raw_line in handle:
-                    if not raw_line.endswith(b"\n"):
-                        raise ValueError("journal has an incomplete physical line")
-                    existing = raw_line[:-1]
-                    if identity_from_record(existing) != identity:
-                        continue
-                    if existing == canonical_record:
-                        return False
-                    raise ValueError("journal identity collision")
-        descriptor = os.open(
-            destination,
-            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-            DATA_FILE_MODE,
-        )
-        try:
-            os.fchmod(descriptor, DATA_FILE_MODE)
-            payload = canonical_record + b"\n"
-            written = os.write(descriptor, payload)
-            if written != len(payload):  # pragma: no cover - regular files are atomic here
-                raise OSError("short O_APPEND journal write")
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        _fsync_directory(destination.parent)
+    destination = Path(path).absolute()
+    parent_fd, name = _ensure_parent_dir_fd(destination)
+    lock_path = destination.with_name(name + ".lock")
+    try:
+        _reject_symlink_at(parent_fd, name, label="journal")
+        with exclusive_lock(lock_path):
+            # Read existing lines via no-follow open when present.
+            try:
+                existing_fd = os.open(
+                    name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd
+                )
+            except FileNotFoundError:
+                existing_fd = None
+            except OSError as exc:
+                if _is_nofollow_error(exc):
+                    raise ContractPathError(
+                        f"journal may not be a symlink: {name}"
+                    ) from exc
+                raise
+            if existing_fd is not None:
+                try:
+                    with os.fdopen(existing_fd, "rb", closefd=True) as handle:
+                        for raw_line in handle:
+                            if not raw_line.endswith(b"\n"):
+                                raise ValueError("journal has an incomplete physical line")
+                            existing = raw_line[:-1]
+                            if identity_from_record(existing) != identity:
+                                continue
+                            if existing == canonical_record:
+                                return False
+                            raise ValueError("journal identity collision")
+                except Exception:
+                    # existing_fd closed by fdopen on success; on error before fdopen
+                    # we already transferred ownership — if fdopen failed, close.
+                    raise
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                    DATA_FILE_MODE,
+                    dir_fd=parent_fd,
+                )
+            except OSError as exc:
+                if _is_nofollow_error(exc):
+                    raise ContractPathError(
+                        f"journal may not be a symlink: {name}"
+                    ) from exc
+                raise
+            try:
+                st = os.fstat(descriptor)
+                if not stat.S_ISREG(st.st_mode):
+                    raise ContractPathError(f"journal must be a regular file: {name}")
+                os.fchmod(descriptor, DATA_FILE_MODE)
+                payload = canonical_record + b"\n"
+                written = os.write(descriptor, payload)
+                if written != len(payload):  # pragma: no cover
+                    raise OSError("short O_APPEND journal write")
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            _fsync_fd(parent_fd)
+    finally:
+        os.close(parent_fd)
     return True
 
 

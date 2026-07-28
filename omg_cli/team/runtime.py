@@ -10,7 +10,14 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from omg_cli.contracts.path_keys import ensure_managed_dir, safe_path_key
+from omg_cli.contracts.path_keys import (
+    DATA_FILE_MODE,
+    ContractPathError,
+    atomic_write_bytes,
+    ensure_managed_dir,
+    exclusive_lock,
+    safe_path_key,
+)
 from omg_cli.contracts.state_schemas import require_safe_id
 from omg_cli.evidence import CLI_WRITER
 from omg_cli.team.api import execute_team_api
@@ -22,8 +29,8 @@ from omg_cli.team.plane import (
     TeamError,
     TeamGateError,
     load_team_meta,
+    mutate_team_meta,
     start_team,
-    team_meta_path,
     team_status,
 )
 from omg_cli.team.roles import normalize_role, role_meta
@@ -66,18 +73,58 @@ def write_team_ref(
     run_id: str,
     team_id: str,
 ) -> Path:
-    path = team_ref_path(root, team_name)
+    """Publish team-name → run_id lookup index atomically (exact 0600).
+
+    Index is non-authoritative for process identity, but still CLI-stamped and
+    identity-idempotent: re-writing the same binding is OK; a conflicting
+    binding for the same team_name fails closed.
+    """
+    name = require_safe_id(team_name, label="team_name")
+    rid = require_safe_id(run_id, label="run_id")
+    tid = require_safe_id(team_id, label="team_id")
+    path = team_ref_path(root, name)
     ensure_managed_dir(path.parent)
     payload = {
         "schema_version": 1,
         "writer": CLI_WRITER,
-        "team_name": team_name,
-        "run_id": run_id,
-        "team_id": team_id,
+        "team_name": name,
+        "run_id": rid,
+        "team_id": tid,
         "note": "lookup index only; mutations stay under .omg/state/runs/<run>/team/",
     }
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    path.chmod(0o600)
+    body = (
+        json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    lock_path = path.parent / "ref.lock"
+    with exclusive_lock(lock_path):
+        if path.is_file():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise TeamError(
+                    f"existing team ref unreadable for {name!r}: {exc}"
+                ) from exc
+            if not isinstance(existing, dict):
+                raise TeamError(f"existing team ref for {name!r} is not an object")
+            if existing.get("writer") == CLI_WRITER:
+                same = (
+                    existing.get("team_name") == name
+                    and existing.get("run_id") == rid
+                    and existing.get("team_id") == tid
+                )
+                if not same:
+                    raise TeamError(
+                        f"team ref identity conflict for {name!r}: "
+                        f"existing run_id={existing.get('run_id')!r} "
+                        f"team_id={existing.get('team_id')!r}; "
+                        f"refusing overwrite with run_id={rid!r} team_id={tid!r}"
+                    )
+        try:
+            atomic_write_bytes(path, body, mode=DATA_FILE_MODE, replace=True)
+        except ContractPathError as exc:
+            raise TeamError(
+                f"secure team ref publication refused for {name!r}: {exc}"
+            ) from exc
     return path
 
 
@@ -429,26 +476,28 @@ def launch_team(
 
     meta.update(startup)
 
-    # Persist annotations onto team.json compatibility view
-    path = team_meta_path(root_path, rid)
-    if path.is_file():
-        current = json.loads(path.read_text(encoding="utf-8"))
-        current.update(
-            {
-                "team_name": name,
-                "team_id": team_id,
-                "launch_mode": "shorthand",
-                "topology": "split",
-                **startup,
-            }
-        )
+    # Persist annotations onto team.json via locked atomic mutate (#21).
+    annotations = {
+        "team_name": name,
+        "team_id": team_id,
+        "launch_mode": "shorthand",
+        "topology": "split",
+        **startup,
+    }
+    extra_note = str(startup.get("startup_note") or "")
+
+    def _apply_shorthand(current: dict[str, Any]) -> dict[str, Any]:
+        current.update(annotations)
         note = str(current.get("note") or "").rstrip()
-        extra_note = str(startup.get("startup_note") or "")
         if extra_note and extra_note not in note:
             current["note"] = (note + "; " + extra_note).strip("; ").strip()
-        path.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
-        path.chmod(0o600)
-        meta = current
+        return current
+
+    try:
+        meta = mutate_team_meta(root_path, rid, _apply_shorthand)
+    except TeamError:
+        # start_team always writes team.json; surface as hard failure.
+        raise
     return meta
 
 

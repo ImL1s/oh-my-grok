@@ -38,11 +38,11 @@ from omg_cli.team.plane import (
     EXPERIMENTAL_ENV,
     TeamError,
     TeamGateError,
-    _atomic_write_json,
     collect_team,
     experimental_enabled,
     in_spawned_worker_context,
     load_team_meta,
+    mutate_team_meta,
     start_team,
     team_meta_path,
     team_status,
@@ -819,18 +819,18 @@ def _link_team_ralph(
     # Mirror onto team.json when present (after first exec start_team creates it)
     meta_path = team_meta_path(root, run_id)
     if meta_path.is_file():
+        linked = {
+            "path": str(ralph_path),
+            "max_iter": int(max_iter),
+            "status": "running",
+        }
+
+        def _apply_link(current: dict[str, Any]) -> dict[str, Any]:
+            current["linked_ralph"] = dict(linked)
+            return current
+
         try:
-            meta = load_team_meta(root, run_id)
-            meta = dict(meta)
-            meta["linked_ralph"] = {
-                "path": str(ralph_path),
-                "max_iter": int(max_iter),
-                "status": "running",
-            }
-            meta["writer"] = CLI_WRITER
-            meta.pop("verified", None)
-            meta.pop("passes", None)
-            _atomic_write_json(meta_path, meta)
+            mutate_team_meta(root, run_id, _apply_link)
         except TeamError:
             pass
 
@@ -896,18 +896,19 @@ def _update_linked_ralph(
     # Keep team.json linked_ralph in sync when team meta exists
     meta_path = team_meta_path(root, run_id)
     if meta_path.is_file():
+        linked = {
+            "path": str(path),
+            "max_iter": int(max_iter),
+            "iteration": int(iteration),
+            "status": status,
+        }
+
+        def _apply_sync(current: dict[str, Any]) -> dict[str, Any]:
+            current["linked_ralph"] = dict(linked)
+            return current
+
         try:
-            meta = dict(load_team_meta(root, run_id))
-            meta["linked_ralph"] = {
-                "path": str(path),
-                "max_iter": int(max_iter),
-                "iteration": int(iteration),
-                "status": status,
-            }
-            meta["writer"] = CLI_WRITER
-            meta.pop("verified", None)
-            meta.pop("passes", None)
-            _atomic_write_json(meta_path, meta)
+            mutate_team_meta(root, run_id, _apply_sync)
         except TeamError:
             pass
 
