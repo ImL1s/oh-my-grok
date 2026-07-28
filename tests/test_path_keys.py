@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import threading
 from pathlib import Path
@@ -214,3 +215,58 @@ def test_regular_managed_store_modes_still_exact(tmp_path: Path) -> None:
     ensure_managed_dir(tmp_path / ".omg" / "runs")
     assert mode_bits(tmp_path / ".omg") == MANAGED_DIR_MODE
     assert mode_bits(tmp_path / ".omg" / "runs") == MANAGED_DIR_MODE
+
+
+def test_lock_open_never_falls_back_to_absolute_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENOENT on descriptor-relative open must fail closed (Codex P1)."""
+
+    import omg_cli.contracts.path_keys as pk
+
+    store = tmp_path / ".omg" / "state"
+    ensure_managed_dir(store)
+    lock_path = store / "events.jsonl.lock"
+    parent_fd, name = pk._ensure_parent_dir_fd(lock_path)
+    try:
+        def always_enoent(*_a, **_k):
+            raise FileNotFoundError(errno.ENOENT, "forced", name)
+
+        monkeypatch.setattr(pk.os, "open", always_enoent)
+        with pytest.raises(ContractPathError, match="unable to open lock"):
+            with pk.exclusive_lock_at(parent_fd, name):
+                pass  # pragma: no cover
+    finally:
+        import os as _os
+
+        _os.close(parent_fd)
+
+
+def test_journal_lock_and_append_share_pinned_parent(tmp_path: Path) -> None:
+    """Journal lock must not re-resolve a swapped directory (Codex P1)."""
+
+    import os
+    import shutil
+
+    journal = tmp_path / ".omg" / "events" / "events.jsonl"
+    ensure_managed_dir(journal.parent)
+    append_locked_jsonl(journal, b'{"n":1}')
+
+    outside = tmp_path / "outside-events"
+    outside.mkdir()
+    body, mode = _sentinel(outside / "events.jsonl", b"outside-journal")
+
+    real_events = journal.parent.resolve()
+    backup = tmp_path / "events-backup"
+    shutil.move(str(real_events), str(backup))
+    journal.parent.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ContractPathError, match="symlink"):
+        append_locked_jsonl(journal, b'{"n":2}')
+    assert (outside / "events.jsonl").read_bytes() == body
+    assert mode_bits(outside / "events.jsonl") == mode
+    # Original journal still only has the first record under the real inode.
+    lines = (backup / "events.jsonl").read_bytes().splitlines()
+    assert lines == [b'{"n":1}']
+    # Lock file must not appear under the swapped outside tree.
+    assert not (outside / "events.jsonl.lock").exists()

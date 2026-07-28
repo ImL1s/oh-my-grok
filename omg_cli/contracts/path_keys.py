@@ -419,22 +419,19 @@ def atomic_write_bytes(
     return destination
 
 
-@contextmanager
-def exclusive_lock(path: Path | str) -> Iterator[None]:
-    """Hold a POSIX advisory lock without following a lock-file symlink."""
+def _open_lock_descriptor_at(parent_fd: int, name: str) -> int:
+    """Open/create a regular lock file under *parent_fd* with O_NOFOLLOW only.
 
-    _require_confinement_platform()
-    if fcntl is None:  # pragma: no cover
-        raise RuntimeError("reliable POSIX advisory locking is unavailable")
-    lock_path = Path(path).absolute()
-    parent_fd, name = _ensure_parent_dir_fd(lock_path)
-    descriptor: int | None = None
-    try:
-        _reject_symlink_at(parent_fd, name, label="lock file")
-        # Exclusive create then plain no-follow open avoids a Darwin race where
-        # concurrent O_CREAT|O_NOFOLLOW openat calls can spuriously return ENOENT.
+    Never falls back to absolute path resolution (intermediate symlink escape).
+    Retries a few times on descriptor-relative races (ENOENT after unlink).
+    """
+
+    name = _validate_component(name)
+    _reject_symlink_at(parent_fd, name, label="lock file")
+    last_exc: OSError | None = None
+    for _ in range(4):
         try:
-            descriptor = os.open(
+            return os.open(
                 name,
                 os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                 DATA_FILE_MODE,
@@ -442,37 +439,44 @@ def exclusive_lock(path: Path | str) -> Iterator[None]:
             )
         except FileExistsError:
             try:
-                descriptor = os.open(
-                    name, os.O_RDWR | os.O_NOFOLLOW, dir_fd=parent_fd
-                )
+                return os.open(name, os.O_RDWR | os.O_NOFOLLOW, dir_fd=parent_fd)
             except OSError as exc:
                 if _is_nofollow_error(exc):
                     raise ContractPathError(
                         f"lock file may not be a symlink: {name}"
                     ) from exc
+                if exc.errno == errno.ENOENT:
+                    last_exc = exc
+                    continue
                 raise
         except OSError as exc:
             if _is_nofollow_error(exc):
                 raise ContractPathError(
                     f"lock file may not be a symlink: {name}"
                 ) from exc
-            # Last-resort retry: parent was ensured; path open with O_NOFOLLOW
-            # still refuses a lock-file symlink on the final component.
             if exc.errno == errno.ENOENT:
-                try:
-                    descriptor = os.open(
-                        str(lock_path),
-                        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
-                        DATA_FILE_MODE,
-                    )
-                except OSError as retry_exc:
-                    if _is_nofollow_error(retry_exc):
-                        raise ContractPathError(
-                            f"lock file may not be a symlink: {name}"
-                        ) from retry_exc
-                    raise
-            else:
-                raise
+                # Parent gone or race — fail closed after retries; never path-open.
+                last_exc = exc
+                continue
+            raise
+    raise ContractPathError(
+        f"unable to open lock under managed parent descriptor: {name}"
+    ) from last_exc
+
+
+@contextmanager
+def exclusive_lock_at(parent_fd: int, name: str) -> Iterator[None]:
+    """Hold a lock on *name* relative to an already-open parent directory fd.
+
+    Does not close *parent_fd*. Callers that also write journal/data files must
+    use this so lock and mutation share one pinned directory inode.
+    """
+
+    _require_confinement_platform()
+    if fcntl is None:  # pragma: no cover
+        raise RuntimeError("reliable POSIX advisory locking is unavailable")
+    descriptor = _open_lock_descriptor_at(parent_fd, name)
+    try:
         st = os.fstat(descriptor)
         if not stat.S_ISREG(st.st_mode):
             raise ContractPathError(f"lock file must be a regular file: {name}")
@@ -480,11 +484,23 @@ def exclusive_lock(path: Path | str) -> Iterator[None]:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         yield
     finally:
-        if descriptor is not None:
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-            finally:
-                os.close(descriptor)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
+@contextmanager
+def exclusive_lock(path: Path | str) -> Iterator[None]:
+    """Hold a POSIX advisory lock without following a lock-file symlink."""
+
+    _require_confinement_platform()
+    lock_path = Path(path).absolute()
+    parent_fd, name = _ensure_parent_dir_fd(lock_path)
+    try:
+        with exclusive_lock_at(parent_fd, name):
+            yield
+    finally:
         os.close(parent_fd)
 
 
@@ -499,9 +515,7 @@ def append_locked_jsonl(path: Path | str, canonical_record: bytes) -> None:
     lock_name = name + ".lock"
     try:
         _reject_symlink_at(parent_fd, name, label="journal")
-        # exclusive_lock needs a path for API compat — open relative via path_keys
-        lock_path = destination.with_name(lock_name)
-        with exclusive_lock(lock_path):
+        with exclusive_lock_at(parent_fd, lock_name):
             try:
                 descriptor = os.open(
                     name,
@@ -550,10 +564,10 @@ def append_locked_jsonl_once(
         raise ValueError("canonical JSONL record must be one non-empty physical line")
     destination = Path(path).absolute()
     parent_fd, name = _ensure_parent_dir_fd(destination)
-    lock_path = destination.with_name(name + ".lock")
+    lock_name = name + ".lock"
     try:
         _reject_symlink_at(parent_fd, name, label="journal")
-        with exclusive_lock(lock_path):
+        with exclusive_lock_at(parent_fd, lock_name):
             # Read existing lines via no-follow open when present.
             try:
                 existing_fd = os.open(
