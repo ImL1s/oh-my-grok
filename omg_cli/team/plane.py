@@ -1197,10 +1197,18 @@ def _rollback_partial_team_start(
     created_run: bool,
     worktrees: Sequence[Path],
     team_dir_path: Path | None,
+    remove_ownership: bool = True,
+    ownership_backup: bytes | None = None,
 ) -> list[str]:
     """Undo pre-commit start debris (issue #17 all-or-nothing).
 
-    Reverse order: worktrees → team dir → ownership manifest → active pointer.
+    Only destroys resources **this invocation created**:
+    - ``worktrees`` must be newly prepared paths (not pre-existing --run trees)
+    - ``team_dir_path`` only when this start created the directory
+    - ownership: restore ``ownership_backup`` when we overwrote a prior file;
+      otherwise unlink only if ``remove_ownership`` (new write / new run)
+
+    Reverse order: worktrees → team dir → ownership → active pointer.
     Never raises; returns actionable error strings for diagnostics.
     """
     from omg_cli.workers import ownership_manifest_path
@@ -1226,7 +1234,23 @@ def _rollback_partial_team_start(
 
     try:
         mpath = ownership_manifest_path(root, rid)
-        if mpath.is_file() or mpath.is_symlink():
+        if ownership_backup is not None:
+            # Restore pre-start ownership when --run reuses an existing run.
+            try:
+                mpath.parent.mkdir(parents=True, exist_ok=True)
+                tmp = mpath.with_name(f".{mpath.name}.{os.getpid()}.rb.tmp")
+                try:
+                    tmp.write_bytes(ownership_backup)
+                    os.replace(tmp, mpath)
+                finally:
+                    if tmp.exists():
+                        try:
+                            tmp.unlink()
+                        except OSError:
+                            pass
+            except OSError as exc:
+                errors.append(f"ownership manifest restore: {exc}")
+        elif remove_ownership and (mpath.is_file() or mpath.is_symlink()):
             mpath.unlink(missing_ok=True)
     except OSError as exc:
         errors.append(f"ownership manifest remove: {exc}")
@@ -1676,9 +1700,14 @@ def start_team(
             raise TeamError(str(exc)) from exc
         # UnknownRoleError propagates (FLOOR 2) — do not swallow.
 
-    # Resolve / create run — track created_run for #17 rollback.
+    # Resolve / create run — track created_* for #17 rollback scope.
+    # When --run reuses an existing run, never destroy pre-existing worktrees /
+    # team dir / ownership (Codex P1 on PR #34).
     created_run = False
-    prepared_worktrees: list[Path] = []
+    created_worktrees: list[Path] = []
+    created_team_dir = False
+    ownership_backup: bytes | None = None
+    remove_ownership = True
     tdir: Path | None = None
     # Resolve / create run
     if run_id:
@@ -1728,8 +1757,10 @@ def start_team(
             root_path,
             rid,
             created_run=created_run,
-            worktrees=prepared_worktrees,
-            team_dir_path=tdir,
+            worktrees=created_worktrees,
+            team_dir_path=tdir if created_team_dir else None,
+            remove_ownership=remove_ownership,
+            ownership_backup=ownership_backup,
         )
         details = [str(exc), *list(extra), *rb]
         return TeamError(
@@ -1737,14 +1768,52 @@ def start_team(
             + "; ".join(d for d in details if d)
         )
 
+    # Snapshot pre-existing resources before we mutate (existing --run safety).
+    from omg_cli.workers import ownership_manifest_path as _own_path
+
+    mpath_pre = _own_path(root_path, rid)
+    if mpath_pre.is_file() and not mpath_pre.is_symlink():
+        try:
+            ownership_backup = mpath_pre.read_bytes()
+            remove_ownership = False  # will restore backup, not unlink
+        except OSError:
+            ownership_backup = None
+            remove_ownership = True
+    else:
+        ownership_backup = None
+        remove_ownership = True
+
+    pre_existing_worktrees: set[Path] = set()
+    for t in tasks:
+        tid_pre = str(t.get("task_id") or t.get("id") or "")
+        if not tid_pre:
+            continue
+        try:
+            wt_pre = worktree_dir(root_path, rid, tid_pre)
+        except Exception:
+            continue
+        if wt_pre.exists():
+            try:
+                pre_existing_worktrees.add(wt_pre.resolve())
+            except OSError:
+                pre_existing_worktrees.add(wt_pre)
+
     # Ownership + real worktrees (filesystem; dry_run still prepares)
     try:
         manifest = build_ownership_manifest(root_path, rid, tasks)
-        prepared_worktrees = list(prepare_owned_tasks(root_path, rid))
+        prepared = list(prepare_owned_tasks(root_path, rid))
+        for wt in prepared:
+            try:
+                wt_resolved = wt.resolve()
+            except OSError:
+                wt_resolved = wt
+            if wt_resolved not in pre_existing_worktrees:
+                created_worktrees.append(wt)
     except WorkerError as exc:
         raise _fail_start(exc) from exc
 
     tdir = team_dir(root_path, rid)
+    created_team_dir = not (tdir.is_dir() and not tdir.is_symlink())
     tdir.mkdir(parents=True, exist_ok=True)
 
     session = session_name_for_cwd(root_path)

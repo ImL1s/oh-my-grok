@@ -23,11 +23,12 @@ echo "== platform contracts ($("$PY" -c 'import sys; print(sys.version.split()[0
   "$@"
 
 # tmux transport smoke only when tmux is present.
+# When present, failures must fail the job (Codex P2 / macOS CI gate).
 if command -v tmux >/dev/null 2>&1; then
   echo "== tmux-present transport smoke =="
   "$PY" -m pytest -q -m "tmux and not live" --tb=short \
     tests/test_team_tmux_transport.py \
-    "$@" || true
+    "$@"
 else
   echo "== tmux not installed; skip tmux marker group =="
 fi
