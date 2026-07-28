@@ -78,7 +78,13 @@ jobs:
       - name: Install tmux (optional transport smoke)
         run: brew install tmux || true
       - name: Platform contracts
+        # #25: hermetic HOME/GROK_HOME; script prints uname/ps/git/tmux on fail.
         run: bash scripts/test_platform_contracts.sh
         env:
           HOME: ${{ runner.temp }}/omg-home
           GROK_HOME: ${{ runner.temp }}/omg-grok-home
+          # Script picks an available UTF-8 locale (macOS often lacks C.UTF-8).
+          GIT_AUTHOR_NAME: omg-platform-ci
+          GIT_AUTHOR_EMAIL: omg-platform-ci@example.com
+          GIT_COMMITTER_NAME: omg-platform-ci
+          GIT_COMMITTER_EMAIL: omg-platform-ci@example.com
