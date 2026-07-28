@@ -170,6 +170,13 @@ def acquire_scale_lock(root: Path | str, run_id: str) -> Iterator[Path]:
                         f"for run {run_id}"
                     )
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Re-check uniqueness under the lock before truncate.
+            st = os.fstat(fd)
+            if not stat_mod.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                raise TeamError(
+                    f"scale lock inode must be a unique regular file "
+                    f"for run {run_id} (nlink={st.st_nlink})"
+                )
         except BlockingIOError as exc:
             holder = ""
             try:

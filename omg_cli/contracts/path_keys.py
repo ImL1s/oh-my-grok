@@ -580,6 +580,11 @@ def append_locked_jsonl(path: Path | str, canonical_record: bytes) -> None:
                 st = os.fstat(descriptor)
                 if not stat.S_ISREG(st.st_mode):
                     raise ContractPathError(f"journal must be a regular file: {name}")
+                if st.st_nlink != 1:
+                    raise ContractPathError(
+                        f"journal must not be hard-linked: {name} "
+                        f"(nlink={st.st_nlink})"
+                    )
                 os.fchmod(descriptor, DATA_FILE_MODE)
                 payload = canonical_record + b"\n"
                 written = os.write(descriptor, payload)
@@ -661,6 +666,11 @@ def append_locked_jsonl_once(
                 st = os.fstat(descriptor)
                 if not stat.S_ISREG(st.st_mode):
                     raise ContractPathError(f"journal must be a regular file: {name}")
+                if st.st_nlink != 1:
+                    raise ContractPathError(
+                        f"journal must not be hard-linked: {name} "
+                        f"(nlink={st.st_nlink})"
+                    )
                 os.fchmod(descriptor, DATA_FILE_MODE)
                 payload = canonical_record + b"\n"
                 written = os.write(descriptor, payload)
