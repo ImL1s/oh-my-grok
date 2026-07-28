@@ -5,7 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/ImL1s/oh-my-grok/main/scripts/install.sh | bash
 #
 # Explicit manual/offline path (same Python transaction engine):
-#   bash install.sh --offline --archive ./oh-my-grok-0.6.0.tar.gz --checksums ./SHA256SUMS
+#   bash install.sh --offline --archive ./oh-my-grok-<VERSION>.tar.gz --checksums ./SHA256SUMS
 set -euo pipefail
 
 REPOSITORY="${OMG_INSTALL_REPOSITORY:-ImL1s/oh-my-grok}"
