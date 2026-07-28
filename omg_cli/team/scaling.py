@@ -137,23 +137,30 @@ def _reclaim_stale_scale_lock(path: Path) -> bool:
         return False
     except OSError:
         return False
+    def _restore() -> None:
+        try:
+            os.rename(reclaim, path)
+        except OSError:
+            try:
+                reclaim.unlink(missing_ok=True)  # type: ignore[call-arg]
+            except TypeError:
+                if reclaim.exists():
+                    reclaim.unlink()
+            except OSError:
+                pass
+
     try:
         try:
-            holder = reclaim.read_text(encoding="utf-8").strip().splitlines()[0].strip()
+            lines = reclaim.read_text(encoding="utf-8").strip().splitlines()
+            holder = lines[0].strip() if lines else ""
             pid = int(holder)
         except (OSError, IndexError, ValueError):
-            reclaim.unlink(missing_ok=True)  # type: ignore[call-arg]
-            return True
+            # Empty / incomplete lock: owner may still hold the O_EXCL fd and
+            # be about to write its PID — never reclaim this race window.
+            _restore()
+            return False
         if _pid_is_alive(pid):
-            # Put a still-live lock back for its owner.
-            try:
-                os.rename(reclaim, path)
-            except OSError:
-                try:
-                    reclaim.unlink(missing_ok=True)  # type: ignore[call-arg]
-                except TypeError:
-                    if reclaim.exists():
-                        reclaim.unlink()
+            _restore()
             return False
         try:
             reclaim.unlink(missing_ok=True)  # type: ignore[call-arg]
@@ -162,10 +169,7 @@ def _reclaim_stale_scale_lock(path: Path) -> bool:
                 reclaim.unlink()
         return True
     except OSError:
-        try:
-            os.rename(reclaim, path)
-        except OSError:
-            pass
+        _restore()
         return False
 
 
@@ -178,42 +182,54 @@ def acquire_scale_lock(root: Path | str, run_id: str) -> Iterator[Path]:
     """
     path = scale_lock_path(root, run_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = -1
-    for attempt in range(2):
-        try:
-            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            break
-        except FileExistsError as exc:
-            if attempt == 0 and _reclaim_stale_scale_lock(path):
-                continue
-            holder = ""
-            try:
-                holder = path.read_text(encoding="utf-8").strip()
-            except OSError:
-                pass
-            raise TeamError(
-                f"scale lock held for run {run_id}"
-                + (f" (pid={holder})" if holder else "")
-                + f"; refuse concurrent scale/stop op ({path})"
-            ) from exc
+    # Write PID to a temp file first, then link into place so a contender never
+    # observes an empty exclusive lock and reclaims it mid-publish.
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(f"{os.getpid()}\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    acquired = False
     try:
-        os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
-        os.close(fd)
-        fd = -1
-        yield path
-    finally:
-        if fd >= 0:
+        for attempt in range(2):
             try:
-                os.close(fd)
-            except OSError:
-                pass
+                os.link(tmp, path)
+                acquired = True
+                break
+            except FileExistsError as exc:
+                if attempt == 0 and _reclaim_stale_scale_lock(path):
+                    continue
+                holder = ""
+                try:
+                    holder = path.read_text(encoding="utf-8").strip()
+                except OSError:
+                    pass
+                raise TeamError(
+                    f"scale lock held for run {run_id}"
+                    + (f" (pid={holder})" if holder else "")
+                    + f"; refuse concurrent scale/stop op ({path})"
+                ) from exc
         try:
-            path.unlink(missing_ok=True)  # type: ignore[call-arg]
+            yield path
+        finally:
+            if acquired:
+                try:
+                    path.unlink(missing_ok=True)  # type: ignore[call-arg]
+                except TypeError:
+                    try:
+                        if path.exists():
+                            path.unlink()
+                    except OSError:
+                        pass
+                except OSError:
+                    pass
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)  # type: ignore[call-arg]
         except TypeError:
-            # py<3.8 missing_ok
             try:
-                if path.exists():
-                    path.unlink()
+                if tmp.exists():
+                    tmp.unlink()
             except OSError:
                 pass
         except OSError:
