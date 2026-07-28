@@ -51,6 +51,7 @@ jobs:
           python scripts/check_writer_ownership.py
           python scripts/generate_standalone_hook.py --check
           python scripts/generate_capabilities_lock.py --check
+          python scripts/check_version_consistency.py --check
       - name: Tests and static checks
         run: |
           python -m pytest -q -m "not live" --tb=short
