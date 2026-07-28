@@ -2088,17 +2088,47 @@ def cmd_parity(args: argparse.Namespace) -> int:
     return 0
 
 
+def apply_safe_yolo_flags(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> argparse.Namespace:
+    """Canonicalize ``--safe`` / ``--yolo`` after multi-layer parent parse.
+
+    Inherited common flags use ``default=argparse.SUPPRESS`` so unset layers do
+    not clobber a True set on an outer parser. Position before or after the
+    subcommand is therefore equivalent. Both flags together is a usage error
+    (exit 2 via ``parser.error``).
+    """
+    safe = bool(getattr(args, "safe", False))
+    yolo = bool(getattr(args, "yolo", False))
+    if safe and yolo:
+        parser.error(
+            "--safe and --yolo are mutually exclusive; pass only one "
+            "(either before or after the subcommand)"
+        )
+    args.safe = safe
+    args.yolo = yolo
+    return args
+
+
 def build_parser() -> argparse.ArgumentParser:
+    # SUPPRESS: root + every nested subparser share this parent. Plain
+    # store_true default=False lets a deeper layer overwrite an outer True
+    # with False when the flag was only given before the subcommand.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--safe",
         action="store_true",
-        help="prefer safe defaults (modes use later)",
+        default=argparse.SUPPRESS,
+        help="prefer safe defaults (modes use later); mutually exclusive with --yolo",
     )
     common.add_argument(
         "--yolo",
         action="store_true",
-        help="allow elevated permissions for mode launchers (off by default)",
+        default=argparse.SUPPRESS,
+        help=(
+            "allow elevated permissions for mode launchers (off by default); "
+            "mutually exclusive with --safe"
+        ),
     )
 
     from omg_cli import __version__
@@ -3858,12 +3888,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 # Keep in sync with build_parser() subcommands (madmax intercept policy).
+# install-hook must be listed: otherwise should_host_launch routes it to Grok.
 KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
     {
         "setup",
         "doctor",
         "update",
         "uninstall",
+        "install-hook",
         "note",
         "state",
         "cancel",
@@ -3936,6 +3968,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(raw)
+    apply_safe_yolo_flags(parser, args)
     if not getattr(args, "command", None):
         parser.print_help()
         return 0

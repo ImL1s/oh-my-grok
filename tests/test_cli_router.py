@@ -640,6 +640,18 @@ def test_safe_and_yolo_flags_accepted():
     assert r2.returncode in (0, 1)
     r3 = _run_omg("doctor", "--yolo")
     assert r3.returncode in (0, 1)
+    # Ordering-independent acceptance (issue #19): root-position flags parse.
+    r4 = _run_omg("--safe", "doctor")
+    assert r4.returncode in (0, 1)
+    r5 = _run_omg("--yolo", "doctor")
+    assert r5.returncode in (0, 1)
+
+
+def test_safe_and_yolo_mutually_exclusive_cli():
+    r = _run_omg("ulw", "--safe", "--yolo", "x")
+    assert r.returncode == 2, r.stderr + r.stdout
+    combined = (r.stderr + r.stdout).lower()
+    assert "mutually exclusive" in combined or ("--safe" in combined and "--yolo" in combined)
 
 
 def test_doctor_hooks_missing_plugin_root(monkeypatch, tmp_path):

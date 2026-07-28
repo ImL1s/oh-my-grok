@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import threading
 from pathlib import Path
@@ -13,11 +14,14 @@ from omg_cli.contracts.path_keys import (
     append_locked_jsonl,
     atomic_write_bytes,
     confined_path,
+    ensure_managed_dir,
+    exclusive_lock,
     mode_bits,
     safe_path_key,
     validate_safe_key,
 )
 from omg_cli.contracts.writer_chain import canonical_json_bytes
+from omg_cli import state as state_mod
 
 
 def test_safe_path_keys_are_namespace_bound_and_reject_hostile_text() -> None:
@@ -114,3 +118,155 @@ def test_locked_jsonl_uses_one_complete_canonical_line_per_record(tmp_path: Path
     assert mode_bits(journal) == DATA_FILE_MODE
     with pytest.raises(ValueError, match="physical line"):
         append_locked_jsonl(journal, b"{}\n{}")
+
+
+def _sentinel(outside: Path, body: bytes = b"sentinel-unchanged") -> tuple[bytes, int]:
+    outside.write_bytes(body)
+    mode = mode_bits(outside)
+    return body, mode
+
+
+def test_ensure_omg_dirs_rejects_dot_omg_symlink(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    body, mode = _sentinel(outside / "marker")
+    (project / ".omg").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ContractPathError, match="symlink"):
+        state_mod.ensure_omg_dirs(project)
+    assert (outside / "marker").read_bytes() == body
+    assert mode_bits(outside / "marker") == mode
+    # No state directory should appear inside the outside tree from a successful walk.
+    assert not (outside / "state").exists() or mode_bits(outside / "marker") == mode
+
+
+def test_nested_state_symlink_rejects_run_write(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    omg = project / ".omg"
+    omg.mkdir(parents=True)
+    outside = tmp_path / "outside-state"
+    outside.mkdir()
+    body, mode = _sentinel(outside / "payload", b"keep-me")
+    (omg / "state").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ContractPathError, match="symlink"):
+        ensure_managed_dir(omg / "state" / "runs")
+    with pytest.raises(ContractPathError, match="symlink"):
+        atomic_write_bytes(omg / "state" / "active.json", b'{"x":1}')
+    assert (outside / "payload").read_bytes() == body
+    assert mode_bits(outside / "payload") == mode
+
+
+def test_lock_file_symlink_rejects_journal_append(tmp_path: Path) -> None:
+    journal = tmp_path / ".omg" / "events" / "events.jsonl"
+    ensure_managed_dir(journal.parent)
+    outside = tmp_path / "outside-lock-target"
+    body, mode = _sentinel(outside, b"lock-target")
+    lock_path = journal.with_name(journal.name + ".lock")
+    lock_path.symlink_to(outside)
+    with pytest.raises(ContractPathError, match="symlink"):
+        append_locked_jsonl(journal, b'{"ok":true}')
+    with pytest.raises(ContractPathError, match="symlink"):
+        with exclusive_lock(lock_path):
+            pass  # pragma: no cover - must not enter
+    assert outside.read_bytes() == body
+    assert mode_bits(outside) == mode
+
+
+def test_component_swap_race_cannot_redirect_publication(tmp_path: Path) -> None:
+    """If a parent component becomes a symlink mid-flight, publication fails closed.
+
+    The parent descriptor is opened before the swap; rename/link stay inside the
+    original directory inode. A post-open path that re-enters via the swapped
+    name must not write the outside sentinel.
+    """
+
+    store = tmp_path / ".omg" / "state"
+    ensure_managed_dir(store)
+    destination = store / "record.json"
+    atomic_write_bytes(destination, b"original")
+
+    outside = tmp_path / "outside-swap"
+    outside.mkdir()
+    body, mode = _sentinel(outside / "record.json", b"outside-original")
+
+    # Swap the managed state directory for a symlink after the first publication.
+    import shutil
+
+    real_state = store.resolve()
+    backup = tmp_path / "state-backup"
+    shutil.move(str(real_state), str(backup))
+    store.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ContractPathError, match="symlink"):
+        atomic_write_bytes(destination, b"attacker")
+    assert (outside / "record.json").read_bytes() == body
+    assert mode_bits(outside / "record.json") == mode
+    # Original bytes remain in the real (moved) directory.
+    assert (backup / "record.json").read_bytes() == b"original"
+
+
+def test_regular_managed_store_modes_still_exact(tmp_path: Path) -> None:
+    path = tmp_path / ".omg" / "state" / "record.json"
+    atomic_write_bytes(path, b"payload")
+    assert path.read_bytes() == b"payload"
+    assert mode_bits(path.parent) == MANAGED_DIR_MODE
+    assert mode_bits(path) == DATA_FILE_MODE
+    ensure_managed_dir(tmp_path / ".omg" / "runs")
+    assert mode_bits(tmp_path / ".omg") == MANAGED_DIR_MODE
+    assert mode_bits(tmp_path / ".omg" / "runs") == MANAGED_DIR_MODE
+
+
+def test_lock_open_never_falls_back_to_absolute_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENOENT on descriptor-relative open must fail closed (Codex P1)."""
+
+    import omg_cli.contracts.path_keys as pk
+
+    store = tmp_path / ".omg" / "state"
+    ensure_managed_dir(store)
+    lock_path = store / "events.jsonl.lock"
+    parent_fd, name = pk._ensure_parent_dir_fd(lock_path)
+    try:
+        def always_enoent(*_a, **_k):
+            raise FileNotFoundError(errno.ENOENT, "forced", name)
+
+        monkeypatch.setattr(pk.os, "open", always_enoent)
+        with pytest.raises(ContractPathError, match="unable to open lock"):
+            with pk.exclusive_lock_at(parent_fd, name):
+                pass  # pragma: no cover
+    finally:
+        import os as _os
+
+        _os.close(parent_fd)
+
+
+def test_journal_lock_and_append_share_pinned_parent(tmp_path: Path) -> None:
+    """Journal lock must not re-resolve a swapped directory (Codex P1)."""
+
+    import os
+    import shutil
+
+    journal = tmp_path / ".omg" / "events" / "events.jsonl"
+    ensure_managed_dir(journal.parent)
+    append_locked_jsonl(journal, b'{"n":1}')
+
+    outside = tmp_path / "outside-events"
+    outside.mkdir()
+    body, mode = _sentinel(outside / "events.jsonl", b"outside-journal")
+
+    real_events = journal.parent.resolve()
+    backup = tmp_path / "events-backup"
+    shutil.move(str(real_events), str(backup))
+    journal.parent.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ContractPathError, match="symlink"):
+        append_locked_jsonl(journal, b'{"n":2}')
+    assert (outside / "events.jsonl").read_bytes() == body
+    assert mode_bits(outside / "events.jsonl") == mode
+    # Original journal still only has the first record under the real inode.
+    lines = (backup / "events.jsonl").read_bytes().splitlines()
+    assert lines == [b'{"n":1}']
+    # Lock file must not appear under the swapped outside tree.
+    assert not (outside / "events.jsonl.lock").exists()

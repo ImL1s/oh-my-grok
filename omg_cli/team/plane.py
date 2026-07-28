@@ -24,6 +24,7 @@ still records the would-be per-provider argv, ``needs_pty``, and
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -32,6 +33,7 @@ import signal
 import stat
 import subprocess
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Collection, Mapping, Sequence
@@ -194,6 +196,12 @@ def team_meta_path(root: Path | str, run_id: str) -> Path:
     return team_dir(root, run_id) / "team.json"
 
 
+def team_meta_lock_path(root: Path | str, run_id: str) -> Path:
+    """Run-scoped exclusive lock for authoritative ``team.json`` mutations."""
+
+    return team_dir(root, run_id) / "team-meta.lock"
+
+
 def team_launch_receipt_path(root: Path | str, run_id: str) -> Path:
     return team_dir(root, run_id) / "launch-receipt.json"
 
@@ -216,6 +224,17 @@ def _require_cli_writer(data: Mapping[str, Any], *, label: str) -> None:
         )
 
 
+# Identity fields that may never change across team.json mutations.
+_TEAM_META_IMMUTABLE_FIELDS: tuple[str, ...] = (
+    "run_id",
+    "created_at",
+    "launch_nonce",
+    "launch_receipt_sha256",
+    "workspace_mode",
+    "session",
+)
+
+
 def _atomic_write_json(path: Path, data: Mapping[str, Any]) -> None:
     from omg_cli.contracts.path_keys import (
         DATA_FILE_MODE,
@@ -230,6 +249,59 @@ def _atomic_write_json(path: Path, data: Mapping[str, Any]) -> None:
         atomic_write_bytes(path, body, mode=DATA_FILE_MODE, replace=True)
     except ContractPathError as exc:
         raise TeamError(f"secure team.json publication refused: {exc}") from exc
+
+
+def _atomic_write_json_at(parent_fd: int, name: str, data: Mapping[str, Any]) -> None:
+    from omg_cli.contracts.path_keys import (
+        DATA_FILE_MODE,
+        ContractPathError,
+        atomic_write_bytes_at,
+    )
+
+    body = (
+        json.dumps(dict(data), indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    try:
+        atomic_write_bytes_at(
+            parent_fd, name, body, mode=DATA_FILE_MODE, replace=True
+        )
+    except ContractPathError as exc:
+        raise TeamError(f"secure team.json publication refused: {exc}") from exc
+
+
+def _load_team_meta_from_fd(parent_fd: int, *, run_id: str) -> dict[str, Any]:
+    """Load ``team.json`` relative to a pinned team-directory descriptor."""
+
+    from omg_cli.contracts.path_keys import DATA_FILE_MODE
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open("team.json", flags, dir_fd=parent_fd)
+    except FileNotFoundError:
+        raise TeamError(f"team.json missing for run {run_id}")
+    except OSError as exc:
+        raise TeamError(f"team.json secure open refused: {exc}") from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise TeamError("team.json must be a regular non-symlink file")
+        with os.fdopen(descriptor, "r", encoding="utf-8", closefd=True) as handle:
+            descriptor = -1
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise TeamError(f"team.json unreadable: {exc}") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not isinstance(data, dict):
+        raise TeamError("team.json must be a JSON object")
+    _require_cli_writer(data, label="team.json")
+    if stat.S_IMODE(info.st_mode) != DATA_FILE_MODE:
+        raise TeamError(
+            f"team.json mode must be {DATA_FILE_MODE:04o}, "
+            f"got {stat.S_IMODE(info.st_mode):04o}"
+        )
+    return data
 
 
 def load_team_meta(root: Path | str, run_id: str) -> dict[str, Any]:
@@ -264,6 +336,137 @@ def load_team_meta(root: Path | str, run_id: str) -> dict[str, Any]:
             f"got {stat.S_IMODE(info.st_mode):04o}"
         )
     return data
+
+
+def _read_meta_generation(meta: Mapping[str, Any]) -> int:
+    """Return current meta_generation (0 when absent on pre-#21 documents)."""
+
+    raw = meta.get("meta_generation")
+    if raw is None:
+        return 0
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise TeamError(
+            f"team.json meta_generation must be a non-negative int, got {raw!r}"
+        )
+    return raw
+
+
+def _assert_immutable_team_meta(
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+    *,
+    run_id: str,
+) -> None:
+    if after.get("run_id") != run_id:
+        raise TeamError(
+            f"team.json run_id mismatch after mutate "
+            f"(path={run_id!r} body={after.get('run_id')!r})"
+        )
+    for key in _TEAM_META_IMMUTABLE_FIELDS:
+        if key not in before or before.get(key) is None:
+            continue
+        if after.get(key) != before.get(key):
+            raise TeamError(
+                f"team.json immutable field {key!r} changed under mutate "
+                f"({before.get(key)!r} -> {after.get(key)!r})"
+            )
+
+
+def mutate_team_meta(
+    root: Path | str,
+    run_id: str,
+    mutator: Callable[[dict[str, Any]], Mapping[str, Any] | None],
+    *,
+    expected_generation: int | None = None,
+) -> dict[str, Any]:
+    """Atomically mutate authoritative ``team.json`` under a run-scoped lock.
+
+    Contract (#21):
+      1. Validate CLI writer authority + schema via :func:`load_team_meta`
+      2. Serialize concurrent writers with ``team-meta.lock``
+      3. Optional CAS on ``meta_generation`` (stale → :class:`TeamError`)
+      4. Apply *mutator* on a deep copy; reject immutable identity changes
+      5. Bump / introduce ``meta_generation``; strip ``verified`` / ``passes``
+      6. Publish via :func:`_atomic_write_json` (exact ``0600``, confined)
+
+    *mutator* receives a deep copy of the current document and may either
+    mutate it in place and return ``None``/the same dict, or return a new
+    mapping. On publication failure the previous valid document remains.
+    """
+    from omg_cli.contracts.path_keys import (
+        ContractPathError,
+        exclusive_lock_at,
+        open_managed_dir_fd,
+    )
+    from omg_cli.contracts.state_schemas import require_safe_id
+
+    rid = require_safe_id(run_id, label="run_id")
+    root_path = Path(root).resolve()
+    team_path = team_dir(root_path, rid)
+    try:
+        parent_fd = open_managed_dir_fd(team_path)
+    except ContractPathError as exc:
+        raise TeamError(f"secure team directory open refused: {exc}") from exc
+    try:
+        # Lock, read, and publish all share this pinned team-dir inode.
+        with exclusive_lock_at(parent_fd, "team-meta.lock"):
+            current = _load_team_meta_from_fd(parent_fd, run_id=rid)
+            if current.get("run_id") is not None and current.get("run_id") != rid:
+                raise TeamError(
+                    f"team.json run_id mismatch (file={current.get('run_id')!r} "
+                    f"path={rid!r})"
+                )
+            # Prefer path-bound identity when historical docs omit run_id.
+            if current.get("run_id") is None:
+                current = dict(current)
+                current["run_id"] = rid
+
+            current_gen = _read_meta_generation(current)
+            if expected_generation is not None:
+                if (
+                    isinstance(expected_generation, bool)
+                    or not isinstance(expected_generation, int)
+                    or expected_generation < 0
+                ):
+                    raise TeamError(
+                        "expected_generation must be a non-negative int, "
+                        f"got {expected_generation!r}"
+                    )
+                if expected_generation != current_gen:
+                    raise TeamError(
+                        f"stale team meta generation: expected {expected_generation}, "
+                        f"have {current_gen}"
+                    )
+
+            draft = copy.deepcopy(dict(current))
+            result = mutator(draft)
+            if result is None:
+                updated = draft
+            else:
+                if not isinstance(result, Mapping):
+                    raise TeamError("team.json mutator must return a mapping or None")
+                updated = dict(result)
+
+            if not isinstance(updated, dict):
+                raise TeamError("team.json mutator result must be a JSON object")
+
+            _assert_immutable_team_meta(current, updated, run_id=rid)
+            # Path identity wins; re-stamp CLI writer authority always.
+            updated["run_id"] = rid
+            updated["writer"] = CLI_WRITER
+            if "schema_version" not in updated:
+                updated["schema_version"] = current.get(
+                    "schema_version", SCHEMA_VERSION
+                )
+            updated["meta_generation"] = current_gen + 1
+            updated.pop("verified", None)
+            updated.pop("passes", None)
+
+            _require_cli_writer(updated, label="team.json")
+            _atomic_write_json_at(parent_fd, "team.json", updated)
+            return updated
+    finally:
+        os.close(parent_fd)
 
 
 def _parse_tasks_json(
@@ -1583,6 +1786,7 @@ def start_team(
         meta = {
             "writer": CLI_WRITER,
             "schema_version": SCHEMA_VERSION,
+            "meta_generation": 0,
             "run_id": rid,
             "session": session,
             "dry_run": True,
@@ -1736,6 +1940,7 @@ def start_team(
         meta = {
             "writer": CLI_WRITER,
             "schema_version": SCHEMA_VERSION,
+            "meta_generation": 0,
             "run_id": rid,
             "session": session,
             "launch_nonce": launch_nonce,
@@ -2249,6 +2454,25 @@ def stop_team(
             raise TeamError("no active run (pass --run ID)")
         run_id = str(active["run_id"])
 
+    # Serialize with scale/relaunch so stop cannot race mid-scale side effects.
+    from omg_cli.team.scaling import acquire_scale_lock
+
+    with acquire_scale_lock(root_path, run_id):
+        return _stop_team_locked(
+            root_path,
+            run_id,
+            force=force,
+            kill_grace_s=kill_grace_s,
+        )
+
+
+def _stop_team_locked(
+    root_path: Path,
+    run_id: str,
+    *,
+    force: bool,
+    kill_grace_s: float,
+) -> dict[str, Any]:
     meta = load_team_meta(root_path, run_id)
     session = str(meta.get("session") or "")
     dry = bool(meta.get("dry_run"))
@@ -2274,6 +2498,43 @@ def stop_team(
             f"(task_ids={ids}, owners={owners}); "
             "pass --force to tear down anyway"
         )
+
+    # Durable stop intent before process side effects. Only a stale-generation
+    # CAS loss may be retried; any other publication failure aborts teardown.
+    def _mark_stopping(current: dict[str, Any]) -> dict[str, Any]:
+        updated = dict(current)
+        if updated.get("stop_state") == "stopped":
+            return updated
+        updated["stop_state"] = "stopping"
+        updated["stop_intent_at"] = _utc_now()
+        return updated
+
+    try:
+        meta = mutate_team_meta(
+            root_path,
+            run_id,
+            _mark_stopping,
+            expected_generation=_read_meta_generation(meta),
+        )
+    except TeamError as exc:
+        if "stale team meta generation" not in str(exc):
+            raise TeamError(
+                f"stop refused: could not publish stop intent before teardown: {exc}"
+            ) from exc
+        # CAS loss under lifecycle lock: re-load and re-publish intent once.
+        meta = load_team_meta(root_path, run_id)
+        try:
+            meta = mutate_team_meta(
+                root_path,
+                run_id,
+                _mark_stopping,
+                expected_generation=_read_meta_generation(meta),
+            )
+        except TeamError as retry_exc:
+            raise TeamError(
+                "stop refused: could not publish stop intent before teardown: "
+                f"{retry_exc}"
+            ) from retry_exc
 
     actions: list[str] = []
     errors: list[str] = []
@@ -2540,30 +2801,10 @@ def stop_team(
         )
     )
 
-    # Update team.json without hiding live or uncertain process truth.
-    updated = dict(meta)
-    updated["stop_actions"] = actions
-    if stop_completed:
-        updated["stopped_at"] = _utc_now()
-        updated["stop_state"] = "stopped"
-        for rec in updated.get("tasks") or []:
-            if isinstance(rec, dict) and rec.get("status") not in ("dry_run",):
-                rec["status"] = "stopped"
-    else:
-        updated["stop_refused_at"] = _utc_now()
-        updated["stop_state"] = "stop_refused"
-        updated["stop_refused_reasons"] = list(errors) or [
-            "exact process/session disappearance was not proved"
-        ]
-        for rec in updated.get("tasks") or []:
-            if (
-                isinstance(rec, dict)
-                and str(rec.get("task_id")) in attempted_task_ids
-                and rec.get("status") not in ("dry_run",)
-            ):
-                rec["status"] = "launch_unknown"
     # Cancel linked ralph composition state when present (D4 team+ralph).
-    linked_ralph = updated.get("linked_ralph")
+    # Done before the locked team.json mutate so a failed ralph cancel still
+    # lands stop state; ralph path is non-authoritative for process identity.
+    linked_ralph = meta.get("linked_ralph")
     if (
         stop_completed
         and isinstance(linked_ralph, Mapping)
@@ -2580,9 +2821,80 @@ def stop_team(
             actions.append(f"cancelled linked_ralph at {rp}")
         except (TeamError, OSError, json.JSONDecodeError, TypeError) as exc:
             errors.append(f"linked_ralph cancel: {exc}")
-    updated.pop("verified", None)
-    updated.pop("passes", None)
-    _atomic_write_json(team_meta_path(root_path, run_id), updated)
+
+    # Update team.json without hiding live or uncertain process truth.
+    # Locked + generation-fenced publication (#21). Refuse publication when a
+    # concurrent scale mutated the task set after we verified identities.
+    stop_actions_final = list(actions)
+    stop_errors_final = list(errors)
+    original_task_ids = frozenset(
+        str(t.get("task_id"))
+        for t in (meta.get("tasks") or [])
+        if isinstance(t, Mapping) and t.get("task_id")
+    )
+    original_generation = _read_meta_generation(meta)
+
+    def _apply_stop(current: dict[str, Any]) -> dict[str, Any]:
+        locked_task_ids = frozenset(
+            str(t.get("task_id"))
+            for t in (current.get("tasks") or [])
+            if isinstance(t, Mapping) and t.get("task_id")
+        )
+        if locked_task_ids != original_task_ids:
+            raise TeamError(
+                "team task set changed during stop (concurrent scale?); "
+                "re-run stop against the current workers"
+            )
+        updated = dict(current)
+        updated["stop_actions"] = list(stop_actions_final)
+        if stop_completed:
+            updated["stopped_at"] = _utc_now()
+            updated["stop_state"] = "stopped"
+            tasks = []
+            for rec in updated.get("tasks") or []:
+                if isinstance(rec, dict):
+                    rec = dict(rec)
+                    if rec.get("status") not in ("dry_run",):
+                        rec["status"] = "stopped"
+                    tasks.append(rec)
+                else:
+                    tasks.append(rec)
+            updated["tasks"] = tasks
+        else:
+            updated["stop_refused_at"] = _utc_now()
+            updated["stop_state"] = "stop_refused"
+            updated["stop_refused_reasons"] = list(stop_errors_final) or [
+                "exact process/session disappearance was not proved"
+            ]
+            tasks = []
+            for rec in updated.get("tasks") or []:
+                if isinstance(rec, dict):
+                    rec = dict(rec)
+                    if (
+                        str(rec.get("task_id")) in attempted_task_ids
+                        and rec.get("status") not in ("dry_run",)
+                    ):
+                        rec["status"] = "launch_unknown"
+                    tasks.append(rec)
+                else:
+                    tasks.append(rec)
+            updated["tasks"] = tasks
+        return updated
+
+    try:
+        updated = mutate_team_meta(
+            root_path,
+            run_id,
+            _apply_stop,
+            expected_generation=original_generation,
+        )
+    except TeamError as exc:
+        # Teardown side effects may already be done. Unrelated metadata writers
+        # (resume / linked_ralph) can bump generation without changing task IDs;
+        # reconcile onto latest doc while keeping the task-set fence.
+        if "stale team meta generation" not in str(exc):
+            raise
+        updated = mutate_team_meta(root_path, run_id, _apply_stop)
 
     try:
         write_status(
@@ -3816,10 +4128,12 @@ __all__ = [
     "format_status_table",
     "in_spawned_worker_context",
     "load_team_meta",
+    "mutate_team_meta",
     "start_team",
     "status_locked_view",
     "stop_team",
     "team_dir",
+    "team_meta_lock_path",
     "team_meta_path",
     "team_shutdown_request_path",
     "team_status",

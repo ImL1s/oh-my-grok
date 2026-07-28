@@ -396,12 +396,10 @@ def test_scale_lock_refuses_concurrent_op(
 
     meta = start_team("lock", TASKS_TWO, root=tmp_path, dry_run=True)
     rid = meta["run_id"]
-    lock = scale_lock_path(tmp_path, rid)
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    lock.write_text("99999\n", encoding="utf-8")
-
-    with pytest.raises(TeamError, match="scale lock held"):
-        scale_team(tmp_path, rid, add=1, dry_run=True)
+    # flock is process-held; a plain PID file is not exclusive.
+    with acquire_scale_lock(tmp_path, rid):
+        with pytest.raises(TeamError, match="scale lock held"):
+            scale_team(tmp_path, rid, add=1, dry_run=True)
 
 
 def test_acquire_scale_lock_exclusive(
@@ -416,7 +414,9 @@ def test_acquire_scale_lock_exclusive(
         with pytest.raises(TeamError, match="scale lock held"):
             with acquire_scale_lock(tmp_path, rid):
                 pass
-    assert not scale_lock_path(tmp_path, rid).exists()
+    # File may remain as a lock node; flock is released so re-acquire works.
+    with acquire_scale_lock(tmp_path, rid):
+        assert scale_lock_path(tmp_path, rid).is_file()
 
 
 def test_relaunch_refuses_when_scale_lock_held(
@@ -435,12 +435,29 @@ def test_relaunch_refuses_when_scale_lock_held(
     live["session"] = "omg-relaunch-lock"
     _write_team_meta(tmp_path, rid, live)
 
+    with acquire_scale_lock(tmp_path, rid):
+        with pytest.raises(TeamError, match="scale lock held"):
+            relaunch_dead_incomplete_workers(tmp_path, rid)
+
+
+def test_scale_lock_allows_orphaned_file_without_holder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Orphan lock files (no live flock holder) do not block scale."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(subprocess, "run", _boom_subprocess)
+
+    meta = start_team("stale lock", TASKS_TWO, root=tmp_path, dry_run=True)
+    rid = meta["run_id"]
     lock = scale_lock_path(tmp_path, rid)
     lock.parent.mkdir(parents=True, exist_ok=True)
-    lock.write_text("99999\n", encoding="utf-8")
+    lock.write_text("999999999\n", encoding="utf-8")
 
-    with pytest.raises(TeamError, match="scale lock held"):
-        relaunch_dead_incomplete_workers(tmp_path, rid)
+    out = scale_team(tmp_path, rid, add=1, dry_run=True)
+    assert out["op"] == "add"
+    assert out["added"] == 1
 
 
 # ---------------------------------------------------------------------------

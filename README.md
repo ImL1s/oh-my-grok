@@ -371,8 +371,8 @@ omg --tmux …                         # require tmux (fail closed if missing)
 | Flag | Meaning |
 |------|---------|
 | `--dry-run` | Write state/argv; do not exec `grok` |
-| `--yolo` | Elevated permissions (default **off**) |
-| `--safe` | Prefer plan permissions (**wins** over yolo) |
+| `--yolo` | Elevated permissions (default **off**); position before/after subcommand equivalent |
+| `--safe` | Prefer plan permissions; mutually exclusive with `--yolo` (contradiction → exit 2) |
 | `--max-iter N` | ralph default 3 · ulw 1 · ralplan max_rounds 3 |
 | `--timeout SEC` | Per-launch timeout (default **3600**; `0` = unlimited) |
 

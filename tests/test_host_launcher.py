@@ -32,9 +32,62 @@ def test_should_host_launch_matrix():
     assert should_host_launch([], KNOWN_SUBCOMMANDS) is True
     assert should_host_launch(["fix it"], KNOWN_SUBCOMMANDS) is True
     assert should_host_launch(["doctor"], KNOWN_SUBCOMMANDS) is False
+    assert should_host_launch(["install-hook"], KNOWN_SUBCOMMANDS) is False
+    assert should_host_launch(["install-hook", "--remove"], KNOWN_SUBCOMMANDS) is False
     assert should_host_launch(["--help"], KNOWN_SUBCOMMANDS) is False
     assert should_host_launch(["--madmax"], KNOWN_SUBCOMMANDS) is False
     assert should_host_launch(["--direct"], KNOWN_SUBCOMMANDS) is True
+
+
+def test_known_subcommands_match_parser_choices():
+    """Pre-parse host-launch set must not drift from argparse registration."""
+    from omg_cli.main import build_parser
+
+    parser = build_parser()
+    choices: set[str] = set()
+    for action in parser._actions:
+        raw = getattr(action, "choices", None)
+        if isinstance(raw, dict):
+            choices |= set(raw)
+    assert choices == set(KNOWN_SUBCOMMANDS)
+
+
+def test_install_hook_routes_to_cmd_not_host(monkeypatch, tmp_path):
+    """omg install-hook must never be treated as a free-form Grok launch."""
+    seen_i: list[list[str]] = []
+    seen_hook: list[list[str] | None] = []
+
+    def fake_i(cwd, argv):
+        seen_i.append(list(argv))
+        return 0
+
+    def fake_hook(argv=None):
+        seen_hook.append(None if argv is None else list(argv))
+        return 0
+
+    monkeypatch.setattr("omg_cli.host_launcher.run_interactive", fake_i)
+    monkeypatch.setattr("omg_cli.hook_install.main", fake_hook)
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["install-hook"]) == 0
+    assert seen_i == []
+    assert seen_hook == [[]]
+
+    seen_hook.clear()
+    assert main(["install-hook", "--remove"]) == 0
+    assert seen_i == []
+    assert seen_hook == [["--remove"]]
+
+    # Launcher-only flags after a recognized subcommand are usage errors.
+    from omg_cli.host_launcher import HostLaunchUsageError, reject_launcher_flags_after_subcommand
+
+    with pytest.raises(HostLaunchUsageError):
+        reject_launcher_flags_after_subcommand(
+            ["install-hook", "--tmux"], KNOWN_SUBCOMMANDS
+        )
+    rc = main(["install-hook", "--tmux"])
+    assert rc == 2
+    assert seen_i == []
 
 
 def test_madmax_suffix_opacity_does_not_scan_safe():

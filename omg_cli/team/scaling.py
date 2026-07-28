@@ -20,6 +20,7 @@ import json
 import os
 import signal
 import subprocess
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
@@ -34,7 +35,6 @@ from omg_cli.team.plane import (
     TEAM_WORKER_ENV,
     TeamError,
     TeamGateError,
-    _atomic_write_json,
     _build_task_grok_argv,
     _grok_args_for_pane,
     _list_pane_identities,
@@ -55,6 +55,7 @@ from omg_cli.team.plane import (
     experimental_enabled,
     in_spawned_worker_context,
     load_team_meta,
+    mutate_team_meta,
     team_dir,
     team_meta_path,
 )
@@ -105,47 +106,89 @@ def scale_lock_path(root: Path | str, run_id: str) -> Path:
 
 @contextmanager
 def acquire_scale_lock(root: Path | str, run_id: str) -> Iterator[Path]:
-    """Exclusive file lock under the run team dir (refuse concurrent scale).
+    """Exclusive lifecycle lock under the run team dir (scale/stop/relaunch).
 
-    Uses ``O_CREAT|O_EXCL`` (no flock dependency). Holder writes PID for ops.
+    Uses POSIX ``fcntl.flock`` so the kernel releases the lock if the holder
+    process dies (stale files are not exclusive forever). The lock file is
+    opened with ``O_NOFOLLOW`` under a managed parent descriptor so a symlink
+    cannot redirect truncation outside ``.omg``. PID text is diagnostic only.
     """
-    path = scale_lock_path(root, run_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-    except FileExistsError as exc:
-        holder = ""
-        try:
-            holder = path.read_text(encoding="utf-8").strip()
-        except OSError:
-            pass
+        import fcntl
+    except ImportError as exc:  # pragma: no cover
         raise TeamError(
-            f"scale lock held for run {run_id}"
-            + (f" (pid={holder})" if holder else "")
-            + f"; refuse concurrent scale op ({path})"
+            "scale/stop lifecycle lock requires POSIX fcntl.flock"
         ) from exc
+
+    from omg_cli.contracts.path_keys import (
+        ContractPathError,
+        open_managed_dir_fd,
+    )
+
+    path = scale_lock_path(root, run_id)
     try:
-        os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
-        os.close(fd)
-        fd = -1
-        yield path
+        parent_fd = open_managed_dir_fd(path.parent)
+    except ContractPathError as exc:
+        raise TeamError(f"scale lock parent open refused: {exc}") from exc
+    fd = -1
+    try:
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(SCALE_LOCK_NAME, flags, 0o644, dir_fd=parent_fd)
+        except OSError as exc:
+            raise TeamError(
+                f"scale lock open refused for run {run_id} "
+                f"(symlink or non-regular?): {exc}"
+            ) from exc
+        try:
+            import stat as stat_mod
+
+            st = os.fstat(fd)
+            if not stat_mod.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                # Fail closed on hard links — never unlink/recreate under a
+                # concurrent holder (that would split the lifecycle lock).
+                raise TeamError(
+                    f"scale lock must be a unique regular file for run {run_id} "
+                    f"(nlink={st.st_nlink})"
+                )
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Re-check uniqueness under the lock before truncate.
+            st = os.fstat(fd)
+            if not stat_mod.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                raise TeamError(
+                    f"scale lock inode must be a unique regular file "
+                    f"for run {run_id} (nlink={st.st_nlink})"
+                )
+        except BlockingIOError as exc:
+            holder = ""
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                holder = os.read(fd, 64).decode("utf-8", errors="replace").strip()
+            except OSError:
+                pass
+            raise TeamError(
+                f"scale lock held for run {run_id}"
+                + (f" (pid={holder})" if holder else "")
+                + f"; refuse concurrent scale/stop op ({path})"
+            ) from exc
+        try:
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
+            try:
+                os.fsync(fd)
+            except OSError:
+                pass
+            yield path
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
     finally:
         if fd >= 0:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        try:
-            path.unlink(missing_ok=True)  # type: ignore[call-arg]
-        except TypeError:
-            # py<3.8 missing_ok
-            try:
-                if path.exists():
-                    path.unlink()
-            except OSError:
-                pass
-        except OSError:
-            pass
+            os.close(fd)
+        os.close(parent_fd)
 
 
 def _assert_team_gates(*, env: Mapping[str, str] | None = None) -> None:
@@ -556,6 +599,14 @@ def scale_team(
 
     with acquire_scale_lock(root_path, rid):
         meta = _require_team_run(root_path, rid)
+        stop_state = str(meta.get("stop_state") or "")
+        if stop_state in {"stopping", "stopped", "stop_refused"} or meta.get(
+            "stopped_at"
+        ):
+            raise TeamError(
+                "scale refused: team is stopping/stopped "
+                f"(stop_state={stop_state!r}); re-check status"
+            )
         if add_n > 0:
             return _scale_up(
                 root_path,
@@ -712,27 +763,97 @@ def _scale_up(
         except OSError as exc:
             raise TeamError(f"scale-up tmux launch failed: {exc}") from exc
 
-    updated = dict(meta)
-    updated["writer"] = CLI_WRITER
-    updated["schema_version"] = int(meta.get("schema_version") or SCHEMA_VERSION)
-    updated["tasks"] = list(tasks_all) + new_records
-    updated["task_count"] = len(_active_tasks(updated["tasks"]))
-    updated["next_worker_index"] = start_idx + n
-    updated["last_scale_at"] = _utc_now()
-    updated["last_scale"] = {
+    scale_at = _utc_now()
+    last_scale = {
         "op": "add",
         "n": n,
         "window_indices": [r["window_index"] for r in new_records],
         "task_ids": [r["task_id"] for r in new_records],
         "dry_run": effective_dry,
     }
-    if not effective_dry:
-        updated["identity_generation"] = generation
-        updated["identity_receipt_sha256"] = scale_receipt_hash
-    # Never copy forged verified
-    updated.pop("verified", None)
-    updated.pop("passes", None)
-    _atomic_write_json(team_meta_path(root, run_id), updated)
+    new_task_list = list(tasks_all) + new_records
+    new_task_count = len(_active_tasks(new_task_list))
+    next_idx = start_idx + n
+    identity_gen = generation if not effective_dry else None
+    identity_hash = scale_receipt_hash if not effective_dry else None
+
+    base_generation = int(meta.get("meta_generation") or 0)
+
+    def _apply_scale_up(current: dict[str, Any]) -> dict[str, Any]:
+        # Refuse to revive or extend a team that was stopped while we scaled.
+        stop_state = str(current.get("stop_state") or "")
+        if stop_state in {"stopping", "stopped", "stop_refused"} or current.get(
+            "stopped_at"
+        ):
+            raise TeamError(
+                "scale-up refused: team is stopping/stopped "
+                f"(stop_state={stop_state!r}); re-check status"
+            )
+        updated = dict(current)
+        updated["schema_version"] = int(
+            current.get("schema_version") or SCHEMA_VERSION
+        )
+        updated["tasks"] = list(new_task_list)
+        updated["task_count"] = new_task_count
+        updated["next_worker_index"] = next_idx
+        updated["last_scale_at"] = scale_at
+        updated["last_scale"] = dict(last_scale)
+        if identity_gen is not None:
+            updated["identity_generation"] = identity_gen
+            updated["identity_receipt_sha256"] = identity_hash
+        return updated
+
+    try:
+        updated = mutate_team_meta(
+            root,
+            run_id,
+            _apply_scale_up,
+            expected_generation=base_generation,
+        )
+    except TeamError as exc:
+        # Panes/receipt may already exist; merge new workers onto latest meta
+        # (same pattern as scale-down CAS loss).
+        if "stale team meta generation" not in str(exc):
+            raise
+
+        def _reconcile_scale_up(current: dict[str, Any]) -> dict[str, Any]:
+            stop_state = str(current.get("stop_state") or "")
+            if stop_state in {"stopping", "stopped", "stop_refused"} or current.get(
+                "stopped_at"
+            ):
+                raise TeamError(
+                    "scale-up refused after launch side effects: team is "
+                    f"stopping/stopped (stop_state={stop_state!r}); re-check status"
+                )
+            updated = dict(current)
+            existing_ids = {
+                str(t.get("task_id"))
+                for t in (current.get("tasks") or [])
+                if isinstance(t, Mapping) and t.get("task_id")
+            }
+            merged = [
+                dict(t)
+                for t in (current.get("tasks") or [])
+                if isinstance(t, Mapping)
+            ]
+            for rec in new_records:
+                tid = str(rec.get("task_id") or "")
+                if tid and tid not in existing_ids:
+                    merged.append(dict(rec))
+                    existing_ids.add(tid)
+            updated["tasks"] = merged
+            updated["task_count"] = len(_active_tasks(merged))
+            updated["next_worker_index"] = max(
+                int(current.get("next_worker_index") or 0), next_idx
+            )
+            updated["last_scale_at"] = scale_at
+            updated["last_scale"] = dict(last_scale)
+            if identity_gen is not None:
+                updated["identity_generation"] = identity_gen
+                updated["identity_receipt_sha256"] = identity_hash
+            return updated
+
+        updated = mutate_team_meta(root, run_id, _reconcile_scale_up)
 
     try:
         write_status(
@@ -877,12 +998,9 @@ def _scale_down(
             rec["pid"] = None
             rec["pgid"] = None
 
-    updated = dict(meta)
-    updated["writer"] = CLI_WRITER
-    updated["tasks"] = tasks_all
-    updated["task_count"] = len(_active_tasks(tasks_all))
-    updated["last_scale_at"] = now
-    updated["last_scale"] = {
+    down_task_list = list(tasks_all)
+    down_task_count = len(_active_tasks(down_task_list))
+    last_scale_down = {
         "op": "remove",
         "n": n,
         "task_ids": sorted(victim_ids),
@@ -890,12 +1008,80 @@ def _scale_down(
         "actions": actions,
         "dry_run": effective_dry,
     }
-    if not effective_dry:
-        updated["identity_generation"] = generation
-        updated["identity_receipt_sha256"] = scale_receipt_hash
-    updated.pop("verified", None)
-    updated.pop("passes", None)
-    _atomic_write_json(team_meta_path(root, run_id), updated)
+    down_identity_gen = generation if not effective_dry else None
+    down_identity_hash = scale_receipt_hash if not effective_dry else None
+
+    down_base_generation = int(meta.get("meta_generation") or 0)
+
+    def _apply_scale_down(current: dict[str, Any]) -> dict[str, Any]:
+        stop_state = str(current.get("stop_state") or "")
+        if stop_state in {"stopping", "stopped", "stop_refused"} or current.get(
+            "stopped_at"
+        ):
+            raise TeamError(
+                "scale-down refused: team is stopping/stopped "
+                f"(stop_state={stop_state!r}); re-check status"
+            )
+        updated = dict(current)
+        updated["tasks"] = list(down_task_list)
+        updated["task_count"] = down_task_count
+        updated["last_scale_at"] = now
+        updated["last_scale"] = dict(last_scale_down)
+        if down_identity_gen is not None:
+            updated["identity_generation"] = down_identity_gen
+            updated["identity_receipt_sha256"] = down_identity_hash
+        return updated
+
+    try:
+        updated = mutate_team_meta(
+            root,
+            run_id,
+            _apply_scale_down,
+            expected_generation=down_base_generation,
+        )
+    except TeamError as exc:
+        # Process side effects may already be done; reconcile victim statuses
+        # onto the latest document without requiring the pre-side-effect generation.
+        if "stale team meta generation" not in str(exc):
+            raise
+
+        def _reconcile_scale_down(current: dict[str, Any]) -> dict[str, Any]:
+            stop_state = str(current.get("stop_state") or "")
+            if stop_state in {"stopping", "stopped", "stop_refused"} or current.get(
+                "stopped_at"
+            ):
+                raise TeamError(
+                    "scale-down refused after side effects: team is stopping/stopped "
+                    f"(stop_state={stop_state!r}); re-check status"
+                )
+            updated = dict(current)
+            by_id = {
+                str(t.get("task_id")): t
+                for t in down_task_list
+                if isinstance(t, Mapping) and t.get("task_id")
+            }
+            merged: list[dict[str, Any]] = []
+            for raw in list(current.get("tasks") or []):
+                if not isinstance(raw, Mapping):
+                    continue
+                rec = dict(raw)
+                tid = str(rec.get("task_id") or "")
+                src = by_id.get(tid)
+                if src is not None and tid in victim_ids:
+                    for key in ("status", "scaled_down_at", "pid", "pgid"):
+                        if key in src:
+                            rec[key] = src[key]
+                merged.append(rec)
+            updated["tasks"] = merged
+            updated["task_count"] = len(_active_tasks(merged))
+            updated["last_scale_at"] = now
+            updated["last_scale"] = dict(last_scale_down)
+            if down_identity_gen is not None:
+                updated["identity_generation"] = down_identity_gen
+                updated["identity_receipt_sha256"] = down_identity_hash
+            return updated
+
+        updated = mutate_team_meta(root, run_id, _reconcile_scale_down)
 
     try:
         write_status(
@@ -938,26 +1124,12 @@ def _scale_down(
 # ---------------------------------------------------------------------------
 
 
-def resume_team(
-    root: Path | str | None = None,
-    run_id: str | None = None,
+def _reconcile_resume_tasks(
+    meta: Mapping[str, Any],
     *,
-    probe_tmux: bool = True,
-    env: Mapping[str, str] | None = None,
-) -> dict[str, Any]:
-    """Reconcile team.json pane statuses after leader restart.
-
-    Idempotent: only status reconciliation writes (CLI_WRITER-stamped).
-    Never sets verified. Fail-closed if not a team run / team.json missing.
-
-    Prefer pane-id liveness when recorded (split topology); fall back to
-    window-index probes for legacy windows topology / hermetic mocks.
-    """
-    root_path = Path(root) if root is not None else Path.cwd().resolve()
-    root_path = root_path.resolve()
-    _assert_team_gates(env=env)
-    rid = _resolve_run_id(root_path, run_id)
-    meta = _require_team_run(root_path, rid)
+    probe_tmux: bool,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], int]:
+    """Probe liveness for *meta* tasks; return (status_by_tid, reconciliations, changed)."""
 
     session = str(meta.get("session") or "")
     dry = bool(meta.get("dry_run"))
@@ -978,7 +1150,6 @@ def resume_team(
             continue
 
         if dry or prev == "dry_run":
-            # dry-run skeleton: no live panes; leave as-is
             tasks_out.append(rec)
             continue
 
@@ -997,14 +1168,12 @@ def resume_team(
             new_st = STATUS_RUNNING
             alive = True
         elif win is False:
-            # Dead pane/window: unsealed work → needs-collect; stopped stays stopped
             if prev in ("stopped", STATUS_FAILED, STATUS_BLOCKED):
                 new_st = prev
             else:
                 new_st = STATUS_NEEDS_COLLECT
             alive = False
         else:
-            # tmux unavailable — do not invent death
             new_st = prev
             alive = None
 
@@ -1035,19 +1204,94 @@ def resume_team(
             )
         tasks_out.append(rec)
 
-    updated = dict(meta)
-    updated["writer"] = CLI_WRITER
-    updated["tasks"] = tasks_out
-    updated["task_count"] = len(_active_tasks(tasks_out))
-    updated["resumed_at"] = _utc_now()
-    updated["resume_changes"] = changed
-    updated.pop("verified", None)
-    updated.pop("passes", None)
+    status_by_tid: dict[str, dict[str, Any]] = {}
+    for rec in tasks_out:
+        tid_key = str(rec.get("task_id") or "")
+        if tid_key:
+            status_by_tid[tid_key] = rec
+    return status_by_tid, reconciliations, changed
 
-    # Always rewrite CLI stamp (idempotent; even when changed==0 so resume
-    # is recorded for operators). Pure-ish: only status reconciliation fields.
-    _atomic_write_json(team_meta_path(root_path, rid), updated)
 
+def resume_team(
+    root: Path | str | None = None,
+    run_id: str | None = None,
+    *,
+    probe_tmux: bool = True,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Reconcile team.json pane statuses after leader restart.
+
+    Idempotent: only status reconciliation writes (CLI_WRITER-stamped).
+    Never sets verified. Fail-closed if not a team run / team.json missing.
+
+    Prefer pane-id liveness when recorded (split topology); fall back to
+    window-index probes for legacy windows topology / hermetic mocks.
+    """
+    root_path = Path(root) if root is not None else Path.cwd().resolve()
+    root_path = root_path.resolve()
+    _assert_team_gates(env=env)
+    rid = _resolve_run_id(root_path, run_id)
+
+    # Up to two attempts: on stale meta_generation, re-load + re-probe so a
+    # concurrent stop/scale cannot be overwritten by a stale liveness snapshot.
+    updated: dict[str, Any] | None = None
+    session = ""
+    dry = False
+    changed = 0
+    reconciliations: list[dict[str, Any]] = []
+    for attempt in range(2):
+        meta = _require_team_run(root_path, rid)
+        session = str(meta.get("session") or "")
+        dry = bool(meta.get("dry_run"))
+        status_by_tid, reconciliations, changed = _reconcile_resume_tasks(
+            meta, probe_tmux=probe_tmux
+        )
+        resumed_at = _utc_now()
+        resume_changes = changed
+        base_generation = int(meta.get("meta_generation") or 0)
+
+        def _apply_resume(
+            current: dict[str, Any],
+            *,
+            _status_by_tid: dict[str, dict[str, Any]] = status_by_tid,
+            _resume_changes: int = resume_changes,
+            _resumed_at: str = resumed_at,
+        ) -> dict[str, Any]:
+            # Merge probed status onto the locked task list by task_id so a
+            # concurrent scale-add worker is preserved (Codex P1).
+            next_doc = dict(current)
+            merged: list[dict[str, Any]] = []
+            for raw_task in list(current.get("tasks") or []):
+                if not isinstance(raw_task, Mapping):
+                    continue
+                rec = dict(raw_task)
+                tid_key = str(rec.get("task_id") or "")
+                src = _status_by_tid.get(tid_key)
+                if src is not None:
+                    for key in ("status", "resumed_at", "status_before_resume"):
+                        if key in src:
+                            rec[key] = src[key]
+                merged.append(rec)
+            next_doc["tasks"] = merged
+            next_doc["task_count"] = len(_active_tasks(merged))
+            next_doc["resumed_at"] = _resumed_at
+            next_doc["resume_changes"] = _resume_changes
+            return next_doc
+
+        try:
+            updated = mutate_team_meta(
+                root_path,
+                rid,
+                _apply_resume,
+                expected_generation=base_generation,
+            )
+            break
+        except TeamError as exc:
+            if attempt == 0 and "stale team meta generation" in str(exc):
+                continue
+            raise
+
+    assert updated is not None  # for type checkers; loop always sets or raises
     return {
         "writer": CLI_WRITER,
         "run_id": rid,
@@ -1389,25 +1633,34 @@ def _relaunch_dead_incomplete_workers_locked(
             tasks_before=tasks_before,
             tasks_after=active_after,
         )
-        meta = dict(meta)
-        meta["identity_generation"] = generation
-        meta["identity_receipt_sha256"] = receipt_hash
+        identity_gen = generation
+        identity_hash = receipt_hash
     else:
         generation = int(meta.get("identity_generation") or 0)
-        meta = dict(meta)
+        identity_gen = None
+        identity_hash = None
 
-    meta["writer"] = CLI_WRITER
-    meta["tasks"] = tasks_all
-    meta["task_count"] = len(_active_tasks(tasks_all))
-    meta["resumed_at"] = _utc_now()
-    meta["last_relaunch"] = {
+    relaunch_tasks = list(tasks_all)
+    relaunch_count = len(_active_tasks(relaunch_tasks))
+    relaunch_at = _utc_now()
+    last_relaunch = {
         "relaunched": [r["task_id"] for r in relaunched],
         "blocked": [b["task_id"] for b in blocked],
-        "at": _utc_now(),
+        "at": relaunch_at,
     }
-    meta.pop("verified", None)
-    meta.pop("passes", None)
-    _atomic_write_json(team_meta_path(root_path, rid), meta)
+
+    def _apply_relaunch(current: dict[str, Any]) -> dict[str, Any]:
+        out = dict(current)
+        out["tasks"] = list(relaunch_tasks)
+        out["task_count"] = relaunch_count
+        out["resumed_at"] = relaunch_at
+        out["last_relaunch"] = dict(last_relaunch)
+        if identity_gen is not None:
+            out["identity_generation"] = identity_gen
+            out["identity_receipt_sha256"] = identity_hash
+        return out
+
+    mutate_team_meta(root_path, rid, _apply_relaunch)
 
     return {
         "writer": CLI_WRITER,
