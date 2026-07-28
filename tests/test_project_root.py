@@ -227,3 +227,23 @@ def test_cli_bad_project_root_exit_2(
         ]
     )
     assert code == 2
+
+
+def test_install_scoped_ignores_stale_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """install-hook must not fail solely because OMG_PROJECT_ROOT is invalid."""
+    from omg_cli.main import main
+
+    clear_resolved_project_root()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(ENV_PROJECT_ROOT, str(tmp_path / "missing-root"))
+    monkeypatch.setattr(
+        "omg_cli.hook_install.main",
+        lambda argv=None: 0,
+    )
+    code = main(["install-hook"])
+    assert code == 0
+    # Project-scoped command still fails closed on the same env.
+    code2 = main(["state"])
+    assert code2 == 2

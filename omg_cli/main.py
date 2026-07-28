@@ -4016,12 +4016,36 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return int(exc.exit_code)
 
+    from omg_cli.project_root import (
+        ProjectRootError,
+        clear_resolved_project_root,
+        resolve_project_root,
+        set_resolved_project_root,
+    )
+
+    def _host_launch_root() -> Path | int:
+        """Resolve cwd-based root for host launch; map ProjectRootError → exit 2."""
+        clear_resolved_project_root()
+        try:
+            resolution = resolve_project_root()
+        except ProjectRootError as exc:
+            print(f"omg: {exc}", file=sys.stderr)
+            return int(getattr(exc, "exit_code", 2) or 2)
+        set_resolved_project_root(resolution)
+        return resolution.root
+
     if has_madmax_flag(raw):
         # Delimiter-aware; GRAM-05 only cares about a recognized *first* token.
-        return int(run_madmax_host(_project_root(), raw))
+        host_root = _host_launch_root()
+        if isinstance(host_root, int):
+            return host_root
+        return int(run_madmax_host(host_root, raw))
 
     if should_host_launch(raw, KNOWN_SUBCOMMANDS):
-        return int(run_interactive(_project_root(), raw))
+        host_root = _host_launch_root()
+        if isinstance(host_root, int):
+            return host_root
+        return int(run_interactive(host_root, raw))
 
     from omg_cli.team.cli import TeamCliError, normalize_team_argv
 
@@ -4042,26 +4066,31 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 1
 
-    # #22: resolve project root once per invocation (project-scoped commands).
-    from omg_cli.project_root import (
-        ProjectRootError,
-        clear_resolved_project_root,
-        resolve_project_root,
-        set_resolved_project_root,
+    # Install / global surfaces do not consume project root — skip discovery so a
+    # stale OMG_PROJECT_ROOT cannot block hook install/update/uninstall (#22 P2).
+    _INSTALL_SCOPED = frozenset(
+        {
+            "install-hook",
+            "update",
+            "uninstall",
+            "mcp-install",
+            "version",  # not a command today; harmless
+        }
     )
-
+    command = str(getattr(args, "command", "") or "")
     clear_resolved_project_root()
-    try:
-        resolution = resolve_project_root(
-            explicit=getattr(args, "project_root", None),
-            here=bool(getattr(args, "setup_here", False)),
-        )
-    except ProjectRootError as exc:
-        print(f"omg: {exc}", file=sys.stderr)
-        return int(getattr(exc, "exit_code", 2) or 2)
-    set_resolved_project_root(resolution)
-    if resolution.note and resolution.shadowed_omg_ancestors:
-        print(f"omg: warning: {resolution.note}", file=sys.stderr)
+    if command not in _INSTALL_SCOPED:
+        try:
+            resolution = resolve_project_root(
+                explicit=getattr(args, "project_root", None),
+                here=bool(getattr(args, "setup_here", False)),
+            )
+        except ProjectRootError as exc:
+            print(f"omg: {exc}", file=sys.stderr)
+            return int(getattr(exc, "exit_code", 2) or 2)
+        set_resolved_project_root(resolution)
+        if resolution.note and resolution.shadowed_omg_ancestors:
+            print(f"omg: warning: {resolution.note}", file=sys.stderr)
 
     return int(func(args))
 
