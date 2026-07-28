@@ -398,7 +398,8 @@ def test_scale_lock_refuses_concurrent_op(
     rid = meta["run_id"]
     lock = scale_lock_path(tmp_path, rid)
     lock.parent.mkdir(parents=True, exist_ok=True)
-    lock.write_text("99999\n", encoding="utf-8")
+    # Live PID must refuse; dead PIDs are reclaimed as stale.
+    lock.write_text(f"{os.getpid()}\n", encoding="utf-8")
 
     with pytest.raises(TeamError, match="scale lock held"):
         scale_team(tmp_path, rid, add=1, dry_run=True)
@@ -437,10 +438,30 @@ def test_relaunch_refuses_when_scale_lock_held(
 
     lock = scale_lock_path(tmp_path, rid)
     lock.parent.mkdir(parents=True, exist_ok=True)
-    lock.write_text("99999\n", encoding="utf-8")
+    lock.write_text(f"{os.getpid()}\n", encoding="utf-8")
 
     with pytest.raises(TeamError, match="scale lock held"):
         relaunch_dead_incomplete_workers(tmp_path, rid)
+
+
+def test_scale_lock_reclaims_stale_dead_pid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", _boom_tmux)
+    monkeypatch.setattr(subprocess, "run", _boom_subprocess)
+
+    meta = start_team("stale lock", TASKS_TWO, root=tmp_path, dry_run=True)
+    rid = meta["run_id"]
+    lock = scale_lock_path(tmp_path, rid)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("999999999\n", encoding="utf-8")  # almost certainly dead
+
+    # Stale dead-PID lock is reclaimed; scale proceeds (dry_run).
+    out = scale_team(tmp_path, rid, add=1, dry_run=True)
+    assert out["op"] == "add"
+    assert out["added"] == 1
 
 
 # ---------------------------------------------------------------------------

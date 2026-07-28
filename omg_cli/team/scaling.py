@@ -103,27 +103,68 @@ def scale_lock_path(root: Path | str, run_id: str) -> Path:
     return team_dir(root, run_id) / SCALE_LOCK_NAME
 
 
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Exists but not signalable by us — treat as held.
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _reclaim_stale_scale_lock(path: Path) -> bool:
+    """Remove a lock file whose recorded PID is dead. Return True if reclaimed."""
+
+    try:
+        holder = path.read_text(encoding="utf-8").strip().splitlines()[0].strip()
+    except (OSError, IndexError):
+        return False
+    try:
+        pid = int(holder)
+    except ValueError:
+        return False
+    if _pid_is_alive(pid):
+        return False
+    try:
+        path.unlink()
+        return True
+    except OSError:
+        return False
+
+
 @contextmanager
 def acquire_scale_lock(root: Path | str, run_id: str) -> Iterator[Path]:
-    """Exclusive file lock under the run team dir (refuse concurrent scale).
+    """Exclusive file lock under the run team dir (refuse concurrent scale/stop).
 
     Uses ``O_CREAT|O_EXCL`` (no flock dependency). Holder writes PID for ops.
+    Stale locks (dead recorded PID) are reclaimed once before refusing.
     """
     path = scale_lock_path(root, run_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-    except FileExistsError as exc:
-        holder = ""
+    fd = -1
+    for attempt in range(2):
         try:
-            holder = path.read_text(encoding="utf-8").strip()
-        except OSError:
-            pass
-        raise TeamError(
-            f"scale lock held for run {run_id}"
-            + (f" (pid={holder})" if holder else "")
-            + f"; refuse concurrent scale op ({path})"
-        ) from exc
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            break
+        except FileExistsError as exc:
+            if attempt == 0 and _reclaim_stale_scale_lock(path):
+                continue
+            holder = ""
+            try:
+                holder = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                pass
+            raise TeamError(
+                f"scale lock held for run {run_id}"
+                + (f" (pid={holder})" if holder else "")
+                + f"; refuse concurrent scale/stop op ({path})"
+            ) from exc
     try:
         os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
         os.close(fd)
@@ -760,12 +801,57 @@ def _scale_up(
             updated["identity_receipt_sha256"] = identity_hash
         return updated
 
-    updated = mutate_team_meta(
-        root,
-        run_id,
-        _apply_scale_up,
-        expected_generation=base_generation,
-    )
+    try:
+        updated = mutate_team_meta(
+            root,
+            run_id,
+            _apply_scale_up,
+            expected_generation=base_generation,
+        )
+    except TeamError as exc:
+        # Panes/receipt may already exist; merge new workers onto latest meta
+        # (same pattern as scale-down CAS loss).
+        if "stale team meta generation" not in str(exc):
+            raise
+
+        def _reconcile_scale_up(current: dict[str, Any]) -> dict[str, Any]:
+            stop_state = str(current.get("stop_state") or "")
+            if stop_state in {"stopping", "stopped", "stop_refused"} or current.get(
+                "stopped_at"
+            ):
+                raise TeamError(
+                    "scale-up refused after launch side effects: team is "
+                    f"stopping/stopped (stop_state={stop_state!r}); re-check status"
+                )
+            updated = dict(current)
+            existing_ids = {
+                str(t.get("task_id"))
+                for t in (current.get("tasks") or [])
+                if isinstance(t, Mapping) and t.get("task_id")
+            }
+            merged = [
+                dict(t)
+                for t in (current.get("tasks") or [])
+                if isinstance(t, Mapping)
+            ]
+            for rec in new_records:
+                tid = str(rec.get("task_id") or "")
+                if tid and tid not in existing_ids:
+                    merged.append(dict(rec))
+                    existing_ids.add(tid)
+            updated["tasks"] = merged
+            updated["task_count"] = len(_active_tasks(merged))
+            updated["next_worker_index"] = max(
+                int(current.get("next_worker_index") or 0), next_idx
+            )
+            updated["last_scale_at"] = scale_at
+            updated["last_scale"] = dict(last_scale)
+            if identity_gen is not None:
+                updated["identity_generation"] = identity_gen
+                updated["identity_receipt_sha256"] = identity_hash
+            return updated
+
+        updated = mutate_team_meta(root, run_id, _reconcile_scale_up)
 
     try:
         write_status(

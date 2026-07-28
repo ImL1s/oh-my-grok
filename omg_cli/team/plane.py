@@ -2499,26 +2499,42 @@ def _stop_team_locked(
             "pass --force to tear down anyway"
         )
 
-    # Durable stop intent before process side effects so concurrent scale
-    # (if it ever races the lock) still sees an in-progress stop.
-    try:
-        def _mark_stopping(current: dict[str, Any]) -> dict[str, Any]:
-            updated = dict(current)
-            if updated.get("stop_state") == "stopped":
-                return updated
-            updated["stop_state"] = "stopping"
-            updated["stop_intent_at"] = _utc_now()
+    # Durable stop intent before process side effects. Only a stale-generation
+    # CAS loss may be retried; any other publication failure aborts teardown.
+    def _mark_stopping(current: dict[str, Any]) -> dict[str, Any]:
+        updated = dict(current)
+        if updated.get("stop_state") == "stopped":
             return updated
+        updated["stop_state"] = "stopping"
+        updated["stop_intent_at"] = _utc_now()
+        return updated
 
+    try:
         meta = mutate_team_meta(
             root_path,
             run_id,
             _mark_stopping,
             expected_generation=_read_meta_generation(meta),
         )
-    except TeamError:
-        # CAS loss: re-load and continue; scale lock still serializes us.
+    except TeamError as exc:
+        if "stale team meta generation" not in str(exc):
+            raise TeamError(
+                f"stop refused: could not publish stop intent before teardown: {exc}"
+            ) from exc
+        # CAS loss under lifecycle lock: re-load and re-publish intent once.
         meta = load_team_meta(root_path, run_id)
+        try:
+            meta = mutate_team_meta(
+                root_path,
+                run_id,
+                _mark_stopping,
+                expected_generation=_read_meta_generation(meta),
+            )
+        except TeamError as retry_exc:
+            raise TeamError(
+                "stop refused: could not publish stop intent before teardown: "
+                f"{retry_exc}"
+            ) from retry_exc
 
     actions: list[str] = []
     errors: list[str] = []
