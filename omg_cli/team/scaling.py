@@ -104,136 +104,55 @@ def scale_lock_path(root: Path | str, run_id: str) -> Path:
     return team_dir(root, run_id) / SCALE_LOCK_NAME
 
 
-def _pid_is_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # Exists but not signalable by us — treat as held.
-        return True
-    except OSError:
-        return False
-    return True
-
-
-def _reclaim_stale_scale_lock(path: Path) -> bool:
-    """Atomically claim and remove a lock file whose recorded PID is dead.
-
-    Uses rename-to-unique so two reclaimers cannot both unlink a lock that a
-    third party just recreated after the first reclamation.
-    """
-
-    if not path.exists():
-        return False
-    reclaim = path.with_name(
-        f"{path.name}.reclaim.{os.getpid()}.{uuid.uuid4().hex}"
-    )
-    try:
-        os.rename(path, reclaim)
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return False
-    def _restore() -> None:
-        try:
-            os.rename(reclaim, path)
-        except OSError:
-            try:
-                reclaim.unlink(missing_ok=True)  # type: ignore[call-arg]
-            except TypeError:
-                if reclaim.exists():
-                    reclaim.unlink()
-            except OSError:
-                pass
-
-    try:
-        try:
-            lines = reclaim.read_text(encoding="utf-8").strip().splitlines()
-            holder = lines[0].strip() if lines else ""
-            pid = int(holder)
-        except (OSError, IndexError, ValueError):
-            # Empty / incomplete lock: owner may still hold the O_EXCL fd and
-            # be about to write its PID — never reclaim this race window.
-            _restore()
-            return False
-        if _pid_is_alive(pid):
-            _restore()
-            return False
-        try:
-            reclaim.unlink(missing_ok=True)  # type: ignore[call-arg]
-        except TypeError:
-            if reclaim.exists():
-                reclaim.unlink()
-        return True
-    except OSError:
-        _restore()
-        return False
-
-
 @contextmanager
 def acquire_scale_lock(root: Path | str, run_id: str) -> Iterator[Path]:
-    """Exclusive file lock under the run team dir (refuse concurrent scale/stop).
+    """Exclusive lifecycle lock under the run team dir (scale/stop/relaunch).
 
-    Uses ``O_CREAT|O_EXCL`` (no flock dependency). Holder writes PID for ops.
-    Stale locks (dead recorded PID) are reclaimed once before refusing.
+    Uses POSIX ``fcntl.flock`` so the kernel releases the lock if the holder
+    process dies (stale files are not exclusive forever). PID is best-effort
+    diagnostics only and never used for ownership decisions.
     """
+    try:
+        import fcntl
+    except ImportError as exc:  # pragma: no cover
+        raise TeamError(
+            "scale/stop lifecycle lock requires POSIX fcntl.flock"
+        ) from exc
+
     path = scale_lock_path(root, run_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Write PID to a temp file first, then link into place so a contender never
-    # observes an empty exclusive lock and reclaims it mid-publish.
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    with open(tmp, "w", encoding="utf-8") as handle:
-        handle.write(f"{os.getpid()}\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    acquired = False
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o644)
     try:
-        for attempt in range(2):
-            try:
-                os.link(tmp, path)
-                acquired = True
-                break
-            except FileExistsError as exc:
-                if attempt == 0 and _reclaim_stale_scale_lock(path):
-                    continue
-                holder = ""
-                try:
-                    holder = path.read_text(encoding="utf-8").strip()
-                except OSError:
-                    pass
-                raise TeamError(
-                    f"scale lock held for run {run_id}"
-                    + (f" (pid={holder})" if holder else "")
-                    + f"; refuse concurrent scale/stop op ({path})"
-                ) from exc
         try:
-            yield path
-        finally:
-            if acquired:
-                try:
-                    path.unlink(missing_ok=True)  # type: ignore[call-arg]
-                except TypeError:
-                    try:
-                        if path.exists():
-                            path.unlink()
-                    except OSError:
-                        pass
-                except OSError:
-                    pass
-    finally:
-        try:
-            tmp.unlink(missing_ok=True)  # type: ignore[call-arg]
-        except TypeError:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            holder = ""
             try:
-                if tmp.exists():
-                    tmp.unlink()
+                os.lseek(fd, 0, os.SEEK_SET)
+                holder = os.read(fd, 64).decode("utf-8", errors="replace").strip()
             except OSError:
                 pass
-        except OSError:
-            pass
+            raise TeamError(
+                f"scale lock held for run {run_id}"
+                + (f" (pid={holder})" if holder else "")
+                + f"; refuse concurrent scale/stop op ({path})"
+            ) from exc
+        try:
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
+            try:
+                os.fsync(fd)
+            except OSError:
+                pass
+            yield path
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        os.close(fd)
 
 
 def _assert_team_gates(*, env: Mapping[str, str] | None = None) -> None:
