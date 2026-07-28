@@ -148,6 +148,27 @@ def acquire_scale_lock(root: Path | str, run_id: str) -> Iterator[Path]:
                 raise TeamError(
                     f"scale lock must be a regular file for run {run_id}"
                 )
+            if st.st_nlink != 1:
+                # Refuse hard-linked lock nodes (truncate would corrupt aliases).
+                os.close(fd)
+                fd = -1
+                try:
+                    os.unlink(SCALE_LOCK_NAME, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+                excl = (
+                    os.O_RDWR
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0)
+                )
+                fd = os.open(SCALE_LOCK_NAME, excl, 0o644, dir_fd=parent_fd)
+                st = os.fstat(fd)
+                if not stat_mod.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                    raise TeamError(
+                        f"scale lock inode must be a unique regular file "
+                        f"for run {run_id}"
+                    )
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             holder = ""
