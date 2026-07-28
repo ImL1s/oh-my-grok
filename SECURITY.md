@@ -9,6 +9,9 @@ Short version:
 - **Primary isolation** is Grok `capability_mode` on `spawn_subagent` (workers without Execute).
 - **PreToolUse deny** is a **fail-open soft-guard**, not a hard sandbox.
 - Escape hatches (`OMG_ALLOW_EXTERNAL_CLI`, `OMG_ALLOW_UNSAFE_SPAWN`, …) default **off** and must never be exported in shell profiles for normal use.
+- `OMG_ALLOW_EXTERNAL_CLI` is authorized only in the fixed-argv child process
+  spawned by `omg ask`; persistent flag-file bypasses are installed-hook drift,
+  while parent-session exports are unsupported ambient bypasses.
 - Prefer `omg ask` for external advisors; do not use agent CLIs as default workers.
 - Repository workflows accept only task-ID/actor-bound receipts under an
   explicit repository/host/launch permission intersection.

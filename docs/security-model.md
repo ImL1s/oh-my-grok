@@ -4,7 +4,7 @@ English | [简体中文](./security-model.zh.md) | [繁體中文](./security-mod
 
 **Canonical truth table** for isolation claims. README, skills, and doctor footers should link here rather than invent stronger wording.
 
-Last updated: 2026-07-23 · Plugin version: **0.6.0**
+Last updated: 2026-07-28 · Plugin version: **0.7.2**
 
 ## Layer table (strongest → weakest)
 
@@ -25,6 +25,39 @@ Last updated: 2026-07-23 · Plugin version: **0.6.0**
 2. **Depth = 1** — children must not spawn; `omg-executor` disallows `spawn_subagent` **and** `run_terminal_command` / `run_terminal_cmd`.
 3. **Only `omg` CLI** writes `passes` / `verified` under `.omg/state/` after semantic acceptance.
 4. **Hooks are defense-in-depth** — fail-open; live canary via `scripts/canary_pretool.py` (PATH shim, never real claude/codex).
+
+## External-agent CLI classification
+
+The PreToolUse hook classifies **active executable contexts**, not every textual
+mention of a protected CLI name. The v0.7.2 contract is:
+
+| Command intent | Expected decision | Why |
+|----------------|-------------------|-----|
+| Direct execution such as `claude --version` | **Deny** | Even a diagnostic flag executes the PATH-resolved provider and may load configuration, plugins, telemetry, or updater code. Use `omg ask` for an advisor. |
+| Discovery such as `which claude`, `command -v claude`, or `type -a claude` | **Allow** | The provider name is data to a discovery command, not the executable head. |
+| Passive inspection such as `strings`, `file`, `stat`, `readlink`, or a hash tool with a provider path operand | **Allow** | A path component or ordinary argument containing `claude`/`codex`/… is not external-agent execution. |
+| Quoted literals, comments, inert heredoc data, or commit text such as `fix(kimi)` | **Allow** | Inert text is not executed. |
+| Command/process substitution or another recognized active shell body that directly executes a protected CLI | **Deny** | The protected CLI is in an executable context. |
+
+`OMG_ALLOW_EXTERNAL_CLI=1` is a **child-process capability** used by the
+fixed-argv `omg ask` broker. Do not export it in a shell profile, project
+`.env`, parent session, or persistent flag file. The hook never treats an
+assignment written inside command text as authorization.
+
+This parser is deliberately a bounded, name-based soft guard, not a complete
+shell interpreter. Wrapper options, dynamic executable heads, platform-specific
+utility grammar, aliases, renamed binaries, and arbitrary interpreter bodies
+remain known parser limitations. Parse timeout, crash, or ambiguity may fail
+open. Therefore:
+
+- keep `capability_mode` / tool removal as the primary isolation boundary;
+- treat unexpected passive-inspection denial as possible installed-hook drift
+  or a compound command containing a real executable context;
+- use `omg doctor` plus the recovery procedure below before weakening policy;
+- never “fix” a false positive by adding an ambient bypass.
+
+Detailed audit status and non-sensitive reproduction evidence:
+[`research/external-cli-soft-gate-audit-2026-07-28.md`](research/external-cli-soft-gate-audit-2026-07-28.md).
 
 ## In-session MCP server (`omg mcp-server`)
 
@@ -205,7 +238,12 @@ remains **fail-open** on hook timeout/crash; primary isolation is still
 `omg` through its blocked terminal): from any plain shell, run
 `python3 -m omg_cli.hook_install` (repairs it), or as a last resort
 `rm "${GROK_HOME:-$HOME/.grok}/hooks/omg-pretool-deny.json"` to disable the
-soft-gate, then restart grok.
+soft-gate, then restart grok. Run `omg doctor` afterward and require the global
+hook freshness/hash check to pass. If the v0.7.2 `omg install-hook` subcommand
+is misrouted into the Grok launcher, use the module command above; this is
+tracked by [issue #18](https://github.com/ImL1s/oh-my-grok/issues/18). Never
+create a persistent `ALLOW_EXTERNAL_CLI` flag file:
+it is non-canonical and disables the whole external-CLI soft guard.
 
 ## Host launcher: bare `omg` / `omg --madmax`
 

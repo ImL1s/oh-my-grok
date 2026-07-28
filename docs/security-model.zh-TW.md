@@ -4,7 +4,7 @@ English | [简体中文](./security-model.zh.md) | [繁體中文](./security-mod
 
 隔離宣稱的**權威對照表**。README、skills、doctor footer 應連到這裡，而不是自行發明更強的措辭。
 
-最後更新：2026-07-23 · Plugin 版本：**0.6.0**
+最後更新：2026-07-28 · Plugin 版本：**0.7.2**
 
 ## 分層表（強 → 弱）
 
@@ -25,6 +25,37 @@ English | [简体中文](./security-model.zh.md) | [繁體中文](./security-mod
 2. **Depth = 1** — 子代不得再 spawn；`omg-executor` 同時 disallow `spawn_subagent` **與** `run_terminal_command`／`run_terminal_cmd`。
 3. **只有 `omg` CLI** 在語意 acceptance 後可寫 `.omg/state/` 下的 `passes`／`verified`。
 4. **Hooks 是縱深防禦** — fail-open；live canary 用 `scripts/canary_pretool.py`（PATH shim，永不真的叫 claude／codex）。
+
+## 外部 agent CLI 分類
+
+PreToolUse hook 分類的是**活躍可執行脈絡**，不是所有含受保護 CLI 名稱的
+文字。v0.7.2 契約如下：
+
+| 指令意圖 | 預期決策 | 原因 |
+|----------|----------|------|
+| `claude --version` 之類的直接執行 | **Deny** | 即使是診斷 flag，也會執行 PATH 解析到的 provider，並可能載入設定、plugin、telemetry 或 updater。需要顧問時使用 `omg ask`。 |
+| `which claude`、`command -v claude`、`type -a claude` 之類的 discovery | **Allow** | Provider 名稱是 discovery 指令的資料，不是 executable head。 |
+| `strings`、`file`、`stat`、`readlink` 或 hash 工具把 provider 路徑當 operand 的被動檢查 | **Allow** | 路徑 component 或一般 argument 含 `claude`／`codex`／… 不等於執行外部 agent。 |
+| Quoted literal、comment、不具執行效果的 heredoc data，或 `fix(kimi)` 之類的 commit 文字 | **Allow** | 不具執行效果的文字不會被執行。 |
+| Command／process substitution，或其他目前可辨識且會直接執行受保護 CLI 的活躍 shell body | **Deny** | 受保護 CLI 位於可執行脈絡。 |
+
+`OMG_ALLOW_EXTERNAL_CLI=1` 是 fixed-argv `omg ask` broker 使用的
+**child-process capability**。不要匯出到 shell profile、專案 `.env`、父 session，
+也不要建立持久 flag file。Hook 絕不把寫在 command text 內的 assignment 當授權。
+
+此 parser 刻意是有界、以名稱為基礎的 soft guard，不是完整 shell interpreter。
+Wrapper options、dynamic executable head、平台特定 utility grammar、alias、改名
+binary 與任意 interpreter body 都仍是已知的 parser 限制。Parse timeout、
+崩潰或歧義可能 fail open。因此：
+
+- 主要隔離邊界仍是 `capability_mode`／tool removal；
+- 被動檢查若意外遭拒，先懷疑 installed-hook 漂移，或 compound command 內另有
+  真正可執行脈絡；
+- 弱化政策前先跑 `omg doctor` 並依下方 recovery 程序修復；
+- 絕不要用 ambient bypass「修正」false positive。
+
+詳細稽核狀態與不涉及敏感 payload 的重現證據：
+[`research/external-cli-soft-gate-audit-2026-07-28.md`](research/external-cli-soft-gate-audit-2026-07-28.md)。
 
 ## In-session MCP server（`omg mcp-server`）
 
@@ -141,7 +172,7 @@ python3 scripts/canary_pretool.py --live
 
 遷移：既有 checkout-path json 會在 `omg setup`／`install-hook` 時自動修復；若無法替換則**隔離**成非 `.json` 名稱（grok 只發現 `*.json`），使它不能再 deny 每個工具。這一切在 hook timeout／崩潰時仍是 **fail-open**；主要隔離仍是實作者沒有 Execute 的 `capability_mode`。
 
-**帶外恢復**（已被舊 hook 弄磚的 session 無法透過被擋的終端跑 `omg`）：從任何一般 shell 跑 `python3 -m omg_cli.hook_install`（修復），或最後手段 `rm "${GROK_HOME:-$HOME/.grok}/hooks/omg-pretool-deny.json"` 停用 soft-gate，然後重開 grok。
+**帶外恢復**（已被舊 hook 弄磚的 session 無法透過被擋的終端跑 `omg`）：從任何一般 shell 跑 `python3 -m omg_cli.hook_install`（修復），或最後手段 `rm "${GROK_HOME:-$HOME/.grok}/hooks/omg-pretool-deny.json"` 停用 soft-gate，然後重開 grok。之後執行 `omg doctor`，並要求全域 hook freshness／hash 檢查通過。若 v0.7.2 的 `omg install-hook` 子命令被錯誤送進 Grok launcher，使用前述 module 指令；此問題由 [issue #18](https://github.com/ImL1s/oh-my-grok/issues/18) 追蹤。絕不要建立持久的 `ALLOW_EXTERNAL_CLI` flag file：它不是 canonical 設計，會停用整層 external-CLI soft guard。
 
 ## Host launcher：裸 `omg`／`omg --madmax`
 

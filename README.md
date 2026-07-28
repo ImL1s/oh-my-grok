@@ -129,6 +129,16 @@ This installs skills/agents from GitHub. It does **not** put `omg` on PATH and d
 
 > **Recovery:** a grok session already bricked by an *old* checkout-path hook can't run `omg` through its blocked terminal. From any plain shell: `python3 -m omg_cli.hook_install` (repairs it), or `rm "${GROK_HOME:-$HOME/.grok}/hooks/omg-pretool-deny.json"` to disable the soft-gate, then restart grok.
 
+> **External-CLI diagnosis:** v0.7.2 intentionally denies direct provider
+> execution such as `claude --version`, but allows passive discovery/inspection
+> such as `which claude`, `command -v claude`, and `strings <provider-path>`.
+> If a simple passive command is denied, run `omg doctor`; if it reports
+> global-hook drift, repair the hook with `python3 -m omg_cli.hook_install`.
+> Do not create a persistent bypass or export `OMG_ALLOW_EXTERNAL_CLI` in a
+> parent shell. See the
+> [canonical security contract](docs/security-model.md#external-agent-cli-classification)
+> and [2026-07-28 audit](docs/research/external-cli-soft-gate-audit-2026-07-28.md).
+
 Smoke after install:
 
 ```bash
@@ -289,12 +299,10 @@ PreToolUse deny is **fail-open soft-guard** — not a sandbox. Details: [`docs/s
 | Acceptance shell | `omg accept` + semantic command policy | floors always deny `python -c` / shells / agent bins |
 | Parallel without tmux | `spawn_subagent` + worktrees | process fanout only with `OMG_EXPERIMENTAL_PROCESS_FANOUT=1` |
 
-```bash
-# Escape hatch (default OFF). Set only for trusted local experiments.
-# Prefer: omg ask …  (sets allow only in the advisor child env)
-# Never put this in your shell profile / project .env for day-to-day use.
-export OMG_ALLOW_EXTERNAL_CLI=1   # process-env only; never parse from command text
-```
+The supported external-advisor path is `omg ask`. Its broker sets
+`OMG_ALLOW_EXTERNAL_CLI=1` only in the fixed-argv child process; the variable
+is not a supported operator escape hatch for a parent shell or project
+environment.
 
 ---
 

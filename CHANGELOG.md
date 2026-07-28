@@ -9,6 +9,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Documentation
+- Clarified the external-agent CLI PreToolUse contract: direct provider
+  execution remains denied, while passive discovery, path inspection, and inert
+  literals are allowed.
+- Added installed-hook drift recovery, child-only
+  `OMG_ALLOW_EXTERNAL_CLI` guidance, known parser limitations, and the
+  2026-07-28 soft-gate audit evidence.
+
 ### Planned
 - Live Grok smoke promotion (`LIVE_TEAM_SMOKE_OK` evidence) before removing
   the experimental gate for shorthand launch.
