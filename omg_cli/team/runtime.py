@@ -454,7 +454,28 @@ def launch_team(
             env=api_env,
         )
     except Exception as exc:
-        # State was already written by start_team; surface seed failure clearly.
+        # #17: compensate partial shorthand launch after start_team committed.
+        # stop_team may return stop_completed=False without raising — treat that
+        # as failed compensation so live panes are not silently abandoned.
+        if not dry_run:
+            try:
+                from omg_cli.team.plane import stop_team
+
+                stop_result = stop_team(root_path, rid, force=True)
+            except Exception as stop_exc:  # noqa: BLE001 — surface both errors
+                raise TeamError(
+                    f"team api board seed failed: {exc}; "
+                    f"compensating stop also failed: {stop_exc}"
+                ) from exc
+            if not bool((stop_result or {}).get("stop_completed")):
+                stop_errors = list((stop_result or {}).get("errors") or [])
+                detail = "; ".join(str(e) for e in stop_errors if e) or (
+                    "exact process/session disappearance was not proved"
+                )
+                raise TeamError(
+                    f"team api board seed failed: {exc}; "
+                    f"compensating stop incomplete: {detail}"
+                ) from exc
         raise TeamError(f"team api board seed failed: {exc}") from exc
 
     meta = dict(meta)

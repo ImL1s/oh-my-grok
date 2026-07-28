@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.platform
+
 from omg_cli.contracts.path_keys import (
     ContractPathError,
     DATA_FILE_MODE,

@@ -55,6 +55,7 @@ from omg_cli.modes import (
 )
 from omg_cli.state import (
     _run_dir,
+    clear_active,
     create_run,
     load_active_run,
     load_run,
@@ -79,6 +80,7 @@ from omg_cli.workers import (
     load_ownership_manifest,
     ownership_manifest_path,
     prepare_owned_tasks,
+    prepare_task,
     seal_all_tasks,
     worktree_dir,
 )
@@ -1158,6 +1160,135 @@ def _restore_live_start_files(
     return errors
 
 
+def _remove_team_worktree(root: Path, worktree: Path) -> str | None:
+    """Best-effort remove a prepared team worktree. Returns error text or None."""
+
+    root = Path(root).resolve()
+    wt = Path(worktree)
+    if not wt.exists():
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "worktree", "remove", "--force", str(wt)],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if proc.returncode == 0 and not wt.exists():
+            return None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        import shutil
+
+        if wt.is_dir() and not wt.is_symlink():
+            shutil.rmtree(wt, ignore_errors=True)
+        elif wt.exists():
+            wt.unlink(missing_ok=True)
+    except OSError as exc:
+        return f"worktree remove {wt}: {exc}"
+    return None if not wt.exists() else f"worktree still present: {wt}"
+
+
+def _rollback_partial_team_start(
+    root: Path,
+    run_id: str,
+    *,
+    created_run: bool,
+    worktrees: Sequence[Path],
+    team_dir_path: Path | None,
+    remove_ownership: bool = True,
+    ownership_backup: bytes | None = None,
+    file_backups: Mapping[Path, bytes | None] | None = None,
+) -> list[str]:
+    """Undo pre-commit start debris (issue #17 all-or-nothing).
+
+    Only destroys resources **this invocation created**:
+    - ``worktrees`` must be newly prepared paths (not pre-existing --run trees)
+    - ``team_dir_path`` only when this start created the directory
+    - ownership: restore ``ownership_backup`` when we overwrote a prior file;
+      otherwise unlink only if ``remove_ownership`` (new write / new run)
+    - ``file_backups``: path → prior bytes (or None if this start created the file)
+
+    Reverse order: worktrees → team dir (or file restore) → ownership → active.
+    Never raises; returns actionable error strings for diagnostics.
+    """
+    from omg_cli.workers import ownership_manifest_path
+
+    errors: list[str] = []
+    root = Path(root).resolve()
+    rid = str(run_id)
+
+    for wt in reversed(list(worktrees)):
+        err = _remove_team_worktree(root, Path(wt))
+        if err:
+            errors.append(err)
+
+    if team_dir_path is not None:
+        tdir = Path(team_dir_path)
+        if tdir.is_dir() and not tdir.is_symlink():
+            try:
+                import shutil
+
+                shutil.rmtree(tdir, ignore_errors=True)
+            except OSError as exc:
+                errors.append(f"team dir remove {tdir}: {exc}")
+    elif file_backups:
+        # Reused team dir: restore or remove files this start overwrote/created.
+        for fpath, prior in file_backups.items():
+            path = Path(fpath)
+            try:
+                if prior is None:
+                    if path.is_file() or path.is_symlink():
+                        path.unlink(missing_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    tmp = path.with_name(f".{path.name}.{os.getpid()}.rb.tmp")
+                    try:
+                        tmp.write_bytes(prior)
+                        os.replace(tmp, path)
+                    finally:
+                        if tmp.exists():
+                            try:
+                                tmp.unlink()
+                            except OSError:
+                                pass
+            except OSError as exc:
+                errors.append(f"file restore {path}: {exc}")
+
+    try:
+        mpath = ownership_manifest_path(root, rid)
+        if ownership_backup is not None:
+            # Restore pre-start ownership when --run reuses an existing run.
+            try:
+                mpath.parent.mkdir(parents=True, exist_ok=True)
+                tmp = mpath.with_name(f".{mpath.name}.{os.getpid()}.rb.tmp")
+                try:
+                    tmp.write_bytes(ownership_backup)
+                    os.replace(tmp, mpath)
+                finally:
+                    if tmp.exists():
+                        try:
+                            tmp.unlink()
+                        except OSError:
+                            pass
+            except OSError as exc:
+                errors.append(f"ownership manifest restore: {exc}")
+        elif remove_ownership and (mpath.is_file() or mpath.is_symlink()):
+            mpath.unlink(missing_ok=True)
+    except OSError as exc:
+        errors.append(f"ownership manifest remove: {exc}")
+
+    if created_run:
+        try:
+            clear_active(root, rid)
+        except OSError as exc:
+            errors.append(f"clear active: {exc}")
+        # Leave run directory for forensics; clearing active unblocks relaunch.
+    return errors
+
+
 def _load_team_launch_receipt(
     root: Path, run_id: str, meta: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -1594,6 +1725,16 @@ def start_team(
             raise TeamError(str(exc)) from exc
         # UnknownRoleError propagates (FLOOR 2) — do not swallow.
 
+    # Resolve / create run — track created_* for #17 rollback scope.
+    # When --run reuses an existing run, never destroy pre-existing worktrees /
+    # team dir / ownership (Codex P1 on PR #34).
+    created_run = False
+    created_worktrees: list[Path] = []
+    created_team_dir = False
+    ownership_backup: bytes | None = None
+    remove_ownership = True
+    file_backups: dict[Path, bytes | None] = {}
+    tdir: Path | None = None
     # Resolve / create run
     if run_id:
         if load_run(root_path, run_id) is None:
@@ -1635,288 +1776,349 @@ def start_team(
         except RuntimeError as exc:
             raise TeamError(str(exc)) from exc
         rid = str(run["run_id"])
+        created_run = True
 
-    # Ownership + real worktrees (filesystem; dry_run still prepares)
-    try:
-        manifest = build_ownership_manifest(root_path, rid, tasks)
-        prepare_owned_tasks(root_path, rid)
-    except WorkerError as exc:
-        raise TeamError(str(exc)) from exc
-
-    tdir = team_dir(root_path, rid)
-    tdir.mkdir(parents=True, exist_ok=True)
-
-    session = session_name_for_cwd(root_path)
-    env_pairs = _pane_env_pairs(
-        run_id=rid,
-        team_id=tid_plane,
-        leader_root=root_path,
-        state_root=root_path / ".omg" / "state",
-        owner_token=token,
-    )
-
-    # Original task dicts by task_id (for role lookup; manifest may drop fields).
-    tasks_by_id: dict[str, dict[str, Any]] = {}
-    for t in tasks:
-        tid0 = str(t.get("task_id") or t.get("id") or "")
-        if tid0:
-            tasks_by_id[tid0] = t
-
-    task_records: list[dict[str, Any]] = []
-    manifest_tasks = list(manifest.get("tasks") or [])
-    # Preserve manifest order for window indices
-    for i, mtask in enumerate(manifest_tasks):
-        tid = str(mtask["task_id"])
-        wt = Path(str(mtask.get("worktree_path") or worktree_dir(root_path, rid, tid)))
-        owned = list(mtask.get("owned_files") or [])
-        src_task = tasks_by_id.get(tid) or mtask
-        role = _task_role(src_task)
-
-        if multi_cli and resolved is not None:
-            route = resolved.for_role(role)
-            prompt_path = _materialize_task_prompt(
-                goal=goal,
-                run_id=rid,
-                task_id=tid,
-                task_index=i + 1,
-                task_count=n,
-                owned_files=owned,
-                worktree=wt,
-                provider=route.provider,
-                role=route.role,
-                posture=route.posture,
-            )
-            inv = build_executor_argv(
-                route.provider,
-                route.role,
-                prompt_file=prompt_path,
-                model=route.model,
-                cwd=wt,
-                check_binary=False,  # already checked at resolve
-            )
-            argv = list(inv.argv)
-            needs_pty = bool(inv.needs_pty)
-            provider = inv.provider
-            posture = inv.posture
-            prompt_delivery = inv.prompt_delivery
-            pane_cmd = build_executor_pane_command(
-                argv,
-                needs_pty=needs_pty,
-                prompt_delivery=prompt_delivery,
-                prompt_file=prompt_path,
-            )
-        else:
-            # D1 zero-config path — identical to pre-D3 behavior.
-            argv = _build_task_grok_argv(
-                goal=goal,
-                run_id=rid,
-                task_id=tid,
-                task_index=i + 1,
-                task_count=n,
-                owned_files=owned,
-                worktree=wt,
-                yolo=yolo,
-                safe=safe,
-                extra=extra,
-            )
-            needs_pty = False
-            provider = "grok"
-            posture = "read-write"  # executor default; D1 does not route roles
-            prompt_delivery = PROMPT_DELIVERY_PROMPT_FILE
-            pane_cmd = build_pane_command(_grok_args_for_pane(argv))
-
-        if fixture_pane_cmd is not None:
-            # Hermetic transport override — keep argv record for diagnostics.
-            pane_cmd = fixture_pane_cmd
-            provider = "fixture"
-
-        # Persist per-task argv under team/ (mirrors fanout workers/*.argv.json)
-        argv_path = tdir / f"{tid}.argv.json"
-        argv_path.write_text(
-            json.dumps(argv, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        rec: dict[str, Any] = {
-            "task_id": tid,
-            "window_index": i,
-            "worktree": str(wt),
-            "argv_path": str(argv_path.relative_to(_run_dir(root_path, rid))),
-            "pane_command": pane_cmd,
-            "argv": argv,
-            "role": role,
-            "provider": provider,
-            "posture": posture,
-            "needs_pty": needs_pty,
-            "prompt_delivery": prompt_delivery,
-            "pid": None,
-            "pgid": None,
-            "pid_start": None,
-            "status": "dry_run" if dry_run else "pending",
-            "_env_pairs": _pane_env_pairs(
-                run_id=rid,
-                team_id=tid_plane,
-                worker_id=tid,
-                leader_root=root_path,
-                state_root=root_path / ".omg" / "state",
-                owner_token=token,
-            ),
-        }
-        task_records.append(rec)
-
-    routing_payload = resolved.to_dict() if resolved is not None else None
-
-    def _public_tasks() -> list[dict[str, Any]]:
-        cleaned: list[dict[str, Any]] = []
-        for item in task_records:
-            row = {
-                k: v
-                for k, v in item.items()
-                if k not in ("_env_pairs", "_tmux_launch")
-            }
-            cleaned.append(row)
-        return cleaned
-
-    if dry_run:
-        # HERMETIC: never call tmux_available() / subprocess
-        note = "dry_run skeleton; pid=None; no tmux/subprocess; " + (
-            "multi-CLI per-provider argv recorded"
-            if multi_cli
-            else "grok-only pane argv recorded"
-        )
-        meta = {
-            "writer": CLI_WRITER,
-            "schema_version": SCHEMA_VERSION,
-            "meta_generation": 0,
-            "run_id": rid,
-            "session": session,
-            "dry_run": True,
-            "workspace_mode": WORKSPACE_MODE,
-            "goal": goal,
-            "task_count": n,
-            "next_worker_index": n,
-            "created_at": _utc_now(),
-            "tasks": _public_tasks(),
-            "multi_cli": multi_cli,
-            "routing": routing_payload,
-            "linked_ralph": None,
-            "topology": topology,
-            "team_id": tid_plane,
-            "owner_token": token,
-            "executor": executor_norm,
-            "note": note,
-        }
-        _atomic_write_json(team_meta_path(root_path, rid), meta)
-        write_status(
+    def _fail_start(exc: BaseException, *, extra: Sequence[str] = ()) -> TeamError:
+        rb = _rollback_partial_team_start(
             root_path,
             rid,
-            "completed",
-            extra={
-                "team": True,
-                "stage": "team_dry_run",
-                "task_count": n,
-                "multi_cli": multi_cli,
-                "note": "team dry_run completed; verified remains false",
-            },
+            created_run=created_run,
+            worktrees=created_worktrees,
+            team_dir_path=tdir if created_team_dir else None,
+            remove_ownership=remove_ownership,
+            ownership_backup=ownership_backup,
+            file_backups=None if created_team_dir else file_backups,
         )
-        return meta
+        details = [str(exc), *list(extra), *rb]
+        return TeamError(
+            "team start transaction failed (rolled back partial state): "
+            + "; ".join(d for d in details if d)
+        )
 
-    # Live path: create tmux session + fill pids
-    launch_nonce = uuid.uuid4().hex
-    transaction_paths = (
-        team_launch_receipt_path(root_path, rid),
-        team_meta_path(root_path, rid),
-        _run_dir(root_path, rid) / "status.json",
-    )
-    snapshots = _snapshot_live_start_files(transaction_paths)
-    created_handle: tuple[str, str] | None = None
-    tmux_launch: dict[str, Any] = {
-        "attach_mode": "detached",
-        "session_owned": True,
-        "leader_pane_id": None,
-        "window_id": None,
-        "attach_hint": None,
-    }
-    try:
-        if topology == "split":
-            from omg_cli.team.tmux import TmuxTeamError, create_split_team_session
+    # Snapshot pre-existing resources before we mutate (existing --run safety).
+    from omg_cli.workers import ownership_manifest_path as _own_path
 
+    mpath_pre = _own_path(root_path, rid)
+    if mpath_pre.is_file() and not mpath_pre.is_symlink():
+        try:
+            ownership_backup = mpath_pre.read_bytes()
+            remove_ownership = False  # will restore backup, not unlink
+        except OSError:
+            ownership_backup = None
+            remove_ownership = True
+    else:
+        ownership_backup = None
+        remove_ownership = True
+
+    pre_existing_worktrees: set[Path] = set()
+    for t in tasks:
+        tid_pre = str(t.get("task_id") or t.get("id") or "")
+        if not tid_pre:
+            continue
+        try:
+            wt_pre = worktree_dir(root_path, rid, tid_pre)
+        except Exception:
+            continue
+        if wt_pre.exists():
             try:
-                created_handle = create_split_team_session(
+                pre_existing_worktrees.add(wt_pre.resolve())
+            except OSError:
+                pre_existing_worktrees.add(wt_pre)
+
+    # Ownership + real worktrees + setup + dry_run/live are all inside the
+    # #17 rollback boundary (Codex: post-prep failures must also roll back).
+    _tx_failed_prefix = "team start transaction failed"
+    try:
+        manifest = build_ownership_manifest(root_path, rid, tasks)
+        # Prepare per-task; register expected path *before* prepare so a
+        # create-then-raise inside prepare_task is still rolled back.
+        for mtask in list(manifest.get("tasks") or []):
+            tid_prep = str(mtask.get("task_id") or "")
+            if not tid_prep:
+                continue
+            wt_expected = worktree_dir(root_path, rid, tid_prep)
+            try:
+                wt_resolved = wt_expected.resolve()
+            except OSError:
+                wt_resolved = wt_expected
+            tracked_new = False
+            if wt_resolved not in pre_existing_worktrees:
+                created_worktrees.append(wt_expected)
+                tracked_new = True
+            try:
+                wt = prepare_task(root_path, rid, tid_prep)
+            except Exception:
+                raise
+            # Prefer the concrete path prepare returned (same location).
+            if tracked_new and wt not in created_worktrees:
+                created_worktrees.append(wt)
+
+        tdir = team_dir(root_path, rid)
+        created_team_dir = not (tdir.is_dir() and not tdir.is_symlink())
+        tdir.mkdir(parents=True, exist_ok=True)
+
+        session = session_name_for_cwd(root_path)
+        env_pairs = _pane_env_pairs(
+            run_id=rid,
+            team_id=tid_plane,
+            leader_root=root_path,
+            state_root=root_path / ".omg" / "state",
+            owner_token=token,
+        )
+
+        # Original task dicts by task_id (for role lookup; manifest may drop fields).
+        tasks_by_id: dict[str, dict[str, Any]] = {}
+        for t in tasks:
+            tid0 = str(t.get("task_id") or t.get("id") or "")
+            if tid0:
+                tasks_by_id[tid0] = t
+
+        task_records: list[dict[str, Any]] = []
+        manifest_tasks = list(manifest.get("tasks") or [])
+        # Preserve manifest order for window indices
+        for i, mtask in enumerate(manifest_tasks):
+            tid = str(mtask["task_id"])
+            wt = Path(str(mtask.get("worktree_path") or worktree_dir(root_path, rid, tid)))
+            owned = list(mtask.get("owned_files") or [])
+            src_task = tasks_by_id.get(tid) or mtask
+            role = _task_role(src_task)
+
+            if multi_cli and resolved is not None:
+                route = resolved.for_role(role)
+                prompt_path = _materialize_task_prompt(
+                    goal=goal,
+                    run_id=rid,
+                    task_id=tid,
+                    task_index=i + 1,
+                    task_count=n,
+                    owned_files=owned,
+                    worktree=wt,
+                    provider=route.provider,
+                    role=route.role,
+                    posture=route.posture,
+                )
+                inv = build_executor_argv(
+                    route.provider,
+                    route.role,
+                    prompt_file=prompt_path,
+                    model=route.model,
+                    cwd=wt,
+                    check_binary=False,  # already checked at resolve
+                )
+                argv = list(inv.argv)
+                needs_pty = bool(inv.needs_pty)
+                provider = inv.provider
+                posture = inv.posture
+                prompt_delivery = inv.prompt_delivery
+                pane_cmd = build_executor_pane_command(
+                    argv,
+                    needs_pty=needs_pty,
+                    prompt_delivery=prompt_delivery,
+                    prompt_file=prompt_path,
+                )
+            else:
+                # D1 zero-config path — identical to pre-D3 behavior.
+                argv = _build_task_grok_argv(
+                    goal=goal,
+                    run_id=rid,
+                    task_id=tid,
+                    task_index=i + 1,
+                    task_count=n,
+                    owned_files=owned,
+                    worktree=wt,
+                    yolo=yolo,
+                    safe=safe,
+                    extra=extra,
+                )
+                needs_pty = False
+                provider = "grok"
+                posture = "read-write"  # executor default; D1 does not route roles
+                prompt_delivery = PROMPT_DELIVERY_PROMPT_FILE
+                pane_cmd = build_pane_command(_grok_args_for_pane(argv))
+
+            if fixture_pane_cmd is not None:
+                # Hermetic transport override — keep argv record for diagnostics.
+                pane_cmd = fixture_pane_cmd
+                provider = "fixture"
+
+            # Persist per-task argv under team/ (mirrors fanout workers/*.argv.json)
+            argv_path = tdir / f"{tid}.argv.json"
+            # When reusing a team dir, backup prior argv so rollback can restore.
+            if not created_team_dir and argv_path not in file_backups:
+                if argv_path.is_file() and not argv_path.is_symlink():
+                    try:
+                        file_backups[argv_path] = argv_path.read_bytes()
+                    except OSError:
+                        file_backups[argv_path] = None
+                else:
+                    file_backups[argv_path] = None
+            argv_path.write_text(
+                json.dumps(argv, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            rec: dict[str, Any] = {
+                "task_id": tid,
+                "window_index": i,
+                "worktree": str(wt),
+                "argv_path": str(argv_path.relative_to(_run_dir(root_path, rid))),
+                "pane_command": pane_cmd,
+                "argv": argv,
+                "role": role,
+                "provider": provider,
+                "posture": posture,
+                "needs_pty": needs_pty,
+                "prompt_delivery": prompt_delivery,
+                "pid": None,
+                "pgid": None,
+                "pid_start": None,
+                "status": "dry_run" if dry_run else "pending",
+                "_env_pairs": _pane_env_pairs(
+                    run_id=rid,
+                    team_id=tid_plane,
+                    worker_id=tid,
+                    leader_root=root_path,
+                    state_root=root_path / ".omg" / "state",
+                    owner_token=token,
+                ),
+            }
+            task_records.append(rec)
+
+        routing_payload = resolved.to_dict() if resolved is not None else None
+
+        def _public_tasks() -> list[dict[str, Any]]:
+            cleaned: list[dict[str, Any]] = []
+            for item in task_records:
+                row = {
+                    k: v
+                    for k, v in item.items()
+                    if k not in ("_env_pairs", "_tmux_launch")
+                }
+                cleaned.append(row)
+            return cleaned
+
+        if dry_run:
+            # HERMETIC: never call tmux_available() / subprocess
+            note = "dry_run skeleton; pid=None; no tmux/subprocess; " + (
+                "multi-CLI per-provider argv recorded"
+                if multi_cli
+                else "grok-only pane argv recorded"
+            )
+            meta = {
+                "writer": CLI_WRITER,
+                "schema_version": SCHEMA_VERSION,
+                "meta_generation": 0,
+                "run_id": rid,
+                "session": session,
+                "dry_run": True,
+                "workspace_mode": WORKSPACE_MODE,
+                "goal": goal,
+                "task_count": n,
+                "next_worker_index": n,
+                "created_at": _utc_now(),
+                "tasks": _public_tasks(),
+                "multi_cli": multi_cli,
+                "routing": routing_payload,
+                "linked_ralph": None,
+                "topology": topology,
+                "team_id": tid_plane,
+                "owner_token": token,
+                "executor": executor_norm,
+                "note": note,
+            }
+            _atomic_write_json(team_meta_path(root_path, rid), meta)
+            write_status(
+                root_path,
+                rid,
+                "completed",
+                extra={
+                    "team": True,
+                    "stage": "team_dry_run",
+                    "task_count": n,
+                    "multi_cli": multi_cli,
+                    "note": "team dry_run completed; verified remains false",
+                },
+            )
+            return meta
+
+        # Live path: create tmux session + fill pids
+        launch_nonce = uuid.uuid4().hex
+        transaction_paths = (
+            team_launch_receipt_path(root_path, rid),
+            team_meta_path(root_path, rid),
+            _run_dir(root_path, rid) / "status.json",
+        )
+        snapshots = _snapshot_live_start_files(transaction_paths)
+        created_handle: tuple[str, str] | None = None
+        tmux_launch: dict[str, Any] = {
+            "attach_mode": "detached",
+            "session_owned": True,
+            "leader_pane_id": None,
+            "window_id": None,
+            "attach_hint": None,
+        }
+        try:
+            if topology == "split":
+                from omg_cli.team.tmux import TmuxTeamError, create_split_team_session
+
+                try:
+                    created_handle = create_split_team_session(
+                        session=session,
+                        tasks=task_records,
+                        env_pairs=env_pairs,
+                        detach=detach,
+                        env=env,
+                    )
+                except TmuxTeamError as exc:
+                    raise TeamError(str(exc)) from exc
+                raw_launch = task_records[0].pop("_tmux_launch", None)
+                if isinstance(raw_launch, Mapping):
+                    tmux_launch = {**tmux_launch, **dict(raw_launch)}
+                # Inside mode joins the live session (name may differ from plan).
+                session = created_handle[0]
+            else:
+                created_handle = _create_tmux_session(
                     session=session,
                     tasks=task_records,
                     env_pairs=env_pairs,
-                    detach=detach,
-                    env=env,
                 )
-            except TmuxTeamError as exc:
-                raise TeamError(str(exc)) from exc
-            raw_launch = task_records[0].pop("_tmux_launch", None)
-            if isinstance(raw_launch, Mapping):
-                tmux_launch = {**tmux_launch, **dict(raw_launch)}
-            # Inside mode joins the live session (name may differ from plan).
-            session = created_handle[0]
-        else:
-            created_handle = _create_tmux_session(
-                session=session,
-                tasks=task_records,
-                env_pairs=env_pairs,
+            option = _tmux_run(
+                [
+                    "set-option",
+                    "-t",
+                    created_handle[1],
+                    LAUNCH_NONCE_OPTION,
+                    launch_nonce,
+                ]
             )
-        option = _tmux_run(
-            [
-                "set-option",
-                "-t",
-                created_handle[1],
-                LAUNCH_NONCE_OPTION,
-                launch_nonce,
-            ]
-        )
-        if option.returncode != 0:
-            raise TeamError("failed to bind tmux launch nonce")
+            if option.returncode != 0:
+                raise TeamError("failed to bind tmux launch nonce")
 
-        session_identity = _read_tmux_session_identity(session)
-        if session_identity != created_handle:
-            raise TeamError("tmux launch identity readback failed")
-
-        if topology == "split" and all(
-            isinstance(rec.get("pane_id"), str)
-            and _TMUX_PANE_ID.fullmatch(str(rec.get("pane_id"))) is not None
-            for rec in task_records
-        ):
-            # Prefer exact pane ids from new-session/split-window -P (required
-            # for inside-tmux where the session already has extra panes).
-            for rec in task_records:
-                pane_id = str(rec["pane_id"])
-                pid_probe = _tmux_run(
-                    ["display-message", "-p", "-t", pane_id, "#{pane_pid}"]
-                )
-                if pid_probe.returncode != 0:
-                    raise TeamError(f"tmux pane pid readback failed for {pane_id}")
-                try:
-                    pid = int((pid_probe.stdout or "").strip())
-                except ValueError as exc:
-                    raise TeamError(
-                        f"tmux pane pid invalid for {pane_id}"
-                    ) from exc
-                if pid <= 0:
-                    raise TeamError(f"tmux pane pid non-positive for {pane_id}")
-                rec["pid"] = pid
-                rec["pgid"] = _pgid_for_pid(pid)
-                rec["pid_start"] = _pid_start_identity(pid)
-                rec["status"] = (
-                    "running"
-                    if rec["pgid"] is not None and rec["pid_start"] is not None
-                    else "launched"
-                )
-        else:
-            pane_identities = _list_pane_identities(created_handle[1])
-            if len(pane_identities) != len(task_records):
+            session_identity = _read_tmux_session_identity(session)
+            if session_identity != created_handle:
                 raise TeamError("tmux launch identity readback failed")
-            for rec in task_records:
-                widx = int(rec["window_index"])
-                pane_identity = pane_identities.get(widx)
-                if pane_identity is not None:
-                    pane_id, pid = pane_identity
-                    rec["pane_id"] = pane_id
+
+            if topology == "split" and all(
+                isinstance(rec.get("pane_id"), str)
+                and _TMUX_PANE_ID.fullmatch(str(rec.get("pane_id"))) is not None
+                for rec in task_records
+            ):
+                # Prefer exact pane ids from new-session/split-window -P (required
+                # for inside-tmux where the session already has extra panes).
+                for rec in task_records:
+                    pane_id = str(rec["pane_id"])
+                    pid_probe = _tmux_run(
+                        ["display-message", "-p", "-t", pane_id, "#{pane_pid}"]
+                    )
+                    if pid_probe.returncode != 0:
+                        raise TeamError(f"tmux pane pid readback failed for {pane_id}")
+                    try:
+                        pid = int((pid_probe.stdout or "").strip())
+                    except ValueError as exc:
+                        raise TeamError(
+                            f"tmux pane pid invalid for {pane_id}"
+                        ) from exc
+                    if pid <= 0:
+                        raise TeamError(f"tmux pane pid non-positive for {pane_id}")
                     rec["pid"] = pid
                     rec["pgid"] = _pgid_for_pid(pid)
                     rec["pid_start"] = _pid_start_identity(pid)
@@ -1925,98 +2127,122 @@ def start_team(
                         if rec["pgid"] is not None and rec["pid_start"] is not None
                         else "launched"
                     )
-                else:
-                    rec["status"] = "launched"  # session created; pid unknown
-
-        _receipt, launch_receipt_sha256 = _persist_team_launch_receipt(
-            root_path,
-            rid,
-            session=session,
-            session_id=created_handle[1],
-            launch_nonce=launch_nonce,
-            tasks=task_records,
-        )
-
-        meta = {
-            "writer": CLI_WRITER,
-            "schema_version": SCHEMA_VERSION,
-            "meta_generation": 0,
-            "run_id": rid,
-            "session": session,
-            "launch_nonce": launch_nonce,
-            "launch_receipt_sha256": launch_receipt_sha256,
-            "identity_generation": 0,
-            "identity_receipt_sha256": launch_receipt_sha256,
-            "dry_run": False,
-            "workspace_mode": WORKSPACE_MODE,
-            "goal": goal,
-            "task_count": n,
-            "next_worker_index": n,
-            "created_at": _utc_now(),
-            "tasks": _public_tasks(),
-            "multi_cli": multi_cli,
-            "routing": routing_payload,
-            "linked_ralph": None,
-            "topology": topology,
-            "team_id": tid_plane,
-            "owner_token": token,
-            "executor": executor_norm,
-            "attach_mode": tmux_launch.get("attach_mode"),
-            "session_owned": bool(tmux_launch.get("session_owned", True)),
-            "leader_pane_id": tmux_launch.get("leader_pane_id"),
-            "window_id": tmux_launch.get("window_id"),
-            "attach_hint": tmux_launch.get("attach_hint"),
-            "note": (
-                "experimental fixture tmux team; hermetic ACK transport "
-                "(not Grok live parity); stop via immutable launch identity"
-                if executor_norm == "fixture"
-                else (
-                    "experimental multi-CLI tmux team; stop via immutable launch identity"
-                    if multi_cli
-                    else "experimental grok-only tmux team; stop via immutable launch identity"
-                )
-            ),
-        }
-        _atomic_write_json(team_meta_path(root_path, rid), meta)
-        write_status(
-            root_path,
-            rid,
-            "running",
-            extra={
-                "team": True,
-                "stage": "team_running",
-                "session": session,
-                "task_count": n,
-                "multi_cli": multi_cli,
-            },
-        )
-        return meta
-    except Exception as exc:
-        cleanup_error = None
-        if created_handle is not None:
-            if topology == "split" and not bool(tmux_launch.get("session_owned", True)):
-                from omg_cli.team.tmux import _kill_panes, _kill_window
-
-                window_id = tmux_launch.get("window_id")
-                if isinstance(window_id, str) and window_id:
-                    cleanup_error = _kill_window(window_id)
-                else:
-                    pane_ids = [
-                        str(rec.get("pane_id"))
-                        for rec in task_records
-                        if isinstance(rec.get("pane_id"), str)
-                    ]
-                    cleanup_error = _kill_panes(pane_ids)
             else:
-                cleanup_error = _cleanup_created_tmux_session(created_handle)
-        restore_errors = _restore_live_start_files(snapshots)
-        details = [str(exc)]
-        if cleanup_error:
-            details.append(cleanup_error)
-        details.extend(restore_errors)
-        raise TeamError(
-            "tmux live start transaction failed: " + "; ".join(details)
-        ) from exc
+                pane_identities = _list_pane_identities(created_handle[1])
+                if len(pane_identities) != len(task_records):
+                    raise TeamError("tmux launch identity readback failed")
+                for rec in task_records:
+                    widx = int(rec["window_index"])
+                    pane_identity = pane_identities.get(widx)
+                    if pane_identity is not None:
+                        pane_id, pid = pane_identity
+                        rec["pane_id"] = pane_id
+                        rec["pid"] = pid
+                        rec["pgid"] = _pgid_for_pid(pid)
+                        rec["pid_start"] = _pid_start_identity(pid)
+                        rec["status"] = (
+                            "running"
+                            if rec["pgid"] is not None and rec["pid_start"] is not None
+                            else "launched"
+                        )
+                    else:
+                        rec["status"] = "launched"  # session created; pid unknown
+
+            _receipt, launch_receipt_sha256 = _persist_team_launch_receipt(
+                root_path,
+                rid,
+                session=session,
+                session_id=created_handle[1],
+                launch_nonce=launch_nonce,
+                tasks=task_records,
+            )
+
+            meta = {
+                "writer": CLI_WRITER,
+                "schema_version": SCHEMA_VERSION,
+                "meta_generation": 0,
+                "run_id": rid,
+                "session": session,
+                "launch_nonce": launch_nonce,
+                "launch_receipt_sha256": launch_receipt_sha256,
+                "identity_generation": 0,
+                "identity_receipt_sha256": launch_receipt_sha256,
+                "dry_run": False,
+                "workspace_mode": WORKSPACE_MODE,
+                "goal": goal,
+                "task_count": n,
+                "next_worker_index": n,
+                "created_at": _utc_now(),
+                "tasks": _public_tasks(),
+                "multi_cli": multi_cli,
+                "routing": routing_payload,
+                "linked_ralph": None,
+                "topology": topology,
+                "team_id": tid_plane,
+                "owner_token": token,
+                "executor": executor_norm,
+                "attach_mode": tmux_launch.get("attach_mode"),
+                "session_owned": bool(tmux_launch.get("session_owned", True)),
+                "leader_pane_id": tmux_launch.get("leader_pane_id"),
+                "window_id": tmux_launch.get("window_id"),
+                "attach_hint": tmux_launch.get("attach_hint"),
+                "note": (
+                    "experimental fixture tmux team; hermetic ACK transport "
+                    "(not Grok live parity); stop via immutable launch identity"
+                    if executor_norm == "fixture"
+                    else (
+                        "experimental multi-CLI tmux team; stop via immutable launch identity"
+                        if multi_cli
+                        else "experimental grok-only tmux team; stop via immutable launch identity"
+                    )
+                ),
+            }
+            _atomic_write_json(team_meta_path(root_path, rid), meta)
+            write_status(
+                root_path,
+                rid,
+                "running",
+                extra={
+                    "team": True,
+                    "stage": "team_running",
+                    "session": session,
+                    "task_count": n,
+                    "multi_cli": multi_cli,
+                },
+            )
+            return meta
+        except Exception as exc:
+            cleanup_error = None
+            if created_handle is not None:
+                if topology == "split" and not bool(tmux_launch.get("session_owned", True)):
+                    from omg_cli.team.tmux import _kill_panes, _kill_window
+
+                    window_id = tmux_launch.get("window_id")
+                    if isinstance(window_id, str) and window_id:
+                        cleanup_error = _kill_window(window_id)
+                    else:
+                        pane_ids = [
+                            str(rec.get("pane_id"))
+                            for rec in task_records
+                            if isinstance(rec.get("pane_id"), str)
+                        ]
+                        cleanup_error = _kill_panes(pane_ids)
+                else:
+                    cleanup_error = _cleanup_created_tmux_session(created_handle)
+            restore_errors = _restore_live_start_files(snapshots)
+            # #17: also undo run/active/worktrees/team-dir created before the
+            # narrow file snapshot so a failed launch does not block retries.
+            extra = []
+            if cleanup_error:
+                extra.append(cleanup_error)
+            extra.extend(restore_errors)
+            raise _fail_start(exc, extra=extra) from exc
+    except TeamError as exc:
+        if str(exc).startswith(_tx_failed_prefix):
+            raise
+        raise _fail_start(exc) from exc
+    except Exception as exc:
+        raise _fail_start(exc) from exc
 
 
 def team_status(
