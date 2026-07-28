@@ -140,3 +140,121 @@ def test_existing_run_rollback_preserves_preexisting_worktrees(
     assert ownership_manifest_path(tmp_path, rid).read_bytes() == prior_ownership
     # Active pointer for a reused run is not cleared by created_run=False path
     # (run already existed); do not require load_active_run is None.
+
+def test_partial_prepare_failure_rolls_back_created_worktrees(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """If prepare_task fails mid-batch, earlier new worktrees are rolled back."""
+    from omg_cli.workers import WorkerError, prepare_task as real_prepare, worktree_dir
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+
+    calls: list[str] = []
+
+    def flaky_prepare(root, run_id, task_id):  # type: ignore[no-untyped-def]
+        calls.append(str(task_id))
+        if str(task_id) == "t2":
+            raise WorkerError("forced mid-prepare failure")
+        return real_prepare(root, run_id, task_id)
+
+    monkeypatch.setattr(plane, "prepare_task", flaky_prepare)
+
+    with pytest.raises(TeamError, match="transaction failed|mid-prepare"):
+        start_team(
+            "partial prep",
+            TASKS,
+            root=tmp_path,
+            dry_run=False,
+            topology="windows",
+        )
+
+    assert load_active_run(tmp_path) is None
+    assert "t1" in calls and "t2" in calls
+    runs = list((tmp_path / ".omg" / "state" / "runs").glob("*"))
+    for run_dir in runs:
+        rid = run_dir.name
+        for tid in ("t1", "t2"):
+            wt = worktree_dir(tmp_path, rid, tid)
+            assert not wt.exists() or not any(wt.iterdir()), f"orphan worktree {wt}"
+
+
+def test_post_prep_setup_failure_rolls_back_new_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Failures after prepare (argv write) must still hit #17 rollback."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+
+    real_write = Path.write_text
+
+    def boom_write(self, *a, **k):  # type: ignore[no-untyped-def]
+        if str(self).endswith(".argv.json"):
+            raise OSError("forced argv write failure")
+        return real_write(self, *a, **k)
+
+    monkeypatch.setattr(Path, "write_text", boom_write)
+
+    with pytest.raises(TeamError, match="transaction failed|argv write"):
+        start_team(
+            "post prep",
+            TASKS,
+            root=tmp_path,
+            dry_run=True,
+            topology="windows",
+        )
+
+    assert load_active_run(tmp_path) is None
+
+
+def test_seed_failure_surfaces_incomplete_compensating_stop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """runtime launch must not ignore stop_completed=False after seed failure."""
+    from omg_cli.team import runtime
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    monkeypatch.setattr(
+        runtime,
+        "start_team",
+        lambda *a, **k: {
+            "run_id": "run-seed-1",
+            "schema_version": 1,
+            "tasks": [{"task_id": "t1"}],
+        },
+    )
+    monkeypatch.setattr(runtime, "write_team_ref", lambda *a, **k: None)
+    monkeypatch.setattr(runtime, "_ensure_lane_dirs", lambda *a, **k: None)
+    monkeypatch.setattr(
+        runtime,
+        "decompose_goal",
+        lambda goal, workers, role: [
+            {"task_id": "t1", "title": "one", "owned_files": ["README.md"], "role": role}
+        ],
+    )
+
+    def boom_seed(*_a, **_k):
+        raise RuntimeError("board seed boom")
+
+    monkeypatch.setattr(runtime, "_seed_api_board", boom_seed)
+
+    def incomplete_stop(*_a, **_k):
+        return {
+            "stop_completed": False,
+            "errors": ["identity mismatch: skipped tmux kill-session"],
+        }
+
+    monkeypatch.setattr(plane, "stop_team", incomplete_stop)
+
+    with pytest.raises(TeamError, match="compensating stop incomplete"):
+        runtime.launch_team(
+            "seed fail",
+            workers=1,
+            role="executor",
+            root=tmp_path,
+            dry_run=False,
+        )
