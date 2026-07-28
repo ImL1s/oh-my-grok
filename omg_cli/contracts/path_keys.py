@@ -205,7 +205,11 @@ def _split_base_and_components(target: Path) -> tuple[Path, list[str]]:
 
 
 def _open_base_dir(base: Path) -> int:
-    """Open an existing base directory (system path; intermediate symlinks OK)."""
+    """Open an existing base directory (system path; intermediate symlinks OK).
+
+    The final component is opened with ``O_NOFOLLOW`` so a swap of the base
+    directory itself to a symlink cannot redirect managed creation outside.
+    """
 
     base = base.absolute()
     if not base.exists():
@@ -217,8 +221,14 @@ def _open_base_dir(base: Path) -> int:
     if not base.is_dir():
         raise ContractPathError(f"managed base is not a directory: {base}")
     try:
-        return os.open(base, os.O_RDONLY | os.O_DIRECTORY)
+        return os.open(
+            base, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        )
     except OSError as exc:
+        if _is_nofollow_error(exc):
+            raise ContractPathError(
+                f"managed base may not be a symlink: {base}"
+            ) from exc
         raise ContractPathError(f"cannot open managed base: {base}") from exc
 
 
@@ -525,15 +535,19 @@ def exclusive_lock_at(parent_fd: int, name: str) -> Iterator[None]:
     descriptor = _open_lock_descriptor_at(parent_fd, name)
     try:
         st = os.fstat(descriptor)
-        if not stat.S_ISREG(st.st_mode):
-            raise ContractPathError(f"lock file must be a regular file: {name}")
-        if st.st_nlink != 1:
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
             raise ContractPathError(
-                f"lock file must not be hard-linked: {name} "
+                f"lock file must be a unique regular file: {name} "
+                f"(nlink={getattr(st, 'st_nlink', '?')})"
+            )
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        st = os.fstat(descriptor)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            raise ContractPathError(
+                f"lock file must be a unique regular file under flock: {name} "
                 f"(nlink={st.st_nlink})"
             )
         os.fchmod(descriptor, DATA_FILE_MODE)
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
         yield
     finally:
         try:
