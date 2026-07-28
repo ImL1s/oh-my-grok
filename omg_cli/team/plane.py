@@ -2881,12 +2881,20 @@ def _stop_team_locked(
             updated["tasks"] = tasks
         return updated
 
-    updated = mutate_team_meta(
-        root_path,
-        run_id,
-        _apply_stop,
-        expected_generation=original_generation,
-    )
+    try:
+        updated = mutate_team_meta(
+            root_path,
+            run_id,
+            _apply_stop,
+            expected_generation=original_generation,
+        )
+    except TeamError as exc:
+        # Teardown side effects may already be done. Unrelated metadata writers
+        # (resume / linked_ralph) can bump generation without changing task IDs;
+        # reconcile onto latest doc while keeping the task-set fence.
+        if "stale team meta generation" not in str(exc):
+            raise
+        updated = mutate_team_meta(root_path, run_id, _apply_stop)
 
     try:
         write_status(

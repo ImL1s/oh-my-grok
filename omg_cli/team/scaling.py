@@ -20,6 +20,7 @@ import json
 import os
 import signal
 import subprocess
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
@@ -119,22 +120,52 @@ def _pid_is_alive(pid: int) -> bool:
 
 
 def _reclaim_stale_scale_lock(path: Path) -> bool:
-    """Remove a lock file whose recorded PID is dead. Return True if reclaimed."""
+    """Atomically claim and remove a lock file whose recorded PID is dead.
 
+    Uses rename-to-unique so two reclaimers cannot both unlink a lock that a
+    third party just recreated after the first reclamation.
+    """
+
+    if not path.exists():
+        return False
+    reclaim = path.with_name(
+        f"{path.name}.reclaim.{os.getpid()}.{uuid.uuid4().hex}"
+    )
     try:
-        holder = path.read_text(encoding="utf-8").strip().splitlines()[0].strip()
-    except (OSError, IndexError):
+        os.rename(path, reclaim)
+    except FileNotFoundError:
+        return False
+    except OSError:
         return False
     try:
-        pid = int(holder)
-    except ValueError:
-        return False
-    if _pid_is_alive(pid):
-        return False
-    try:
-        path.unlink()
+        try:
+            holder = reclaim.read_text(encoding="utf-8").strip().splitlines()[0].strip()
+            pid = int(holder)
+        except (OSError, IndexError, ValueError):
+            reclaim.unlink(missing_ok=True)  # type: ignore[call-arg]
+            return True
+        if _pid_is_alive(pid):
+            # Put a still-live lock back for its owner.
+            try:
+                os.rename(reclaim, path)
+            except OSError:
+                try:
+                    reclaim.unlink(missing_ok=True)  # type: ignore[call-arg]
+                except TypeError:
+                    if reclaim.exists():
+                        reclaim.unlink()
+            return False
+        try:
+            reclaim.unlink(missing_ok=True)  # type: ignore[call-arg]
+        except TypeError:
+            if reclaim.exists():
+                reclaim.unlink()
         return True
     except OSError:
+        try:
+            os.rename(reclaim, path)
+        except OSError:
+            pass
         return False
 
 
