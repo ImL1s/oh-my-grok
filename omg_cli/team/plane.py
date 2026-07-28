@@ -2767,11 +2767,28 @@ def stop_team(
             errors.append(f"linked_ralph cancel: {exc}")
 
     # Update team.json without hiding live or uncertain process truth.
-    # Locked + generation-fenced publication (#21).
+    # Locked + generation-fenced publication (#21). Refuse publication when a
+    # concurrent scale mutated the task set after we verified identities.
     stop_actions_final = list(actions)
     stop_errors_final = list(errors)
+    original_task_ids = frozenset(
+        str(t.get("task_id"))
+        for t in (meta.get("tasks") or [])
+        if isinstance(t, Mapping) and t.get("task_id")
+    )
+    original_generation = _read_meta_generation(meta)
 
     def _apply_stop(current: dict[str, Any]) -> dict[str, Any]:
+        locked_task_ids = frozenset(
+            str(t.get("task_id"))
+            for t in (current.get("tasks") or [])
+            if isinstance(t, Mapping) and t.get("task_id")
+        )
+        if locked_task_ids != original_task_ids:
+            raise TeamError(
+                "team task set changed during stop (concurrent scale?); "
+                "re-run stop against the current workers"
+            )
         updated = dict(current)
         updated["stop_actions"] = list(stop_actions_final)
         if stop_completed:
@@ -2808,7 +2825,12 @@ def stop_team(
             updated["tasks"] = tasks
         return updated
 
-    updated = mutate_team_meta(root_path, run_id, _apply_stop)
+    updated = mutate_team_meta(
+        root_path,
+        run_id,
+        _apply_stop,
+        expected_generation=original_generation,
+    )
 
     try:
         write_status(
