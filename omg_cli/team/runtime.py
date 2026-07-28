@@ -535,6 +535,64 @@ def _seed_api_board(
         )
 
 
+def remove_team_ref(root: Path | str, team_name: str) -> None:
+    """Best-effort delete a team-name lookup ref (transaction compensation)."""
+    path = team_ref_path(root, team_name)
+    try:
+        if path.is_file() or path.is_symlink():
+            path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def compensate_failed_launch(
+    root: Path | str,
+    run_id: str,
+    *,
+    team_name: str | None = None,
+    dry_run: bool = False,
+    phase: str = "post-start",
+) -> list[str]:
+    """Reverse-order cleanup after start_team committed but launch aborts (#17).
+
+    Order: stop live team (if any) → remove team ref written by this launch.
+    Returns diagnostic strings (never raises). Callers may promote incomplete
+    stop into TeamError.
+    """
+    errors: list[str] = []
+    root_path = Path(root).resolve()
+    rid = str(run_id)
+    if not dry_run:
+        try:
+            from omg_cli.team.plane import stop_team
+
+            stop_result = stop_team(root_path, rid, force=True)
+            if not bool((stop_result or {}).get("stop_completed")):
+                stop_errors = list((stop_result or {}).get("errors") or [])
+                detail = "; ".join(str(e) for e in stop_errors if e) or (
+                    "exact process/session disappearance was not proved"
+                )
+                errors.append(f"compensating stop incomplete: {detail}")
+        except Exception as stop_exc:  # noqa: BLE001 — surface in caller
+            errors.append(f"compensating stop also failed: {stop_exc}")
+    else:
+        # Dry-run start leaves active + skeleton; clear active so retries work.
+        try:
+            from omg_cli.state import clear_active
+
+            clear_active(root_path, rid)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"clear active after dry_run compensate: {exc}")
+    if team_name:
+        try:
+            remove_team_ref(root_path, team_name)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"team ref remove {team_name!r}: {exc}")
+    if errors:
+        errors.insert(0, f"phase={phase}")
+    return errors
+
+
 def launch_team(
     goal: str,
     *,
@@ -557,6 +615,10 @@ def launch_team(
 
     ``executor=\"fixture\"`` swaps pane commands for the hermetic ACK fixture
     (transport smoke only — not Grok live parity).
+
+    Commit point (#17): ``start_team`` success is the control-plane commit
+    (tmux identity + team.json). ACK readiness is post-commit health (#20).
+    Failures after start_team trigger compensating stop + ref removal.
     """
     root_path = Path(root).resolve() if root is not None else Path.cwd().resolve()
     role_n = normalize_role(role)
@@ -586,19 +648,38 @@ def launch_team(
     )
     rid = str(meta["run_id"])
     name = _slug_team_name(goal, rid)
-    write_team_ref(root_path, team_name=name, run_id=rid, team_id=team_id)
+    ref_written = False
+    phase = "write_team_ref"
 
-    api_env = dict(env or {})
-    api_env.setdefault(EXPERIMENTAL_ENV, "1")
-    # Leader seeds the board — strip worker markers for this process.
-    for key in (
-        "OMG_TEAM_WORKER",
-        "OMG_PROCESS_FANOUT_WORKER",
-        "OMG_SPAWNED_WORKER",
-    ):
-        api_env.pop(key, None)
+    def _abort(exc: BaseException, *, label: str) -> TeamError:
+        rb = compensate_failed_launch(
+            root_path,
+            rid,
+            team_name=name if ref_written else None,
+            dry_run=dry_run,
+            phase=label,
+        )
+        details = [str(exc), *rb]
+        return TeamError(
+            f"team launch transaction failed ({label}): "
+            + "; ".join(d for d in details if d)
+        )
 
     try:
+        write_team_ref(root_path, team_name=name, run_id=rid, team_id=team_id)
+        ref_written = True
+
+        api_env = dict(env or {})
+        api_env.setdefault(EXPERIMENTAL_ENV, "1")
+        # Leader seeds the board — strip worker markers for this process.
+        for key in (
+            "OMG_TEAM_WORKER",
+            "OMG_PROCESS_FANOUT_WORKER",
+            "OMG_SPAWNED_WORKER",
+        ):
+            api_env.pop(key, None)
+
+        phase = "api_board_seed"
         _seed_api_board(
             root_path,
             run_id=rid,
@@ -606,51 +687,28 @@ def launch_team(
             tasks=tasks,
             env=api_env,
         )
-    except Exception as exc:
-        # #17: compensate partial shorthand launch after start_team committed.
-        # stop_team may return stop_completed=False without raising — treat that
-        # as failed compensation so live panes are not silently abandoned.
-        if not dry_run:
-            try:
-                from omg_cli.team.plane import stop_team
 
-                stop_result = stop_team(root_path, rid, force=True)
-            except Exception as stop_exc:  # noqa: BLE001 — surface both errors
-                raise TeamError(
-                    f"team api board seed failed: {exc}; "
-                    f"compensating stop also failed: {stop_exc}"
-                ) from exc
-            if not bool((stop_result or {}).get("stop_completed")):
-                stop_errors = list((stop_result or {}).get("errors") or [])
-                detail = "; ".join(str(e) for e in stop_errors if e) or (
-                    "exact process/session disappearance was not proved"
-                )
-                raise TeamError(
-                    f"team api board seed failed: {exc}; "
-                    f"compensating stop incomplete: {detail}"
-                ) from exc
-        raise TeamError(f"team api board seed failed: {exc}") from exc
+        meta = dict(meta)
+        meta["team_name"] = name
+        meta["team_id"] = team_id
+        meta["launch_mode"] = "shorthand"
+        meta["topology"] = "split"
+        meta["schema_version"] = meta.get("schema_version", SCHEMA_VERSION)
 
-    meta = dict(meta)
-    meta["team_name"] = name
-    meta["team_id"] = team_id
-    meta["launch_mode"] = "shorthand"
-    meta["topology"] = "split"
-    meta["schema_version"] = meta.get("schema_version", SCHEMA_VERSION)
+        expected_workers = [str(t["task_id"]) for t in tasks]
+        phase = "startup_readiness"
+        startup = startup_readiness_payload(
+            root_path,
+            run_id=rid,
+            team_id=team_id,
+            expected_workers=expected_workers,
+            dry_run=dry_run,
+            env=api_env,
+        )
+        meta.update(startup)
 
-    expected_workers = [str(t["task_id"]) for t in tasks]
-    startup = startup_readiness_payload(
-        root_path,
-        run_id=rid,
-        team_id=team_id,
-        expected_workers=expected_workers,
-        dry_run=dry_run,
-        env=api_env,
-    )
-    meta.update(startup)
-
-    # Persist annotations onto team.json via locked atomic mutate (#21).
-    try:
+        # Persist annotations onto team.json via locked atomic mutate (#21).
+        phase = "startup_annotations"
         meta = persist_startup_annotations(
             root_path,
             rid,
@@ -662,10 +720,13 @@ def launch_team(
                 **startup,
             },
         )
-    except TeamError:
-        # start_team always writes team.json; surface as hard failure.
-        raise
-    return meta
+        return meta
+    except TeamError as exc:
+        if "team launch transaction failed" in str(exc):
+            raise
+        raise _abort(exc, label=phase) from exc
+    except Exception as exc:
+        raise _abort(exc, label=phase) from exc
 
 
 def status_for_identity(

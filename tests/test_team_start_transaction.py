@@ -257,3 +257,136 @@ def test_seed_failure_surfaces_incomplete_compensating_stop(
             root=tmp_path,
             dry_run=False,
         )
+
+
+def test_launch_seed_failure_removes_team_ref(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#17: board seed failure compensates stop and deletes team ref."""
+    from omg_cli.team import runtime
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    monkeypatch.setattr(
+        runtime,
+        "start_team",
+        lambda *a, **k: {
+            "run_id": "run-seed-ref",
+            "schema_version": 1,
+            "tasks": [{"task_id": "t1"}],
+        },
+    )
+    refs: list[str] = []
+
+    def track_ref(*_a, **k):
+        refs.append(str(k.get("team_name") or "x"))
+        return tmp_path / "ref.json"
+
+    monkeypatch.setattr(runtime, "write_team_ref", track_ref)
+    monkeypatch.setattr(runtime, "_ensure_lane_dirs", lambda *a, **k: None)
+    monkeypatch.setattr(
+        runtime,
+        "decompose_goal",
+        lambda goal, workers, role: [
+            {"task_id": "t1", "title": "one", "owned_files": ["README.md"], "role": role}
+        ],
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_seed_api_board",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("seed boom")),
+    )
+    removed: list[str] = []
+    monkeypatch.setattr(
+        runtime,
+        "remove_team_ref",
+        lambda root, name: removed.append(str(name)),
+    )
+    monkeypatch.setattr(
+        plane,
+        "stop_team",
+        lambda *a, **k: {"stop_completed": True, "errors": []},
+    )
+
+    with pytest.raises(TeamError, match="api_board_seed|seed boom"):
+        runtime.launch_team(
+            "seed fail ref",
+            workers=1,
+            role="executor",
+            root=tmp_path,
+            dry_run=False,
+        )
+    assert refs, "ref should have been written before seed"
+    assert removed, "compensating ref remove must run"
+
+
+def test_launch_annotation_failure_compensates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#17: startup annotation failure after seed still compensates."""
+    from omg_cli.team import runtime
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    monkeypatch.setattr(
+        runtime,
+        "start_team",
+        lambda *a, **k: {
+            "run_id": "run-ann-1",
+            "schema_version": 1,
+            "tasks": [{"task_id": "t1"}],
+            "dry_run": False,
+        },
+    )
+    monkeypatch.setattr(runtime, "write_team_ref", lambda *a, **k: None)
+    monkeypatch.setattr(runtime, "_ensure_lane_dirs", lambda *a, **k: None)
+    monkeypatch.setattr(runtime, "_seed_api_board", lambda *a, **k: None)
+    monkeypatch.setattr(
+        runtime,
+        "decompose_goal",
+        lambda goal, workers, role: [
+            {"task_id": "t1", "title": "one", "owned_files": ["README.md"], "role": role}
+        ],
+    )
+    monkeypatch.setattr(
+        runtime,
+        "startup_readiness_payload",
+        lambda *a, **k: {
+            "startup_status": "running",
+            "startup_acks": 1,
+            "startup_expected": 1,
+            "startup_ack_workers": ["t1"],
+            "startup_missing_workers": [],
+            "ready_timeout_ms": 1,
+            "startup_note": "ok",
+        },
+    )
+    monkeypatch.setattr(
+        runtime,
+        "persist_startup_annotations",
+        lambda *a, **k: (_ for _ in ()).throw(TeamError("annotation boom")),
+    )
+    stopped: list[str] = []
+    monkeypatch.setattr(
+        plane,
+        "stop_team",
+        lambda root, rid, **k: stopped.append(str(rid))
+        or {"stop_completed": True, "errors": []},
+    )
+    removed: list[str] = []
+    monkeypatch.setattr(
+        runtime, "remove_team_ref", lambda *a, **k: removed.append("yes")
+    )
+
+    with pytest.raises(TeamError, match="startup_annotations|annotation boom"):
+        runtime.launch_team(
+            "ann fail",
+            workers=1,
+            role="executor",
+            root=tmp_path,
+            dry_run=False,
+        )
+    assert stopped == ["run-ann-1"]
+    assert removed == ["yes"]
