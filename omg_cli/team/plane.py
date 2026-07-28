@@ -2454,6 +2454,25 @@ def stop_team(
             raise TeamError("no active run (pass --run ID)")
         run_id = str(active["run_id"])
 
+    # Serialize with scale/relaunch so stop cannot race mid-scale side effects.
+    from omg_cli.team.scaling import acquire_scale_lock
+
+    with acquire_scale_lock(root_path, run_id):
+        return _stop_team_locked(
+            root_path,
+            run_id,
+            force=force,
+            kill_grace_s=kill_grace_s,
+        )
+
+
+def _stop_team_locked(
+    root_path: Path,
+    run_id: str,
+    *,
+    force: bool,
+    kill_grace_s: float,
+) -> dict[str, Any]:
     meta = load_team_meta(root_path, run_id)
     session = str(meta.get("session") or "")
     dry = bool(meta.get("dry_run"))
@@ -2479,6 +2498,27 @@ def stop_team(
             f"(task_ids={ids}, owners={owners}); "
             "pass --force to tear down anyway"
         )
+
+    # Durable stop intent before process side effects so concurrent scale
+    # (if it ever races the lock) still sees an in-progress stop.
+    try:
+        def _mark_stopping(current: dict[str, Any]) -> dict[str, Any]:
+            updated = dict(current)
+            if updated.get("stop_state") == "stopped":
+                return updated
+            updated["stop_state"] = "stopping"
+            updated["stop_intent_at"] = _utc_now()
+            return updated
+
+        meta = mutate_team_meta(
+            root_path,
+            run_id,
+            _mark_stopping,
+            expected_generation=_read_meta_generation(meta),
+        )
+    except TeamError:
+        # CAS loss: re-load and continue; scale lock still serializes us.
+        meta = load_team_meta(root_path, run_id)
 
     actions: list[str] = []
     errors: list[str] = []

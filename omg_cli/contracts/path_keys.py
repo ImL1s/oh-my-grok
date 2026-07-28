@@ -121,10 +121,16 @@ def _open_dir_at(dir_fd: int | None, name: str) -> int:
 
 
 def _mkdir_open_at(dir_fd: int, name: str, *, mode: int = MANAGED_DIR_MODE) -> int:
-    """Create *name* under *dir_fd* if missing, then open it with O_NOFOLLOW."""
+    """Create *name* under *dir_fd* if missing, then open it with O_NOFOLLOW.
 
+    Mode is enforced only when this call creates the directory so existing
+    intermediate components keep their prior permissions.
+    """
+
+    created = False
     try:
         os.mkdir(name, mode, dir_fd=dir_fd)
+        created = True
     except FileExistsError:
         pass
     except OSError as exc:
@@ -138,7 +144,8 @@ def _mkdir_open_at(dir_fd: int, name: str, *, mode: int = MANAGED_DIR_MODE) -> i
         st = os.fstat(child)
         if not stat.S_ISDIR(st.st_mode):
             raise ContractPathError(f"managed path is not a directory: {name}")
-        os.fchmod(child, mode)
+        if created:
+            os.fchmod(child, mode)
     except Exception:
         os.close(child)
         raise
@@ -162,9 +169,10 @@ def _split_base_and_components(target: Path) -> tuple[Path, list[str]]:
         raise ContractPathError("empty managed path")
 
     if MANAGED_ROOT_MARKER in parts:
-        # Project-local marker only: nested checkouts under an ancestor named
-        # ``.omg`` must not treat that ancestor as the managed root.
-        idx = len(parts) - 1 - parts[::-1].index(MANAGED_ROOT_MARKER)
+        # First ``.omg`` establishes the managed boundary so earlier managed
+        # components (including nested markers under it) stay no-follow.
+        # Existing intermediate directories are not re-chmod'd (see _mkdir_open_at).
+        idx = parts.index(MANAGED_ROOT_MARKER)
         if idx == 0:
             raise ContractPathError("managed root marker cannot be filesystem root")
         base = Path(*parts[:idx])

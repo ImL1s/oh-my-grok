@@ -556,6 +556,14 @@ def scale_team(
 
     with acquire_scale_lock(root_path, rid):
         meta = _require_team_run(root_path, rid)
+        stop_state = str(meta.get("stop_state") or "")
+        if stop_state in {"stopping", "stopped", "stop_refused"} or meta.get(
+            "stopped_at"
+        ):
+            raise TeamError(
+                "scale refused: team is stopping/stopped "
+                f"(stop_state={stop_state!r}); re-check status"
+            )
         if add_n > 0:
             return _scale_up(
                 root_path,
@@ -731,7 +739,9 @@ def _scale_up(
     def _apply_scale_up(current: dict[str, Any]) -> dict[str, Any]:
         # Refuse to revive or extend a team that was stopped while we scaled.
         stop_state = str(current.get("stop_state") or "")
-        if stop_state in {"stopped", "stop_refused"} or current.get("stopped_at"):
+        if stop_state in {"stopping", "stopped", "stop_refused"} or current.get(
+            "stopped_at"
+        ):
             raise TeamError(
                 "scale-up refused: team is stopping/stopped "
                 f"(stop_state={stop_state!r}); re-check status"
@@ -917,7 +927,9 @@ def _scale_down(
 
     def _apply_scale_down(current: dict[str, Any]) -> dict[str, Any]:
         stop_state = str(current.get("stop_state") or "")
-        if stop_state in {"stopped", "stop_refused"} or current.get("stopped_at"):
+        if stop_state in {"stopping", "stopped", "stop_refused"} or current.get(
+            "stopped_at"
+        ):
             raise TeamError(
                 "scale-down refused: team is stopping/stopped "
                 f"(stop_state={stop_state!r}); re-check status"
@@ -932,12 +944,56 @@ def _scale_down(
             updated["identity_receipt_sha256"] = down_identity_hash
         return updated
 
-    updated = mutate_team_meta(
-        root,
-        run_id,
-        _apply_scale_down,
-        expected_generation=down_base_generation,
-    )
+    try:
+        updated = mutate_team_meta(
+            root,
+            run_id,
+            _apply_scale_down,
+            expected_generation=down_base_generation,
+        )
+    except TeamError as exc:
+        # Process side effects may already be done; reconcile victim statuses
+        # onto the latest document without requiring the pre-side-effect generation.
+        if "stale team meta generation" not in str(exc):
+            raise
+
+        def _reconcile_scale_down(current: dict[str, Any]) -> dict[str, Any]:
+            stop_state = str(current.get("stop_state") or "")
+            if stop_state in {"stopping", "stopped", "stop_refused"} or current.get(
+                "stopped_at"
+            ):
+                raise TeamError(
+                    "scale-down refused after side effects: team is stopping/stopped "
+                    f"(stop_state={stop_state!r}); re-check status"
+                )
+            updated = dict(current)
+            by_id = {
+                str(t.get("task_id")): t
+                for t in down_task_list
+                if isinstance(t, Mapping) and t.get("task_id")
+            }
+            merged: list[dict[str, Any]] = []
+            for raw in list(current.get("tasks") or []):
+                if not isinstance(raw, Mapping):
+                    continue
+                rec = dict(raw)
+                tid = str(rec.get("task_id") or "")
+                src = by_id.get(tid)
+                if src is not None and tid in victim_ids:
+                    for key in ("status", "scaled_down_at", "pid", "pgid"):
+                        if key in src:
+                            rec[key] = src[key]
+                merged.append(rec)
+            updated["tasks"] = merged
+            updated["task_count"] = len(_active_tasks(merged))
+            updated["last_scale_at"] = now
+            updated["last_scale"] = dict(last_scale_down)
+            if down_identity_gen is not None:
+                updated["identity_generation"] = down_identity_gen
+                updated["identity_receipt_sha256"] = down_identity_hash
+            return updated
+
+        updated = mutate_team_meta(root, run_id, _reconcile_scale_down)
 
     try:
         write_status(
