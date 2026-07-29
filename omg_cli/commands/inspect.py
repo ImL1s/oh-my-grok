@@ -56,12 +56,26 @@ def cmd_wiki(args: argparse.Namespace) -> int:
 
 
 def cmd_hud(args: argparse.Namespace) -> int:
+    from omg_cli.cli_envelope import emit_json, success
+    from omg_cli.command_context import get_context
     from omg_cli.hud import hud_line, hud_pack
 
     root = project_root()
     rid = getattr(args, "run_id", None)
-    if getattr(args, "json", False):
-        print(json.dumps(hud_pack(root, rid), indent=2, ensure_ascii=False))
+    ctx = get_context(args)
+    # Local --json, global --json, or context wants_json
+    as_json = bool(
+        getattr(args, "json", False)
+        or getattr(args, "json_output", False)
+        or (ctx and ctx.wants_json)
+    )
+    if as_json:
+        pack = hud_pack(root, rid)
+        if getattr(args, "json_output", False) or (ctx and ctx.wants_json):
+            emit_json(success("hud", data=pack))
+        else:
+            # Legacy local --json shape (no envelope) for back-compat
+            print(json.dumps(pack, indent=2, ensure_ascii=False))
     else:
         print(hud_line(root, rid))
     return 0
