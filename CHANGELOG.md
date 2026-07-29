@@ -24,6 +24,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   native-status/capabilities/parity handlers extracted from `main.py`
   (parser still in `build_parser`; no user-visible change). Shared helpers in
   `omg_cli/cli_util.py`.
+- **`omg_cli/commands/install.py`** (#29 Phase 2): setup/install-hook/doctor/
+  update/uninstall handlers extracted (no user-visible change).
 - **`docs/cli-contract.md`** (#30 Phase 0): exit-code classes and schema_version 1
   envelope for scripted surfaces.
 
