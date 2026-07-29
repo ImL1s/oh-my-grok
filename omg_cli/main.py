@@ -43,13 +43,14 @@ from omg_cli.commands.modes import (  # #29 Phase 2 — modes family
     cmd_qa,
     cmd_review,
 )
-from omg_cli.commands.run import (  # #29 Phase 2 — run family
+from omg_cli.commands.run import (  # #29 Phase 2+4' — run family
     _print_state_human,  # noqa: F401 — re-export for tests
-    cmd_cancel,
-    cmd_recover,
-    cmd_resume,
-    cmd_session,
-    cmd_state,
+    cmd_cancel,  # noqa: F401
+    cmd_recover,  # noqa: F401
+    cmd_resume,  # noqa: F401
+    cmd_session,  # noqa: F401
+    cmd_state,  # noqa: F401
+    register_run_parsers,
 )
 from omg_cli.commands.team import (  # #29 Phase 2 — team family
     cmd_accept,
@@ -265,110 +266,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_uninstall.set_defaults(func=cmd_uninstall)
 
-    p_state = sub.add_parser(
-        "state",
-        parents=[common],
-        help="show active run (or --run <id>)",
-    )
-    p_state.add_argument("--run", dest="run_id", default=None, help="specific run_id")
-    p_state.add_argument(
-        "--human",
-        action="store_true",
-        help="one-screen human summary (mode/status/verified/next)",
-    )
-    p_state.set_defaults(func=cmd_state)
+    register_run_parsers(sub, common)
 
-    p_cancel = sub.add_parser(
-        "cancel",
-        parents=[common],
-        help="cancel active (or --run) run",
-    )
-    p_cancel.add_argument("--run", dest="run_id", default=None, help="specific run_id")
-    p_cancel.add_argument(
-        "--grace",
-        dest="grace",
-        type=float,
-        default=2.0,
-        help="seconds after SIGTERM before SIGKILL (default: 2.0; 0=SIGTERM only)",
-    )
-    p_cancel.set_defaults(func=cmd_cancel)
-
-    p_resume = sub.add_parser(
-        "resume",
-        parents=[common],
-        help="smart resume routing + write/clear .omg/state/RESUME.md",
-    )
-    p_resume.add_argument("--run", dest="run_id", default=None, help="specific run_id")
-    p_resume.add_argument(
-        "--clear",
-        action="store_true",
-        help="delete RESUME.md after successful continuation",
-    )
-    p_resume.add_argument(
-        "--no-write",
-        action="store_true",
-        help="print pack only; do not write RESUME.md",
-    )
-    # --json inherited from common (json_output)
-    p_resume.set_defaults(func=cmd_resume)
-
-    p_session = sub.add_parser(
-        "session",
-        parents=[common],
-        help="build exact Grok create/resume/continue/fork session argv",
-    )
-    session_sub = p_session.add_subparsers(dest="session_action")
-    p_session_allocate = session_sub.add_parser(
-        "allocate",
-        parents=[common],
-        help="allocate a new canonical Grok session UUID",
-    )
-    p_session_allocate.set_defaults(func=cmd_session, session_action="allocate")
-    p_session_route = session_sub.add_parser(
-        "route",
-        parents=[common],
-        help="validate one exact Grok host-session route",
-    )
-    route = p_session_route.add_mutually_exclusive_group(required=True)
-    route.add_argument("--session-id", help="new session UUID")
-    route.add_argument("--resume", dest="resume_session_id", help="existing session UUID")
-    route.add_argument(
-        "--continue",
-        dest="continue_best_effort",
-        action="store_true",
-        help="use Grok's best-effort continuation route",
-    )
-    p_session_route.add_argument(
-        "--fork-session",
-        action="store_true",
-        help="fork the selected resume/continue route",
-    )
-    p_session_route.add_argument(
-        "--new-session-id",
-        help="new child UUID required for a fork",
-    )
-    p_session_route.add_argument(
-        "--existing-session-id",
-        dest="existing_session_ids",
-        action="append",
-        default=[],
-        help="known UUID that the child must not reuse (repeatable)",
-    )
-    p_session_route.set_defaults(func=cmd_session, session_action="route")
-    p_session.set_defaults(func=cmd_session)
-
-    p_recover = sub.add_parser(
-        "recover",
-        parents=[common],
-        help="recover a bounded immutable session JSONL suffix",
-    )
-    p_recover.add_argument("source", help="regular JSONL source file (symlinks refused)")
-    p_recover.add_argument(
-        "--output",
-        default=None,
-        help="recovery directory (default: .omg/state/recovery/manual-<hash>)",
-    )
-    p_recover.set_defaults(func=cmd_recover)
 
     p_memory = sub.add_parser(
         "memory",
