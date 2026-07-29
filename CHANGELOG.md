@@ -45,6 +45,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **`emit_data` migration** (#30): wiki/lsp/notify/native-status/capabilities/
   parity/memory/tracker/compact/review/qa/autopilot wrap domain JSON in
   schema_version 1 envelopes under global `--json` (legacy dump without flag).
+- **team / workflow / run** paths also use `emit_data` under global `--json`
+  (accept/integrate/team/worker/interview/goal/cancel/session/recover).
 - **`docs/cli-contract.md`** (#30 Phase 0): exit-code classes and schema_version 1
   envelope for scripted surfaces.
 

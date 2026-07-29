@@ -494,6 +494,9 @@ def test_cli_goal_set_host(tmp_path: Path) -> None:
     )
     assert proc_json.returncode == 0
     payload = json.loads(proc_json.stdout)
-    assert payload["goal_id"] == "cli-host"
-    assert "handoff_markdown" in payload
-    assert "cli handoff ok" in payload["suggested_slash"]
+    # Global --json wraps domain payload in schema_version 1 envelope (#30).
+    body = payload.get("data", payload)
+    assert payload.get("ok") is True or "goal_id" in body
+    assert body["goal_id"] == "cli-host"
+    assert "handoff_markdown" in body
+    assert "cli handoff ok" in body["suggested_slash"]
