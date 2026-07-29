@@ -20,6 +20,7 @@ def test_main_reexports_memory_handlers() -> None:
     assert cmd_memory is memory_cmds.cmd_memory
     assert cmd_tracker is memory_cmds.cmd_tracker
     assert cmd_compact is memory_cmds.cmd_compact
+    assert callable(memory_cmds.register_memory_parsers)
 
 
 def test_parser_wires_memory_handlers() -> None:
