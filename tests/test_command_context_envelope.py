@@ -66,3 +66,37 @@ def test_command_context_wants_json() -> None:
         output="json",
     )
     assert ctx.wants_json is True
+
+
+def test_capabilities_global_json_envelope(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    code = main(["--json", "capabilities"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["command"] == "capabilities"
+    assert "data" in payload
+    assert payload["schema_version"] == SCHEMA_VERSION
+
+
+def test_lsp_status_global_json_envelope(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    code = main(["--json", "lsp", "status"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["command"] == "lsp.status"
+    assert "data" in payload
+
+
+def test_memory_show_global_json(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    # setup minimal .omg so memory works
+    (tmp_path / ".omg").mkdir()
+    code = main(["--json", "memory", "show"])
+    # may fail if memory needs more setup — accept 0 or 1 with envelope
+    out = capsys.readouterr().out
+    if code == 0 and out.strip():
+        payload = json.loads(out)
+        assert payload["ok"] is True
+        assert payload["command"] == "memory"

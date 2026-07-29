@@ -60,6 +60,46 @@ def emit_json(payload: dict[str, Any], *, stream=None) -> None:
     print(json.dumps(payload, indent=2, ensure_ascii=False), file=out)
 
 
+def wants_json(args: Any) -> bool:
+    """True when global --json / CommandContext requests machine output."""
+    if bool(getattr(args, "json_output", False)):
+        return True
+    ctx = getattr(args, "omg_ctx", None)
+    return bool(getattr(ctx, "wants_json", False))
+
+
+def emit_data(
+    args: Any,
+    command: str,
+    data: Any,
+    *,
+    stream=None,
+) -> None:
+    """Emit domain payload: wrap in schema_version 1 when ``wants_json``.
+
+    Legacy path (no --json): print ``data`` as JSON if it is a dict/list,
+    else ``str(data)`` — matching pre-envelope command defaults for scripted
+    surfaces that already dumped JSON without an envelope.
+    """
+    if wants_json(args):
+        # Already a full OMG CLI envelope (ok + command + schema_version).
+        if (
+            isinstance(data, dict)
+            and data.get("schema_version") == SCHEMA_VERSION
+            and "command" in data
+            and "ok" in data
+        ):
+            emit_json(data, stream=stream)
+        else:
+            emit_json(success(command, data=data), stream=stream)
+        return
+    out = stream if stream is not None else sys.stdout
+    if isinstance(data, (dict, list)):
+        print(json.dumps(data, indent=2, ensure_ascii=False), file=out)
+    else:
+        print(data, file=out)
+
+
 def exit_for_ok(ok: bool, *, usage: bool = False) -> int:
     """Map outcome to contract exit classes."""
     if usage:
@@ -69,8 +109,10 @@ def exit_for_ok(ok: bool, *, usage: bool = False) -> int:
 
 __all__ = [
     "SCHEMA_VERSION",
+    "emit_data",
     "emit_json",
     "exit_for_ok",
     "failure",
     "success",
+    "wants_json",
 ]

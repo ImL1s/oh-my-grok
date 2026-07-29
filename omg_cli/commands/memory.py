@@ -7,10 +7,10 @@ Parser construction remains in ``main.build_parser``.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
+from omg_cli.cli_envelope import emit_data
 from omg_cli.cli_util import project_root, read_json_path, write_json_path
 
 
@@ -59,11 +59,10 @@ def cmd_memory(args: argparse.Namespace) -> int:
             result = store
             if getattr(args, "output", None):
                 target = write_json_path(args.output, result)
-                print(
-                    json.dumps(
-                        {"path": str(target), "facts": len(store["facts"])},
-                        indent=2,
-                    )
+                emit_data(
+                    args,
+                    "memory.export",
+                    {"path": str(target), "facts": len(store["facts"])},
                 )
                 return 0
         elif action == "import":
@@ -88,7 +87,7 @@ def cmd_memory(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as exc:
         print(f"omg memory: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    emit_data(args, "memory", result)
     return 0
 
 
@@ -154,7 +153,7 @@ def cmd_tracker(args: argparse.Namespace) -> int:
     except (OSError, ValueError, TrackerError, ContractValidationError) as exc:
         print(f"omg tracker: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    emit_data(args, "tracker", result)
     return 0
 
 
@@ -214,7 +213,7 @@ def cmd_compact(args: argparse.Namespace) -> int:
     except (OSError, ValueError, CompactionError, ContractValidationError) as exc:
         print(f"omg compact: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    emit_data(args, "compact", result)
     return 0
 
 

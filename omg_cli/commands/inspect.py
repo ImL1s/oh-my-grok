@@ -12,6 +12,7 @@ import os
 import sys
 from pathlib import Path
 
+from omg_cli.cli_envelope import emit_data, emit_json, wants_json
 from omg_cli.cli_util import notification_config, project_root, read_json_path
 
 
@@ -36,14 +37,14 @@ def cmd_wiki(args: argparse.Namespace) -> int:
                 tags=tags,
                 source=getattr(args, "source", None),
             )
-            print(json.dumps(result, indent=2, ensure_ascii=False))
+            emit_data(args, "wiki.ingest", result)
             return 0
         if action == "list":
-            print(json.dumps(list_pages(root), indent=2, ensure_ascii=False))
+            emit_data(args, "wiki.list", list_pages(root))
             return 0
         if action == "query":
             hits = query(root, str(args.q), limit=int(getattr(args, "limit", 20)))
-            print(json.dumps(hits, indent=2, ensure_ascii=False))
+            emit_data(args, "wiki.query", hits)
             return 0
     except WikiError as e:
         print(f"wiki failed: {e}", file=sys.stderr)
@@ -56,26 +57,12 @@ def cmd_wiki(args: argparse.Namespace) -> int:
 
 
 def cmd_hud(args: argparse.Namespace) -> int:
-    from omg_cli.cli_envelope import emit_json, success
-    from omg_cli.command_context import get_context
     from omg_cli.hud import hud_line, hud_pack
 
     root = project_root()
     rid = getattr(args, "run_id", None)
-    ctx = get_context(args)
-    # Local --json, global --json, or context wants_json
-    as_json = bool(
-        getattr(args, "json", False)
-        or getattr(args, "json_output", False)
-        or (ctx and ctx.wants_json)
-    )
-    if as_json:
-        pack = hud_pack(root, rid)
-        if getattr(args, "json_output", False) or (ctx and ctx.wants_json):
-            emit_json(success("hud", data=pack))
-        else:
-            # Legacy local --json shape (no envelope) for back-compat
-            print(json.dumps(pack, indent=2, ensure_ascii=False))
+    if wants_json(args) or getattr(args, "json", False):
+        emit_data(args, "hud", hud_pack(root, rid))
     else:
         print(hud_line(root, rid))
     return 0
@@ -92,61 +79,49 @@ def cmd_lsp(args: argparse.Namespace) -> int:
 
     action = getattr(args, "lsp_action", None)
     if action == "status" or action is None:
-        print(json.dumps(probe_tools(), indent=2, ensure_ascii=False))
+        emit_data(args, "lsp.status", probe_tools())
         return 0
     if action == "validate":
         root = project_root()
         path = root / ".lsp.json"
         try:
             if not path.is_file():
-                print(
-                    json.dumps(
-                        {
-                            "ok": False,
-                            "schema_version": 1,
-                            "command": "lsp.validate",
-                            "error": "E_LSP_MISSING",
-                            "path": str(path),
-                            "message": ".lsp.json not found",
-                        },
-                        indent=2,
-                        ensure_ascii=False,
-                    )
+                emit_json(
+                    {
+                        "ok": False,
+                        "schema_version": 1,
+                        "command": "lsp.validate",
+                        "error": "E_LSP_MISSING",
+                        "path": str(path),
+                        "message": ".lsp.json not found",
+                    }
                 )
                 return 1
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise LSPRegistrationError(".lsp.json must be a JSON object")
             servers = validate_registration(raw)
-            print(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "schema_version": 1,
-                        "command": "lsp.validate",
-                        "path": str(path),
-                        "servers": sorted(servers.keys()),
-                        "status": registration_status(root),
-                    },
-                    indent=2,
-                    ensure_ascii=False,
-                )
+            emit_json(
+                {
+                    "ok": True,
+                    "schema_version": 1,
+                    "command": "lsp.validate",
+                    "path": str(path),
+                    "servers": sorted(servers.keys()),
+                    "status": registration_status(root),
+                }
             )
             return 0
         except (OSError, json.JSONDecodeError, LSPRegistrationError) as exc:
-            print(
-                json.dumps(
-                    {
-                        "ok": False,
-                        "schema_version": 1,
-                        "command": "lsp.validate",
-                        "error": "E_LSP_INVALID",
-                        "path": str(path),
-                        "message": str(exc),
-                    },
-                    indent=2,
-                    ensure_ascii=False,
-                )
+            emit_json(
+                {
+                    "ok": False,
+                    "schema_version": 1,
+                    "command": "lsp.validate",
+                    "error": "E_LSP_INVALID",
+                    "path": str(path),
+                    "message": str(exc),
+                }
             )
             return 1
     if action in {"check", "symbols", "diagnostics"}:
@@ -167,7 +142,7 @@ def cmd_lsp(args: argparse.Namespace) -> int:
             ),
             "next_action": "Use the host IDE/Grok LSP client for symbols/diagnostics",
         }
-        print(json.dumps(result, indent=2, ensure_ascii=False))
+        emit_json(result)
         return 1
     print(
         "usage: omg lsp {status,validate} "
@@ -233,7 +208,7 @@ def cmd_notify(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as exc:
         print(f"omg notify: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    emit_data(args, "notify", result)
     return 0
 
 
@@ -258,7 +233,7 @@ def cmd_native_status(args: argparse.Namespace) -> int:
             "note": "pass --probe for bounded help-only observation",
         },
     }
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    emit_data(args, "native-status", result)
     return 0
 
 
@@ -364,7 +339,7 @@ def cmd_capabilities(args: argparse.Namespace) -> int:
         },
         "lock": lock,
     }
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    emit_data(args, "capabilities", result)
     return 0
 
 
@@ -418,7 +393,7 @@ def cmd_parity(args: argparse.Namespace) -> int:
     except (OSError, ValueError, ContractValidationError) as exc:
         print(f"omg parity: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    emit_data(args, "parity.release-readback", result)
     return 0
 
 
