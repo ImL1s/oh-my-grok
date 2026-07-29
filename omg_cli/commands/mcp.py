@@ -1,7 +1,7 @@
 """MCP-family CLI handlers (#29 Phase 2).
 
 Commands: mcp-server, mcp-install.
-Parser construction remains in ``main.build_parser``.
+Parser construction: ``register_mcp_parsers`` (#29 Phase 4').
 """
 
 from __future__ import annotations
@@ -73,7 +73,53 @@ def cmd_mcp_install(args: argparse.Namespace) -> int:
     proc = subprocess.run(cmd, check=False)
     return int(proc.returncode)
 
+
+def register_mcp_parsers(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Register mcp-family argparse parsers (#29 Phase 4').
+
+    Commands: mcp-server, mcp-install.
+    """
+    p_mcp_server = sub.add_parser(
+        "mcp-server",
+        parents=[common],
+        help=(
+            "run focused in-session MCP server (stdio JSON-RPC; "
+            "reads + proposal writes only; sets OMG_MCP_SERVER=1)"
+        ),
+    )
+    p_mcp_server.add_argument(
+        "--root",
+        default=None,
+        help="project root (default: cwd)",
+    )
+    p_mcp_server.set_defaults(func=cmd_mcp_server)
+
+    p_mcp_install = sub.add_parser(
+        "mcp-install",
+        parents=[common],
+        help="register with Grok: grok mcp add omg omg -- mcp-server",
+    )
+    p_mcp_install.add_argument(
+        "--scope",
+        choices=("user", "project"),
+        default="user",
+        help="grok mcp add --scope (default: user)",
+    )
+    p_mcp_install.add_argument(
+        "--print-only",
+        "--dry-run",
+        dest="print_only",
+        action="store_true",
+        help="print the grok mcp add command without running it",
+    )
+    p_mcp_install.set_defaults(func=cmd_mcp_install)
+
+
 __all__ = [
+    "register_mcp_parsers",
     "cmd_mcp_install",
     "cmd_mcp_server",
 ]

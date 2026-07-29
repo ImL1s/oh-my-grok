@@ -55,6 +55,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   memory/tracker/compact (``note`` remains early in main for help order).
 - **install parser registration** (#29 Phase 4′): `register_install_parsers`
   (early: setup/install-hook/doctor; late: update/uninstall around note).
+- **workflow + mcp parser registration** (#29 Phase 4′): `register_workflow_parsers`
+  (early workflow / late interview+goal) and `register_mcp_parsers`.
 - **Golden envelope tests** (#30): exit 0/1/2 matrix for state/capabilities/lsp/hud
   plus wiki/memory/native-status/workflow/team plan-only/cancel.
 - **`omg cancel --json`** failure path emits `E_RUN_NOT_FOUND` envelope (no prose stdout).
