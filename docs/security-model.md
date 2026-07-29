@@ -115,9 +115,10 @@ Authoritative local stores under `.omg` use the primitives in
 
 System path prefixes above the managed region (for example macOS `/tmp` →
 `/private/tmp`) may still contain platform symlinks; confinement is claimed for
-managed components, not for the entire absolute path from `/`. Issue #16
-closure still requires macOS CI evidence from the early #25 harness in addition
-to these unit gates.
+managed components, not for the entire absolute path from `/`. Issue #16 closed
+after Linux unit/adversarial gates **and** the #25 `macos-platform` CI lane
+(path_keys / lock / symlink contracts). Early plans deferred that close until
+the harness existed; both #16 and #25 are now closed on GitHub.
 
 ## Recovery, memory, tracking, compaction, notifications
 
