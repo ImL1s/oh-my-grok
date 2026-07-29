@@ -28,6 +28,8 @@ def test_main_reexports_modes_and_mcp() -> None:
     assert cmd_dual_review is modes_cmds.cmd_dual_review
     assert cmd_mcp_server is mcp_cmds.cmd_mcp_server
     assert cmd_mcp_install is mcp_cmds.cmd_mcp_install
+    assert callable(modes_cmds.register_modes_parsers)
+    assert callable(mcp_cmds.register_mcp_parsers)
 
 
 def test_parser_wires_modes_and_mcp() -> None:

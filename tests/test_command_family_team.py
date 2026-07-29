@@ -24,6 +24,7 @@ def test_main_reexports_team_and_workflow_extras() -> None:
     assert cmd_interview is workflow_cmds.cmd_interview
     assert cmd_goal is workflow_cmds.cmd_goal
     assert cmd_workflow is workflow_cmds.cmd_workflow
+    assert callable(team_cmds.register_team_parsers)
 
 
 def test_parser_wires_team_handlers() -> None:
