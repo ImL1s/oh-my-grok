@@ -1,12 +1,12 @@
-"""Authoritative top-level command inventory (#29 Phase 1).
+"""Authoritative top-level command inventory (#29).
 
 ``KNOWN_SUBCOMMANDS`` is the single source for host-launch recognition and
 madmax intercept. ``build_parser()`` in ``main.py`` must register the same
 names — enforced by ``tests/test_host_launcher.py`` / ``test_command_registry``.
 
-Phase 2+ (handlers extraction, CommandSpec with parser callbacks) is deferred
-to follow-up PRs; this module freezes the inventory so new commands cannot
-drift between argparse and host routing.
+Phase 1: inventory (name/help/family).
+Phase 2 (started): handlers live under ``omg_cli/commands/<family>.py``;
+parser registration still in ``main.build_parser`` until a later phase.
 """
 
 from __future__ import annotations

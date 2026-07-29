@@ -19,7 +19,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **`omg lsp validate`** and stable `E_LSP_*` codes (#28); legacy
   `check`/`symbols`/`diagnostics` return `E_LSP_HOST_OWNED` with `next_action`.
 - **`omg_cli/command_registry.py`** (#29 Phase 1): authoritative top-level
-  `KNOWN_SUBCOMMANDS` / `CommandSpec` inventory (handlers still in `main.py`).
+  `KNOWN_SUBCOMMANDS` / `CommandSpec` inventory.
+- **`omg_cli/commands/inspect.py`** (#29 Phase 2): wiki/hud/lsp/notify/
+  native-status/capabilities/parity handlers extracted from `main.py`
+  (parser still in `build_parser`; no user-visible change). Shared helpers in
+  `omg_cli/cli_util.py`.
 - **`docs/cli-contract.md`** (#30 Phase 0): exit-code classes and schema_version 1
   envelope for scripted surfaces.
 
