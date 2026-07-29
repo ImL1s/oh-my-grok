@@ -40,6 +40,7 @@ def test_main_reexports_inspect_handlers() -> None:
     assert cmd_native_status is inspect_cmds.cmd_native_status
     assert cmd_capabilities is inspect_cmds.cmd_capabilities
     assert cmd_parity is inspect_cmds.cmd_parity
+    assert inspect_cmds.register_inspect_parsers is not None
 
 
 def test_parser_wires_inspect_handlers() -> None:
@@ -65,6 +66,23 @@ def test_inspect_help_lists_primary_commands() -> None:
     help_text = parser.format_help()
     for name in INSPECT_CMDS:
         assert name in help_text
+
+
+def test_register_inspect_parsers_phase_all_matches_build() -> None:
+    """phase=all wires the same handlers as main's early+late calls."""
+    import argparse
+
+    from omg_cli.commands.inspect import register_inspect_parsers
+
+    root = argparse.ArgumentParser()
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", dest="json_output", action="store_true")
+    sub = root.add_subparsers(dest="command")
+    register_inspect_parsers(sub, common, phase="all")
+    ns = root.parse_args(["wiki", "list"])
+    assert ns.func.__module__ == "omg_cli.commands.inspect"
+    ns = root.parse_args(["lsp", "status"])
+    assert ns.func is inspect_cmds.cmd_lsp
 
 
 def test_lsp_status_via_main_still_works(capsys: pytest.CaptureFixture[str]) -> None:

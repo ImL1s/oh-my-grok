@@ -47,6 +47,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   schema_version 1 envelopes under global `--json` (legacy dump without flag).
 - **`docs/cli-commands.md`** + generator (#29 Phase 4): inventory table derived
   from `COMMAND_SPECS`; `python3 scripts/generate_cli_commands_doc.py --check`.
+- **inspect parser registration** (#29 Phase 4′): `register_inspect_parsers`
+  owns notify/native-status/capabilities/parity/wiki/hud/lsp argparse wiring.
 - **Golden envelope tests** (#30): exit 0/1/2 matrix for state/capabilities/lsp/hud
   plus wiki/memory/native-status/workflow/team plan-only/cancel.
 - **`omg cancel --json`** failure path emits `E_RUN_NOT_FOUND` envelope (no prose stdout).
