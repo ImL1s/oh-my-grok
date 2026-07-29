@@ -24,6 +24,7 @@ def test_main_reexports_run_handlers() -> None:
     assert cmd_session is run_cmds.cmd_session
     assert cmd_recover is run_cmds.cmd_recover
     assert _print_state_human is run_cmds._print_state_human
+    assert callable(run_cmds.register_run_parsers)
 
 
 def test_parser_wires_run_handlers() -> None:

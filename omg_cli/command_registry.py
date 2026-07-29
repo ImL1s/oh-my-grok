@@ -6,8 +6,8 @@ names — enforced by ``tests/test_host_launcher.py`` / ``test_command_registry`
 
 Phase 1: inventory (name/help/family).
 Phase 2: handlers live under ``omg_cli/commands/<family>.py``.
-Phase 4′: inspect family registers parsers via
-``register_inspect_parsers`` (other families still in ``main.build_parser``).
+Phase 4′: inspect + run families register parsers via
+``register_*_parsers`` (other families still in ``main.build_parser``).
 """
 
 from __future__ import annotations
