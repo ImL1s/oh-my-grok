@@ -7,6 +7,8 @@ Parser construction remains in ``main.build_parser``.
 
 from __future__ import annotations
 
+from omg_cli.cli_envelope import emit_data
+
 import argparse
 import json
 import os
@@ -113,7 +115,7 @@ def cmd_review(args: argparse.Namespace) -> int:
     except (ReviewError, json.JSONDecodeError, RuntimeError) as exc:
         print(f"omg review: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    emit_data(args, "review", result)
     return 0 if result.get("clean") else 1
 
 
@@ -147,7 +149,7 @@ def cmd_qa(args: argparse.Namespace) -> int:
     except (QAError, json.JSONDecodeError, RuntimeError) as exc:
         print(f"omg qa: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    emit_data(args, "qa", result)
     if action == "run":
         return 0 if result.get("clean") else 1
     return 0
@@ -225,7 +227,7 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
     except (AutopilotError, FileNotFoundError, json.JSONDecodeError, RuntimeError) as exc:
         print(f"omg autopilot: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    emit_data(args, "autopilot", result)
     return 0
 
 

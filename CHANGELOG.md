@@ -42,6 +42,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **`CommandContext`** + global **`--json`** (#29 Phase 3 / #30):
   `omg_cli/command_context.py`, `omg_cli/cli_envelope.py`; parse-once on
   common parent (SUPPRESS). `state` and `hud` honor global JSON envelopes.
+- **`emit_data` migration** (#30): wiki/lsp/notify/native-status/capabilities/
+  parity/memory/tracker/compact/review/qa/autopilot wrap domain JSON in
+  schema_version 1 envelopes under global `--json` (legacy dump without flag).
 - **`docs/cli-contract.md`** (#30 Phase 0): exit-code classes and schema_version 1
   envelope for scripted surfaces.
 

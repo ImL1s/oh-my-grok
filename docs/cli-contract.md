@@ -105,5 +105,5 @@ families and is the long-term target for #30.
 | Team plan-only JSON | **shipped** (#27) |
 | Shared envelope helpers (`omg_cli/cli_envelope.py`) | **shipped** (#29/#30) |
 | Global `--json` / `--human` + `CommandContext` | **shipped** (partial migration) |
-| Migrated: `state` / `hud` under global `--json` | **partial** |
+| Migrated under global `--json` via `emit_data` | **partial** — state, hud, wiki, lsp, notify, native-status, capabilities, parity, memory, tracker, compact, review, qa, autopilot |
 | Golden contract tests for every family | deferred |
