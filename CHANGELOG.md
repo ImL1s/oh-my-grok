@@ -28,6 +28,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   update/uninstall handlers extracted (no user-visible change).
 - **`omg_cli/commands/run.py`** (#29 Phase 2): state/cancel/resume/session/
   recover handlers extracted (no user-visible change).
+- **`omg_cli/commands/memory.py`** (#29 Phase 2): note/memory/tracker/compact
+  handlers extracted (no user-visible change).
 - **`docs/cli-contract.md`** (#30 Phase 0): exit-code classes and schema_version 1
   envelope for scripted surfaces.
 
