@@ -18,7 +18,9 @@ English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.m
 | **Workers** | Only Grok `spawn_subagent` (depth 1); implementers `capability_mode=read-write` (no shell) |
 
 **Not OMC-identical:** Stop pin is real on grok **≥0.2.107** but **capped** (8 continuations/turn), fail-open, and skippable (Esc/Ctrl+C).  
-**Persistence beyond one turn:** `/loop`, outer `omg ralph "…"`, or forthcoming `omg autopilot run --resume`.
+**Persistence beyond one turn (primary hands-off path):**  
+`omg autopilot run --resume RUN --unattended` (#40) — CLI outer loop re-launches Grok after host-turn stalls until `verified` / `blocked` / `cancelled` / interview / await.  
+Also: `/loop`, outer `omg ralph "…"`.
 
 ### OMC feel → OMG equivalent
 
@@ -26,7 +28,7 @@ English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.m
 |-----------------|----------------|-------|
 | Stay in session until done (Stop block) | **Stop pin (primary)** | grok ≥0.2.107; cap 8/turn; fail-open |
 | In-turn “keep going” without Stop | **`/goal` (secondary)** | Host-native; Active bypasses Stop gate |
-| Cross-turn / headless / beyond cap | **`/loop` / `omg ralph` (tertiary; forthcoming `run --resume`)** | Fresh turn; counter resets |
+| Cross-turn / headless / beyond cap | **`omg autopilot run --resume … --unattended` (tertiary, #40)** · `/loop` / `omg ralph` | Fresh turn; counter resets; no human `go` |
 | Human pause (requirements unclear) | **`ask_user_question` + interview** | Gate yields; not mid-phase chat |
 | Destructive / credential pause | **`omg autopilot await`** | Sets `autopilot_awaiting`; gate yields |
 | Cancel sticky mode | **`omg cancel`** | Not “unblock Stop” |
@@ -41,7 +43,7 @@ English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.m
 - **Fail-open:** hook crash/timeout → turn may end (do not assume pin survived).
 - **Skips:** Esc, Ctrl+C, refusal, max-turns — Stop not consulted.
 - **Not used:** `TurnControl::ForceContinue` (stubbed in host; D17).
-- **Beyond cap:** `/loop 5m omg autopilot status --run RUN` (forthcoming `omg autopilot run --resume RUN`).
+- **Beyond cap / hands-off:** `omg autopilot run --resume RUN --unattended` (primary, #40). Optional: `/loop 5m omg autopilot status --run RUN`.
 
 ---
 
@@ -79,10 +81,25 @@ English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.m
 
 ### B. Terminal-only CLI
 
-You can drive phases without the skill (scripted ops / debugging):
+You can drive phases without the skill (scripted ops / debugging).
+
+**Hands-off outer driver (recommended for multi-turn goals, #40):**
 
 ```bash
 omg doctor
+# Start + drive until verified/blocked/await/interview pause (no human "go"):
+omg autopilot run "ship feature X" --skip-interview --unattended
+# Resume after a pause or crash:
+omg autopilot run --resume "$RUN" --unattended
+# Optional stall budget (default 32 re-launches with no phase advance):
+omg autopilot run --resume "$RUN" --unattended --max-stall-relaunches 16
+```
+
+Stdout is machine JSON (`phase` / `pause` / `resume_command`); human hints go to stderr.
+
+**Manual phase transitions (debugging):**
+
+```bash
 omg autopilot start "ship feature X"
 # or requirements already closed:
 omg autopilot start "ship feature X" --skip-interview

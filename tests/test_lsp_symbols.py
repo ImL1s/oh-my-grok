@@ -106,6 +106,7 @@ def test_probe_tools_is_status_alias_without_execution(tmp_path: Path, monkeypat
         ["lsp", "status"],
         ["lsp", "check", "sample.py"],
         ["lsp", "symbols", "sample.py"],
+        ["lsp", "diagnostics", "sample.py"],
     ],
 )
 def test_lsp_cli_never_imports_removed_semantic_proxies(
@@ -118,5 +119,43 @@ def test_lsp_cli_never_imports_removed_semantic_proxies(
         assert output["ownership"] == "host_owned"
     else:
         assert code == 1
+        assert output["error"] == "E_LSP_HOST_OWNED"
+        assert output["ownership"] == "host_owned"
         assert output["status"] == "semantic_proxy_unsupported"
         assert output["semantic_proxy_operations"] == []
+        assert "next_action" in output
+
+
+def test_lsp_validate_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    code = main(["lsp", "validate"])
+    assert code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["error"] == "E_LSP_MISSING"
+    assert out["ok"] is False
+
+
+def test_lsp_validate_ok(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    _write(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(lsp.shutil, "which", lambda _name: "/usr/bin/fake")
+    code = main(["lsp", "validate"])
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is True
+    assert "python" in out["servers"]
+
+
+def test_lsp_help_states_host_owned_boundary() -> None:
+    from omg_cli.main import build_parser
+
+    p = build_parser()
+    lsp_help = ""
+    for action in p._actions:
+        if getattr(action, "choices", None) and "lsp" in (action.choices or {}):
+            lsp_parser = action.choices["lsp"]
+            lsp_help = lsp_parser.format_help()
+            break
+    low = lsp_help.lower()
+    assert "semantic proxy" in low or "host-owned" in low or "e_lsp_host_owned" in low
+    assert "validate" in low

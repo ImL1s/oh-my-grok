@@ -15,12 +15,12 @@
     "agents/omg-verifier.md": "8f410b7d8b43b0bef32f27b05d9cce2d7409f638babc396d4e1f4926be10816c",
     "agents/omg-writer.md": "4609b70f3e027f71d6cd93ddd1036dbdd10ca7e82216e5607361479fdba751f9",
     "skills/omg-ask/SKILL.md": "652560e94b22e32f438cbe29cd8db875f254c12b76a1e5556a5fb550da339ba3",
-    "skills/omg-autopilot/SKILL.md": "c1a87ba7ef961b7f69c7a32ef4495af7e5174c18d2960abafa101e3050e070d6",
+    "skills/omg-autopilot/SKILL.md": "ab19f8a00cfad781cadc06af8fc7129b4299d130af2ae9475924fae5869726c5",
     "skills/omg-cancel/SKILL.md": "cc60cbe53fceac3bdbda0df29743c51f464e35c61f74ec150a8aa4a2bfa8a93f",
     "skills/omg-deep-interview/SKILL.md": "4a9c414bed13559a264c5bbc20c6bdc04456cb767300c02578c870117c158daf",
     "skills/omg-dual-review/SKILL.md": "f19c495df050a6b38660a20754312541c963081c08d875ee558a29b183bc6fbe",
     "skills/omg-hud/SKILL.md": "8dd721f9cef62c126e3b4f0d40d4d2d4f1d8508cfd581a3ba9ea09cb6825bfb2",
-    "skills/omg-lsp/SKILL.md": "a9aed5f42e9a0ec872a14bfd8a3fb0760fb031f391c54f9da18be38df383ddaf",
+    "skills/omg-lsp/SKILL.md": "e75297231980816ba74edf1204bcd4d8249b09b911572d2a5d3b9829996e1a26",
     "skills/omg-pipeline/SKILL.md": "cebeac3f1c8af94286af5c0ecde336ab02feca476f9ce5a8af915614796bc223",
     "skills/omg-ralph/SKILL.md": "6beb5510a2fa35c31d4d974e46b96bf4eae2bb984662f3686c17046ccc7a57ea",
     "skills/omg-ralplan/SKILL.md": "c11c5de0b4705565976a0da85c90d957578bdab83aa33cf1b3ad634bb035f727",
@@ -31,7 +31,7 @@
     "skills/omg-using/SKILL.md": "304eb43595340e4897c72b2529d02b36a28ce17c860bfaa2ac03af76f7465e0e",
     "skills/omg-wiki/SKILL.md": "bd8f8f4fd809ffc1bde337ab4ec81c5d81eb90adea9dd4dfb83861afa79c6ac9"
   },
-  "aggregate": "6d6087e3e2f0031ebcf6ac762d9643a48afb3a961dcff246b5b37f805e38ba22",
+  "aggregate": "56a79456448da6122f227d833516ada7a3ae083a3207a513309491f3f958a28d",
   "session_surface": {
     "schema": "omg-plugin-session-surface/v1",
     "skills": [
@@ -44,7 +44,7 @@
       {
         "name": "omg-autopilot",
         "path": "skills/omg-autopilot/SKILL.md",
-        "sha256": "c1a87ba7ef961b7f69c7a32ef4495af7e5174c18d2960abafa101e3050e070d6",
+        "sha256": "ab19f8a00cfad781cadc06af8fc7129b4299d130af2ae9475924fae5869726c5",
         "metadata_status": "valid"
       },
       {
@@ -74,7 +74,7 @@
       {
         "name": "omg-lsp",
         "path": "skills/omg-lsp/SKILL.md",
-        "sha256": "a9aed5f42e9a0ec872a14bfd8a3fb0760fb031f391c54f9da18be38df383ddaf",
+        "sha256": "e75297231980816ba74edf1204bcd4d8249b09b911572d2a5d3b9829996e1a26",
         "metadata_status": "valid"
       },
       {
@@ -375,5 +375,5 @@
     },
     "issues": []
   },
-  "session_surface_aggregate": "7d509d8f5df4fb90c60526a06941a58d1c4caa654f53c3f5b12dd875f896cefc"
+  "session_surface_aggregate": "51b9469c63a4bb6936d03c1581fb31de1a968d662612236c761c3b9aac81455f"
 }

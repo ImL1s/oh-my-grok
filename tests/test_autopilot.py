@@ -527,6 +527,8 @@ def test_run_autopilot_pauses_at_interview(tmp_path: Path) -> None:
 def test_run_autopilot_pauses_when_awaiting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    import json
+
     st = start_autopilot(tmp_path, "ship it", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence={"consensus": True})
@@ -542,12 +544,18 @@ def test_run_autopilot_pauses_when_awaiting(
     rc = run_autopilot(tmp_path, "", resume_run_id=rid)
     assert rc == 0
     assert not launched
-    out = capsys.readouterr().out
-    assert f"omg autopilot await --clear --run {rid}" in out
-    assert f"omg autopilot run --resume {rid}" in out
-    assert out.index(f"omg autopilot await --clear --run {rid}") < out.index(
+    captured = capsys.readouterr()
+    err = captured.err
+    assert f"omg autopilot await --clear --run {rid}" in err
+    assert f"omg autopilot run --resume {rid}" in err
+    assert err.index(f"omg autopilot await --clear --run {rid}") < err.index(
         f"omg autopilot run --resume {rid}"
     )
+    payload = json.loads(captured.out)
+    assert payload["ok"] is True
+    assert payload["pause"] == "awaiting"
+    assert payload["run_id"] == rid
+    assert f"--resume {rid}" in payload["resume_command"]
     assert (tmp_path / ".omg" / "state" / "RESUME.md").is_file()
 
 
@@ -580,3 +588,72 @@ def test_run_resume_reenters_current_phase(
 
 def test_cli_autopilot_run_listed_in_skills_md() -> None:
     assert "omg autopilot run" in (ROOT / "docs" / "skills.md").read_text()
+
+
+def test_run_autopilot_unattended_relaunches_on_stall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#40: unattended re-launches same phase without human go."""
+    st = start_autopilot(tmp_path, "keep going", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "review")
+    launches = 0
+
+    def _fake_launch(argv, **kw):
+        nonlocal launches
+        launches += 1
+        # Never advance phase → stall path.
+        return 0
+
+    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    rc = run_autopilot(
+        tmp_path,
+        "",
+        resume_run_id=rid,
+        unattended=True,
+        max_stall_relaunches=3,
+    )
+    assert rc == 1
+    assert launches == 4  # initial + 3 stall re-launches then block
+    assert status_autopilot(tmp_path, rid)["phase"] == "blocked"
+
+
+def test_run_autopilot_unattended_still_pauses_on_await(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    st = start_autopilot(tmp_path, "pause me", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "review")
+    set_awaiting_confirmation(tmp_path, rid, True, reason="need human")
+    launches = 0
+
+    def _fake_launch(argv, **kw):
+        nonlocal launches
+        launches += 1
+        return 0
+
+    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    rc = run_autopilot(
+        tmp_path, "", resume_run_id=rid, unattended=True, max_stall_relaunches=5
+    )
+    assert rc == 0
+    assert launches == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pause"] == "awaiting"
+    assert "--unattended" in payload["resume_command"]
+
+
+def test_cli_autopilot_run_unattended_flag() -> None:
+    """Argparse surfaces --unattended for outer loop (#40)."""
+    from omg_cli.main import build_parser
+
+    p = build_parser()
+    ns = p.parse_args(
+        ["autopilot", "run", "--resume", "r1", "--unattended", "--max-stall-relaunches", "4"]
+    )
+    assert ns.unattended is True
+    assert ns.max_stall_relaunches == 4

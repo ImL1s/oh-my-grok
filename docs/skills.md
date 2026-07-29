@@ -126,15 +126,15 @@ omg resume --clear   # after successfully continuing
 ```bash
 omg autopilot start "ship feature X with tests"
 # or: omg autopilot start "…" --skip-interview
-omg autopilot run "ship feature X with tests"          # outer cross-turn driver
-omg autopilot run --resume RUN                         # resume after cap / crash
+omg autopilot run "ship feature X with tests" --unattended   # hands-off outer (#40)
+omg autopilot run --resume RUN --unattended                  # after cap / crash
 omg autopilot status --run RUN
 omg autopilot await --run RUN --set   # pause for destructive/credential confirm
 omg autopilot complete --run RUN
 ```
 
 Phases: `interview → ralplan → implement → review → (rework) → qa → acceptance → verified`  
-Stop pin on grok **≥0.2.107** (cap **8**/turn, fail-open) — beyond cap see [autopilot.md](./autopilot.md#stop-pin-honesty) (`/loop`, outer `omg ralph`, `omg autopilot run --resume`).
+Stop pin on grok **≥0.2.107** (cap **8**/turn, fail-open) — beyond cap see [autopilot.md](./autopilot.md#stop-pin-honesty) (`omg autopilot run --resume … --unattended`, `/loop`, outer `omg ralph`).
 
 ---
 
@@ -213,6 +213,7 @@ omg team stop --run RUN
 
 ```bash
 export OMG_EXPERIMENTAL_TMUX_TEAM=1
+omg team start --goal "parallelize A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --plan-only
 omg team start --goal "parallelize A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --dry-run
 # multi-CLI (role→provider); floors reject cursor-on-reviewer and unknown roles:
 omg team start --goal "…" --tasks-json '[{"task_id":"t1","role":"executor","owned_files":["a.py"]}]' \
@@ -428,14 +429,15 @@ Not run/`verified` authority.
 |--|--|
 | **When** | Inspect the public `.lsp.json` registration and local server-command availability |
 | **Invoke** | `lsp` · `/oh-my-grok:omg-lsp` |
-| **CLI** | `omg lsp status` · `omg lsp check path.py` · `omg lsp symbols path.py` · `omg lsp diagnostics path.py` |
+| **CLI** | `omg lsp status` · `omg lsp validate` · legacy: `check`/`symbols`/`diagnostics` → `E_LSP_HOST_OWNED` |
 | **SKILL** | [`skills/omg-lsp/SKILL.md`](../skills/omg-lsp/SKILL.md) |
 
-`omg lsp status` validates the host-owned registration without starting a
-server. It reports `semantic_proxy_count: 0`; configured but unobserved is not
-healthy. `check`, `symbols`, and `diagnostics` return
-`semantic_proxy_unsupported` with exit code 1. Use Grok's host tools for
-semantic language operations and `read_file` / `grep` for repository lookup.
+`omg lsp status` / `omg lsp validate` inspect host-owned `.lsp.json` without
+starting a server. Status reports `semantic_proxy_count: 0`; configured but
+unobserved is never healthy. Legacy `check`/`symbols`/`diagnostics` always
+return `E_LSP_HOST_OWNED` / `semantic_proxy_unsupported` with exit code 1
+(#28). Use Grok's host tools for semantic language operations and
+`read_file` / `grep` for repository lookup.
 
 ---
 
