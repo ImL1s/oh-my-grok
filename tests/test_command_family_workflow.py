@@ -10,6 +10,7 @@ from omg_cli.main import build_parser, cmd_workflow
 
 def test_main_reexports_workflow_handler() -> None:
     assert cmd_workflow is workflow_cmds.cmd_workflow
+    assert callable(workflow_cmds.register_workflow_parsers)
 
 
 def test_parser_wires_workflow_handlers() -> None:
