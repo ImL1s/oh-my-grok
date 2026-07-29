@@ -1,7 +1,7 @@
 """Memory-family CLI handlers (#29 Phase 2).
 
 Commands: note, memory, tracker, compact.
-Parser construction: ``register_memory_parsers`` (#29 Phase 4'); ``note`` stays in main for help order.
+Parser construction: ``register_memory_parsers`` (#29 Phase 4'); ``register_note_parser`` for early note (help order with install).
 """
 
 from __future__ import annotations
@@ -324,8 +324,46 @@ def register_memory_parsers(
     p_compact.set_defaults(func=cmd_compact)
 
 
+
+def register_note_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Register the early ``note`` command (#29 Phase 4').
+
+    Kept separate so install early/late can sandwich historical help order.
+    """
+    p_note = sub.add_parser(
+        "note",
+        parents=[common],
+        help="append a durable project note (.omg/notepad.md)",
+    )
+    p_note.add_argument(
+        "text",
+        nargs="*",
+        help="note text (omit to show the notepad)",
+    )
+    p_note.add_argument(
+        "--priority",
+        action="store_true",
+        help="permanent (else 7d TTL tag)",
+    )
+    p_note.add_argument(
+        "--show",
+        action="store_true",
+        help="print the notepad and exit",
+    )
+    p_note.add_argument(
+        "--prune",
+        action="store_true",
+        help="remove [7d] notes older than 7 days (permanent kept)",
+    )
+    p_note.set_defaults(func=cmd_note)
+
+
 __all__ = [
     "register_memory_parsers",
+    "register_note_parser",
     "cmd_compact",
     "cmd_memory",
     "cmd_note",

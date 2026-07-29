@@ -2,7 +2,7 @@
 
 Commands: ulw/ralph/ralplan (via cmd_mode), review, qa, autopilot, ask,
 pipeline, dual-review.
-Parser construction remains in ``main.build_parser``.
+Parser construction: ``register_modes_parsers`` (#29 Phase 4').
 """
 
 from __future__ import annotations
@@ -355,7 +355,481 @@ def cmd_dual_review(args: argparse.Namespace) -> int:
         force=bool(getattr(args, "force", False)),
     )
 
+
+def register_modes_parsers(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Register modes-family argparse parsers (#29 Phase 4').
+
+    Commands: review, qa, autopilot, ulw, ralph, ralplan, ask, pipeline, dual-review.
+    """
+    p_review = sub.add_parser(
+        "review",
+        parents=[common],
+        help="hash-bound structured review gate (code-reviewer + architect)",
+    )
+    p_review.add_argument("--run", dest="run_id", required=True)
+    p_review.add_argument(
+        "--diff-text",
+        dest="diff_text",
+        default="",
+        help="current diff text whose hash binds both lanes",
+    )
+    p_review.add_argument(
+        "--code-reviewer-json",
+        required=True,
+        help='JSON payload e.g. {"verdict":"APPROVE","findings":[]}',
+    )
+    p_review.add_argument(
+        "--architect-json",
+        required=True,
+        help='JSON payload e.g. {"verdict":"CLEAR","findings":[]}',
+    )
+    p_review.set_defaults(func=cmd_review)
+
+    p_qa = sub.add_parser(
+        "qa",
+        parents=[common],
+        help="bounded UltraQA freeze/run/status (never sets verified)",
+    )
+    qa_sub = p_qa.add_subparsers(dest="qa_action")
+    p_qa_f = qa_sub.add_parser("freeze", parents=[common], help="freeze scenarios")
+    p_qa_f.add_argument("--run", dest="run_id", required=True)
+    p_qa_f.add_argument(
+        "--scenarios-json",
+        required=True,
+        help='[{"id","command"}] or {"id","check":"always_pass"}',
+    )
+    p_qa_f.add_argument("--plan-hash", default=None)
+    p_qa_f.add_argument("--spec-hash", default=None)
+    p_qa_f.set_defaults(func=cmd_qa, qa_action="freeze")
+    p_qa_r = qa_sub.add_parser("run", parents=[common], help="run one QA cycle")
+    p_qa_r.add_argument("--run", dest="run_id", required=True)
+    p_qa_r.add_argument(
+        "--repair-classification",
+        choices=("product_change", "test_harness_correction"),
+        default=None,
+    )
+    p_qa_r.set_defaults(func=cmd_qa, qa_action="run")
+    p_qa_s = qa_sub.add_parser("status", parents=[common], help="QA status")
+    p_qa_s.add_argument("--run", dest="run_id", required=True)
+    p_qa_s.set_defaults(func=cmd_qa, qa_action="status")
+    p_qa.set_defaults(func=cmd_qa)
+
+    p_ap = sub.add_parser(
+        "autopilot",
+        parents=[common],
+        help="strict Autopilot v2 phase coordinator",
+    )
+    ap_sub = p_ap.add_subparsers(dest="autopilot_action")
+    p_ap_start = ap_sub.add_parser("start", parents=[common], help="start autopilot run")
+    p_ap_start.add_argument("goal", nargs="+", help="goal text")
+    p_ap_start.add_argument("--force", action="store_true")
+    p_ap_start.add_argument(
+        "--skip-interview",
+        action="store_true",
+        help="start at ralplan only when interview already complete (evidence later)",
+    )
+    p_ap_start.set_defaults(func=cmd_autopilot, autopilot_action="start")
+    p_ap_tr = ap_sub.add_parser(
+        "transition", parents=[common], help="legal phase transition"
+    )
+    p_ap_tr.add_argument("--run", dest="run_id", required=True)
+    p_ap_tr.add_argument("--phase", required=True, help="next phase")
+    p_ap_tr.add_argument("--reason", default=None)
+    p_ap_tr.add_argument(
+        "--evidence-json",
+        default=None,
+        help='gate evidence e.g. {"interview_complete":true}',
+    )
+    p_ap_tr.set_defaults(func=cmd_autopilot, autopilot_action="transition")
+    p_ap_st = ap_sub.add_parser("status", parents=[common], help="autopilot status")
+    p_ap_st.add_argument("--run", dest="run_id", required=True)
+    p_ap_st.set_defaults(func=cmd_autopilot, autopilot_action="status")
+    p_ap_c = ap_sub.add_parser(
+        "complete",
+        parents=[common],
+        help="same-process acceptance → verified only",
+    )
+    p_ap_c.add_argument("--run", dest="run_id", required=True)
+    p_ap_c.set_defaults(func=cmd_autopilot, autopilot_action="complete")
+    p_ap_await = ap_sub.add_parser(
+        "await",
+        parents=[common],
+        help="set/clear autopilot awaiting-confirmation pause",
+    )
+    p_ap_await.add_argument("--run", dest="run_id", required=True)
+    p_ap_await.add_argument("--reason", default=None, help="pause reason label")
+    p_ap_await.add_argument(
+        "--clear",
+        action="store_true",
+        help="clear awaiting flag (default sets awaiting=true)",
+    )
+    p_ap_await.set_defaults(func=cmd_autopilot, autopilot_action="await")
+    p_ap_run = ap_sub.add_parser(
+        "run",
+        parents=[common],
+        help="outer CLI driver (cross-turn/headless persistence)",
+    )
+    p_ap_run.add_argument("goal", nargs="*", help="goal text (omit when resuming)")
+    p_ap_run.add_argument("--force", action="store_true")
+    p_ap_run.add_argument(
+        "--skip-interview",
+        action="store_true",
+        help="start at ralplan when creating a new run",
+    )
+    p_ap_run.add_argument(
+        "--resume",
+        dest="resume",
+        nargs="?",
+        const="__active__",
+        default=None,
+        metavar="RUN",
+        help="resume active or explicit autopilot run",
+    )
+    p_ap_run.add_argument(
+        "--max-phase-cycles",
+        dest="max_phase_cycles",
+        type=int,
+        default=5,
+        help="max grok launches per phase before blocked (default 5)",
+    )
+    p_ap_run.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="create run + argv only; do not exec grok",
+    )
+    p_ap_run.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=float,
+        default=None,
+        help="seconds per grok launch (default 3600); 0 = unlimited",
+    )
+    p_ap_run.add_argument(
+        "--unattended",
+        action="store_true",
+        help=(
+            "hands-off outer loop (#40): re-launch on host-turn stalls without "
+            "printing a human go prompt (still pauses on interview/await)"
+        ),
+    )
+    p_ap_run.add_argument(
+        "--max-stall-relaunches",
+        dest="max_stall_relaunches",
+        type=int,
+        default=32,
+        help="unattended: max re-launches after no phase advance (default 32)",
+    )
+    p_ap_run.set_defaults(func=cmd_autopilot, autopilot_action="run")
+    p_ap.set_defaults(func=cmd_autopilot)
+
+    for mode, help_text in (
+        ("ulw", "ultrawork parallel mode (spawn_subagent fan-out)"),
+        ("ralph", "ralph persistence loop (one story per iteration)"),
+        ("ralplan", "ralplan consensus planning (no implementation)"),
+    ):
+        p = sub.add_parser(mode, parents=[common], help=help_text)
+        p.add_argument("goal", nargs="*", help="goal text")
+        p.add_argument(
+            "--max-iter",
+            dest="max_iter",
+            type=int,
+            default=None,
+            help=(
+                "max iterations (ralph default 3; ulw default 1) "
+                "or max_rounds for ralplan verifier attempts (default 3)"
+            ),
+        )
+        p.add_argument(
+            "--dry-run",
+            dest="dry_run",
+            action="store_true",
+            help="create run + argv only; do not exec grok",
+        )
+        p.add_argument(
+            "--require-acceptance",
+            dest="require_acceptance",
+            action="store_true",
+            default=None,
+            help="exit non-zero if not verified (default on for ralph)",
+        )
+        p.add_argument(
+            "--no-require-acceptance",
+            dest="no_require_acceptance",
+            action="store_true",
+            default=False,
+            help="allow completed-without-verified exit 0",
+        )
+        p.add_argument(
+            "--timeout",
+            dest="timeout",
+            type=float,
+            default=None,
+            help=(
+                "seconds per grok launch (default 3600); "
+                "0 = unlimited; dry-run ignores"
+            ),
+        )
+        if mode == "ralph":
+            p.add_argument(
+                "--resume",
+                dest="resume",
+                nargs="?",
+                const="__active__",
+                default=None,
+                metavar="RUN",
+                help=(
+                    "resume active Ralph run, or explicit RUN, with its "
+                    "persisted Grok session and cumulative ceiling"
+                ),
+            )
+        if mode == "ralplan":
+            p.add_argument(
+                "--run",
+                dest="run_id",
+                default=None,
+                metavar="RUN",
+                help=(
+                    "reuse an existing run_id (pipeline/autopilot embedding); "
+                    "skips create_run so active pointer stays on that run"
+                ),
+            )
+        if mode == "ulw":
+            p.add_argument(
+                "--fanout",
+                dest="fanout",
+                choices=("skill", "process"),
+                default="skill",
+                help=(
+                    "parallelism path: skill=spawn_subagent in one grok (default); "
+                    "process=N× independent grok -p (experimental; requires "
+                    "OMG_EXPERIMENTAL_PROCESS_FANOUT=1)"
+                ),
+            )
+            p.add_argument(
+                "--workers",
+                dest="workers",
+                type=int,
+                default=None,
+                help=(
+                    "process fanout worker count (default 2; hard cap 8 / "
+                    "OMG_MAX_WORKERS); ignored for --fanout skill; process path "
+                    "requires OMG_EXPERIMENTAL_PROCESS_FANOUT=1"
+                ),
+            )
+            p.add_argument(
+                "--force",
+                dest="force",
+                action="store_true",
+                help="supersede active run when creating (process fanout)",
+            )
+        p.set_defaults(func=cmd_mode)
+
+    # --- Phase 2: ask / pipeline / dual-review ---
+    p_ask = sub.add_parser(
+        "ask",
+        parents=[common],
+        help="trusted user broker for external advisors (codex/claude/gemini)",
+    )
+    p_ask.add_argument(
+        "provider",
+        help="provider: codex | claude (fable) | gemini (optional)",
+    )
+    p_ask.add_argument("prompt", nargs="*", help="prompt text")
+    p_ask.add_argument(
+        "--prompt-file",
+        dest="prompt_file",
+        default=None,
+        help="read prompt from file (appended with positional prompt)",
+    )
+    p_ask.add_argument(
+        "--file",
+        dest="files",
+        action="append",
+        default=[],
+        help="extra context file to inline (repeatable)",
+    )
+    p_ask.add_argument("--cwd", dest="cwd", default=None, help="child cwd (default: project root)")
+    p_ask.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=float,
+        default=600.0,
+        help="seconds (default 600; 0 = unlimited)",
+    )
+    p_ask.add_argument(
+        "--max-bytes",
+        dest="max_bytes",
+        type=int,
+        default=512 * 1024,
+        help="truncate captured output (default 512KiB)",
+    )
+    p_ask.add_argument(
+        "--out",
+        dest="out",
+        default=None,
+        help="artifact path (default .omg/artifacts/ask-<ts>-<provider>.md)",
+    )
+    p_ask.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="optional existing run_id to link artifact",
+    )
+    p_ask.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="print argv + env keys; do not exec provider",
+    )
+    # Global --json optional; ask still defaults write_json=True in handler
+    p_ask.add_argument("--model", dest="model", default=None, help="optional model pin")
+    p_ask.add_argument(
+        "--extra",
+        dest="extra",
+        action="append",
+        default=[],
+        help=(
+            "passthrough arg after fixed template (disabled by default; "
+            "set OMG_ASK_ALLOW_EXTRA=1; elevation flags always denied)"
+        ),
+    )
+    p_ask.set_defaults(func=cmd_ask)
+
+    p_pipe = sub.add_parser(
+        "pipeline",
+        parents=[common],
+        help="plan → implement → dual-review → accept (Grok-native FSM)",
+    )
+    p_pipe.add_argument("goal", nargs="*", help="goal text")
+    p_pipe.add_argument(
+        "--plan-only",
+        dest="plan_only",
+        action="store_true",
+        help="stop after ralplan accepted",
+    )
+    p_pipe.add_argument(
+        "--skip-plan",
+        dest="skip_plan",
+        action="store_true",
+        help="start at implement (user already has a plan)",
+    )
+    p_pipe.add_argument(
+        "--implement",
+        dest="implement",
+        choices=("ralph", "ulw"),
+        default="ralph",
+        help="implement stage mode (default: ralph)",
+    )
+    p_pipe.add_argument(
+        "--max-plan-rounds",
+        dest="max_plan_rounds",
+        type=int,
+        default=3,
+        help="ralplan max_rounds (default 3)",
+    )
+    p_pipe.add_argument(
+        "--max-iter",
+        dest="max_iter",
+        type=int,
+        default=3,
+        help="ralph max_iter / ulw iters (default 3)",
+    )
+    p_pipe.add_argument(
+        "--require-acceptance",
+        dest="require_acceptance",
+        action="store_true",
+        default=False,
+        help="exit non-zero if not verified (default on)",
+    )
+    p_pipe.add_argument(
+        "--no-require-acceptance",
+        dest="no_require_acceptance",
+        action="store_true",
+        default=False,
+        help="allow completed-without-verified exit 0",
+    )
+    p_pipe.add_argument(
+        "--dual-review",
+        dest="dual_review",
+        action="store_true",
+        default=False,
+        help="enable dual-review stage (default on unless --no-dual-review)",
+    )
+    p_pipe.add_argument(
+        "--no-dual-review",
+        dest="no_dual_review",
+        action="store_true",
+        default=False,
+        help="skip Grok-native dual-review stage",
+    )
+    p_pipe.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=float,
+        default=None,
+        help="seconds per grok launch",
+    )
+    p_pipe.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="FSM + argv artifacts only; no live grok",
+    )
+    p_pipe.add_argument(
+        "--resume",
+        dest="resume",
+        default=None,
+        metavar="RUN_ID",
+        help="resume pipeline from pipeline.json stage",
+    )
+    p_pipe.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="supersede active run when creating",
+    )
+    p_pipe.set_defaults(func=cmd_pipeline)
+
+    p_dual = sub.add_parser(
+        "dual-review",
+        parents=[common],
+        help="Grok-native critic→verifier (does not set verified)",
+    )
+    p_dual.add_argument("goal", nargs="*", help="goal / review scope")
+    p_dual.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="attach to existing run_id (or create dual-review run)",
+    )
+    p_dual.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="write stage prompts only; no grok exec",
+    )
+    p_dual.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=float,
+        default=None,
+        help="seconds per grok launch",
+    )
+    p_dual.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="supersede active run when creating",
+    )
+    p_dual.set_defaults(func=cmd_dual_review)
+
+
 __all__ = [
+    "register_modes_parsers",
     "cmd_ask",
     "cmd_autopilot",
     "cmd_dual_review",

@@ -1,7 +1,7 @@
 """Team-family CLI handlers (#29 Phase 2).
 
 Commands: accept, integrate, team, worker.
-Parser construction remains in ``main.build_parser``.
+Parser construction: ``register_team_parsers`` (#29 Phase 4').
 """
 
 from __future__ import annotations
@@ -714,7 +714,608 @@ def cmd_worker(args: argparse.Namespace) -> int:
         print(f"omg worker: {exc}", file=sys.stderr)
         return 1
 
+
+def register_team_parsers(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Register team-family argparse parsers (#29 Phase 4').
+
+    Commands: accept, integrate, worker, team.
+    """
+    p_accept = sub.add_parser(
+        "accept",
+        parents=[common],
+        help="freeze PRD commands and run acceptance for active (or --run) run",
+    )
+    p_accept.add_argument("--run", dest="run_id", default=None, help="specific run_id")
+    p_accept.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="validate/freeze only; do not exec acceptance commands",
+    )
+    p_accept.add_argument(
+        "--review",
+        dest="review",
+        action="store_true",
+        help="print frozen commands; require --yes to execute",
+    )
+    p_accept.add_argument(
+        "--yes",
+        dest="yes",
+        action="store_true",
+        help="confirm execution (required with --review or non-tty stdin)",
+    )
+    p_accept.add_argument(
+        "--allow-cmd",
+        dest="allow_cmd",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="extend acceptance basename allowlist (repeatable; floors still apply)",
+    )
+    p_accept.add_argument(
+        "--no-allowlist",
+        dest="no_allowlist",
+        action="store_true",
+        help=(
+            "DANGEROUS TTY-only break-glass: skip positive allowlist "
+            "(shells, agent CLIs, python -c, npx still blocked)"
+        ),
+    )
+
+    p_accept.set_defaults(func=cmd_accept)
+
+    p_integrate = sub.add_parser(
+        "integrate",
+        parents=[common],
+        help="apply ULW result envelopes via git cherry-pick (active or --run)",
+    )
+    p_integrate.add_argument(
+        "--run", dest="run_id", default=None, help="specific run_id"
+    )
+    p_integrate.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="validate envelopes / base_sha only; do not cherry-pick",
+    )
+    p_integrate.add_argument(
+        "--require-squash",
+        dest="require_squash",
+        action="store_true",
+        help="reject envelopes whose base..head range has more than one commit",
+    )
+    p_integrate.set_defaults(func=cmd_integrate)
+
+    p_worker = sub.add_parser(
+        "worker",
+        parents=[common],
+        help="prepare/seal ULW worktrees and result envelopes (no-shell bridge)",
+    )
+    worker_sub = p_worker.add_subparsers(dest="worker_action")
+    p_w_prep = worker_sub.add_parser(
+        "prepare",
+        parents=[common],
+        help="create .omg/worktrees/<run>/<task> via git worktree add",
+    )
+    p_w_prep.add_argument(
+        "--task", dest="task_id", required=True, help="task_id for worktree"
+    )
+    p_w_prep.add_argument(
+        "--run", dest="run_id", default=None, help="run_id (default: active)"
+    )
+    p_w_prep.set_defaults(func=cmd_worker, worker_action="prepare")
+    p_w_seal = worker_sub.add_parser(
+        "seal",
+        parents=[common],
+        help="git add/commit in worktree and write ulw-results envelope",
+    )
+    seal_target = p_w_seal.add_mutually_exclusive_group(required=True)
+    seal_target.add_argument(
+        "--task", dest="task_id", default=None, help="task_id for envelope"
+    )
+    seal_target.add_argument(
+        "--all",
+        dest="seal_all",
+        action="store_true",
+        help="seal every ownership-manifest task with a local worktree",
+    )
+    p_w_seal.add_argument(
+        "--run", dest="run_id", default=None, help="run_id (default: active)"
+    )
+    p_w_seal.add_argument(
+        "--message",
+        dest="message",
+        default="omg seal",
+        help="commit message (default: omg seal)",
+    )
+    p_w_seal.add_argument(
+        "--status",
+        dest="status",
+        choices=("ok", "failed"),
+        default="ok",
+        help="envelope status (default: ok)",
+    )
+    p_w_seal.add_argument(
+        "--evidence",
+        dest="evidence",
+        default="",
+        help="optional evidence string on envelope",
+    )
+    p_w_seal.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help=(
+            "with --all: re-seal even when an envelope already exists "
+            "(pick up post-seal commits); without --force, existing "
+            "envelope → already-sealed"
+        ),
+    )
+    p_w_seal.set_defaults(func=cmd_worker, worker_action="seal", seal_all=False)
+
+    p_w_own = worker_sub.add_parser(
+        "own",
+        parents=[common],
+        help="write CLI ownership manifest for ULW tasks",
+    )
+    p_w_own.add_argument("--run", dest="run_id", default=None)
+    p_w_own.add_argument(
+        "--tasks-json",
+        required=True,
+        help='JSON array: [{"task_id","owned_files":[...],"capability_mode"?}]',
+    )
+    p_w_own.set_defaults(func=cmd_worker, worker_action="own", task_id="__own__")
+
+    p_w_po = worker_sub.add_parser(
+        "prepare-owned",
+        parents=[common],
+        help="prepare worktrees for every ownership-manifest task",
+    )
+    p_w_po.add_argument("--run", dest="run_id", default=None)
+    p_w_po.set_defaults(
+        func=cmd_worker, worker_action="prepare-owned", task_id="__prepare_owned__"
+    )
+
+    p_w_join = worker_sub.add_parser(
+        "join",
+        parents=[common],
+        help="join sealed envelopes against ownership manifest (block if missing)",
+    )
+    p_w_join.add_argument("--run", dest="run_id", default=None)
+    p_w_join.set_defaults(func=cmd_worker, worker_action="join", task_id="__join__")
+
+    p_w_man = worker_sub.add_parser(
+        "manifest",
+        parents=[common],
+        help="show ownership manifest for a run",
+    )
+    p_w_man.add_argument("--run", dest="run_id", default=None)
+    p_w_man.set_defaults(
+        func=cmd_worker, worker_action="manifest", task_id="__manifest__"
+    )
+    p_worker.set_defaults(func=cmd_worker)
+
+    p_team = sub.add_parser(
+        "team",
+        parents=[common],
+        help=(
+            'experimental tmux team: omg team [N[:role]] "<goal>" '
+            "(requires OMG_EXPERIMENTAL_TMUX_TEAM=1); also start|run|api|…"
+        ),
+    )
+    team_sub = p_team.add_subparsers(dest="team_action")
+    p_t_launch = team_sub.add_parser(
+        "launch",
+        parents=[common],
+        help=(
+            'OMX-like shorthand launch (also: omg team N[:role] "<goal>"); '
+            "split-pane topology; seeds team api board"
+        ),
+    )
+    p_t_launch.add_argument(
+        "--workers",
+        dest="workers",
+        type=int,
+        required=True,
+        help="number of worker panes (N)",
+    )
+    p_t_launch.add_argument(
+        "--role",
+        dest="role",
+        default="executor",
+        help="canonical team role (default: executor)",
+    )
+    p_t_launch.add_argument(
+        "--goal",
+        dest="goal",
+        required=True,
+        help="shared goal text",
+    )
+    p_t_launch.add_argument(
+        "--routing",
+        dest="routing",
+        default=None,
+        help='optional role→{provider,model?} JSON (same as team start)',
+    )
+    p_t_launch.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="existing run_id (default: create a new ulw/team run)",
+    )
+    p_t_launch.add_argument(
+        "--plan-only",
+        dest="plan_only",
+        action="store_true",
+        help=(
+            "side-effect-free preview (#27): no .omg mutation, worktrees, or "
+            "tmux; print plan JSON only"
+        ),
+    )
+    p_t_launch.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help=(
+            "materialize team.json + api board without live tmux/subprocess "
+            "(alias of --materialize-only; not side-effect-free — use "
+            "--plan-only for pure preview)"
+        ),
+    )
+    p_t_launch.add_argument(
+        "--materialize-only",
+        dest="materialize_only",
+        action="store_true",
+        help="same as --dry-run: write control-plane artifacts, no live workers",
+    )
+    p_t_launch.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="supersede active run when creating a new run",
+    )
+    p_t_launch.add_argument(
+        "--detach",
+        dest="detach",
+        action="store_true",
+        help="allow detached live launch outside an interactive TTY",
+    )
+    p_t_launch.set_defaults(func=cmd_team, team_action="launch")
+
+    p_t_start = team_sub.add_parser(
+        "start",
+        parents=[common],
+        help=(
+            "create run + ownership worktrees + tmux session "
+            "(or --plan-only / --dry-run)"
+        ),
+    )
+    p_t_start.add_argument(
+        "--goal",
+        dest="goal",
+        required=True,
+        help="shared goal text for all task panes",
+    )
+    p_t_start.add_argument(
+        "--tasks-json",
+        dest="tasks_json",
+        required=True,
+        help=(
+            'JSON array: [{"task_id","owned_files":[...],"role"?,'
+            '"capability_mode"?}]'
+        ),
+    )
+    p_t_start.add_argument(
+        "--routing",
+        dest="routing",
+        default=None,
+        help=(
+            'JSON object role→{provider,model?}, e.g. '
+            '\'{"executor":{"provider":"codex"}}\'; enables multi-CLI floors'
+        ),
+    )
+    p_t_start.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="existing run_id (default: create a new ulw/team run)",
+    )
+    p_t_start.add_argument(
+        "--plan-only",
+        dest="plan_only",
+        action="store_true",
+        help=(
+            "side-effect-free preview (#27): no .omg mutation, worktrees, or "
+            "tmux; print plan JSON only"
+        ),
+    )
+    p_t_start.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help=(
+            "materialize team.json skeleton (pid=None); never call "
+            "tmux/subprocess (not side-effect-free — prefer --plan-only for "
+            "pure preview; alias of --materialize-only)"
+        ),
+    )
+    p_t_start.add_argument(
+        "--materialize-only",
+        dest="materialize_only",
+        action="store_true",
+        help="same as --dry-run: write control-plane artifacts, no live workers",
+    )
+    p_t_start.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="supersede active run when creating a new run",
+    )
+    p_t_start.add_argument(
+        "--no-wait",
+        dest="no_wait",
+        action="store_true",
+        help=(
+            "skip readiness ACK wait; persist startup_status=unverified_start "
+            "and do not claim a proven Team started (#20)"
+        ),
+    )
+    p_t_start.set_defaults(func=cmd_team, team_action="start")
+
+    p_t_run = team_sub.add_parser(
+        "run",
+        parents=[common],
+        help=(
+            "staged team pipeline driver (team-plan→prd→exec→verify→fix); "
+            "THIN glue over start/collect + parse_verdict_file gate; "
+            "never sets verified"
+        ),
+    )
+    p_t_run.add_argument(
+        "--goal",
+        dest="goal",
+        required=True,
+        help="shared goal text",
+    )
+    p_t_run.add_argument(
+        "--tasks-json",
+        dest="tasks_json",
+        default=None,
+        help=(
+            'JSON array of tasks (leader/ralplan decomposition); '
+            'required unless --tasks-path is set'
+        ),
+    )
+    p_t_run.add_argument(
+        "--tasks-path",
+        dest="tasks_path",
+        default=None,
+        help="path to JSON tasks array or {tasks:[...]} (existing ralplan artifact)",
+    )
+    p_t_run.add_argument(
+        "--max-fix",
+        dest="max_fix",
+        type=int,
+        default=3,
+        help="max team-fix rounds before terminal failed (default 3)",
+    )
+    p_t_run.add_argument(
+        "--routing",
+        dest="routing",
+        default=None,
+        help='optional role→{provider,model?} JSON (same as team start)',
+    )
+    p_t_run.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="existing run_id (default: create a new team-pipeline run)",
+    )
+    p_t_run.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="sequence stages with dry-run start_team; no tmux/subprocess",
+    )
+    p_t_run.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="supersede active run when creating a new run",
+    )
+    p_t_run.add_argument(
+        "--ralph",
+        dest="ralph",
+        action="store_true",
+        help=(
+            "wrap staged pipeline in a bounded ralph persistence loop "
+            "(exec→verify→fix up to --max-iter; never sets verified; "
+            "links team.json ↔ team-ralph.json)"
+        ),
+    )
+    p_t_run.add_argument(
+        "--max-iter",
+        dest="max_iter",
+        type=int,
+        default=None,
+        help=(
+            "with --ralph: max outer iterations (default 3 from ralph); "
+            "stop at team-verify APPROVE or max_iter → failed"
+        ),
+    )
+    p_t_run.set_defaults(func=cmd_team, team_action="run")
+
+    p_t_scale = team_sub.add_parser(
+        "scale",
+        parents=[common],
+        help=(
+            "dynamic scale: --add N / --remove N panes on a running team "
+            "(cap-bounded; scale lock; no pkill -f; never sets verified)"
+        ),
+    )
+    p_t_scale.add_argument(
+        "--run", dest="run_id", required=True, help="team run_id"
+    )
+    p_t_scale_grp = p_t_scale.add_mutually_exclusive_group(required=True)
+    p_t_scale_grp.add_argument(
+        "--add",
+        dest="add",
+        type=int,
+        default=None,
+        help="add N new task panes (respects max_workers_cap; monotonic indices)",
+    )
+    p_t_scale_grp.add_argument(
+        "--remove",
+        dest="remove",
+        type=int,
+        default=None,
+        help=(
+            "graceful drain: remove N idle/newest panes (kill recorded pgids + "
+            "windows only; preserve worktrees; never below 1)"
+        ),
+    )
+    p_t_scale.add_argument(
+        "--tasks-json",
+        dest="tasks_json",
+        default=None,
+        help="optional JSON tasks for --add (length must equal N; else synthetic)",
+    )
+    p_t_scale.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="append/mark team.json only; no tmux/subprocess",
+    )
+    p_t_scale.set_defaults(func=cmd_team, team_action="scale")
+
+    p_t_resume = team_sub.add_parser(
+        "resume",
+        parents=[common],
+        help=(
+            "reconcile team.json pane liveness after leader restart "
+            "(idempotent status write; never sets verified)"
+        ),
+    )
+    p_t_resume.add_argument(
+        "team_identity",
+        nargs="?",
+        default=None,
+        help="team name or run_id (optional if --run set)",
+    )
+    p_t_resume.add_argument(
+        "--run", dest="run_id", default=None, help="team run_id"
+    )
+    # --json inherited from common → json_output (handler maps to as_json)
+    p_t_resume.set_defaults(func=cmd_team, team_action="resume")
+
+    p_t_status = team_sub.add_parser(
+        "status",
+        parents=[common],
+        help="read team.json + ownership + optional pane liveness (no state write)",
+    )
+    p_t_status.add_argument(
+        "team_identity",
+        nargs="?",
+        default=None,
+        help="team name or run_id (optional; default active / --run)",
+    )
+    p_t_status.add_argument(
+        "--run", dest="run_id", default=None, help="run_id (default: active)"
+    )
+    # --json inherited from common → json_output (handler maps to as_json)
+    p_t_status.add_argument(
+        "--full",
+        dest="full_status",
+        action="store_true",
+        help=(
+            "include aggregate extras (topology/startup_acks/mailbox/"
+            "api_summary/worktrees); with --json prints full JSON instead "
+            "of the locked set"
+        ),
+    )
+    p_t_status.set_defaults(func=cmd_team, team_action="status")
+
+    p_t_collect = team_sub.add_parser(
+        "collect",
+        parents=[common],
+        help="seal_all_tasks + integrate_results (never sets verified)",
+    )
+    p_t_collect.add_argument(
+        "--run", dest="run_id", default=None, help="run_id (default: active)"
+    )
+    p_t_collect.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="re-seal even when envelopes already exist",
+    )
+    p_t_collect.set_defaults(func=cmd_team, team_action="collect")
+
+    p_t_stop = team_sub.add_parser(
+        "stop",
+        parents=[common],
+        help="kill recorded tmux session + killpg recorded pgids (no pkill -f)",
+    )
+    p_t_stop.add_argument(
+        "team_identity",
+        nargs="?",
+        default=None,
+        help="team name or run_id (optional if --run set)",
+    )
+    p_t_stop.add_argument(
+        "--run", dest="run_id", default=None, help="run_id (default: active)"
+    )
+    p_t_stop.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help=(
+            "tear down even when API tasks are in_progress "
+            "(default: fail closed and write shutdown-request.json)"
+        ),
+    )
+    p_t_stop.set_defaults(func=cmd_team, team_action="stop")
+
+    p_t_api = team_sub.add_parser(
+        "api",
+        parents=[common],
+        help=(
+            "OMX-shaped team api façade (P0 mailbox/task ops); "
+            "requires OMG_EXPERIMENTAL_TMUX_TEAM=1"
+        ),
+    )
+    p_t_api.add_argument(
+        "api_op",
+        metavar="OP",
+        help=(
+            "operation name (P0: send-message, mailbox-list, "
+            "mailbox-mark-delivered, create-task, list-tasks, claim-task, "
+            "transition-task-status, release-task-claim, get-summary, "
+            "read-config, write-worker-inbox)"
+        ),
+    )
+    p_t_api.add_argument(
+        "--input",
+        dest="api_input",
+        required=True,
+        help="JSON object input (OMX-shaped fields + run_id/team_id)",
+    )
+    p_t_api.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="run_id injected into --input when omitted there",
+    )
+    # --json inherited from common → json_output
+    p_t_api.set_defaults(func=cmd_team, team_action="api")
+    p_team.set_defaults(func=cmd_team)
+
+
 __all__ = [
+    "register_team_parsers",
     "cmd_accept",
     "cmd_integrate",
     "cmd_team",
