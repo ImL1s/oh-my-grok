@@ -1,7 +1,7 @@
 """Inspect-family CLI handlers (#29 Phase 2).
 
 Commands: wiki, hud, lsp, notify, native-status, capabilities, parity.
-Parser construction remains in ``main.build_parser`` until a later phase.
+Parser construction: ``register_inspect_parsers`` (#29 Phase 4').
 """
 
 from __future__ import annotations
@@ -397,7 +397,187 @@ def cmd_parity(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def register_inspect_parsers(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+    *,
+    phase: str = "all",
+) -> None:
+    """Register inspect-family argparse parsers (#29 Phase 4').
+
+    ``phase``:
+      - ``early``: notify, native-status (before workflow in help order)
+      - ``late``: capabilities, parity, wiki, hud, lsp
+      - ``all``: both (tests / future single call)
+    """
+    if phase not in {"early", "late", "all"}:
+        raise ValueError(f"unknown inspect register phase: {phase!r}")
+    if phase in ("early", "all"):
+        p_notify = sub.add_parser(
+            "notify",
+            parents=[common],
+            help="outbound-only non-authoritative notification queue",
+        )
+        notify_sub = p_notify.add_subparsers(dest="notify_action")
+        p_notify_status = notify_sub.add_parser(
+            "status", parents=[common], help="show validated adapter configuration"
+        )
+        p_notify_status.add_argument("--config", default=None)
+        p_notify_status.set_defaults(func=cmd_notify, notify_action="status")
+        p_notify_send = notify_sub.add_parser(
+            "send", parents=[common], help="enqueue one bounded notification"
+        )
+        p_notify_send.add_argument("--owner", dest="owner_id", required=True)
+        p_notify_send.add_argument("--generation", type=int, required=True)
+        p_notify_send.add_argument(
+            "--severity", choices=("info", "success", "warning", "error"), default="info"
+        )
+        p_notify_send.add_argument("--title", required=True)
+        p_notify_send.add_argument("--message", required=True)
+        p_notify_send.add_argument("--stable-source-id", default=None)
+        p_notify_send.add_argument("--max-attempts", type=int, default=3)
+        p_notify_send.set_defaults(func=cmd_notify, notify_action="send")
+        p_notify_process = notify_sub.add_parser(
+            "process", parents=[common], help="deliver a bounded queue batch"
+        )
+        p_notify_process.add_argument("--owner", dest="owner_id", required=True)
+        p_notify_process.add_argument("--generation", type=int, required=True)
+        p_notify_process.add_argument("--config", default=None)
+        p_notify_process.add_argument("--max-records", type=int, default=32)
+        p_notify_process.add_argument("--rate-limit", type=float, default=10.0)
+        p_notify_process.set_defaults(func=cmd_notify, notify_action="process")
+        p_notify.set_defaults(func=cmd_notify)
+
+        p_native_status = sub.add_parser(
+            "native-status",
+            parents=[common],
+            help="honest public Grok dashboard/workflow observation tiers",
+        )
+        p_native_status.add_argument(
+            "--probe",
+            action="store_true",
+            help="run bounded grok --help observation (never invoke slash commands)",
+        )
+        p_native_status.add_argument("--timeout", type=float, default=5.0)
+        p_native_status.set_defaults(func=cmd_native_status)
+    if phase in ("late", "all"):
+        p_capabilities = sub.add_parser(
+            "capabilities",
+            parents=[common],
+            help="independent configured→verified capability tiers",
+        )
+        p_capabilities.add_argument("--notification-config", default=None)
+        p_capabilities.set_defaults(func=cmd_capabilities)
+
+        p_parity = sub.add_parser(
+            "parity",
+            parents=[common],
+            help="frozen run-manifest and release-bundle verification",
+        )
+        parity_sub = p_parity.add_subparsers(dest="parity_action")
+        p_parity_run = parity_sub.add_parser(
+            "run",
+            parents=[common],
+            help="delegate the exact W0 run-manifest engine",
+        )
+        p_parity_run.add_argument(
+            "manifest_args",
+            nargs=argparse.REMAINDER,
+            help="run-manifest action and arguments",
+        )
+        p_parity_run.set_defaults(func=cmd_parity, parity_action="run")
+        p_parity_readback = parity_sub.add_parser(
+            "release-readback",
+            parents=[common],
+            help="verify the exact prebuilt release-bundle file set",
+        )
+        p_parity_readback.add_argument("--manifest", required=True)
+        p_parity_readback.add_argument("--claimed-registries", default=None)
+        p_parity_readback.set_defaults(func=cmd_parity, parity_action="release-readback")
+        p_parity.set_defaults(func=cmd_parity)
+
+        p_wiki = sub.add_parser(
+            "wiki",
+            parents=[common],
+            help="local markdown wiki under .omg/wiki",
+        )
+        wiki_sub = p_wiki.add_subparsers(dest="wiki_action")
+        p_w_ing = wiki_sub.add_parser("ingest", parents=[common], help="append/create page")
+        p_w_ing.add_argument("--title", required=True)
+        p_w_ing.add_argument("--text", default=None, help="page body text")
+        p_w_ing.add_argument("--file", default=None, help="read body from file")
+        p_w_ing.add_argument("--tags", default=None, help="comma-separated tags")
+        p_w_ing.add_argument("--source", default=None, help="optional source note")
+        p_w_ing.set_defaults(func=cmd_wiki)
+        p_w_list = wiki_sub.add_parser("list", parents=[common], help="list wiki pages")
+        p_w_list.set_defaults(func=cmd_wiki)
+        p_w_q = wiki_sub.add_parser("query", parents=[common], help="keyword search")
+        p_w_q.add_argument("q", help="search string")
+        p_w_q.add_argument("--limit", type=int, default=20)
+        p_w_q.set_defaults(func=cmd_wiki)
+        p_wiki.set_defaults(func=cmd_wiki)
+
+        p_hud = sub.add_parser(
+            "hud",
+            parents=[common],
+            help="one-line HUD for active (or --run) status",
+        )
+        p_hud.add_argument("--run", dest="run_id", default=None)
+        # --json inherited from common (json_output)
+        p_hud.set_defaults(func=cmd_hud)
+
+        p_lsp = sub.add_parser(
+            "lsp",
+            parents=[common],
+            help=(
+                "inspect host-owned .lsp.json registration only "
+                "(no semantic proxy; #28)"
+            ),
+            description=(
+                "Inspect host-owned .lsp.json registration only. "
+                "OMG has no semantic proxy; use status|validate. "
+                "Legacy check|symbols|diagnostics always return E_LSP_HOST_OWNED."
+            ),
+        )
+        lsp_sub = p_lsp.add_subparsers(dest="lsp_action")
+        p_lsp_st = lsp_sub.add_parser(
+            "status",
+            parents=[common],
+            help="inspect registration and command availability (primary)",
+        )
+        p_lsp_st.set_defaults(func=cmd_lsp)
+        p_lsp_val = lsp_sub.add_parser(
+            "validate",
+            parents=[common],
+            help="validate .lsp.json shape and report precise field errors (primary)",
+        )
+        p_lsp_val.set_defaults(func=cmd_lsp)
+        p_lsp_ck = lsp_sub.add_parser(
+            "check",
+            parents=[common],
+            help="LEGACY: always E_LSP_HOST_OWNED (use host IDE/Grok LSP)",
+        )
+        p_lsp_ck.add_argument("path", help="file path")
+        p_lsp_ck.set_defaults(func=cmd_lsp)
+        p_lsp_sym = lsp_sub.add_parser(
+            "symbols",
+            parents=[common],
+            help="LEGACY: always E_LSP_HOST_OWNED (use host IDE/Grok LSP)",
+        )
+        p_lsp_sym.add_argument("path", help="Python file path")
+        p_lsp_sym.set_defaults(func=cmd_lsp)
+        p_lsp_diag = lsp_sub.add_parser(
+            "diagnostics",
+            parents=[common],
+            help="LEGACY: always E_LSP_HOST_OWNED (use host IDE/Grok LSP)",
+        )
+        p_lsp_diag.add_argument("path", help="Python file path")
+        p_lsp_diag.set_defaults(func=cmd_lsp)
+        p_lsp.set_defaults(func=cmd_lsp)
+
 __all__ = [
+    "register_inspect_parsers",
     "cmd_capabilities",
     "cmd_hud",
     "cmd_lsp",

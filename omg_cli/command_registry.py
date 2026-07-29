@@ -5,8 +5,9 @@ madmax intercept. ``build_parser()`` in ``main.py`` must register the same
 names — enforced by ``tests/test_host_launcher.py`` / ``test_command_registry``.
 
 Phase 1: inventory (name/help/family).
-Phase 2 (started): handlers live under ``omg_cli/commands/<family>.py``;
-parser registration still in ``main.build_parser`` until a later phase.
+Phase 2: handlers live under ``omg_cli/commands/<family>.py``.
+Phase 4′: inspect family registers parsers via
+``register_inspect_parsers`` (other families still in ``main.build_parser``).
 """
 
 from __future__ import annotations
