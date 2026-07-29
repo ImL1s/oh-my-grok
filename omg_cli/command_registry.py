@@ -69,15 +69,43 @@ COMMAND_SPECS: Final[tuple[CommandSpec, ...]] = (
 
 KNOWN_SUBCOMMANDS: Final[frozenset[str]] = frozenset(s.name for s in COMMAND_SPECS)
 
+# Marker for generated inventory fragment (docs/cli-commands.md).
+INVENTORY_START = "<!-- OMG:CLI-COMMANDS:START -->"
+INVENTORY_END = "<!-- OMG:CLI-COMMANDS:END -->"
+
 
 def command_names() -> tuple[str, ...]:
     """Stable ordered top-level command names."""
     return tuple(s.name for s in COMMAND_SPECS)
 
 
+def render_inventory_markdown() -> str:
+    """Render the authoritative command inventory table (#29 Phase 4)."""
+    lines = [
+        "| Command | Family | Summary |",
+        "|---------|--------|---------|",
+    ]
+    for spec in COMMAND_SPECS:
+        lines.append(f"| `{spec.name}` | {spec.family} | {spec.help} |")
+    return "\n".join(lines) + "\n"
+
+
+def inventory_fragment() -> str:
+    """Full marker-bounded fragment for docs embedding."""
+    return (
+        f"{INVENTORY_START}\n"
+        f"{render_inventory_markdown()}"
+        f"{INVENTORY_END}\n"
+    )
+
+
 __all__ = [
     "COMMAND_SPECS",
     "CommandSpec",
+    "INVENTORY_END",
+    "INVENTORY_START",
     "KNOWN_SUBCOMMANDS",
     "command_names",
+    "inventory_fragment",
+    "render_inventory_markdown",
 ]
