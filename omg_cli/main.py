@@ -867,10 +867,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_g_set_host = goal_sub.add_parser(
         "set-host",
+        parents=[common],
         help="print host /goal handoff text (does not mutate host goal)",
     )
     p_g_set_host.add_argument("--goal", dest="goal_id", required=True)
-    # --json inherited from common (json_output)
+    # --json from common (json_output); also accepted as omg --json goal set-host
     p_g_set_host.set_defaults(func=cmd_goal, goal_action="set-host")
 
     p_goal.set_defaults(func=cmd_goal)
