@@ -11,6 +11,7 @@ import json
 import sys
 from pathlib import Path
 
+from omg_cli.cli_envelope import emit_data
 from omg_cli.cli_util import project_root
 
 
@@ -157,7 +158,7 @@ def cmd_cancel(args: argparse.Namespace) -> int:
         print(f"cancellation requested for run {cancelled['run_id']}")
     else:
         print(f"cancelled run {cancelled['run_id']}")
-    print(json.dumps(cancelled, indent=2, ensure_ascii=False))
+    emit_data(args, "cancel", cancelled)
     return 0
 
 
@@ -228,7 +229,7 @@ def cmd_session(args: argparse.Namespace) -> int:
     except HostSessionError as exc:
         print(f"omg session: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    emit_data(args, "session", result)
     return 0
 
 
@@ -260,7 +261,7 @@ def cmd_recover(args: argparse.Namespace) -> int:
     except (OSError, ValueError, SessionRecoveryError) as exc:
         print(f"omg recover: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    emit_data(args, "recover", result)
     return 0 if result.get("error") is None else 1
 
 

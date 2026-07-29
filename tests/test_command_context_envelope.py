@@ -100,3 +100,13 @@ def test_memory_show_global_json(tmp_path, monkeypatch, capsys) -> None:
         payload = json.loads(out)
         assert payload["ok"] is True
         assert payload["command"] == "memory"
+
+
+def test_session_allocate_global_json(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    code = main(["--json", "session", "allocate"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["command"] == "session"
+    assert "data" in payload

@@ -105,5 +105,6 @@ families and is the long-term target for #30.
 | Team plan-only JSON | **shipped** (#27) |
 | Shared envelope helpers (`omg_cli/cli_envelope.py`) | **shipped** (#29/#30) |
 | Global `--json` / `--human` + `CommandContext` | **shipped** (partial migration) |
-| Migrated under global `--json` via `emit_data` | **partial** — state, hud, wiki, lsp, notify, native-status, capabilities, parity, memory, tracker, compact, review, qa, autopilot |
+| Migrated under global `--json` via `emit_data` | **most surfaces** — state/hud/wiki/lsp/notify/native-status/capabilities/parity/memory/tracker/compact/review/qa/autopilot/team/worker/accept/integrate/interview/goal/cancel/session/recover |
+| Remaining | doctor/setup human-only; worker seal tables human; some dual-review ask paths |
 | Golden contract tests for every family | deferred |

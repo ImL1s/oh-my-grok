@@ -90,6 +90,12 @@ def emit_data(
             and "ok" in data
         ):
             emit_json(data, stream=stream)
+        elif isinstance(data, dict) and "ok" in data and "operation" in data:
+            # Team API / similar domain envelopes — keep top-level operation.
+            payload = dict(data)
+            payload.setdefault("schema_version", SCHEMA_VERSION)
+            payload.setdefault("command", command)
+            emit_json(payload, stream=stream)
         else:
             emit_json(success(command, data=data), stream=stream)
         return

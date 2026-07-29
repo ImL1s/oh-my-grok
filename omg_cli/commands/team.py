@@ -10,6 +10,7 @@ import argparse
 import json
 import sys
 
+from omg_cli.cli_envelope import emit_data
 from omg_cli.cli_util import project_root
 
 
@@ -195,7 +196,7 @@ def cmd_accept(args: argparse.Namespace) -> int:
         return 1
 
     print(f"verified run {verified['run_id']}")
-    print(json.dumps(verified, indent=2, ensure_ascii=False))
+    emit_data(args, "accept", verified)
     return 0
 
 
@@ -228,8 +229,8 @@ def cmd_integrate(args: argparse.Namespace) -> int:
         return 1
 
     rpath = result_path(root, run_id)
-    print(f"integrate result: {rpath}")
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    print(f"integrate result: {rpath}", file=sys.stderr)
+    emit_data(args, "integrate", result)
 
     status = result.get("status")
     if status == "ok":
@@ -296,7 +297,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                         "without live panes."
                     ),
                 }
-                print(json.dumps(plan, indent=2, ensure_ascii=False))
+                emit_data(args, "team", plan)
                 print("Team plan-only (no state written)", file=sys.stderr)
                 return 0
             meta = launch_team(
@@ -312,7 +313,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 run_id=getattr(args, "run_id", None),
                 detach=bool(getattr(args, "detach", False)),
             )
-            print(json.dumps(meta, indent=2, ensure_ascii=False))
+            emit_data(args, "team", meta)
             hint = meta.get("attach_hint")
             if hint and not meta.get("dry_run"):
                 print(f"omg team launch: {hint}", file=sys.stderr)
@@ -376,7 +377,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                         "without live panes."
                     ),
                 }
-                print(json.dumps(plan, indent=2, ensure_ascii=False))
+                emit_data(args, "team", plan)
                 print("Team plan-only (no state written)", file=sys.stderr)
                 return 0
             meta = start_team(
@@ -397,7 +398,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 dry_run=dry_run,
                 no_wait=no_wait,
             )
-            print(json.dumps(meta, indent=2, ensure_ascii=False))
+            emit_data(args, "team", meta)
             startup = meta.get("startup_status")
             if startup in ("failed_start", "degraded"):
                 print(
@@ -454,7 +455,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 ralph=bool(getattr(args, "ralph", False)),
                 max_iter=getattr(args, "max_iter", None),
             )
-            print(json.dumps(result, indent=2, ensure_ascii=False))
+            emit_data(args, "team", result)
             phase = str(result.get("phase") or "")
             if phase == "complete":
                 return 0
@@ -473,7 +474,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 dry_run=bool(getattr(args, "dry_run", False)),
                 tasks_json=getattr(args, "tasks_json", None),
             )
-            print(json.dumps(result, indent=2, ensure_ascii=False))
+            emit_data(args, "team", result)
             return 0
         if action == "resume":
             from omg_cli.team.runtime import resume_for_identity
@@ -483,7 +484,7 @@ def cmd_team(args: argparse.Namespace) -> int:
             )
             result = resume_for_identity(root, identity)
             # Always JSON (operator machine-readable); --json kept for symmetry.
-            print(json.dumps(result, indent=2, ensure_ascii=False))
+            emit_data(args, "team", result)
             return 0
         if action == "status":
             from omg_cli.team.runtime import status_for_identity
@@ -500,9 +501,9 @@ def cmd_team(args: argparse.Namespace) -> int:
                     if getattr(args, "full_status", False)
                     else status_locked_view(st)
                 )
-                print(json.dumps(payload, indent=2, ensure_ascii=False))
+                emit_data(args, "team", payload)
             elif getattr(args, "full_status", False):
-                print(json.dumps(st, indent=2, ensure_ascii=False))
+                emit_data(args, "team", st)
             else:
                 print(format_status_table(st))
             return 0
@@ -512,7 +513,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 getattr(args, "run_id", None),
                 force_seal=bool(getattr(args, "force", False)),
             )
-            print(json.dumps(result, indent=2, ensure_ascii=False))
+            emit_data(args, "team", result)
             # Never sets verified; integrate status drives exit
             integrate = result.get("integrate") or {}
             status = integrate.get("status")
@@ -531,7 +532,7 @@ def cmd_team(args: argparse.Namespace) -> int:
             result = stop_team(
                 root, rid, force=bool(getattr(args, "force", False))
             )
-            print(json.dumps(result, indent=2, ensure_ascii=False))
+            emit_data(args, "team", result)
             return 0 if not result.get("errors") else 1
         if action == "api":
             from omg_cli.team.api import (
@@ -548,30 +549,28 @@ def cmd_team(args: argparse.Namespace) -> int:
             try:
                 payload = parse_input_json(raw_input)
             except TeamApiError as exc:
-                print(
-                    json.dumps(
-                        {
-                            "ok": False,
-                            "operation": op or "unknown",
-                            "error": {
-                                "code": exc.code,
-                                "message": exc.message,
-                                **(
-                                    {"details": exc.details}
-                                    if exc.details
-                                    else {}
-                                ),
-                            },
+                emit_data(
+                    args,
+                    "team.api",
+                    {
+                        "ok": False,
+                        "operation": op or "unknown",
+                        "error": {
+                            "code": exc.code,
+                            "message": exc.message,
+                            **(
+                                {"details": exc.details}
+                                if exc.details
+                                else {}
+                            ),
                         },
-                        indent=2,
-                        ensure_ascii=False,
-                    )
+                    },
                 )
                 return exc.exit_code
             if getattr(args, "run_id", None) and "run_id" not in payload:
                 payload["run_id"] = args.run_id
             code, envelope = execute_team_api(op, payload, root=root)
-            print(json.dumps(envelope, indent=2, ensure_ascii=False))
+            emit_data(args, "team", envelope)
             return code
         print(f"omg team: unknown action {action!r}", file=sys.stderr)
         return 2
@@ -629,30 +628,22 @@ def cmd_worker(args: argparse.Namespace) -> int:
             if not isinstance(tasks, list):
                 raise WorkerError("--tasks-json must be a JSON array")
             manifest = build_ownership_manifest(root, run_id, tasks)
-            print(json.dumps(manifest, indent=2, ensure_ascii=False))
+            emit_data(args, "worker.own", manifest)
             return 0
         if action == "prepare-owned":
             paths = prepare_owned_tasks(root, run_id)
-            print(
-                json.dumps(
-                    {"run_id": run_id, "worktrees": [str(p) for p in paths]},
-                    indent=2,
-                    ensure_ascii=False,
-                )
+            emit_data(
+                args,
+                "worker.prepare-owned",
+                {"run_id": run_id, "worktrees": [str(p) for p in paths]},
             )
             return 0
         if action == "join":
             result = join_worker_results(root, run_id)
-            print(json.dumps(result, indent=2, ensure_ascii=False))
+            emit_data(args, "worker.join", result)
             return 0 if result.get("complete") else 1
         if action == "manifest":
-            print(
-                json.dumps(
-                    load_ownership_manifest(root, run_id),
-                    indent=2,
-                    ensure_ascii=False,
-                )
-            )
+            emit_data(args, "worker.manifest", load_ownership_manifest(root, run_id))
             return 0
         if action == "seal" and getattr(args, "seal_all", False):
             results = seal_all_tasks(
@@ -711,8 +702,11 @@ def cmd_worker(args: argparse.Namespace) -> int:
                 status=str(getattr(args, "status", None) or "ok"),
                 evidence=str(getattr(args, "evidence", None) or ""),
             )
-            print(f"omg worker seal: task={task_id} status={env.get('status')}")
-            print(json.dumps(env, indent=2, ensure_ascii=False))
+            print(
+                f"omg worker seal: task={task_id} status={env.get('status')}",
+                file=sys.stderr,
+            )
+            emit_data(args, "worker.seal", env)
             return 0 if env.get("status") == "ok" else 1
         print(f"omg worker: unknown action {action!r}", file=sys.stderr)
         return 2

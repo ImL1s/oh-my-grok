@@ -6,6 +6,8 @@ Parser construction remains in ``main.build_parser``.
 
 from __future__ import annotations
 
+from omg_cli.cli_envelope import emit_data
+
 import argparse
 import json
 import sys
@@ -143,7 +145,7 @@ def cmd_workflow(args: argparse.Namespace) -> int:
     except (OSError, ValueError, WorkflowRegistryError, WorkflowSchemaError) as exc:
         print(f"omg workflow: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    emit_data(args, "workflow", result)
     if action == "run":
         return 0 if isinstance(result, dict) and result.get("terminal") == "ship" else 1
     return 0
@@ -187,12 +189,12 @@ def cmd_interview(args: argparse.Namespace) -> int:
             print("omg interview: action required", file=sys.stderr)
             return 2
     except InterviewIncomplete as exc:
-        print(json.dumps(exc.result, indent=2, ensure_ascii=False))
+        emit_data(args, "interview", exc.result)
         return 1
     except (InterviewError, RuntimeError) as exc:
         print(f"omg interview: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    emit_data(args, "interview", result)
     return 0
 
 
@@ -277,7 +279,7 @@ def cmd_goal(args: argparse.Namespace) -> int:
         elif action == "set-host":
             result = set_host_goal_handoff(root, args.goal_id)
             if bool(getattr(args, "json", False) or getattr(args, "json_output", False)):
-                print(json.dumps(result, indent=2, ensure_ascii=False))
+                emit_data(args, "goal.set-host", result)
             else:
                 print(result["handoff_markdown"])
             return 0
@@ -285,12 +287,12 @@ def cmd_goal(args: argparse.Namespace) -> int:
             print("omg goal: action required", file=sys.stderr)
             return 2
     except GoalRepairRefused as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, indent=2, ensure_ascii=False))
+        emit_data(args, "goal", {"ok": False, "error": str(exc)})
         return 1
     except (GoalError, RuntimeError, json.JSONDecodeError) as exc:
         print(f"omg goal: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    emit_data(args, "goal", result)
     return 0
 
 
