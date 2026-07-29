@@ -549,24 +549,22 @@ def cmd_team(args: argparse.Namespace) -> int:
             try:
                 payload = parse_input_json(raw_input)
             except TeamApiError as exc:
-                print(
-                    json.dumps(
-                        {
-                            "ok": False,
-                            "operation": op or "unknown",
-                            "error": {
-                                "code": exc.code,
-                                "message": exc.message,
-                                **(
-                                    {"details": exc.details}
-                                    if exc.details
-                                    else {}
-                                ),
-                            },
+                emit_data(
+                    args,
+                    "team.api",
+                    {
+                        "ok": False,
+                        "operation": op or "unknown",
+                        "error": {
+                            "code": exc.code,
+                            "message": exc.message,
+                            **(
+                                {"details": exc.details}
+                                if exc.details
+                                else {}
+                            ),
                         },
-                        indent=2,
-                        ensure_ascii=False,
-                    )
+                    },
                 )
                 return exc.exit_code
             if getattr(args, "run_id", None) and "run_id" not in payload:
