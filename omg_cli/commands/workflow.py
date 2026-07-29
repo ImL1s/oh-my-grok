@@ -148,9 +148,157 @@ def cmd_workflow(args: argparse.Namespace) -> int:
         return 0 if isinstance(result, dict) and result.get("terminal") == "ship" else 1
     return 0
 
+def cmd_interview(args: argparse.Namespace) -> int:
+    """Run the deterministic resumable requirements interview primitive."""
+    from omg_cli.interview import (
+        InterviewError,
+        InterviewIncomplete,
+        answer_interview,
+        close_interview,
+        interview_status,
+        pressure_pass_interview,
+        start_interview,
+    )
+
+    root = project_root()
+    action = getattr(args, "interview_action", None)
+    try:
+        if action == "start":
+            result = start_interview(
+                root,
+                " ".join(args.task or []).strip(),
+                profile=args.profile,
+                force=bool(getattr(args, "force", False)),
+            )
+        elif action == "answer":
+            result = answer_interview(
+                root,
+                args.run_id,
+                args.text,
+                question_id=getattr(args, "question_id", None),
+            )
+        elif action == "pressure-pass":
+            result = pressure_pass_interview(root, args.run_id, args.text)
+        elif action == "close":
+            result = close_interview(root, args.run_id)
+        elif action == "status":
+            result = interview_status(root, getattr(args, "run_id", None))
+        else:
+            print("omg interview: action required", file=sys.stderr)
+            return 2
+    except InterviewIncomplete as exc:
+        print(json.dumps(exc.result, indent=2, ensure_ascii=False))
+        return 1
+    except (InterviewError, RuntimeError) as exc:
+        print(f"omg interview: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_goal(args: argparse.Namespace) -> int:
+    """Durable hash-chained goal ledger (ultragoal primitive)."""
+    from omg_cli.goals import (
+        GoalError,
+        GoalRepairRefused,
+        block_story,
+        checkpoint,
+        complete_story,
+        init_goal,
+        link_run,
+        list_goals,
+        repair_goal,
+        resume_story,
+        set_host_goal_handoff,
+        start_story,
+        goal_status,
+        verify_goal,
+    )
+
+    root = project_root()
+    action = getattr(args, "goal_action", None)
+    try:
+        if action == "init":
+            stories_raw = json.loads(args.stories_json)
+            if not isinstance(stories_raw, list):
+                raise GoalError("--stories-json must be a JSON array")
+            result = init_goal(
+                root,
+                args.goal_id,
+                stories_raw,
+                title=getattr(args, "title", None),
+                objective=getattr(args, "objective", None),
+                source_spec_hash=getattr(args, "source_spec_hash", None),
+                source_plan_hash=getattr(args, "source_plan_hash", None),
+            )
+        elif action == "status":
+            if getattr(args, "goal_id", None):
+                result = goal_status(root, args.goal_id)
+            else:
+                result = {"goals": list_goals(root)}
+        elif action == "link-run":
+            result = link_run(root, args.goal_id, args.run_id)
+        elif action == "start-story":
+            result = start_story(root, args.goal_id, args.story_id)
+        elif action == "checkpoint":
+            result = checkpoint(
+                root,
+                args.goal_id,
+                args.story_id,
+                evidence_path=args.evidence,
+                message=args.message,
+            )
+        elif action == "block-story":
+            result = block_story(
+                root,
+                args.goal_id,
+                args.story_id,
+                reason=args.reason,
+                next_action=getattr(args, "next_action", None),
+            )
+        elif action == "resume-story":
+            result = resume_story(root, args.goal_id, args.story_id)
+        elif action == "complete-story":
+            result = complete_story(root, args.goal_id, args.story_id)
+        elif action == "verify":
+            result = verify_goal(
+                root,
+                args.goal_id,
+                run_id=getattr(args, "run_id", None),
+            )
+        elif action == "repair":
+            result = repair_goal(
+                root,
+                args.goal_id,
+                dry_run=bool(getattr(args, "dry_run", False))
+                or not bool(getattr(args, "yes", False)),
+                yes=bool(getattr(args, "yes", False)),
+            )
+        elif action == "set-host":
+            result = set_host_goal_handoff(root, args.goal_id)
+            if getattr(args, "json", False):
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            else:
+                print(result["handoff_markdown"])
+            return 0
+        else:
+            print("omg goal: action required", file=sys.stderr)
+            return 2
+    except GoalRepairRefused as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, indent=2, ensure_ascii=False))
+        return 1
+    except (GoalError, RuntimeError, json.JSONDecodeError) as exc:
+        print(f"omg goal: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 
 __all__ = [
     "_workflow_receipts",
+    "cmd_goal",
+    "cmd_interview",
     "cmd_workflow",
     "workflow_receipts",
 ]

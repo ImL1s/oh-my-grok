@@ -35,6 +35,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **`omg_cli/commands/modes.py`** + **`mcp.py`** (#29 Phase 2): review/qa/
   autopilot/ulw/ralph/ralplan/ask/pipeline/dual-review and mcp-server/
   mcp-install handlers extracted (no user-visible change).
+- **`omg_cli/commands/team.py`** (#29 Phase 2): accept/integrate/team/worker
+  handlers extracted; interview/goal joined `commands/workflow.py`
+  (no user-visible change). Phase 2 handler extract complete — `main.py`
+  is bootstrap + `build_parser` only for handlers.
 - **`docs/cli-contract.md`** (#30 Phase 0): exit-code classes and schema_version 1
   envelope for scripted surfaces.
 
