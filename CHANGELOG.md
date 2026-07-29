@@ -9,7 +9,23 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Added
+- **`omg autopilot run --unattended`** (#40): hands-off outer loop re-launches
+  Grok after host-turn stalls (no human `go`); pauses on interview/`await`;
+  `--max-stall-relaunches` budget; machine JSON on stdout, resume hints on stderr.
+- **`omg team {start,launch} --plan-only`** (#27): side-effect-free plan JSON
+  (no `.omg` / worktrees / tmux). `--materialize-only` alias for mutating dry-run;
+  CLI never prints `Team started` for non-live modes.
+- **`omg lsp validate`** and stable `E_LSP_*` codes (#28); legacy
+  `check`/`symbols`/`diagnostics` return `E_LSP_HOST_OWNED` with `next_action`.
+- **`omg_cli/command_registry.py`** (#29 Phase 1): authoritative top-level
+  `KNOWN_SUBCOMMANDS` / `CommandSpec` inventory (handlers still in `main.py`).
+- **`docs/cli-contract.md`** (#30 Phase 0): exit-code classes and schema_version 1
+  envelope for scripted surfaces.
+
 ### Documentation
+- Autopilot EN/zh/zh-TW + skills: primary hands-off path is
+  `omg autopilot run --resume … --unattended` (no longer “forthcoming”).
 - Clarified the external-agent CLI PreToolUse contract: direct provider
   execution remains denied, while passive discovery, path inspection, and inert
   literals are allowed.
@@ -28,6 +44,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Host Stop veto (not feasible on Grok today).
 - Full OMC semantic LSP proxy (host-owned `.lsp.json` registration ships in 0.6.0;
   OMG does not claim host health or proxy hover/rename/goto operations).
+- #29 Phase 2+ handler extraction; #30 global `--json` + shared renderer.
 
 ## [0.7.2] - 2026-07-28
 

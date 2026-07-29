@@ -8,6 +8,8 @@ import os
 import sys
 from pathlib import Path
 
+from omg_cli.command_registry import KNOWN_SUBCOMMANDS
+
 
 def _project_root() -> Path:
     """Canonical project root (#22). Prefer process resolution after argv parse."""
@@ -256,30 +258,97 @@ def cmd_hud(args: argparse.Namespace) -> int:
 
 
 def cmd_lsp(args: argparse.Namespace) -> int:
-    from omg_cli.lsp_tools import probe_tools
+    """LSP registration inspection only (#28) — no semantic proxy."""
+    from omg_cli.lsp_tools import (
+        LSPRegistrationError,
+        probe_tools,
+        registration_status,
+        validate_registration,
+    )
 
     action = getattr(args, "lsp_action", None)
     if action == "status" or action is None:
         print(json.dumps(probe_tools(), indent=2, ensure_ascii=False))
         return 0
+    if action == "validate":
+        root = _project_root()
+        path = root / ".lsp.json"
+        try:
+            if not path.is_file():
+                print(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "schema_version": 1,
+                            "command": "lsp.validate",
+                            "error": "E_LSP_MISSING",
+                            "path": str(path),
+                            "message": ".lsp.json not found",
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                )
+                return 1
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise LSPRegistrationError(".lsp.json must be a JSON object")
+            servers = validate_registration(raw)
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "schema_version": 1,
+                        "command": "lsp.validate",
+                        "path": str(path),
+                        "servers": sorted(servers.keys()),
+                        "status": registration_status(root),
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+        except (OSError, json.JSONDecodeError, LSPRegistrationError) as exc:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "schema_version": 1,
+                        "command": "lsp.validate",
+                        "error": "E_LSP_INVALID",
+                        "path": str(path),
+                        "message": str(exc),
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            return 1
     if action in {"check", "symbols", "diagnostics"}:
         status = probe_tools()
         result = {
             "ok": False,
-            "ownership": status["ownership"],
+            "schema_version": 1,
+            "command": f"lsp.{action}",
+            "error": "E_LSP_HOST_OWNED",
+            "ownership": "host_owned",
             "status": "semantic_proxy_unsupported",
             "operation": action,
-            "path": str(Path(args.path)),
-            "semantic_proxy_operations": status["semantic_proxy_operations"],
-            "error": (
-                "semantic LSP operations belong to Grok; OMG only validates "
-                "the public .lsp.json registration"
+            "path": str(Path(getattr(args, "path", "") or ".")),
+            "semantic_proxy_operations": status.get("semantic_proxy_operations") or [],
+            "message": (
+                "semantic LSP operations belong to the Grok host; OMG only "
+                "validates .lsp.json registration (use: omg lsp status|validate)"
             ),
+            "next_action": "Use the host IDE/Grok LSP client for symbols/diagnostics",
         }
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 1
     print(
-        "usage: omg lsp {status,check,symbols,diagnostics} …",
+        "usage: omg lsp {status,validate} "
+        "[legacy: check|symbols|diagnostics → E_LSP_HOST_OWNED]\n"
+        "OMG does not proxy semantic LSP; registration inspection only (#28).",
         file=sys.stderr,
     )
     return 2
@@ -769,12 +838,39 @@ def cmd_team(args: argparse.Namespace) -> int:
 
             routing_raw = getattr(args, "routing", None)
             routing = parse_routing_json(routing_raw) if routing_raw else None
+            plan_only = bool(getattr(args, "plan_only", False))
+            dry_run = bool(getattr(args, "dry_run", False) or getattr(args, "materialize_only", False))
+            if plan_only:
+                # #27: side-effect-free preview (no run / worktrees / team dir).
+                workers = int(getattr(args, "workers", 0) or 0)
+                role = str(getattr(args, "role", None) or "executor")
+                goal = getattr(args, "goal", None) or ""
+                plan = {
+                    "mode": "plan_only",
+                    "schema_version": 1,
+                    "command": "team.launch",
+                    "dry_run": False,
+                    "mutates": False,
+                    "goal": goal,
+                    "project_root": str(root),
+                    "workers": workers,
+                    "role": role,
+                    "routing": routing,
+                    "note": (
+                        "plan-only: no .omg mutation, no worktrees, no tmux "
+                        "(#27). Use --dry-run/--materialize-only to materialize "
+                        "without live panes."
+                    ),
+                }
+                print(json.dumps(plan, indent=2, ensure_ascii=False))
+                print("Team plan-only (no state written)", file=sys.stderr)
+                return 0
             meta = launch_team(
                 getattr(args, "goal", None) or "",
                 workers=int(getattr(args, "workers", 0) or 0),
                 role=str(getattr(args, "role", None) or "executor"),
                 root=root,
-                dry_run=bool(getattr(args, "dry_run", False)),
+                dry_run=dry_run,
                 force=bool(getattr(args, "force", False)),
                 routing=routing,
                 yolo=bool(getattr(args, "yolo", False)),
@@ -797,8 +893,14 @@ def cmd_team(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 1
-            if startup == "running" or meta.get("dry_run"):
+            if startup == "running":
                 print("Team started", file=sys.stderr)
+            elif meta.get("dry_run") or dry_run:
+                print(
+                    "Team materialized (dry-run/materialize-only: no live workers; "
+                    "not started)",
+                    file=sys.stderr,
+                )
             return 0
         if action == "start":
             from omg_cli.team.runtime import apply_start_readiness
@@ -812,8 +914,37 @@ def cmd_team(args: argparse.Namespace) -> int:
             routing = parse_routing_json(routing_raw) if routing_raw else None
             # parse_routing_json returns None for empty; keep None so zero-config
             # stays D1. Non-empty --routing enables multi-CLI floors.
-            dry_run = bool(getattr(args, "dry_run", False))
+            dry_run = bool(
+                getattr(args, "dry_run", False)
+                or getattr(args, "materialize_only", False)
+            )
+            plan_only = bool(getattr(args, "plan_only", False))
             no_wait = bool(getattr(args, "no_wait", False))
+            if plan_only:
+                # #27: side-effect-free preview (no run / worktrees / team dir).
+                from omg_cli.team.plane import _parse_tasks_json
+
+                tasks = _parse_tasks_json(tasks_json)
+                plan = {
+                    "mode": "plan_only",
+                    "schema_version": 1,
+                    "command": "team.start",
+                    "dry_run": False,
+                    "mutates": False,
+                    "goal": goal,
+                    "project_root": str(root),
+                    "task_count": len(tasks),
+                    "tasks": tasks,
+                    "routing": routing,
+                    "note": (
+                        "plan-only: no .omg mutation, no worktrees, no tmux "
+                        "(#27). Use --dry-run/--materialize-only to materialize "
+                        "without live panes."
+                    ),
+                }
+                print(json.dumps(plan, indent=2, ensure_ascii=False))
+                print("Team plan-only (no state written)", file=sys.stderr)
+                return 0
             meta = start_team(
                 goal,
                 tasks_json,
@@ -850,8 +981,14 @@ def cmd_team(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 0
-            if startup == "running" or dry_run:
+            if startup == "running":
                 print("Team started", file=sys.stderr)
+            elif dry_run:
+                print(
+                    "Team materialized (dry-run/materialize-only: no live workers; "
+                    "not started)",
+                    file=sys.stderr,
+                )
             return 0
         if action == "run":
             # Staged FSM driver (plan→prd→exec→verify→fix). Decomposition is
@@ -1239,6 +1376,10 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
                 yolo=bool(getattr(args, "yolo", False)),
                 safe=bool(getattr(args, "safe", False)),
                 force=bool(getattr(args, "force", False)),
+                unattended=bool(getattr(args, "unattended", False)),
+                max_stall_relaunches=int(
+                    getattr(args, "max_stall_relaunches", 32) or 32
+                ),
             )
         if action == "start":
             goal = " ".join(args.goal or []).strip()
@@ -2672,29 +2813,47 @@ def build_parser() -> argparse.ArgumentParser:
     p_lsp = sub.add_parser(
         "lsp",
         parents=[common],
-        help="inspect host-owned .lsp.json registration (no semantic proxy)",
+        help=(
+            "inspect host-owned .lsp.json registration only "
+            "(no semantic proxy; #28)"
+        ),
+        description=(
+            "Inspect host-owned .lsp.json registration only. "
+            "OMG has no semantic proxy; use status|validate. "
+            "Legacy check|symbols|diagnostics always return E_LSP_HOST_OWNED."
+        ),
     )
     lsp_sub = p_lsp.add_subparsers(dest="lsp_action")
     p_lsp_st = lsp_sub.add_parser(
-        "status", parents=[common], help="inspect registration and command availability"
+        "status",
+        parents=[common],
+        help="inspect registration and command availability (primary)",
     )
     p_lsp_st.set_defaults(func=cmd_lsp)
+    p_lsp_val = lsp_sub.add_parser(
+        "validate",
+        parents=[common],
+        help="validate .lsp.json shape and report precise field errors (primary)",
+    )
+    p_lsp_val.set_defaults(func=cmd_lsp)
     p_lsp_ck = lsp_sub.add_parser(
-        "check", parents=[common], help="report semantic check as host-owned/unsupported"
+        "check",
+        parents=[common],
+        help="LEGACY: always E_LSP_HOST_OWNED (use host IDE/Grok LSP)",
     )
     p_lsp_ck.add_argument("path", help="file path")
     p_lsp_ck.set_defaults(func=cmd_lsp)
     p_lsp_sym = lsp_sub.add_parser(
         "symbols",
         parents=[common],
-        help="report symbol lookup as host-owned/unsupported",
+        help="LEGACY: always E_LSP_HOST_OWNED (use host IDE/Grok LSP)",
     )
     p_lsp_sym.add_argument("path", help="Python file path")
     p_lsp_sym.set_defaults(func=cmd_lsp)
     p_lsp_diag = lsp_sub.add_parser(
         "diagnostics",
         parents=[common],
-        help="report diagnostics as host-owned/unsupported",
+        help="LEGACY: always E_LSP_HOST_OWNED (use host IDE/Grok LSP)",
     )
     p_lsp_diag.add_argument("path", help="Python file path")
     p_lsp_diag.set_defaults(func=cmd_lsp)
@@ -3120,10 +3279,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="existing run_id (default: create a new ulw/team run)",
     )
     p_t_launch.add_argument(
+        "--plan-only",
+        dest="plan_only",
+        action="store_true",
+        help=(
+            "side-effect-free preview (#27): no .omg mutation, worktrees, or "
+            "tmux; print plan JSON only"
+        ),
+    )
+    p_t_launch.add_argument(
         "--dry-run",
         dest="dry_run",
         action="store_true",
-        help="write team.json + api board; never call tmux/subprocess",
+        help=(
+            "materialize team.json + api board without live tmux/subprocess "
+            "(alias of --materialize-only; not side-effect-free — use "
+            "--plan-only for pure preview)"
+        ),
+    )
+    p_t_launch.add_argument(
+        "--materialize-only",
+        dest="materialize_only",
+        action="store_true",
+        help="same as --dry-run: write control-plane artifacts, no live workers",
     )
     p_t_launch.add_argument(
         "--force",
@@ -3142,7 +3320,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_t_start = team_sub.add_parser(
         "start",
         parents=[common],
-        help="create run + ownership worktrees + tmux session (or --dry-run)",
+        help=(
+            "create run + ownership worktrees + tmux session "
+            "(or --plan-only / --dry-run)"
+        ),
     )
     p_t_start.add_argument(
         "--goal",
@@ -3175,10 +3356,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="existing run_id (default: create a new ulw/team run)",
     )
     p_t_start.add_argument(
+        "--plan-only",
+        dest="plan_only",
+        action="store_true",
+        help=(
+            "side-effect-free preview (#27): no .omg mutation, worktrees, or "
+            "tmux; print plan JSON only"
+        ),
+    )
+    p_t_start.add_argument(
         "--dry-run",
         dest="dry_run",
         action="store_true",
-        help="write team.json skeleton (pid=None); never call tmux/subprocess",
+        help=(
+            "materialize team.json skeleton (pid=None); never call "
+            "tmux/subprocess (not side-effect-free — prefer --plan-only for "
+            "pure preview; alias of --materialize-only)"
+        ),
+    )
+    p_t_start.add_argument(
+        "--materialize-only",
+        dest="materialize_only",
+        action="store_true",
+        help="same as --dry-run: write control-plane artifacts, no live workers",
     )
     p_t_start.add_argument(
         "--force",
@@ -3604,6 +3804,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="seconds per grok launch (default 3600); 0 = unlimited",
     )
+    p_ap_run.add_argument(
+        "--unattended",
+        action="store_true",
+        help=(
+            "hands-off outer loop (#40): re-launch on host-turn stalls without "
+            "printing a human go prompt (still pauses on interview/await)"
+        ),
+    )
+    p_ap_run.add_argument(
+        "--max-stall-relaunches",
+        dest="max_stall_relaunches",
+        type=int,
+        default=32,
+        help="unattended: max re-launches after no phase advance (default 32)",
+    )
     p_ap_run.set_defaults(func=cmd_autopilot, autopilot_action="run")
     p_ap.set_defaults(func=cmd_autopilot)
 
@@ -3950,53 +4165,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_mcp_install.set_defaults(func=cmd_mcp_install)
 
     return parser
-
-
-# Keep in sync with build_parser() subcommands (madmax intercept policy).
-# install-hook must be listed: otherwise should_host_launch routes it to Grok.
-KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
-    {
-        "setup",
-        "doctor",
-        "update",
-        "uninstall",
-        "install-hook",
-        "note",
-        "state",
-        "cancel",
-        "resume",
-        "session",
-        "recover",
-        "memory",
-        "tracker",
-        "compact",
-        "notify",
-        "native-status",
-        "workflow",
-        "capabilities",
-        "parity",
-        "wiki",
-        "hud",
-        "lsp",
-        "interview",
-        "goal",
-        "accept",
-        "integrate",
-        "worker",
-        "team",
-        "review",
-        "qa",
-        "autopilot",
-        "ulw",
-        "ralph",
-        "ralplan",
-        "ask",
-        "pipeline",
-        "dual-review",
-        "mcp-server",
-        "mcp-install",
-    }
-)
 
 
 def main(argv: list[str] | None = None) -> int:

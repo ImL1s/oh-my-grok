@@ -14,8 +14,8 @@ strict CLI phase machine and Grok-native workers until acceptance. While autopil
 is incomplete, the **Stop gate pins the turn** (host-honored **≥0.2.107**): honest
 caps — **8 continuations/turn** then the turn ends; fail-open on hook crash;
 Esc/Ctrl+C skip Stop. Pause only for interview (`ask_user_question`) or destructive
-confirmation via `omg autopilot await`. Beyond the cap: `/loop` or outer `omg ralph`
-(forthcoming `omg autopilot run --resume`).
+confirmation via `omg autopilot await`. Beyond the cap: outer CLI
+`omg autopilot run --resume RUN --unattended` (#40), or `/loop` / `omg ralph`.
 
 **Authority split**
 
@@ -23,7 +23,7 @@ confirmation via `omg autopilot await`. Beyond the cap: `/loop` or outer `omg ra
 |---------|--------|
 | Phase legality, stamps, `verified` | **`omg` CLI only** |
 | Spec / plan / code proposals | Session + `spawn_subagent` |
-| Outer “don’t stop” across many turns | Stop pin (same turn, cap 8) + `/loop` / `omg ralph` (forthcoming `run --resume`) |
+| Outer “don’t stop” across many turns | Stop pin (same turn, cap 8) + **`omg autopilot run --resume … --unattended`** (#40) · `/loop` / `omg ralph` |
 
 ## HARD RULES (non-negotiable)
 
@@ -57,10 +57,19 @@ confirmation via `omg autopilot await`. Beyond the cap: `/loop` or outer `omg ra
 | Want | How on Grok / OMG |
 |------|-------------------|
 | Strict phases + destination gates | This skill + `omg autopilot *` |
-| Outer retry until verified | `omg ralph "…"` **or** user re-invokes this skill after each turn |
+| Hands-off until verified/blocked (no re-type `go`) | **`omg autopilot run --resume RUN --unattended`** (primary outer loop, #40) |
+| Outer retry until verified | `omg ralph "…"` **or** re-invoke this skill after each turn |
 | Host-forced continuation on Stop | **Available ≥0.2.107 (cap 8/turn)** — see `docs/research/stop-continuation/` |
 
-If the session ends mid-phase: run `omg autopilot status --run RUN` and resume the playbook from the current phase.
+If the session ends mid-phase: run `omg autopilot status --run RUN`. For true hands-off, prefer the outer driver:
+
+```bash
+omg autopilot run --resume RUN --unattended
+# optional cap on stall re-launches (default 32):
+# omg autopilot run --resume RUN --unattended --max-stall-relaunches 16
+```
+
+Unattended still **pauses** on interview incomplete and `omg autopilot await` (human required). It does **not** claim infinite Stop stickiness.
 
 ## CLI phase machine (normative)
 
@@ -235,6 +244,8 @@ Still finish run acceptance via `omg accept` / `omg autopilot complete` before
 ```bash
 omg autopilot start "goal"
 omg autopilot start "goal" --skip-interview
+omg autopilot run "goal" --skip-interview --unattended   # outer hands-off driver (#40)
+omg autopilot run --resume RUN --unattended
 omg autopilot transition --run RUN --phase PHASE --evidence-json '{…}' --reason "…"
 omg autopilot status --run RUN
 omg autopilot await --run RUN --set

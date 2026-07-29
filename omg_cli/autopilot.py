@@ -765,13 +765,21 @@ def run_autopilot(
     yolo: bool = False,
     safe: bool = False,
     force: bool = False,
+    unattended: bool = False,
+    max_stall_relaunches: int = 32,
     **launch_kw: Any,
 ) -> int:
     """Outer CLI driver: launch grok per phase until verified or pause/terminal.
 
     Tertiary cross-turn persistence (beyond in-session Stop pin). Writes RESUME.md
     each phase; pauses at incomplete interview with resume hint.
+
+    With ``unattended=True`` (#40), host-turn stalls (no phase advance after a
+    successful grok launch) re-launch in-process instead of returning a human
+    ``go`` prompt — until terminal, await/interview pause, launch failure, or
+    ``max_stall_relaunches`` exhausted. Does **not** claim infinite Stop pin.
     """
+    import json
     import sys
 
     from omg_cli.modes import (
@@ -835,7 +843,12 @@ def run_autopilot(
     launch_timeout = resolve_launch_timeout(timeout, dry_run=dry_run)
     run_dir = _run_dir(root_path, run_id)
     phase_cycles: dict[str, int] = {}
-    resume_cmd = f"omg autopilot run --resume {run_id}"
+    stall_relaunches = 0
+    max_stall = max(1, int(max_stall_relaunches))
+    resume_cmd = (
+        f"omg autopilot run --resume {run_id}"
+        + (" --unattended" if unattended else "")
+    )
 
     while True:
         st = status_autopilot(root_path, run_id)
@@ -846,20 +859,54 @@ def run_autopilot(
             clear_cmd = f"omg autopilot await --clear --run {run_id}"
             reason = run_row.get("autopilot_awaiting_reason")
             if isinstance(reason, str) and reason.strip():
-                print(f"{clear_cmd}  # reason: {reason.strip()}")
+                print(f"{clear_cmd}  # reason: {reason.strip()}", file=sys.stderr)
             else:
-                print(clear_cmd)
-            print(resume_cmd)
+                print(clear_cmd, file=sys.stderr)
+            print(resume_cmd, file=sys.stderr)
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "pause": "awaiting",
+                        "run_id": run_id,
+                        "resume_command": resume_cmd,
+                    },
+                    ensure_ascii=False,
+                )
+            )
             return 0
         if phase == "verified":
             write_resume_md(root_path, run_id)
+            print(
+                json.dumps(
+                    {"ok": True, "phase": "verified", "run_id": run_id},
+                    ensure_ascii=False,
+                )
+            )
             return 0
         if phase in ("blocked", "cancelled"):
             write_resume_md(root_path, run_id)
+            print(
+                json.dumps(
+                    {"ok": False, "phase": phase, "run_id": run_id},
+                    ensure_ascii=False,
+                )
+            )
             return 1
         if phase == "interview" and not _interview_complete(root_path, run_id):
             write_resume_md(root_path, run_id)
-            print(resume_cmd)
+            print(resume_cmd, file=sys.stderr)
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "pause": "interview",
+                        "run_id": run_id,
+                        "resume_command": resume_cmd,
+                    },
+                    ensure_ascii=False,
+                )
+            )
             return 0
 
         phase_cycles[phase] = int(phase_cycles.get(phase, 0)) + 1
@@ -917,10 +964,51 @@ def run_autopilot(
         if dry_run:
             return 0
         if new_phase == phase:
-            # No gate progress this launch — stop for cross-turn resume.
+            # No gate progress this launch — host turn likely ended (Stop cap).
+            if unattended:
+                stall_relaunches += 1
+                if stall_relaunches > max_stall:
+                    try:
+                        transition(
+                            root_path,
+                            run_id,
+                            "blocked",
+                            reason=f"max_stall_relaunches={max_stall}",
+                        )
+                    except AutopilotError:
+                        pass
+                    write_resume_md(root_path, run_id)
+                    print(
+                        json.dumps(
+                            {
+                                "ok": False,
+                                "phase": phase,
+                                "run_id": run_id,
+                                "error": "max_stall_relaunches",
+                                "resume_command": resume_cmd,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 1
+                # Re-launch same phase without requiring human "go" (#40).
+                continue
             write_resume_md(root_path, run_id)
-            print(resume_cmd)
+            print(resume_cmd, file=sys.stderr)
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "pause": "stall",
+                        "phase": phase,
+                        "run_id": run_id,
+                        "resume_command": resume_cmd,
+                    },
+                    ensure_ascii=False,
+                )
+            )
             return 0
+        stall_relaunches = 0
 
 
 __all__ = [

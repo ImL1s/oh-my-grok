@@ -24,7 +24,11 @@ the host. A valid registration with no fresh host observation is
 
 ```bash
 omg lsp status                          # registration + host-observation truth
+omg lsp validate                        # validate .lsp.json shape (precise errors)
 ```
+
+Legacy semantic action names exist only for deprecation (`E_LSP_HOST_OWNED`);
+do not advertise them as OMG capabilities — use the host IDE / Grok LSP client.
 
 The repository registration uses Grok's server mapping shape, for example:
 

@@ -121,15 +121,15 @@ omg resume --clear   # 成功接續後清除
 ```bash
 omg autopilot start "完成功能 X 並含測試"
 # 或：omg autopilot start "…" --skip-interview
-omg autopilot run "完成功能 X 並含測試"          # 跨 turn 外層驅動
-omg autopilot run --resume RUN                   # cap / 崩潰後恢復
+omg autopilot run "完成功能 X 並含測試" --unattended   # 無人值守外層 (#40)
+omg autopilot run --resume RUN --unattended            # cap / 崩潰後恢復
 omg autopilot status --run RUN
 omg autopilot await --run RUN --set   # 破壞性/憑證確認時暫停
 omg autopilot complete --run RUN
 ```
 
 階段：`interview → ralplan → implement → review → (rework) → qa → acceptance → verified`  
-grok **≥0.2.107** 有 Stop pin（每 turn 上限 **8**，fail-open）— 超 cap 見 [autopilot.zh-TW.md](./autopilot.zh-TW.md#stop-pin-誠實說明)（`/loop`、外層 `omg ralph`、`omg autopilot run --resume`）。
+grok **≥0.2.107** 有 Stop pin（每 turn 上限 **8**，fail-open）— 超 cap 見 [autopilot.zh-TW.md](./autopilot.zh-TW.md#stop-pin-誠實說明)（`omg autopilot run --resume … --unattended`、`/loop`、外層 `omg ralph`）。
 
 ---
 
@@ -388,14 +388,14 @@ omg wiki query "auth"
 |--|--|
 | **何時** | 檢查公開 `.lsp.json` 註冊與本機 server command 是否可用 |
 | **呼叫** | `lsp` · `/oh-my-grok:omg-lsp` |
-| **CLI** | `omg lsp status` · `omg lsp check path.py` · `omg lsp symbols path.py` · `omg lsp diagnostics path.py` |
+| **CLI** | `omg lsp status` · `omg lsp validate` · legacy: `check`/`symbols`/`diagnostics` → `E_LSP_HOST_OWNED` |
 | **SKILL** | [`skills/omg-lsp/SKILL.md`](../skills/omg-lsp/SKILL.md) |
 
-`omg lsp status` 只驗證 host-owned 註冊，不會啟動 server。它會回報
-`semantic_proxy_count: 0`；configured 但未由 host 觀測，不代表 healthy。
-`check`、`symbols`、`diagnostics` 會回傳 `semantic_proxy_unsupported` 並以
-exit code 1 結束。語意語言操作請使用 Grok host tools；repository 查找則用
-`read_file` / `grep`。
+`omg lsp status` / `omg lsp validate` 只檢查 host-owned `.lsp.json`，不會啟動
+server。status 會回報 `semantic_proxy_count: 0`；configured 但未由 host 觀測，
+不代表 healthy。legacy `check`/`symbols`/`diagnostics` 一律回傳
+`E_LSP_HOST_OWNED` / `semantic_proxy_unsupported` 並以 exit code 1 結束（#28）。
+語意語言操作請使用 Grok host tools；repository 查找用 `read_file` / `grep`。
 
 ---
 
