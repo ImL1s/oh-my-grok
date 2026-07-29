@@ -1,7 +1,7 @@
 """Memory-family CLI handlers (#29 Phase 2).
 
 Commands: note, memory, tracker, compact.
-Parser construction remains in ``main.build_parser``.
+Parser construction: ``register_memory_parsers`` (#29 Phase 4'); ``note`` stays in main for help order.
 """
 
 from __future__ import annotations
@@ -217,7 +217,115 @@ def cmd_compact(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def register_memory_parsers(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Register memory-family argparse parsers (#29 Phase 4').
+
+    Commands: memory, tracker, compact (``note`` stays early in main for help order).
+    """
+    p_memory = sub.add_parser(
+        "memory",
+        parents=[common],
+        help="deterministic redacted project fact memory",
+    )
+    memory_sub = p_memory.add_subparsers(dest="memory_action")
+    p_memory_put = memory_sub.add_parser("put", parents=[common], help="upsert user fact")
+    p_memory_put.add_argument("key")
+    p_memory_put.add_argument("value")
+    p_memory_put.add_argument("--updated-at", default=None)
+    p_memory_put.set_defaults(func=cmd_memory, memory_action="put")
+    p_memory_search = memory_sub.add_parser(
+        "search", parents=[common], help="search fact keys and values"
+    )
+    p_memory_search.add_argument("query")
+    p_memory_search.add_argument("--limit", type=int, default=20)
+    p_memory_search.set_defaults(func=cmd_memory, memory_action="search")
+    p_memory_show = memory_sub.add_parser(
+        "show", parents=[common], help="print canonical fact store"
+    )
+    p_memory_show.set_defaults(func=cmd_memory, memory_action="show", output=None)
+    p_memory_export = memory_sub.add_parser(
+        "export", parents=[common], help="write canonical fact store JSON"
+    )
+    p_memory_export.add_argument("--output", required=True)
+    p_memory_export.set_defaults(func=cmd_memory, memory_action="export")
+    p_memory_import = memory_sub.add_parser(
+        "import", parents=[common], help="merge canonical fact store JSON"
+    )
+    p_memory_import.add_argument("file")
+    p_memory_import.set_defaults(func=cmd_memory, memory_action="import")
+    p_memory_rescan = memory_sub.add_parser(
+        "rescan", parents=[common], help="replace scanner observations from JSON"
+    )
+    p_memory_rescan.add_argument("file")
+    p_memory_rescan.add_argument("--observed-at", default=None)
+    p_memory_rescan.set_defaults(func=cmd_memory, memory_action="rescan")
+    p_memory.set_defaults(func=cmd_memory)
+
+    p_tracker = sub.add_parser(
+        "tracker",
+        parents=[common],
+        help="generation-fenced passive lifecycle projection",
+    )
+    tracker_sub = p_tracker.add_subparsers(dest="tracker_action")
+    p_tracker_status = tracker_sub.add_parser(
+        "status", parents=[common], help="show a projected run"
+    )
+    p_tracker_status.add_argument("--run", dest="run_id", required=True)
+    p_tracker_status.set_defaults(func=cmd_tracker, tracker_action="status")
+    p_tracker_project = tracker_sub.add_parser(
+        "project", parents=[common], help="project journal or supplied events"
+    )
+    p_tracker_project.add_argument("--run", dest="run_id", required=True)
+    p_tracker_project.add_argument("--generation", type=int, required=True)
+    p_tracker_project.add_argument(
+        "--events",
+        default=None,
+        help="optional JSON event array; otherwise read passive journals",
+    )
+    p_tracker_project.set_defaults(func=cmd_tracker, tracker_action="project")
+    p_tracker_reconcile = tracker_sub.add_parser(
+        "reconcile", parents=[common], help="reconcile signed native inventory"
+    )
+    p_tracker_reconcile.add_argument("--run", dest="run_id", required=True)
+    p_tracker_reconcile.add_argument("--inventory", required=True)
+    p_tracker_reconcile.set_defaults(func=cmd_tracker, tracker_action="reconcile")
+    p_tracker.set_defaults(func=cmd_tracker)
+
+    p_compact = sub.add_parser(
+        "compact",
+        parents=[common],
+        help="lossless generation-fenced runtime compaction",
+    )
+    compact_sub = p_compact.add_subparsers(dest="compact_action")
+    p_compact_create = compact_sub.add_parser(
+        "create", parents=[common], help="create or adopt a checkpoint"
+    )
+    p_compact_create.add_argument("--run", dest="run_id", required=True)
+    p_compact_create.add_argument("--generation", type=int, required=True)
+    p_compact_create.add_argument("--guidance-file", required=True)
+    p_compact_create.add_argument("--receipts", required=True)
+    p_compact_create.add_argument("--recovery-manifest", required=True)
+    p_compact_create.set_defaults(func=cmd_compact, compact_action="create")
+    p_compact_show = compact_sub.add_parser(
+        "show", parents=[common], help="validate and print checkpoint"
+    )
+    p_compact_show.add_argument("path")
+    p_compact_show.set_defaults(func=cmd_compact, compact_action="show")
+    p_compact_render = compact_sub.add_parser(
+        "render", parents=[common], help="restore exact guidance bytes"
+    )
+    p_compact_render.add_argument("path")
+    p_compact_render.add_argument("--guidance-out", required=True)
+    p_compact_render.set_defaults(func=cmd_compact, compact_action="render")
+    p_compact.set_defaults(func=cmd_compact)
+
+
 __all__ = [
+    "register_memory_parsers",
     "cmd_compact",
     "cmd_memory",
     "cmd_note",
