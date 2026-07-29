@@ -107,5 +107,5 @@ families and is the long-term target for #30.
 | Global `--json` / `--human` + `CommandContext` | **shipped** (partial migration) |
 | Migrated under global `--json` via `emit_data` | **most surfaces** — state/hud/wiki/lsp/notify/native-status/capabilities/parity/memory/tracker/compact/review/qa/autopilot/team/worker/accept/integrate/interview/goal/cancel/session/recover |
 | Remaining | doctor/setup human-only; worker seal tables human; some dual-review ask paths |
-| Golden envelope tests (state/capabilities/lsp/hud) | **partial** (`tests/test_cli_envelope_golden.py`) |
-| Golden contract tests for every family | deferred |
+| Golden envelope tests (inspect/run/memory/workflow/team plan-only) | **partial** (`tests/test_cli_envelope_golden.py`) |
+| Golden contract tests for every family | deferred (doctor/setup human-first; dual-review ask paths) |

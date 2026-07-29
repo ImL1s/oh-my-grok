@@ -141,6 +141,7 @@ def cmd_state(args: argparse.Namespace) -> int:
 
 
 def cmd_cancel(args: argparse.Namespace) -> int:
+    from omg_cli.cli_envelope import failure, wants_json
     from omg_cli.state import cancel_run
 
     root = project_root()
@@ -149,15 +150,28 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     try:
         cancelled = cancel_run(root, run_id, kill_grace_s=grace)
     except FileNotFoundError as e:
-        print(f"cancel failed: {e}", file=sys.stderr)
+        if wants_json(args):
+            emit_data(
+                args,
+                "cancel",
+                failure(
+                    "cancel",
+                    "E_RUN_NOT_FOUND",
+                    str(e),
+                    next_action="start a run or pass --run <id>",
+                ),
+            )
+        else:
+            print(f"cancel failed: {e}", file=sys.stderr)
         return 1
     outcome = str(cancelled.get("cancel_outcome") or "cancelled")
-    if outcome == "already complete":
-        print(f"run {cancelled['run_id']} already complete; no cancellation requested")
-    elif outcome == "cancellation requested":
-        print(f"cancellation requested for run {cancelled['run_id']}")
-    else:
-        print(f"cancelled run {cancelled['run_id']}")
+    if not wants_json(args):
+        if outcome == "already complete":
+            print(f"run {cancelled['run_id']} already complete; no cancellation requested")
+        elif outcome == "cancellation requested":
+            print(f"cancellation requested for run {cancelled['run_id']}")
+        else:
+            print(f"cancelled run {cancelled['run_id']}")
     emit_data(args, "cancel", cancelled)
     return 0
 
