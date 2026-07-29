@@ -17,12 +17,13 @@ from omg_cli.commands.inspect import (  # #29 Phase 2+4' — inspect family
     cmd_wiki,  # noqa: F401
     register_inspect_parsers,
 )
-from omg_cli.commands.install import (  # #29 Phase 2 — install family
-    cmd_doctor,
-    cmd_install_hook,
-    cmd_setup,
-    cmd_uninstall,
-    cmd_update,
+from omg_cli.commands.install import (  # #29 Phase 2+4' — install family
+    cmd_doctor,  # noqa: F401
+    cmd_install_hook,  # noqa: F401
+    cmd_setup,  # noqa: F401
+    cmd_uninstall,  # noqa: F401
+    cmd_update,  # noqa: F401
+    register_install_parsers,
 )
 from omg_cli.commands.mcp import (  # #29 Phase 2 — mcp family
     cmd_mcp_install,
@@ -170,56 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command")
 
-    p_setup = sub.add_parser(
-        "setup",
-        parents=[common],
-        help="ensure .omg dirs, merge AGENTS + gitignore",
-    )
-    p_setup.add_argument(
-        "--no-global-rules",
-        action="store_true",
-        help="do not install ~/.grok/rules/omg.md global guidance",
-    )
-    p_setup.add_argument(
-        "--no-global-hook",
-        action="store_true",
-        help="do not install the global PreToolUse soft-gate ($GROK_HOME/hooks/); "
-        "doctor will still report it missing",
-    )
-    p_setup.add_argument(
-        "--here",
-        dest="setup_here",
-        action="store_true",
-        help=(
-            "initialize .omg in the exact current directory (skip git/.omg "
-            "discovery; #22)"
-        ),
-    )
-    p_setup.set_defaults(func=cmd_setup)
-
-    p_install_hook = sub.add_parser(
-        "install-hook",
-        parents=[common],
-        help="install/repair the global PreToolUse soft-gate ($GROK_HOME/hooks/)",
-    )
-    p_install_hook.add_argument(
-        "--remove",
-        action="store_true",
-        help="uninstall the global hook instead of installing it",
-    )
-    p_install_hook.set_defaults(func=cmd_install_hook)
-
-    p_doctor = sub.add_parser(
-        "doctor",
-        parents=[common],
-        help="check plugin + environment health",
-    )
-    p_doctor.add_argument(
-        "--strict",
-        action="store_true",
-        help="treat compat.claude isolation risks as FAIL (exit 1)",
-    )
-    p_doctor.set_defaults(func=cmd_doctor)
+    register_install_parsers(sub, common, phase="early")
 
     p_note = sub.add_parser(
         "note",
@@ -248,24 +200,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_note.set_defaults(func=cmd_note)
 
-    p_update = sub.add_parser(
-        "update",
-        parents=[common],
-        help="git pull + refresh installed plugin",
-    )
-    p_update.set_defaults(func=cmd_update)
+    register_install_parsers(sub, common, phase="late")
 
-    p_uninstall = sub.add_parser(
-        "uninstall",
-        parents=[common],
-        help="remove plugin, global hook, and OMG rules block",
-    )
-    p_uninstall.add_argument(
-        "--yes",
-        action="store_true",
-        help="actually perform removal",
-    )
-    p_uninstall.set_defaults(func=cmd_uninstall)
 
     register_run_parsers(sub, common)
 

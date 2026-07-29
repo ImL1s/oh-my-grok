@@ -28,6 +28,7 @@ def test_main_reexports_install_handlers() -> None:
     assert cmd_doctor is install_cmds.cmd_doctor
     assert cmd_update is install_cmds.cmd_update
     assert cmd_uninstall is install_cmds.cmd_uninstall
+    assert callable(install_cmds.register_install_parsers)
 
 
 def test_parser_wires_install_handlers() -> None:
