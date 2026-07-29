@@ -33,6 +33,24 @@ python3 scripts/generate_capabilities_lock.py --check
 
 When inputs intentionally changed, run each generator once, review the bytes, run it again, and prove the hash is unchanged before `--check`.
 
+## Deterministic package (#26)
+
+Build the public archive from the shipping inventory (never hand-curate a second
+file list):
+
+```bash
+python3 scripts/package_release.py --out dist/release-bundle --mtime 0
+# dual-build must be byte-identical:
+python3 scripts/package_release.py --out dist/release-bundle-b --mtime 0
+cmp dist/release-bundle/*.tar.gz dist/release-bundle-b/*.tar.gz
+```
+
+CI workflow `release` jobs:
+
+1. **package** (`contents: read`) — write `oh-my-grok-<ver>.tar.gz` + `SHA256SUMS`
+2. **verify** (`contents: read`) — download the same artifact; tests/static/smoke; re-verify checksums
+3. **publish** (`contents: write`, tags only) — upload exact bytes; public hash readback; no rebuild
+
 ## Candidate gates
 
 Run on the exact candidate commit and record outputs in the W6 aggregate:

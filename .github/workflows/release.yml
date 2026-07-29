@@ -1,20 +1,26 @@
-name: release-verify
+# #26: Build once → verify same bytes → optional publish (no rebuild).
+# Build/verify: contents:read. Publish: contents:write only on tags.
+name: release
 
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: read
-
 concurrency:
-  group: release-verify-${{ github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  verify-candidate:
+  # ----- Stage 1: deterministic package (read-only) -----
+  package:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      archive_name: ${{ steps.meta.outputs.archive_name }}
+      archive_sha256: ${{ steps.meta.outputs.archive_sha256 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,11 +30,10 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: requirements-dev.txt
-      - name: Install verification tools
+      - name: Install tools
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
-          pip install 'ruff==0.15.22' 'mypy==2.3.0'
       - name: Version and tag identity
         env:
           RELEASE_REF: ${{ github.ref }}
@@ -36,13 +41,80 @@ jobs:
           python - <<'PY'
           import json, os
           from omg_cli import __version__
-
           plugin = json.load(open("plugin.json", encoding="utf-8"))
           assert plugin["version"] == __version__
           ref = os.environ["RELEASE_REF"]
           if ref.startswith("refs/tags/"):
-              assert ref.removeprefix("refs/tags/") == f"v{__version__}"
+              assert ref.removeprefix("refs/tags/") == f"v{__version__}", (
+                  ref, __version__
+              )
           print(__version__)
+          PY
+      - name: Package release bundle
+        id: meta
+        run: |
+          python scripts/package_release.py --out dist/release-bundle --mtime 0
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          meta = json.loads(Path("dist/release-bundle/package-meta.json").read_text())
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"version={meta['version']}\n")
+              fh.write(f"archive_name={meta['archive_name']}\n")
+              fh.write(f"archive_sha256={meta['archive_sha256']}\n")
+          print(json.dumps(meta, indent=2))
+          PY
+      - name: Dual-build byte identity
+        run: |
+          python scripts/package_release.py --out dist/release-bundle-b --mtime 0
+          cmp dist/release-bundle/*.tar.gz dist/release-bundle-b/*.tar.gz
+          cmp dist/release-bundle/SHA256SUMS dist/release-bundle-b/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle
+          path: dist/release-bundle/
+          if-no-files-found: error
+          retention-days: 14
+
+  # ----- Stage 2: verify candidate + same artifact bytes (read-only) -----
+  verify:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install 'ruff==0.15.22' 'mypy==2.3.0'
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-bundle
+          path: dist/release-bundle
+      - name: Verify packaged archive checksums
+        env:
+          EXPECT_SHA: ${{ needs.package.outputs.archive_sha256 }}
+          ARCHIVE_NAME: ${{ needs.package.outputs.archive_name }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from omg_cli.setup_cmd import verify_release_archive
+          name = os.environ["ARCHIVE_NAME"]
+          archive = Path("dist/release-bundle") / name
+          sums = Path("dist/release-bundle/SHA256SUMS")
+          got = verify_release_archive(archive, sums)
+          assert got["asset_sha256"] == os.environ["EXPECT_SHA"]
+          print("archive_ok", got["asset_sha256"])
           PY
       - name: Frozen parity and generated checks
         run: |
@@ -55,14 +127,67 @@ jobs:
       - name: Tests and static checks
         run: |
           python -m pytest -q -m "not live" --tb=short
-          # #24: same entrypoint as CI (no duplicated file lists).
           bash scripts/static_checks.sh
       - name: Hermetic smoke
         run: ./scripts/smoke.sh
         env:
           OMG_E2E: "1"
           OMG_SMOKE_STRICT: "0"
-      - name: Publication boundary
+      - name: Re-upload verified bytes (no rebuild)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle-verified
+          path: dist/release-bundle/
+          if-no-files-found: error
+          retention-days: 14
+
+  # ----- Stage 3: publish exact bytes (write only on tags) -----
+  publish:
+    needs: [package, verify]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-bundle-verified
+          path: dist/release-bundle
+      - name: Refuse rebuild — only upload existing bytes
+        env:
+          EXPECT_SHA: ${{ needs.package.outputs.archive_sha256 }}
+          ARCHIVE_NAME: ${{ needs.package.outputs.archive_name }}
+          TAG: ${{ github.ref_name }}
         run: |
-          echo "Verification only: this workflow does not build, tag, upload, or publish."
-          echo "Upload the prebuilt W6 release bundle only after omg parity release-readback."
+          set -euo pipefail
+          ARCHIVE="dist/release-bundle/${ARCHIVE_NAME}"
+          SUMS="dist/release-bundle/SHA256SUMS"
+          test -f "$ARCHIVE" && test -f "$SUMS"
+          ACTUAL=$(sha256sum "$ARCHIVE" | awk '{print $1}')
+          test "$ACTUAL" = "$EXPECT_SHA"
+          # Idempotent: if assets already on release with same hash, success.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG exists"
+          else
+            gh release create "$TAG" --title "$TAG" --notes "Automated release $TAG (exact packaged bytes)."
+          fi
+          # Upload archive then SHA256SUMS (public_upload_order).
+          gh release upload "$TAG" "$ARCHIVE" "$SUMS" --clobber
+          # Public hash readback (download API asset bytes).
+          python - <<'PY'
+          import hashlib, os, subprocess, tempfile
+          from pathlib import Path
+          tag = os.environ["TAG"]
+          name = os.environ["ARCHIVE_NAME"]
+          expect = os.environ["EXPECT_SHA"]
+          with tempfile.TemporaryDirectory() as td:
+              dest = Path(td) / name
+              subprocess.run(
+                  ["gh", "release", "download", tag, "-p", name, "-D", td],
+                  check=True,
+              )
+              got = hashlib.sha256(dest.read_bytes()).hexdigest()
+              assert got == expect, (got, expect)
+              print("public_readback_ok", got)
+          PY
