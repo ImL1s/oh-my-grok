@@ -85,6 +85,89 @@ def test_hud_success_envelope(tmp_path: Path, monkeypatch, capsys) -> None:
     assert "data" in payload
 
 
+def test_wiki_list_success_envelope(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".omg").mkdir()
+    code = main(["--json", "wiki", "list"])
+    assert code == 0
+    payload = _load_out(capsys)
+    assert payload["ok"] is True
+    assert payload["command"] == "wiki.list"
+    assert payload["schema_version"] == SCHEMA_VERSION
+    assert payload.get("data") == []
+
+
+def test_memory_show_success_envelope(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".omg").mkdir()
+    code = main(["--json", "memory", "show"])
+    assert code == 0
+    payload = _load_out(capsys)
+    assert payload["ok"] is True
+    assert payload["command"] == "memory"
+    assert "data" in payload
+
+
+def test_native_status_success_envelope(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".omg").mkdir()
+    code = main(["--json", "native-status"])
+    assert code == 0
+    payload = _load_out(capsys)
+    assert payload["ok"] is True
+    assert payload["command"] == "native-status"
+    assert "data" in payload
+
+
+def test_workflow_list_success_envelope(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".omg").mkdir()
+    code = main(["--json", "workflow", "list"])
+    assert code == 0
+    payload = _load_out(capsys)
+    assert payload["ok"] is True
+    assert payload["command"] == "workflow"
+    assert payload.get("data") == []
+
+
+def test_team_plan_only_success_envelope(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".omg").mkdir()
+    code = main(
+        [
+            "--json",
+            "team",
+            "launch",
+            "--workers",
+            "2",
+            "--goal",
+            "noop",
+            "--plan-only",
+        ]
+    )
+    assert code == 0
+    payload = _load_out(capsys)
+    assert payload["ok"] is True
+    assert payload["command"] == "team"
+    assert payload["schema_version"] == SCHEMA_VERSION
+    data = payload.get("data") or {}
+    assert data.get("mode") == "plan_only"
+    assert data.get("mutates") is False
+
+
+def test_cancel_no_run_failure_envelope(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".omg").mkdir()
+    code = main(["--json", "cancel"])
+    assert code == 1
+    payload = _load_out(capsys)
+    assert payload["ok"] is False
+    assert payload["command"] == "cancel"
+    assert payload["schema_version"] == SCHEMA_VERSION
+    err = payload.get("error") or {}
+    assert err.get("code") == "E_RUN_NOT_FOUND" or payload.get("error_code") == "E_RUN_NOT_FOUND"
+
+
 def test_usage_error_exit_2() -> None:
     # Unknown option on a real subcommand → argparse usage (exit 2).
     # Note: an unrecognized *top-level* token is host-launch, not usage error.
