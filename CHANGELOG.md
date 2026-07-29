@@ -32,6 +32,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   handlers extracted (no user-visible change).
 - **`omg_cli/commands/workflow.py`** (#29 Phase 2): workflow install/list/show/
   plan/run handlers extracted (no user-visible change).
+- **`omg_cli/commands/modes.py`** + **`mcp.py`** (#29 Phase 2): review/qa/
+  autopilot/ulw/ralph/ralplan/ask/pipeline/dual-review and mcp-server/
+  mcp-install handlers extracted (no user-visible change).
 - **`docs/cli-contract.md`** (#30 Phase 0): exit-code classes and schema_version 1
   envelope for scripted surfaces.
 
