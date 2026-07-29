@@ -276,7 +276,7 @@ def cmd_goal(args: argparse.Namespace) -> int:
             )
         elif action == "set-host":
             result = set_host_goal_handoff(root, args.goal_id)
-            if getattr(args, "json", False):
+            if bool(getattr(args, "json", False) or getattr(args, "json_output", False)):
                 print(json.dumps(result, indent=2, ensure_ascii=False))
             else:
                 print(result["handoff_markdown"])

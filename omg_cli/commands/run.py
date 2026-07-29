@@ -82,27 +82,58 @@ _print_state_human = print_state_human
 
 
 def cmd_state(args: argparse.Namespace) -> int:
+    from omg_cli.cli_envelope import emit_json, failure, success
+    from omg_cli.command_context import get_context
     from omg_cli.state import load_active_run, load_run_view
 
     root = project_root()
-    human = bool(getattr(args, "human", False))
+    ctx = get_context(args)
+    # Explicit --human (command or global) forces human summary.
+    force_human = bool(getattr(args, "human", False) or getattr(args, "human_output", False))
+    wants_json = bool(ctx and ctx.wants_json) and not force_human
+    # Legacy: without --human, state already prints JSON for present runs.
+    human = force_human
+
     if getattr(args, "run_id", None):
         data = load_run_view(root, args.run_id)
         if data is None:
-            print(f"no run found: {args.run_id}", file=sys.stderr)
+            if wants_json:
+                emit_json(
+                    failure(
+                        "state",
+                        "E_RUN_NOT_FOUND",
+                        f"no run found: {args.run_id}",
+                        next_action="pass a valid --run ID or omg state",
+                    )
+                )
+            else:
+                print(f"no run found: {args.run_id}", file=sys.stderr)
             return 1
         if human:
             print_state_human(data)
+        elif wants_json:
+            emit_json(success("state", data=data))
         else:
             print(json.dumps(data, indent=2, ensure_ascii=False))
         return 0
 
     active = load_active_run(root)
     if active is None:
-        print("no active run")
+        if wants_json:
+            emit_json(
+                success(
+                    "state",
+                    active=None,
+                    message="no active run",
+                )
+            )
+        else:
+            print("no active run")
         return 0
     if human:
         print_state_human(load_run_view(root, str(active["run_id"])) or active)
+    elif wants_json:
+        emit_json(success("state", data=active))
     else:
         print(json.dumps(active, indent=2, ensure_ascii=False))
     return 0
@@ -149,7 +180,11 @@ def cmd_resume(args: argparse.Namespace) -> int:
         run_id=getattr(args, "run_id", None),
         write_md=not getattr(args, "no_write", False),
     )
-    if getattr(args, "json", False):
+    as_json = bool(
+        getattr(args, "json", False)
+        or getattr(args, "json_output", False)
+    )
+    if as_json:
         sys.stdout.write(format_pack_json(pack))
     else:
         sys.stdout.write(format_pack_human(pack))

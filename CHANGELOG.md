@@ -39,6 +39,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   handlers extracted; interview/goal joined `commands/workflow.py`
   (no user-visible change). Phase 2 handler extract complete — `main.py`
   is bootstrap + `build_parser` only for handlers.
+- **`CommandContext`** + global **`--json`** (#29 Phase 3 / #30):
+  `omg_cli/command_context.py`, `omg_cli/cli_envelope.py`; parse-once on
+  common parent (SUPPRESS). `state` and `hud` honor global JSON envelopes.
 - **`docs/cli-contract.md`** (#30 Phase 0): exit-code classes and schema_version 1
   envelope for scripted surfaces.
 

@@ -103,5 +103,7 @@ families and is the long-term target for #30.
 | Autopilot run machine JSON pauses | **shipped** (#40) |
 | LSP validate / `E_LSP_*` | **shipped** (#28) |
 | Team plan-only JSON | **shipped** (#27) |
-| Shared `CliResult` renderer + global `--json` | deferred |
+| Shared envelope helpers (`omg_cli/cli_envelope.py`) | **shipped** (#29/#30) |
+| Global `--json` / `--human` + `CommandContext` | **shipped** (partial migration) |
+| Migrated: `state` / `hud` under global `--json` | **partial** |
 | Golden contract tests for every family | deferred |

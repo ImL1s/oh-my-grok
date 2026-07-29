@@ -92,6 +92,20 @@ def apply_safe_yolo_flags(
     return args
 
 
+def apply_output_flags(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> argparse.Namespace:
+    """Canonicalize global ``--json`` (#29/#30).
+
+    Dest is ``json_output`` so command-local ``--json`` (e.g. hud) stays a
+    separate attribute but still counts in ``resolve_output_mode``.
+    Default output remains human-friendly where the command already is.
+    """
+    del parser  # reserved for future mutual-exclusion with global --human
+    args.json_output = bool(getattr(args, "json_output", False))
+    return args
+
+
 def build_parser() -> argparse.ArgumentParser:
     # SUPPRESS: root + every nested subparser share this parent. Plain
     # store_true default=False lets a deeper layer overwrite an outer True
@@ -110,6 +124,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "allow elevated permissions for mode launchers (off by default); "
             "mutually exclusive with --safe"
+        ),
+    )
+    common.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "machine JSON envelope on stdout for supported commands (#30); "
+            "default remains each command's human-friendly mode"
         ),
     )
     common.add_argument(
@@ -284,11 +308,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print pack only; do not write RESUME.md",
     )
-    p_resume.add_argument(
-        "--json",
-        action="store_true",
-        help="machine-readable pack",
-    )
+    # --json inherited from common (json_output)
     p_resume.set_defaults(func=cmd_resume)
 
     p_session = sub.add_parser(
@@ -611,7 +631,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="one-line HUD for active (or --run) status",
     )
     p_hud.add_argument("--run", dest="run_id", default=None)
-    p_hud.add_argument("--json", action="store_true")
+    # --json inherited from common (json_output)
     p_hud.set_defaults(func=cmd_hud)
 
     p_lsp = sub.add_parser(
@@ -847,14 +867,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_g_set_host = goal_sub.add_parser(
         "set-host",
+        parents=[common],
         help="print host /goal handoff text (does not mutate host goal)",
     )
     p_g_set_host.add_argument("--goal", dest="goal_id", required=True)
-    p_g_set_host.add_argument(
-        "--json",
-        action="store_true",
-        help="print full JSON payload instead of handoff markdown",
-    )
+    # --json from common (json_output); also accepted as omg --json goal set-host
     p_g_set_host.set_defaults(func=cmd_goal, goal_action="set-host")
 
     p_goal.set_defaults(func=cmd_goal)
@@ -1344,12 +1361,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_t_resume.add_argument(
         "--run", dest="run_id", default=None, help="team run_id"
     )
-    p_t_resume.add_argument(
-        "--json",
-        dest="as_json",
-        action="store_true",
-        help="print JSON (default for resume)",
-    )
+    # --json inherited from common → json_output (handler maps to as_json)
     p_t_resume.set_defaults(func=cmd_team, team_action="resume")
 
     p_t_status = team_sub.add_parser(
@@ -1366,12 +1378,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_t_status.add_argument(
         "--run", dest="run_id", default=None, help="run_id (default: active)"
     )
-    p_t_status.add_argument(
-        "--json",
-        dest="as_json",
-        action="store_true",
-        help="print LOCKED field set as JSON",
-    )
+    # --json inherited from common → json_output (handler maps to as_json)
     p_t_status.add_argument(
         "--full",
         dest="full_status",
@@ -1455,12 +1462,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="run_id injected into --input when omitted there",
     )
-    p_t_api.add_argument(
-        "--json",
-        dest="as_json",
-        action="store_true",
-        help="print JSON envelope (always on for api; kept for symmetry)",
-    )
+    # --json inherited from common → json_output
     p_t_api.set_defaults(func=cmd_team, team_action="api")
     p_team.set_defaults(func=cmd_team)
 
@@ -1785,13 +1787,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print argv + env keys; do not exec provider",
     )
-    p_ask.add_argument(
-        "--json",
-        dest="json",
-        action="store_true",
-        default=True,
-        help="write sidecar meta JSON (default on)",
-    )
+    # Global --json optional; ask still defaults write_json=True in handler
     p_ask.add_argument("--model", dest="model", default=None, help="optional model pin")
     p_ask.add_argument(
         "--extra",
@@ -2030,6 +2026,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(raw)
     apply_safe_yolo_flags(parser, args)
+    apply_output_flags(parser, args)
+    # Bridge: legacy dest names used by team/ask handlers
+    if bool(getattr(args, "json_output", False)):
+        if not hasattr(args, "as_json"):
+            args.as_json = True
+        if not hasattr(args, "json"):
+            args.json = True
     if not getattr(args, "command", None):
         parser.print_help()
         return 0
@@ -2051,6 +2054,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     command = str(getattr(args, "command", "") or "")
     clear_resolved_project_root()
+    root_path: Path | None = None
     if command not in _INSTALL_SCOPED:
         try:
             resolution = resolve_project_root(
@@ -2061,9 +2065,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"omg: {exc}", file=sys.stderr)
             return int(getattr(exc, "exit_code", 2) or 2)
         set_resolved_project_root(resolution)
+        root_path = resolution.root
         if resolution.note and resolution.shadowed_omg_ancestors:
             print(f"omg: warning: {resolution.note}", file=sys.stderr)
 
+    from omg_cli.command_context import attach_command_context
+
+    attach_command_context(args, root=root_path)
     return int(func(args))
 
 
