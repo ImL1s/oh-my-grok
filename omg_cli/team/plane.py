@@ -2549,43 +2549,37 @@ def _write_confined_linked_ralph_state(
         raise TeamError(f"linked Ralph write refused: {exc}") from exc
 
 
-def _live_signal_target_matches(
+def _resolve_live_signal_target(
     session: str,
     receipt: Mapping[str, Any],
     row: Mapping[str, Any],
-) -> bool:
-    """Revalidate exact tmux and OS process identity immediately before signal."""
+) -> dict[str, Any] | None:
+    """Resolve a kill target bound to session/nonce/pane_id.
+
+    Launch receipts capture pane PIDs immediately after create; the
+    ``worker-ready && exec …`` pane chain often replaces that process before
+    stop. When the receipted pane_id still lives under the same session_id +
+    launch_nonce, rebind to the *current* pane_pid/pgid/pid_start. Refuse when
+    session/nonce/pane_id diverge (no free-form pkill).
+    """
     window_index = row.get("window_index")
     pane_id = row.get("pane_id")
-    pid = row.get("pid")
-    pgid = row.get("pgid")
-    pid_start = row.get("pid_start")
     if (
         isinstance(window_index, bool)
         or not isinstance(window_index, int)
         or not isinstance(pane_id, str)
         or _TMUX_PANE_ID.fullmatch(pane_id) is None
-        or isinstance(pid, bool)
-        or not isinstance(pid, int)
-        or pid <= 0
-        or isinstance(pgid, bool)
-        or not isinstance(pgid, int)
-        or pgid <= 0
-        or not isinstance(pid_start, str)
-        or not pid_start
     ):
-        return False
+        return None
     if _read_tmux_session_identity(session) != (session, receipt.get("session_id")):
-        return False
+        return None
     if _read_tmux_launch_nonce(session) != receipt.get("launch_nonce"):
-        return False
-    # Prefer exact pane target when the probe returns pane_id\tpid (inside-tmux
-    # shared sessions make session-wide list-panes ambiguous). Otherwise fall
-    # back to the slot map used by legacy windows topology mocks/tests.
+        return None
+
+    live_pid: int | None = None
     pane_probe = _tmux_run(
         ["display-message", "-p", "-t", pane_id, "#{pane_id}\t#{pane_pid}"]
     )
-    pane_exact = False
     if pane_probe.returncode == 0:
         parts = (pane_probe.stdout or "").strip().split("\t")
         if (
@@ -2593,17 +2587,44 @@ def _live_signal_target_matches(
             and _TMUX_PANE_ID.fullmatch(parts[0]) is not None
             and parts[0] == pane_id
         ):
-            pane_exact = True
             try:
                 live_pid = int(parts[1])
             except ValueError:
-                return False
-            if live_pid != pid:
-                return False
-    if not pane_exact:
-        if _list_pane_identities(session).get(window_index) != (pane_id, pid):
-            return False
-    return _pgid_for_pid(pid) == pgid and _pid_start_identity(pid) == pid_start
+                return None
+    if live_pid is None:
+        observed = _list_pane_identities(session).get(window_index)
+        if observed is None or observed[0] != pane_id:
+            return None
+        live_pid = int(observed[1])
+    if live_pid <= 0:
+        return None
+    live_pgid = _pgid_for_pid(live_pid)
+    live_start = _pid_start_identity(live_pid)
+    if live_pgid is None or live_pgid <= 0 or not live_start:
+        return None
+    receipt_pid = row.get("pid")
+    receipt_pgid = row.get("pgid")
+    receipt_start = row.get("pid_start")
+    rebound = not (
+        receipt_pid == live_pid
+        and receipt_pgid == live_pgid
+        and receipt_start == live_start
+    )
+    out = dict(row)
+    out["pid"] = live_pid
+    out["pgid"] = live_pgid
+    out["pid_start"] = live_start
+    out["identity_rebound"] = rebound
+    return out
+
+
+def _live_signal_target_matches(
+    session: str,
+    receipt: Mapping[str, Any],
+    row: Mapping[str, Any],
+) -> bool:
+    """Revalidate session/nonce/pane-bound identity immediately before signal."""
+    return _resolve_live_signal_target(session, receipt, row) is not None
 
 
 def _process_group_disappeared(pgid: int) -> tuple[bool, str | None]:
@@ -2849,59 +2870,92 @@ def _stop_team_locked(
                 raise TeamError("live tmux session identity mismatch")
             if observed_nonce != receipt["launch_nonce"]:
                 raise TeamError("live tmux launch nonce mismatch")
+            # observed_panes used only as a soft preflight; kill authority is
+            # resolved per-pane via session/nonce/pane_id rebind below.
+            _ = observed_panes
             for row in current_rows:
-                window_index = row["window_index"]
-                pane_id = row["pane_id"]
-                pid = row["pid"]
-                pgid = row["pgid"]
-                pid_start = row["pid_start"]
-                if (
-                    isinstance(window_index, bool)
-                    or not isinstance(window_index, int)
-                    or not isinstance(pane_id, str)
-                    or _TMUX_PANE_ID.fullmatch(pane_id) is None
-                    or isinstance(pid, bool)
-                    or not isinstance(pid, int)
-                    or pid <= 0
-                    or isinstance(pgid, bool)
-                    or not isinstance(pgid, int)
-                    or pgid <= 0
-                    or not isinstance(pid_start, str)
-                    or not pid_start
-                    or observed_panes.get(window_index) != (pane_id, pid)
-                    or _pgid_for_pid(pid) != pgid
-                    or _pid_start_identity(pid) != pid_start
-                ):
+                resolved = _resolve_live_signal_target(session, receipt, row)
+                if resolved is None:
                     raise TeamError("live tmux pane/process identity mismatch")
-                verified_targets.append(dict(row))
+                if resolved.get("identity_rebound"):
+                    actions.append(
+                        "pane identity rebound "
+                        f"task={resolved.get('task_id')} "
+                        f"pid={row.get('pid')}→{resolved.get('pid')} "
+                        f"pgid={row.get('pgid')}→{resolved.get('pgid')}"
+                    )
+                verified_targets.append(resolved)
             identity_verified = True
         except (TeamError, ProcessLookupError, PermissionError, OSError) as exc:
             errors.append(f"identity verification refused signalling: {exc}")
 
-    # 1) Signal each target only while its exact session/pane/PID/PGID identity
-    # is still live.  Do this before killing tmux: after kill-session the pane
-    # authority is gone and a recorded PGID could already have been reused.
+    # 1) Signal each target only while its session/nonce/pane_id identity is
+    # still live (pane_pid may rebind after worker-ready && exec).  Do this
+    # before killing tmux: after kill-session the pane authority is gone and a
+    # recorded PGID could already have been reused.
     signalled: list[dict[str, Any]] = []
     attempted_task_ids: set[str] = set()
     process_disappearance_verified = bool(identity_verified and verified_targets)
     for raw in verified_targets:
-        pid = raw["pid"]
-        pgid = raw["pgid"]
         tid = raw.get("task_id")
-        if not isinstance(pid, int) or not isinstance(pgid, int):
-            errors.append(f"verified signal identity became invalid for task={tid}")
-            continue
-        target = pgid
         try:
-            if receipt is None or not _live_signal_target_matches(
-                session, receipt, raw
-            ):
+            if receipt is None:
                 identity_verified = False
                 errors.append(
                     f"signal identity drift refused signalling for task={tid}"
                 )
                 process_disappearance_verified = False
                 continue
+            resolved = _resolve_live_signal_target(session, receipt, raw)
+            if resolved is None:
+                # Worker may have already exited (claim→completed) while the
+                # owned session/nonce still match. Treat as already stopped.
+                session_ok = (
+                    _read_tmux_session_identity(session)
+                    == (session, receipt.get("session_id"))
+                    and _read_tmux_launch_nonce(session) == receipt.get("launch_nonce")
+                )
+                pane_id = raw.get("pane_id")
+                pane_gone = False
+                if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id):
+                    probe = _tmux_run(
+                        ["display-message", "-p", "-t", pane_id, "#{pane_pid}"]
+                    )
+                    if probe.returncode != 0:
+                        pane_gone = True
+                    else:
+                        try:
+                            live_pid = int((probe.stdout or "").strip())
+                        except ValueError:
+                            live_pid = -1
+                        if live_pid <= 0 or _pgid_for_pid(live_pid) is None:
+                            pane_gone = True
+                if session_ok and pane_gone:
+                    actions.append(
+                        f"process already gone before signal task={tid}"
+                    )
+                    attempted_task_ids.add(str(tid))
+                    continue
+                identity_verified = False
+                errors.append(
+                    f"signal identity drift refused signalling for task={tid}"
+                )
+                process_disappearance_verified = False
+                continue
+            if resolved.get("identity_rebound"):
+                actions.append(
+                    "pane identity rebound at signal "
+                    f"task={tid} pid={raw.get('pid')}→{resolved.get('pid')}"
+                )
+            pid = resolved["pid"]
+            pgid = resolved["pgid"]
+            if not isinstance(pid, int) or not isinstance(pgid, int):
+                errors.append(
+                    f"verified signal identity became invalid for task={tid}"
+                )
+                process_disappearance_verified = False
+                continue
+            target = pgid
             attempted_task_ids.add(str(tid))
             if os.name == "posix":
                 try:
@@ -2910,33 +2964,66 @@ def _stop_team_locked(
                     signalled.append({"task_id": tid, "pgid": target, "pid": pid})
                 except ProcessLookupError:
                     actions.append(f"process already gone pgid={target} task={tid}")
-                if kill_grace_s and kill_grace_s > 0:
-                    import time
-
-                    time.sleep(float(kill_grace_s))
             else:
                 os.kill(pid, signal.SIGTERM)
                 actions.append(f"kill:SIGTERM pid={pid} task={tid}")
                 signalled.append({"task_id": tid, "pgid": target, "pid": pid})
 
-            group_gone, group_error = _process_group_disappeared(pgid)
+            # Prefer bounded disappearance poll after SIGTERM when grace is set
+            # so live agent processes can exit without forced SIGKILL + identity
+            # revalidation races.
+            if kill_grace_s and kill_grace_s > 0:
+                group_gone, group_error = _wait_process_group_disappearance(
+                    pgid, timeout_s=float(kill_grace_s)
+                )
+                if (
+                    not group_gone
+                    and group_error
+                    and "disappearance timed out" in group_error
+                ):
+                    # Timeout is not fatal — fall through to SIGKILL escalation.
+                    group_error = None
+                    group_gone = False
+            else:
+                group_gone, group_error = _process_group_disappeared(pgid)
             if group_error is not None:
                 process_disappearance_verified = False
                 errors.append(group_error)
                 continue
             if not group_gone:
+                # Prefer a fresh pane-bound target (exec-replaced PIDs). If the
+                # receipted leader was already reaped, keep the last known pgid
+                # when session/nonce still match so same-group survivors can be
+                # SIGKILL'd (see test_stop_kills_same_pgid_child_…).
+                resolved_kill = _resolve_live_signal_target(session, receipt, resolved)
+                if resolved_kill is not None:
+                    if resolved_kill.get("identity_rebound"):
+                        actions.append(
+                            "pane identity rebound at SIGKILL "
+                            f"task={tid} pid={pid}→{resolved_kill.get('pid')}"
+                        )
+                    pid = resolved_kill["pid"]
+                    pgid = resolved_kill["pgid"]
+                    target = pgid
                 leader_pgid, leader_error = _receipt_leader_pgid(pid)
                 if leader_error is not None:
                     identity_verified = False
                     process_disappearance_verified = False
                     errors.append(leader_error)
                     continue
-                escalation_authorized = bool(
-                    receipt is not None
-                    and leader_pgid in (None, pgid)
-                    and _read_tmux_session_identity(session)
+                session_exact = (
+                    _read_tmux_session_identity(session)
                     == (session, receipt.get("session_id"))
                     and _read_tmux_launch_nonce(session) == receipt.get("launch_nonce")
+                )
+                escalation_authorized = bool(
+                    session_exact
+                    and (
+                        resolved_kill is not None
+                        and leader_pgid in (None, pgid)
+                        or resolved_kill is None
+                        and leader_pgid is None
+                    )
                 )
                 if not escalation_authorized:
                     identity_verified = False
@@ -2979,29 +3066,50 @@ def _stop_team_locked(
         except (PermissionError, OSError) as exc:
             identity_verified = False
             process_disappearance_verified = False
-            errors.append(f"signal task={tid} target={target}: {exc}")
+            errors.append(f"signal task={tid}: {exc}")
 
     # 2) Only after process-group signalling, tear down tmux transport.
     # Owned sessions: kill exact immutable session ID.
     # Inside-tmux (session_owned=False): kill only the team window / panes —
     # never the leader's shared session.
+    #
+    # When every worker process is already gone, an owned session may have
+    # auto-destroyed with its last pane — treat that as verified disappearance
+    # instead of requiring a live identity match for kill-session.
     session_disappearance_verified = bool(dry)
     session_owned = bool(meta.get("session_owned", True))
     window_id = meta.get("window_id")
     if session and not dry:
+        session_still_exact = False
+        session_already_gone = False
         try:
-            session_still_exact = bool(
-                identity_verified
+            has = _tmux_run(["has-session", "-t", session])
+            has_rc = getattr(has, "returncode", None) if has is not None else None
+            if (
+                has_rc not in (None, 0)
+                and identity_verified
                 and process_disappearance_verified
-                and receipt is not None
-                and _read_tmux_session_identity(session)
-                == (session, receipt.get("session_id"))
-                and _read_tmux_launch_nonce(session) == receipt.get("launch_nonce")
-            )
+            ):
+                session_already_gone = True
+                session_disappearance_verified = True
+                actions.append(
+                    f"tmux session already gone after process teardown {session}"
+                )
+            elif has_rc == 0 or has_rc is None:
+                session_still_exact = bool(
+                    identity_verified
+                    and process_disappearance_verified
+                    and receipt is not None
+                    and _read_tmux_session_identity(session)
+                    == (session, receipt.get("session_id"))
+                    and _read_tmux_launch_nonce(session) == receipt.get("launch_nonce")
+                )
         except OSError as exc:
             session_still_exact = False
             errors.append(f"tmux pre-kill identity readback: {exc}")
-        if session_still_exact and receipt is not None:
+        if session_already_gone:
+            pass
+        elif session_still_exact and receipt is not None:
             session_id = str(receipt["session_id"])
             try:
                 if session_owned:

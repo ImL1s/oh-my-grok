@@ -4,9 +4,9 @@ Durable mailbox/task mutations go through the CLI-owned stores under
 ``.omg/state/runs/<run_id>/team/<team_key>/``. Workers never write mailbox or
 task files directly.
 
-P0 + P0′ ops (mailbox/task + heartbeat/shutdown/orphan) are implemented;
-remaining ``TEAM_API_OPERATIONS`` return ``E_TEAM_API_UNIMPLEMENTED``.
-Full 33-op parity is intentionally not claimed.
+P0 + P0′ ops (mailbox/task CRUD, heartbeat/shutdown/orphan, events, manifest)
+are implemented; remaining ``TEAM_API_OPERATIONS`` return
+``E_TEAM_API_UNIMPLEMENTED``. Full 33-op parity is intentionally not claimed.
 """
 
 from __future__ import annotations
@@ -119,12 +119,15 @@ P0_OPERATIONS: tuple[str, ...] = (
     "mailbox-list",
     "mailbox-mark-delivered",
     "create-task",
+    "read-task",
     "list-tasks",
+    "update-task",
     "claim-task",
     "transition-task-status",
     "release-task-claim",
     "get-summary",
     "read-config",
+    "read-manifest",
     "write-worker-inbox",
     # Production P0′ reliability ops (wired from existing plane/liveness modules)
     "update-worker-heartbeat",
@@ -135,6 +138,8 @@ P0_OPERATIONS: tuple[str, ...] = (
     "write-shutdown-ack",
     "read-shutdown-ack",
     "orphan-cleanup",
+    "append-event",
+    "read-events",
 )
 
 TeamApiEnvelope = dict[str, Any]
@@ -829,6 +834,131 @@ def _op_list_tasks(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     return _ok("list-tasks", {"count": len(tasks), "tasks": tasks})
 
 
+def _op_read_task(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    task_id = _validate_task_id(_require_str(payload, "task_id"))
+    _require_control_plane(root, run_id)
+    task = _read_task(root, run_id, team_id, task_id)
+    if task is None:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            f"task {task_id!r} not found",
+            details={"error": "task_not_found", "task_id": task_id},
+        )
+    ready, deps = _task_readiness(root, run_id, team_id, task)
+    return _ok(
+        "read-task",
+        {
+            "task": task,
+            "ready": ready,
+            "blocked_by_incomplete": deps,
+        },
+    )
+
+
+def _op_update_task(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    """Patch non-lifecycle task fields with optional expected_version CAS.
+
+    Status / owner / claim mutations stay on claim/transition/release ops.
+    """
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    task_id = _validate_task_id(_require_str(payload, "task_id"))
+    expected_version = payload.get("expected_version")
+    if expected_version is not None and (
+        isinstance(expected_version, bool)
+        or not isinstance(expected_version, int)
+        or expected_version < 1
+    ):
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "expected_version must be a positive integer when provided",
+            exit_code=2,
+        )
+
+    patchable = {
+        "subject",
+        "description",
+        "depends_on",
+        "blocked_by",
+        "requires_code_change",
+        "result",
+        "error",
+    }
+    provided = {k: payload[k] for k in patchable if k in payload}
+    if not provided:
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "update-task requires at least one of: subject, description, "
+            "depends_on/blocked_by, requires_code_change, result, error",
+            exit_code=2,
+        )
+
+    if "depends_on" in provided or "blocked_by" in provided:
+        raw_deps = provided.get("depends_on", provided.get("blocked_by"))
+        if not isinstance(raw_deps, list) or not all(
+            isinstance(item, str) for item in raw_deps
+        ):
+            raise TeamApiError(
+                "E_TEAM_API_INVALID_INPUT",
+                "depends_on/blocked_by must be a string array",
+                exit_code=2,
+            )
+        depends = [_validate_task_id(item.strip()) for item in raw_deps]
+        provided["depends_on"] = depends
+        provided["blocked_by"] = list(depends)
+
+    if "requires_code_change" in provided and not isinstance(
+        provided["requires_code_change"], bool
+    ):
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "requires_code_change must be a boolean when provided",
+            exit_code=2,
+        )
+    for text_key in ("subject", "description"):
+        if text_key in provided and not isinstance(provided[text_key], str):
+            raise TeamApiError(
+                "E_TEAM_API_INVALID_INPUT",
+                f"{text_key} must be a string when provided",
+                exit_code=2,
+            )
+
+    path = _task_path(root, run_id, team_id, task_id)
+    ensure_managed_dir(path.parent)
+    with exclusive_lock(path.with_suffix(".lock")):
+        task = _read_task(root, run_id, team_id, task_id)
+        if task is None:
+            raise TeamApiError(
+                "E_TEAM_API_FAILED",
+                f"task {task_id!r} not found",
+                details={"error": "task_not_found", "task_id": task_id},
+            )
+        if expected_version is not None and task["version"] != expected_version:
+            return _ok(
+                "update-task",
+                {
+                    "ok": False,
+                    "error": "version_conflict",
+                    "task": task,
+                    "expected_version": expected_version,
+                },
+            )
+        if _is_terminal(task["status"]) and any(
+            k in provided for k in ("subject", "description", "depends_on", "blocked_by")
+        ):
+            raise TeamApiError(
+                "E_TEAM_API_FAILED",
+                f"task {task_id!r} is terminal ({task['status']}); "
+                "cannot patch subject/description/depends_on",
+                details={"error": "already_terminal", "task_id": task_id},
+            )
+        merged = {**task, **provided, "version": task["version"] + 1}
+        updated = _write_task(root, run_id, team_id, merged)
+    return _ok("update-task", {"ok": True, "task": updated})
+
+
 def _op_claim_task(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     run_id = _resolve_run_id(payload, root)
     team_id = _resolve_team_id(payload)
@@ -1061,6 +1191,114 @@ def _op_read_config(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
             details={"error": "team_not_found"},
         )
     return _ok("read-config", {"config": config, "plane": plane})
+
+
+def _op_read_manifest(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    """Return CLI-stamped team.json control-plane (manifest) for the run."""
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    plane = _require_control_plane(root, run_id)
+    # team_id is required for OMX shape; control plane is run-scoped today.
+    return _ok(
+        "read-manifest",
+        {
+            "run_id": run_id,
+            "team_id": team_id,
+            "manifest": plane,
+        },
+    )
+
+
+def _events_path(root: Path, run_id: str, team_id: str) -> Path:
+    return _team_state_dir(root, run_id, team_id) / "events.jsonl"
+
+
+def _op_append_event(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    _require_control_plane(root, run_id)
+    kind = require_safe_id(_require_str(payload, "kind"), label="kind")
+    body = payload.get("body")
+    if body is None:
+        body = {}
+    if not isinstance(body, (dict, list, str, int, float, bool)) and body is not None:
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "body must be JSON-serializable when provided",
+            exit_code=2,
+        )
+    worker = _optional_str(payload, "worker")
+    if worker:
+        worker = require_safe_id(worker, label="worker")
+    event_id = _optional_str(payload, "event_id") or f"evt-{secrets.token_hex(8)}"
+    require_safe_id(event_id, label="event_id")
+    event = {
+        "event_id": event_id,
+        "ts": _utc_now(),
+        "kind": kind,
+        "worker": worker,
+        "body": body,
+        "run_id": run_id,
+        "team_id": team_id,
+    }
+    path = _events_path(root, run_id, team_id)
+    ensure_managed_dir(path.parent)
+    line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+    with exclusive_lock(path.with_suffix(".lock")):
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+    return _ok("append-event", {"event": event, "path": str(path)})
+
+
+def _op_read_events(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    _require_control_plane(root, run_id)
+    after = _optional_str(payload, "after")  # event_id exclusive cursor
+    kind_filter = _optional_str(payload, "kind")
+    if kind_filter:
+        kind_filter = require_safe_id(kind_filter, label="kind")
+    limit = payload.get("limit", 100)
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "limit must be a positive integer when provided",
+            exit_code=2,
+        )
+    limit = min(limit, 1000)
+    path = _events_path(root, run_id, team_id)
+    events: list[dict[str, Any]] = []
+    if path.exists():
+        seen_after = after is None
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            eid = str(row.get("event_id") or "")
+            if not seen_after:
+                if eid == after:
+                    seen_after = True
+                continue
+            if kind_filter and str(row.get("kind") or "") != kind_filter:
+                continue
+            events.append(row)
+            if len(events) >= limit:
+                break
+    return _ok(
+        "read-events",
+        {
+            "count": len(events),
+            "events": events,
+            "after": after,
+            "limit": limit,
+        },
+    )
 
 
 def _op_get_summary(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
@@ -1448,12 +1686,15 @@ _HANDLERS: dict[str, Handler] = {
     "mailbox-list": _op_mailbox_list,
     "mailbox-mark-delivered": _op_mailbox_mark_delivered,
     "create-task": _op_create_task,
+    "read-task": _op_read_task,
     "list-tasks": _op_list_tasks,
+    "update-task": _op_update_task,
     "claim-task": _op_claim_task,
     "transition-task-status": _op_transition_task_status,
     "release-task-claim": _op_release_task_claim,
     "get-summary": _op_get_summary,
     "read-config": _op_read_config,
+    "read-manifest": _op_read_manifest,
     "write-worker-inbox": _op_write_worker_inbox,
     "update-worker-heartbeat": _op_update_worker_heartbeat,
     "read-worker-heartbeat": _op_read_worker_heartbeat,
@@ -1463,6 +1704,8 @@ _HANDLERS: dict[str, Handler] = {
     "write-shutdown-ack": _op_write_shutdown_ack,
     "read-shutdown-ack": _op_read_shutdown_ack,
     "orphan-cleanup": _op_orphan_cleanup,
+    "append-event": _op_append_event,
+    "read-events": _op_read_events,
 }
 
 
@@ -1471,22 +1714,27 @@ WORKER_ALLOWED_OPS: frozenset[str] = frozenset(
         "send-message",
         "mailbox-list",
         "mailbox-mark-delivered",
+        "read-task",
         "list-tasks",
         "claim-task",
         "transition-task-status",
         "release-task-claim",
         "get-summary",
         "read-config",
+        "read-manifest",
         "update-worker-heartbeat",
         "read-worker-heartbeat",
         "read-worker-status",
         "read-shutdown-request",
         "write-shutdown-ack",
+        "append-event",
+        "read-events",
     }
 )
 WORKER_DENIED_OPS: frozenset[str] = frozenset(
     {
         "create-task",
+        "update-task",
         "write-worker-inbox",
         "write-shutdown-request",
         "orphan-cleanup",
