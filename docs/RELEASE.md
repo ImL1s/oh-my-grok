@@ -69,7 +69,7 @@ OMG_E2E=1 OMG_SMOKE_STRICT=0 ./scripts/smoke.sh
 
 Live Grok gates are required only for claims that depend on current host behavior. A config file or help probe cannot promote a capability to observed/healthy/verified.
 
-Experimental `omg team` shorthand remains behind `OMG_EXPERIMENTAL_TMUX_TEAM=1`. The promotion gate is `scripts/live_team_smoke.py --live`, which prints `LIVE_TEAM_SMOKE_OK` only after non-dry panes, worktrees, ACKs, claim→completed, and stop-session proof; dry path `DRY_TEAM_SMOKE_OK` is hermetic and does not promote. Until live smoke is green, do not claim OMX-like live team launch or remove the experimental gate.
+`omg team` is **default on** (kill switch `OMG_DISABLE_TMUX_TEAM=1`; legacy `OMG_EXPERIMENTAL_TMUX_TEAM=0` disables). Hermetic transport proof: `scripts/live_team_smoke.py --fixture-executor` → `FIXTURE_TEAM_SMOKE_OK`. Grok-live promotion proof remains `scripts/live_team_smoke.py --live` → `LIVE_TEAM_SMOKE_OK` (quota; do not claim Grok-live parity from fixture alone).
 
 ## Frozen run manifest
 

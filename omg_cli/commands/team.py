@@ -945,7 +945,8 @@ def register_team_parsers(
         parents=[common],
         help=(
             'experimental tmux team: omg team [N[:role]] "<goal>" '
-            "(requires OMG_EXPERIMENTAL_TMUX_TEAM=1); also start|run|api|…"
+            "(default on; OMG_DISABLE_TMUX_TEAM=1 kill-switch); "
+            "also start|run|api|worker-ready|…"
         ),
     )
     team_sub = p_team.add_subparsers(dest="team_action")
@@ -1336,7 +1337,7 @@ def register_team_parsers(
         parents=[common],
         help=(
             "OMX-shaped team api façade (P0 mailbox/task ops); "
-            "requires OMG_EXPERIMENTAL_TMUX_TEAM=1"
+            "default on; set OMG_DISABLE_TMUX_TEAM=1 to refuse"
         ),
     )
     p_t_api.add_argument(

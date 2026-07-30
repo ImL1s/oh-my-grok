@@ -494,7 +494,10 @@ def start_team_pipeline(
     if not goal:
         raise TeamPipelineError("goal text required")
     if not experimental_enabled():
-        raise TeamGateError(f"team pipeline requires {EXPERIMENTAL_ENV}=1")
+        raise TeamGateError(
+            "team pipeline disabled "
+            f"(OMG_DISABLE_TMUX_TEAM=1 or {EXPERIMENTAL_ENV}=0)"
+        )
     if in_spawned_worker_context():
         raise TeamGateError(
             "refusing team pipeline inside a spawned-worker context "
@@ -943,7 +946,10 @@ def run_team_pipeline(
     assert_safe_supervised_parent()
 
     if not experimental_enabled():
-        raise TeamGateError(f"team pipeline requires {EXPERIMENTAL_ENV}=1")
+        raise TeamGateError(
+            "team pipeline disabled "
+            f"(OMG_DISABLE_TMUX_TEAM=1 or {EXPERIMENTAL_ENV}=0)"
+        )
     if in_spawned_worker_context():
         raise TeamGateError(
             "refusing team pipeline inside a spawned-worker context"

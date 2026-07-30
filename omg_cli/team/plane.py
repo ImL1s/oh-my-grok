@@ -1,9 +1,10 @@
-"""Experimental tmux team plane (D1 grok-only + D3 multi-CLI routing).
+"""Tmux team plane (D1 grok-only + D3 multi-CLI routing).
 
 Gate
 ----
-``OMG_EXPERIMENTAL_TMUX_TEAM=1`` required. Isolation is **integration** isolation
-(worktree ownership + seal + integrate), **not** an execution sandbox.
+**Default on.** Kill switch ``OMG_DISABLE_TMUX_TEAM=1``; legacy
+``OMG_EXPERIMENTAL_TMUX_TEAM=0`` also disables. Isolation is **integration**
+isolation (worktree ownership + seal + integrate), **not** an execution sandbox.
 
 Zero-config (no ``routing``) preserves D1: all panes are grok via
 ``build_grok_argv`` / ``build_pane_command``. With ``routing``, D3 resolves
@@ -88,7 +89,10 @@ from omg_cli.workers import (
 # Constants
 # ---------------------------------------------------------------------------
 
+# Historical opt-in name (still accepted). Default is **on**; kill switch below.
 EXPERIMENTAL_ENV = "OMG_EXPERIMENTAL_TMUX_TEAM"
+# Production kill switch — when truthy, all team launch/api/scale paths refuse.
+DISABLE_ENV = "OMG_DISABLE_TMUX_TEAM"
 # Markers injected into worker panes / process-fanout children so nested
 # supervisors refuse (depth-1 — a worker must not launch a team).
 WORKER_ENV_MARKERS: tuple[str, ...] = (
@@ -153,9 +157,29 @@ def _truthy_env(raw: str | None) -> bool:
     return (raw or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _falsey_env(raw: str | None) -> bool:
+    return (raw or "").strip().lower() in ("0", "false", "no", "off")
+
+
 def experimental_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Whether the tmux team plane may run.
+
+    **Default on** after production promotion (process-ready + fixture smoke).
+    Kill switch: ``OMG_DISABLE_TMUX_TEAM=1``.
+    Legacy: ``OMG_EXPERIMENTAL_TMUX_TEAM=0`` still disables; ``=1`` enables.
+    """
     source = env if env is not None else os.environ
-    return _truthy_env(source.get(EXPERIMENTAL_ENV))
+    if _truthy_env(source.get(DISABLE_ENV)):
+        return False
+    raw = source.get(EXPERIMENTAL_ENV)
+    if raw is not None and str(raw).strip() != "":
+        if _falsey_env(raw):
+            return False
+        if _truthy_env(raw):
+            return True
+        # Unknown non-empty value: fail closed (disabled).
+        return False
+    return True
 
 
 def in_spawned_worker_context(env: Mapping[str, str] | None = None) -> bool:
@@ -498,8 +522,9 @@ def _assert_start_gates(
     """Return task count after cap check; raise TeamGateError on refuse."""
     if not experimental_enabled(env):
         raise TeamGateError(
-            f"omg team start is experimental and disabled by default.\n"
-            f"  Set {EXPERIMENTAL_ENV}=1 to opt in.\n"
+            f"omg team is disabled "
+            f"(set {DISABLE_ENV}=1 kill-switch, or {EXPERIMENTAL_ENV}=0).\n"
+            f"  Unset {DISABLE_ENV} (and do not set {EXPERIMENTAL_ENV}=0) to enable.\n"
             f"  Isolation is worktree ownership + seal/integrate "
             f"(not an execution sandbox). Multi-CLI panes require explicit "
             f"role routing; zero-config remains grok-only."
@@ -1778,11 +1803,11 @@ def start_team(
     else:
         note = (
             "experimental multi-CLI tmux team plane "
-            f"(gate {EXPERIMENTAL_ENV}=1); integration isolation only"
+            f"(default on; kill {DISABLE_ENV}=1); integration isolation only"
             if multi_cli
             else (
                 "experimental grok-only tmux team plane "
-                f"(gate {EXPERIMENTAL_ENV}=1); multi-CLI via --routing"
+                f"(default on; kill {DISABLE_ENV}=1); multi-CLI via --routing"
             )
         )
         create_extra: dict[str, Any] = {
@@ -4378,6 +4403,7 @@ def native_team_status(
 
 __all__ = [
     "CLI_WRITER",
+    "DISABLE_ENV",
     "EXPERIMENTAL_ENV",
     "STATUS_TASK_KEYS",
     "STATUS_TOP_KEYS",

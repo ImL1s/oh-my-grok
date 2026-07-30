@@ -193,7 +193,8 @@ def acquire_scale_lock(root: Path | str, run_id: str) -> Iterator[Path]:
 def _assert_team_gates(*, env: Mapping[str, str] | None = None) -> None:
     if not experimental_enabled(env):
         raise TeamGateError(
-            f"omg team scale/resume requires {EXPERIMENTAL_ENV}=1 "
+            f"omg team scale/resume disabled "
+            f"(unset OMG_DISABLE_TMUX_TEAM; {EXPERIMENTAL_ENV}=0 disables). "
             "(experimental tmux team plane; integration isolation only)"
         )
     if in_spawned_worker_context(env):

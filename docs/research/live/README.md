@@ -1,15 +1,27 @@
-# Live suite evidence (local only)
+# Live / fixture team smoke evidence
 
-Machine-local canary / suite logs are **not** shipped in the public tree.
+Machine-local JSON under this directory is **gitignored** (regenerate locally).
 
-Generate on a developer machine:
+## Fixture transport smoke (hermetic, no Grok quota)
 
 ```bash
-# from repo root
-./scripts/canary_pretool.py --dry
-# optional live (needs grok):
-# python3 scripts/canary_pretool.py --live
-# ./scripts/live_suite.sh
+# From repo root; requires tmux
+PYTHONPATH=. python3 scripts/live_team_smoke.py --fixture-executor \
+  --workers 2 --goal $'1. a\n2. b'
+# Expect last line:
+# FIXTURE_TEAM_SMOKE_OK
 ```
 
-Outputs land under this directory (gitignored except this README).
+Proves: split panes, process-level `worker-ready`, mailbox ACK, stop.
+
+## Live Grok promotion smoke (quota; optional)
+
+```bash
+# Requires grok credentials + tmux
+python3 scripts/live_team_smoke.py --live --workers 2 --goal $'1. a\n2. b'
+# Expect last line only when all hard assertions pass:
+# LIVE_TEAM_SMOKE_OK
+```
+
+`LIVE_TEAM_SMOKE_OK` is the Grok-live promotion proof. Fixture OK is transport
+only — do not treat it as full multi-CLI or Grok model parity.

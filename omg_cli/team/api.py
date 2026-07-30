@@ -44,6 +44,7 @@ from omg_cli.team.mailbox import (
     send_message,
 )
 from omg_cli.team.plane import (
+    DISABLE_ENV,
     EXPERIMENTAL_ENV,
     TEAM_ID_ENV,
     TEAM_OWNER_TOKEN_ENV,
@@ -1620,7 +1621,8 @@ def execute_team_api(
         return 2, _fail(
             op or "unknown",
             "E_TEAM_API_GATE",
-            f"omg team api requires {EXPERIMENTAL_ENV}=1",
+            f"omg team api disabled "
+            f"({EXPERIMENTAL_ENV}=0 or {DISABLE_ENV}=1)",
         )
 
     # Process-fanout / spawned-subagent workers remain denied. Team panes may
