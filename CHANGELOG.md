@@ -62,6 +62,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **Team process-level readiness (P0-1):** pane commands run `omg team worker-ready`
   before the agent binary; launch success counts process receipts **or** mailbox
   ACK so read-only posture panes are not structurally `failed_start`.
+- **Team P0′ reliability API:** heartbeat read/update, worker status, shutdown
+  request/ack, orphan-cleanup; `omg doctor` soft check for team gate/tmux/API surface.
 - **Golden envelope tests** (#30): exit 0/1/2 matrix for state/capabilities/lsp/hud
   plus wiki/memory/native-status/workflow/team plan-only/cancel.
 - **`omg cancel --json`** failure path emits `E_RUN_NOT_FOUND` envelope (no prose stdout).

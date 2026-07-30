@@ -1,11 +1,12 @@
-"""OMX-shaped ``omg team api`` façade (P0 subset).
+"""OMX-shaped ``omg team api`` façade (P0 / P0′ reliability subset).
 
 Durable mailbox/task mutations go through the CLI-owned stores under
 ``.omg/state/runs/<run_id>/team/<team_key>/``. Workers never write mailbox or
 task files directly.
 
-P0 ops match OMX names; remaining ``TEAM_API_OPERATIONS`` return
-``E_TEAM_API_UNIMPLEMENTED``. Full 33-op parity is intentionally not claimed.
+P0 + P0′ ops (mailbox/task + heartbeat/shutdown/orphan) are implemented;
+remaining ``TEAM_API_OPERATIONS`` return ``E_TEAM_API_UNIMPLEMENTED``.
+Full 33-op parity is intentionally not claimed.
 """
 
 from __future__ import annotations
@@ -103,6 +104,8 @@ TEAM_API_OPERATIONS: tuple[str, ...] = (
     "cleanup",
     "orphan-cleanup",
     "write-shutdown-request",
+    "read-shutdown-request",
+    "write-shutdown-ack",
     "read-shutdown-ack",
     "read-monitor-snapshot",
     "write-monitor-snapshot",
@@ -122,6 +125,15 @@ P0_OPERATIONS: tuple[str, ...] = (
     "get-summary",
     "read-config",
     "write-worker-inbox",
+    # Production P0′ reliability ops (wired from existing plane/liveness modules)
+    "update-worker-heartbeat",
+    "read-worker-heartbeat",
+    "read-worker-status",
+    "write-shutdown-request",
+    "read-shutdown-request",
+    "write-shutdown-ack",
+    "read-shutdown-ack",
+    "orphan-cleanup",
 )
 
 TeamApiEnvelope = dict[str, Any]
@@ -1121,6 +1133,315 @@ def _op_write_worker_inbox(root: Path, payload: dict[str, Any]) -> TeamApiEnvelo
     return _ok("write-worker-inbox", {"worker": worker, "path": str(path)})
 
 
+def _shutdown_ack_path(root: Path, run_id: str, worker: str) -> Path:
+    from omg_cli.team.plane import team_dir
+
+    require_safe_id(worker, label="worker")
+    return team_dir(root, run_id) / f"shutdown-ack-{safe_path_key(worker, namespace='worker')}.json"
+
+
+def _op_update_worker_heartbeat(
+    root: Path, payload: dict[str, Any]
+) -> TeamApiEnvelope:
+    from omg_cli.team.liveness import (
+        LivenessError,
+        initialize_liveness,
+        load_liveness,
+        record_heartbeat,
+    )
+
+    run_id = _require_str(payload, "run_id")
+    team_id = _resolve_team_id(payload)
+    worker = _require_str(payload, "worker")
+    task_id = _require_str(payload, "task_id")
+    generation = int(payload.get("generation") or 0)
+    expected = payload.get("expected_sequence")
+    if expected is None:
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "expected_sequence is required",
+            exit_code=2,
+        )
+    expected_sequence = int(expected)
+    try:
+        row = load_liveness(
+            root, run_id=run_id, team_id=team_id, task_id=task_id
+        )
+        if row is None:
+            initialize_liveness(
+                root,
+                run_id=run_id,
+                team_id=team_id,
+                task_id=task_id,
+                worker_id=worker,
+                generation=generation,
+            )
+        updated = record_heartbeat(
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            task_id=task_id,
+            worker_id=worker,
+            generation=generation,
+            expected_sequence=expected_sequence,
+        )
+    except (LivenessError, ValueError, TypeError, ContractValidationError) as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            str(exc),
+            details={"error": "heartbeat_failed"},
+        ) from exc
+    return _ok(
+        "update-worker-heartbeat",
+        {
+            "worker": worker,
+            "task_id": task_id,
+            "heartbeat_sequence": updated.get("heartbeat_sequence"),
+            "heartbeat_at": updated.get("heartbeat_at"),
+        },
+    )
+
+
+def _op_read_worker_heartbeat(
+    root: Path, payload: dict[str, Any]
+) -> TeamApiEnvelope:
+    from omg_cli.team.liveness import classify_liveness, load_liveness
+
+    run_id = _require_str(payload, "run_id")
+    team_id = _resolve_team_id(payload)
+    task_id = _require_str(payload, "task_id")
+    row = load_liveness(root, run_id=run_id, team_id=team_id, task_id=task_id)
+    if row is None:
+        return _ok(
+            "read-worker-heartbeat",
+            {"task_id": task_id, "present": False, "liveness": None},
+        )
+    return _ok(
+        "read-worker-heartbeat",
+        {
+            "task_id": task_id,
+            "present": True,
+            "liveness": classify_liveness(row),
+            "row": row,
+        },
+    )
+
+
+def _op_read_worker_status(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    from omg_cli.team.runtime import worker_ready_path
+
+    run_id = _require_str(payload, "run_id")
+    team_id = _resolve_team_id(payload)
+    worker = _require_str(payload, "worker")
+    ready_path = worker_ready_path(
+        root, run_id=run_id, team_id=team_id, worker_id=worker
+    )
+    process_ready = False
+    ready_payload: dict[str, Any] | None = None
+    if ready_path.is_file():
+        try:
+            data = json.loads(ready_path.read_text(encoding="utf-8"))
+            if (
+                isinstance(data, dict)
+                and data.get("writer") == CLI_WRITER
+                and data.get("kind") == "worker_ready"
+            ):
+                process_ready = True
+                ready_payload = data
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            process_ready = False
+    return _ok(
+        "read-worker-status",
+        {
+            "worker": worker,
+            "process_ready": process_ready,
+            "ready": ready_payload,
+            "ready_path": str(ready_path),
+        },
+    )
+
+
+def _op_write_shutdown_request(
+    root: Path, payload: dict[str, Any]
+) -> TeamApiEnvelope:
+    from omg_cli.team.plane import _list_in_progress_api_tasks, _write_shutdown_request
+
+    run_id = _require_str(payload, "run_id")
+    team_id = _resolve_team_id(payload)
+    force = bool(payload.get("force") or False)
+    in_progress = _list_in_progress_api_tasks(root, run_id, team_id)
+    path = _write_shutdown_request(
+        root,
+        run_id,
+        team_id=team_id,
+        force=force,
+        in_progress=in_progress,
+    )
+    return _ok(
+        "write-shutdown-request",
+        {
+            "path": str(path),
+            "force": force,
+            "in_progress_count": len(in_progress),
+        },
+    )
+
+
+def _op_read_shutdown_request(
+    root: Path, payload: dict[str, Any]
+) -> TeamApiEnvelope:
+    from omg_cli.team.plane import team_shutdown_request_path
+
+    run_id = _require_str(payload, "run_id")
+    path = team_shutdown_request_path(root, run_id)
+    if not path.is_file():
+        return _ok("read-shutdown-request", {"present": False, "request": None})
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            f"shutdown request unreadable: {exc}",
+        ) from exc
+    return _ok(
+        "read-shutdown-request",
+        {"present": True, "request": data, "path": str(path)},
+    )
+
+
+def _op_write_shutdown_ack(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _require_str(payload, "run_id")
+    worker = _require_str(payload, "worker")
+    path = _shutdown_ack_path(root, run_id, worker)
+    ensure_managed_dir(path.parent)
+    body = {
+        "store_kind": "team_shutdown_ack",
+        "schema_version": 1,
+        "writer": CLI_WRITER,
+        "run_id": run_id,
+        "worker": worker,
+        "acked_at": _utc_now(),
+        "note": str(payload.get("note") or "worker acknowledges shutdown"),
+    }
+    atomic_write_bytes(
+        path,
+        (json.dumps(body, indent=2, ensure_ascii=False, sort_keys=True) + "\n").encode(
+            "utf-8"
+        ),
+        mode=DATA_FILE_MODE,
+        replace=True,
+    )
+    return _ok("write-shutdown-ack", {"worker": worker, "path": str(path)})
+
+
+def _op_read_shutdown_ack(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _require_str(payload, "run_id")
+    worker = _require_str(payload, "worker")
+    path = _shutdown_ack_path(root, run_id, worker)
+    if not path.is_file():
+        return _ok(
+            "read-shutdown-ack",
+            {"worker": worker, "present": False, "ack": None},
+        )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            f"shutdown ack unreadable: {exc}",
+        ) from exc
+    return _ok(
+        "read-shutdown-ack",
+        {"worker": worker, "present": True, "ack": data, "path": str(path)},
+    )
+
+
+def _op_orphan_cleanup(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    """Best-effort: mark tasks whose recorded pgid is gone as stopped in meta.
+
+    Does not pkill; only reconciles team.json task status for dead pids.
+    """
+    from omg_cli.team.plane import load_team_meta, mutate_team_meta
+
+    run_id = _require_str(payload, "run_id")
+    try:
+        meta = load_team_meta(root, run_id)
+    except Exception as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            f"team meta missing: {exc}",
+            details={"error": "team_not_found"},
+        ) from exc
+
+    cleaned: list[str] = []
+    still_alive: list[str] = []
+
+    def _pgid_gone(pgid: int) -> bool:
+        if pgid <= 0:
+            return True
+        try:
+            os.killpg(pgid, 0)
+            return False
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        except OSError:
+            return True
+
+    tasks = list(meta.get("tasks") or [])
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        tid = str(task.get("task_id") or "")
+        pgid = task.get("pgid")
+        if pgid is None:
+            continue
+        try:
+            pgid_i = int(pgid)
+        except (TypeError, ValueError):
+            continue
+        if _pgid_gone(pgid_i):
+            cleaned.append(tid)
+        else:
+            still_alive.append(tid)
+
+    def _apply(current: dict[str, Any]) -> dict[str, Any]:
+        updated = dict(current)
+        new_tasks = []
+        for task in updated.get("tasks") or []:
+            if not isinstance(task, dict):
+                new_tasks.append(task)
+                continue
+            row = dict(task)
+            if str(row.get("task_id") or "") in cleaned:
+                row["status"] = "stopped"
+                row["orphan_cleaned_at"] = _utc_now()
+            new_tasks.append(row)
+        updated["tasks"] = new_tasks
+        updated["orphan_cleanup_at"] = _utc_now()
+        return updated
+
+    if cleaned:
+        try:
+            mutate_team_meta(root, run_id, _apply)
+        except Exception as exc:
+            raise TeamApiError(
+                "E_TEAM_API_FAILED",
+                f"orphan cleanup meta mutate failed: {exc}",
+            ) from exc
+
+    return _ok(
+        "orphan-cleanup",
+        {
+            "run_id": run_id,
+            "cleaned_task_ids": cleaned,
+            "alive_task_ids": still_alive,
+            "note": "pgid gone → task status=stopped; no process kill issued",
+        },
+    )
+
+
 _HANDLERS: dict[str, Handler] = {
     "send-message": _op_send_message,
     "mailbox-list": _op_mailbox_list,
@@ -1133,6 +1454,14 @@ _HANDLERS: dict[str, Handler] = {
     "get-summary": _op_get_summary,
     "read-config": _op_read_config,
     "write-worker-inbox": _op_write_worker_inbox,
+    "update-worker-heartbeat": _op_update_worker_heartbeat,
+    "read-worker-heartbeat": _op_read_worker_heartbeat,
+    "read-worker-status": _op_read_worker_status,
+    "write-shutdown-request": _op_write_shutdown_request,
+    "read-shutdown-request": _op_read_shutdown_request,
+    "write-shutdown-ack": _op_write_shutdown_ack,
+    "read-shutdown-ack": _op_read_shutdown_ack,
+    "orphan-cleanup": _op_orphan_cleanup,
 }
 
 
@@ -1147,12 +1476,19 @@ WORKER_ALLOWED_OPS: frozenset[str] = frozenset(
         "release-task-claim",
         "get-summary",
         "read-config",
+        "update-worker-heartbeat",
+        "read-worker-heartbeat",
+        "read-worker-status",
+        "read-shutdown-request",
+        "write-shutdown-ack",
     }
 )
 WORKER_DENIED_OPS: frozenset[str] = frozenset(
     {
         "create-task",
         "write-worker-inbox",
+        "write-shutdown-request",
+        "orphan-cleanup",
     }
 )
 
