@@ -5,9 +5,11 @@ Default is **dry-run** proof of shorthand + state seed. Pass ``--live`` only whe
 ``OMG_EXPERIMENTAL_TMUX_TEAM=1``, tmux, and grok credentials are available.
 
 ``--live`` is the promotion gate: it prints ``LIVE_TEAM_SMOKE_OK`` **only** when
-all hard assertions pass (real grok panes, worktrees, ACKs, claim→completed,
-stop clears the owned session). Missing credentials / quota / timeouts exit
-non-zero without that line — never claim promotion from a soft skip.
+all hard assertions pass (real grok panes, worktrees, process-ready or mailbox
+ACKs, claim→completed, stop clears the owned session). Process-level
+``worker-ready`` receipts satisfy startup readiness; mailbox ACK remains
+enrichment. Missing credentials / quota / timeouts exit non-zero without that
+line — never claim promotion from a soft skip.
 
 ``--fixture-executor`` runs the hermetic ACK fixture in split panes (tmux
 required; no grok). That path proves transport only — never Grok live parity.
@@ -211,13 +213,23 @@ def _assert_live_gate(
 
     run_id = str(meta["run_id"])
     team_id = str(meta.get("team_id") or "team")
+    # P0-1: process-level worker-ready is sufficient for launch readiness.
+    # Mailbox ACKs remain useful enrichment but are not required when process
+    # receipts already prove panes started.
+    process_ready = meta.get("startup_process_ready")
     startup_acks = meta.get("startup_acks")
-    if startup_acks is not None:
-        assert int(startup_acks) >= workers, (
-            f"startup_acks={startup_acks} expected >= {workers}"
-        )
+    process_ok = process_ready is not None and int(process_ready) >= workers
+    ack_meta_ok = startup_acks is not None and int(startup_acks) >= workers
+    assert process_ok or ack_meta_ok, (
+        f"startup not ready: process_ready={process_ready!r} "
+        f"startup_acks={startup_acks!r} expected >= {workers}"
+    )
     ack_n = _leader_ack_count(cwd, run_id=run_id, team_id=team_id)
-    assert ack_n >= workers, f"ACK count={ack_n} expected >= {workers}"
+    if not process_ok:
+        assert ack_n >= workers, (
+            f"ACK count={ack_n} expected >= {workers} "
+            f"(no process_ready fallback)"
+        )
 
     # claim → completed: poll API board until all tasks completed (and saw claims).
     deadline = time.monotonic() + timeout_s

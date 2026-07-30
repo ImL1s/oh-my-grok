@@ -291,13 +291,24 @@ Full 33-op clone is **not** a promotion requirement (~9 ops needed for shutdown/
 
 ---
 
-## 9. Immediate next actions
+## 9. Status (2026-07-30, post-merge)
 
-1. Land this research as committed doc (this file).  
-2. Collect advisor notes; revise P0′ op list if needed.  
-3. Execute **Phase A** until live smoke green → **remove experimental gate**.  
-4. Only then Phase B API expansion.  
-5. Keep #31 tracking or open a focused epic: `team production promotion`.
+| Item | Status |
+|------|--------|
+| P0-1 process `worker-ready` | **Shipped** (#62) |
+| P0′ heartbeat / shutdown / orphan + doctor | **Shipped** (#63) |
+| Default-on gate + `OMG_DISABLE_TMUX_TEAM` + fixture smoke | **Shipped** (#64) |
+| P0′ `read-task` / `update-task` / `read-manifest` / events | **Shipped** (branch `feat/team-p0-prime-task-events`) |
+| Grok-live `LIVE_TEAM_SMOKE_OK` | **Still open** (quota; not CI-required) |
+| Full 33-op / broadcast / await-event / preflight pack | Deferred (Phase B residual) |
+
+### Immediate next actions
+
+1. ~~Land research doc~~ done.  
+2. ~~Phase A reliability + default-on~~ done on main via #62–#64.  
+3. Land P0′ task/events/manifest API PR.  
+4. Run `scripts/live_team_smoke.py --live` when quota available → archive `LIVE_TEAM_SMOKE_OK`.  
+5. Residual Phase B/C only after live proof (handoffs, preflight-context, broadcast).
 
 ---
 

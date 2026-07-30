@@ -64,6 +64,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   ACK so read-only posture panes are not structurally `failed_start`.
 - **Team P0′ reliability API:** heartbeat read/update, worker status, shutdown
   request/ack, orphan-cleanup; `omg doctor` soft check for team gate/tmux/API surface.
+- **Team P0′ task/events/manifest API:** `read-task`, `update-task` (CAS
+  `expected_version`), `read-manifest`, `append-event`, `read-events` (jsonl +
+  after/kind cursor); workers may read tasks/events/manifest and append events;
+  `update-task` remains leader-only.
+- **Live team smoke readiness:** `scripts/live_team_smoke.py --live` accepts
+  process-level `startup_process_ready` (P0-1) as startup proof; mailbox ACK
+  is no longer a hard requirement when process receipts already meet the worker
+  count (claim→completed + stop still required for `LIVE_TEAM_SMOKE_OK`).
 - **Team plane default-on:** `omg team` enabled unless `OMG_DISABLE_TMUX_TEAM=1`
   (legacy `OMG_EXPERIMENTAL_TMUX_TEAM=0` still disables). Fixture smoke:
   `FIXTURE_TEAM_SMOKE_OK` via `scripts/live_team_smoke.py --fixture-executor`.
