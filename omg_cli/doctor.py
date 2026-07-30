@@ -1200,16 +1200,14 @@ def check_team_plane() -> SoftResult:
             f"api handlers={handlers}/{catalog} (P0′={p0}); "
             "integration isolation only (not execution sandbox)"
         )
+        # Only warn on API surface drift. Missing tmux / gate-off are expected
+        # on CI and install images — report as ok detail, never fail --strict.
         if handlers != p0:
             return (name, "warn", detail + "; handler/P0′ count mismatch")
-        if not tmux:
-            return (name, "warn", detail + "; install tmux for live team")
         if not gated:
-            return (
-                name,
-                "ok",
-                detail + f"; set {EXPERIMENTAL_ENV}=1 to enable launches",
-            )
+            detail += f"; set {EXPERIMENTAL_ENV}=1 to enable launches"
+        if not tmux:
+            detail += "; install tmux for live team panes"
         return (name, "ok", detail)
     except Exception as exc:
         return (name, "warn", f"team plane probe failed ({type(exc).__name__})")
