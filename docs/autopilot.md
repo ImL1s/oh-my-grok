@@ -3,7 +3,7 @@
 English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.md)
 
 **Audience:** humans driving Grok Build + maintainers writing skills.  
-**Plugin version:** matches [`plugin.json`](../plugin.json) (currently **0.7.2**).
+**Plugin version:** matches [`plugin.json`](../plugin.json) (currently **0.7.3**).
 **Skill source:** [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md)  
 **All skills catalog:** [`skills.md`](./skills.md) · [zh](./skills.zh.md) · [zh-TW](./skills.zh-TW.md) · [docs index](./README.md)
 

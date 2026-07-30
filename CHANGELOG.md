@@ -9,104 +9,6 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
-### Added
-- **`omg autopilot run --unattended`** (#40): hands-off outer loop re-launches
-  Grok after host-turn stalls (no human `go`); pauses on interview/`await`;
-  `--max-stall-relaunches` budget; machine JSON on stdout, resume hints on stderr.
-- **`omg team {start,launch} --plan-only`** (#27): side-effect-free plan JSON
-  (no `.omg` / worktrees / tmux). `--materialize-only` alias for mutating dry-run;
-  CLI never prints `Team started` for non-live modes.
-- **`omg lsp validate`** and stable `E_LSP_*` codes (#28); legacy
-  `check`/`symbols`/`diagnostics` return `E_LSP_HOST_OWNED` with `next_action`.
-- **`omg_cli/command_registry.py`** (#29 Phase 1): authoritative top-level
-  `KNOWN_SUBCOMMANDS` / `CommandSpec` inventory.
-- **`omg_cli/commands/inspect.py`** (#29 Phase 2): wiki/hud/lsp/notify/
-  native-status/capabilities/parity handlers extracted from `main.py`
-  (parser still in `build_parser`; no user-visible change). Shared helpers in
-  `omg_cli/cli_util.py`.
-- **`omg_cli/commands/install.py`** (#29 Phase 2): setup/install-hook/doctor/
-  update/uninstall handlers extracted (no user-visible change).
-- **`omg_cli/commands/run.py`** (#29 Phase 2): state/cancel/resume/session/
-  recover handlers extracted (no user-visible change).
-- **`omg_cli/commands/memory.py`** (#29 Phase 2): note/memory/tracker/compact
-  handlers extracted (no user-visible change).
-- **`omg_cli/commands/workflow.py`** (#29 Phase 2): workflow install/list/show/
-  plan/run handlers extracted (no user-visible change).
-- **`omg_cli/commands/modes.py`** + **`mcp.py`** (#29 Phase 2): review/qa/
-  autopilot/ulw/ralph/ralplan/ask/pipeline/dual-review and mcp-server/
-  mcp-install handlers extracted (no user-visible change).
-- **`omg_cli/commands/team.py`** (#29 Phase 2): accept/integrate/team/worker
-  handlers extracted; interview/goal joined `commands/workflow.py`
-  (no user-visible change). Phase 2 handler extract complete — `main.py`
-  is bootstrap + `build_parser` only for handlers.
-- **`CommandContext`** + global **`--json`** (#29 Phase 3 / #30):
-  `omg_cli/command_context.py`, `omg_cli/cli_envelope.py`; parse-once on
-  common parent (SUPPRESS). `state` and `hud` honor global JSON envelopes.
-- **`emit_data` migration** (#30): wiki/lsp/notify/native-status/capabilities/
-  parity/memory/tracker/compact/review/qa/autopilot wrap domain JSON in
-  schema_version 1 envelopes under global `--json` (legacy dump without flag).
-- **`docs/cli-commands.md`** + generator (#29 Phase 4): inventory table derived
-  from `COMMAND_SPECS`; `python3 scripts/generate_cli_commands_doc.py --check`.
-- **inspect parser registration** (#29 Phase 4′): `register_inspect_parsers`
-  owns notify/native-status/capabilities/parity/wiki/hud/lsp argparse wiring.
-- **run parser registration** (#29 Phase 4′): `register_run_parsers` owns
-  state/cancel/resume/session/recover argparse wiring.
-- **memory parser registration** (#29 Phase 4′): `register_memory_parsers` owns
-  memory/tracker/compact (``note`` remains early in main for help order).
-- **install parser registration** (#29 Phase 4′): `register_install_parsers`
-  (early: setup/install-hook/doctor; late: update/uninstall around note).
-- **workflow + mcp parser registration** (#29 Phase 4′): `register_workflow_parsers`
-  (early workflow / late interview+goal) and `register_mcp_parsers`.
-- **team + modes + note parser registration** (#29 Phase 4′): `register_team_parsers`,
-  `register_modes_parsers`, `register_note_parser`. All top-level parsers leave `main`.
-- **Team process-level readiness (P0-1):** pane commands run `omg team worker-ready`
-  before the agent binary; launch success counts process receipts **or** mailbox
-  ACK so read-only posture panes are not structurally `failed_start`.
-- **Team P0′ reliability API:** heartbeat read/update, worker status, shutdown
-  request/ack, orphan-cleanup; `omg doctor` soft check for team gate/tmux/API surface.
-- **Team P0′ task/events/manifest API:** `read-task`, `update-task` (CAS
-  `expected_version`), `read-manifest`, `append-event`, `read-events` (jsonl +
-  after/kind cursor); workers may read tasks/events/manifest and append events;
-  `update-task` remains leader-only.
-- **Live team smoke readiness:** `scripts/live_team_smoke.py --live` accepts
-  process-level `startup_process_ready` (P0-1) as startup proof; mailbox ACK
-  is no longer a hard requirement when process receipts already meet the worker
-  count (claim→completed + stop still required for `LIVE_TEAM_SMOKE_OK`).
-- **`omg team stop --kill-grace SECONDS`:** poll process-group disappearance
-  after SIGTERM before SIGKILL escalation; live smoke uses `--kill-grace 2.0`
-  to reduce authority-drift `stop_refused` races with real grok panes.
-- **Team stop pane rebind + session-gone:** stop rebinds kill targets to the
-  current pane_pid under receipted session/nonce/pane_id (covers
-  `worker-ready && exec`); treats post-signal owned-session auto-destroy as
-  verified disappearance. Unblocks `LIVE_TEAM_SMOKE_OK` on real grok panes.
-- **Team plane default-on:** `omg team` enabled unless `OMG_DISABLE_TMUX_TEAM=1`
-  (legacy `OMG_EXPERIMENTAL_TMUX_TEAM=0` still disables). Fixture smoke:
-  `FIXTURE_TEAM_SMOKE_OK` via `scripts/live_team_smoke.py --fixture-executor`.
-- **Grok live team smoke:** `scripts/live_team_smoke.py --live` achieved
-  `LIVE_TEAM_SMOKE_OK` (2026-07-30 local; process-ready gate + stop proof).
-- **Golden envelope tests** (#30): exit 0/1/2 matrix for state/capabilities/lsp/hud
-  plus wiki/memory/native-status/workflow/team plan-only/cancel.
-- **`omg cancel --json`** failure path emits `E_RUN_NOT_FOUND` envelope (no prose stdout).
-- **team / workflow / run** paths also use `emit_data` under global `--json`
-  (accept/integrate/team/worker/interview/goal/cancel/session/recover).
-- **`docs/cli-contract.md`** (#30 Phase 0): exit-code classes and schema_version 1
-  envelope for scripted surfaces.
-
-### Documentation
-- Autopilot EN/zh/zh-TW + skills: primary hands-off path is
-  `omg autopilot run --resume … --unattended` (no longer “forthcoming”).
-- Clarified the external-agent CLI PreToolUse contract: direct provider
-  execution remains denied, while passive discovery, path inspection, and inert
-  literals are allowed.
-- Added installed-hook drift recovery, child-only
-  `OMG_ALLOW_EXTERNAL_CLI` guidance, known parser limitations, and the
-  2026-07-28 soft-gate audit evidence.
-- **Team plane docs sync (post-promotion):** skills / security-model / README /
-  RELEASE (EN+zh+zh-TW), `CLAUDE.md`, and `templates/omg-rules.md` no longer
-  require `OMG_EXPERIMENTAL_TMUX_TEAM=1` or call team “experimental”; document
-  default-on + kill switch + `LIVE_TEAM_SMOKE_OK` (local) + integration-only
-  isolation honesty.
-
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —
   not blockers for production path; full OMX 33-op not claimed.
@@ -119,6 +21,53 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Host Stop veto (not feasible on Grok today).
 - Full OMC semantic LSP proxy (host-owned `.lsp.json` registration ships in 0.6.0;
   OMG does not claim host health or proxy hover/rename/goto operations).
+
+## [0.7.3] - 2026-07-30
+
+### Added
+- **`omg autopilot run --unattended`** (#40): hands-off outer loop re-launches
+  Grok after host-turn stalls (no human `go`); pauses on interview/`await`;
+  `--max-stall-relaunches` budget; machine JSON on stdout, resume hints on stderr.
+- **`omg team {start,launch} --plan-only`** (#27): side-effect-free plan JSON
+  (no `.omg` / worktrees / tmux). `--materialize-only` alias for mutating dry-run;
+  CLI never prints `Team started` for non-live modes.
+- **`omg lsp validate`** and stable `E_LSP_*` codes (#28); legacy
+  `check`/`symbols`/`diagnostics` return `E_LSP_HOST_OWNED` with `next_action`.
+- **`omg_cli/command_registry.py`** (#29 Phase 1): authoritative top-level
+  `KNOWN_SUBCOMMANDS` / `CommandSpec` inventory.
+- **CLI composition (#29 / #30):** handler families extracted from `main.py`
+  (`commands/inspect|install|run|memory|workflow|modes|mcp|team`); argparse
+  registration leaves `main` as composition-only; global **`--json`** +
+  `CommandContext` / schema_version 1 envelopes; golden envelope tests;
+  `docs/cli-commands.md` + `docs/cli-contract.md`.
+- **Team process-level readiness (P0-1, #62):** pane commands run
+  `omg team worker-ready` before the agent binary; launch success counts
+  process receipts **or** mailbox ACK so read-only posture panes are not
+  structurally `failed_start`.
+- **Team P0′ reliability API (#63):** heartbeat read/update, worker status,
+  shutdown request/ack, orphan-cleanup; `omg doctor` soft check for team
+  gate/tmux/API surface.
+- **Team plane default-on (#64):** enabled unless `OMG_DISABLE_TMUX_TEAM=1`
+  (legacy `OMG_EXPERIMENTAL_TMUX_TEAM=0` still disables). Fixture smoke:
+  `FIXTURE_TEAM_SMOKE_OK` via `scripts/live_team_smoke.py --fixture-executor`.
+- **Team P0′ task/events/manifest API (#65):** `read-task`, `update-task`
+  (CAS `expected_version`), `read-manifest`, `append-event`, `read-events`;
+  live process-ready gate + stop kill-grace / pane rebind.
+- **Grok live team smoke (#66):** `scripts/live_team_smoke.py --live` achieved
+  `LIVE_TEAM_SMOKE_OK` (2026-07-30 local; process-ready gate + stop proof).
+- **Deterministic release packager + staged publish** (#26 / #42).
+- **CI:** full-package static analysis entrypoint; macOS platform contract lane.
+
+### Documentation
+- Autopilot EN/zh/zh-TW + skills: primary hands-off path is
+  `omg autopilot run --resume … --unattended` (no longer “forthcoming”).
+- Clarified the external-agent CLI PreToolUse contract: direct provider
+  execution remains denied, while passive discovery, path inspection, and inert
+  literals are allowed.
+- **Team plane docs sync (post-promotion):** skills / security-model / README /
+  RELEASE (EN+zh+zh-TW), `CLAUDE.md`, and `templates/omg-rules.md` document
+  default-on + kill switch + `LIVE_TEAM_SMOKE_OK` (local) + integration-only
+  isolation honesty (no longer experimental-gate language).
 
 ## [0.7.2] - 2026-07-28
 

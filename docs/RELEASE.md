@@ -6,9 +6,9 @@ English | [简体中文](./RELEASE.zh.md) | [繁體中文](./RELEASE.zh-TW.md)
 
 | Field | Value |
 |---|---|
-| Version | **0.7.2** |
-| Intended tag | `v0.7.2` |
-| Public assets | `oh-my-grok-0.7.2.tar.gz`, then `SHA256SUMS` |
+| Version | **0.7.3** |
+| Intended tag | `v0.7.3` |
+| Public assets | `oh-my-grok-0.7.3.tar.gz`, then `SHA256SUMS` |
 | Install | GitHub release transaction; no PyPI dependency |
 
 The release is not published merely because tests pass or a tag exists. Product
@@ -110,7 +110,7 @@ The manifest binds candidate commit/tree, toolchain, environment allowlist, sour
 omg parity release-readback \
   --manifest .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle-manifest.json
 python3 scripts/release_attest.py \
-  --asset .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle/oh-my-grok-0.7.2.tar.gz \
+  --asset .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle/oh-my-grok-0.7.3.tar.gz \
   --checksums .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle/SHA256SUMS
 ```
 
@@ -161,12 +161,12 @@ curl -fsSL https://raw.githubusercontent.com/ImL1s/oh-my-grok/main/scripts/insta
 Pinned/manual GitHub-only:
 
 ```bash
-TAG=v0.7.2
-curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.7.2.tar.gz"
+TAG=v0.7.3
+curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.7.3.tar.gz"
 curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/SHA256SUMS"
 shasum -a 256 -c SHA256SUMS
 curl -fsSLo install.sh "https://raw.githubusercontent.com/ImL1s/oh-my-grok/${TAG}/scripts/install.sh"
-bash install.sh --offline --archive ./oh-my-grok-0.7.2.tar.gz \
+bash install.sh --offline --archive ./oh-my-grok-0.7.3.tar.gz \
   --checksums ./SHA256SUMS --source-tag "${TAG}"
 ```
 
@@ -174,4 +174,4 @@ The installer verifies before extraction, bounds and rejects link/path escape ar
 
 ## Plugin marketplace and package registries
 
-The GitHub release is the claimed OMG channel. An xAI marketplace PR remains optional and requires that registry's current schema plus an exact tag SHA. PyPI/non-editable wheel publication and npm-style package registries are not claimed release channels for OMG 0.7.2. Do not imply otherwise in release notes.
+The GitHub release is the claimed OMG channel. An xAI marketplace PR remains optional and requires that registry's current schema plus an exact tag SHA. PyPI/non-editable wheel publication and npm-style package registries are not claimed release channels for OMG 0.7.3. Do not imply otherwise in release notes.

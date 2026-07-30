@@ -30,7 +30,7 @@ from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
 _OMG_GENERATED_FROM_SHA = "4b8c9014afb787a7e71e1faf3e79adaba3e38d8987183060aa6ef710334231b1"
-_OMG_PLUGIN_VERSION = "0.7.2"
+_OMG_PLUGIN_VERSION = "0.7.3"
 
 
 # ---- kill switch (extracted verbatim from hooks/bin/_common.hook_disabled) ----

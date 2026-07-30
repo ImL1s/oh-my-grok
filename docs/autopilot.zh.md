@@ -3,7 +3,7 @@
 English | [简体中文](./autopilot.zh.md) | [繁體中文](./autopilot.zh-TW.md)
 
 **对象：** 使用 Grok Build 的人 + 维护 skill 的人。  
-**版本：** 与 [`plugin.json`](../plugin.json) 一致（目前 **0.7.2**）。
+**版本：** 与 [`plugin.json`](../plugin.json) 一致（目前 **0.7.3**）。
 **Skill 原文：** [`skills/omg-autopilot/SKILL.md`](../skills/omg-autopilot/SKILL.md)
 
 ---
