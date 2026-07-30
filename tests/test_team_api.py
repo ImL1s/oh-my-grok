@@ -116,12 +116,15 @@ def test_team_api_non_p0_op_unimplemented(
 def test_team_api_requires_experimental_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from omg_cli.team.plane import DISABLE_ENV
+
     run_id = _seed_control_plane(tmp_path, monkeypatch)
-    monkeypatch.delenv(EXPERIMENTAL_ENV, raising=False)
+    monkeypatch.setenv(DISABLE_ENV, "1")
     code, envelope = execute_team_api(
         "mailbox-list",
         {"run_id": run_id, "team_id": TEAM, "worker": "w1"},
         root=tmp_path,
+        env={DISABLE_ENV: "1"},
     )
     assert code == 2
     assert envelope["ok"] is False
@@ -857,11 +860,13 @@ def test_cli_team_api_json_roundtrip(
     assert out["data"]["message"]["kind"] == "message"
 
 
-def test_cli_team_api_gate_without_env(
+def test_cli_team_api_gate_with_kill_switch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    from omg_cli.team.plane import DISABLE_ENV
+
     run_id = _seed_control_plane(tmp_path, monkeypatch)
-    monkeypatch.delenv(EXPERIMENTAL_ENV, raising=False)
+    monkeypatch.setenv(DISABLE_ENV, "1")
     monkeypatch.chdir(tmp_path)
     rc = main(
         [
