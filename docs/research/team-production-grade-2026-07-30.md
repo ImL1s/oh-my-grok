@@ -10,10 +10,20 @@
 
 | Question | Answer |
 |----------|--------|
-| Is OMG tmux team “complete” today? | **No** — large surface, but **gated experimental** and partial API |
-| Can it become production without cloning OMC/OMX? | **Yes** — adopt their *contracts* (lifecycle, CLI-first API, worktree seal, ACK/shutdown), not their host quirks |
-| What “production” means here | Default-on (or soft-on with doctor), live smoke green, full worker lifecycle, honest isolation docs, residual ops deferred *explicitly* |
+| Is OMG tmux team “complete” today? | **Production path yes** (default-on, process-ready, P0′ API, doctor, **LIVE_TEAM_SMOKE_OK** 2026-07-30) — **not** full OMX clone |
+| Can it become production without cloning OMC/OMX? | **Yes** — adopted *contracts* (lifecycle, CLI-first API, worktree seal, readiness/shutdown), not host quirks |
+| What “production” means here | Default-on + kill switch, fixture + live smoke green, worker lifecycle, honest isolation docs, residual ops deferred *explicitly* |
 | What we must **not** claim | Full OMX 33-op parity; execution sandbox; OMC Stop infinite stickiness; native Claude implicit-team on Grok |
+
+### Promotion log (shipped)
+
+| Step | Evidence |
+|------|----------|
+| P0-1 process-ready | PR #62 — `worker-ready` before agent; read-only no longer structural `failed_start` |
+| P0′ reliability API + doctor | PR #63 — heartbeat/shutdown/orphan + team plane soft-check |
+| Default-on + fixture smoke | PR #64 — `OMG_DISABLE_TMUX_TEAM` kill switch; `FIXTURE_TEAM_SMOKE_OK` |
+| Task/events/manifest + live gate | PR #65 — process-ready live path |
+| **Grok live smoke** | **2026-07-30 local:** `scripts/live_team_smoke.py --live` → **`LIVE_TEAM_SMOKE_OK`** (startup_status=running, process=2, stop identity verified). JSON under `docs/research/live/` is gitignored — regenerate with the script. |
 
 ---
 
@@ -50,14 +60,14 @@ OMX `$team` / `omx team` is the closest model for **OMG’s `omg team`**:
 
 | Mechanism | OMX | OMG today |
 |-----------|-----|-----------|
-| Gate | Product feature (with app/tmux caveats) | `OMG_EXPERIMENTAL_TMUX_TEAM=1` |
+| Gate | Product feature (with app/tmux caveats) | **Default on**; kill `OMG_DISABLE_TMUX_TEAM=1` |
 | State root | `.omx/state/team/<name>/` | `.omg/state/runs/<run>/team/…` |
 | Identity | `manifest.v2.json`, worker heartbeats | team.json + identity receipt chain (partial) |
-| API | Broad `omx team api` surface | **11/33 P0** ops; rest `E_TEAM_API_UNIMPLEMENTED` |
+| API | Broad `omx team api` surface | **P0′ ~24 handlers** / catalog ~35; residual ops deferred |
 | Lifecycle | status / resume / shutdown (force) | start/run/scale/resume/status/collect/stop |
 | Worktrees | Optional `--worktree` | Ownership + seal + integrate |
 | Preflight | `preflight-context.json` for resume after compaction | Weak / incomplete |
-| Doctor | `omx doctor --team` | No dedicated `omg doctor --team` |
+| Doctor | `omx doctor --team` | `omg doctor` soft **team plane** check |
 | Ultragoal link | Workers report up; leader owns ledger | Partial (linked flags) |
 | Worker skill | Explicit worker preamble + API-only mutations | Exists in seed prompts; uneven |
 
