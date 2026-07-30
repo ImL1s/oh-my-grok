@@ -588,7 +588,14 @@ def _write_live_stop_identity(
     live["identity_generation"] = 0
     live["identity_receipt_sha256"] = receipt_hash
     starts = {task["pid"]: task["pid_start"] for task in live["tasks"]}
-    monkeypatch.setattr(plane, "_pid_start_identity", starts.get)
+
+    def _start_for(pid: int) -> str | None:
+        if pid in starts:
+            return starts[pid]
+        # Allow pane_id-stable rebind tests (exec-replaced pane_pid).
+        return f"test-start-{pid}"
+
+    monkeypatch.setattr(plane, "_pid_start_identity", _start_for)
     plane._atomic_write_json(team_meta_path(root, str(meta["run_id"])), live)
     return live
 
@@ -610,7 +617,25 @@ def _tmux_identity_runner(
         commands.append(command)
         result = MagicMock(returncode=0, stdout="", stderr="")
         if command[0] == "display-message":
-            result.stdout = f"{live['session']}\t{session_id}\n"
+            # Pane-targeted probe: display-message -p -t %N #{pane_id}\t#{pane_pid}
+            if "-t" in command:
+                try:
+                    t_idx = command.index("-t")
+                    target = command[t_idx + 1]
+                except (ValueError, IndexError):
+                    target = None
+                task = next(
+                    (t for t in live["tasks"] if t.get("pane_id") == target),
+                    None,
+                )
+                if task is not None:
+                    result.stdout = (
+                        f"{task['pane_id']}\t{int(task['pid']) + pane_pid_delta}\n"
+                    )
+                else:
+                    result.stdout = f"{live['session']}\t{session_id}\n"
+            else:
+                result.stdout = f"{live['session']}\t{session_id}\n"
         elif command[0] == "show-options":
             result.stdout = expected_nonce + "\n"
         elif command[0] == "list-panes":
@@ -740,15 +765,17 @@ def test_stop_signals_revalidated_pgids_before_killing_exact_tmux_session(
     assert ["kill-session", "-t", "$9"] in commands
 
 
-def test_stop_refuses_signal_when_pgid_drifts_at_immediate_revalidation(
+def test_stop_rebounds_pgid_when_pane_still_bound(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Same pane_id under session/nonce may change pgid after exec; rebind + signal."""
     _init_repo(tmp_path)
     _enable_team(monkeypatch)
-    meta = start_team("signal-time drift", [TASKS_TWO[0]], root=tmp_path, dry_run=True)
+    meta = start_team("signal-time rebind", [TASKS_TWO[0]], root=tmp_path, dry_run=True)
     live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
     commands: list[list[str]] = []
-    pgid_reads = iter([525252, 999999])
+    # verify + signal resolves may each call getpgid; return drifted pgid after first.
+    pgid_reads = iter([525252, 999999, 999999, 999999, 999999, 999999])
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(plane, "tmux_available", lambda: True)
     monkeypatch.setattr(plane, "_tmux_run", _tmux_identity_runner(live, commands))
@@ -756,6 +783,8 @@ def test_stop_refuses_signal_when_pgid_drifts_at_immediate_revalidation(
 
     def killpg(pgid: int, sig: int) -> None:
         if sig == 0:
+            if pgid == 999999:
+                raise ProcessLookupError("gone after rebind")
             return
         signals.append((pgid, int(sig)))
 
@@ -763,21 +792,21 @@ def test_stop_refuses_signal_when_pgid_drifts_at_immediate_revalidation(
 
     result = stop_team(tmp_path, meta["run_id"])
 
-    assert result["identity_verified"] is False
-    assert signals == []
-    assert not any(command[0] == "kill-session" for command in commands)
-    assert any("signal identity drift" in error for error in result["errors"])
+    assert any(pgid == 999999 for pgid, _sig in signals)
+    assert result["identity_verified"] is True
+    assert any("identity rebound" in a for a in (result.get("actions") or []))
 
 
-def test_stop_revalidates_again_before_sigkill_escalation(
+def test_stop_rebounds_before_sigkill_escalation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Pane-bound pgid may change between SIGTERM and SIGKILL; rebind is allowed."""
     _init_repo(tmp_path)
     _enable_team(monkeypatch)
-    meta = start_team("sigkill-time drift", [TASKS_TWO[0]], root=tmp_path, dry_run=True)
+    meta = start_team("sigkill-time rebind", [TASKS_TWO[0]], root=tmp_path, dry_run=True)
     live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
     commands: list[list[str]] = []
-    pgid_reads = iter([525252, 525252, 999999, 999999, 999999])
+    pgid_reads = iter([525252, 525252, 999999, 999999, 999999, 999999, 999999])
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(plane, "tmux_available", lambda: True)
     monkeypatch.setattr(plane, "_tmux_run", _tmux_identity_runner(live, commands))
@@ -785,6 +814,9 @@ def test_stop_revalidates_again_before_sigkill_escalation(
 
     def killpg(pgid: int, sig: int) -> None:
         if sig == 0:
+            # Keep group "alive" until SIGKILL so escalation path runs.
+            if sig == 0 and any(s == signal.SIGKILL for _, s in signals):
+                raise ProcessLookupError("gone")
             return
         signals.append((pgid, int(sig)))
 
@@ -792,10 +824,9 @@ def test_stop_revalidates_again_before_sigkill_escalation(
 
     result = stop_team(tmp_path, meta["run_id"], kill_grace_s=0.001)
 
-    assert signals == [(525252, int(signal.SIGTERM))]
-    assert result["identity_verified"] is False
-    assert not any(command[0] == "kill-session" for command in commands)
-    assert any("SIGKILL group authority drift" in error for error in result["errors"])
+    assert (525252, int(signal.SIGTERM)) in signals
+    assert any(sig == int(signal.SIGKILL) for _pgid, sig in signals)
+    assert result["identity_verified"] is True
 
 
 def test_stop_refuses_when_process_group_disappearance_remains_unproved(
@@ -1006,41 +1037,56 @@ def test_stop_forged_writer_and_pgid_without_launch_receipt_never_signals(
 
     assert result["identity_verified"] is False
     assert signals == []
-    assert tmux_commands == []
+    # has-session probe is allowed; kill-session / kill-pane must never run.
+    assert all(cmd and cmd[0] == "has-session" for cmd in tmux_commands)
     assert any("launch receipt missing" in error for error in result["errors"])
 
 
-def test_stop_pid_reuse_identity_mismatch_never_signals(
+def test_stop_pgid_rebind_on_same_pane_still_signals(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Receipted pgid drift under the same pane_id rebinds; still pane-scoped."""
     _init_repo(tmp_path)
     _enable_team(monkeypatch)
-    meta = start_team("pid reuse", TASKS_TWO, root=tmp_path, dry_run=True)
+    meta = start_team("pgid rebind", TASKS_TWO, root=tmp_path, dry_run=True)
     live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
     commands: list[list[str]] = []
     signals: list[Any] = []
     monkeypatch.setattr(plane, "tmux_available", lambda: True)
     monkeypatch.setattr(plane, "_tmux_run", _tmux_identity_runner(live, commands))
     monkeypatch.setattr(plane.os, "getpgid", lambda _pid: 999999)
-    monkeypatch.setattr(plane.os, "killpg", lambda *args: signals.append(args))
+    monkeypatch.setattr(
+        plane.os,
+        "killpg",
+        lambda pgid, sig: (
+            (_ for _ in ()).throw(ProcessLookupError("gone"))
+            if sig == 0
+            else signals.append((pgid, sig))
+        ),
+    )
 
     result = stop_team(tmp_path, meta["run_id"])
 
-    assert result["identity_verified"] is False
-    assert signals == []
-    assert not any(command[0] == "kill-session" for command in commands)
+    assert result["identity_verified"] is True
+    assert signals  # pane-bound rebind still signals
+    assert any(pgid == 999999 for pgid, _sig in signals)
 
 
 @pytest.mark.parametrize(
-    ("session_id", "pane_pid_delta", "nonce"),
-    [("$77", 0, None), ("$9", 1, None), ("$9", 0, "b" * 32)],
+    ("session_id", "pane_pid_delta", "nonce", "expect_ok"),
+    [
+        ("$77", 0, None, False),  # wrong session id
+        ("$9", 1, None, True),  # pane pid replaced (exec) → rebind OK
+        ("$9", 0, "b" * 32, False),  # wrong launch nonce
+    ],
 )
-def test_stop_tmux_session_or_pane_pid_mismatch_never_signals(
+def test_stop_tmux_session_nonce_or_pane_rebind(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     session_id: str,
     pane_pid_delta: int,
     nonce: str | None,
+    expect_ok: bool,
 ) -> None:
     _init_repo(tmp_path)
     _enable_team(monkeypatch)
@@ -1060,26 +1106,32 @@ def test_stop_tmux_session_or_pane_pid_mismatch_never_signals(
             pane_pid_delta=pane_pid_delta,
         ),
     )
-    monkeypatch.setattr(
-        plane.os,
-        "getpgid",
-        lambda pid: next(t["pgid"] for t in live["tasks"] if t["pid"] == pid),
-    )
-    monkeypatch.setattr(plane.os, "killpg", lambda *args: signals.append(args))
+
+    def _getpgid(pid: int) -> int:
+        for t in live["tasks"]:
+            if t["pid"] == pid:
+                return int(t["pgid"])
+        # Rebound pane_pid (receipt_pid + delta) keeps original pgid for hermetic test.
+        return int(live["tasks"][0]["pgid"])
+
+    monkeypatch.setattr(plane.os, "getpgid", _getpgid)
+
+    def killpg(pgid: int, sig: int) -> None:
+        if sig == 0:
+            raise ProcessLookupError("gone")
+        signals.append((pgid, sig))
+
+    monkeypatch.setattr(plane.os, "killpg", killpg)
 
     result = stop_team(tmp_path, meta["run_id"])
 
-    assert result["identity_verified"] is False
-    assert signals == []
-    assert not any(command[0] == "kill-session" for command in commands)
-    assert all(
-        "killpg" in a
-        or "tmux kill-session" in a
-        or "tmux unavailable" in a
-        or a.startswith("tmux")
-        for a in result.get("actions") or []
-        if "dry_run" not in a
-    )
+    if expect_ok:
+        assert result["identity_verified"] is True
+        assert signals
+    else:
+        assert result["identity_verified"] is False
+        assert signals == []
+        assert not any(command[0] == "kill-session" for command in commands)
 
 
 def test_stop_dry_run_entries_not_signalled(

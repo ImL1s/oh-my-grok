@@ -530,8 +530,18 @@ def cmd_team(args: argparse.Namespace) -> int:
                 args, "run_id", None
             )
             rid = resolve_team_ref(root, identity)
+            grace = getattr(args, "kill_grace_s", None)
+            if grace is None:
+                grace = 0.0
+            try:
+                grace_f = float(grace)
+            except (TypeError, ValueError):
+                grace_f = 0.0
             result = stop_team(
-                root, rid, force=bool(getattr(args, "force", False))
+                root,
+                rid,
+                force=bool(getattr(args, "force", False)),
+                kill_grace_s=max(0.0, grace_f),
             )
             emit_data(args, "team", result)
             return 0 if not result.get("errors") else 1
@@ -1318,6 +1328,17 @@ def register_team_parsers(
         help=(
             "tear down even when API tasks are in_progress "
             "(default: fail closed and write shutdown-request.json)"
+        ),
+    )
+    p_t_stop.add_argument(
+        "--kill-grace",
+        dest="kill_grace_s",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help=(
+            "after SIGTERM, poll up to SECONDS for process-group disappearance "
+            "before SIGKILL escalation (default 0 = immediate probe)"
         ),
     )
     p_t_stop.set_defaults(func=cmd_team, team_action="stop")

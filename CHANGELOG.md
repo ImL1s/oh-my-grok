@@ -72,6 +72,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   process-level `startup_process_ready` (P0-1) as startup proof; mailbox ACK
   is no longer a hard requirement when process receipts already meet the worker
   count (claim→completed + stop still required for `LIVE_TEAM_SMOKE_OK`).
+- **`omg team stop --kill-grace SECONDS`:** poll process-group disappearance
+  after SIGTERM before SIGKILL escalation; live smoke uses `--kill-grace 2.0`
+  to reduce authority-drift `stop_refused` races with real grok panes.
+- **Team stop pane rebind + session-gone:** stop rebinds kill targets to the
+  current pane_pid under receipted session/nonce/pane_id (covers
+  `worker-ready && exec`); treats post-signal owned-session auto-destroy as
+  verified disappearance. Unblocks `LIVE_TEAM_SMOKE_OK` on real grok panes.
 - **Team plane default-on:** `omg team` enabled unless `OMG_DISABLE_TMUX_TEAM=1`
   (legacy `OMG_EXPERIMENTAL_TMUX_TEAM=0` still disables). Fixture smoke:
   `FIXTURE_TEAM_SMOKE_OK` via `scripts/live_team_smoke.py --fixture-executor`.

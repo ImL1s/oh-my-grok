@@ -280,6 +280,10 @@ def _assert_live_gate(
             "stop",
             str(meta.get("team_name") or run_id),
             "--force",
+            # Live grok panes need a short SIGTERM window before SIGKILL identity
+            # revalidation; zero-grace races produce authority-drift stop_refused.
+            "--kill-grace",
+            "2.0",
         ],
         cwd=cwd,
         env=env,
