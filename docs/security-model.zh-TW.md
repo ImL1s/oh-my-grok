@@ -4,7 +4,7 @@ English | [简体中文](./security-model.zh.md) | [繁體中文](./security-mod
 
 隔離宣稱的**權威對照表**。README、skills、doctor footer 應連到這裡，而不是自行發明更強的措辭。
 
-最後更新：2026-07-28 · Plugin 版本：**0.7.2**
+最後更新：2026-07-30 · Plugin 版本：**0.7.2**
 
 ## 分層表（強 → 弱）
 
@@ -188,9 +188,9 @@ OMX/Sol 對齊的 root 入口（不是 mode FSM；永不蓋 `verified`）：
 
 `--madmax` 是刻意的 break-glass，不是 sandbox。緩解靠文件與名稱前綴（`omg-`）— 不是 PreToolUse。
 
-## 實驗性 team plane：`omg team`（D1 零設定 + D3 multi-CLI + D2 staged driver + D4 scale／resume／ralph）
+## Team plane：`omg team`（預設開啟；D1 零設定 + D3 multi-CLI + D2 staged driver + D4 scale／resume／ralph）
 
-由 **`OMG_EXPERIMENTAL_TMUX_TEAM=1`** 閘控。生命週期：`start`／`run`／`scale`／`resume`／`status`／`collect`／`stop`。
+**預設開啟**（2026-07-30 升格；本地 `LIVE_TEAM_SMOKE_OK`）。關閉：**`OMG_DISABLE_TMUX_TEAM=1`**（舊 **`OMG_EXPERIMENTAL_TMUX_TEAM=0`** 也會關）。生命週期：`start`／`run`／`scale`／`resume`／`status`／`collect`／`stop`。
 
 | 宣稱 | 現實 |
 |-------|---------|

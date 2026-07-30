@@ -154,15 +154,15 @@ omg accept --yes
 
 ---
 
-### `omg team` — 实验性 tmux team plane（D1 零设定 + D3 multi-CLI + D2 分阶段 driver + D4 scale/resume/ralph）
+### `omg team` — tmux team plane（默认开启；D1 零设定 + D3 multi-CLI + D2 分阶段 driver + D4 scale/resume/ralph）
 
 | | |
 |--|--|
-| **何时** | 选择性多 pane ULW + 真实 worktree；测试用 hermetic dry-run |
-| **闸门** | `OMG_EXPERIMENTAL_TMUX_TEAM=1`（未设则拒绝） |
+| **何时** | 多 pane ULW + 真实 worktree；测试用 hermetic dry-run / fixture smoke |
+| **闸门** | **默认开启。** 关闭：`OMG_DISABLE_TMUX_TEAM=1`（旧 `OMG_EXPERIMENTAL_TMUX_TEAM=0` 也会关） |
 | **Skill** | `omg-team` — session slash **仅** `/oh-my-grok:omg-team`；自然语言 `team N …` |
 | **CLI** | `omg team launch`（argv 简写 `N`/`N:role`+goal → launch）；亦 `start\|run\|scale\|resume\|status\|collect\|stop\|api` |
-| **诚实范围** | 零设定 = grok panes；`--routing` 启 multi-CLI（含角色地板）。**整合**隔离（ownership + seal + integrate）— **不是**执行沙箱。`collect` / `run` / `scale` / `resume` 永不写 `verified`。scale/resume/ralph 是**同一** team plane 的生命周期延伸（无新隔离宣称）。**无裸 `/team` slash alias** — 2026-07-25 host 探测：plugin skill 为 `/name` 或 `/plugin:name`，无 frontmatter 可为 `omg-team` 注册 unnamespaced `/team`；其他 plugin 已占用 `team` skill 名。 |
+| **诚实范围** | 零设定 = grok panes；`--routing` 启 multi-CLI（含角色地板）。**整合**隔离（ownership + seal + integrate）— **不是**执行沙箱。`collect` / `run` / `scale` / `resume` 永不写 `verified`。scale/resume/ralph 是**同一** team plane 的生命周期延伸（无新隔离宣称）。Live 升格证据：`scripts/live_team_smoke.py --live` → `LIVE_TEAM_SMOKE_OK`（2026-07-30 本地；不进 CI）。**无裸 `/team` slash alias** — 2026-07-25 host 探测：plugin skill 为 `/name` 或 `/plugin:name`，无 frontmatter 可为 `omg-team` 注册 unnamespaced `/team`；其他 plugin 已占用 `team` skill 名。 |
 
 **`omg team run`** 是 team plane 上的**分阶段 DRIVER**（不是新的 planner/verifier）：
 
@@ -181,7 +181,6 @@ omg accept --yes
 - **`omg team resume --run ID`** — leader 重启后重读 `team.json`、对账 pane 存活；只做幂等 status 写入。
 
 ```bash
-export OMG_EXPERIMENTAL_TMUX_TEAM=1
 omg team start --goal "平行修 A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --dry-run
 omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --dry-run --max-fix 3
 omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --ralph --max-iter 2 --dry-run
@@ -190,6 +189,7 @@ omg team resume --run RUN
 omg team status --run RUN --json
 omg team collect --run RUN   # seal_all_tasks + integrate；永不 verified
 omg team stop --run RUN      # 只殺記錄的 session + pgid（禁止 pkill -f）
+# 关闭 team plane：export OMG_DISABLE_TMUX_TEAM=1
 ```
 
 ---

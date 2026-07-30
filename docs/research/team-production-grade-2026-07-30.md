@@ -94,28 +94,25 @@ OmO exposes a **managed** team FSM: start/status/stop/supervise/reclaim/deliver/
 
 ## 3. OMG current gap matrix (tmux team)
 
-### 3.1 Shipped (experimental)
+### 3.1 Shipped (production path, 2026-07-30)
 
 - Lifecycle commands + shorthand `omg team N[:role] "goal"`  
 - `--plan-only` / materialize split (#27)  
 - Zero-config grok panes; optional `--routing` multi-CLI  
-- P0 API: send-message, mailbox-list/mark-delivered, create/list tasks, claim/transition/release, get-summary, read-config, write-worker-inbox  
+- P0 + P0′ API: mailbox/task claim + reliability (heartbeat/shutdown/orphan) +
+  read-task/update-task/read-manifest/events  
 - Worktree ownership + seal + integrate  
 - Scale / resume / thin `team run` staged driver + optional ralph wrap  
-- Live smoke script exists; promotion still **not** claimed  
+- Process-level `worker-ready` + default-on gate + doctor team plane check  
+- **`LIVE_TEAM_SMOKE_OK`** local (2026-07-30); fixture `FIXTURE_TEAM_SMOKE_OK`  
 
-### 3.2 Missing for “production / non-experimental”
+### 3.2 Residual (explicitly non-blocking for production path)
 
 | Gap | Severity | Reference |
 |-----|----------|-----------|
-| Experimental env gate still required | **Blocker** for “default product” | OMX ships team as feature (with caveats) |
-| Live smoke promotion not green / not CI-required | **Blocker** | `LIVE_TEAM_SMOKE_OK` |
-| 22/33 API ops unimplemented | High for OMX interop tools | OMX full catalog names already listed |
-| No `omg doctor --team` | High | OMX doctor --team |
-| Shutdown protocol incomplete vs OMC blocking ack | High | OMC shutdown sequence |
-| Heartbeat/events/monitor-snapshot API missing | High | OMX worker status files |
+| Live smoke not CI-required | Medium (quota) | re-run `scripts/live_team_smoke.py --live` when needed |
+| Remaining ~11 API ops vs full OMX 33 | Medium for interop tools | broadcast / await-event / preflight pack deferred |
 | Preflight-context for resume after compaction | Medium | OMX preflight-context.json |
-| Orphan cleanup CLI | Medium | OMC cleanup-orphans / OMX force shutdown |
 | Atomic claim hardening evidence | Medium | OMC race notes; OMX claim tokens |
 | Provider posture honesty in UX (gemini none) | Medium | security-model already documents |
 | In-session Grok “implicit team” analogue | Out of scope / host limit | Use ULW + spawn_subagent |
@@ -308,17 +305,18 @@ Full 33-op clone is **not** a promotion requirement (~9 ops needed for shutdown/
 | P0-1 process `worker-ready` | **Shipped** (#62) |
 | P0′ heartbeat / shutdown / orphan + doctor | **Shipped** (#63) |
 | Default-on gate + `OMG_DISABLE_TMUX_TEAM` + fixture smoke | **Shipped** (#64) |
-| P0′ `read-task` / `update-task` / `read-manifest` / events | **Shipped** (branch `feat/team-p0-prime-task-events`) |
-| Grok-live `LIVE_TEAM_SMOKE_OK` | **Still open** (quota; not CI-required) |
+| P0′ `read-task` / `update-task` / `read-manifest` / events | **Shipped** (#65) |
+| Grok-live `LIVE_TEAM_SMOKE_OK` | **Shipped** (#66; local 2026-07-30; not CI) |
+| User-facing docs sync (no experimental gate language) | **This docs pass** |
 | Full 33-op / broadcast / await-event / preflight pack | Deferred (Phase B residual) |
 
 ### Immediate next actions
 
 1. ~~Land research doc~~ done.  
 2. ~~Phase A reliability + default-on~~ done on main via #62–#64.  
-3. Land P0′ task/events/manifest API PR.  
-4. Run `scripts/live_team_smoke.py --live` when quota available → archive `LIVE_TEAM_SMOKE_OK`.  
-5. Residual Phase B/C only after live proof (handoffs, preflight-context, broadcast).
+3. ~~Land P0′ task/events/manifest API~~ done (#65).  
+4. ~~`LIVE_TEAM_SMOKE_OK`~~ done (#66 local).  
+5. Optional Phase B residual only (handoffs, preflight-context, broadcast, CI wire).
 
 ---
 
@@ -329,4 +327,4 @@ Full 33-op clone is **not** a promotion requirement (~9 ops needed for shutdown/
 - [ ] Never claim OMC Stop stickiness on Grok  
 - [ ] Never set `verified` from team collect/stop  
 - [ ] Never use pkill -f for stop  
-- [ ] Live promotion evidence required before “production team” marketing  
+- [x] Live promotion evidence required before “production team” marketing (`LIVE_TEAM_SMOKE_OK` 2026-07-30)  

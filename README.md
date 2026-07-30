@@ -337,7 +337,7 @@ omg {setup,doctor,update,uninstall,note,state,cancel,resume,wiki,hud,lsp,
 | `omg ulw` / `ralph` / `ralplan` | Parallel / persist / plan-only modes |
 | `omg worker own\|prepare\|seal\|join` | ULW ownership + worktree + envelopes |
 | `omg worker seal --all [--force]` | Leader batch-seals every prepared worktree with a real `head_sha` (fail-closed; nonzero if any task failed) |
-| `omg team start\|run\|scale\|resume\|status\|collect\|stop` | Experimental tmux team plane; Grok-only by default, explicit provider routing optional |
+| `omg team start\|run\|scale\|resume\|status\|collect\|stop` | tmux team plane (**default on**; kill `OMG_DISABLE_TMUX_TEAM=1`); Grok-only by default, explicit provider routing optional |
 | `omg integrate` | Cherry-pick ULW envelopes (does **not** set verified alone) |
 | `omg review` / `omg qa` | Hash-bound review · UltraQA (**QA clean ≠ verified**) |
 | `omg autopilot …` | Strict phases; `start` / `transition` / `status` / `complete` — [skills](docs/skills.md#omg-autopilot--full-lifecycle-in-session) · [guide](docs/autopilot.md) |
@@ -521,7 +521,8 @@ Full dual-review ship bar (C1–C9) is complete. Recent lines:
 - **2026-07-20 core-purpose parity:** evidence stamps, session lease, interview, goal ledger + repair, ULW ownership/join, hash-bound review, UltraQA, strict autopilot; destination gates; CLI acceptance authority for `verified`.
 - **v0.2.6:** `omg --madmax` full-open host launch in tmux; OSS install dual-track + release protocol; CI smoke.
 - **v0.6.0:** versioned repository workflows; exact session routes and bounded recovery; project memory, tracker, compaction and outbound notifications; plugin MCP/LSP manifests; immutable GitHub-release installation and release readback.
-- **v0.5.0:** fail-closed gate and global-hook hardening; experimental gated multi-CLI tmux team plane with integration isolation; in-session MCP server; local LSP probe; editable packaging.
+- **v0.7.2+ team plane:** default-on `omg team` (kill `OMG_DISABLE_TMUX_TEAM`); process-ready + P0′ API + doctor; `LIVE_TEAM_SMOKE_OK` local 2026-07-30; integration isolation only.
+- **v0.5.0:** fail-closed gate and global-hook hardening; multi-CLI tmux team plane (then experimental-gated) with integration isolation; in-session MCP server; local LSP probe; editable packaging.
 - **v0.4.2:** `omg worker seal --all` — leader batch seal (fail-closed; valid `head_sha`); local-path installer force-refresh (uninstall+reinstall).
 - **v0.4.1:** backlog polish (`omg note --prune`, installed-snapshot capabilities lock, docs-drift guard) + command_policy break-glass floor hardening (fail-closed region boundary).
 - **v0.4.0:** OMC/OMX parity — global guidance injection (`~/.grok/rules/omg.md`); `omg update`/`uninstall`/`note`; self-healing installer + doctor drift checks; kill switches; capabilities lock; verdict-gate hardening + 6 audited security fixes (Fable 5 full-branch GO).

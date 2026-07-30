@@ -39,7 +39,7 @@ OMG **不取代** Grok Build。
 
 Workers 只经 Grok **`spawn_subagent`**（depth 1）。  
 **没有** OMC 式 Stop hard-pin（chat 不会被强制钉住）。中断就说 **继续** 或再呼叫 skill。  
-**tmux team：** 已有实验性 multi-CLI team plane（需设定 `OMG_EXPERIMENTAL_TMUX_TEAM=1`）；它只提供 worktree／seal／integrate 的**整合隔离**，不是执行 sandbox。
+**tmux team：** `omg team` **默认开启**（关闭：`OMG_DISABLE_TMUX_TEAM=1`；旧 `OMG_EXPERIMENTAL_TMUX_TEAM=0` 也会关）。零设定 = grok panes；`--routing` 可开 multi-CLI。只提供 worktree／seal／integrate 的**整合隔离**，不是执行 sandbox。
 **范围诚实：** core purpose 编排对等子集 — 仍不是完整 OMC skill zoo，也不宣称各 provider 有一致的执行 sandbox；详见 [`docs/security-model.md`](../security-model.md)。
 
 版本：**0.7.2** · License: MIT

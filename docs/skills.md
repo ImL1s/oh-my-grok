@@ -160,21 +160,20 @@ omg accept --yes
 
 ---
 
-### `omg team` — experimental tmux team plane (D1 zero-config + D3 multi-CLI + D2 staged driver + D4 scale/resume/ralph)
+### `omg team` — tmux team plane (default on; D1 zero-config + D3 multi-CLI + D2 staged driver + D4 scale/resume/ralph)
 
 | | |
 |--|--|
-| **When** | Opt-in multi-pane ULW with real worktrees; hermetic dry-run for tests |
-| **Gate** | `OMG_EXPERIMENTAL_TMUX_TEAM=1` (refused otherwise) |
+| **When** | Multi-pane ULW with real worktrees; hermetic dry-run / fixture smoke for tests |
+| **Gate** | **Default on.** Kill switch `OMG_DISABLE_TMUX_TEAM=1` (legacy `OMG_EXPERIMENTAL_TMUX_TEAM=0` also disables) |
 | **Skill** | `omg-team` — in-session slash **`/oh-my-grok:omg-team` only**; natural `team N …` |
 | **CLI** | `omg team launch` (argv shorthand `N`/`N:role`+goal → launch); also `start\|run\|scale\|resume\|status\|collect\|stop\|api` |
-| **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` / `scale` / `resume` never set `verified`. Scaling/resume/ralph are **lifecycle extensions** of the same team plane (no new isolation claims). Shorthand uses **split-pane** topology + seeds P0 `team api`; still experimental until live Grok promotion. **No bare `/team` slash alias** — 2026-07-25 host probe (`grok inspect` / plugin skill docs): skills are `/name` or `/plugin:name`; no frontmatter to register an unnamespaced `/team` for `omg-team`, and other plugins already expose `team` skills. |
+| **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` / `scale` / `resume` never set `verified`. Scaling/resume/ralph are **lifecycle extensions** of the same team plane (no new isolation claims). Shorthand uses **split-pane** topology + seeds team API (P0′ surface, not full OMX 33-op). Live promotion proof: `scripts/live_team_smoke.py --live` → `LIVE_TEAM_SMOKE_OK` (2026-07-30 local; not CI-required). **No bare `/team` slash alias** — 2026-07-25 host probe (`grok inspect` / plugin skill docs): skills are `/name` or `/plugin:name`; no frontmatter to register an unnamespaced `/team` for `omg-team`, and other plugins already expose `team` skills. |
 
 **Canonical shorthand (OMX-like):** `omg team` accepts `N` / `N:role` before the
 goal and normalizes to `launch` (not a separate argparse choice named `3`).
 
 ```bash
-export OMG_EXPERIMENTAL_TMUX_TEAM=1
 omg team launch --workers 3 --role executor --goal "fix flaky tests"
 # argv shorthand (same launch path): omg team <N[:role]> "<goal>"
 omg team launch --workers 2 --role executor --goal "map A and B" --dry-run
@@ -212,7 +211,6 @@ omg team stop --run RUN
 - **`omg team resume --run ID`** — re-read `team.json`, reconcile pane liveness after leader restart; idempotent status writes only.
 
 ```bash
-export OMG_EXPERIMENTAL_TMUX_TEAM=1
 omg team start --goal "parallelize A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --plan-only
 omg team start --goal "parallelize A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --dry-run
 # multi-CLI (role→provider); floors reject cursor-on-reviewer and unknown roles:
@@ -228,7 +226,8 @@ omg team status --run RUN --json
 omg team collect --run RUN   # seal_all_tasks + integrate; never verified
 omg team stop --run RUN      # kill recorded session + pgids only (no pkill -f)
 omg team api send-message --input '{"run_id":"RUN","team_id":"t","from_worker":"leader","to_worker":"w1","body":"hi"}' --json
-# P0 ops only (mailbox/task claim); not full OMX 33-op parity; gate OMG_EXPERIMENTAL_TMUX_TEAM=1
+# P0′ ops (mailbox/task/reliability/events); not full OMX 33-op parity
+# disable: export OMG_DISABLE_TMUX_TEAM=1
 ```
 
 ---

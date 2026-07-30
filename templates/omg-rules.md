@@ -32,9 +32,9 @@ For a reviewed, reusable stage graph use `omg workflow plan` and execute its
 tasks only through native `spawn_subagent`; return task-ID-bound receipts to
 `omg workflow run`. Do not launch foreign CLI workers or invent receipts.
 Durable tmux team panes (user says `team`, `team N`, `/oh-my-grok:omg-team`, or
-asks for tmux workers): run canonical `omg team [N[:role]] "<goal>"` with
-`omg team` (default on; `OMG_DISABLE_TMUX_TEAM=1` to kill). Do **not** substitute `spawn_subagent` /
-`omg ulw` for that request. Team remains experimental until live promotion.
+asks for tmux workers): run canonical `omg team [N[:role]] "<goal>"`
+(default on; `OMG_DISABLE_TMUX_TEAM=1` to kill). Do **not** substitute `spawn_subagent` /
+`omg ulw` for that request. Isolation remains integration-only (not an execution sandbox).
 **HARD RULE — autopilot mid-phase:** Inside ralplan / implement / review / qa /
 rework / acceptance: **do not ask the user**. Record uncertainty under
 `.omg/artifacts/` and keep working, or `omg autopilot transition --phase blocked`.

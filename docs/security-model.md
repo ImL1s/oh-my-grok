@@ -4,7 +4,7 @@ English | [简体中文](./security-model.zh.md) | [繁體中文](./security-mod
 
 **Canonical truth table** for isolation claims. README, skills, and doctor footers should link here rather than invent stronger wording.
 
-Last updated: 2026-07-28 · Plugin version: **0.7.2**
+Last updated: 2026-07-30 · Plugin version: **0.7.2**
 
 ## Layer table (strongest → weakest)
 
@@ -283,9 +283,9 @@ OMX/Sol-aligned root entry (not a mode FSM; never stamps `verified`):
 
 `--madmax` is intentional break-glass, not a sandbox. Document and name-prefix (`omg-`) are the mitigations — not PreToolUse.
 
-## Experimental team plane: `omg team` (D1 zero-config + D3 multi-CLI + D2 staged driver + D4 scale/resume/ralph)
+## Team plane: `omg team` (default on; D1 zero-config + D3 multi-CLI + D2 staged driver + D4 scale/resume/ralph)
 
-**Default on.** Kill switch **`OMG_DISABLE_TMUX_TEAM=1`** (legacy **`OMG_EXPERIMENTAL_TMUX_TEAM=0`** also disables). Lifecycle: `start` / `run` / `scale` / `resume` / `status` / `collect` / `stop`.
+**Default on** (promoted 2026-07-30; `LIVE_TEAM_SMOKE_OK` local). Kill switch **`OMG_DISABLE_TMUX_TEAM=1`** (legacy **`OMG_EXPERIMENTAL_TMUX_TEAM=0`** also disables). Lifecycle: `start` / `run` / `scale` / `resume` / `status` / `collect` / `stop`.
 
 | Claim | Reality |
 |-------|---------|

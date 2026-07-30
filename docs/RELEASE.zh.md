@@ -48,7 +48,7 @@ OMG_E2E=1 OMG_SMOKE_STRICT=0 ./scripts/smoke.sh
 
 Live Grok 闸门只在“依赖目前 host 行为”的宣称时才需要。设定档或 help probe **不能**把能力升格为 observed／healthy／verified。
 
-实验性 `omg team` 简写仍受 `OMG_EXPERIMENTAL_TMUX_TEAM=1` 闸控。升格闸门是 `scripts/live_team_smoke.py --live`：仅在非 dry panes、worktrees、ACK、claim→completed 与 stop 清会话全部通过后才打印 `LIVE_TEAM_SMOKE_OK`；dry 路径的 `DRY_TEAM_SMOKE_OK` 是隔离证明，不构成升格。在 live smoke 变绿之前，不得宣称 OMX 式 live team 启动，也不得移除实验闸门。
+`omg team` **默认开启**（关闭：`OMG_DISABLE_TMUX_TEAM=1`；旧 `OMG_EXPERIMENTAL_TMUX_TEAM=0` 也会关）。Hermetic 传输证明：`scripts/live_team_smoke.py --fixture-executor` → `FIXTURE_TEAM_SMOKE_OK`。Grok-live 升格证明：`scripts/live_team_smoke.py --live` → `LIVE_TEAM_SMOKE_OK`（quota；2026-07-30 本地已绿；**不要**只靠 fixture 宣称 Grok-live 对等）。不是完整 OMX 33-op。
 
 ## 冻结的 run manifest
 

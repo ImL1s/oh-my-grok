@@ -101,10 +101,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Added installed-hook drift recovery, child-only
   `OMG_ALLOW_EXTERNAL_CLI` guidance, known parser limitations, and the
   2026-07-28 soft-gate audit evidence.
+- **Team plane docs sync (post-promotion):** skills / security-model / README /
+  RELEASE (EN+zh+zh-TW), `CLAUDE.md`, and `templates/omg-rules.md` no longer
+  require `OMG_EXPERIMENTAL_TMUX_TEAM=1` or call team “experimental”; document
+  default-on + kill switch + `LIVE_TEAM_SMOKE_OK` (local) + integration-only
+  isolation honesty.
 
 ### Planned
-- Live Grok smoke promotion (`LIVE_TEAM_SMOKE_OK` evidence) before removing
-  the experimental gate for shorthand launch.
+- Optional residual team API ops (broadcast / await-event / preflight pack) —
+  not blockers for production path; full OMX 33-op not claimed.
+- Optional CI wire for live team smoke (quota-heavy; fixture path already hermetic).
 - Optional PyPI/`pipx` CLI track — **shipped editable-only** (`pyproject.toml` +
   `pipx install --editable` / `pip install -e .`); non-editable wheel / PyPI
   publish still deferred (`plugin_root()` needs checkout siblings).
@@ -113,7 +119,6 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Host Stop veto (not feasible on Grok today).
 - Full OMC semantic LSP proxy (host-owned `.lsp.json` registration ships in 0.6.0;
   OMG does not claim host health or proxy hover/rename/goto operations).
-- #29 Phase 2+ handler extraction; #30 global `--json` + shared renderer.
 
 ## [0.7.2] - 2026-07-28
 
