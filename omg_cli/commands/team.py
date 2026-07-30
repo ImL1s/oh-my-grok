@@ -1343,10 +1343,8 @@ def register_team_parsers(
         "api_op",
         metavar="OP",
         help=(
-            "operation name (P0: send-message, mailbox-list, "
-            "mailbox-mark-delivered, create-task, list-tasks, claim-task, "
-            "transition-task-status, release-task-claim, get-summary, "
-            "read-config, write-worker-inbox)"
+            "operation name (P0/P0′ mailbox+task+heartbeat+shutdown+orphan; "
+            "see omg_cli.team.api.P0_OPERATIONS)"
         ),
     )
     p_t_api.add_argument(

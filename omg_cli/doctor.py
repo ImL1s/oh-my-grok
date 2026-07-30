@@ -1180,6 +1180,41 @@ def run_checks() -> list[tuple[str, bool, str]]:
     ]
 
 
+def check_team_plane() -> SoftResult:
+    """Report experimental team gate, tmux availability, and P0′ API surface."""
+    name = "team plane"
+    try:
+        import shutil
+
+        from omg_cli.team.api import P0_OPERATIONS, TEAM_API_OPERATIONS, _HANDLERS
+        from omg_cli.team.plane import EXPERIMENTAL_ENV, experimental_enabled
+
+        tmux = shutil.which("tmux") is not None
+        gated = experimental_enabled()
+        handlers = len(_HANDLERS)
+        p0 = len(P0_OPERATIONS)
+        catalog = len(TEAM_API_OPERATIONS)
+        detail = (
+            f"gate={EXPERIMENTAL_ENV}={'on' if gated else 'off'}; "
+            f"tmux={'yes' if tmux else 'missing'}; "
+            f"api handlers={handlers}/{catalog} (P0′={p0}); "
+            "integration isolation only (not execution sandbox)"
+        )
+        if handlers != p0:
+            return (name, "warn", detail + "; handler/P0′ count mismatch")
+        if not tmux:
+            return (name, "warn", detail + "; install tmux for live team")
+        if not gated:
+            return (
+                name,
+                "ok",
+                detail + f"; set {EXPERIMENTAL_ENV}=1 to enable launches",
+            )
+        return (name, "ok", detail)
+    except Exception as exc:
+        return (name, "warn", f"team plane probe failed ({type(exc).__name__})")
+
+
 def run_soft_checks() -> list[SoftResult]:
     """Soft/best-effort checks (WARN by default; FAIL under --strict)."""
     return [
@@ -1193,6 +1228,7 @@ def run_soft_checks() -> list[SoftResult]:
         check_capabilities_lock(),
         check_installed_capabilities_lock(),
         check_installed_release_identity(),
+        check_team_plane(),
     ]
 
 
