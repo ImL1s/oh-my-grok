@@ -30,6 +30,7 @@ RESERVED_ACTIONS: frozenset[str] = frozenset(
         "shutdown",
         "api",
         "launch",
+        "worker-ready",
         "help",
         "-h",
         "--help",

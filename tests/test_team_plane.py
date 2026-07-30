@@ -203,7 +203,9 @@ def test_dry_run_writes_team_json_no_tmux_no_subprocess(
         assert "--cwd" in rec["argv"]
         assert rec["pane_command"]
         assert "XAI_API_KEY" not in rec["pane_command"]
-        assert "export " not in rec["pane_command"]
+        # Process-ready wrap may pin PYTHONPATH; forbid secret exports only.
+        assert "XAI_API_KEY=" not in rec["pane_command"]
+        assert "worker-ready" in rec["pane_command"]
         wt = Path(rec["worktree"])
         assert wt.is_dir()
         assert wt == worktree_dir(tmp_path, rid, rec["task_id"])

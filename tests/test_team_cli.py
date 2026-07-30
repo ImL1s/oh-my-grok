@@ -53,6 +53,7 @@ def test_normalize_goal_only_defaults_three() -> None:
 
 def test_normalize_preserves_legacy_and_shutdown_alias() -> None:
     assert normalize_team_argv(["team", "start", "--goal", "x"])[1] == "start"
+    assert normalize_team_argv(["team", "worker-ready"])[1] == "worker-ready"
     assert normalize_team_argv(["team", "shutdown", "alpha"]) == [
         "team",
         "stop",

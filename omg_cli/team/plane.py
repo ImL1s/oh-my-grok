@@ -579,8 +579,11 @@ def build_team_task_prompt(
             "",
             "## Coordination (CLI-first)",
             f"- Your worker id is `{task_id}` (also in `OMG_TEAM_WORKER_ID`).",
+            "- Process readiness is already recorded by the pane wrapper "
+            "(`omg team worker-ready`) before this model session starts.",
             "- Read your inbox under the team api worker dir when present.",
-            "- First action: ACK the leader via team api, e.g.",
+            "- If your tools allow shell, optionally enrich readiness with a "
+            "mailbox ACK (not required for launch success):",
             "  `OMG_EXPERIMENTAL_TMUX_TEAM=1 omg team api send-message --input "
             f"'{{\"run_id\":\"{run_id}\",\"team_id\":\"team\",\"from_worker\":\"{task_id}\","
             "\"to_worker\":\"leader-fixed\",\"body\":\"ACK\"}'`",
@@ -826,12 +829,43 @@ def _pane_env_pairs(
     return sorted(merged.items(), key=lambda kv: kv[0])
 
 
+def build_worker_ready_prefix() -> str:
+    """Shell fragment: write process-level ready receipt, then continue pane.
+
+    Pins ``PYTHONPATH`` to the repo that contains ``omg_cli`` so detached tmux
+    panes (no parent env) can still import the package.
+    """
+    import shlex
+    import sys
+
+    repo_root = Path(__file__).resolve().parents[2]
+    py_path = shlex.quote(str(repo_root))
+    ready = shlex.join(
+        [sys.executable, "-m", "omg_cli.main", "team", "worker-ready"]
+    )
+    # Portable env prefix (dash/sh/bash/zsh) — avoid bash-only ${var:+…}.
+    return f"PYTHONPATH={py_path}:$PYTHONPATH {ready}"
+
+
+def wrap_pane_with_worker_ready(pane_command: str) -> str:
+    """Prefix *pane_command* with process-level ``team worker-ready``.
+
+    Fail-closed: if ready fails, the worker binary is not started.
+    """
+    prefix = build_worker_ready_prefix()
+    cmd = str(pane_command or "").strip()
+    if not cmd:
+        raise TeamError("wrap_pane_with_worker_ready requires a non-empty command")
+    # Compound via && so readiness is a hard gate before the model/agent runs.
+    return f"{prefix} && {cmd}"
+
+
 def build_fixture_pane_command() -> str:
     """Pane command for hermetic transport smoke (ACK fixture; no grok).
 
     Resolves ``tests/fixtures/team_worker_fixture.py`` relative to the repo
     checkout that contains ``omg_cli/``. Production grok path is unchanged when
-    ``executor`` is omitted.
+    ``executor`` is omitted. Always wrapped with process-level worker-ready.
     """
     import shlex
     import sys
@@ -846,7 +880,9 @@ def build_fixture_pane_command() -> str:
         raise TeamError(
             f"fixture executor requested but missing fixture script: {fixture}"
         )
-    return shlex.join([sys.executable, str(fixture)])
+    return wrap_pane_with_worker_ready(
+        shlex.join([sys.executable, str(fixture)])
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1909,11 +1945,13 @@ def start_team(
                 provider = inv.provider
                 posture = inv.posture
                 prompt_delivery = inv.prompt_delivery
-                pane_cmd = build_executor_pane_command(
-                    argv,
-                    needs_pty=needs_pty,
-                    prompt_delivery=prompt_delivery,
-                    prompt_file=prompt_path,
+                pane_cmd = wrap_pane_with_worker_ready(
+                    build_executor_pane_command(
+                        argv,
+                        needs_pty=needs_pty,
+                        prompt_delivery=prompt_delivery,
+                        prompt_file=prompt_path,
+                    )
                 )
             else:
                 # D1 zero-config path — identical to pre-D3 behavior.
@@ -1933,10 +1971,13 @@ def start_team(
                 provider = "grok"
                 posture = "read-write"  # executor default; D1 does not route roles
                 prompt_delivery = PROMPT_DELIVERY_PROMPT_FILE
-                pane_cmd = build_pane_command(_grok_args_for_pane(argv))
+                pane_cmd = wrap_pane_with_worker_ready(
+                    build_pane_command(_grok_args_for_pane(argv))
+                )
 
             if fixture_pane_cmd is not None:
                 # Hermetic transport override — keep argv record for diagnostics.
+                # fixture builder already includes worker-ready wrap.
                 pane_cmd = fixture_pane_cmd
                 provider = "fixture"
 
@@ -4347,6 +4388,8 @@ __all__ = [
     "WORKSPACE_MODE",
     "build_executor_pane_command",
     "build_fixture_pane_command",
+    "build_worker_ready_prefix",
+    "wrap_pane_with_worker_ready",
     "build_team_task_prompt",
     "collect_team",
     "experimental_enabled",
