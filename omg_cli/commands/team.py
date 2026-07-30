@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from omg_cli.cli_envelope import emit_data
 from omg_cli.cli_util import project_root
@@ -534,6 +535,47 @@ def cmd_team(args: argparse.Namespace) -> int:
             )
             emit_data(args, "team", result)
             return 0 if not result.get("errors") else 1
+        if action == "worker-ready":
+            # Process-level readiness (pane wrapper). Env-bound identity only.
+            import os
+
+            from omg_cli.team.runtime import write_worker_ready_receipt
+
+            worker_id = (os.environ.get("OMG_TEAM_WORKER_ID") or "").strip()
+            run_id = (os.environ.get("OMG_TEAM_RUN_ID") or "").strip()
+            team_id = (os.environ.get("OMG_TEAM_ID") or "team").strip() or "team"
+            leader = (
+                os.environ.get("OMG_TEAM_LEADER_ROOT")
+                or os.environ.get("OMG_PROJECT_ROOT")
+                or ""
+            ).strip()
+            if not worker_id or not run_id:
+                print(
+                    "omg team worker-ready: requires OMG_TEAM_WORKER_ID and "
+                    "OMG_TEAM_RUN_ID in the environment",
+                    file=sys.stderr,
+                )
+                return 2
+            ready_root = Path(leader).resolve() if leader else root
+            path = write_worker_ready_receipt(
+                ready_root,
+                run_id=run_id,
+                team_id=team_id,
+                worker_id=worker_id,
+                source="process",
+            )
+            emit_data(
+                args,
+                "team.worker-ready",
+                {
+                    "ok": True,
+                    "worker_id": worker_id,
+                    "run_id": run_id,
+                    "team_id": team_id,
+                    "ready_path": str(path),
+                },
+            )
+            return 0
         if action == "api":
             from omg_cli.team.api import (
                 TeamApiError,
@@ -1278,6 +1320,16 @@ def register_team_parsers(
         ),
     )
     p_t_stop.set_defaults(func=cmd_team, team_action="stop")
+
+    p_t_ready = team_sub.add_parser(
+        "worker-ready",
+        parents=[common],
+        help=(
+            "process-level readiness receipt for a pane wrapper "
+            "(reads OMG_TEAM_* env; primary launch gate)"
+        ),
+    )
+    p_t_ready.set_defaults(func=cmd_team, team_action="worker-ready")
 
     p_t_api = team_sub.add_parser(
         "api",

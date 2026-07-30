@@ -38,12 +38,15 @@ from omg_cli.team.roles import normalize_role, role_meta
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
-# Bounded wait for worker ACK messages before reporting launch as running.
+# Bounded wait for worker readiness before reporting launch as running.
+# Process-level ready receipts (``team worker-ready``) count as ready; mailbox
+# body=ACK remains an optional model-level enrichment (# production P0-1).
 READY_TIMEOUT_ENV = "OMG_TEAM_READY_TIMEOUT_MS"
 DEFAULT_READY_TIMEOUT_MS = 45_000
 _LEADER_ID = "leader-fixed"
 _ACK_BODY = "ACK"
 _ACK_POLL_S = 0.25
+_READY_FILENAME = "ready.json"
 
 
 def _slug_team_name(goal: str, run_id: str) -> str:
@@ -231,13 +234,109 @@ def ready_timeout_ms(env: Mapping[str, str] | None = None) -> int:
     return value
 
 
+def worker_ready_path(
+    root: Path | str, *, run_id: str, team_id: str, worker_id: str
+) -> Path:
+    """Per-worker process-level readiness receipt path."""
+    rid = require_safe_id(run_id, label="run_id")
+    tid = require_safe_id(team_id, label="team_id")
+    wid = require_safe_id(worker_id, label="worker_id")
+    return (
+        Path(root).resolve()
+        / ".omg"
+        / "state"
+        / "runs"
+        / rid
+        / "team"
+        / safe_path_key(tid, namespace="team")
+        / "workers"
+        / safe_path_key(wid, namespace="worker")
+        / _READY_FILENAME
+    )
+
+
+def write_worker_ready_receipt(
+    root: Path | str,
+    *,
+    run_id: str,
+    team_id: str,
+    worker_id: str,
+    source: str = "process",
+) -> Path:
+    """Write CLI-stamped process readiness receipt (pane wrapper / fixture).
+
+    Does **not** require mailbox or shell inside the worker model — used as the
+    primary readiness signal so read-only posture panes can still go ``running``.
+    """
+    from datetime import datetime, timezone
+
+    from omg_cli.contracts.path_keys import atomic_write_bytes
+
+    path = worker_ready_path(
+        root, run_id=run_id, team_id=team_id, worker_id=worker_id
+    )
+    ensure_managed_dir(path.parent)
+    payload = {
+        "schema_version": 1,
+        "writer": CLI_WRITER,
+        "kind": "worker_ready",
+        "run_id": require_safe_id(run_id, label="run_id"),
+        "team_id": require_safe_id(team_id, label="team_id"),
+        "worker_id": require_safe_id(worker_id, label="worker_id"),
+        "source": str(source or "process"),
+        "ready_at": datetime.now(timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "pid": os.getpid(),
+    }
+    body = (
+        json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    atomic_write_bytes(path, body, mode=DATA_FILE_MODE)
+    return path
+
+
+def collect_process_ready_workers(
+    root: Path | str,
+    *,
+    run_id: str,
+    team_id: str,
+    expected_workers: Sequence[str] | None = None,
+) -> set[str]:
+    """Return worker ids that have a valid process-level ready receipt."""
+    expected = [
+        str(w).strip() for w in (expected_workers or ()) if str(w).strip()
+    ]
+    ready: set[str] = set()
+    for wid in expected:
+        path = worker_ready_path(
+            root, run_id=run_id, team_id=team_id, worker_id=wid
+        )
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if data.get("writer") != CLI_WRITER:
+            continue
+        if data.get("kind") != "worker_ready":
+            continue
+        if str(data.get("worker_id") or "").strip() != wid:
+            continue
+        ready.add(wid)
+    return ready
+
+
 def collect_startup_ack_workers(
     root: Path | str,
     *,
     run_id: str,
     team_id: str,
 ) -> set[str]:
-    """Return worker ids that sent body=ACK to ``leader-fixed``."""
+    """Return worker ids that sent body=ACK to ``leader-fixed`` (mailbox)."""
     try:
         listing = list_messages(
             root,
@@ -282,12 +381,16 @@ def wait_for_startup_acks(
     env: Mapping[str, str] | None = None,
     poll_s: float = _ACK_POLL_S,
 ) -> dict[str, Any]:
-    """Poll leader mailbox until all workers ACK or timeout.
+    """Poll until every expected worker is process-ready and/or mailbox-ACK.
 
-    Returns ``startup_acks``, ``startup_ack_workers``, ``startup_status``:
-    - ``running`` — every expected worker ACKed
-    - ``degraded`` — some but not all ACKed
-    - ``failed_start`` — zero ACKs
+    Process-level ``ready.json`` (from ``omg team worker-ready``) is the primary
+    gate so read-only posture panes can start without shell. Mailbox ``ACK`` is
+    still counted separately for diagnostics / enrichment.
+
+    Returns:
+    - ``running`` — every expected worker process-ready **or** ACKed
+    - ``degraded`` — some but not all ready
+    - ``failed_start`` — zero ready signals
     """
     expected = [str(w).strip() for w in expected_workers if str(w).strip()]
     expected_set = set(expected)
@@ -296,10 +399,19 @@ def wait_for_startup_acks(
         raise TeamGateError("ready timeout_ms must be >= 0")
     deadline = time.monotonic() + (ms / 1000.0)
     acked: set[str] = set()
+    process_ready: set[str] = set()
     while True:
         acked = collect_startup_ack_workers(root, run_id=run_id, team_id=team_id)
         acked &= expected_set
-        if expected_set and acked >= expected_set:
+        process_ready = collect_process_ready_workers(
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            expected_workers=expected,
+        )
+        process_ready &= expected_set
+        ready = acked | process_ready
+        if expected_set and ready >= expected_set:
             break
         if not expected:
             break
@@ -307,9 +419,12 @@ def wait_for_startup_acks(
             break
         time.sleep(max(0.05, float(poll_s)))
 
-    ordered = [w for w in expected if w in acked]
-    missing = [w for w in expected if w not in acked]
-    count = len(ordered)
+    ready = acked | process_ready
+    ordered_ready = [w for w in expected if w in ready]
+    ordered_ack = [w for w in expected if w in acked]
+    ordered_proc = [w for w in expected if w in process_ready]
+    missing = [w for w in expected if w not in ready]
+    count = len(ordered_ready)
     if not expected:
         status = "running"
     elif count == len(expected):
@@ -319,8 +434,12 @@ def wait_for_startup_acks(
     else:
         status = "degraded"
     return {
-        "startup_acks": count,
-        "startup_ack_workers": ordered,
+        # Mailbox ACK count (backward-compatible field name)
+        "startup_acks": len(ordered_ack),
+        "startup_ack_workers": ordered_ack,
+        "startup_process_ready": len(ordered_proc),
+        "startup_process_ready_workers": ordered_proc,
+        "startup_ready_workers": ordered_ready,
         "startup_missing_workers": missing,
         "startup_status": status,
         "startup_expected": len(expected),
@@ -383,22 +502,28 @@ def startup_readiness_payload(
         poll_s=poll_s,
     )
     status = str(startup["startup_status"])
+    proc_n = int(startup.get("startup_process_ready") or 0)
+    ack_n = int(startup.get("startup_acks") or 0)
+    ready_n = len(startup.get("startup_ready_workers") or [])
     if status == "running":
         startup["startup_note"] = (
-            f"all {startup['startup_acks']} workers ACK'd within "
+            f"all {ready_n} workers ready "
+            f"(process={proc_n}, mailbox_ack={ack_n}) within "
             f"{startup['ready_timeout_ms']}ms"
         )
     elif status == "degraded":
         startup["startup_note"] = (
-            f"partial ACK {startup['startup_acks']}/"
-            f"{startup['startup_expected']} within "
+            f"partial ready {ready_n}/"
+            f"{startup['startup_expected']} "
+            f"(process={proc_n}, mailbox_ack={ack_n}) within "
             f"{startup['ready_timeout_ms']}ms "
             f"(knob {READY_TIMEOUT_ENV}); state left for diagnosis"
         )
     else:
         startup["startup_note"] = (
-            f"zero ACKs within {startup['ready_timeout_ms']}ms "
-            f"(knob {READY_TIMEOUT_ENV}); state left for diagnosis"
+            f"zero readiness signals within {startup['ready_timeout_ms']}ms "
+            f"(process/mailbox; knob {READY_TIMEOUT_ENV}); "
+            "state left for diagnosis"
         )
     return startup
 
@@ -465,6 +590,9 @@ def apply_start_readiness(
     for key in (
         "startup_acks",
         "startup_ack_workers",
+        "startup_process_ready",
+        "startup_process_ready_workers",
+        "startup_ready_workers",
         "startup_missing_workers",
         "startup_status",
         "startup_expected",

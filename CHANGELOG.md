@@ -59,6 +59,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   (early workflow / late interview+goal) and `register_mcp_parsers`.
 - **team + modes + note parser registration** (#29 Phase 4′): `register_team_parsers`,
   `register_modes_parsers`, `register_note_parser`. All top-level parsers leave `main`.
+- **Team process-level readiness (P0-1):** pane commands run `omg team worker-ready`
+  before the agent binary; launch success counts process receipts **or** mailbox
+  ACK so read-only posture panes are not structurally `failed_start`.
 - **Golden envelope tests** (#30): exit 0/1/2 matrix for state/capabilities/lsp/hud
   plus wiki/memory/native-status/workflow/team plan-only/cancel.
 - **`omg cancel --json`** failure path emits `E_RUN_NOT_FOUND` envelope (no prose stdout).

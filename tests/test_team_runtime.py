@@ -94,10 +94,10 @@ def test_wait_for_startup_acks_full_partial_zero(
     run_id = "run-ack-wait"
     team_id = "team"
     # Seed empty mailbox via first send is enough once control plane exists —
-    # wait_for_startup_acks only reads mailbox; inject ACKs directly.
+    # wait_for_startup_acks reads mailbox ACK + process ready receipts.
     monkeypatch.setenv("OMG_TEAM_READY_TIMEOUT_MS", "200")
 
-    # Zero ACKs → failed_start
+    # Zero signals → failed_start
     zero = wait_for_startup_acks(
         tmp_path,
         run_id=run_id,
@@ -108,6 +108,7 @@ def test_wait_for_startup_acks_full_partial_zero(
     )
     assert zero["startup_status"] == "failed_start"
     assert zero["startup_acks"] == 0
+    assert zero["startup_process_ready"] == 0
 
     send_message(
         tmp_path,
@@ -154,6 +155,47 @@ def test_wait_for_startup_acks_full_partial_zero(
     assert full["startup_status"] == "running"
     assert full["startup_acks"] == 2
     assert full["startup_ack_workers"] == ["w1", "w2"]
+
+
+def test_process_ready_alone_makes_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Process-level ready receipts satisfy readiness without mailbox ACK."""
+    from omg_cli.team.runtime import (
+        wait_for_startup_acks,
+        write_worker_ready_receipt,
+    )
+
+    monkeypatch.setenv("OMG_TEAM_READY_TIMEOUT_MS", "200")
+    run_id = "run-proc-ready"
+    team_id = "team"
+    write_worker_ready_receipt(
+        tmp_path, run_id=run_id, team_id=team_id, worker_id="w1"
+    )
+    write_worker_ready_receipt(
+        tmp_path, run_id=run_id, team_id=team_id, worker_id="w2"
+    )
+    out = wait_for_startup_acks(
+        tmp_path,
+        run_id=run_id,
+        team_id=team_id,
+        expected_workers=["w1", "w2"],
+        timeout_ms=100,
+        poll_s=0.01,
+    )
+    assert out["startup_status"] == "running"
+    assert out["startup_acks"] == 0
+    assert out["startup_process_ready"] == 2
+    assert out["startup_ready_workers"] == ["w1", "w2"]
+
+
+def test_wrap_pane_with_worker_ready_prefixes_command() -> None:
+    from omg_cli.team.plane import wrap_pane_with_worker_ready
+
+    wrapped = wrap_pane_with_worker_ready("echo hi")
+    assert "team" in wrapped and "worker-ready" in wrapped
+    assert wrapped.endswith("echo hi")
+    assert "&&" in wrapped
 
 
 def test_ready_timeout_ms_rejects_junk(monkeypatch: pytest.MonkeyPatch) -> None:

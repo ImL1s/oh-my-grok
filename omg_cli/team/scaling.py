@@ -349,13 +349,19 @@ def _build_pane_record(
         provider = inv.provider
         posture = inv.posture
         prompt_delivery = inv.prompt_delivery
-        pane_cmd = build_executor_pane_command(
-            argv,
-            needs_pty=needs_pty,
-            prompt_delivery=prompt_delivery,
-            prompt_file=prompt_path,
+        from omg_cli.team.plane import wrap_pane_with_worker_ready
+
+        pane_cmd = wrap_pane_with_worker_ready(
+            build_executor_pane_command(
+                argv,
+                needs_pty=needs_pty,
+                prompt_delivery=prompt_delivery,
+                prompt_file=prompt_path,
+            )
         )
     else:
+        from omg_cli.team.plane import wrap_pane_with_worker_ready
+
         argv = _build_task_grok_argv(
             goal=goal,
             run_id=run_id,
@@ -372,7 +378,9 @@ def _build_pane_record(
         provider = "grok"
         posture = "read-write"
         prompt_delivery = PROMPT_DELIVERY_PROMPT_FILE
-        pane_cmd = build_pane_command(_grok_args_for_pane(argv))
+        pane_cmd = wrap_pane_with_worker_ready(
+            build_pane_command(_grok_args_for_pane(argv))
+        )
 
     argv_path = tdir / f"{tid}.argv.json"
     argv_path.write_text(
