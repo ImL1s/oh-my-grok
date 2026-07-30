@@ -843,8 +843,8 @@ def build_worker_ready_prefix() -> str:
     ready = shlex.join(
         [sys.executable, "-m", "omg_cli.main", "team", "worker-ready"]
     )
-    # Export for the rest of the compound command (fixture / grok) as well.
-    return f"export PYTHONPATH={py_path}${{PYTHONPATH:+:$PYTHONPATH}}; {ready}"
+    # Portable env prefix (dash/sh/bash/zsh) — avoid bash-only ${var:+…}.
+    return f"PYTHONPATH={py_path}:$PYTHONPATH {ready}"
 
 
 def wrap_pane_with_worker_ready(pane_command: str) -> str:

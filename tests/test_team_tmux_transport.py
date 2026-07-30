@@ -163,13 +163,20 @@ def test_split_transport_two_panes_and_acks(
         run_id = str(meta["run_id"])
         assert session
         assert _pane_count(session) == 2
-        assert meta.get("startup_acks") == 2
         assert meta.get("startup_status") == "running"
-        assert set(meta.get("startup_ack_workers") or []) == {"w1", "w2"}
+        # Process-level ready is primary; mailbox ACK remains enrichment.
+        proc_ready = int(meta.get("startup_process_ready") or 0)
+        acks_n = int(meta.get("startup_acks") or 0)
+        assert proc_ready == 2 or acks_n == 2, meta
+        ready_workers = set(meta.get("startup_ready_workers") or [])
+        if not ready_workers:
+            ready_workers = set(meta.get("startup_ack_workers") or [])
+        assert ready_workers == {"w1", "w2"}
 
         acks = _wait_acks(
             tmp_path, run_id=run_id, team_id=TEAM_ID, expected=2, timeout_s=5.0
         )
+        # Fixture still sends mailbox ACK for transport proof.
         assert len(acks) == 2, f"expected 2 ACK messages, got {acks!r}"
         senders = {str(m.get("sender_id") or "") for m in acks}
         assert senders == {"w1", "w2"}
