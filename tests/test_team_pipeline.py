@@ -535,12 +535,15 @@ def test_cli_team_run_dry_run(
     assert disk["writer"] == CLI_WRITER
 
 
-def test_cli_team_run_refuses_without_gate(
+def test_cli_team_run_refuses_with_kill_switch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    from omg_cli.team.plane import DISABLE_ENV
+
     _init_repo(tmp_path)
     env = os.environ.copy()
     env.pop(EXPERIMENTAL_ENV, None)
+    env[DISABLE_ENV] = "1"
     env["PYTHONPATH"] = str(REPO_ROOT) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
     )
@@ -562,7 +565,8 @@ def test_cli_team_run_refuses_without_gate(
         text=True,
     )
     assert r.returncode == 2
-    assert EXPERIMENTAL_ENV in (r.stderr + r.stdout)
+    blob = r.stderr + r.stdout
+    assert DISABLE_ENV in blob or "disabled" in blob
 
 
 def test_refuses_spawned_worker(

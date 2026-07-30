@@ -3,16 +3,19 @@ name: omg-team
 description: Durable tmux team workers via omg team N[:role] "goal". Use when user says team, team N, tmux team, or wants parallel panes — not spawn_subagent ULW. Slash invoke is /oh-my-grok:omg-team only (no bare /team).
 ---
 
-# omg-team — Durable tmux team (experimental)
+# omg-team — Durable tmux team (default on)
 
 Launch **real tmux worker panes** coordinated by the `omg` CLI. This is **not**
 `spawn_subagent` / `omg-ultrawork` and **not** host `--madmax`.
 
-Requires `OMG_EXPERIMENTAL_TMUX_TEAM=1`. Still experimental until live Grok smoke
-promotion; do not claim full OMX `$team` parity.
+**Default on.** Kill switch: `OMG_DISABLE_TMUX_TEAM=1` (legacy
+`OMG_EXPERIMENTAL_TMUX_TEAM=0` also disables). Isolation remains **integration**
+only (worktree + seal) — not an execution sandbox. Do not claim full OMX
+`$team` 33-op parity.
 
-Live launch polls worker ACKs (`body=ACK` → `leader-fixed`) before success.
-Timeout: `OMG_TEAM_READY_TIMEOUT_MS` (default 45000). Partial/zero ACK exits
+Launch readiness is **process-level** (`omg team worker-ready` receipt) before
+the agent binary; mailbox `ACK` is optional enrichment. Timeout:
+`OMG_TEAM_READY_TIMEOUT_MS` (default 45000). Partial/zero readiness exits
 non-zero and leaves state for diagnosis — never silent dry-run/ULW fallback.
 
 ## HARD RULES
@@ -30,10 +33,10 @@ non-zero and leaves state for diagnosis — never silent dry-run/ULW fallback.
 ## Canonical launch
 
 ```bash
-export OMG_EXPERIMENTAL_TMUX_TEAM=1
 omg team 3:executor "fix flaky tests"
 # equivalent:
 omg team launch --workers 3 --role executor --goal "fix flaky tests"
+# disable: export OMG_DISABLE_TMUX_TEAM=1
 ```
 
 In-session: `/oh-my-grok:omg-team 3:executor fix flaky tests` (or natural

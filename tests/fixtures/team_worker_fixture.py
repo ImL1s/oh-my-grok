@@ -79,9 +79,13 @@ def _send_ack(*, leader_root: Path, worker_id: str) -> int:
 
 
 def main() -> int:
-    if (os.environ.get(EXPERIMENTAL_ENV) or "").strip() != "1":
+    # Team plane default-on; kill switch or legacy EXPERIMENTAL=0 disables.
+    disable = (os.environ.get("OMG_DISABLE_TMUX_TEAM") or "").strip().lower()
+    exp = (os.environ.get(EXPERIMENTAL_ENV) or "").strip().lower()
+    if disable in ("1", "true", "yes", "on") or exp in ("0", "false", "no", "off"):
         print(
-            f"team_worker_fixture: requires {EXPERIMENTAL_ENV}=1",
+            "team_worker_fixture: team plane disabled "
+            f"(OMG_DISABLE_TMUX_TEAM or {EXPERIMENTAL_ENV}=0)",
             file=sys.stderr,
         )
         return 2

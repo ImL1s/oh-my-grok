@@ -55,7 +55,7 @@ COMMAND_SPECS: Final[tuple[CommandSpec, ...]] = (
     CommandSpec("accept", "acceptance + verified stamp", "team"),
     CommandSpec("integrate", "worktree integrate", "team"),
     CommandSpec("worker", "ULW worker ownership", "team"),
-    CommandSpec("team", "experimental tmux team", "team"),
+    CommandSpec("team", "tmux team plane (default on; kill-switch OMG_DISABLE_TMUX_TEAM)", "team"),
     CommandSpec("review", "structured dual review", "modes"),
     CommandSpec("qa", "ultraqa freeze/run", "modes"),
     CommandSpec("autopilot", "strict phase FSM", "modes"),

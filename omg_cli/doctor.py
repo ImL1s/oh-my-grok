@@ -1187,25 +1187,30 @@ def check_team_plane() -> SoftResult:
         import shutil
 
         from omg_cli.team.api import P0_OPERATIONS, TEAM_API_OPERATIONS, _HANDLERS
-        from omg_cli.team.plane import EXPERIMENTAL_ENV, experimental_enabled
+        from omg_cli.team.plane import (
+            DISABLE_ENV,
+            EXPERIMENTAL_ENV,
+            experimental_enabled,
+        )
 
         tmux = shutil.which("tmux") is not None
-        gated = experimental_enabled()
+        enabled = experimental_enabled()
         handlers = len(_HANDLERS)
         p0 = len(P0_OPERATIONS)
         catalog = len(TEAM_API_OPERATIONS)
         detail = (
-            f"gate={EXPERIMENTAL_ENV}={'on' if gated else 'off'}; "
+            f"team_plane={'on' if enabled else 'off'}; "
+            f"kill_switch={DISABLE_ENV}; legacy_opt={EXPERIMENTAL_ENV}; "
             f"tmux={'yes' if tmux else 'missing'}; "
             f"api handlers={handlers}/{catalog} (P0′={p0}); "
             "integration isolation only (not execution sandbox)"
         )
-        # Only warn on API surface drift. Missing tmux / gate-off are expected
-        # on CI and install images — report as ok detail, never fail --strict.
+        # Only warn on API surface drift. Missing tmux is expected on CI
+        # images — report as ok detail, never fail --strict.
         if handlers != p0:
             return (name, "warn", detail + "; handler/P0′ count mismatch")
-        if not gated:
-            detail += f"; set {EXPERIMENTAL_ENV}=1 to enable launches"
+        if not enabled:
+            detail += f"; unset {DISABLE_ENV} (and avoid {EXPERIMENTAL_ENV}=0)"
         if not tmux:
             detail += "; install tmux for live team panes"
         return (name, "ok", detail)

@@ -114,8 +114,14 @@ def _boom_subprocess(*_a: Any, **_k: Any) -> Any:
 
 
 def test_experimental_gate_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+    from omg_cli.team.plane import DISABLE_ENV
+
     monkeypatch.delenv(EXPERIMENTAL_ENV, raising=False)
+    monkeypatch.delenv(DISABLE_ENV, raising=False)
+    assert experimental_enabled() is True  # default on
+    monkeypatch.setenv(DISABLE_ENV, "1")
     assert experimental_enabled() is False
+    monkeypatch.delenv(DISABLE_ENV, raising=False)
     monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
     assert experimental_enabled() is True
     monkeypatch.delenv(TEAM_WORKER_ENV, raising=False)
@@ -124,12 +130,14 @@ def test_experimental_gate_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert in_spawned_worker_context() is True
 
 
-def test_start_refuses_without_experimental_env(
+def test_start_refuses_when_kill_switch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    from omg_cli.team.plane import DISABLE_ENV
+
     _init_repo(tmp_path)
-    monkeypatch.delenv(EXPERIMENTAL_ENV, raising=False)
-    with pytest.raises(TeamGateError, match=EXPERIMENTAL_ENV):
+    monkeypatch.setenv(DISABLE_ENV, "1")
+    with pytest.raises(TeamGateError, match=DISABLE_ENV):
         start_team("g", TASKS_TWO, root=tmp_path, dry_run=True)
 
 
@@ -252,12 +260,15 @@ def test_cli_team_start_dry_run(
     assert team_meta_path(tmp_path, payload["run_id"]).is_file()
 
 
-def test_cli_team_start_refuses_without_gate(
+def test_cli_team_start_refuses_with_kill_switch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    from omg_cli.team.plane import DISABLE_ENV
+
     _init_repo(tmp_path)
     env = os.environ.copy()
     env.pop(EXPERIMENTAL_ENV, None)
+    env[DISABLE_ENV] = "1"
     env["PYTHONPATH"] = str(REPO_ROOT) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
     )
@@ -279,7 +290,7 @@ def test_cli_team_start_refuses_without_gate(
         text=True,
     )
     assert r.returncode == 2
-    assert EXPERIMENTAL_ENV in (r.stderr + r.stdout)
+    assert DISABLE_ENV in (r.stderr + r.stdout)
 
 
 def test_live_start_persists_nonce_bound_immutable_launch_receipt(

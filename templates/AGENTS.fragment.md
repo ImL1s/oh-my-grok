@@ -24,7 +24,7 @@ omg doctor         # health checks
 omg state          # active run status
 omg cancel         # abort active run
 omg ulw "goal"     # parallel ultrawork (spawn_subagent)
-omg team launch --workers 3 --goal "…"  # experimental tmux team (OMG_EXPERIMENTAL_TMUX_TEAM=1)
+omg team launch --workers 3 --goal "…"  # tmux team (default on; OMG_DISABLE_TMUX_TEAM=1)
 omg ralph "goal"   # persistence loop
 omg ralplan "goal" # plan consensus
 omg workflow list  # installed repository workflows

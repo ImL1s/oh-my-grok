@@ -285,7 +285,7 @@ OMX/Sol-aligned root entry (not a mode FSM; never stamps `verified`):
 
 ## Experimental team plane: `omg team` (D1 zero-config + D3 multi-CLI + D2 staged driver + D4 scale/resume/ralph)
 
-Gated by **`OMG_EXPERIMENTAL_TMUX_TEAM=1`**. Lifecycle: `start` / `run` / `scale` / `resume` / `status` / `collect` / `stop`.
+**Default on.** Kill switch **`OMG_DISABLE_TMUX_TEAM=1`** (legacy **`OMG_EXPERIMENTAL_TMUX_TEAM=0`** also disables). Lifecycle: `start` / `run` / `scale` / `resume` / `status` / `collect` / `stop`.
 
 | Claim | Reality |
 |-------|---------|
