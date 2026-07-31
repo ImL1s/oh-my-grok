@@ -311,7 +311,16 @@ def main(argv: list[str] | None = None) -> int:
             return int(getattr(exc, "exit_code", 2) or 2)
         set_resolved_project_root(resolution)
         root_path = resolution.root
-        if resolution.note and resolution.shadowed_omg_ancestors:
+        worker_team_api = False
+        if command == "team" and getattr(args, "team_action", None) == "api":
+            from omg_cli.team.api import team_api_worker_context_present
+
+            worker_team_api = team_api_worker_context_present()
+        if (
+            resolution.note
+            and resolution.shadowed_omg_ancestors
+            and not worker_team_api
+        ):
             print(f"omg: warning: {resolution.note}", file=sys.stderr)
 
     from omg_cli.command_context import attach_command_context

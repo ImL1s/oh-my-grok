@@ -19,6 +19,7 @@ from omg_cli.team.plane import (
     WORKER_ENV_MARKERS,
     start_team,
 )
+from omg_cli.workers import worktree_dir
 
 
 TEAM = "team-api"
@@ -48,7 +49,16 @@ def _init_repo(path: Path) -> None:
 
 def _env_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
-    for key in WORKER_ENV_MARKERS:
+    for key in (
+        *WORKER_ENV_MARKERS,
+        "OMG_TEAM_WORKER_ID",
+        "OMG_TEAM_RUN_ID",
+        "OMG_TEAM_ID",
+        "OMG_TEAM_LEADER_ROOT",
+        "OMG_TEAM_STATE_ROOT",
+        "OMG_TEAM_OWNER_TOKEN",
+        "OMG_PROJECT_ROOT",
+    ):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -277,6 +287,47 @@ def _bind_worker_env(
         monkeypatch.setenv("OMG_TEAM_OWNER_TOKEN", owner_token)
 
 
+def _run_worker_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    run_id: str,
+    leader_root: Path | None,
+    op: str,
+    payload: dict,
+    state_root: Path | None = None,
+    explicit_root: Path | None = None,
+) -> tuple[int, Path]:
+    worker_id = "t-a"
+    worker_root = worktree_dir(tmp_path, run_id, worker_id)
+    _bind_worker_env(
+        monkeypatch,
+        run_id=run_id,
+        worker_id=worker_id,
+        owner_token="test-owner-token",
+    )
+    monkeypatch.setenv(
+        "OMG_TEAM_STATE_ROOT",
+        str(state_root or (tmp_path / ".omg" / "state")),
+    )
+    if leader_root is None:
+        monkeypatch.delenv("OMG_TEAM_LEADER_ROOT", raising=False)
+    else:
+        monkeypatch.setenv("OMG_TEAM_LEADER_ROOT", str(leader_root))
+    monkeypatch.chdir(worker_root)
+    argv = [
+        "team",
+        "api",
+        op,
+        "--input",
+        json.dumps(payload),
+        "--json",
+    ]
+    if explicit_root is not None:
+        argv = ["--project-root", str(explicit_root), *argv]
+    return main(argv), worker_root
+
+
 def test_worker_mailbox_list_forged_worker_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -291,6 +342,40 @@ def test_worker_mailbox_list_forged_worker_fails_closed(
     assert envelope["ok"] is False
     assert envelope["error"]["code"] == "E_TEAM_API_GATE"
     assert envelope["error"]["details"]["error"] == "identity_mismatch"
+
+
+@pytest.mark.parametrize("marker", [None, "0", "unknown"])
+def test_partial_worker_environment_never_falls_through_to_leader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    marker: str | None,
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    env = {
+        EXPERIMENTAL_ENV: "1",
+        "OMG_TEAM_WORKER_ID": "worker-1",
+        "OMG_TEAM_RUN_ID": run_id,
+        "OMG_TEAM_ID": TEAM,
+    }
+    if marker is not None:
+        env["OMG_TEAM_WORKER"] = marker
+
+    code, envelope = execute_team_api(
+        "create-task",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "subject": "must not gain leader semantics",
+            "description": "partial worker context",
+        },
+        root=tmp_path,
+        env=env,
+    )
+
+    assert code == 2
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "E_TEAM_API_GATE"
+    assert envelope["error"]["details"]["error"] == "worker_env_incomplete"
 
 
 def test_worker_claim_task_forged_worker_fails_closed(
@@ -1045,6 +1130,215 @@ def test_cli_team_api_json_roundtrip(
     assert out["ok"] is True
     assert out["operation"] == "send-message"
     assert out["data"]["message"]["kind"] == "message"
+
+
+def test_cli_team_api_worker_routes_from_worktree_to_leader_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    rc, worker_root = _run_worker_cli(
+        tmp_path,
+        monkeypatch,
+        run_id=run_id,
+        leader_root=tmp_path,
+        op="send-message",
+        payload={"to_worker": "leader-fixed", "body": "ACK-from-worktree"},
+    )
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "shadows ancestor control plane" not in captured.err
+    out = json.loads(captured.out)
+    assert out["data"]["message"]["body"] == "ACK-from-worktree"
+    code, inbox = execute_team_api(
+        "mailbox-list",
+        {"run_id": run_id, "team_id": TEAM, "worker": "leader-fixed"},
+        root=tmp_path,
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    assert code == 0
+    assert inbox["data"]["count"] == 1
+    assert inbox["data"]["messages"][0]["sender_id"] == "t-a"
+    shadow_mailbox = (
+        worker_root
+        / ".omg"
+        / "state"
+        / "runs"
+        / run_id
+        / "team"
+        / TEAM
+        / "mailbox"
+        / "leader-fixed.json"
+    )
+    assert not shadow_mailbox.exists()
+
+
+def test_cli_team_api_worker_without_leader_root_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    rc, _ = _run_worker_cli(
+        tmp_path,
+        monkeypatch,
+        run_id=run_id,
+        leader_root=None,
+        op="send-message",
+        payload={"to_worker": "leader-fixed", "body": "must-not-send"},
+    )
+
+    assert rc == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["error"]["code"] == "E_TEAM_API_GATE"
+    assert out["error"]["details"]["error"] == "worker_leader_root_invalid"
+
+
+@pytest.mark.parametrize("invalid_kind", ["missing", "file", "relative"])
+def test_cli_team_api_worker_rejects_invalid_leader_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    invalid_kind: str,
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    invalid_root = tmp_path / "missing-leader"
+    if invalid_kind == "file":
+        invalid_root.write_text("not a directory\n", encoding="utf-8")
+    elif invalid_kind == "relative":
+        invalid_root = Path("relative-leader")
+    rc, _ = _run_worker_cli(
+        tmp_path,
+        monkeypatch,
+        run_id=run_id,
+        leader_root=invalid_root,
+        op="mailbox-list",
+        payload={"worker": "t-a"},
+    )
+
+    assert rc == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["error"]["code"] == "E_TEAM_API_GATE"
+    assert out["error"]["details"]["error"] == "worker_leader_root_invalid"
+
+
+def test_cli_team_api_worker_rejects_symlinked_control_plane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    fake_root = tmp_path / "fake-leader"
+    fake_root.mkdir()
+    (fake_root / ".omg").symlink_to(tmp_path / ".omg", target_is_directory=True)
+    rc, _ = _run_worker_cli(
+        tmp_path,
+        monkeypatch,
+        run_id=run_id,
+        leader_root=fake_root,
+        op="mailbox-list",
+        payload={"worker": "t-a"},
+    )
+
+    assert rc == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["error"]["code"] == "E_TEAM_API_GATE"
+    assert out["error"]["details"]["error"] == "worker_leader_root_invalid"
+
+
+@pytest.mark.parametrize("state_kind", ["mismatch", "symlink"])
+def test_cli_team_api_worker_rejects_invalid_state_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    state_kind: str,
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    state_root = tmp_path / "other-state"
+    if state_kind == "mismatch":
+        state_root.mkdir()
+    else:
+        state_root.symlink_to(tmp_path / ".omg" / "state", target_is_directory=True)
+    rc, _ = _run_worker_cli(
+        tmp_path,
+        monkeypatch,
+        run_id=run_id,
+        leader_root=tmp_path,
+        state_root=state_root,
+        op="mailbox-list",
+        payload={"worker": "t-a"},
+    )
+
+    assert rc == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["error"]["code"] == "E_TEAM_API_GATE"
+    assert out["error"]["details"]["error"] == "worker_leader_root_invalid"
+
+
+def test_cli_team_api_worker_accepts_canonical_leader_root_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    leader_link = tmp_path.parent / f"{tmp_path.name}-leader-link"
+    leader_link.symlink_to(tmp_path, target_is_directory=True)
+    rc, _ = _run_worker_cli(
+        tmp_path,
+        monkeypatch,
+        run_id=run_id,
+        leader_root=leader_link,
+        op="send-message",
+        payload={"to_worker": "leader-fixed", "body": "ACK-via-link"},
+    )
+
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+@pytest.mark.parametrize("override_source", ["argument", "environment"])
+def test_cli_team_api_worker_rejects_project_root_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    override_source: str,
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    worker_root = worktree_dir(tmp_path, run_id, "t-a")
+    explicit_root = worker_root if override_source == "argument" else None
+    if override_source == "environment":
+        monkeypatch.setenv("OMG_PROJECT_ROOT", str(worker_root))
+    rc, _ = _run_worker_cli(
+        tmp_path,
+        monkeypatch,
+        run_id=run_id,
+        leader_root=tmp_path,
+        explicit_root=explicit_root,
+        op="mailbox-list",
+        payload={"worker": "t-a"},
+    )
+
+    assert rc == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["error"]["code"] == "E_TEAM_API_GATE"
+    assert out["error"]["details"]["error"] == "worker_leader_root_invalid"
+
+
+def test_cli_team_api_worker_cross_repo_run_does_not_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    other_root = tmp_path.parent / f"{tmp_path.name}-other-repo"
+    assert _seed_control_plane(other_root, monkeypatch) != run_id
+    rc, _ = _run_worker_cli(
+        tmp_path,
+        monkeypatch,
+        run_id=run_id,
+        leader_root=other_root,
+        state_root=other_root / ".omg" / "state",
+        op="send-message",
+        payload={"to_worker": "leader-fixed", "body": "must-not-send"},
+    )
+
+    assert rc == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["error"]["code"] == "E_TEAM_API_FAILED"
+    assert out["error"]["details"]["error"] == "team_not_found"
+    assert not (other_root / ".omg" / "state" / "runs" / run_id).exists()
 
 
 def test_cli_team_api_gate_with_kill_switch(
