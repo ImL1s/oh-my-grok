@@ -108,6 +108,57 @@ def _boom_subprocess(*_a: Any, **_k: Any) -> Any:
     raise AssertionError("subprocess must not be called in dry_run")
 
 
+def test_create_tmux_session_injects_task_scoped_worker_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_tmux_run(args: Any, **_kwargs: Any) -> MagicMock:
+        command = list(args)
+        calls.append(command)
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        if command[0] == "new-session":
+            result.stdout = "omg-workers\t$7\n"
+        return result
+
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+    monkeypatch.setattr(plane, "_tmux_run", fake_tmux_run)
+    common_identity = {
+        plane.TEAM_RUN_ID_ENV: "run-1",
+        plane.TEAM_ID_ENV: "team-1",
+        plane.TEAM_LEADER_ROOT_ENV: str(tmp_path.resolve()),
+        plane.TEAM_STATE_ROOT_ENV: str((tmp_path / ".omg" / "state").resolve()),
+        plane.TEAM_OWNER_TOKEN_ENV: "owner-1",
+    }
+    tasks = []
+    for task_id in ("task-a", "task-b"):
+        task_env = [*common_identity.items(), (plane.TEAM_WORKER_ID_ENV, task_id)]
+        tasks.append(
+            {
+                "task_id": task_id,
+                "worktree": str(tmp_path / task_id),
+                "pane_command": f"run-{task_id}",
+                "_env_pairs": task_env,
+            }
+        )
+
+    assert plane._create_tmux_session(
+        session="omg-workers",
+        tasks=tasks,
+        env_pairs=[(plane.TEAM_RUN_ID_ENV, "run-1")],
+    ) == ("omg-workers", "$7")
+
+    create = next(command for command in calls if command[0] == "new-session")
+    later = next(command for command in calls if command[0] == "new-window")
+    assert f"{plane.TEAM_WORKER_ID_ENV}=task-a" in create
+    assert f"{plane.TEAM_WORKER_ID_ENV}=task-b" not in create
+    assert f"{plane.TEAM_WORKER_ID_ENV}=task-b" in later
+    assert f"{plane.TEAM_WORKER_ID_ENV}=task-a" not in later
+    for key, value in common_identity.items():
+        assert f"{key}={value}" in create
+        assert f"{key}={value}" in later
+
+
 # ---------------------------------------------------------------------------
 # Gates
 # ---------------------------------------------------------------------------

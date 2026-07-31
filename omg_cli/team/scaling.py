@@ -26,7 +26,7 @@ from typing import Any, Iterator, Mapping, Sequence
 
 from omg_cli.evidence import CLI_WRITER
 from omg_cli.fanout import max_workers_cap
-from omg_cli.madmax import build_pane_command, tmux_available
+from omg_cli.madmax import build_pane_command, tmux_available, tmux_env_args
 from omg_cli.state import _run_dir, load_active_run, load_run, write_status
 from omg_cli.team.plane import (
     EXPERIMENTAL_ENV,
@@ -461,6 +461,7 @@ def _add_tmux_windows(
         widx = int(rec["window_index"])
         wt = str(rec["worktree"])
         pane_cmd = str(rec["pane_command"])
+        task_env_args = tmux_env_args(list(rec.get("_env_pairs") or []))
         # Target session:index so indices stay monotonic / explicit.
         target = f"{session}:{widx}"
         nw = _tmux_run(
@@ -472,6 +473,7 @@ def _add_tmux_windows(
                 tid,
                 "-c",
                 wt,
+                *task_env_args,
                 pane_cmd,
             ]
         )
@@ -486,6 +488,7 @@ def _add_tmux_windows(
                     tid,
                     "-c",
                     wt,
+                    *task_env_args,
                     pane_cmd,
                 ]
             )
@@ -723,6 +726,17 @@ def _scale_up(
             safe=safe,
             extra=extra,
         )
+        if not effective_dry:
+            rec["_env_pairs"] = _pane_env_pairs(
+                run_id=run_id,
+                team_id=str(meta.get("team_id") or "team"),
+                worker_id=str(rec["task_id"]),
+                leader_root=root,
+                state_root=root / ".omg" / "state",
+                owner_token=(
+                    str(meta["owner_token"]) if meta.get("owner_token") else None
+                ),
+            )
         new_records.append(rec)
 
     if not effective_dry:
@@ -770,6 +784,9 @@ def _scale_up(
             raise
         except OSError as exc:
             raise TeamError(f"scale-up tmux launch failed: {exc}") from exc
+
+    for rec in new_records:
+        rec.pop("_env_pairs", None)
 
     scale_at = _utc_now()
     last_scale = {
