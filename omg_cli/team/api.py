@@ -1849,6 +1849,23 @@ def _apply_worker_identity_matrix(
                 details={"error": "identity_mismatch"},
             )
         out["worker"] = identity
+    if operation in (
+        "update-worker-heartbeat",
+        "write-shutdown-ack",
+        "append-event",
+    ):
+        _bind_worker_env_field(
+            out, field="worker", env_value=identity, label="worker"
+        )
+    if operation == "update-worker-heartbeat":
+        # A team-pane worker may update only its own liveness key. Leader calls
+        # bypass this matrix and may retain distinct task/host worker identities.
+        _bind_worker_env_field(
+            out, field="task_id", env_value=identity, label="task_id"
+        )
+    # Worker status and heartbeat reads remain unbound intentionally: their
+    # target fields are team-visible selectors, not caller identities.
+    # read-shutdown-ack is not worker-allowed and remains leader-only.
     return out
 
 

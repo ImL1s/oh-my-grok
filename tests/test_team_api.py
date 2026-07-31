@@ -447,6 +447,193 @@ def test_worker_release_claim_forged_worker_fails_closed(
     assert forged["error"]["details"]["error"] == "identity_mismatch"
 
 
+def test_worker_update_heartbeat_forged_worker_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _bind_worker_env(monkeypatch, run_id=run_id, worker_id="worker-1")
+    code, envelope = execute_team_api(
+        "update-worker-heartbeat",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "worker": "worker-2",
+            "task_id": "task-7",
+            "generation": 0,
+            "expected_sequence": 0,
+        },
+        root=tmp_path,
+    )
+    assert code == 2
+    assert envelope["ok"] is False
+    assert envelope["error"]["details"]["error"] == "identity_mismatch"
+
+
+def test_worker_update_heartbeat_forged_task_id_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _bind_worker_env(monkeypatch, run_id=run_id, worker_id="worker-1")
+    code, envelope = execute_team_api(
+        "update-worker-heartbeat",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "task_id": "task-7",
+            "generation": 0,
+            "expected_sequence": 0,
+        },
+        root=tmp_path,
+    )
+    assert code == 2
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "E_TEAM_API_GATE"
+    assert envelope["error"]["details"] == {
+        "error": "identity_mismatch",
+        "field": "task_id",
+    }
+
+
+def test_worker_update_heartbeat_injects_worker_and_task_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _bind_worker_env(monkeypatch, run_id=run_id, worker_id="worker-1")
+    code, envelope = execute_team_api(
+        "update-worker-heartbeat",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "generation": 0,
+            "expected_sequence": 0,
+        },
+        root=tmp_path,
+    )
+    assert code == 0, envelope
+    assert envelope["data"]["worker"] == "worker-1"
+    assert envelope["data"]["task_id"] == "worker-1"
+
+    code, heartbeat = execute_team_api(
+        "read-worker-heartbeat",
+        {"run_id": run_id, "team_id": TEAM, "task_id": "worker-1"},
+        root=tmp_path,
+    )
+    assert code == 0, heartbeat
+    assert heartbeat["data"]["row"]["worker_id"] == "worker-1"
+    assert heartbeat["data"]["row"]["task_id"] == "worker-1"
+
+
+def test_worker_reads_team_visible_status_and_heartbeat_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _bind_worker_env(monkeypatch, run_id=run_id, worker_id="worker-1")
+
+    code, status = execute_team_api(
+        "read-worker-status",
+        {"run_id": run_id, "team_id": TEAM, "worker": "t-a"},
+        root=tmp_path,
+    )
+    assert code == 0, status
+    assert status["data"]["worker"] == "t-a"
+    assert status["data"]["process_ready"] is False
+
+    code, heartbeat = execute_team_api(
+        "read-worker-heartbeat",
+        {"run_id": run_id, "team_id": TEAM, "task_id": "t-a"},
+        root=tmp_path,
+    )
+    assert code == 0, heartbeat
+    assert heartbeat["data"]["task_id"] == "t-a"
+    assert heartbeat["data"]["present"] is False
+
+
+def test_worker_write_shutdown_ack_forged_worker_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _bind_worker_env(monkeypatch, run_id=run_id, worker_id="worker-1")
+    code, envelope = execute_team_api(
+        "write-shutdown-ack",
+        {"run_id": run_id, "team_id": TEAM, "worker": "worker-2"},
+        root=tmp_path,
+    )
+    assert code == 2
+    assert envelope["ok"] is False
+    assert envelope["error"]["details"]["error"] == "identity_mismatch"
+
+
+def test_worker_write_shutdown_ack_injects_env_worker_when_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _bind_worker_env(monkeypatch, run_id=run_id, worker_id="worker-1")
+    code, envelope = execute_team_api(
+        "write-shutdown-ack",
+        {"run_id": run_id, "team_id": TEAM},
+        root=tmp_path,
+    )
+    assert code == 0, envelope
+    assert envelope["data"]["worker"] == "worker-1"
+
+    code, persisted = _exec(
+        tmp_path,
+        "read-shutdown-ack",
+        {"worker": "worker-1"},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0, persisted
+    assert persisted["data"]["ack"]["worker"] == "worker-1"
+
+
+def test_worker_append_event_forged_worker_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _bind_worker_env(monkeypatch, run_id=run_id, worker_id="worker-1")
+    code, envelope = execute_team_api(
+        "append-event",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "kind": "worker-progress",
+            "worker": "worker-2",
+            "body": {"step": 1},
+        },
+        root=tmp_path,
+    )
+    assert code == 2
+    assert envelope["ok"] is False
+    assert envelope["error"]["details"]["error"] == "identity_mismatch"
+
+
+def test_worker_append_event_injects_env_worker_when_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _bind_worker_env(monkeypatch, run_id=run_id, worker_id="worker-1")
+    code, envelope = execute_team_api(
+        "append-event",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "kind": "worker-progress",
+            "body": {"step": 1},
+        },
+        root=tmp_path,
+    )
+    assert code == 0, envelope
+    assert envelope["data"]["event"]["worker"] == "worker-1"
+    code, persisted = execute_team_api(
+        "read-events",
+        {"run_id": run_id, "team_id": TEAM},
+        root=tmp_path,
+    )
+    assert code == 0, persisted
+    assert persisted["data"]["events"][0]["worker"] == "worker-1"
+
+
 def test_team_api_rejects_forged_minimal_team_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

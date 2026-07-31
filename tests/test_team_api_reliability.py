@@ -70,7 +70,7 @@ def test_heartbeat_and_status_ops(
         {
             "run_id": run_id,
             "team_id": team_id,
-            "worker": "w1",
+            "worker": "host-w1",
             "task_id": "w1",
             "generation": 0,
             "expected_sequence": 0,
@@ -87,6 +87,8 @@ def test_heartbeat_and_status_ops(
         env=env,
     )
     assert code2 == 0 and env2["data"]["present"] is True
+    assert env2["data"]["row"]["worker_id"] == "host-w1"
+    assert env2["data"]["row"]["task_id"] == "w1"
     code3, env3 = execute_team_api(
         "read-worker-status",
         {"run_id": run_id, "team_id": team_id, "worker": "w1"},
