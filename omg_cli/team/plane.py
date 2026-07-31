@@ -939,11 +939,11 @@ def _create_tmux_session(
             "  Install: brew install tmux\n"
             "  Or use --dry-run to write team.json without launching."
         )
-    env_args = tmux_env_args(env_pairs)
     if not tasks:
         raise TeamError("no tasks for tmux session")
 
     first = tasks[0]
+    first_env_args = tmux_env_args(list(first.get("_env_pairs") or env_pairs))
     create = _tmux_run(
         [
             "new-session",
@@ -957,7 +957,7 @@ def _create_tmux_session(
             str(first["task_id"]),
             "-c",
             str(first["worktree"]),
-            *env_args,
+            *first_env_args,
             str(first["pane_command"]),
         ]
     )
@@ -985,6 +985,9 @@ def _create_tmux_session(
 
     try:
         for task in tasks[1:]:
+            task_env_args = tmux_env_args(
+                list(task.get("_env_pairs") or env_pairs)
+            )
             nw = _tmux_run(
                 [
                     "new-window",
@@ -994,6 +997,7 @@ def _create_tmux_session(
                     str(task["task_id"]),
                     "-c",
                     str(task["worktree"]),
+                    *task_env_args,
                     str(task["pane_command"]),
                 ]
             )

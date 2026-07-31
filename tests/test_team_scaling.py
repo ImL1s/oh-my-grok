@@ -94,6 +94,120 @@ def _boom_tmux(*_a: Any, **_k: Any) -> Any:
     raise AssertionError("tmux_available must not be called in dry_run scale")
 
 
+def test_add_tmux_windows_injects_scale_worker_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_tmux_run(args: Any, **_kwargs: Any) -> MagicMock:
+        command = list(args)
+        calls.append(command)
+        if len(calls) == 1:
+            return MagicMock(returncode=1, stdout="", stderr="primary failed")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(scaling, "tmux_available", lambda: True)
+    monkeypatch.setattr(scaling, "_session_alive", lambda _session: True)
+    monkeypatch.setattr(scaling, "_tmux_run", fake_tmux_run)
+
+    scaling._add_tmux_windows(
+        session="omg-workers",
+        records=[
+            {
+                "task_id": "scale-2",
+                "window_index": 2,
+                "worktree": str(tmp_path / "scale-2"),
+                "pane_command": "run-scale-2",
+                "_env_pairs": [(plane.TEAM_WORKER_ID_ENV, "scale-2")],
+            }
+        ],
+    )
+
+    assert len(calls) == 2
+    for create in calls:
+        assert f"{plane.TEAM_WORKER_ID_ENV}=scale-2" in create
+    first_env = [item for item in calls[0] if item.startswith("OMG_")]
+    fallback_env = [item for item in calls[1] if item.startswith("OMG_")]
+    assert fallback_env == first_env
+
+
+def test_scale_up_generates_complete_task_scoped_worker_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team(
+        "live scale identity",
+        TASKS_TWO,
+        root=tmp_path,
+        dry_run=True,
+        team_id="team-1",
+        owner_token="owner-1",
+    )
+    rid = meta["run_id"]
+    live = dict(load_team_meta(tmp_path, rid))
+    live["dry_run"] = False
+    live["session"] = "omg-workers"
+    live["tasks"] = [
+        {
+            **task,
+            "pane_id": f"%{index + 10}",
+            "pid": 10000 + index,
+            "pgid": 20000 + index,
+            "pid_start": f"start-{10000 + index}",
+            "status": STATUS_RUNNING,
+        }
+        for index, task in enumerate(live["tasks"])
+    ]
+    _receipt, receipt_hash = plane._persist_team_launch_receipt(
+        tmp_path,
+        rid,
+        session=live["session"],
+        session_id="$7",
+        launch_nonce="a" * 32,
+        tasks=live["tasks"],
+    )
+    live.update(
+        {
+            "launch_nonce": "a" * 32,
+            "launch_receipt_sha256": receipt_hash,
+            "identity_generation": 0,
+            "identity_receipt_sha256": receipt_hash,
+        }
+    )
+    _write_team_meta(tmp_path, rid, live)
+
+    launched: list[dict[str, Any]] = []
+
+    def capture_add(*, session: str, records: Any) -> None:
+        assert session == "omg-workers"
+        launched.extend(dict(record) for record in records)
+
+    monkeypatch.setattr(scaling, "_add_tmux_windows", capture_add)
+    monkeypatch.setattr(
+        scaling, "_list_pane_identities", lambda _session: {2: ("%12", 10002)}
+    )
+    monkeypatch.setattr(scaling, "_pgid_for_pid", lambda _pid: 20002)
+    monkeypatch.setattr(scaling, "_pid_start_identity", lambda _pid: "start-10002")
+
+    out = scale_team(tmp_path, rid, add=1)
+
+    assert out["task_ids"] == ["scale-2"]
+    assert len(launched) == 1
+    env = dict(launched[0]["_env_pairs"])
+    assert env[plane.TEAM_RUN_ID_ENV] == rid
+    assert env[plane.TEAM_ID_ENV] == "team-1"
+    assert env[plane.TEAM_WORKER_ID_ENV] == "scale-2"
+    assert env[plane.TEAM_LEADER_ROOT_ENV] == str(tmp_path.resolve())
+    assert env[plane.TEAM_STATE_ROOT_ENV] == str(
+        (tmp_path / ".omg" / "state").resolve()
+    )
+    assert env[plane.TEAM_OWNER_TOKEN_ENV] == "owner-1"
+    disk = load_team_meta(tmp_path, rid)
+    scaled = next(task for task in disk["tasks"] if task["task_id"] == "scale-2")
+    assert "_env_pairs" not in scaled
+
+
 def _write_team_meta(root: Path, run_id: str, meta: dict[str, Any]) -> None:
     meta["writer"] = CLI_WRITER
     plane._atomic_write_json(team_meta_path(root, run_id), meta)
