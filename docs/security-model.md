@@ -301,7 +301,7 @@ OMX/Sol-aligned root entry (not a mode FSM; never stamps `verified`):
 | `omg team resume` | Idempotent liveness reconciliation into `team.json` after leader restart; dead incomplete relaunch shares the same **scale lock** (refuse concurrent scale/resume double-spawn); fail-closed if not a team run |
 | `omg team run --ralph` | Bounded outer max_iter loop (ralph discipline) around the same staged driver; `linked_ralph` ↔ `linked_team`; complete only via real team-verify APPROVE — **not** a second isolation boundary |
 | Identity receipt chain | Binds session id, launch nonce, generation, and per-task pane/pid/pgid/pid-start. **Does not** hash `pane_command` or `worktree` paths — a same-UID writer who can already edit `team.json` could alter relaunch argv/cwd; that is outside the integration-isolation threat model (not an execution sandbox) |
-| `owner_token` | Shared `uuid4().hex` in `team.json` (`0o600`) + injected into each pane env (`OMG_TEAM_OWNER_TOKEN`). Same-UID processes can read it; it proves pane membership to the API, not cross-user isolation. Per-worker tokens are not claimed |
+| `owner_token` | Shared `uuid4().hex` in `team.json` (`0o600`) + injected into each pane env (`OMG_TEAM_OWNER_TOKEN`). Same-UID processes can read or replace it, and the current API does not authenticate it against authoritative state. It is advisory env-bound attribution, not proof of membership or cross-user isolation. Per-worker tokens are not claimed. |
 
 ### Per-provider posture enforcement (NOT uniform)
 
