@@ -74,6 +74,17 @@ def _pane_count(session: str) -> int:
     return len([line for line in (proc.stdout or "").splitlines() if line.strip()])
 
 
+def _pane_current_paths(session: str) -> set[Path]:
+    proc = _tmux("list-panes", "-t", session, "-F", "#{pane_current_path}")
+    if proc.returncode != 0:
+        return set()
+    return {
+        Path(line.strip()).resolve()
+        for line in (proc.stdout or "").splitlines()
+        if line.strip()
+    }
+
+
 def _leader_ack_messages(root: Path, *, run_id: str, team_id: str) -> list[dict]:
     """Read durable leader mailbox (list API omits bodies by design)."""
     path = _recipient_path(root, run_id, team_id, "leader-fixed")
@@ -163,6 +174,10 @@ def test_split_transport_two_panes_and_acks(
         run_id = str(meta["run_id"])
         assert session
         assert _pane_count(session) == 2
+        expected_worktrees = {
+            Path(str(task["worktree"])).resolve() for task in meta.get("tasks") or []
+        }
+        assert _pane_current_paths(session) == expected_worktrees
         assert meta.get("startup_status") == "running"
         # Process-level ready is primary; mailbox ACK remains enrichment.
         proc_ready = int(meta.get("startup_process_ready") or 0)

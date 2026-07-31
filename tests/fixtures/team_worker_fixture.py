@@ -4,9 +4,10 @@
 Not Grok live parity — replaces pane_command so split-pane transport can be
 proved without the grok binary or API quota.
 
-Requires ``OMG_EXPERIMENTAL_TMUX_TEAM=1`` and identity env from pane ``-e``:
-``OMG_TEAM_WORKER_ID``, ``OMG_TEAM_RUN_ID``, ``OMG_TEAM_ID``,
-``OMG_TEAM_LEADER_ROOT``.
+Requires ``OMG_EXPERIMENTAL_TMUX_TEAM=1`` and the complete pane ``-e`` contract:
+``OMG_TEAM_WORKER``, ``OMG_TEAM_WORKER_ID``, ``OMG_TEAM_RUN_ID``,
+``OMG_TEAM_ID``, ``OMG_TEAM_LEADER_ROOT``, ``OMG_TEAM_STATE_ROOT``, and
+``OMG_TEAM_OWNER_TOKEN``.
 
 Usage (from repo root)::
 
@@ -40,7 +41,7 @@ def _require_env(name: str) -> str:
     return value
 
 
-def _send_ack(*, leader_root: Path, worker_id: str) -> int:
+def _send_ack(*, worker_id: str) -> int:
     """Call ``omg team api send-message`` with body ACK (CLI path)."""
     payload = {
         "from_worker": worker_id,
@@ -66,7 +67,6 @@ def _send_ack(*, leader_root: Path, worker_id: str) -> int:
             "--input",
             json.dumps(payload, ensure_ascii=False),
         ],
-        cwd=str(leader_root),
         env=env,
         text=True,
         capture_output=True,
@@ -105,7 +105,7 @@ def main() -> int:
     deadline = time.monotonic() + _ACK_DEADLINE_S
     last_code = 1
     while time.monotonic() < deadline:
-        last_code = _send_ack(leader_root=leader_root, worker_id=worker_id)
+        last_code = _send_ack(worker_id=worker_id)
         if last_code == 0:
             break
         time.sleep(_ACK_POLL_S)

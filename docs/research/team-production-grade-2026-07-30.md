@@ -149,7 +149,9 @@ Promotion removes `OMG_EXPERIMENTAL_TMUX_TEAM` **or** flips default to enabled w
    - resume idempotent under scale lock  
 4. **Worker contract**  
    - Mutations only via `omg team api`  
-   - Identity + owner_token checks fail-closed  
+   - Worker CLI routing rejects partial/mismatched root env; API identity fields
+     remain advisory attribution, not membership/authentication (see
+     `docs/security-model.md`)
 5. **Shutdown**  
    - write-shutdown-request / read-shutdown-ack ops OR equivalent plane method  
    - No state wipe while in_progress unless `--force` + confirm  

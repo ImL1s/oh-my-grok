@@ -591,6 +591,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 TeamApiError,
                 execute_team_api,
                 parse_input_json,
+                resolve_team_api_cli_root,
             )
 
             op = getattr(args, "api_op", None) or ""
@@ -600,6 +601,10 @@ def cmd_team(args: argparse.Namespace) -> int:
                 return 2
             try:
                 payload = parse_input_json(raw_input)
+                api_root = resolve_team_api_cli_root(
+                    root,
+                    explicit_root=getattr(args, "project_root", None),
+                )
             except TeamApiError as exc:
                 emit_data(
                     args,
@@ -621,7 +626,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 return exc.exit_code
             if getattr(args, "run_id", None) and "run_id" not in payload:
                 payload["run_id"] = args.run_id
-            code, envelope = execute_team_api(op, payload, root=root)
+            code, envelope = execute_team_api(op, payload, root=api_root)
             emit_data(args, "team", envelope)
             return code
         print(f"omg team: unknown action {action!r}", file=sys.stderr)

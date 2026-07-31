@@ -83,6 +83,17 @@ def _pane_count(session: str) -> int:
     return len([ln for ln in (proc.stdout or "").splitlines() if ln.strip()])
 
 
+def _pane_current_paths(session: str) -> set[Path]:
+    proc = _tmux("list-panes", "-t", session, "-F", "#{pane_current_path}")
+    if proc.returncode != 0:
+        return set()
+    return {
+        Path(line.strip()).resolve()
+        for line in (proc.stdout or "").splitlines()
+        if line.strip()
+    }
+
+
 def _list_sessions() -> set[str]:
     proc = _tmux("list-sessions", "-F", "#{session_name}")
     if proc.returncode != 0:
@@ -416,6 +427,15 @@ def main() -> int:
                 session = str(meta.get("session") or "")
                 pane_count = _pane_count(session)
                 assert pane_count == args.workers, pane_count
+                expected_worktrees = {
+                    Path(str(task["worktree"])).resolve()
+                    for task in meta.get("tasks") or []
+                }
+                pane_paths = _pane_current_paths(session)
+                assert pane_paths == expected_worktrees, (
+                    f"pane cwd mismatch: actual={sorted(map(str, pane_paths))} "
+                    f"expected={sorted(map(str, expected_worktrees))}"
+                )
                 # Poll durable leader mailbox (list API omits bodies).
                 from omg_cli.team.mailbox import _recipient_path
 

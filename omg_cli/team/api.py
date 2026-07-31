@@ -47,8 +47,12 @@ from omg_cli.team.plane import (
     DISABLE_ENV,
     EXPERIMENTAL_ENV,
     TEAM_ID_ENV,
+    TEAM_LEADER_ROOT_ENV,
     TEAM_OWNER_TOKEN_ENV,
     TEAM_RUN_ID_ENV,
+    TEAM_STATE_ROOT_ENV,
+    TEAM_WORKER_ENV,
+    TEAM_WORKER_ID_ENV,
     TeamError,
     TeamGateError,
     experimental_enabled,
@@ -162,6 +166,130 @@ class TeamApiError(RuntimeError):
         self.message = message
         self.exit_code = exit_code
         self.details = dict(details or {})
+
+
+_TEAM_API_WORKER_CONTEXT_FIELDS = (
+    TEAM_WORKER_ENV,
+    TEAM_WORKER_ID_ENV,
+    TEAM_RUN_ID_ENV,
+    TEAM_ID_ENV,
+    TEAM_LEADER_ROOT_ENV,
+    TEAM_STATE_ROOT_ENV,
+    TEAM_OWNER_TOKEN_ENV,
+)
+
+
+def team_api_worker_context_present(
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    """Whether any team-worker routing field is present.
+
+    Partial fields must not silently fall through to leader semantics.  This is
+    an environment-consistency check, not actor authentication.
+    """
+    source = env if env is not None else os.environ
+    return any(
+        (source.get(name) or "").strip()
+        for name in _TEAM_API_WORKER_CONTEXT_FIELDS
+    )
+
+
+def _worker_routing_error(
+    message: str, *, missing: list[str] | None = None
+) -> TeamApiError:
+    details: dict[str, Any] = {"error": "worker_leader_root_invalid"}
+    if missing:
+        details["missing"] = missing
+    return TeamApiError(
+        "E_TEAM_API_GATE",
+        f"omg team api refused: {message}",
+        exit_code=2,
+        details=details,
+    )
+
+
+def _absolute_existing_dir(raw: str, *, label: str) -> tuple[Path, Path]:
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        raise _worker_routing_error(f"{label} must be absolute")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise _worker_routing_error(f"{label} is not usable") from exc
+    if not resolved.is_dir():
+        raise _worker_routing_error(f"{label} is not a directory")
+    return candidate, resolved
+
+
+def resolve_team_api_cli_root(
+    default_root: Path | str,
+    *,
+    explicit_root: Path | str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> Path:
+    """Route a worker CLI call from its task worktree to the leader store.
+
+    Launcher-provided roots are consistency hints only.  Same-UID processes can
+    alter their environment, so this does not authenticate team membership.
+    """
+    source = env if env is not None else os.environ
+    fallback = Path(default_root).resolve()
+    if not team_api_worker_context_present(source):
+        return fallback
+
+    marker = (source.get(TEAM_WORKER_ENV) or "").strip().lower()
+    required = {
+        TEAM_WORKER_ENV: marker in {"1", "true", "yes", "on"},
+        **{
+            name: bool((source.get(name) or "").strip())
+            for name in _TEAM_API_WORKER_CONTEXT_FIELDS
+            if name != TEAM_WORKER_ENV
+        },
+    }
+    missing = [name for name, valid in required.items() if not valid]
+    if missing:
+        raise _worker_routing_error(
+            "incomplete worker routing environment", missing=missing
+        )
+
+    _, leader_root = _absolute_existing_dir(
+        (source.get(TEAM_LEADER_ROOT_ENV) or "").strip(),
+        label=TEAM_LEADER_ROOT_ENV,
+    )
+    control_dir = leader_root / ".omg"
+    if not control_dir.is_dir() or control_dir.is_symlink():
+        raise _worker_routing_error("leader root has no real .omg control plane")
+
+    state_input, state_root = _absolute_existing_dir(
+        (source.get(TEAM_STATE_ROOT_ENV) or "").strip(),
+        label=TEAM_STATE_ROOT_ENV,
+    )
+    try:
+        expected_state = (control_dir / "state").resolve(strict=True)
+    except OSError as exc:
+        raise _worker_routing_error("leader state root is not usable") from exc
+    if state_input.is_symlink() or state_root != expected_state:
+        raise _worker_routing_error(
+            f"{TEAM_STATE_ROOT_ENV} does not match leader state"
+        )
+
+    for label, raw_root in (
+        ("--project-root", explicit_root),
+        ("OMG_PROJECT_ROOT", source.get("OMG_PROJECT_ROOT")),
+    ):
+        if raw_root is None or not str(raw_root).strip():
+            continue
+        try:
+            requested = Path(str(raw_root)).expanduser().resolve(strict=True)
+        except OSError as exc:
+            raise _worker_routing_error(
+                f"{label} is not usable in worker context"
+            ) from exc
+        if requested != leader_root:
+            raise _worker_routing_error(
+                f"{label} differs from {TEAM_LEADER_ROOT_ENV}"
+            )
+    return leader_root
 
 
 def _utc_now() -> str:
@@ -1913,6 +2041,15 @@ def execute_team_api(
                 exc.message,
                 details=exc.details or None,
             )
+    elif team_api_worker_context_present(env):
+        # Identity/routing fields without a valid worker marker are partial
+        # context, not a leader invocation.
+        return 2, _fail(
+            op or "unknown",
+            "E_TEAM_API_GATE",
+            "omg team api refused: partial or invalid worker environment",
+            details={"error": "worker_env_incomplete"},
+        )
     elif in_spawned_worker_context(env):
         # OMG_TEAM_WORKER without identity — fail closed.
         return 2, _fail(
