@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import errno
 import json
+import os
+import stat
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +20,7 @@ from omg_cli.contracts.path_keys import (
     ensure_managed_dir,
     exclusive_lock,
     mode_bits,
+    read_managed_regular_bytes,
     safe_path_key,
     validate_safe_key,
 )
@@ -100,12 +104,81 @@ def test_atomic_no_clobber_has_one_concurrent_winner_and_never_follows_symlink(
     assert target.read_bytes() == b"unchanged"
 
 
-def test_locked_jsonl_uses_one_complete_canonical_line_per_record(tmp_path: Path) -> None:
+def test_managed_read_uses_pinned_parent(tmp_path: Path) -> None:
+    path = tmp_path / ".omg" / "receipts" / "generation-1.json"
+    body = b'{"generation":1}'
+    atomic_write_bytes(path, body, replace=False)
+
+    assert read_managed_regular_bytes(path) == body
+
+
+def test_managed_read_rejects_leaf_symlink_and_hardlink(tmp_path: Path) -> None:
+    receipts = tmp_path / ".omg" / "receipts"
+    ensure_managed_dir(receipts)
+    outside = tmp_path / "outside-receipt"
+    outside.write_bytes(b"outside")
+
+    symlink = receipts / "symlink.json"
+    symlink.symlink_to(outside)
+    with pytest.raises(ContractPathError, match="symlink"):
+        read_managed_regular_bytes(symlink)
+
+    hardlink = receipts / "hardlink.json"
+    hardlink.hardlink_to(outside)
+    with pytest.raises(ContractPathError, match="single-link regular"):
+        read_managed_regular_bytes(hardlink)
+
+
+def test_managed_read_is_bounded(tmp_path: Path) -> None:
+    path = tmp_path / ".omg" / "receipts" / "oversized.json"
+    atomic_write_bytes(path, b"12345", replace=False)
+
+    with pytest.raises(ContractPathError, match="exceeds 4 byte read limit"):
+        read_managed_regular_bytes(path, max_bytes=4)
+
+
+def test_managed_read_rejects_same_size_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = tmp_path / ".omg" / "receipts" / "racing.json"
+    atomic_write_bytes(path, b"12345", replace=False)
+    real_fstat = os.fstat
+    regular_calls = 0
+
+    def racing_fstat(descriptor: int):
+        nonlocal regular_calls
+        current = real_fstat(descriptor)
+        if not stat.S_ISREG(current.st_mode):
+            return current
+        regular_calls += 1
+        if regular_calls == 2:
+            return SimpleNamespace(
+                st_mode=current.st_mode,
+                st_nlink=current.st_nlink,
+                st_dev=current.st_dev,
+                st_ino=current.st_ino,
+                st_size=current.st_size,
+                st_mtime_ns=current.st_mtime_ns,
+                st_ctime_ns=current.st_ctime_ns + 1,
+            )
+        return current
+
+    monkeypatch.setattr(os, "fstat", racing_fstat)
+
+    with pytest.raises(ContractPathError, match="changed while reading"):
+        read_managed_regular_bytes(path)
+
+
+def test_locked_jsonl_uses_one_complete_canonical_line_per_record(
+    tmp_path: Path,
+) -> None:
     journal = tmp_path / "events" / "journal.jsonl"
     expected = [{"index": index, "payload": "x" * 32} for index in range(32)]
 
     threads = [
-        threading.Thread(target=append_locked_jsonl, args=(journal, canonical_json_bytes(row)))
+        threading.Thread(
+            target=append_locked_jsonl, args=(journal, canonical_json_bytes(row))
+        )
         for row in expected
     ]
     for thread in threads:
@@ -231,6 +304,7 @@ def test_lock_open_never_falls_back_to_absolute_path(
     lock_path = store / "events.jsonl.lock"
     parent_fd, name = pk._ensure_parent_dir_fd(lock_path)
     try:
+
         def always_enoent(*_a, **_k):
             raise FileNotFoundError(errno.ENOENT, "forced", name)
 

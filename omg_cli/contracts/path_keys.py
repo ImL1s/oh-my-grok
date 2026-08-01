@@ -37,6 +37,7 @@ MANAGED_DIR_MODE = 0o700
 DATA_FILE_MODE = 0o600
 IMMUTABLE_SOURCE_MODE = 0o400
 EXECUTABLE_MODE = 0o700
+MAX_MANAGED_READ_BYTES = 16 * 1024 * 1024
 SAFE_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
 MANAGED_ROOT_MARKER = ".omg"
 
@@ -329,9 +330,7 @@ def confined_path(root: Path | str, *parts: str) -> Path:
         owns = False
         for name in clean_parts:
             child_path = (
-                root_path.joinpath(name)
-                if current is base_fd and not owns
-                else None
+                root_path.joinpath(name) if current is base_fd and not owns else None
             )
             # Only open components that already exist; confined_path does not create.
             try:
@@ -450,9 +449,7 @@ def atomic_write_bytes(
     destination = Path(path).absolute()
     parent_fd, name = _ensure_parent_dir_fd(destination)
     try:
-        atomic_write_bytes_at(
-            parent_fd, name, body, mode=mode, replace=replace
-        )
+        atomic_write_bytes_at(parent_fd, name, body, mode=mode, replace=replace)
     finally:
         os.close(parent_fd)
     return destination
@@ -474,6 +471,89 @@ def open_managed_dir_fd(path: Path | str) -> int:
         return _walk_managed_dirs(base_fd, components, create=True)
     finally:
         os.close(base_fd)
+
+
+def open_existing_managed_dir_fd(path: Path | str) -> int:
+    """Open an existing managed directory without creating missing components."""
+    _require_confinement_platform()
+    target = Path(path).absolute()
+    base, components = _split_base_and_components(target)
+    base_fd = _open_base_dir(base)
+    try:
+        return _walk_managed_dirs(base_fd, components, create=False)
+    finally:
+        os.close(base_fd)
+
+
+def fsync_existing_managed_dir(path: Path | str) -> None:
+    """Retry durability for an existing managed directory through a pinned fd."""
+    descriptor = open_existing_managed_dir_fd(path)
+    try:
+        _fsync_fd(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def read_managed_regular_bytes(
+    path: Path | str,
+    *,
+    max_bytes: int = MAX_MANAGED_READ_BYTES,
+) -> bytes:
+    """Read one bounded regular, single-link file through a pinned parent fd."""
+    _require_confinement_platform()
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0:
+        raise ValueError("max_bytes must be a non-negative integer")
+    source = Path(path).absolute()
+    name = _validate_component(source.name)
+    parent_fd = open_existing_managed_dir_fd(source.parent)
+    try:
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=parent_fd,
+            )
+        except OSError as exc:
+            if _is_nofollow_error(exc):
+                raise ContractPathError(
+                    f"managed file may not be a symlink: {name}"
+                ) from exc
+            raise
+        with os.fdopen(descriptor, "rb", closefd=True) as handle:
+            before = os.fstat(handle.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise ContractPathError(
+                    f"managed file must be a single-link regular file: {name}"
+                )
+            if before.st_size > max_bytes:
+                raise ContractPathError(
+                    f"managed file exceeds {max_bytes} byte read limit: {name}"
+                )
+            body = handle.read(max_bytes + 1)
+            if len(body) > max_bytes:
+                raise ContractPathError(
+                    f"managed file exceeds {max_bytes} byte read limit: {name}"
+                )
+            after = os.fstat(handle.fileno())
+            if (
+                before.st_dev,
+                before.st_ino,
+                before.st_nlink,
+                before.st_size,
+                before.st_mtime_ns,
+                before.st_ctime_ns,
+            ) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_nlink,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            ) or after.st_size != len(body):
+                raise ContractPathError(f"managed file changed while reading: {name}")
+        return body
+    finally:
+        os.close(parent_fd)
 
 
 def _open_lock_descriptor_at(parent_fd: int, name: str) -> int:
@@ -544,8 +624,7 @@ def exclusive_lock_at(parent_fd: int, name: str) -> Iterator[None]:
         st = os.fstat(descriptor)
         if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
             raise ContractPathError(
-                f"lock file must be a unique regular file under flock: {name} "
-                f"(nlink={st.st_nlink})"
+                f"lock file must be a unique regular file under flock: {name} (nlink={st.st_nlink})"
             )
         os.fchmod(descriptor, DATA_FILE_MODE)
         yield
@@ -601,8 +680,7 @@ def append_locked_jsonl(path: Path | str, canonical_record: bytes) -> None:
                     raise ContractPathError(f"journal must be a regular file: {name}")
                 if st.st_nlink != 1:
                     raise ContractPathError(
-                        f"journal must not be hard-linked: {name} "
-                        f"(nlink={st.st_nlink})"
+                        f"journal must not be hard-linked: {name} (nlink={st.st_nlink})"
                     )
                 os.fchmod(descriptor, DATA_FILE_MODE)
                 payload = canonical_record + b"\n"
@@ -657,7 +735,9 @@ def append_locked_jsonl_once(
                     with os.fdopen(existing_fd, "rb", closefd=True) as handle:
                         for raw_line in handle:
                             if not raw_line.endswith(b"\n"):
-                                raise ValueError("journal has an incomplete physical line")
+                                raise ValueError(
+                                    "journal has an incomplete physical line"
+                                )
                             existing = raw_line[:-1]
                             if identity_from_record(existing) != identity:
                                 continue
@@ -687,8 +767,7 @@ def append_locked_jsonl_once(
                     raise ContractPathError(f"journal must be a regular file: {name}")
                 if st.st_nlink != 1:
                     raise ContractPathError(
-                        f"journal must not be hard-linked: {name} "
-                        f"(nlink={st.st_nlink})"
+                        f"journal must not be hard-linked: {name} (nlink={st.st_nlink})"
                     )
                 os.fchmod(descriptor, DATA_FILE_MODE)
                 payload = canonical_record + b"\n"

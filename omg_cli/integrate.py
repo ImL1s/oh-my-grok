@@ -916,6 +916,73 @@ def integrate_results(
     skip_preflight: bool = False,
     require_squash: bool = False,
     lease: Any = None,
+    _scale_lock_held: bool = False,
+) -> dict[str, Any]:
+    """Integrate envelopes while excluding concurrent team scale transactions."""
+    root = Path(root).resolve()
+    if _scale_lock_held:
+        return _integrate_results_locked(
+            root,
+            run_id,
+            envelopes_dir,
+            dry_run=dry_run,
+            skip_preflight=skip_preflight,
+            require_squash=require_squash,
+            lease=lease,
+            _scale_lock_held=True,
+        )
+
+    from omg_cli.state import RunSchema, classify_run_schema, execution_lease, load_run
+    from omg_cli.team.plane import TeamError
+    from omg_cli.team.scaling import acquire_scale_lock
+
+    run = load_run(root, run_id)
+    if run is None:
+        raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
+    schema = classify_run_schema(run)
+
+    if schema is RunSchema.STRICT_V2 and lease is None and not dry_run:
+        try:
+            with execution_lease(root, run_id, intent="integrate") as owned_lease:
+                with acquire_scale_lock(root, run_id):
+                    return _integrate_results_locked(
+                        root,
+                        run_id,
+                        envelopes_dir,
+                        dry_run=dry_run,
+                        skip_preflight=skip_preflight,
+                        require_squash=require_squash,
+                        lease=owned_lease,
+                        _scale_lock_held=True,
+                    )
+        except TeamError as exc:
+            raise IntegrateError(f"team scale lock refused: {exc}") from exc
+    try:
+        with acquire_scale_lock(root, run_id):
+            return _integrate_results_locked(
+                root,
+                run_id,
+                envelopes_dir,
+                dry_run=dry_run,
+                skip_preflight=skip_preflight,
+                require_squash=require_squash,
+                lease=lease,
+                _scale_lock_held=True,
+            )
+    except TeamError as exc:
+        raise IntegrateError(f"team scale lock refused: {exc}") from exc
+
+
+def _integrate_results_locked(
+    root: Path | str,
+    run_id: str,
+    envelopes_dir: Path | str | None = None,
+    *,
+    dry_run: bool = False,
+    skip_preflight: bool = False,
+    require_squash: bool = False,
+    lease: Any = None,
+    _scale_lock_held: bool = False,
 ) -> dict[str, Any]:
     """Load ULW envelopes, apply in task_id order, write integrate.result.json.
 
@@ -1014,7 +1081,21 @@ def integrate_results(
 
     try:
         # When a CLI ownership manifest exists, require join complete first.
-        from omg_cli.workers import join_worker_results, ownership_manifest_path
+        from omg_cli.workers import (
+            WorkerError,
+            _assert_no_pending_team_scale,
+            join_worker_results,
+            ownership_manifest_path,
+        )
+
+        # Dry-run still publishes integrate.result.json, so it participates in
+        # the same identity-transaction exclusion as live integration.  Public
+        # callers reach this point with the scale lock held (or explicitly
+        # attest that an outer lifecycle transaction already holds it).
+        try:
+            _assert_no_pending_team_scale(root, run_id)
+        except WorkerError as exc:
+            raise IntegrateError(str(exc)) from exc
 
         own_path = ownership_manifest_path(root, run_id)
         # Strict-v2 ULW requires ownership manifest + complete join (not dry-run only).
@@ -1029,7 +1110,14 @@ def integrate_results(
                 f"at {own_path}; run omg worker own first"
             )
         if own_path.is_file() and not dry_run:
-            joined = join_worker_results(root, run_id)
+            try:
+                joined = join_worker_results(
+                    root,
+                    run_id,
+                    _scale_lock_held=_scale_lock_held,
+                )
+            except WorkerError as exc:
+                raise IntegrateError(str(exc)) from exc
             if not joined.get("complete"):
                 raise IntegrateError(
                     "ownership join incomplete; refuse integrate: "

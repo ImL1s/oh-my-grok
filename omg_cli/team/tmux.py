@@ -66,10 +66,12 @@ def pane_alive(pane_id: str) -> bool | None:
         return None
     if not isinstance(pane_id, str) or _TMUX_PANE_ID.fullmatch(pane_id) is None:
         return False
-    probe = _tmux_run(["display-message", "-p", "-t", pane_id, "#{pane_id}"])
+    probe = _tmux_run(
+        ["display-message", "-p", "-t", pane_id, "#{pane_id}\t#{pane_dead}"]
+    )
     if probe.returncode != 0:
         return False
-    return (probe.stdout or "").strip() == pane_id
+    return (probe.stdout or "").strip() == f"{pane_id}\t0"
 
 
 def respawn_worker_pane(

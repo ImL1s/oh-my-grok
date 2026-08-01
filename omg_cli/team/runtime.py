@@ -969,21 +969,53 @@ def resume_for_identity(
     *,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Thin resume wrapper: reconcile liveness, then relaunch dead incomplete workers.
+    """Reconcile and relaunch under one lifecycle transaction lock.
 
     Combines :func:`omg_cli.team.scaling.resume_team` with
     :func:`omg_cli.team.scaling.relaunch_dead_incomplete_workers`. Generation
     increments only when at least one worker is safely respawned.
     """
     from omg_cli.team.scaling import (
-        relaunch_dead_incomplete_workers,
-        resume_team,
+        _relaunch_dead_incomplete_workers_locked,
+        _resume_team_locked_impl,
+        acquire_scale_lock,
+        pending_identity_wal_operation,
     )
 
     root_path = Path(root).resolve()
     run_id = resolve_team_ref(root_path, identity)
-    reconciled = resume_team(root_path, run_id, env=env)
-    relaunch = relaunch_dead_incomplete_workers(root_path, run_id, env=env)
+    with acquire_scale_lock(root_path, run_id):
+        meta = load_team_meta(root_path, run_id)
+        pending_operation = pending_identity_wal_operation(
+            root_path,
+            run_id,
+            meta,
+        )
+        if pending_operation == "relaunch":
+            # A crash-safe relaunch WAL is the sole mutation authority. Recover
+            # it before raw liveness reconciliation, which intentionally gates
+            # every pending identity transaction.
+            relaunch = _relaunch_dead_incomplete_workers_locked(
+                root_path,
+                run_id,
+                env=env,
+            )
+            reconciled = _resume_team_locked_impl(
+                root_path,
+                run_id,
+                env=env,
+            )
+        else:
+            reconciled = _resume_team_locked_impl(
+                root_path,
+                run_id,
+                env=env,
+            )
+            relaunch = _relaunch_dead_incomplete_workers_locked(
+                root_path,
+                run_id,
+                env=env,
+            )
     out = dict(reconciled)
     out.update(
         {
