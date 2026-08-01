@@ -4,7 +4,7 @@ English | [简体中文](./security-model.zh.md) | [繁體中文](./security-mod
 
 隔離宣稱的**權威對照表**。README、skills、doctor footer 應連到這裡，而不是自行發明更強的措辭。
 
-最後更新：2026-07-30 · Plugin 版本：**0.7.3**
+最後更新：2026-08-01 · Plugin 版本：**0.7.4**
 
 ## 分層表（強 → 弱）
 
