@@ -5,6 +5,7 @@ No live tmux. dry_run must never call tmux_available / subprocess.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -597,6 +598,44 @@ def test_collect_rejects_forged_team_json(
     assert run2.get("verified") is not True
 
 
+def test_collect_refuses_pending_scale_wal_before_seal_or_integrate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.contracts.path_keys import atomic_write_bytes
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team("pending collect", TASKS_TWO, root=tmp_path, dry_run=True)
+    rid = meta["run_id"]
+    atomic_write_bytes(
+        plane.team_dir(tmp_path, rid) / "scale-wal" / "1.json",
+        b'{"pending":true}',
+        replace=False,
+    )
+    seal_calls = 0
+    integrate_calls = 0
+
+    def forbidden_seal(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        nonlocal seal_calls
+        seal_calls += 1
+        return []
+
+    def forbidden_integrate(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        nonlocal integrate_calls
+        integrate_calls += 1
+        return {}
+
+    monkeypatch.setattr(plane, "seal_all_tasks", forbidden_seal)
+    monkeypatch.setattr("omg_cli.integrate.integrate_results", forbidden_integrate)
+
+    with pytest.raises(TeamError, match="scale WAL is pending"):
+        collect_team(tmp_path, rid)
+
+    assert seal_calls == 0
+    assert integrate_calls == 0
+    assert not (tmp_path / ".omg" / "artifacts" / "ulw-results" / rid).exists()
+
+
 # ---------------------------------------------------------------------------
 # stop: recorded session/pgids only; dry_run not signalled
 # ---------------------------------------------------------------------------
@@ -691,8 +730,7 @@ def _tmux_identity_runner(
             result.stdout = expected_nonce + "\n"
         elif command[0] == "list-panes":
             result.stdout = "".join(
-                f"{task['window_index']}\t{task['pane_id']}\t"
-                f"{task['pid'] + pane_pid_delta}\n"
+                f"{task['window_index']}\t{task['pane_id']}\t{task['pid'] + pane_pid_delta}\n"
                 for task in live["tasks"]
             )
         elif command[0] == "kill-session":
@@ -702,6 +740,43 @@ def _tmux_identity_runner(
         return result
 
     return run
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_stop_refuses_pending_scale_wal_before_shutdown_or_signal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, force: bool
+) -> None:
+    from omg_cli.contracts.path_keys import atomic_write_bytes
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team("pending stop", TASKS_TWO, root=tmp_path, dry_run=True)
+    rid = meta["run_id"]
+    _write_live_stop_identity(tmp_path, meta, monkeypatch)
+    atomic_write_bytes(
+        plane.team_dir(tmp_path, rid) / "scale-wal" / "1.json",
+        b'{"pending":true}',
+        replace=False,
+    )
+    monkeypatch.setattr(
+        plane,
+        "_tmux_run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("pending WAL must not touch tmux")
+        ),
+    )
+    monkeypatch.setattr(
+        plane.os,
+        "killpg",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("pending WAL must not signal")
+        ),
+    )
+
+    with pytest.raises(TeamError, match="scale WAL is pending"):
+        stop_team(tmp_path, rid, force=force)
+
+    assert not plane.team_shutdown_request_path(tmp_path, rid).exists()
 
 
 def test_stop_uses_only_recorded_session_and_pgids(
@@ -854,7 +929,9 @@ def test_stop_rebounds_before_sigkill_escalation(
     """Pane-bound pgid may change between SIGTERM and SIGKILL; rebind is allowed."""
     _init_repo(tmp_path)
     _enable_team(monkeypatch)
-    meta = start_team("sigkill-time rebind", [TASKS_TWO[0]], root=tmp_path, dry_run=True)
+    meta = start_team(
+        "sigkill-time rebind", [TASKS_TWO[0]], root=tmp_path, dry_run=True
+    )
     live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
     commands: list[list[str]] = []
     pgid_reads = iter([525252, 525252, 999999, 999999, 999999, 999999, 999999])
@@ -1036,8 +1113,18 @@ else:
         reaper.join(timeout=2.0)
 
         assert leader.poll() is not None
-        with pytest.raises(ProcessLookupError):
-            os.killpg(pgid, 0)
+        # SIGKILL can leave a short-lived zombie until reaped; poll until the
+        # process group is gone rather than requiring immediate ESRCH.
+        gone_deadline = time.monotonic() + 2.0
+        while time.monotonic() < gone_deadline:
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.02)
+        else:
+            with pytest.raises(ProcessLookupError):
+                os.killpg(pgid, 0)
         assert result["stop_completed"] is True
         assert result["identity_verified"] is True
         assert any(
@@ -1299,6 +1386,248 @@ def test_stop_refuses_incomplete_scaled_identity_chain(
     assert stopped["identity_verified"] is False
     assert signals == []
     assert any("generation 1 missing" in error for error in stopped["errors"])
+
+
+def test_identity_receipt_publish_then_raise_adopts_exact_published_body(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.contracts import path_keys
+
+    real_atomic_write = path_keys.atomic_write_bytes
+    real_fsync_dir = path_keys.fsync_existing_managed_dir
+    synced: list[Path] = []
+
+    def publish_then_raise(*args: Any, **kwargs: Any) -> Path:
+        real_atomic_write(*args, **kwargs)
+        raise OSError("simulated parent fsync result loss")
+
+    def track_fsync(path: Path) -> None:
+        synced.append(path)
+        real_fsync_dir(path)
+
+    monkeypatch.setattr(path_keys, "atomic_write_bytes", publish_then_raise)
+    monkeypatch.setattr(path_keys, "fsync_existing_managed_dir", track_fsync)
+
+    receipt, receipt_hash = plane._persist_team_identity_receipt(
+        tmp_path,
+        "run-1",
+        session="omg-workers",
+        session_id="$7",
+        launch_nonce="a" * 32,
+        generation=1,
+        previous_receipt_sha256="b" * 64,
+        operation="add",
+        tasks_before=[],
+        tasks_after=[],
+    )
+
+    path = plane.team_identity_receipt_path(tmp_path, "run-1", 1)
+    body = path.read_bytes()
+    assert receipt["generation"] == 1
+    assert receipt_hash == hashlib.sha256(body).hexdigest()
+    assert synced == [path.parent]
+
+
+def test_identity_receipt_v2_scale_intent_round_trip(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.contracts.writer_chain import canonical_json_bytes
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team("v2 intent", [TASKS_TWO[0]], root=tmp_path, dry_run=True)
+    live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
+    intent = {
+        "operation": "add",
+        "tasks": [{"task_id": "t-c", "owned_files": ["c.py"]}],
+    }
+    receipt, head = plane._persist_team_identity_receipt(
+        tmp_path,
+        live["run_id"],
+        session=live["session"],
+        session_id="$9",
+        launch_nonce=live["launch_nonce"],
+        generation=1,
+        previous_receipt_sha256=live["launch_receipt_sha256"],
+        operation="add",
+        tasks_before=live["tasks"],
+        tasks_after=live["tasks"],
+        scale_intent=intent,
+    )
+    live["identity_generation"] = 1
+    live["identity_receipt_sha256"] = head
+    plane._atomic_write_json(team_meta_path(tmp_path, live["run_id"]), live)
+
+    chain = plane._load_team_identity_chain(tmp_path, live["run_id"], live)
+
+    assert receipt["schema_version"] == plane.IDENTITY_RECEIPT_SCHEMA_VERSION
+    assert chain[-1]["scale_intent"] == intent
+    assert (
+        chain[-1]["scale_intent_sha256"]
+        == hashlib.sha256(canonical_json_bytes(intent)).hexdigest()
+    )
+
+
+def test_identity_receipt_v2_rejects_scale_intent_hash_tamper(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team("v2 tamper", [TASKS_TWO[0]], root=tmp_path, dry_run=True)
+    live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
+    receipt, _head = plane._persist_team_identity_receipt(
+        tmp_path,
+        live["run_id"],
+        session=live["session"],
+        session_id="$9",
+        launch_nonce=live["launch_nonce"],
+        generation=1,
+        previous_receipt_sha256=live["launch_receipt_sha256"],
+        operation="add",
+        tasks_before=live["tasks"],
+        tasks_after=live["tasks"],
+        scale_intent={"operation": "add", "task_ids": ["t-c"]},
+    )
+    receipt["scale_intent"] = {"operation": "add", "task_ids": ["t-evil"]}
+    body = canonical_json_bytes(receipt)
+    plane.team_identity_receipt_path(tmp_path, live["run_id"], 1).write_bytes(body)
+    live["identity_generation"] = 1
+    live["identity_receipt_sha256"] = sha256_hex(body)
+    plane._atomic_write_json(team_meta_path(tmp_path, live["run_id"]), live)
+
+    with pytest.raises(TeamError, match="scale intent mismatch"):
+        plane._load_team_identity_chain(tmp_path, live["run_id"], live)
+
+
+def test_identity_receipt_loader_accepts_committed_legacy_v1_chain(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team("legacy identity", [TASKS_TWO[0]], root=tmp_path, dry_run=True)
+    live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
+    legacy_rows = [
+        {
+            "task_id": task.get("task_id"),
+            "window_index": task.get("window_index"),
+            "pane_id": task.get("pane_id"),
+            "pid": task.get("pid"),
+            "pgid": task.get("pgid"),
+            "pid_start": task.get("pid_start"),
+        }
+        for task in live["tasks"]
+    ]
+    legacy = {
+        "store_kind": "team_identity_receipt",
+        "schema_version": plane.LAUNCH_RECEIPT_SCHEMA_VERSION,
+        "writer": CLI_WRITER,
+        "run_id": live["run_id"],
+        "session_name": live["session"],
+        "session_id": "$9",
+        "launch_nonce": live["launch_nonce"],
+        "generation": 1,
+        "previous_receipt_sha256": live["launch_receipt_sha256"],
+        "operation": "remove",
+        "receipt_nonce": "c" * 32,
+        "tasks_before": legacy_rows,
+        "tasks_after": legacy_rows,
+    }
+    body = canonical_json_bytes(legacy)
+    path = plane.team_identity_receipt_path(tmp_path, live["run_id"], 1)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
+    live["identity_generation"] = 1
+    live["identity_receipt_sha256"] = sha256_hex(body)
+    plane._atomic_write_json(team_meta_path(tmp_path, live["run_id"]), live)
+
+    chain = plane._load_team_identity_chain(tmp_path, live["run_id"], live)
+
+    assert chain[-1] == legacy
+
+
+def test_identity_receipt_publish_then_raise_rejects_unexpected_body(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.contracts import path_keys
+
+    real_atomic_write = path_keys.atomic_write_bytes
+
+    def publish_other_then_raise(path: Path, _body: bytes, **kwargs: Any) -> Path:
+        real_atomic_write(path, b'{"unexpected":true}', **kwargs)
+        raise OSError("simulated ambiguous publication")
+
+    monkeypatch.setattr(path_keys, "atomic_write_bytes", publish_other_then_raise)
+
+    with pytest.raises(OSError, match="ambiguous publication"):
+        plane._persist_team_identity_receipt(
+            tmp_path,
+            "run-1",
+            session="omg-workers",
+            session_id="$7",
+            launch_nonce="a" * 32,
+            generation=1,
+            previous_receipt_sha256="b" * 64,
+            operation="add",
+            tasks_before=[],
+            tasks_after=[],
+        )
+
+    path = plane.team_identity_receipt_path(tmp_path, "run-1", 1)
+    assert path.read_bytes() == b'{"unexpected":true}'
+
+
+@pytest.mark.parametrize(
+    "durability_error",
+    [
+        OSError("retry fsync failed"),
+        pytest.param(
+            None,
+            id="contract-path-error",
+        ),
+    ],
+    ids=["os-error", None],
+)
+def test_identity_receipt_publish_then_raise_propagates_durability_retry_failure(
+    durability_error: BaseException | None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from omg_cli.contracts import path_keys
+    from omg_cli.contracts.path_keys import ContractPathError
+
+    real_atomic_write = path_keys.atomic_write_bytes
+    failure = durability_error or ContractPathError("retry fsync refused")
+
+    def publish_then_raise(*args: Any, **kwargs: Any) -> Path:
+        real_atomic_write(*args, **kwargs)
+        raise OSError("simulated parent fsync result loss")
+
+    def fail_fsync(_path: Path) -> None:
+        raise failure
+
+    monkeypatch.setattr(path_keys, "atomic_write_bytes", publish_then_raise)
+    monkeypatch.setattr(path_keys, "fsync_existing_managed_dir", fail_fsync)
+
+    with pytest.raises(type(failure), match="retry fsync"):
+        plane._persist_team_identity_receipt(
+            tmp_path,
+            "run-1",
+            session="omg-workers",
+            session_id="$7",
+            launch_nonce="a" * 32,
+            generation=1,
+            previous_receipt_sha256="b" * 64,
+            operation="add",
+            tasks_before=[],
+            tasks_after=[],
+        )
+
+    path = plane.team_identity_receipt_path(tmp_path, "run-1", 1)
+    assert json.loads(path.read_text(encoding="utf-8"))["generation"] == 1
 
 
 def test_stop_after_scale_validates_chain_and_signals_only_current_worker(

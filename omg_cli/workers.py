@@ -10,16 +10,23 @@ The leader (or operator) runs ``omg worker prepare`` / ``omg worker seal`` to:
 Only the omg CLI owns envelopes under
 ``.omg/artifacts/ulw-results/<run_id>/``.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import re
+import stat
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from omg_cli.contracts.path_keys import (
+    ContractPathError,
+    ensure_managed_dir,
+    open_existing_managed_dir_fd,
+)
 from omg_cli.evidence import EvidenceError, validate_identifier
 from omg_cli.integrate import (
     _run_git,
@@ -97,11 +104,87 @@ def _branch_name(run_id: str, task_id: str) -> str:
     return f"omg/{rid}/{task_id}"
 
 
+def _resolved_git_dir(base: Path, raw: str) -> Path:
+    candidate = Path(raw.strip())
+    if not candidate.is_absolute():
+        candidate = base / candidate
+    return candidate.resolve()
+
+
+def validate_task_worktree(
+    root: Path | str,
+    run_id: str,
+    task_id: str,
+    *,
+    path: Path | str | None = None,
+) -> Path:
+    """Validate an exact linked worktree without following the leaf symlink."""
+    root = Path(root).resolve()
+    try:
+        run_id = validate_identifier(run_id, label="run_id")
+    except EvidenceError as exc:
+        raise WorkerError(str(exc)) from exc
+    task_id = validate_task_id(task_id)
+    expected = worktree_dir(root, run_id, task_id)
+    candidate = Path(path).absolute() if path is not None else expected
+    if candidate != expected:
+        raise WorkerError(f"worktree path is not the expected OMG path: {candidate}")
+    worktree_fd = -1
+    try:
+        worktree_fd = open_existing_managed_dir_fd(candidate)
+        if not stat.S_ISDIR(os.fstat(worktree_fd).st_mode):
+            raise WorkerError(
+                f"existing worktree path is not OMG-managed: {candidate}"
+            )
+    except (OSError, ContractPathError) as exc:
+        raise WorkerError(
+            f"existing worktree path is not OMG-managed: {candidate}"
+        ) from exc
+    finally:
+        if worktree_fd >= 0:
+            os.close(worktree_fd)
+
+    git_marker = candidate / ".git"
+    try:
+        git_stat = git_marker.lstat()
+    except FileNotFoundError:
+        git_stat = None
+    except OSError as exc:
+        raise WorkerError(
+            f"existing worktree path is not OMG-managed: {candidate}"
+        ) from exc
+    if git_stat is not None:
+        if not (stat.S_ISREG(git_stat.st_mode) or stat.S_ISDIR(git_stat.st_mode)):
+            raise WorkerError(
+                f"existing worktree path is not OMG-managed: {candidate}"
+            )
+        top = _run_git(["rev-parse", "--show-toplevel"], cwd=candidate)
+        common = _run_git(["rev-parse", "--git-common-dir"], cwd=candidate)
+        root_common = _run_git(["rev-parse", "--git-common-dir"], cwd=root)
+        branch_probe = _run_git(["branch", "--show-current"], cwd=candidate)
+        if (
+            top.returncode != 0
+            or Path((top.stdout or "").strip()).resolve() != candidate.resolve()
+            or common.returncode != 0
+            or root_common.returncode != 0
+            or _resolved_git_dir(candidate, common.stdout or "")
+            != _resolved_git_dir(root, root_common.stdout or "")
+            or branch_probe.returncode != 0
+            or (branch_probe.stdout or "").strip() != _branch_name(run_id, task_id)
+        ):
+            raise WorkerError(
+                f"existing worktree path is not OMG-managed: {candidate}"
+            )
+        return candidate
+
+    raise WorkerError(f"existing worktree path is not OMG-managed: {candidate}")
+
+
 def prepare_task(root: Path | str, run_id: str, task_id: str) -> Path:
     """Create ``.omg/worktrees/<run_id>/<task_id>`` via ``git worktree add`` if possible.
 
-    Falls back to mkdir-only (documented clone path) when not a git work tree
-    or ``git worktree add`` fails.
+    Fails closed when Git or ``git worktree add`` is unavailable.  OMG never
+    treats a marker-only directory or an unrelated clone as task ownership.
 
     Returns the worktree path.
     """
@@ -113,25 +196,34 @@ def prepare_task(root: Path | str, run_id: str, task_id: str) -> Path:
         raise WorkerError(str(exc)) from exc
 
     wt = worktree_dir(root, run_id, task_id)
-    if wt.is_dir() and (wt / ".git").exists():
-        return wt
-    if wt.is_dir() and any(wt.iterdir()):
-        # Already prepared as clone/mkdir path
-        return wt
+    try:
+        wt_stat = wt.lstat()
+    except FileNotFoundError:
+        wt_stat = None
+    except OSError as exc:
+        raise WorkerError(f"existing worktree path is not OMG-managed: {wt}") from exc
+    if wt_stat is not None and not stat.S_ISDIR(wt_stat.st_mode):
+        raise WorkerError(f"existing worktree path is not OMG-managed: {wt}")
 
-    wt.parent.mkdir(parents=True, exist_ok=True)
+    if wt_stat is not None:
+        try:
+            has_entries = any(wt.iterdir())
+        except OSError as exc:
+            raise WorkerError(
+                f"existing worktree path is not OMG-managed: {wt}"
+            ) from exc
+        if has_entries:
+            return validate_task_worktree(root, run_id, task_id, path=wt)
+
+    try:
+        ensure_managed_dir(wt.parent)
+    except (OSError, ContractPathError) as exc:
+        raise WorkerError(f"managed worktree parent unavailable: {wt.parent}") from exc
 
     if not git_available(root):
-        wt.mkdir(parents=True, exist_ok=True)
-        # Document clone fallback for operators
-        note = wt / "OMG_WORKTREE_NOTE.txt"
-        note.write_text(
-            "git worktree unavailable: directory created as clone path.\n"
-            "Clone or copy the project here, commit worker changes, then "
-            "`omg worker seal --task <id>` from the project root.\n",
-            encoding="utf-8",
+        raise WorkerError(
+            f"git worktree unavailable; cannot prepare managed task path: {wt}"
         )
-        return wt
 
     branch = _branch_name(run_id, task_id)
     # Prefer linked worktree on a new branch from HEAD
@@ -141,6 +233,10 @@ def prepare_task(root: Path | str, run_id: str, task_id: str) -> Path:
         timeout=120.0,
     )
     if r.returncode != 0:
+        try:
+            return validate_task_worktree(root, run_id, task_id, path=wt)
+        except WorkerError:
+            pass
         # Branch may already exist — try without -b
         r2 = _run_git(
             ["worktree", "add", str(wt), branch],
@@ -148,19 +244,15 @@ def prepare_task(root: Path | str, run_id: str, task_id: str) -> Path:
             timeout=120.0,
         )
         if r2.returncode != 0:
-            # Final fallback: mkdir clone path
-            wt.mkdir(parents=True, exist_ok=True)
-            note = wt / "OMG_WORKTREE_NOTE.txt"
-            err = (r.stderr or r2.stderr or "").strip()
-            note.write_text(
-                "git worktree add failed; directory created as clone path.\n"
-                f"error: {err}\n"
-                "Clone or copy the project here, commit worker changes, then "
-                "`omg worker seal --task <id>` from the project root.\n",
-                encoding="utf-8",
+            try:
+                return validate_task_worktree(root, run_id, task_id, path=wt)
+            except WorkerError:
+                pass
+            detail = (r2.stderr or r.stderr or "unknown git error").strip()[:500]
+            raise WorkerError(
+                f"git worktree add failed for managed task path {wt}: {detail}"
             )
-            return wt
-    return wt
+    return validate_task_worktree(root, run_id, task_id, path=wt)
 
 
 def _list_changed_files(worktree: Path, base_sha: str, head_sha: str) -> list[str]:
@@ -213,10 +305,13 @@ def seal_task(
         raise WorkerError(f"status must be ok|failed, got {status!r}")
 
     wt = worktree_dir(root, run_id, task_id)
-    if not wt.is_dir():
+    try:
+        wt.lstat()
+    except OSError:
         raise WorkerError(
             f"worktree missing: {wt}; run `omg worker prepare --task {task_id}` first"
         )
+    validate_task_worktree(root, run_id, task_id, path=wt)
 
     # Validate schema before any envelope write.  Classification is read-only
     # and never upgrades legacy status in place.
@@ -352,7 +447,14 @@ def ownership_manifest_path(root: Path | str, run_id: str) -> Path:
         run_id = validate_identifier(run_id, label="run_id")
     except EvidenceError as exc:
         raise WorkerError(str(exc)) from exc
-    return Path(root).resolve() / ".omg" / "state" / "runs" / run_id / "task_ownership.json"
+    return (
+        Path(root).resolve()
+        / ".omg"
+        / "state"
+        / "runs"
+        / run_id
+        / "task_ownership.json"
+    )
 
 
 def build_ownership_manifest(
@@ -406,9 +508,7 @@ def build_ownership_manifest(
                     )
             file_owners[f] = tid
         role = str(raw.get("role") or "omg-executor").strip()
-        cap = str(
-            raw.get("capability_mode") or required_capability_mode
-        ).strip()
+        cap = str(raw.get("capability_mode") or required_capability_mode).strip()
         if cap not in ("read-write", "read-only"):
             raise WorkerError(f"task {tid}: bad capability_mode {cap!r}")
         wt = worktree_dir(root, run_id, tid)
@@ -438,8 +538,7 @@ def build_ownership_manifest(
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(
-            json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True)
-            + "\n",
+            json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         os.replace(tmp, path)
@@ -465,11 +564,86 @@ def load_ownership_manifest(root: Path | str, run_id: str) -> dict[str, Any]:
     return data
 
 
+def _assert_no_pending_team_scale(root: Path, run_id: str) -> None:
+    """Refuse ownership consumers while identity state is ahead of team.json.
+
+    Scale-up publishes its immutable WAL before replacing the ownership
+    manifest.  Serializing consumers on the same scale lock and checking the
+    committed identity generation prevents an orphaned pre-commit manifest
+    from becoming join/integration authority after a crash.
+    """
+    from omg_cli.team.plane import TeamError, load_team_meta, team_dir, team_meta_path
+
+    meta_path = team_meta_path(root, run_id)
+    try:
+        meta_stat = meta_path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise WorkerError(f"team identity state unreadable: {exc}") from exc
+    if not stat.S_ISREG(meta_stat.st_mode):
+        raise WorkerError("team identity state must be a regular file")
+    try:
+        meta = load_team_meta(root, run_id)
+    except TeamError as exc:
+        raise WorkerError(f"team identity state invalid: {exc}") from exc
+    generation = meta.get("identity_generation", 0)
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 0
+    ):
+        raise WorkerError("team identity generation is invalid")
+
+    from omg_cli.team.scaling import _load_future_identity_receipts
+
+    try:
+        pending_receipts = _load_future_identity_receipts(
+            root,
+            run_id,
+            committed_generation=generation,
+        )
+    except TeamError as exc:
+        raise WorkerError(f"pending team identity receipt invalid: {exc}") from exc
+    if pending_receipts:
+        raise WorkerError(
+            "team operation refused while identity receipt is pending "
+            f"(committed_generation={generation}, "
+            f"pending={sorted(pending_receipts)})"
+        )
+
+    wal_dir = team_dir(root, run_id) / "scale-wal"
+    try:
+        wal_stat = wal_dir.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise WorkerError(f"team scale WAL directory unreadable: {exc}") from exc
+    if not stat.S_ISDIR(wal_stat.st_mode):
+        raise WorkerError("team scale WAL path must be a directory")
+    try:
+        names = [entry.name for entry in wal_dir.iterdir()]
+    except OSError as exc:
+        raise WorkerError(f"team scale WAL directory unreadable: {exc}") from exc
+    pending = sorted(
+        int(match.group(1))
+        for name in names
+        if (match := re.fullmatch(r"0*([0-9]+)\.json", name)) is not None
+        and int(match.group(1)) > generation
+    )
+    if pending:
+        raise WorkerError(
+            "team operation refused while scale WAL is pending "
+            f"(committed_generation={generation}, pending={pending})"
+        )
+
+
 def join_worker_results(
     root: Path | str,
     run_id: str,
     *,
     require_all_ok: bool = True,
+    _scale_lock_held: bool = False,
 ) -> dict[str, Any]:
     """Join sealed envelopes against ownership manifest.
 
@@ -482,6 +656,21 @@ def join_worker_results(
         run_id = validate_identifier(run_id, label="run_id")
     except EvidenceError as exc:
         raise WorkerError(str(exc)) from exc
+    if not _scale_lock_held:
+        from omg_cli.team.scaling import acquire_scale_lock
+        from omg_cli.team.plane import TeamError
+
+        try:
+            with acquire_scale_lock(root, run_id):
+                return join_worker_results(
+                    root,
+                    run_id,
+                    require_all_ok=require_all_ok,
+                    _scale_lock_held=True,
+                )
+        except TeamError as exc:
+            raise WorkerError(f"ownership join lock refused: {exc}") from exc
+    _assert_no_pending_team_scale(root, run_id)
     manifest = load_ownership_manifest(root, run_id)
     tasks = list(manifest.get("tasks") or [])
     if len(tasks) < 1:
@@ -533,9 +722,7 @@ def join_worker_results(
             )
             continue
         owned = {
-            _norm_relpath(f)
-            for f in (task.get("owned_files") or [])
-            if str(f).strip()
+            _norm_relpath(f) for f in (task.get("owned_files") or []) if str(f).strip()
         }
         changed = env.get("changed_files") or []
         if not isinstance(changed, list):
@@ -803,5 +990,6 @@ __all__ = [
     "seal_task",
     "seal_native_team_worktree",
     "validate_task_id",
+    "validate_task_worktree",
     "worktree_dir",
 ]

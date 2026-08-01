@@ -1,4 +1,5 @@
 """Tests for omg worker prepare/seal — worktree + ULW envelope."""
+
 from __future__ import annotations
 
 import json
@@ -114,10 +115,12 @@ def test_seal_dirty_no_commit_fails(tmp_path, monkeypatch):
     def selective_git(args, cwd=None, timeout=30.0):
         # After add -A, pretend index has nothing staged (returncode 0 for --quiet)
         if list(args[:3]) == ["diff", "--cached", "--quiet"]:
+
             class R:
                 returncode = 0
                 stdout = ""
                 stderr = ""
+
             return R()
         return real_run(args, cwd=cwd, timeout=timeout)
 
@@ -134,6 +137,201 @@ def test_prepare_invalid_task_id(tmp_path):
     run = create_run(tmp_path, mode="ulw", goal="bad")
     with pytest.raises(WorkerError, match="task_id"):
         prepare_task(tmp_path, run["run_id"], "../evil")
+
+
+def test_prepare_refuses_arbitrary_nonempty_worktree_path(tmp_path):
+    _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="occupied")
+    wt = worktree_dir(tmp_path, run["run_id"], "occupied")
+    wt.mkdir(parents=True)
+    (wt / "foreign.txt").write_text("not managed\n", encoding="utf-8")
+
+    with pytest.raises(WorkerError, match="not OMG-managed"):
+        prepare_task(tmp_path, run["run_id"], "occupied")
+
+
+def test_prepare_refuses_when_git_is_unavailable(tmp_path, monkeypatch):
+    import omg_cli.workers as workers
+
+    _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="fallback")
+    rid = run["run_id"]
+    monkeypatch.setattr(workers, "git_available", lambda _root: False)
+
+    with pytest.raises(WorkerError, match="git worktree unavailable"):
+        prepare_task(tmp_path, rid, "fallback")
+    assert not worktree_dir(tmp_path, rid, "fallback").exists()
+
+
+def test_prepare_refuses_legacy_prefix_fallback_marker(tmp_path):
+    _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="legacy fallback")
+    wt = worktree_dir(tmp_path, run["run_id"], "legacy")
+    wt.mkdir(parents=True)
+    (wt / "OMG_WORKTREE_NOTE.txt").write_text(
+        "git worktree unavailable: forged authority\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WorkerError, match="not OMG-managed"):
+        prepare_task(tmp_path, run["run_id"], "legacy")
+
+
+def test_prepare_refuses_when_both_git_worktree_add_attempts_fail(
+    tmp_path, monkeypatch
+):
+    import omg_cli.workers as workers
+
+    _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="worktree add failed")
+    rid = run["run_id"]
+    real_run_git = workers._run_git
+
+    def fail_worktree_add(args, cwd=None, timeout=30.0):
+        if list(args[:2]) == ["worktree", "add"]:
+            return subprocess.CompletedProcess(args, 1, "", "simulated add failure")
+        return real_run_git(args, cwd=cwd, timeout=timeout)
+
+    monkeypatch.setattr(workers, "_run_git", fail_worktree_add)
+
+    with pytest.raises(WorkerError, match="git worktree add failed"):
+        prepare_task(tmp_path, rid, "failed-add")
+
+
+def test_prepare_adopts_exact_worktree_when_git_reports_result_loss(
+    tmp_path, monkeypatch
+):
+    import omg_cli.workers as workers
+
+    _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="worktree add result loss")
+    rid = run["run_id"]
+    real_run_git = workers._run_git
+    add_calls = 0
+
+    def create_then_report_failure(args, cwd=None, timeout=30.0):
+        nonlocal add_calls
+        result = real_run_git(args, cwd=cwd, timeout=timeout)
+        if list(args[:3]) == ["worktree", "add", "-b"]:
+            add_calls += 1
+            assert result.returncode == 0
+            return subprocess.CompletedProcess(
+                args,
+                1,
+                result.stdout,
+                "simulated lost success response",
+            )
+        return result
+
+    monkeypatch.setattr(workers, "_run_git", create_then_report_failure)
+
+    wt = prepare_task(tmp_path, rid, "lost-result")
+
+    assert add_calls == 1
+    assert workers.validate_task_worktree(tmp_path, rid, "lost-result") == wt
+
+
+def test_prepare_refuses_intermediate_worktree_symlink(tmp_path):
+    _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="intermediate symlink")
+    outside = tmp_path / "outside-worktrees"
+    outside.mkdir()
+    worktrees = tmp_path / ".omg" / "worktrees"
+    worktrees.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(WorkerError, match="managed worktree parent unavailable"):
+        prepare_task(tmp_path, run["run_id"], "linked-parent")
+
+
+def test_prepare_refuses_worktree_leaf_symlink(tmp_path):
+    _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="symlink")
+    wt = worktree_dir(tmp_path, run["run_id"], "linked")
+    wt.parent.mkdir(parents=True)
+    outside = tmp_path / "outside-worktree"
+    outside.mkdir()
+    wt.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(WorkerError, match="not OMG-managed"):
+        prepare_task(tmp_path, run["run_id"], "linked")
+
+
+def test_prepare_refuses_git_marker_symlink(tmp_path):
+    _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="git marker symlink")
+    wt = worktree_dir(tmp_path, run["run_id"], "linked-git")
+    wt.mkdir(parents=True)
+    outside = tmp_path / "outside-git-marker"
+    outside.mkdir()
+    (wt / ".git").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(WorkerError, match="not OMG-managed"):
+        prepare_task(tmp_path, run["run_id"], "linked-git")
+
+
+def test_prepare_refuses_fabricated_git_marker(tmp_path):
+    _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="fake git marker")
+    wt = worktree_dir(tmp_path, run["run_id"], "fake-git")
+    wt.mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: /tmp/not-this-repo\n", encoding="utf-8")
+
+    with pytest.raises(WorkerError, match="not OMG-managed"):
+        prepare_task(tmp_path, run["run_id"], "fake-git")
+
+
+def test_join_refuses_ownership_from_pending_team_scale_wal(tmp_path):
+    from omg_cli.contracts.path_keys import atomic_write_bytes
+    from omg_cli.team.plane import team_dir, team_meta_path
+    from omg_cli.workers import build_ownership_manifest, join_worker_results
+
+    _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="pending scale")
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [{"task_id": "orphan", "owned_files": ["orphan.py"]}],
+    )
+    atomic_write_bytes(
+        team_meta_path(tmp_path, rid),
+        b'{"identity_generation":0,"writer":"omg-cli"}',
+    )
+    atomic_write_bytes(
+        team_dir(tmp_path, rid) / "scale-wal" / "1.json",
+        b'{"pending":true}',
+        replace=False,
+    )
+
+    with pytest.raises(WorkerError, match="scale WAL is pending"):
+        join_worker_results(tmp_path, rid)
+
+
+def test_join_refuses_ownership_from_future_identity_receipt(tmp_path):
+    from omg_cli.contracts.path_keys import atomic_write_bytes
+    from omg_cli.team.plane import team_identity_receipt_path, team_meta_path
+    from omg_cli.workers import build_ownership_manifest, join_worker_results
+
+    _init_repo(tmp_path)
+    run = create_run(tmp_path, mode="ulw", goal="pending identity receipt")
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [{"task_id": "orphan", "owned_files": ["orphan.py"]}],
+    )
+    atomic_write_bytes(
+        team_meta_path(tmp_path, rid),
+        b'{"identity_generation":0,"writer":"omg-cli"}',
+    )
+    atomic_write_bytes(
+        team_identity_receipt_path(tmp_path, rid, 1),
+        b"{}",
+        replace=False,
+    )
+
+    with pytest.raises(WorkerError, match="identity receipt is pending"):
+        join_worker_results(tmp_path, rid)
 
 
 def test_cli_worker_prepare_seal(tmp_path):
@@ -314,7 +512,9 @@ def test_ownership_dotfile_not_collapsed(tmp_path):
     base = _init_repo(tmp_path)
 
     # Case 1: owned "a.py" must NOT accept changed ".config" as owned
-    run1 = create_run(tmp_path, mode="ulw", goal="dot-foreign", extra={"base_sha": base})
+    run1 = create_run(
+        tmp_path, mode="ulw", goal="dot-foreign", extra={"base_sha": base}
+    )
     rid1 = run1["run_id"]
     build_ownership_manifest(
         tmp_path,
@@ -609,7 +809,9 @@ def test_cli_worker_seal_all(tmp_path):
     from omg_cli.workers import build_ownership_manifest, prepare_task
 
     base = _init_repo(tmp_path)
-    run = create_run(tmp_path, mode="ulw", goal="cli-seal-all", extra={"base_sha": base})
+    run = create_run(
+        tmp_path, mode="ulw", goal="cli-seal-all", extra={"base_sha": base}
+    )
     rid = run["run_id"]
     build_ownership_manifest(
         tmp_path,
@@ -737,9 +939,7 @@ def test_seal_all_non_worktree_missing_worker_error_is_error(tmp_path):
     )
 
     base = _init_repo(tmp_path)
-    run = create_run(
-        tmp_path, mode="ulw", goal="seal-err", extra={"base_sha": base}
-    )
+    run = create_run(tmp_path, mode="ulw", goal="seal-err", extra={"base_sha": base})
     rid = run["run_id"]
     build_ownership_manifest(
         tmp_path,
@@ -774,9 +974,7 @@ def test_seal_all_force_reseals_advanced_worktree(tmp_path):
     )
 
     base = _init_repo(tmp_path)
-    run = create_run(
-        tmp_path, mode="ulw", goal="seal-force", extra={"base_sha": base}
-    )
+    run = create_run(tmp_path, mode="ulw", goal="seal-force", extra={"base_sha": base})
     rid = run["run_id"]
     build_ownership_manifest(
         tmp_path,

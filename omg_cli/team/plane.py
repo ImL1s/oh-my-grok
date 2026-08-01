@@ -115,6 +115,7 @@ SPAWN_DENY_API_MARKERS: tuple[str, ...] = (
 WORKSPACE_MODE = "worktree"
 SCHEMA_VERSION = 1
 LAUNCH_RECEIPT_SCHEMA_VERSION = 1
+IDENTITY_RECEIPT_SCHEMA_VERSION = 2
 LAUNCH_NONCE_OPTION = "@omg_launch_nonce"
 _TMUX_SESSION_ID = re.compile(r"^\$[0-9]{1,16}$")
 _TMUX_PANE_ID = re.compile(r"^%[0-9]{1,16}$")
@@ -287,9 +288,7 @@ def _atomic_write_json_at(parent_fd: int, name: str, data: Mapping[str, Any]) ->
         json.dumps(dict(data), indent=2, ensure_ascii=False, sort_keys=True) + "\n"
     ).encode("utf-8")
     try:
-        atomic_write_bytes_at(
-            parent_fd, name, body, mode=DATA_FILE_MODE, replace=True
-        )
+        atomic_write_bytes_at(parent_fd, name, body, mode=DATA_FILE_MODE, replace=True)
     except ContractPathError as exc:
         raise TeamError(f"secure team.json publication refused: {exc}") from exc
 
@@ -323,8 +322,7 @@ def _load_team_meta_from_fd(parent_fd: int, *, run_id: str) -> dict[str, Any]:
     _require_cli_writer(data, label="team.json")
     if stat.S_IMODE(info.st_mode) != DATA_FILE_MODE:
         raise TeamError(
-            f"team.json mode must be {DATA_FILE_MODE:04o}, "
-            f"got {stat.S_IMODE(info.st_mode):04o}"
+            f"team.json mode must be {DATA_FILE_MODE:04o}, got {stat.S_IMODE(info.st_mode):04o}"
         )
     return data
 
@@ -357,8 +355,7 @@ def load_team_meta(root: Path | str, run_id: str) -> dict[str, Any]:
     _require_cli_writer(data, label="team.json")
     if stat.S_IMODE(info.st_mode) != DATA_FILE_MODE:
         raise TeamError(
-            f"team.json mode must be {DATA_FILE_MODE:04o}, "
-            f"got {stat.S_IMODE(info.st_mode):04o}"
+            f"team.json mode must be {DATA_FILE_MODE:04o}, got {stat.S_IMODE(info.st_mode):04o}"
         )
     return data
 
@@ -384,8 +381,7 @@ def _assert_immutable_team_meta(
 ) -> None:
     if after.get("run_id") != run_id:
         raise TeamError(
-            f"team.json run_id mismatch after mutate "
-            f"(path={run_id!r} body={after.get('run_id')!r})"
+            f"team.json run_id mismatch after mutate (path={run_id!r} body={after.get('run_id')!r})"
         )
     for key in _TEAM_META_IMMUTABLE_FIELDS:
         if key not in before or before.get(key) is None:
@@ -438,8 +434,7 @@ def mutate_team_meta(
             current = _load_team_meta_from_fd(parent_fd, run_id=rid)
             if current.get("run_id") is not None and current.get("run_id") != rid:
                 raise TeamError(
-                    f"team.json run_id mismatch (file={current.get('run_id')!r} "
-                    f"path={rid!r})"
+                    f"team.json run_id mismatch (file={current.get('run_id')!r} path={rid!r})"
                 )
             # Prefer path-bound identity when historical docs omit run_id.
             if current.get("run_id") is None:
@@ -610,8 +605,8 @@ def build_team_task_prompt(
             "- If your tools allow shell, optionally enrich readiness with a "
             "mailbox ACK (not required for launch success):",
             "  `OMG_EXPERIMENTAL_TMUX_TEAM=1 omg team api send-message --input "
-            f"'{{\"run_id\":\"{run_id}\",\"team_id\":\"team\",\"from_worker\":\"{task_id}\","
-            "\"to_worker\":\"leader-fixed\",\"body\":\"ACK\"}'`",
+            f'\'{{"run_id":"{run_id}","team_id":"team","from_worker":"{task_id}",'
+            '"to_worker":"leader-fixed","body":"ACK"}\'`',
             "- Then `claim-task` for your board task, work, commit, and "
             "`transition-task-status` (include `worker` matching your id + "
             "claim_token) to completed.",
@@ -865,9 +860,7 @@ def build_worker_ready_prefix() -> str:
 
     repo_root = Path(__file__).resolve().parents[2]
     py_path = shlex.quote(str(repo_root))
-    ready = shlex.join(
-        [sys.executable, "-m", "omg_cli.main", "team", "worker-ready"]
-    )
+    ready = shlex.join([sys.executable, "-m", "omg_cli.main", "team", "worker-ready"])
     # Portable env prefix (dash/sh/bash/zsh) — avoid bash-only ${var:+…}.
     return f"PYTHONPATH={py_path}:$PYTHONPATH {ready}"
 
@@ -905,9 +898,7 @@ def build_fixture_pane_command() -> str:
         raise TeamError(
             f"fixture executor requested but missing fixture script: {fixture}"
         )
-    return wrap_pane_with_worker_ready(
-        shlex.join([sys.executable, str(fixture)])
-    )
+    return wrap_pane_with_worker_ready(shlex.join([sys.executable, str(fixture)]))
 
 
 # ---------------------------------------------------------------------------
@@ -964,8 +955,7 @@ def _create_tmux_session(
     if create.returncode != 0:
         err = (create.stderr or create.stdout or "").strip()
         raise TeamError(
-            f"failed to create tmux session {session!r} "
-            f"(exit {create.returncode}): {err}"
+            f"failed to create tmux session {session!r} (exit {create.returncode}): {err}"
         )
     parts = (create.stdout or "").strip().split("\t")
     if (
@@ -985,9 +975,7 @@ def _create_tmux_session(
 
     try:
         for task in tasks[1:]:
-            task_env_args = tmux_env_args(
-                list(task.get("_env_pairs") or env_pairs)
-            )
+            task_env_args = tmux_env_args(list(task.get("_env_pairs") or env_pairs))
             nw = _tmux_run(
                 [
                     "new-window",
@@ -1356,6 +1344,7 @@ def _rollback_partial_team_start(
 def _load_team_launch_receipt(
     root: Path, run_id: str, meta: Mapping[str, Any]
 ) -> dict[str, Any]:
+    from omg_cli.contracts.path_keys import read_managed_regular_bytes
     from omg_cli.contracts.writer_chain import (
         canonical_json_bytes,
         parse_canonical_json_bytes,
@@ -1363,9 +1352,11 @@ def _load_team_launch_receipt(
     )
 
     path = team_launch_receipt_path(root, run_id)
-    if not path.is_file() or path.is_symlink():
-        raise TeamError("immutable team launch receipt missing")
-    parsed = parse_canonical_json_bytes(path.read_bytes())
+    try:
+        body = read_managed_regular_bytes(path)
+    except (OSError, ValueError) as exc:
+        raise TeamError("immutable team launch receipt missing") from exc
+    parsed = parse_canonical_json_bytes(body)
     if not isinstance(parsed, dict):
         raise TeamError("team launch receipt must be an object")
     required = {
@@ -1424,11 +1415,29 @@ def _load_team_launch_receipt(
     return parsed
 
 
+_LEGACY_IDENTITY_ROW_KEYS = frozenset(
+    {
+        "task_id",
+        "window_index",
+        "pane_id",
+        "pid",
+        "pgid",
+        "pid_start",
+    }
+)
+_IDENTITY_ROW_KEYS = _LEGACY_IDENTITY_ROW_KEYS | {
+    "window_id",
+    "window_nonce",
+}
+
+
 def _identity_rows(tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
             "task_id": raw.get("task_id"),
             "window_index": raw.get("window_index"),
+            "window_id": raw.get("window_id"),
+            "window_nonce": raw.get("window_nonce"),
             "pane_id": raw.get("pane_id"),
             "pid": raw.get("pid"),
             "pgid": raw.get("pgid"),
@@ -1450,9 +1459,15 @@ def _persist_team_identity_receipt(
     operation: str,
     tasks_before: Sequence[Mapping[str, Any]],
     tasks_after: Sequence[Mapping[str, Any]],
+    scale_intent: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Append one immutable scale generation to the launch identity chain."""
-    from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes
+    from omg_cli.contracts.path_keys import (
+        DATA_FILE_MODE,
+        atomic_write_bytes,
+        fsync_existing_managed_dir,
+        read_managed_regular_bytes,
+    )
     from omg_cli.contracts.state_schemas import require_sha256
     from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
 
@@ -1461,9 +1476,12 @@ def _persist_team_identity_receipt(
     require_sha256(previous_receipt_sha256, label="previous_receipt_sha256")
     if operation not in {"add", "remove", "relaunch"}:
         raise TeamError("scaled identity receipt operation mismatch")
+    scale_intent_body = (
+        canonical_json_bytes(scale_intent) if scale_intent is not None else None
+    )
     receipt = {
         "store_kind": "team_identity_receipt",
-        "schema_version": LAUNCH_RECEIPT_SCHEMA_VERSION,
+        "schema_version": IDENTITY_RECEIPT_SCHEMA_VERSION,
         "writer": CLI_WRITER,
         "run_id": run_id,
         "session_name": session,
@@ -1475,8 +1493,13 @@ def _persist_team_identity_receipt(
         "receipt_nonce": uuid.uuid4().hex,
         "tasks_before": _identity_rows(tasks_before),
         "tasks_after": _identity_rows(tasks_after),
+        "scale_intent": dict(scale_intent) if scale_intent is not None else None,
+        "scale_intent_sha256": (
+            sha256_hex(scale_intent_body) if scale_intent_body is not None else None
+        ),
     }
     body = canonical_json_bytes(receipt)
+    receipt_hash = sha256_hex(body)
     receipt_path = team_identity_receipt_path(root, run_id, generation)
     try:
         atomic_write_bytes(
@@ -1492,7 +1515,16 @@ def _persist_team_identity_receipt(
                 "immutable team identity generation already exists"
             ) from exc
         return adopted
-    return receipt, sha256_hex(body)
+    except OSError as exc:
+        try:
+            published = read_managed_regular_bytes(receipt_path)
+        except (OSError, ValueError):
+            raise exc
+        if published != body:
+            raise exc
+        fsync_existing_managed_dir(receipt_path.parent)
+        return receipt, receipt_hash
+    return receipt, receipt_hash
 
 
 def _adopt_aborted_identity_receipt(
@@ -1509,6 +1541,7 @@ def _adopt_aborted_identity_receipt(
     orphan is this writer's own aborted intent; the retry resumes it verbatim.
     Any other content stays a hard conflict.
     """
+    from omg_cli.contracts.path_keys import read_managed_regular_bytes
     from omg_cli.contracts.writer_chain import (
         canonical_json_bytes,
         parse_canonical_json_bytes,
@@ -1516,9 +1549,7 @@ def _adopt_aborted_identity_receipt(
     )
 
     try:
-        if path.is_symlink() or not path.is_file():
-            return None
-        parsed = parse_canonical_json_bytes(path.read_bytes())
+        parsed = parse_canonical_json_bytes(read_managed_regular_bytes(path))
     except (OSError, ValueError):
         return None
     if not isinstance(parsed, dict) or set(parsed) != set(intended):
@@ -1538,6 +1569,7 @@ def _load_team_identity_chain(
     root: Path, run_id: str, meta: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
     """Validate every generation and return the complete append-only chain."""
+    from omg_cli.contracts.path_keys import read_managed_regular_bytes
     from omg_cli.contracts.state_schemas import require_sha256
     from omg_cli.contracts.writer_chain import (
         canonical_json_bytes,
@@ -1547,7 +1579,10 @@ def _load_team_identity_chain(
 
     launch = _load_team_launch_receipt(root, run_id, meta)
     chain = [launch]
-    previous_rows = launch["tasks"]
+    # Generation-zero launch receipts predate immutable scaled-window handles.
+    # Normalize their rows so an upgraded writer can append the stronger shape
+    # without invalidating the existing receipt hash.
+    previous_rows = _identity_rows(launch["tasks"])
     previous_hash = str(meta.get("launch_receipt_sha256") or "")
     require_sha256(previous_hash, label="launch_receipt_sha256")
     generation = meta.get("identity_generation", 0)
@@ -1559,14 +1594,16 @@ def _load_team_identity_chain(
         raise TeamError("team identity generation is invalid")
     for expected_generation in range(1, generation + 1):
         path = team_identity_receipt_path(root, run_id, expected_generation)
-        if path.is_symlink() or not path.is_file():
+        try:
+            body = read_managed_regular_bytes(path)
+        except (OSError, ValueError) as exc:
             raise TeamError(
                 f"team identity receipt generation {expected_generation} missing"
-            )
-        parsed = parse_canonical_json_bytes(path.read_bytes())
+            ) from exc
+        parsed = parse_canonical_json_bytes(body)
         if not isinstance(parsed, dict):
             raise TeamError("team identity receipt must be an object")
-        required = {
+        legacy_required = {
             "store_kind",
             "schema_version",
             "writer",
@@ -1581,11 +1618,29 @@ def _load_team_identity_chain(
             "tasks_before",
             "tasks_after",
         }
-        if set(parsed) != required:
+        v2_required = legacy_required | {
+            "scale_intent",
+            "scale_intent_sha256",
+        }
+        schema_version = parsed.get("schema_version")
+        if (
+            (
+                schema_version == LAUNCH_RECEIPT_SCHEMA_VERSION
+                and set(parsed) != legacy_required
+            )
+            or (
+                schema_version == IDENTITY_RECEIPT_SCHEMA_VERSION
+                and set(parsed) != v2_required
+            )
+            or schema_version
+            not in {
+                LAUNCH_RECEIPT_SCHEMA_VERSION,
+                IDENTITY_RECEIPT_SCHEMA_VERSION,
+            }
+        ):
             raise TeamError("team identity receipt keys mismatch")
         if (
             parsed["store_kind"] != "team_identity_receipt"
-            or parsed["schema_version"] != LAUNCH_RECEIPT_SCHEMA_VERSION
             or parsed["writer"] != CLI_WRITER
             or parsed["run_id"] != run_id
             or parsed["session_name"] != launch["session_name"]
@@ -1600,21 +1655,39 @@ def _load_team_identity_chain(
             or not isinstance(parsed["tasks_after"], list)
         ):
             raise TeamError("team identity receipt chain mismatch")
+        if schema_version == IDENTITY_RECEIPT_SCHEMA_VERSION:
+            scale_intent = parsed["scale_intent"]
+            scale_intent_sha256 = parsed["scale_intent_sha256"]
+            if scale_intent is None or scale_intent_sha256 is None:
+                if scale_intent is not None or scale_intent_sha256 is not None:
+                    raise TeamError("team identity receipt scale intent mismatch")
+            else:
+                if not isinstance(scale_intent, Mapping):
+                    raise TeamError("team identity receipt scale intent mismatch")
+                try:
+                    require_sha256(scale_intent_sha256, label="scale_intent_sha256")
+                except ValueError as exc:
+                    raise TeamError(
+                        "team identity receipt scale intent mismatch"
+                    ) from exc
+                if (
+                    sha256_hex(canonical_json_bytes(scale_intent))
+                    != scale_intent_sha256
+                ):
+                    raise TeamError("team identity receipt scale intent mismatch")
+        normalized_rows: dict[str, list[dict[str, Any]]] = {}
         for field in ("tasks_before", "tasks_after"):
             for row in parsed[field]:
-                if not isinstance(row, Mapping) or set(row) != {
-                    "task_id",
-                    "window_index",
-                    "pane_id",
-                    "pid",
-                    "pgid",
-                    "pid_start",
+                if not isinstance(row, Mapping) or set(row) not in {
+                    _LEGACY_IDENTITY_ROW_KEYS,
+                    _IDENTITY_ROW_KEYS,
                 }:
                     raise TeamError("team identity receipt task row mismatch")
-        if parsed["tasks_before"] != previous_rows:
+            normalized_rows[field] = _identity_rows(parsed[field])
+        if normalized_rows["tasks_before"] != previous_rows:
             raise TeamError("team identity receipt task continuity mismatch")
         previous_hash = sha256_hex(canonical_json_bytes(parsed))
-        previous_rows = parsed["tasks_after"]
+        previous_rows = normalized_rows["tasks_after"]
         chain.append(parsed)
     expected_hash = meta.get(
         "identity_receipt_sha256", meta.get("launch_receipt_sha256")
@@ -1626,8 +1699,7 @@ def _load_team_identity_chain(
         for task in meta.get("tasks") or []
         if isinstance(task, Mapping) and task.get("status") != "scaled_down"
     ]
-    latest_rows = launch["tasks"] if generation == 0 else chain[-1]["tasks_after"]
-    if _identity_rows(expected_active) != latest_rows:
+    if _identity_rows(expected_active) != previous_rows:
         raise TeamError("team.json active identities differ from receipt chain")
     return chain
 
@@ -1764,8 +1836,7 @@ def start_team(
     executor_norm = (executor or "").strip().lower() or None
     if executor_norm is not None and executor_norm != "fixture":
         raise TeamError(
-            f"unsupported team executor {executor!r} "
-            "(supported: None / 'fixture')"
+            f"unsupported team executor {executor!r} (supported: None / 'fixture')"
         )
     tid_plane = (team_id or "team").strip() or "team"
     token = owner_token or uuid.uuid4().hex
@@ -1942,7 +2013,9 @@ def start_team(
         # Preserve manifest order for window indices
         for i, mtask in enumerate(manifest_tasks):
             tid = str(mtask["task_id"])
-            wt = Path(str(mtask.get("worktree_path") or worktree_dir(root_path, rid, tid)))
+            wt = Path(
+                str(mtask.get("worktree_path") or worktree_dir(root_path, rid, tid))
+            )
             owned = list(mtask.get("owned_files") or [])
             src_task = tasks_by_id.get(tid) or mtask
             role = _task_role(src_task)
@@ -2183,9 +2256,7 @@ def start_team(
                     try:
                         pid = int((pid_probe.stdout or "").strip())
                     except ValueError as exc:
-                        raise TeamError(
-                            f"tmux pane pid invalid for {pane_id}"
-                        ) from exc
+                        raise TeamError(f"tmux pane pid invalid for {pane_id}") from exc
                     if pid <= 0:
                         raise TeamError(f"tmux pane pid non-positive for {pane_id}")
                     rec["pid"] = pid
@@ -2283,7 +2354,9 @@ def start_team(
         except Exception as exc:
             cleanup_error = None
             if created_handle is not None:
-                if topology == "split" and not bool(tmux_launch.get("session_owned", True)):
+                if topology == "split" and not bool(
+                    tmux_launch.get("session_owned", True)
+                ):
                     from omg_cli.team.tmux import _kill_panes, _kill_window
 
                     window_id = tmux_launch.get("window_id")
@@ -2412,7 +2485,12 @@ def collect_team(
     require_squash: bool = False,
 ) -> dict[str, Any]:
     """Thin wrapper: seal_all_tasks then integrate_results. Never sets verified."""
+    from contextlib import ExitStack
+
     from omg_cli.integrate import integrate_results
+    from omg_cli.state import RunSchema, classify_run_schema, execution_lease
+    from omg_cli.team.scaling import acquire_scale_lock
+    from omg_cli.workers import _assert_no_pending_team_scale
 
     root_path = Path(root) if root is not None else Path.cwd().resolve()
     root_path = root_path.resolve()
@@ -2422,24 +2500,48 @@ def collect_team(
             raise TeamError("no active run (pass --run ID)")
         run_id = str(active["run_id"])
 
-    # Require CLI-stamped team.json so forged {verified:true} team files
-    # cannot be used as a collect authority signal.
-    load_team_meta(root_path, run_id)
+    run_before = load_run(root_path, run_id)
+    if run_before is None:
+        raise TeamError(f"no run found: {run_id}")
+    schema = classify_run_schema(run_before)
 
-    try:
-        seal_results = seal_all_tasks(root_path, run_id, force=force_seal)
-    except WorkerError as exc:
-        raise TeamError(f"seal failed: {exc}") from exc
-
-    try:
-        integrate = integrate_results(
-            root_path,
-            run_id,
-            skip_preflight=skip_preflight,
-            require_squash=require_squash,
+    # Lock order matches integrate_results: execution lease, then scale lock.
+    # The scale lock spans seal through cherry-pick so a WAL cannot appear
+    # between authorization and integration.
+    with ExitStack() as stack:
+        lease = (
+            stack.enter_context(
+                execution_lease(root_path, run_id, intent="team-collect")
+            )
+            if schema is RunSchema.STRICT_V2
+            else None
         )
-    except Exception as exc:
-        raise TeamError(f"integrate failed: {exc}") from exc
+        stack.enter_context(acquire_scale_lock(root_path, run_id))
+
+        # Require CLI-stamped team.json so forged {verified:true} team files
+        # cannot be used as a collect authority signal.
+        load_team_meta(root_path, run_id)
+        try:
+            _assert_no_pending_team_scale(root_path, run_id)
+        except WorkerError as exc:
+            raise TeamError(str(exc)) from exc
+
+        try:
+            seal_results = seal_all_tasks(root_path, run_id, force=force_seal)
+        except WorkerError as exc:
+            raise TeamError(f"seal failed: {exc}") from exc
+
+        try:
+            integrate = integrate_results(
+                root_path,
+                run_id,
+                skip_preflight=skip_preflight,
+                require_squash=require_squash,
+                lease=lease,
+                _scale_lock_held=True,
+            )
+        except Exception as exc:
+            raise TeamError(f"integrate failed: {exc}") from exc
 
     # Explicit: never touch verified / passes
     run = load_run(root_path, run_id) or {}
@@ -2735,8 +2837,7 @@ def _write_shutdown_request(
         ],
         "in_progress_owners": owners,
         "note": (
-            "graceful shutdown requested; workers should release or complete "
-            "claims before teardown"
+            "graceful shutdown requested; workers should release or complete claims before teardown"
             if not force
             else "forced shutdown; exact pane/session teardown proceeds"
         ),
@@ -2789,7 +2890,16 @@ def _stop_team_locked(
     force: bool,
     kill_grace_s: float,
 ) -> dict[str, Any]:
+    from omg_cli.workers import _assert_no_pending_team_scale
+
     meta = load_team_meta(root_path, run_id)
+    # A pre-receipt WAL may own a live read-write pane that is intentionally
+    # absent from the committed receipt chain.  Do not report or begin a stop
+    # until the identical add request reconciles that pane into authority.
+    try:
+        _assert_no_pending_team_scale(root_path, run_id)
+    except WorkerError as exc:
+        raise TeamError(str(exc)) from exc
     session = str(meta.get("session") or "")
     dry = bool(meta.get("dry_run"))
     team_id = str(meta.get("team_id") or "team")
@@ -2848,8 +2958,7 @@ def _stop_team_locked(
             )
         except TeamError as retry_exc:
             raise TeamError(
-                "stop refused: could not publish stop intent before teardown: "
-                f"{retry_exc}"
+                f"stop refused: could not publish stop intent before teardown: {retry_exc}"
             ) from retry_exc
 
     actions: list[str] = []
@@ -2914,11 +3023,10 @@ def _stop_team_locked(
             if resolved is None:
                 # Worker may have already exited (claim→completed) while the
                 # owned session/nonce still match. Treat as already stopped.
-                session_ok = (
-                    _read_tmux_session_identity(session)
-                    == (session, receipt.get("session_id"))
-                    and _read_tmux_launch_nonce(session) == receipt.get("launch_nonce")
-                )
+                session_ok = _read_tmux_session_identity(session) == (
+                    session,
+                    receipt.get("session_id"),
+                ) and _read_tmux_launch_nonce(session) == receipt.get("launch_nonce")
                 pane_id = raw.get("pane_id")
                 pane_gone = False
                 if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id):
@@ -2935,9 +3043,7 @@ def _stop_team_locked(
                         if live_pid <= 0 or _pgid_for_pid(live_pid) is None:
                             pane_gone = True
                 if session_ok and pane_gone:
-                    actions.append(
-                        f"process already gone before signal task={tid}"
-                    )
+                    actions.append(f"process already gone before signal task={tid}")
                     attempted_task_ids.add(str(tid))
                     continue
                 identity_verified = False
@@ -2954,9 +3060,7 @@ def _stop_team_locked(
             pid = resolved["pid"]
             pgid = resolved["pgid"]
             if not isinstance(pid, int) or not isinstance(pgid, int):
-                errors.append(
-                    f"verified signal identity became invalid for task={tid}"
-                )
+                errors.append(f"verified signal identity became invalid for task={tid}")
                 process_disappearance_verified = False
                 continue
             target = pgid
@@ -3015,11 +3119,10 @@ def _stop_team_locked(
                     process_disappearance_verified = False
                     errors.append(leader_error)
                     continue
-                session_exact = (
-                    _read_tmux_session_identity(session)
-                    == (session, receipt.get("session_id"))
-                    and _read_tmux_launch_nonce(session) == receipt.get("launch_nonce")
-                )
+                session_exact = _read_tmux_session_identity(session) == (
+                    session,
+                    receipt.get("session_id"),
+                ) and _read_tmux_launch_nonce(session) == receipt.get("launch_nonce")
                 escalation_authorized = bool(
                     session_exact
                     and (
@@ -3064,8 +3167,7 @@ def _stop_team_locked(
             else:
                 process_disappearance_verified = False
                 errors.append(
-                    "leader/group disappearance unproved "
-                    f"for task={tid} pid={pid} pgid={pgid}"
+                    f"leader/group disappearance unproved for task={tid} pid={pid} pgid={pgid}"
                 )
         except (PermissionError, OSError) as exc:
             identity_verified = False
@@ -3125,8 +3227,7 @@ def _stop_team_locked(
                         actions.append(f"tmux disappearance verified {session_id}")
                     elif r.returncode != 0:
                         errors.append(
-                            f"tmux kill-session failed for {session_id}: "
-                            f"exit {r.returncode}"
+                            f"tmux kill-session failed for {session_id}: exit {r.returncode}"
                         )
                     else:
                         errors.append(
@@ -3155,11 +3256,12 @@ def _stop_team_locked(
                         probe = _tmux_run(
                             ["display-message", "-p", "-t", pane_id, "#{pane_id}"]
                         )
-                        if probe.returncode == 0 and (probe.stdout or "").strip() == pane_id:
+                        if (
+                            probe.returncode == 0
+                            and (probe.stdout or "").strip() == pane_id
+                        ):
                             remaining.append(pane_id)
-                    if remaining and not (
-                        isinstance(window_id, str) and window_id
-                    ):
+                    if remaining and not (isinstance(window_id, str) and window_id):
                         pane_err = _kill_panes(remaining)
                         if pane_err:
                             errors.append(pane_err)
@@ -3180,8 +3282,7 @@ def _stop_team_locked(
                     if not remaining:
                         session_disappearance_verified = True
                         actions.append(
-                            "tmux inside-mode worker panes/window removed "
-                            "(shared session kept)"
+                            "tmux inside-mode worker panes/window removed (shared session kept)"
                         )
                     else:
                         errors.append(
@@ -3273,10 +3374,9 @@ def _stop_team_locked(
             for rec in updated.get("tasks") or []:
                 if isinstance(rec, dict):
                     rec = dict(rec)
-                    if (
-                        str(rec.get("task_id")) in attempted_task_ids
-                        and rec.get("status") not in ("dry_run",)
-                    ):
+                    if str(rec.get("task_id")) in attempted_task_ids and rec.get(
+                        "status"
+                    ) not in ("dry_run",):
                         rec["status"] = "launch_unknown"
                     tasks.append(rec)
                 else:
@@ -3349,7 +3449,10 @@ def format_status_table(status: Mapping[str, Any]) -> str:
         lines.append(f"topology:       {status.get('topology')}")
     if status.get("launch_mode") is not None:
         lines.append(f"launch_mode:    {status.get('launch_mode')}")
-    if status.get("startup_status") is not None or status.get("startup_acks") is not None:
+    if (
+        status.get("startup_status") is not None
+        or status.get("startup_acks") is not None
+    ):
         lines.append(
             f"startup_acks:   {status.get('startup_acks')}/"
             f"{status.get('startup_expected')} "
@@ -3376,8 +3479,7 @@ def format_status_table(status: Mapping[str, Any]) -> str:
             if not isinstance(row, Mapping):
                 continue
             lines.append(
-                f"  - {row.get('task_id')}: {row.get('worktree')} "
-                f"[{row.get('status')}]"
+                f"  - {row.get('task_id')}: {row.get('worktree')} [{row.get('status')}]"
             )
     lines.extend(
         [

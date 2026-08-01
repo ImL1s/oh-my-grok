@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from omg_cli.team.plane import EXPERIMENTAL_ENV, WORKER_ENV_MARKERS
+from omg_cli.team import runtime, scaling
 from omg_cli.team.runtime import launch_team, resolve_team_ref, team_ref_path
 
 
@@ -31,6 +32,85 @@ def _init_repo(path: Path) -> None:
     (path / "README.md").write_text("base\n", encoding="utf-8")
     _git(path, "add", "README.md")
     _git(path, "commit", "-m", "initial")
+
+
+@pytest.mark.parametrize(
+    ("pending_operation", "expected_order"),
+    [
+        ("relaunch", ["relaunch", "resume"]),
+        (None, ["resume", "relaunch"]),
+    ],
+)
+def test_resume_for_identity_uses_one_lock_and_operation_aware_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pending_operation: str | None,
+    expected_order: list[str],
+) -> None:
+    events: list[str] = []
+    lock_held = False
+
+    class LifecycleLock:
+        def __enter__(self) -> None:
+            nonlocal lock_held
+            assert not lock_held
+            lock_held = True
+            events.append("lock-enter")
+
+        def __exit__(self, *_args: object) -> None:
+            nonlocal lock_held
+            assert lock_held
+            events.append("lock-exit")
+            lock_held = False
+
+    monkeypatch.setattr(runtime, "resolve_team_ref", lambda *_args: "run-1")
+    monkeypatch.setattr(
+        runtime,
+        "load_team_meta",
+        lambda *_args: {"identity_generation": 0},
+    )
+    monkeypatch.setattr(
+        scaling,
+        "acquire_scale_lock",
+        lambda *_args: LifecycleLock(),
+    )
+    monkeypatch.setattr(
+        scaling,
+        "pending_identity_wal_operation",
+        lambda *_args: pending_operation,
+    )
+
+    def recover(*_args: object, **_kwargs: object) -> dict[str, object]:
+        assert lock_held
+        events.append("relaunch")
+        return {
+            "relaunched": [{"task_id": "w2"}],
+            "blocked": [],
+            "skipped": [],
+            "identity_generation": 1,
+            "note": "relaunch recovered",
+        }
+
+    def reconcile(*_args: object, **_kwargs: object) -> dict[str, object]:
+        assert lock_held
+        events.append("resume")
+        return {
+            "identity_generation": 1,
+            "note": "resume reconciled",
+        }
+
+    monkeypatch.setattr(
+        scaling,
+        "_relaunch_dead_incomplete_workers_locked",
+        recover,
+    )
+    monkeypatch.setattr(scaling, "_resume_team_locked_impl", reconcile)
+
+    out = runtime.resume_for_identity(tmp_path, "team-name")
+
+    assert events == ["lock-enter", *expected_order, "lock-exit"]
+    assert out["identity_generation"] == 1
+    assert out["relaunched"] == [{"task_id": "w2"}]
 
 
 def test_launch_team_dry_run_seeds_ref_and_board(

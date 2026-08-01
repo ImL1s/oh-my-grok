@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -189,6 +190,114 @@ def test_integrate_missing_envelopes(tmp_path):
     assert result_path(tmp_path, run["run_id"]).is_file()
     assert "ulw-results" in (result.get("note") or "")
     assert legacy_import_command(tmp_path, run["run_id"]) in result["note"]
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_integrate_refuses_pending_team_scale_ownership(tmp_path, dry_run):
+    from omg_cli.contracts.path_keys import atomic_write_bytes
+    from omg_cli.team.plane import team_dir, team_meta_path
+    from omg_cli.workers import build_ownership_manifest
+
+    base = _init_repo(tmp_path)
+    run = create_run(
+        tmp_path,
+        mode="ulw",
+        goal="pending team scale",
+        extra={"base_sha": base},
+    )
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [{"task_id": "orphan", "owned_files": ["orphan.py"]}],
+    )
+    atomic_write_bytes(
+        team_meta_path(tmp_path, rid),
+        b'{"identity_generation":0,"writer":"omg-cli"}',
+    )
+    atomic_write_bytes(
+        team_dir(tmp_path, rid) / "scale-wal" / "1.json",
+        b'{"pending":true}',
+        replace=False,
+    )
+
+    with pytest.raises(IntegrateError, match="scale WAL is pending"):
+        integrate_results(tmp_path, rid, dry_run=dry_run)
+    assert not result_path(tmp_path, rid).exists()
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_integrate_refuses_future_identity_receipt(tmp_path, dry_run):
+    from omg_cli.contracts.path_keys import atomic_write_bytes
+    from omg_cli.team.plane import team_identity_receipt_path, team_meta_path
+    from omg_cli.workers import build_ownership_manifest
+
+    base = _init_repo(tmp_path)
+    run = create_run(
+        tmp_path,
+        mode="ulw",
+        goal="pending identity receipt",
+        extra={"base_sha": base},
+    )
+    rid = run["run_id"]
+    build_ownership_manifest(
+        tmp_path,
+        rid,
+        [{"task_id": "orphan", "owned_files": ["orphan.py"]}],
+    )
+    atomic_write_bytes(
+        team_meta_path(tmp_path, rid),
+        b'{"identity_generation":0,"writer":"omg-cli"}',
+    )
+    atomic_write_bytes(
+        team_identity_receipt_path(tmp_path, rid, 1),
+        b"{}",
+        replace=False,
+    )
+
+    with pytest.raises(IntegrateError, match="identity receipt is pending"):
+        integrate_results(tmp_path, rid, dry_run=dry_run)
+    assert not result_path(tmp_path, rid).exists()
+
+
+def test_integrate_dry_run_holds_scale_lock_through_result_write(
+    tmp_path, monkeypatch
+):
+    import omg_cli.integrate as integrate_module
+    import omg_cli.team.scaling as scaling
+
+    base = _init_repo(tmp_path)
+    run = create_run(
+        tmp_path,
+        mode="ulw",
+        goal="dry-run lock",
+        extra={"base_sha": base},
+    )
+    held = False
+
+    @contextmanager
+    def tracked_lock(_root, _run_id):
+        nonlocal held
+        assert not held
+        held = True
+        try:
+            yield
+        finally:
+            held = False
+
+    real_write = integrate_module._atomic_write_json
+
+    def guarded_write(path, payload):
+        assert held
+        return real_write(path, payload)
+
+    monkeypatch.setattr(scaling, "acquire_scale_lock", tracked_lock)
+    monkeypatch.setattr(integrate_module, "_atomic_write_json", guarded_write)
+
+    result = integrate_results(tmp_path, run["run_id"], dry_run=True)
+
+    assert result["status"] == "missing"
+    assert held is False
 
 
 def test_explicit_legacy_import_backs_up_and_preserves_v1_state(tmp_path):
