@@ -378,6 +378,7 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             "hooks/bin/omg_pretool_deny_standalone.py",
             ".mcp.json",
             ".lsp.json",
+            ".gitignore",
             "omg_capabilities.lock.json",
             "templates/AGENTS.fragment.md",
             "templates/gitignore.fragment",
