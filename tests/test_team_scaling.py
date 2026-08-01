@@ -1984,6 +1984,14 @@ def test_scale_up_pending_retry_fails_closed_when_live_pane_is_rebound(
     receipt_path = plane.team_identity_receipt_path(tmp_path, rid, 1)
     receipt_before = receipt_path.read_bytes()
     monkeypatch.setattr(scaling, "_read_scaled_pane_pid", lambda **_kwargs: None)
+    # Pane still "present" with foreign process: cleanup must not touch real tmux.
+    monkeypatch.setattr(
+        scaling, "_cleanup_exact_dead_recorded_pane", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(scaling, "_tmux_pane_presence", lambda _pane: True)
+    # Process still looks live but does not match receipt (rebound).
+    monkeypatch.setattr(scaling, "_pgid_for_pid", lambda _pid: 99999)
+    monkeypatch.setattr(scaling, "_pid_start_identity", lambda _pid: "foreign-start")
 
     def refuse_side_effect(*_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("rebound retry must not launch, rollback, or commit")
@@ -2136,6 +2144,11 @@ def test_scale_up_receipt_result_loss_preserves_window_and_retry_recovers(
     assert load_team_meta(tmp_path, rid)["identity_generation"] == 0
 
     monkeypatch.setattr(scaling, "_read_scaled_pane_pid", lambda **_kwargs: None)
+    # Never hit real tmux: recovery still calls dead-pane cleanup before
+    # pane-absence checks (CI Linux runners may not install tmux).
+    monkeypatch.setattr(
+        scaling, "_cleanup_exact_dead_recorded_pane", lambda *_a, **_k: False
+    )
     monkeypatch.setattr(scaling, "_tmux_pane_presence", lambda _pane: False)
     monkeypatch.setattr(scaling, "_pgid_for_pid", lambda _pid: None)
     monkeypatch.setattr(scaling, "_pid_start_identity", lambda _pid: None)

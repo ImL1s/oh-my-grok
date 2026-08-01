@@ -1113,8 +1113,18 @@ else:
         reaper.join(timeout=2.0)
 
         assert leader.poll() is not None
-        with pytest.raises(ProcessLookupError):
-            os.killpg(pgid, 0)
+        # SIGKILL can leave a short-lived zombie until reaped; poll until the
+        # process group is gone rather than requiring immediate ESRCH.
+        gone_deadline = time.monotonic() + 2.0
+        while time.monotonic() < gone_deadline:
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.02)
+        else:
+            with pytest.raises(ProcessLookupError):
+                os.killpg(pgid, 0)
         assert result["stop_completed"] is True
         assert result["identity_verified"] is True
         assert any(
