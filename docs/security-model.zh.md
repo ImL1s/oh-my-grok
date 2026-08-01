@@ -79,6 +79,17 @@ Plugin 的 `.mcp.json` 只是惯例式注册。`configured` 与本机 `loadable`
 
 Grok `/create-workflow`、`.grok/workflows/*.rhai` 与原生 dashboard 属 `optional_unclaimed`。Help 文字或本机档案不是稳定 schema 或新鲜呼叫的证据。OMG 永不探测未文件化的 localhost／私有 sidecar。
 
+## 受管 `.omg` store 围篱
+
+权威本机 store 位于 `.omg` 下，使用 `omg_cli/contracts/path_keys.py` 的原语。在 POSIX 主机上这些原语：
+
+- 先打开既有的 base 目录，再以 descriptor-relative 的 `dir_fd` 操作与 `O_NOFOLLOW` 走访／创建每一个**受管**组件（从 `.omg` 标记向下，或非标记路径的缺少后缀）；
+- 拒绝受管组件的 symlink（目录、目的地、临时文件、journal、lock）— 即使 symlink 目标仍在项目内；
+- 以 exclusive create + descriptor-relative rename／link 发布，并在已打开的 descriptor 上用 `fchmod` 强制 mode；
+- 在没有等价 no-follow／`dir_fd` 支持时以 `ContractPathError` fail-closed（没有较弱的 path-based 后备）。
+
+受管区域之上的系统路径前缀（例如 macOS `/tmp` → `/private/tmp`）仍可能含平台 symlink；围篱宣称适用于受管组件，不是从 `/` 起的整条绝对路径。Issue #16 在 Linux unit／adversarial gates **与** #25 `macos-platform` CI lane（path_keys／lock／symlink 契约）之后关闭。
+
 ## Recovery、memory、tracking、compaction、notifications
 
 - Recovery 只开启一般非 symlink 来源、复制有界后缀、再检查档案身份、写入不可变证据、redact context，并保留 broken-chain／unknown-record 警告。这是刻意的部分恢复。
@@ -197,14 +208,18 @@ OMX/Sol 对齐的 root 入口（不是 mode FSM；永不盖 `verified`）：
 | 零设定 panes | **只有 grok**（省略 `--routing` 时走 D1，经 madmax `build_pane_command`） |
 | Multi-CLI panes | 同一闸门下，当 `--routing` 映射 role→`{provider,model?}` 时**存在**（providers：grok／codex／agy／cursor／gemini） |
 | 隔离 | **仅整合**隔离：ownership manifest + 每任务 git worktree + `seal` + `integrate` — **不是**执行 sandbox。D4 scale／resume／ralph **不**新增隔离宣称。 |
-| Kill 路径 | `stop`／scale-down **只**杀记录的 tmux session／window 名称 + 记录的 `pgid` — **没有**自我匹配的 `pkill -f` |
+| Kill 路径 | `stop` 验证记录的 session 身份；scale-down 只向 receipt 绑定的 `pgid` 发信号，并通过 tmux 内单一条件命令验证 session／launch nonce／window／pane 身份后关闭 pane — **不用**可变的 `session:index` 作为破坏性目标，且**没有**自我匹配的 `pkill -f` |
 | `verified` | `collect`／`stop`／**`run`**／**`scale`**／**`resume`**／ralph loop **永不**设定；仍只在 `omg accept` 之后 |
 | Nested | 在 spawned-worker 脉络（`OMG_TEAM_WORKER`／相关标记）内拒绝 start／run／scale／resume |
 | Routing floors | Reviewer／verifier → 只允许结构化 verdict providers（`grok`／`codex`／`claude`／`gemini`；**禁止 cursor**）；未知角色 fail-closed；姿势由角色推导（永不自由填） |
 | `omg team run` | **仅 staged DRIVER**（`team-plan→team-prd→team-exec→team-verify→team-fix`）。**不**重做 ralplan／dual_review／planner／verifier — 序列化 team plane，并经 POST-A2 `parse_verdict_file` 闸控持久的 `stages/team-verifier.*`。分解是 leader／ralplan 的工作（`--tasks-json`／`--tasks-path`）。除了“把它们串起来”外，没有 autopilot 对等。 |
-| `omg team scale` | 在 run-dir **scale lock** 下动态 `--add N`／`--remove N`；受 `max_workers_cap()` 限制；window index 单调；scale-down 保留 worktree，且活跃 pane 不少于 1 |
-| `omg team resume` | leader 重启后幂等活体对账进 `team.json`；若不是 team run 则 fail-closed |
+| `omg team scale` | 在 run-dir **scale lock** 下动态 `--add N`／`--remove N`；每个新 add transaction 受 `max_workers_cap()` 限制（transaction 发布后，即使可变 cap 降低仍可 recovery）；window index 单调；scale-down 保留 worktree，且活跃 pane 不少于 1。Live scale-up 在任何副作用前会发布不可变、按 generation 分隔的 WAL，绑定规范化请求、base receipt、session 身份与每任务精确启动计划。WAL 规划的新 window 或 orphan adopt 后会设置 `@omg_scale_nonce`、rename window，并以 **fail-closed 的 ownership readback** 要求精确 `display-message` 身份（`window_id`／`pane_id`／task／nonce）— rename／option 未粘住会中止 bind，而不是信任可变的 `session:index`。未提交的 scale-up WAL **或** `identity-receipts/*.json` 的未来 identity-receipt generation 会挡住 dry-run add、remove、resume／relaunch、collect／join／integrate 与 stop，直到原 add（或精确 remove receipt recovery）完成。Remove recovery 绑定 receipt 受害者（`tasks_before − tasks_after`），不是重新 drain；错误的 `--remove N` 会 fail-closed 并带 generation 与 receipt victim ids。Meta 提交若失去成功路径，会以 identity readback 分类为 **committed／not_committed／unknown**（generation、receipt hash、victim／task 身份 — 不以 volatile 的 `last_scale.actions` 单独判定）；unknown 会保留 live window／receipt 并要求重试。 |
+| `omg team resume` | `resume_for_identity` 以同一把 **scale lock** 包住幂等活体对账与 dead-worker relaunch。若 relaunch WAL 待处理，先做精确 relaunch recovery，再做 raw reconciliation；否则先 reconciliation。并行 scale／resume 不会重复 spawn；非 team run 会 fail-closed。 |
+| Dead-worker relaunch | 在任何 tmux respawn 副作用前，先发布不可变、按 generation 分隔的 relaunch WAL，绑定 base receipt／generation、精确 session id + launch nonce、精确目标 window，以及每个 task + 随机 relaunch nonce／start-command fingerprint。`$TMUX_PANE` bootstrap 会验证精确 session id、launch nonce 与 window，写入并读回 task／relaunch-nonce pane markers，才执行原始命令。精确 retry 只采用唯一符合的 pre-marker 或 marked pane，避免重复 spawn；身份外来、重复、模棱两可或漂移时 fail-closed。WAL 待处理期间，只允许只读 status 与精确 relaunch recovery；raw resume、scale、stop、collect、join 与 integrate 都会被拦截。 |
+| Relaunch 目标 | Shared／inside split topology 要求 `team.json` 已记录精确 window，且 live window 符合 receipt 授权。Detached、owned split session 只有在精确 receipt-owned session id + launch nonce 恰好列出唯一 window 时，才能推导缺少的 window id；否则 relaunch fail-closed。 |
 | `omg team run --ralph` | 同一 staged driver 外层有界 max_iter loop（ralph 纪律）；`linked_ralph` ↔ `linked_team`；只有真实 team-verify APPROVE 才算完成 — **不是**第二道隔离边界 |
+| 身份 receipt 链 | 绑定 session id、launch nonce、generation 与每任务 pane/pid/pgid/pid-start；scaled generation 另绑定不可变 window id + 每 window 随机 nonce。V2 scale-up receipt 绑定 WAL hash、规范化请求、精确 pane plan、ownership/argv/prompt artifact hash；relaunch receipt 绑定 relaunch WAL hash、请求与精确 relaunched records。未来 receipt generation（meta 未提交）与 pending WAL 共用生命周期闸门；recovery 是「重试原本的 live scale／relaunch／remove」，不是对外国 op 做 raw resume。仍符合 receipt 身份的 remain-on-exit dead pane 会被精确清理，process 不在时可提交为 `needs_collect` — 不可只因 pane 仍在就卡住 generation。相同请求在同一 session 重试时会采用唯一的 pre-marker、marked、renamed 或 receipt-bound pane，而不重复 spawn；不兼容或模棱两可的 recovery 会 fail-closed。Launch／legacy／relaunch receipt **不**代表更广的执行 sandbox 保证。 |
+| `owner_token` | `team.json`（`0o600`）中的共用 `uuid4().hex`，并注入每个 pane env（`OMG_TEAM_OWNER_TOKEN`）。同 UID 进程可读取或替换，且目前 API 不会用它对权威状态做认证。它是咨询性的 env 绑定归属，不是 membership 证明或跨用户隔离。不宣称每 worker 各自 token。 |
 
 ### 各 provider 姿势强制（不均一）
 

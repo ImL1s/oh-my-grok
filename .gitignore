@@ -39,6 +39,9 @@ PROJECT.md
 TEST_READY.md
 progress.md
 
+# Local pytest / ad-hoc temp (do not commit)
+.tmp/
+
 
 # prior-session research scratch (not part of the plugin)
 .agents/

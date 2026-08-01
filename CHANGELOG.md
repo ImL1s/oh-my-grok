@@ -9,6 +9,17 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Fixed
+- **Team scale/resume crash recovery (window readback + identity receipts):**
+  generation-scoped WAL before side effects; fail-closed scaled-window ownership
+  readback (`@omg_scale_nonce` + rename → exact `display-message`); pending
+  identity-receipt generations and scale-up WAL gate join/collect/stop/integrate;
+  scale-down recovery binds receipt victims (not re-drain) with generation/task
+  ids in errors; meta commit result-loss classifies committed/not_committed/
+  unknown without treating volatile `last_scale.actions` as sole identity;
+  remain-on-exit dead panes clean then commit `needs_collect` when process
+  absent. Integration isolation only — not an execution sandbox.
+
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —
   not blockers for production path; full OMX 33-op not claimed.
