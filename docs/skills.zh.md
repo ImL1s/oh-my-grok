@@ -177,8 +177,8 @@ omg accept --yes
 
 **生命周期（D4）：**
 
-- **`omg team scale --run ID --add N|--remove N [--dry-run]`** — 动态加/减 pane（run 目录 scale lock；`--add` 受 `max_workers_cap()` 与单调 window index 限制；`--remove` 优雅排空，只杀记录的 pgid + window，**不**杀 session、**禁止** `pkill -f`，标记 `scaled_down` 并保留 worktree；active 不可低于 1）。
-- **`omg team resume --run ID`** — leader 重启后重读 `team.json`、对账 pane 存活；只做幂等 status 写入。
+- **`omg team scale --run ID --add N|--remove N [--dry-run]`** — 在 run 目录 **scale lock** 下动态加/减 pane。Live scale-up 在副作用前先发布按 generation 分隔的不可变 **WAL**，再以 `@omg_scale_nonce` + rename 绑定 window，并 **fail-closed ownership readback**（精确 `display-message`；不单靠可变的 `session:index`）。未提交的 scale-up WAL 或未来 **identity-receipt** generation 会挡住 dry-run add、remove、resume/relaunch、collect/join/integrate、stop，直到原 op recovery 完成。`--add` 受 `max_workers_cap()` 与单调 window index 限制；`--remove` 首次优雅排空（idle/newest），recovery 绑定 **receipt 受害者**（错误的 `--remove N` 会 fail-closed 并带 generation + task id），只杀记录的 pgid + 已认证 pane（**不**杀 session、**禁止** `pkill -f`），标记 `scaled_down` 并保留 worktree；active 不可低于 1。Meta 提交若失去成功路径，以 identity readback 分为 committed / not_committed / unknown（不以 volatile 的 `last_scale.actions` 单独判定）。**不是**执行 sandbox — 见 `docs/security-model.md`。
+- **`omg team resume --run ID`** — 同一 scale lock 下重读 `team.json`；若 relaunch WAL 待处理，先做精确 relaunch recovery，再做 pane 存活对账（幂等 status 写入）。仍符合 receipt 身份的 remain-on-exit dead pane，process 不在时可清理后提交为 `needs_collect`。
 
 ```bash
 omg team start --goal "平行修 A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --dry-run

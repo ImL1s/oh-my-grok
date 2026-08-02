@@ -521,6 +521,7 @@ Full dual-review ship bar (C1–C9) is complete. Recent lines:
 - **2026-07-20 core-purpose parity:** evidence stamps, session lease, interview, goal ledger + repair, ULW ownership/join, hash-bound review, UltraQA, strict autopilot; destination gates; CLI acceptance authority for `verified`.
 - **v0.2.6:** `omg --madmax` full-open host launch in tmux; OSS install dual-track + release protocol; CI smoke.
 - **v0.6.0:** versioned repository workflows; exact session routes and bounded recovery; project memory, tracker, compaction and outbound notifications; plugin MCP/LSP manifests; immutable GitHub-release installation and release readback.
+- **v0.7.4:** team scale/resume crash recovery — generation-scoped WAL, fail-closed window ownership readback, pending identity-receipt lifecycle gates, receipt-bound remove recovery, meta result-loss adopt; hermetic tests without live tmux. Integration isolation only (not an execution sandbox).
 - **v0.7.2+ team plane:** default-on `omg team` (kill `OMG_DISABLE_TMUX_TEAM`); process-ready + P0′ API + doctor; `LIVE_TEAM_SMOKE_OK` local 2026-07-30; integration isolation only.
 - **v0.5.0:** fail-closed gate and global-hook hardening; multi-CLI tmux team plane (then experimental-gated) with integration isolation; in-session MCP server; local LSP probe; editable packaging.
 - **v0.4.2:** `omg worker seal --all` — leader batch seal (fail-closed; valid `head_sha`); local-path installer force-refresh (uninstall+reinstall).
