@@ -167,7 +167,11 @@ def _implementation_work_evidence(
     """True + optional gate_audit label when implement→review has proof of work."""
     receipt = ev.get("implementation_receipt")
     if isinstance(receipt, dict) and receipt.get("writer") == CLI_WRITER:
-        return True, None
+        if break_glass:
+            # Inline evidence is caller-supplied JSON, not a verified on-disk
+            # CLI stamp — writer=="omg-cli" here is unauthenticated and
+            # trivially forgeable, so it is audited the same as no_change.
+            return True, "break_glass:implementation_receipt"
     stored_fp = state.get("implement_workspace_fp")
     if stored_fp is not None and _workspace_fingerprint(root) != stored_fp:
         return True, None

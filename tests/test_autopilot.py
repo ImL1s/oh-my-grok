@@ -426,8 +426,12 @@ def test_implement_to_review_allows_workspace_fingerprint_change(
     assert status_autopilot(tmp_path, rid)["phase"] == "review"
 
 
-def test_implement_to_review_allows_implementation_receipt(tmp_path: Path) -> None:
-    """A CLI-writer implementation_receipt is sufficient without a fp change."""
+def test_implement_to_review_allows_implementation_receipt_with_break_glass(
+    tmp_path: Path,
+) -> None:
+    """An inline implementation_receipt is unauthenticated caller JSON, not a
+    verified CLI stamp — it only substitutes for a fp change when audited via
+    break_glass=true (same as no_change_reason)."""
     from omg_cli.evidence import CLI_WRITER
 
     st = start_autopilot(tmp_path, "impl gate receipt", skip_interview=True)
@@ -438,10 +442,33 @@ def test_implement_to_review_allows_implementation_receipt(tmp_path: Path) -> No
         rid,
         "review",
         evidence={
-            "implementation_receipt": {"writer": CLI_WRITER, "note": "work done"}
+            "implementation_receipt": {"writer": CLI_WRITER, "note": "work done"},
+            "break_glass": True,
         },
     )
     assert status_autopilot(tmp_path, rid)["phase"] == "review"
+
+
+def test_implement_to_review_rejects_inline_receipt_without_break_glass(
+    tmp_path: Path,
+) -> None:
+    """Inline evidence.implementation_receipt alone (no break_glass, no real
+    fp change) must not bypass the implement→review work gate."""
+    from omg_cli.evidence import CLI_WRITER
+
+    st = start_autopilot(tmp_path, "impl gate receipt no bg", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    with pytest.raises(AutopilotError, match="implementation|no_change"):
+        transition(
+            tmp_path,
+            rid,
+            "review",
+            evidence={
+                "implementation_receipt": {"writer": CLI_WRITER, "note": "work done"}
+            },
+        )
+    assert status_autopilot(tmp_path, rid)["phase"] == "implement"
 
 
 def test_try_advance_after_launch_stalls_implement_without_work_evidence(
