@@ -68,6 +68,27 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `process_starttime` is unavailable (unknown ≠ same process).
 - **`set_verified` force hatch:** `force=True` requires in-process
   `OMG_INTERNAL_FORCE_VERIFIED=1`; not exposed on any CLI argparse path.
+- **Review gate workspace binding (Round 2 / R2-2):** `omg review`
+  records `workspace_fp` (`_implement_workspace_fingerprint`) on every
+  structured review stamp; `stage_review_is_clean` requires it to match the
+  current workspace (missing on schema_version≥2 stamps → fail-closed).
+- **QA gate workspace binding (Round 2 / R2-1):** clean UltraQA cycles
+  also record `implement_workspace_fp`; `stage_qa_is_clean` rechecks it
+  alongside `product_hash` so non-`omg_cli/**/*.py` product-surface drift
+  after QA went clean cannot reach acceptance.
+- **Blocked recovery gates (Round 2 / R2-3):** destination gates run for
+  `blocked→implement` / `ralplan` / `review` / `qa` — e.g.
+  `blocked→review` still requires implement work evidence;
+  `blocked→qa` still requires a fresh clean review stamp; re-entering
+  `review` from `blocked` invalidates stale review/QA stamps.
+- **Interview trusted path envelope (Round 2 / R2-4):** `_interview_complete`
+  requires a CLI-owned `interview.json` complete envelope (writer, run_id,
+  spec artifact + content hash) — a bare `status=complete` string alone
+  no longer unlocks `ralplan`.
+- **Consensus stamp-only (Round 2 / R2-5):** `_consensus_ready` trusts only
+  CLI `ralplan.json` with `writer`, `run_id`, and `accepted=true`;
+  `status.ralplan_consensus` and artifact markers alone no longer unlock
+  `implement`.
 
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —

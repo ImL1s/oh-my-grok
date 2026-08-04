@@ -106,13 +106,19 @@ omg autopilot start "ship feature X" --skip-interview
 
 RUN=…   # from start JSON: run_id
 
-# … after interview closed:
-omg autopilot transition --run "$RUN" --phase ralplan \
-  --evidence-json '{"interview_complete":true}' --reason "interview closed"
+# … after interview closed (preferred: omg interview * writes CLI envelope):
+omg autopilot transition --run "$RUN" --phase ralplan --reason "interview closed"
+# break-glass only (audited):
+# omg autopilot transition --run "$RUN" --phase ralplan \
+#   --evidence-json '{"interview_complete":true,"break_glass":true}' \
+#   --reason "interview closed (break-glass)"
 
-# … after plan APPROVE:
-omg autopilot transition --run "$RUN" --phase implement \
-  --evidence-json '{"consensus":true}' --reason "ralplan APPROVE"
+# … after plan APPROVE (preferred: omg ralplan * writes accepted ralplan.json stamp):
+omg autopilot transition --run "$RUN" --phase implement --reason "ralplan APPROVE"
+# break-glass only (audited):
+# omg autopilot transition --run "$RUN" --phase implement \
+#   --evidence-json '{"consensus":true,"break_glass":true}' \
+#   --reason "ralplan APPROVE (break-glass)"
 
 # review requires work evidence (fp drift, CLI receipt, or break_glass no_change):
 omg autopilot transition --run "$RUN" --phase review --reason "impl ready"
@@ -160,9 +166,9 @@ as `gate_audit` (for example `break_glass:consensus`, `break_glass:no_change`).
 
 | Enter phase | Preferred (stamp-first) | Break-glass (audited) |
 |-------------|-------------------------|------------------------|
-| `ralplan` from `interview` | CLI interview `status=complete` | `interview_complete` + `break_glass` |
-| `implement` | CLI `ralplan` accepted / `ralplan_consensus` | `consensus` + `break_glass` |
-| `review` from `implement` | Workspace fingerprint drift (curated product surfaces) since implement entry, **or** on-disk CLI implementation receipt (`stages/implementation.json`, fingerprint-rechecked) | `no_change_reason` + `break_glass`, **or** inline `implementation_receipt` + `break_glass` |
+| `ralplan` from `interview` | CLI interview envelope: `interview.json` with `writer=omg-cli`, `status=complete`, and a matching CLI-stamped spec artifact (`spec_path` + content hash) | `interview_complete` + `break_glass` |
+| `implement` | CLI `stages/ralplan.json` stamp with `writer=omg-cli`, `run_id` match, and `accepted=true` (not `status.ralplan_consensus` alone) | `consensus` + `break_glass` |
+| `review` from `implement` **or** `blocked` | Workspace fingerprint drift (curated product surfaces) since implement entry, **or** on-disk CLI implementation receipt (`stages/implementation.json`, fingerprint-rechecked) | `no_change_reason` + `break_glass`, **or** inline `implementation_receipt` + `break_glass` |
 | `qa` | CLI `stages/structured_review.json` clean (see fingerprint recheck below) | — |
 | `acceptance` | CLI `stages/ultraqa.json` status `clean` (see fingerprint recheck below) | — |
 | `verified` | **Only** `omg autopilot complete` after same-process accept | — |
@@ -170,10 +176,35 @@ as `gate_audit` (for example `break_glass:consensus`, `break_glass:no_change`).
 Break-glass is an operator-intent escape hatch, not a silent trust path. See
 [`security-model.md`](./security-model.md#autopilot-break_glass-vs-cli-stamps).
 
+### Blocked recovery re-applies destination gates (Round 2)
+
+`blocked` is a pause, not a bypass. Transitions **from** `blocked` to
+`implement`, `ralplan`, `review`, or `qa` run the same destination gates as
+the linear path — gates key off **target phase**, not only `src`:
+
+| Edge | Gate (same as linear path) |
+|------|------------------------------|
+| `blocked → implement` | `_consensus_ready` (CLI `ralplan.json` `accepted=true`) or audited `consensus` + `break_glass` |
+| `blocked → ralplan` | `_interview_complete` (CLI interview envelope) when recovering from `interview`, or replan from later phases |
+| `blocked → review` | Implement→review work evidence (fingerprint drift, CLI receipt, or audited `no_change`) |
+| `blocked → qa` | `stage_review_is_clean` (fresh structured review stamp + workspace binding) |
+
+Example: recovering `blocked → review` without product work still needs audited
+break-glass (same as `implement → review`):
+
+```bash
+omg autopilot transition --run "$RUN" --phase review \
+  --evidence-json '{"no_change_reason":"resume without new diff","break_glass":true}' \
+  --reason "blocked recovery"
+```
+
+Re-entering `review` from `blocked` (or `rework` / `implement`) invalidates
+prior review/QA stamps so a pre-block clean stamp cannot reopen `qa`.
+
 ### Implement → review work gate
 
-Leaving `implement` for `review` requires evidence that work happened (or an
-explicit audited no-op):
+Leaving `implement` (or recovering `blocked → review`) requires evidence that
+work happened (or an explicit audited no-op):
 
 1. **Workspace fingerprint drift** — on entering `implement`, the CLI records
    `implement_workspace_fp` via a **dedicated**
@@ -228,14 +259,14 @@ the **current** workspace — a prior `clean=true` alone is not enough:
 
 | Stage file | Recheck | Legacy behavior |
 |------------|---------|-----------------|
-| `structured_review.json` | Top-level `diff_hash` must match nested `code_reviewer_stamp` / `architect_stamp` lane evaluations (same logic as `omg review`). Tampered or drifted hashes → not clean. | Stamps with **no** `diff_hash` and **no** lane stamps: clean flag only (weaker). |
-| `ultraqa.json` | Last clean cycle’s `product_hash` must match a fresh `product_hash(root)` recompute. | Cycles without `product_hash`: clean flag only (weaker). |
+| `structured_review.json` | Top-level `diff_hash` must match nested `code_reviewer_stamp` / `architect_stamp` lane evaluations (same logic as `omg review`). **`workspace_fp`** (recorded by `omg review` at stamp time via `_implement_workspace_fingerprint`) must match a fresh recompute — catches drift on non-Python product surfaces (`hooks/`, `skills/`, …) that `diff_hash` alone might miss. Missing `workspace_fp` on schema_version≥2 stamps → fail-closed. | Stamps with **no** `diff_hash`, **no** lane stamps, and **no** `workspace_fp`: clean flag only (weaker). |
+| `ultraqa.json` | Last clean cycle’s `product_hash` must match a fresh `product_hash(root)` recompute. **`implement_workspace_fp`** on the clean cycle (same broader fingerprint as the implement→review gate) must also match — closes the gap where `product_hash` only covers `omg_cli/**/*.py` but config/plugin surfaces changed after QA went clean. | Cycles without `product_hash` / `implement_workspace_fp`: clean flag only (weaker). |
 
-**Limits (Round 1 honesty):** rechecks are content-hash / stamp-structure checks,
-not a full cross-file transaction WAL. Concurrent partial writes, TOCTOU outside
-the stamp fields, or adversarial workspace races may still require operator
-`omg doctor` / manual recovery. Full StageEvidenceEnvelope v3 + cross-file WAL
-is planned, not claimed here.
+**Limits (Round 2 honesty):** rechecks bind stamps to workspace fingerprints and
+lane/hash consistency, but are still not a full cross-file transaction WAL.
+Concurrent partial writes, TOCTOU outside the stamp fields, or adversarial
+workspace races may still require operator `omg doctor` / manual recovery. Full
+StageEvidenceEnvelope v3 + cross-file WAL is planned, not claimed here.
 
 Re-entering `implement` invalidates prior review/QA stamps (`invalidated=true`) so
 a `qa→blocked→implement→…→qa` loop cannot reuse stale quality gates.
@@ -252,7 +283,7 @@ Normative copy for agents is the skill file; this is the human-readable map.
 |-------|---------------|-----|
 | Bootstrap | — | `omg doctor`, `omg setup`, `omg autopilot status` |
 | interview | `omg-deep-interview` | `omg interview *` → transition `ralplan` |
-| ralplan | `omg-ralplan` + critic/verifier **read-only** | transition `implement` + consensus evidence |
+| ralplan | `omg-ralplan` + critic/verifier **read-only** | `omg ralplan *` → accepted stamp → transition `implement` |
 | implement | `omg-ultrawork` / `omg-ralph` + executor **read-write** | transition `review` |
 | review | `omg-dual-review` or `omg review` | clean → transition `qa`; else `rework` |
 | qa | `omg-ultraqa` | freeze (allowlisted cmds) → run → clean → transition `acceptance` |
@@ -327,7 +358,7 @@ Agents (plugin): `omg-orchestrator`, `omg-executor`, `omg-critic`, `omg-verifier
 
 - Claiming “done” without CLI stamps / `omg autopilot status` showing `verified`
 - `transition --phase verified` (illegal)
-- Lying in `--evidence-json` to skip interview/ralplan
+- Lying in `--evidence-json` to skip interview/ralplan (bare booleans without `break_glass`, or trusting `status.ralplan_consensus` without `ralplan.json`)
 - Self-approve after implement (skip dual-review / structured review)
 - Infinite skill self-loop without status (prefer status + user “continue”)
 - External agent CLIs as workers
