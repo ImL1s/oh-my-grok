@@ -107,6 +107,20 @@ def test_recommend_ralph_includes_session(tmp_path):
     assert any("grok --resume" in c for c in cmds)
 
 
+def test_resume_pack_includes_bundle_keys(tmp_path):
+    run = create_run(tmp_path, mode="autopilot", goal="bundle")
+    rid = run["run_id"]
+    write_status(tmp_path, rid, "running", extra={"stage": "autopilot", "autopilot_phase": "review"})
+    pack = build_resume_pack(tmp_path, rid)
+    assert pack["ok"] is True
+    bundle = pack["resume_bundle"]
+    assert bundle["schema_version"] == 1
+    assert "run_view" in bundle
+    assert "gate_failure" in bundle  # may be null
+    assert "provenance" in bundle
+    assert bundle["provenance"]["run_id"] == rid
+
+
 def test_cli_resume_json(tmp_path, monkeypatch):
     from omg_cli.main import main
 

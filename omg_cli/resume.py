@@ -134,9 +134,10 @@ def build_resume_pack(root: Path, run_id: str | None = None) -> dict[str, Any]:
     rid = str(status.get("run_id") or run_id or "")
     view = load_run_view(root, rid) or status
     terminal = _is_terminal(status)
+    generated_at = _utc_now()
     pack: dict[str, Any] = {
         "ok": True,
-        "generated_at": _utc_now(),
+        "generated_at": generated_at,
         "run_id": rid,
         "mode": status.get("mode"),
         "status": status.get("status"),
@@ -152,6 +153,44 @@ def build_resume_pack(root: Path, run_id: str | None = None) -> dict[str, Any]:
     if terminal:
         pack["reason"] = "run_terminal"
         pack["hint"] = "Run is terminal; no omg resume re-entry. Start a new run if needed."
+
+    gate_failure = status.get("autopilot_gate_failure")
+    if not isinstance(gate_failure, dict) or not gate_failure:
+        gate_failure = None
+
+    autopilot_phase: Any = None
+    legal_next: Any = None
+    if str(status.get("mode") or "").lower() == "autopilot":
+        # Best-effort only: autopilot-specific state may be absent/partial
+        # (e.g. pre-FSM runs) and must never break the generic resume pack.
+        try:
+            from omg_cli.autopilot import status_autopilot
+
+            ap_status = status_autopilot(root, rid)
+        except Exception:
+            ap_status = None
+        if isinstance(ap_status, dict):
+            autopilot_phase = ap_status.get("phase")
+            legal_next = ap_status.get("legal_next")
+            if gate_failure is None:
+                ap_gate = ap_status.get("gate_failure")
+                if isinstance(ap_gate, dict) and ap_gate:
+                    gate_failure = ap_gate
+
+    # Partial bundle schema_version=1 — wiki/memory/compaction context is
+    # deliberately out of scope for Round 1 (see Round 1 hardening plan).
+    pack["resume_bundle"] = {
+        "schema_version": 1,
+        "run_view": view,
+        "gate_failure": gate_failure,
+        "autopilot_phase": autopilot_phase,
+        "legal_next": legal_next,
+        "provenance": {
+            "generated_at": generated_at,
+            "run_id": rid,
+            "selector": "run_id" if run_id else "active_run",
+        },
+    }
     return pack
 
 
