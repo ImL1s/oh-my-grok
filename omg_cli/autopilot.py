@@ -7,6 +7,7 @@ Does not write verified except via same-process set_verified after acceptance.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -49,6 +50,9 @@ LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
     | COMMIT_ONLY_TRANSITIONS.get(phase, frozenset())
     for phase in MANUAL_TRANSITIONS
 }
+
+
+logger = logging.getLogger(__name__)
 
 
 class AutopilotError(ValueError):
@@ -818,6 +822,12 @@ def _record_gate_failure(
         )
     except Exception:
         # Never block the outer driver on status merge failures.
+        logger.warning(
+            "autopilot: failed to record gate_failure for run_id=%s phase=%s",
+            run_id,
+            phase,
+            exc_info=True,
+        )
         return
 
 
@@ -827,6 +837,9 @@ def _clear_gate_failure(root: Path, run_id: str) -> None:
     try:
         merge_status_fields(root, run_id, {"autopilot_gate_failure": {}})
     except Exception:
+        logger.debug(
+            "autopilot: failed to clear gate_failure for run_id=%s", run_id, exc_info=True
+        )
         return
 
 
