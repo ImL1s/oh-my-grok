@@ -257,6 +257,85 @@ def test_invalidated_flag_cleared_at_fresh_v2_cycle_start(tmp_path):
     assert "invalidated_at" not in state
 
 
+def test_high_prior_history_invalidate_rerun_still_executes_stages(tmp_path):
+    """R6-1: seeded history through round 5 + invalidate + a low-ceiling
+    re-run must still execute stages, not immediately block with zero
+    stages. Without resetting history/round/session-attempts on a fresh
+    cycle, ``first_round`` (derived from max prior history round + 1) stays
+    pinned past the configured ceiling forever, so every future replan
+    instantly blocks. Identity fields (run_id/goal/writer/schema) must
+    survive the reset."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.state import create_run
+
+    goal = "reset history on fresh replan cycle"
+    run = create_run(
+        tmp_path,
+        mode="ralplan",
+        goal=goal,
+        extra={"schema_version": 2, "lifecycle_version": 2},
+    )
+    run_id = run["run_id"]
+
+    path = ralplan_state_path(tmp_path, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    prior_history = [
+        {
+            "stage": stage,
+            "role": stage,
+            "round": 5,
+            "verdict": "APPROVE" if stage != "planner" else "READY",
+            "exit_code": 0,
+            "valid": True,
+        }
+        for stage in ("planner", "architect", "critic")
+    ]
+    stale_state = {
+        "writer": CLI_WRITER,
+        "schema_version": 2,
+        "lifecycle_version": 2,
+        "run_id": run_id,
+        "goal": goal,
+        "status": "critic",
+        "stage": "critic",
+        "round": 5,
+        "max_rounds": 5,
+        "history": prior_history,
+        "sessions": {
+            role: {"session_id": "s-" + role, "attempts": 5}
+            for role in ("planner", "architect", "critic")
+        },
+        "accepted": False,
+        "invalidated": True,
+        "invalidated_reason": "stale replan",
+        "invalidated_at": "2026-01-01T00:00:00+00:00",
+    }
+    path.write_text(json.dumps(stale_state), encoding="utf-8")
+
+    rc = run_ralplan(
+        goal,
+        root=tmp_path,
+        existing_run_id=run_id,
+        max_rounds=1,
+        dry_run=True,
+        stage_executor=_v2_full_approve_executor(),
+    )
+    assert rc == 0  # a fresh round 1 must be able to reach APPROVE, not block
+
+    state = load_ralplan_state(tmp_path, run_id)
+    assert state is not None
+    assert state["accepted"] is True
+    # Identity fields survive the reset untouched.
+    assert state["run_id"] == run_id
+    assert state["goal"] == goal
+    assert state["writer"] == CLI_WRITER
+    assert state["schema_version"] == 2
+    # New stages actually executed at round 1 (not stuck past the ceiling).
+    new_rounds = {item["round"] for item in state["history"]}
+    assert new_rounds == {1}
+    assert "invalidated" not in state
+
+
 def test_artifact_approve_detection(tmp_path):
     md = tmp_path / "v.md"
     md.write_text("## Verdict\nAPPROVE\n\nAll good.\n", encoding="utf-8")

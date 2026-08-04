@@ -205,6 +205,28 @@ def _clear_invalidation(state: dict[str, Any]) -> None:
     state.pop("invalidated_at", None)
 
 
+def _reset_for_fresh_cycle(state: dict[str, Any]) -> None:
+    """Reset progress counters so a fresh strict-v2 cycle starts at round 1.
+
+    Called alongside :func:`_clear_invalidation` when a new consensus
+    attempt begins against a state left ``invalidated: True`` by a prior
+    replan. ``first_round`` in ``_run_ralplan_v2`` is derived from the max
+    round already present in ``history`` — without wiping ``history`` (and
+    the per-session ``attempts`` counters, and ``round``) here, a state with
+    prior history past the configured ``max_rounds`` ceiling would stay
+    pinned past that ceiling forever: every future replan would immediately
+    block with zero stages executed instead of actually re-running
+    planner/architect/critic. Identity fields (``run_id``, ``goal``,
+    ``writer``, ``schema_version``, ``lifecycle_version``) are left
+    untouched — only progress state resets.
+    """
+    state["history"] = []
+    state["round"] = 0
+    for binding in state.get("sessions", {}).values():
+        if isinstance(binding, dict):
+            binding["attempts"] = 0
+
+
 def initial_ralplan_state(
     *,
     run_id: str,
@@ -1005,8 +1027,12 @@ def _run_ralplan_v2(
                 # Fresh consensus attempt under lease: a mid-run replan must
                 # not stay fenced by a stale invalidation stamp once a new
                 # attempt actually begins (clear-on-accept below is the
-                # primary guard; this covers the window before it).
+                # primary guard; this covers the window before it). Also
+                # reset history/round/session-attempts so first_round becomes
+                # 1 and the configured ceiling is usable again (R6-1) —
+                # identity fields are untouched.
                 _clear_invalidation(state)
+                _reset_for_fresh_cycle(state)
             state["max_rounds"] = ceiling
             save_ralplan_state(root, run_id, state)
 
