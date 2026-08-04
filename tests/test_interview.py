@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -332,6 +333,49 @@ def test_interview_attach_run_writes_envelope_for_autopilot(tmp_path: Path) -> N
 
     out = transition(tmp_path, rid, "ralplan")
     assert out["phase"] == "ralplan"
+
+
+def test_attach_close_resume_command_targets_same_autopilot_run(
+    tmp_path: Path,
+) -> None:
+    """R6-2: closing an attached (mode=="autopilot") interview must advertise
+    a resume_command that keeps the same run_id — bare `omg ralplan <goal>`
+    would start a brand-new run and orphan the autopilot run's evidence."""
+    from omg_cli.autopilot import start_autopilot
+
+    (tmp_path / ".git").mkdir()
+    st = start_autopilot(tmp_path, _clear_task(), skip_interview=False)
+    rid = st["run_id"]
+
+    start_interview(tmp_path, "", attach_run_id=rid)
+    pressure_pass_interview(
+        tmp_path,
+        rid,
+        "Pressure test confirms compatibility and CLI authority outweighs automatic conversational convenience.",
+    )
+    closed = close_interview(tmp_path, rid)
+    assert closed["status"] == "complete"
+    assert closed["resume_command"] == (
+        f"omg ralplan {shlex.quote(_clear_task())} --run {rid}"
+    )
+
+
+def test_bare_interview_close_resume_command_has_no_run_flag(
+    tmp_path: Path,
+) -> None:
+    """Standalone (mode=="interview") runs are not autopilot-attached, so
+    their resume_command stays a bare `omg ralplan <goal>` with no --run."""
+    started = start_interview(tmp_path, _clear_task(), profile="standard")
+    (tmp_path / ".git").mkdir()
+    pressure_pass_interview(
+        tmp_path,
+        started["run_id"],
+        "The assumption is that a deterministic CLI is sufficient; reject an automatic LLM engine to preserve auditable authority.",
+    )
+    closed = close_interview(tmp_path, started["run_id"])
+    assert closed["status"] == "complete"
+    assert closed["resume_command"] == f"omg ralplan {shlex.quote(_clear_task())}"
+    assert "--run" not in closed["resume_command"]
 
 
 def test_interview_attach_rejects_wrong_phase_and_mode(tmp_path: Path) -> None:

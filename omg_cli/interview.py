@@ -552,7 +552,14 @@ def close_interview(root: Path | str, run_id: str) -> dict[str, Any]:
         _atomic_write_json(path, artifact)
         state.update(status="complete", pending_question=None, blocker=None)
         state["spec_path"] = str(path.relative_to(root))
-        state["resume_command"] = f"omg ralplan {shlex.quote(state['task'])}"
+        quoted_task = shlex.quote(state["task"])
+        if run.get("mode") == "autopilot":
+            # An attached interview lives under the autopilot run's own
+            # run_id (see ``_attach_interview_run``): resuming must reuse
+            # that run_id, not spawn a fresh, orphaned ralplan run.
+            state["resume_command"] = f"omg ralplan {quoted_task} --run {run_id}"
+        else:
+            state["resume_command"] = f"omg ralplan {quoted_task}"
         state["closed_by_invocation_id"] = lease.invocation_id
         state["revision"] += 1
         state["updated_at"] = _now()
