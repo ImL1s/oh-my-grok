@@ -133,12 +133,15 @@ Illegal transitions fail closed (CLI prints error, phase unchanged).
 interview → ralplan → implement → review → (rework) → qa → acceptance → verified
 ```
 
-Also: `blocked`, `cancelled` (see `omg_cli/autopilot.py` `LEGAL_TRANSITIONS`).
+Also: `blocked`, `cancelled` (see `omg_cli/autopilot.py` `LEGAL_TRANSITIONS` /
+`MANUAL_TRANSITIONS`). `legal_next` from `omg autopilot status` lists **manual**
+edges only; at `acceptance`, use `terminal_action` / `omg autopilot complete`
+(never `transition … verified`).
 
 | Enter phase | Required evidence / stamp |
 |-------------|---------------------------|
-| `ralplan` from `interview` | `interview_complete: true` |
-| `implement` | `consensus: true` |
+| `ralplan` from `interview` | CLI interview `status=complete`, **or** `interview_complete` + `break_glass` |
+| `implement` | CLI `ralplan` accepted / `ralplan_consensus`, **or** `consensus` + `break_glass` |
 | `qa` | CLI `stages/structured_review.json` clean |
 | `acceptance` | CLI `stages/ultraqa.json` status `clean` |
 | `verified` | **Only** `omg autopilot complete` after same-process accept — never `transition … verified` |

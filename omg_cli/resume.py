@@ -99,8 +99,11 @@ def recommend_commands(status: dict[str, Any]) -> list[str]:
         cmds.append(f"omg state --run {rid} --human")
         cmds.append(f"# re-run workers or: omg integrate --run {rid}")
     elif mode == "ralplan":
-        cmds.append(f"omg ralplan --resume {rid}" if False else f"omg state --run {rid}")
-        cmds.append("# ralplan: re-invoke omg ralplan with same goal if unfinished")
+        # ralplan has --run (embed/reuse), not --resume (ralph-only).
+        cmds.append(f"omg state --run {rid}")
+        cmds.append(
+            f"# ralplan: re-invoke omg ralplan \"…\" --run {rid} if unfinished"
+        )
     elif mode in {"interview", "deep-interview"}:
         rc = status.get("resume_command")
         if isinstance(rc, str) and rc.strip():

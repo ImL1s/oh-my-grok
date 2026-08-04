@@ -441,7 +441,11 @@ def register_modes_parsers(
     p_ap_tr.add_argument(
         "--evidence-json",
         default=None,
-        help='gate evidence e.g. {"interview_complete":true}',
+        help=(
+            "gate evidence JSON; bare interview_complete/consensus booleans "
+            'require break_glass=true (prefer CLI stamps). '
+            'e.g. {"consensus":true,"break_glass":true}'
+        ),
     )
     p_ap_tr.set_defaults(func=cmd_autopilot, autopilot_action="transition")
     p_ap_st = ap_sub.add_parser("status", parents=[common], help="autopilot status")

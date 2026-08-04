@@ -22,8 +22,9 @@ from omg_cli.state import (
 )
 
 
-# Legal forward edges for strict v2 autopilot phases
-LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
+# Edges ``transition()`` may take (machine-callable). ``verified`` is NOT here —
+# it is commit-only via ``complete_with_acceptance`` (same-process acceptance).
+MANUAL_TRANSITIONS: dict[str, frozenset[str]] = {
     "init": frozenset({"interview", "ralplan"}),  # interview skip only if forced clear
     "interview": frozenset({"ralplan", "blocked", "cancelled"}),
     "ralplan": frozenset({"implement", "blocked", "cancelled"}),
@@ -31,10 +32,22 @@ LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
     "review": frozenset({"qa", "rework", "ralplan", "blocked", "cancelled"}),
     "rework": frozenset({"review", "blocked", "cancelled"}),
     "qa": frozenset({"acceptance", "ralplan", "rework", "blocked", "cancelled"}),
-    "acceptance": frozenset({"verified", "blocked", "cancelled"}),
+    "acceptance": frozenset({"blocked", "cancelled"}),
     "verified": frozenset(),
     "blocked": frozenset({"interview", "ralplan", "implement", "review", "qa", "cancelled"}),
     "cancelled": frozenset(),
+}
+
+# Conceptual commit-only edges (status may advertise; ``transition()`` never takes them).
+COMMIT_ONLY_TRANSITIONS: dict[str, frozenset[str]] = {
+    "acceptance": frozenset({"verified"}),
+}
+
+# Full phase graph for docs / introspection (= manual ∪ commit-only).
+LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
+    phase: MANUAL_TRANSITIONS.get(phase, frozenset())
+    | COMMIT_ONLY_TRANSITIONS.get(phase, frozenset())
+    for phase in MANUAL_TRANSITIONS
 }
 
 
@@ -151,7 +164,18 @@ def load_autopilot(root: Path | str, run_id: str) -> dict[str, Any]:
 
 
 def assert_legal_transition(src: str, dst: str) -> None:
-    allowed = LEGAL_TRANSITIONS.get(src)
+    """Raise unless ``src → dst`` is a manual ``transition()`` edge.
+
+    Commit-only destinations (``verified``) are rejected here — callers that
+    need the conceptual graph should read ``LEGAL_TRANSITIONS`` /
+    ``COMMIT_ONLY_TRANSITIONS``, not this assert.
+    """
+    if dst in COMMIT_ONLY_TRANSITIONS.get(src, frozenset()):
+        raise AutopilotError(
+            f"commit-only transition {src!r} -> {dst!r} "
+            "(use complete_with_acceptance / omg autopilot complete)"
+        )
+    allowed = MANUAL_TRANSITIONS.get(src)
     if allowed is None:
         raise AutopilotError(f"unknown phase {src!r}")
     if dst not in allowed:
@@ -245,14 +269,37 @@ def transition(
 
         # Gate by DESTINATION phase (not only specific src) so blocked→qa
         # / blocked→implement cannot skip quality or consensus gates.
+        # Interview/consensus: prefer CLI-owned stamps; bare booleans are
+        # break-glass only (must set evidence.break_glass=true + audit).
+        ev = dict(evidence or {})
+        break_glass = ev.get("break_glass") is True
+        gate_audit: str | None = None
+
         if next_phase == "ralplan":
-            # First entry from interview needs evidence; recovery from later
-            # phases may re-enter ralplan with replan reason.
-            if src == "interview" and not (evidence or {}).get("interview_complete"):
-                raise AutopilotError("no interview gate → no ralplan handoff")
+            # First entry from interview needs a trusted gate; recovery from
+            # later phases may re-enter ralplan with replan reason.
+            if src == "interview":
+                if _interview_complete(root, run_id):
+                    pass
+                elif ev.get("interview_complete") and break_glass:
+                    gate_audit = "break_glass:interview_complete"
+                else:
+                    raise AutopilotError(
+                        "no interview gate → no ralplan handoff "
+                        "(need CLI interview status=complete, or "
+                        "evidence.interview_complete + break_glass=true)"
+                    )
         if next_phase == "implement":
-            if not (evidence or {}).get("consensus"):
-                raise AutopilotError("no consensus → no implementation")
+            if _consensus_ready(root, run_id):
+                pass
+            elif ev.get("consensus") and break_glass:
+                gate_audit = "break_glass:consensus"
+            else:
+                raise AutopilotError(
+                    "no consensus → no implementation "
+                    "(need CLI ralplan accepted / ralplan_consensus, or "
+                    "evidence.consensus + break_glass=true)"
+                )
         if next_phase == "qa":
             if not stage_review_is_clean(root, run_id):
                 raise AutopilotError(
@@ -265,11 +312,6 @@ def transition(
                     "no clean QA → no acceptance "
                     "(requires CLI-stamped stages/ultraqa.json status=clean)"
                 )
-        if next_phase == "verified":
-            raise AutopilotError(
-                "verified only via complete_with_acceptance (same-process)"
-            )
-
         if next_phase == "implement":
             # Any (re-)entry into implement produces new, unreviewed product
             # code. Prior clean review/QA stamps must never remain authoritative
@@ -301,15 +343,16 @@ def transition(
         if src == "qa" and next_phase == "ralplan":
             state["cycles"]["qa"] = int(state["cycles"].get("qa") or 0) + 1
 
+        hist_entry: dict[str, Any] = {
+            "from": src,
+            "phase": next_phase,
+            "reason": reason,
+            "at": _utc_now(),
+        }
+        if gate_audit:
+            hist_entry["gate_audit"] = gate_audit
         state["phase"] = next_phase
-        state["history"] = list(state.get("history") or []) + [
-            {
-                "from": src,
-                "phase": next_phase,
-                "reason": reason,
-                "at": _utc_now(),
-            }
-        ]
+        state["history"] = list(state.get("history") or []) + [hist_entry]
         if next_phase == "blocked":
             state["blocker"] = {"reason": reason or "blocked", "from": src}
             status = "blocked"
@@ -552,7 +595,10 @@ def set_awaiting_confirmation(
 def status_autopilot(root: Path | str, run_id: str) -> dict[str, Any]:
     state = load_autopilot(root, run_id)
     run = load_run(root, run_id) or {}
-    return {
+    phase = str(state.get("phase") or "")
+    legal_next = sorted(MANUAL_TRANSITIONS.get(phase, frozenset()))
+    commit_only_next = sorted(COMMIT_ONLY_TRANSITIONS.get(phase, frozenset()))
+    out: dict[str, Any] = {
         "run_id": run_id,
         "phase": state.get("phase"),
         "goal": state.get("goal"),
@@ -560,8 +606,17 @@ def status_autopilot(root: Path | str, run_id: str) -> dict[str, Any]:
         "blocker": state.get("blocker"),
         "verified": bool(run.get("verified") or state.get("verified")),
         "run_status": run.get("status"),
-        "legal_next": sorted(LEGAL_TRANSITIONS.get(str(state.get("phase")), frozenset())),
+        # Only edges ``transition()`` can take — never advertise commit-only
+        # ``verified`` as a manual next phase (use terminal_action instead).
+        "legal_next": legal_next,
     }
+    if commit_only_next:
+        out["commit_only_next"] = commit_only_next
+        out["terminal_action"] = "omg autopilot complete"
+    gate = run.get("autopilot_gate_failure")
+    if isinstance(gate, dict) and gate:
+        out["gate_failure"] = gate
+    return out
 
 
 # Phase → skill body for outer-driver prompt injection
@@ -697,6 +752,41 @@ def _consensus_ready(root: Path, run_id: str) -> bool:
     return bool(data and data.get("accepted") is True)
 
 
+def _record_gate_failure(
+    root: Path,
+    run_id: str,
+    phase: str,
+    message: str,
+) -> None:
+    """Persist last advance-gate failure for status / stall payloads (best-effort)."""
+    from omg_cli.state import merge_status_fields
+
+    try:
+        merge_status_fields(
+            root,
+            run_id,
+            {
+                "autopilot_gate_failure": {
+                    "phase": phase,
+                    "message": message,
+                    "at": _utc_now(),
+                }
+            },
+        )
+    except Exception:
+        # Never block the outer driver on status merge failures.
+        return
+
+
+def _clear_gate_failure(root: Path, run_id: str) -> None:
+    from omg_cli.state import merge_status_fields
+
+    try:
+        merge_status_fields(root, run_id, {"autopilot_gate_failure": {}})
+    except Exception:
+        return
+
+
 def _try_advance_after_launch(root: Path, run_id: str, phase: str) -> str:
     """Inspect stamps after a grok launch; transition when gates are satisfied."""
     phase = str(phase)
@@ -706,18 +796,18 @@ def _try_advance_after_launch(root: Path, run_id: str, phase: str) -> str:
                 root,
                 run_id,
                 "ralplan",
-                evidence={"interview_complete": True},
                 reason="interview complete",
             )
+            _clear_gate_failure(root, run_id)
             return "ralplan"
         if phase == "ralplan" and _consensus_ready(root, run_id):
             transition(
                 root,
                 run_id,
                 "implement",
-                evidence={"consensus": True},
                 reason="ralplan consensus",
             )
+            _clear_gate_failure(root, run_id)
             return "implement"
         if phase == "implement":
             # Recheck live phase: launch/side-effects may have moved to
@@ -732,9 +822,11 @@ def _try_advance_after_launch(root: Path, run_id: str, phase: str) -> str:
                 "review",
                 reason="implementation ready for review",
             )
+            _clear_gate_failure(root, run_id)
             return "review"
         if phase == "review" and stage_review_is_clean(root, run_id):
             transition(root, run_id, "qa", reason="structured review clean")
+            _clear_gate_failure(root, run_id)
             return "qa"
         if phase == "qa" and stage_qa_is_clean(root, run_id):
             transition(
@@ -743,13 +835,22 @@ def _try_advance_after_launch(root: Path, run_id: str, phase: str) -> str:
                 "acceptance",
                 reason="ultraqa clean",
             )
+            _clear_gate_failure(root, run_id)
             return "acceptance"
         if phase == "acceptance":
             out = complete_with_acceptance(root, run_id)
             if out.get("phase") == "verified":
+                _clear_gate_failure(root, run_id)
                 return "verified"
-    except AutopilotError:
-        pass
+            msg = (
+                "acceptance complete did not reach verified "
+                f"(phase={out.get('phase')!r})"
+            )
+            _record_gate_failure(root, run_id, phase, msg)
+            return phase
+    except AutopilotError as exc:
+        _record_gate_failure(root, run_id, phase, str(exc))
+        return phase
     return phase
 
 
@@ -964,7 +1065,11 @@ def run_autopilot(
         if dry_run:
             return 0
         if new_phase == phase:
-            # No gate progress this launch — host turn likely ended (Stop cap).
+            # No gate progress this launch — host turn likely ended (Stop cap)
+            # or a destination gate failed (see gate_failure on status).
+            run_now = load_run(root_path, run_id) or {}
+            gate = run_now.get("autopilot_gate_failure")
+            gate_payload = gate if isinstance(gate, dict) and gate else None
             if unattended:
                 stall_relaunches += 1
                 if stall_relaunches > max_stall:
@@ -978,41 +1083,39 @@ def run_autopilot(
                     except AutopilotError:
                         pass
                     write_resume_md(root_path, run_id)
-                    print(
-                        json.dumps(
-                            {
-                                "ok": False,
-                                "phase": phase,
-                                "run_id": run_id,
-                                "error": "max_stall_relaunches",
-                                "resume_command": resume_cmd,
-                            },
-                            ensure_ascii=False,
-                        )
-                    )
+                    stall_body: dict[str, Any] = {
+                        "ok": False,
+                        "phase": phase,
+                        "run_id": run_id,
+                        "error": "max_stall_relaunches",
+                        "resume_command": resume_cmd,
+                    }
+                    if gate_payload:
+                        stall_body["gate_failure"] = gate_payload
+                    print(json.dumps(stall_body, ensure_ascii=False))
                     return 1
                 # Re-launch same phase without requiring human "go" (#40).
                 continue
             write_resume_md(root_path, run_id)
             print(resume_cmd, file=sys.stderr)
-            print(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "pause": "stall",
-                        "phase": phase,
-                        "run_id": run_id,
-                        "resume_command": resume_cmd,
-                    },
-                    ensure_ascii=False,
-                )
-            )
+            stall_ok: dict[str, Any] = {
+                "ok": True,
+                "pause": "stall",
+                "phase": phase,
+                "run_id": run_id,
+                "resume_command": resume_cmd,
+            }
+            if gate_payload:
+                stall_ok["gate_failure"] = gate_payload
+            print(json.dumps(stall_ok, ensure_ascii=False))
             return 0
         stall_relaunches = 0
 
 
 __all__ = [
+    "COMMIT_ONLY_TRANSITIONS",
     "LEGAL_TRANSITIONS",
+    "MANUAL_TRANSITIONS",
     "AutopilotError",
     "assert_legal_transition",
     "autopilot_context_pack",

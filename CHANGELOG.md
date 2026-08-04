@@ -9,6 +9,18 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Fixed
+- **Autopilot FSM public contract:** split `MANUAL_TRANSITIONS` vs
+  `COMMIT_ONLY_TRANSITIONS`; `omg autopilot status` `legal_next` no longer
+  advertises `verified` as a `transition()` edge (use `commit_only_next` +
+  `terminal_action: omg autopilot complete`). Advance-gate failures are
+  recorded on status / stall JSON instead of being swallowed silently.
+- **Resume ralplan hint:** drop dead `omg ralplan --resume` placeholder
+  (`--resume` is ralph-only); recommend `omg state --run` + `--run` re-invoke.
+- **Interview/consensus gates:** prefer CLI-owned stamps; bare
+  `interview_complete` / `consensus` booleans require `break_glass=true` and
+  are audited on history (`gate_audit`). StageEvidenceEnvelope v3 still planned.
+
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —
   not blockers for production path; full OMX 33-op not claimed.
@@ -21,6 +33,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Host Stop veto (not feasible on Grok today).
 - Full OMC semantic LSP proxy (host-owned `.lsp.json` registration ships in 0.6.0;
   OMG does not claim host health or proxy hover/rename/goto operations).
+- StageEvidenceEnvelope v3 / ResumeBundle / autopilot cross-file WAL (from
+  external Pro+GitHub review) — planned hardening, not in this slice.
 
 ## [0.7.4] - 2026-08-01
 

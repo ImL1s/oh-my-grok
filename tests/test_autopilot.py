@@ -9,7 +9,9 @@ import pytest
 from omg_cli.acceptance import clear_cli_acceptance_tokens
 from omg_cli.autopilot import (
     AutopilotError,
+    COMMIT_ONLY_TRANSITIONS,
     LEGAL_TRANSITIONS,
+    MANUAL_TRANSITIONS,
     assert_legal_transition,
     autopilot_context_pack,
     build_phase_prompt,
@@ -27,6 +29,17 @@ from omg_cli.qa import freeze_scenarios, run_qa_cycle
 from omg_cli.review import run_structured_review
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _ev_interview_bg() -> dict:
+    """Test-only break-glass interview gate (not a CLI stamp)."""
+    return {"interview_complete": True, "break_glass": True}
+
+
+def _ev_consensus_bg() -> dict:
+    """Test-only break-glass consensus gate (not a CLI stamp)."""
+    return {"consensus": True, "break_glass": True}
+
 
 
 def _goal_bound_prd(tmp_path: Path, goal: str) -> dict:
@@ -93,7 +106,7 @@ def _stamp_qa_clean(root: Path, run_id: str, *, tmp_path: Path | None = None) ->
 
 
 def _walk_to_acceptance(root: Path, rid: str, *, tmp_path: Path | None = None) -> None:
-    transition(root, rid, "implement", evidence={"consensus": True})
+    transition(root, rid, "implement", evidence=_ev_consensus_bg())
     transition(root, rid, "review")
     _stamp_review_clean(root, rid)
     transition(root, rid, "qa")
@@ -105,9 +118,58 @@ def test_legal_transition_table() -> None:
     assert_legal_transition("interview", "ralplan")
     with pytest.raises(AutopilotError):
         assert_legal_transition("interview", "qa")
-    with pytest.raises(AutopilotError):
+    with pytest.raises(AutopilotError, match="commit-only|illegal"):
         assert_legal_transition("init", "verified")
+    with pytest.raises(AutopilotError, match="commit-only"):
+        assert_legal_transition("acceptance", "verified")
     assert "acceptance" in LEGAL_TRANSITIONS["qa"]
+    # Conceptual graph still includes verified; manual table does not.
+    assert "verified" in LEGAL_TRANSITIONS["acceptance"]
+    assert "verified" not in MANUAL_TRANSITIONS["acceptance"]
+    assert COMMIT_ONLY_TRANSITIONS["acceptance"] == frozenset({"verified"})
+
+
+def test_consensus_stamp_unlocks_implement_without_boolean(tmp_path: Path) -> None:
+    """CLI ralplan accepted stamp is enough — no evidence.consensus boolean."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.ralplan import ralplan_state_path
+
+    st = start_autopilot(tmp_path, "stamp consensus", skip_interview=True)
+    rid = st["run_id"]
+    path = ralplan_state_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        __import__("json").dumps(
+            {
+                "writer": CLI_WRITER,
+                "run_id": rid,
+                "accepted": True,
+                "status": "accepted",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out = transition(tmp_path, rid, "implement")
+    assert out["phase"] == "implement"
+    hist = __import__("omg_cli.autopilot", fromlist=["load_autopilot"]).load_autopilot(
+        tmp_path, rid
+    )["history"]
+    assert not any(h.get("gate_audit") for h in hist if h.get("phase") == "implement")
+
+
+def test_status_legal_next_excludes_verified(tmp_path: Path) -> None:
+    st = start_autopilot(tmp_path, "legal next contract", skip_interview=True)
+    rid = st["run_id"]
+    _walk_to_acceptance(tmp_path, rid, tmp_path=tmp_path)
+    st2 = status_autopilot(tmp_path, rid)
+    assert st2["phase"] == "acceptance"
+    assert "verified" not in st2["legal_next"]
+    assert st2.get("commit_only_next") == ["verified"]
+    assert st2.get("terminal_action") == "omg autopilot complete"
+    with pytest.raises(AutopilotError, match="commit-only"):
+        transition(tmp_path, rid, "verified")
 
 
 def test_start_and_gated_transitions(tmp_path: Path) -> None:
@@ -121,20 +183,37 @@ def test_start_and_gated_transitions(tmp_path: Path) -> None:
     with pytest.raises(AutopilotError, match="interview"):
         transition(tmp_path, rid, "ralplan")
 
+    # Bare boolean without break_glass is no longer trusted.
+    with pytest.raises(AutopilotError, match="break_glass"):
+        transition(
+            tmp_path,
+            rid,
+            "ralplan",
+            evidence={"interview_complete": True},
+        )
+
     transition(
         tmp_path,
         rid,
         "ralplan",
-        evidence={"interview_complete": True},
+        evidence=_ev_interview_bg(),
     )
     with pytest.raises(AutopilotError, match="consensus"):
         transition(tmp_path, rid, "implement")
+
+    with pytest.raises(AutopilotError, match="break_glass"):
+        transition(
+            tmp_path,
+            rid,
+            "implement",
+            evidence={"consensus": True},
+        )
 
     transition(
         tmp_path,
         rid,
         "implement",
-        evidence={"consensus": True},
+        evidence=_ev_consensus_bg(),
     )
     transition(tmp_path, rid, "review")
 
@@ -186,7 +265,7 @@ def test_complete_without_prd_or_ultraqa_refuses(tmp_path: Path) -> None:
     clear_cli_acceptance_tokens()
     st = start_autopilot(tmp_path, "no prd no qa", skip_interview=True)
     rid = st["run_id"]
-    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
     transition(tmp_path, rid, "review")
     _stamp_review_clean(tmp_path, rid)
     transition(tmp_path, rid, "qa")
@@ -200,6 +279,30 @@ def test_complete_without_prd_or_ultraqa_refuses(tmp_path: Path) -> None:
     qa_path.unlink()
     with pytest.raises(AutopilotError, match="prd|ultraqa"):
         complete_with_acceptance(tmp_path, rid)
+
+
+def test_try_advance_records_gate_failure(tmp_path: Path) -> None:
+    from omg_cli.autopilot import _try_advance_after_launch
+
+    clear_cli_acceptance_tokens()
+    st = start_autopilot(tmp_path, "gate failure surface", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    transition(tmp_path, rid, "review")
+    _stamp_review_clean(tmp_path, rid)
+    transition(tmp_path, rid, "qa")
+    _stamp_qa_clean(tmp_path, rid)
+    transition(tmp_path, rid, "acceptance")
+    (
+        tmp_path / ".omg" / "state" / "runs" / rid / "stages" / "ultraqa.json"
+    ).unlink()
+    assert _try_advance_after_launch(tmp_path, rid, "acceptance") == "acceptance"
+    st2 = status_autopilot(tmp_path, rid)
+    assert st2["phase"] == "acceptance"
+    gate = st2.get("gate_failure")
+    assert isinstance(gate, dict)
+    assert gate.get("phase") == "acceptance"
+    assert gate.get("message")
 
 
 def test_complete_happy_path_same_process_acceptance(tmp_path: Path) -> None:
@@ -274,7 +377,7 @@ def test_blocked_to_qa_still_requires_review(tmp_path: Path) -> None:
     """Destination gates apply even when recovering from blocked."""
     st = start_autopilot(tmp_path, "blocked qa", skip_interview=True)
     rid = st["run_id"]
-    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
     transition(tmp_path, rid, "review")
     transition(tmp_path, rid, "blocked", reason="ops")
     with pytest.raises(AutopilotError, match="structured_review"):
@@ -295,7 +398,7 @@ def test_rework_invalidates_review_stamp(tmp_path: Path) -> None:
 
     st = start_autopilot(tmp_path, "rework stamp", skip_interview=True)
     rid = st["run_id"]
-    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
     transition(tmp_path, rid, "review")
     _stamp_review_clean(tmp_path, rid)
     assert stage_review_is_clean(tmp_path, rid) is True
@@ -321,14 +424,14 @@ def test_blocked_implement_roundtrip_invalidates_stale_stamps(tmp_path: Path) ->
     st = start_autopilot(tmp_path, "roundtrip", skip_interview=True)
     rid = st["run_id"]
     # Reach a clean qa the legitimate way.
-    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
     transition(tmp_path, rid, "review")
     _stamp_review_clean(tmp_path, rid)
     transition(tmp_path, rid, "qa")
     _stamp_qa_clean(tmp_path, rid)
     # Detour that used to smuggle new code past review/QA:
     transition(tmp_path, rid, "blocked", reason="infra hiccup")
-    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
     transition(tmp_path, rid, "blocked", reason="another hiccup")
     # The qa gate must now reject: the review stamp was invalidated on implement.
     with pytest.raises(AutopilotError, match="review"):
@@ -405,7 +508,7 @@ def test_qa_blocked_review_roundtrip_invalidates_review_stamp(tmp_path: Path) ->
     st = start_autopilot(tmp_path, "qa-blocked-review", skip_interview=True)
     rid = st["run_id"]
     # Reach a clean qa the legitimate way.
-    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
     transition(tmp_path, rid, "review")
     _stamp_review_clean(tmp_path, rid)
     assert stage_review_is_clean(tmp_path, rid) is True
@@ -490,7 +593,7 @@ def test_try_advance_after_launch_skips_when_implement_became_blocked(
     st = start_autopilot(tmp_path, "block mid implement", skip_interview=True)
     rid = st["run_id"]
     merge_status_fields(tmp_path, rid, {"ralplan_consensus": True})
-    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
     transition(tmp_path, rid, "blocked", reason="ops")
     assert status_autopilot(tmp_path, rid)["phase"] == "blocked"
     out = _try_advance_after_launch(tmp_path, rid, "implement")
@@ -531,7 +634,7 @@ def test_run_autopilot_pauses_when_awaiting(
 
     st = start_autopilot(tmp_path, "ship it", skip_interview=True)
     rid = st["run_id"]
-    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
     transition(tmp_path, rid, "review")
     set_awaiting_confirmation(tmp_path, rid, True, reason="cli:pause")
     launched: list[bool] = []
@@ -564,7 +667,7 @@ def test_run_resume_reenters_current_phase(
 ) -> None:
     st = start_autopilot(tmp_path, "resume goal", skip_interview=True)
     rid = st["run_id"]
-    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
     transition(tmp_path, rid, "review")
     phases_seen: list[str] = []
 
@@ -596,7 +699,7 @@ def test_run_autopilot_unattended_relaunches_on_stall(
     """#40: unattended re-launches same phase without human go."""
     st = start_autopilot(tmp_path, "keep going", skip_interview=True)
     rid = st["run_id"]
-    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
     transition(tmp_path, rid, "review")
     launches = 0
 
@@ -626,7 +729,7 @@ def test_run_autopilot_unattended_still_pauses_on_await(
 
     st = start_autopilot(tmp_path, "pause me", skip_interview=True)
     rid = st["run_id"]
-    transition(tmp_path, rid, "implement", evidence={"consensus": True})
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
     transition(tmp_path, rid, "review")
     set_awaiting_confirmation(tmp_path, rid, True, reason="need human")
     launches = 0

@@ -63,6 +63,18 @@ def test_recommend_commands_includes_autopilot_run_resume() -> None:
     )
 
 
+def test_recommend_commands_ralplan_uses_run_not_fake_resume() -> None:
+    run = {
+        "mode": "ralplan",
+        "run_id": "rp1",
+        "status": "running",
+    }
+    cmds = recommend_commands(run)
+    assert any(c == "omg state --run rp1" for c in cmds)
+    assert any("--run rp1" in c and "ralplan" in c for c in cmds)
+    assert not any("ralplan --resume" in c for c in cmds)
+
+
 def test_recommend_commands_awaiting_puts_clear_before_resume() -> None:
     run = {
         "mode": "autopilot",
