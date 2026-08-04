@@ -1019,19 +1019,26 @@ def _interview_complete(root: Path, run_id: str) -> bool:
 
 
 def _consensus_ready(root: Path, run_id: str) -> bool:
-    """True when CLI-owned consensus is present for *this* run_id.
+    """True only when the CLI-owned ``ralplan.json`` stamp for *this*
+    run_id records genuine accepted consensus.
 
     Workers may write proposal artifacts under ``.omg/artifacts/``; those do
-    **not** unlock implement. Acceptance comes from ``omg ralplan --run``
-    (status ``ralplan_consensus`` or CLI-written ``ralplan.json`` accepted).
+    **not** unlock implement. ``status.ralplan_consensus`` alone is also
+    insufficient — it is a plain status.json field that can go stale (e.g.
+    a prior accepted round's flag surviving a later replan) without a
+    matching on-disk stamp; the ``ralplan.json`` stamp is the source of
+    truth and must show ``writer``, ``run_id``, and ``accepted`` together.
     """
-    run = load_run(root, run_id) or {}
-    if run.get("ralplan_consensus") is True:
-        return True
     from omg_cli.ralplan import ralplan_state_path
 
     data = _read_stage_json(ralplan_state_path(root, run_id))
-    return bool(data and data.get("accepted") is True)
+    if not data:
+        return False
+    if data.get("writer") != CLI_WRITER:
+        return False
+    if data.get("run_id") != run_id:
+        return False
+    return data.get("accepted") is True
 
 
 def _record_gate_failure(

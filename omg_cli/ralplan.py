@@ -24,6 +24,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from omg_cli.evidence import CLI_WRITER
 from omg_cli.modes import (
     DEFAULT_TIMEOUT,
     _launch_grok,
@@ -123,6 +124,7 @@ def initial_ralplan_state(
 ) -> dict[str, Any]:
     now = _utc_now()
     return {
+        "writer": CLI_WRITER,
         "run_id": run_id,
         "goal": goal,
         "status": "draft",
@@ -837,6 +839,7 @@ def _initial_v2_state(
 ) -> dict[str, Any]:
     now = _utc_now()
     return {
+        "writer": CLI_WRITER,
         "schema_version": 2,
         "lifecycle_version": 2,
         "run_id": run_id,

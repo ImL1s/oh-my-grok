@@ -1141,11 +1141,33 @@ def _rid(root: Path) -> str:
 
 def _stamp_gate_for(root: Path, kw: dict) -> int:
     """Simulate grok completing the current phase gate (test helper)."""
+    import json
+
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.ralplan import ralplan_state_path
+
     run_dir = kw["run_dir"]
     run_id = run_dir.name
     phase = status_autopilot(root, run_id)["phase"]
     if phase == "ralplan":
-        merge_status_fields(root, run_id, {"ralplan_consensus": True})
+        # Genuine CLI-owned ralplan.json stamp (writer/run_id/accepted) —
+        # a bare status.ralplan_consensus boolean is no longer trusted
+        # alone (R2-5).
+        path = ralplan_state_path(root, run_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "writer": CLI_WRITER,
+                    "run_id": run_id,
+                    "accepted": True,
+                    "status": "accepted",
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     elif phase == "implement":
         # Simulate grok producing a real product change so implement→review
         # has workspace-fingerprint evidence of work.
@@ -1186,6 +1208,9 @@ def test_build_phase_prompt_ralplan_binds_to_autopilot_run(tmp_path: Path) -> No
 
 
 def test_consensus_ready_ignores_artifact_marker(tmp_path: Path) -> None:
+    """R2-5: neither a bare artifact marker nor a bare
+    status.ralplan_consensus boolean is sufficient — only a CLI-owned
+    ralplan.json stamp (writer + run_id + accepted) makes consensus ready."""
     from omg_cli.autopilot import _consensus_ready
 
     st = start_autopilot(tmp_path, "artifact alone", skip_interview=True)
@@ -1194,7 +1219,26 @@ def test_consensus_ready_ignores_artifact_marker(tmp_path: Path) -> None:
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("{}", encoding="utf-8")
     assert _consensus_ready(tmp_path, rid) is False
+
+    # A stale/forged status field alone (no matching on-disk stamp) must
+    # still be rejected — closes the stale-flag-survives-replan gap.
     merge_status_fields(tmp_path, rid, {"ralplan_consensus": True})
+    assert _consensus_ready(tmp_path, rid) is False
+
+    # A genuine CLI stamp is the source of truth.
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.ralplan import ralplan_state_path
+
+    path = ralplan_state_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        __import__("json").dumps(
+            {"writer": CLI_WRITER, "run_id": rid, "accepted": True, "status": "accepted"},
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     assert _consensus_ready(tmp_path, rid) is True
 
 
