@@ -110,6 +110,8 @@ RUN=…   # from start JSON: run_id
 omg interview start --attach-run "$RUN"    # task defaults to the autopilot goal
 omg interview answer --run "$RUN" --question-id ... --text ...
 omg interview close --run "$RUN"
+# close JSON `resume_command` for attach mode includes `--run "$RUN"` (not a
+# standalone `omg ralplan <goal>` that would orphan a fresh ralplan run).
 
 # … after interview closed (preferred: omg interview * writes CLI envelope):
 omg autopilot transition --run "$RUN" --phase ralplan --reason "interview closed"
@@ -213,7 +215,9 @@ for the run invalidates that stamp and review/QA stamps — regardless of
 blocked excursion still sits on disk. Only the first `interview→ralplan`
 handoff (no stamp yet) is a no-op. A fresh accept write clears
 `invalidated` on the stamp; a new strict-v2 consensus attempt also clears
-stale invalidation at cycle start.
+stale invalidation at cycle start. A fresh strict-v2 attempt also resets
+`history`, per-session `attempts`, and `round` so prior rounds past the
+configured ceiling do not pin every future replan into an immediate block.
 
 `omg ralplan * --run RUN` embedded in an autopilot run is fail-closed:
 the autopilot FSM must be at `phase==ralplan`, and the CLI goal must match

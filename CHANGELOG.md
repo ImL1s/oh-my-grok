@@ -124,6 +124,18 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `phase==ralplan` and a `--run` goal that exactly matches the frozen run
   goal; `_consensus_ready` also rejects accepted stamps whose `goal` field
   disagrees with the current run goal (defense in depth).
+- **Ralplan history reset on fresh replan (Round 6 / R6-1):** starting a
+  new strict-v2 consensus attempt against a state left `invalidated: True`
+  by a prior replan now calls `_reset_for_fresh_cycle` (wipes `history`,
+  per-session `attempts`, and `round`) so `first_round` starts at 1 and the
+  configured `max_rounds` ceiling is available again — previously, stale
+  history past the ceiling pinned every future replan into an immediate block
+  with zero stages executed.
+- **Attached interview close resume includes `--run` (Round 6 / R6-2):**
+  `omg interview close` on an autopilot-attached interview
+  (`--attach-run`) now sets `resume_command` to
+  `omg ralplan <goal> --run <run_id>` instead of a standalone
+  `omg ralplan <goal>` that would spawn an orphaned ralplan run.
 
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —
