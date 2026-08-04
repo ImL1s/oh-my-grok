@@ -590,6 +590,21 @@ def test_implement_fingerprint_covers_non_python_product_surfaces(
     assert qa_after == qa_before
 
 
+def test_implement_fingerprint_includes_scripts_and_bin(tmp_path: Path) -> None:
+    from omg_cli.autopilot import _implement_workspace_fingerprint
+
+    (tmp_path / "omg_cli").mkdir()
+    (tmp_path / "omg_cli" / "x.py").write_text("a\n", encoding="utf-8")
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "bin").mkdir()
+    base = _implement_workspace_fingerprint(tmp_path)
+    (tmp_path / "scripts" / "install-plugin.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    assert _implement_workspace_fingerprint(tmp_path) != base
+    mid = _implement_workspace_fingerprint(tmp_path)
+    (tmp_path / "bin" / "omg").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    assert _implement_workspace_fingerprint(tmp_path) != mid
+
+
 def test_implement_to_review_allows_non_python_product_change(
     tmp_path: Path,
 ) -> None:

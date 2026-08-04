@@ -189,6 +189,8 @@ _IMPLEMENT_FINGERPRINT_ROOTS: tuple[str, ...] = (
     "skills",
     "agents",
     "templates",
+    "scripts",
+    "bin",
 )
 
 # Generated/ignored directory names that must never affect the implement-gate
@@ -218,7 +220,7 @@ def _implement_workspace_fingerprint(root: Path | str) -> str:
 
     A separate helper from ``qa.product_hash`` on purpose: implementation
     work confined to non-Python product surfaces (``plugin.json``, ``hooks/``,
-    ``skills/``, ``agents/``, ``templates/``, or non-``.py`` files under
+    ``skills/``, ``agents/``, ``templates/``, ``scripts/``, ``bin/``, or non-``.py`` files under
     ``omg_cli/``) must still register as work here, without touching
     ``qa.product_hash``'s narrower semantics used for QA/acceptance. Generated
     caches (``__pycache__/``, ``.pytest_cache/``, ``.ruff_cache/``,
