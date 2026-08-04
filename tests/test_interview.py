@@ -338,9 +338,13 @@ def test_interview_attach_run_writes_envelope_for_autopilot(tmp_path: Path) -> N
 def test_attach_close_resume_command_targets_same_autopilot_run(
     tmp_path: Path,
 ) -> None:
-    """R6-2: closing an attached (mode=="autopilot") interview must advertise
-    a resume_command that keeps the same run_id — bare `omg ralplan <goal>`
-    would start a brand-new run and orphan the autopilot run's evidence."""
+    """R6-2/R7-0: closing an attached (mode=="autopilot") interview must
+    advertise a resume_command that keeps the same run_id — bare
+    `omg ralplan <goal>` would start a brand-new run and orphan the
+    autopilot run's evidence. It must also transition the autopilot phase
+    sidecar to "ralplan" first, since the phase is still "interview" at
+    close time and a bare `omg ralplan --run` would be rejected by
+    embedding (phase mismatch)."""
     from omg_cli.autopilot import start_autopilot
 
     (tmp_path / ".git").mkdir()
@@ -356,7 +360,8 @@ def test_attach_close_resume_command_targets_same_autopilot_run(
     closed = close_interview(tmp_path, rid)
     assert closed["status"] == "complete"
     assert closed["resume_command"] == (
-        f"omg ralplan {shlex.quote(_clear_task())} --run {rid}"
+        f"omg autopilot transition --run {rid} --phase ralplan "
+        f"&& omg ralplan {shlex.quote(_clear_task())} --run {rid}"
     )
 
 

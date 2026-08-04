@@ -556,8 +556,14 @@ def close_interview(root: Path | str, run_id: str) -> dict[str, Any]:
         if run.get("mode") == "autopilot":
             # An attached interview lives under the autopilot run's own
             # run_id (see ``_attach_interview_run``): resuming must reuse
-            # that run_id, not spawn a fresh, orphaned ralplan run.
-            state["resume_command"] = f"omg ralplan {quoted_task} --run {run_id}"
+            # that run_id, not spawn a fresh, orphaned ralplan run. The
+            # autopilot phase sidecar is still "interview" at this point, so
+            # a bare `omg ralplan --run` would be rejected by embedding
+            # (phase mismatch) — advance to "ralplan" first.
+            state["resume_command"] = (
+                f"omg autopilot transition --run {run_id} --phase ralplan "
+                f"&& omg ralplan {quoted_task} --run {run_id}"
+            )
         else:
             state["resume_command"] = f"omg ralplan {quoted_task}"
         state["closed_by_invocation_id"] = lease.invocation_id
