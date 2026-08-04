@@ -20,6 +20,23 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **Interview/consensus gates:** prefer CLI-owned stamps; bare
   `interview_complete` / `consensus` booleans require `break_glass=true` and
   are audited on history (`gate_audit`). StageEvidenceEnvelope v3 still planned.
+- **Review/QA fingerprint recheck:** `stage_review_is_clean` / `stage_qa_is_clean`
+  re-validate `diff_hash` lane stamps and `product_hash` against the current
+  workspace; drifted or tampered stamps fail closed (legacy hash-less stamps
+  keep weaker clean-flag-only behavior).
+- **Implement→review work gate:** require workspace fingerprint drift since
+  implement entry, a real on-disk CLI implementation receipt, or audited
+  `no_change_reason` / inline receipt with `break_glass=true`; unattended
+  auto-advance records `gate_failure` instead of silently skipping.
+- **Autopilot sidecar writes:** `autopilot.json` and stage invalidation use
+  temp-file + `os.replace` atomic publish (mini-WAL; cross-file WAL still planned).
+- **Resume bundle v1:** `omg resume` emits partial `resume_bundle`
+  (`schema_version=1`: `run_view`, `gate_failure`, `autopilot_phase`,
+  `legal_next`, `provenance`) — wiki/memory/compaction deferred.
+- **Tracker process identity:** lease PID match fails closed when
+  `process_starttime` is unavailable (unknown ≠ same process).
+- **`set_verified` force hatch:** `force=True` requires in-process
+  `OMG_INTERNAL_FORCE_VERIFIED=1`; not exposed on any CLI argparse path.
 
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —
@@ -33,8 +50,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Host Stop veto (not feasible on Grok today).
 - Full OMC semantic LSP proxy (host-owned `.lsp.json` registration ships in 0.6.0;
   OMG does not claim host health or proxy hover/rename/goto operations).
-- StageEvidenceEnvelope v3 / ResumeBundle / autopilot cross-file WAL (from
-  external Pro+GitHub review) — planned hardening, not in this slice.
+- StageEvidenceEnvelope v3 / full ResumeBundle / autopilot cross-file WAL (from
+  external Pro+GitHub review) — Round 1 landed partial `resume_bundle` v1 +
+  atomic single-file writes; full envelope + WAL deferred.
 
 ## [0.7.4] - 2026-08-01
 

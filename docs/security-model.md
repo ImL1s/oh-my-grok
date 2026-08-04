@@ -162,6 +162,27 @@ See `omg_cli/goals.py` verify path.
 
 See `omg_cli/command_policy.py` (`POLICY_VERSION`).
 
+### Autopilot `break_glass` vs CLI stamps
+
+Autopilot phase gates treat **on-disk CLI stamps** (`writer=omg-cli`, matching
+`run_id`, under `.omg/state/runs/<run_id>/stages/`) as the preferred proof of
+progress. Caller-supplied `--evidence-json` booleans or inline receipt objects
+are **not** equivalent: they are trivially forgeable in the same turn and do not
+prove the CLI writers ran.
+
+When an operator intentionally bypasses a missing stamp (dry-run, recovery,
+local debugging), they must pass `break_glass=true` on the transition evidence.
+The autopilot FSM records `gate_audit` on history (for example
+`break_glass:consensus`) so later forensics can distinguish stamp-backed advances
+from audited overrides. Break-glass does **not** weaken acceptance: `verified`
+still requires same-process `omg accept` / `omg autopilot complete` with
+command-policy checks — it only documents operator intent at earlier gates.
+
+Review/QA **fingerprint rechecks** (Round 1) re-validate hash fields on existing
+CLI stamps against the current workspace; they do not grant trust to un-stamped
+inline JSON. Residual: single-file atomic writes and hash rechecks are not a full
+cross-file WAL or cryptographic writer identity (planned hardening).
+
 | Family | Allowed | Denied |
 |--------|---------|--------|
 | `true` / `false` | yes | — |
