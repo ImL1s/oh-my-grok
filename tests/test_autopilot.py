@@ -356,6 +356,100 @@ def test_blocked_to_ralplan_invalidates_accepted_ralplan_stamp(
     assert status_autopilot(tmp_path, rid)["phase"] == "implement"
 
 
+def test_blocked_interview_ralplan_invalidates_accepted_ralplan_stamp(
+    tmp_path: Path,
+) -> None:
+    """R5-2: review → blocked → interview → ralplan detours back through
+    ``interview`` before re-entering ralplan. Before the fix,
+    ``src not in {"interview", "init"}`` treated every interview→ralplan
+    edge as a first-time linear handoff and skipped invalidation, so a
+    stale accepted ralplan.json stamp from *before* the blocked detour
+    would silently unlock implement again — closes the
+    blocked→interview→ralplan bypass. Existence of a CLI-owned
+    ralplan.json for this run_id (not ``src``) must gate invalidation."""
+    import json as _json
+
+    from omg_cli.autopilot import _consensus_ready, load_autopilot
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.ralplan import ralplan_state_path
+
+    st = start_autopilot(
+        tmp_path, "blocked interview replan invalidate", skip_interview=True
+    )
+    rid = st["run_id"]
+
+    path = ralplan_state_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _stamp_accepted() -> None:
+        path.write_text(
+            _json.dumps(
+                {
+                    "writer": CLI_WRITER,
+                    "run_id": rid,
+                    "accepted": True,
+                    "status": "accepted",
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    _stamp_accepted()
+    assert _consensus_ready(tmp_path, rid) is True
+
+    transition(tmp_path, rid, "implement")
+    (tmp_path / "changed.py").write_text("# product change\n", encoding="utf-8")
+    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "blocked", reason="paused for review")
+    # Detour through interview instead of a direct blocked→ralplan edge.
+    transition(tmp_path, rid, "interview", reason="re-interview after blocked")
+    transition(
+        tmp_path,
+        rid,
+        "ralplan",
+        reason="replan from interview",
+        evidence=_ev_interview_bg(),
+    )
+
+    assert _consensus_ready(tmp_path, rid) is False
+    data = _json.loads(path.read_text(encoding="utf-8"))
+    assert data.get("accepted") is False
+    assert data.get("invalidated") is True
+    assert data.get("invalidated_reason")
+    assert data.get("invalidated_at")
+    # Exactly one bump for this single re-entry — no double-bump.
+    assert load_autopilot(tmp_path, rid)["cycles"]["ralplan"] == 1
+
+    # Stale stamp must not silently unlock implement again — blocked until
+    # a fresh accept.
+    with pytest.raises(AutopilotError, match="consensus"):
+        transition(tmp_path, rid, "implement")
+
+    # A fresh, non-invalidated accepted stamp unblocks implement again.
+    _stamp_accepted()
+    transition(tmp_path, rid, "implement")
+    assert status_autopilot(tmp_path, rid)["phase"] == "implement"
+
+
+def test_first_interview_to_ralplan_with_no_stamp_is_noop(tmp_path: Path) -> None:
+    """R5-2: the very first interview→ralplan handoff (no CLI-owned
+    ralplan.json written yet) must remain a no-op — no spurious cycle bump,
+    no invalidation call against a nonexistent stamp."""
+    from omg_cli.autopilot import load_autopilot
+
+    st = start_autopilot(tmp_path, "first interview handoff")
+    rid = st["run_id"]
+    assert st["phase"] == "interview"
+
+    transition(tmp_path, rid, "ralplan", evidence=_ev_interview_bg())
+
+    state = load_autopilot(tmp_path, rid)
+    assert state["phase"] == "ralplan"
+    assert state["cycles"]["ralplan"] == 0
+
+
 def test_status_legal_next_excludes_verified(tmp_path: Path) -> None:
     st = start_autopilot(tmp_path, "legal next contract", skip_interview=True)
     rid = st["run_id"]

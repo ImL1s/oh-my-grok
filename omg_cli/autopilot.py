@@ -311,6 +311,25 @@ def _implementation_work_evidence(
     return False, None
 
 
+def _ralplan_stamp_exists(root: Path | str, run_id: str) -> bool:
+    """True when a CLI-owned ``ralplan.json`` already exists for this run_id.
+
+    Mirrors the same ownership check ``invalidate_ralplan_consensus`` uses
+    internally (writer + run_id match) — used by ``transition()`` to gate
+    re-entry invalidation on stamp *existence* rather than on ``src``, so a
+    stale stamp cannot survive a blocked→interview→ralplan detour just
+    because the immediate hop back into ralplan happens to come from
+    ``interview`` again.
+    """
+    from omg_cli.ralplan import ralplan_state_path
+
+    root = Path(root).resolve()
+    data = _read_stage_json(ralplan_state_path(root, run_id))
+    if not data:
+        return False
+    return data.get("writer") == CLI_WRITER and data.get("run_id") == run_id
+
+
 def invalidate_quality_stages(root: Path | str, run_id: str, *, reason: str) -> None:
     """Mark review/QA stage stamps stale after rework or replan (CLI write)."""
     from omg_cli.qa import qa_state_path
@@ -559,14 +578,17 @@ def transition(
                 root, run_id, reason=f"(re)implement from {src}"
             )
             state["implement_workspace_fp"] = _implement_workspace_fingerprint(root)
-        if next_phase == "ralplan" and src not in {"interview", "init"}:
-            # Any non-linear (re-)entry into ralplan — review/qa replan,
-            # AND blocked→ralplan (blocked can be reached from review/qa/
-            # implement, so a stale accepted stamp may still be sitting
-            # there) — must not leave stale stamps behind. Only the first
-            # linear interview→ralplan handoff (and init→ralplan, the
-            # skip-interview creation edge) is exempt: nothing has been
-            # accepted yet on that path.
+        if next_phase == "ralplan" and _ralplan_stamp_exists(root, run_id):
+            # A CLI-owned ralplan.json already on disk for this run_id is a
+            # prior consensus epoch, full stop — gate on stamp *existence*,
+            # not on ``src``. Gating on src alone (the old
+            # ``src not in {"interview", "init"}`` rule) let review→blocked→
+            # interview→ralplan bypass invalidation: the interview detour
+            # made ``src == "interview"`` again even though a stale accepted
+            # stamp from before the blocked excursion was still sitting on
+            # disk, silently unlocking implement. Only the very first
+            # interview→ralplan (or init→ralplan skip-interview) handoff,
+            # where no stamp has been written yet, remains a no-op.
             state["cycles"]["ralplan"] = int(state["cycles"].get("ralplan") or 0) + 1
             # Stale clean stamps must not open QA/acceptance after replan
             invalidate_quality_stages(
