@@ -206,6 +206,10 @@ omg autopilot transition --run "$RUN" --phase review \
 Re-entering `review` from `blocked` (or `rework` / `implement`) invalidates
 prior review/QA stamps so a pre-block clean stamp cannot reopen `qa`.
 
+Re-entering `ralplan` from any non-interview source (e.g. `review`, `qa`,
+`blocked`) invalidates the prior accepted `ralplan.json` stamp and review/QA
+stamps — a fresh ralplan consensus is required before `implement` again.
+
 ### Implement → review work gate
 
 Leaving `implement` (or recovering `blocked → review`) requires evidence that

@@ -94,6 +94,15 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   install/CLI surface edits register as implement work and bind review/QA
   freshness rechecks — previously those paths were omitted from the curated
   fingerprint tuple.
+- **Ralplan stamp invalidation on replan (Round 4 / R4-1):** any
+  non-interview re-entry into `ralplan` (including `review→ralplan`,
+  `qa→ralplan`, and `blocked→ralplan`) invalidates the prior accepted
+  `ralplan.json` stamp and review/QA stamps — a stale accepted consensus
+  can no longer silently unlock `implement` without a fresh ralplan cycle.
+- **Interview attach-run for autopilot (Round 4 / R4-2):** added
+  `omg interview start --attach-run RUN_ID` to seed CLI interview envelopes
+  under an existing autopilot run in phase `interview` (task defaults to
+  the run goal; fail-closed on phase/mode mismatch or task/goal disagreement).
 
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —
