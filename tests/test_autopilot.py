@@ -134,6 +134,78 @@ def test_legal_transition_table() -> None:
     assert COMMIT_ONLY_TRANSITIONS["acceptance"] == frozenset({"verified"})
 
 
+def test_interview_complete_rejects_bare_status_string(tmp_path: Path) -> None:
+    """R2-4: a forged interview.json with only status="complete" (no CLI
+    writer, no spec artifact) must not unlock ralplan without break_glass —
+    closes the bare-status-string forgery gap."""
+    import json
+
+    from omg_cli.autopilot import _interview_complete
+    from omg_cli.interview import interview_state_path
+
+    st = start_autopilot(tmp_path, "interview envelope forged")
+    rid = st["run_id"]
+    path = interview_state_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"run_id": rid, "status": "complete"}), encoding="utf-8")
+
+    assert _interview_complete(tmp_path, rid) is False
+    with pytest.raises(AutopilotError, match="interview"):
+        transition(tmp_path, rid, "ralplan")
+
+
+def test_interview_complete_requires_genuine_cli_envelope(tmp_path: Path) -> None:
+    """R2-4: a genuine CLI-owned interview.json bound to a matching
+    CLI-stamped interview-spec artifact (writer, hash, run_id) unlocks
+    ralplan without break_glass."""
+    import json
+
+    from omg_cli.autopilot import _interview_complete
+    from omg_cli.evidence import CLI_WRITER, sha256_bytes
+    from omg_cli.interview import interview_spec_path, interview_state_path
+
+    st = start_autopilot(tmp_path, "interview envelope genuine")
+    rid = st["run_id"]
+
+    content = {"run_id": rid, "session_id": "s1"}
+    canonical = (
+        json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8")
+    spec_path = interview_spec_path(tmp_path, rid)
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text(
+        json.dumps(
+            {
+                "content": content,
+                "stamp": {
+                    "writer": CLI_WRITER,
+                    "invocation_id": "inv-1",
+                    "content_sha256": sha256_bytes(canonical),
+                    "run_id": rid,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    state_path = interview_state_path(tmp_path, rid)
+    state_path.write_text(
+        json.dumps(
+            {
+                "writer": CLI_WRITER,
+                "run_id": rid,
+                "status": "complete",
+                "spec_path": str(spec_path.relative_to(tmp_path)),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _interview_complete(tmp_path, rid) is True
+    transition(tmp_path, rid, "ralplan")
+    assert status_autopilot(tmp_path, rid)["phase"] == "ralplan"
+
+
 def test_consensus_stamp_unlocks_implement_without_boolean(tmp_path: Path) -> None:
     """CLI ralplan accepted stamp is enough — no evidence.consensus boolean."""
     from omg_cli.evidence import CLI_WRITER

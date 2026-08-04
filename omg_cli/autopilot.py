@@ -967,10 +967,55 @@ def build_phase_prompt(
 
 
 def _interview_complete(root: Path, run_id: str) -> bool:
-    from omg_cli.stop_gate import _read_interview_status
+    """True only when a CLI-owned interview.json for *this* run_id records a
+    genuine complete envelope — not a bare ``status`` string, which is
+    trivially forgeable by writing an untrusted ``interview.json``.
 
-    status = _read_interview_status(root, run_id)
-    return status == "complete"
+    Mirrors ``interview.py``'s own envelope validation for status=="complete"
+    (CLI writer, run_id binding, and a matching CLI-stamped interview-spec
+    artifact whose content hash/writer/run_id all check out) without
+    requiring the *autopilot* run's own mode to be ``interview`` — autopilot
+    embeds interview state under its own run_id rather than reusing a
+    separate ``omg interview start`` run.
+    """
+    from omg_cli.interview import interview_spec_path, interview_state_path
+
+    root_path = Path(root).resolve()
+    data = _read_stage_json(interview_state_path(root_path, run_id))
+    if not data:
+        return False
+    if data.get("writer") != CLI_WRITER:
+        return False
+    if data.get("run_id") != run_id:
+        return False
+    if data.get("status") != "complete":
+        return False
+    spec_rel = data.get("spec_path")
+    if not spec_rel:
+        return False
+    expected_path = interview_spec_path(root_path, run_id)
+    if str(spec_rel) != str(expected_path.relative_to(root_path)):
+        return False
+    artifact = _read_stage_json(expected_path)
+    if not artifact:
+        return False
+    content = artifact.get("content")
+    stamp = artifact.get("stamp")
+    if not isinstance(content, dict) or not isinstance(stamp, dict):
+        return False
+    if stamp.get("writer") != CLI_WRITER or not stamp.get("invocation_id"):
+        return False
+    canonical = (
+        json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8")
+    from omg_cli.evidence import sha256_bytes
+
+    if sha256_bytes(canonical) != stamp.get("content_sha256"):
+        return False
+    if content.get("run_id") != run_id or stamp.get("run_id") != run_id:
+        return False
+    return True
 
 
 def _consensus_ready(root: Path, run_id: str) -> bool:
