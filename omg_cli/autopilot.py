@@ -15,6 +15,7 @@ from typing import Any, Mapping
 from omg_cli.evidence import CLI_WRITER, assert_safe_supervised_parent, validate_identifier
 from omg_cli.state import (
     RunSchema,
+    _atomic_write_json,
     classify_run_schema,
     create_run,
     execution_lease,
@@ -192,11 +193,7 @@ def invalidate_quality_stages(root: Path | str, run_id: str, *, reason: str) -> 
         data["writer"] = CLI_WRITER
         if "status" in data and data.get("status") == "clean":
             data["status"] = "invalidated"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        _atomic_write_json(path, data)
 
 
 def autopilot_state_path(root: Path | str, run_id: str) -> Path:
@@ -215,16 +212,12 @@ def autopilot_state_path(root: Path | str, run_id: str) -> Path:
 def _save(root: Path, run_id: str, state: dict[str, Any], lease: Any) -> None:
     lease.assert_current()
     path = autopilot_state_path(root, run_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
     state = dict(state)
     state["writer"] = CLI_WRITER
     state["updated_at"] = _utc_now()
     state["execution_generation"] = getattr(lease, "generation", None)
     state["execution_owner_invocation_id"] = getattr(lease, "invocation_id", None)
-    path.write_text(
-        json.dumps(state, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    _atomic_write_json(path, state)
 
 
 def load_autopilot(root: Path | str, run_id: str) -> dict[str, Any]:

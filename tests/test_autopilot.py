@@ -484,6 +484,40 @@ def test_rework_invalidates_review_stamp(tmp_path: Path) -> None:
     transition(tmp_path, rid, "qa")
 
 
+def test_autopilot_save_and_invalidate_use_atomic_write_helper(tmp_path: Path) -> None:
+    """``_save`` and ``invalidate_quality_stages`` must reuse
+    ``state._atomic_write_json`` (temp file + fsync + os.replace) instead of
+    a bare ``path.write_text``, so a crash mid-write can never leave a torn
+    autopilot.json or stage stamp — and never leaks its temp file."""
+    import json
+
+    import omg_cli.autopilot as autopilot_mod
+    from omg_cli.autopilot import autopilot_state_path
+    from omg_cli.review import review_state_path
+    from omg_cli.state import _atomic_write_json
+
+    assert autopilot_mod._atomic_write_json is _atomic_write_json
+
+    st = start_autopilot(tmp_path, "atomic write", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
+    _stamp_review_clean(tmp_path, rid)
+
+    path = autopilot_state_path(tmp_path, rid)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["run_id"] == rid
+    assert data["writer"] == "omg-cli"
+    assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
+
+    transition(tmp_path, rid, "rework", reason="findings")
+    review_path = review_state_path(tmp_path, rid)
+    review_data = json.loads(review_path.read_text(encoding="utf-8"))
+    assert review_data["invalidated"] is True
+    assert review_data["writer"] == "omg-cli"
+    assert list(review_path.parent.glob(f".{review_path.name}.*.tmp")) == []
+
+
 def test_stale_review_stamp_rejected_when_diff_hash_drifts(tmp_path: Path) -> None:
     """A structured_review.json whose declared diff_hash no longer matches
     the diff_hash actually approved by its own CLI-stamped lanes must be
