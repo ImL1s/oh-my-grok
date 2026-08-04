@@ -102,13 +102,22 @@ def cmd_review(args: argparse.Namespace) -> int:
     from omg_cli.review import ReviewError, run_structured_review
 
     root = project_root()
+    diff_text = args.diff_text or ""
+    if not diff_text.strip():
+        print(
+            "omg review: --diff-text is required and must be non-empty "
+            "(a clean stamp bound to an empty diff hash is not a real "
+            "review of product changes)",
+            file=sys.stderr,
+        )
+        return 2
     try:
         cr = json.loads(args.code_reviewer_json)
         ar = json.loads(args.architect_json)
         result = run_structured_review(
             root,
             args.run_id,
-            diff_text=args.diff_text or "",
+            diff_text=diff_text,
             code_reviewer_payload=cr,
             architect_payload=ar,
         )

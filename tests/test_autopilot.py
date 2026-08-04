@@ -801,6 +801,52 @@ def test_stale_review_stamp_rejected_when_diff_hash_drifts(tmp_path: Path) -> No
         transition(tmp_path, rid, "qa")
 
 
+def test_stale_review_stamp_rejected_when_workspace_fp_drifts(tmp_path: Path) -> None:
+    """R2-2: a structured_review.json clean stamp whose recorded
+    workspace_fp no longer matches the current workspace must be treated as
+    stale, not clean — binds the review gate to the workspace it actually
+    describes, not just the diff_hash/lane-stamp consistency check."""
+    from omg_cli.autopilot import stage_review_is_clean
+
+    st = start_autopilot(tmp_path, "stale review workspace fp", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
+    _stamp_review_clean(tmp_path, rid)
+    assert stage_review_is_clean(tmp_path, rid) is True
+
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "hooks.json").write_text('{"changed": true}\n', encoding="utf-8")
+
+    assert stage_review_is_clean(tmp_path, rid) is False
+    with pytest.raises(AutopilotError, match="structured_review"):
+        transition(tmp_path, rid, "qa")
+
+
+def test_review_stamp_missing_workspace_fp_fails_closed(tmp_path: Path) -> None:
+    """R2-2: a schema_version>=2 stamp missing workspace_fp (tampered/legacy)
+    must fail closed rather than fall back to clean-flag-only trust."""
+    import json
+
+    from omg_cli.autopilot import stage_review_is_clean
+    from omg_cli.review import review_state_path
+
+    st = start_autopilot(tmp_path, "review missing workspace fp", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
+    _stamp_review_clean(tmp_path, rid)
+    assert stage_review_is_clean(tmp_path, rid) is True
+
+    path = review_state_path(tmp_path, rid)
+    data = json.loads(path.read_text())
+    del data["workspace_fp"]
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+    assert stage_review_is_clean(tmp_path, rid) is False
+
+
 def test_stale_qa_stamp_rejected_when_product_hash_drifts(tmp_path: Path) -> None:
     """An ultraqa.json clean stamp whose recorded product_hash no longer
     matches the current workspace must be treated as stale, not clean."""

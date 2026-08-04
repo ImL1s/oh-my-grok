@@ -266,11 +266,17 @@ def run_structured_review(
     )
     disposition = classify_rework(cr, ar)
     clean = disposition == "clean"
+    # Recorded at every write (not just clean) so a fresh review attempt
+    # after workspace drift always carries the current fingerprint.
+    from omg_cli.autopilot import _implement_workspace_fingerprint
+
+    workspace_fp = _implement_workspace_fingerprint(root)
     state = {
         "writer": CLI_WRITER,
         "schema_version": 2,
         "run_id": run_id,
         "diff_hash": diff_hash,
+        "workspace_fp": workspace_fp,
         "clean": clean,
         "disposition": disposition,
         "code_reviewer": cr,

@@ -97,6 +97,19 @@ def stage_review_is_clean(root: Path | str, run_id: str) -> bool:
         return False
     if data.get("clean") is not True:
         return False
+    # Bind to the current workspace fingerprint: run_structured_review has
+    # written this on every stamp since schema_version 2, so its absence on
+    # a schema_version>=2 stamp is itself stale/tampered, not legacy — fail
+    # closed rather than trusting a clean flag with no workspace binding.
+    workspace_fp = data.get("workspace_fp")
+    if not workspace_fp:
+        return False
+    try:
+        current_workspace_fp = _implement_workspace_fingerprint(root)
+    except OSError:
+        return False
+    if current_workspace_fp != workspace_fp:
+        return False
     diff_hash = data.get("diff_hash")
     cr_stamp = data.get("code_reviewer_stamp")
     ar_stamp = data.get("architect_stamp")
