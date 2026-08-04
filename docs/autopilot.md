@@ -184,7 +184,11 @@ explicit audited no-op):
    `qa.product_hash` (which only hashes `omg_cli/**/*.py` and also backs
    UltraQA's acceptance repair-cycle semantics) — implementation work
    confined to non-Python product surfaces would otherwise be invisible to
-   this gate without ever changing QA's own hash semantics.
+   this gate without ever changing QA's own hash semantics. Generated
+   caches (`__pycache__/`, `*.pyc`, `.pytest_cache/`, `.ruff_cache/`,
+   `.mypy_cache/`, `*.egg-info/` — mirroring this repo's `.gitignore`) are
+   excluded, so merely running tests/importing a module during `implement`
+   never counts as product work on its own.
 2. **On-disk CLI stamp** — `omg_cli.implementation.stamp_implementation_receipt`
    writes a real, CLI-owned `stages/implementation.json`
    (`writer=omg-cli`, `content_sha256`, `stamped_at`) under
@@ -194,7 +198,12 @@ explicit audited no-op):
    recompute — a stale/tampered receipt does not satisfy the gate. Accepted
    **without** `break_glass` (audited as `cli_receipt:implementation.json`).
    No CLI subcommand calls the stamper yet; it exists for direct/test use
-   until a phase writer wires it in.
+   until a phase writer wires it in. The receipt is bound to its implement
+   cycle: `implementation.invalidate_implementation_receipt` marks any
+   leftover receipt `invalidated=true` on every (re)entry into `implement`,
+   so a receipt from a prior cycle can never satisfy the gate for a later
+   cycle even if the fingerprint still happens to match (e.g.
+   `review → ralplan → implement` with no new work).
 3. **Break-glass no-change** — `evidence.no_change_reason` + `break_glass=true`
    (audited as `break_glass:no_change`).
 4. **Break-glass inline receipt** — `evidence.implementation_receipt` with

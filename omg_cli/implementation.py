@@ -75,9 +75,9 @@ def read_implementation_receipt(
 ) -> dict[str, Any] | None:
     """Return the on-disk receipt only if it is a validly CLI-stamped record.
 
-    Fail-closed: malformed JSON, wrong writer, or run_id mismatch all read as
-    "no receipt" rather than raising — callers treat this the same as an
-    absent file.
+    Fail-closed: malformed JSON, wrong writer, run_id mismatch, or an
+    ``invalidated`` record all read as "no receipt" rather than raising —
+    callers treat this the same as an absent file.
     """
     run_id = validate_identifier(run_id, label="run_id")
     path = implementation_receipt_path(root, run_id)
@@ -91,11 +91,46 @@ def read_implementation_receipt(
         return None
     if data.get("writer") != CLI_WRITER or data.get("run_id") != run_id:
         return None
+    if data.get("invalidated") is True:
+        return None
     return data
+
+
+def invalidate_implementation_receipt(
+    root: Path | str, run_id: str, *, reason: str
+) -> None:
+    """Mark any existing on-disk receipt stale on (re)entering ``implement``.
+
+    A receipt stamped during a prior implement cycle must never satisfy the
+    implement→review work gate for a later cycle whose workspace fingerprint
+    happens to still match (e.g. ``review → ralplan → implement`` with no new
+    product changes) — that would let a stale receipt substitute for real
+    work without ``break_glass``. Mirrors ``autopilot.invalidate_quality_stages``:
+    mark in place (audit trail preserved) rather than delete. No-op when no
+    valid CLI-stamped receipt exists yet.
+    """
+    root = Path(root).resolve()
+    run_id = validate_identifier(run_id, label="run_id")
+    path = implementation_receipt_path(root, run_id)
+    if not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(data, dict) or data.get("writer") != CLI_WRITER:
+        return
+    if data.get("run_id") != run_id:
+        return
+    data["invalidated"] = True
+    data["invalidated_reason"] = reason
+    data["invalidated_at"] = _utc_now()
+    _atomic_write_json(path, data)
 
 
 __all__ = [
     "implementation_receipt_path",
+    "invalidate_implementation_receipt",
     "read_implementation_receipt",
     "stamp_implementation_receipt",
 ]

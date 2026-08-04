@@ -44,6 +44,21 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   without `break_glass` — previously the docs advertised this path but no
   producer/reader existed, so it always fell through to the unauthenticated
   inline-receipt break-glass path.
+- **Implementation receipt bound to implement cycle (Codex PR review P2):**
+  a receipt stamped during one implement cycle no longer satisfies the
+  implement→review gate for a later cycle whose fingerprint happens to
+  still match (e.g. `review → ralplan → implement` with no new product
+  work). `implementation.invalidate_implementation_receipt` marks any
+  leftover receipt stale on every (re)entry into `implement`, mirroring
+  `invalidate_quality_stages`; `read_implementation_receipt` treats
+  `invalidated=true` the same as a missing file.
+- **Implement-gate fingerprint excludes generated caches (Codex PR review
+  P2):** `_implement_workspace_fingerprint` no longer hashes
+  `__pycache__/`, `*.pyc`, `.pytest_cache/`, `.ruff_cache/`, `.mypy_cache/`,
+  or `*.egg-info/` (mirrors this repo's own `.gitignore` cache entries) —
+  previously, merely running tests or importing an `omg_cli` module during
+  `implement` could write/update bytecode with zero source edits and
+  falsely register as implementation work.
 - **Autopilot sidecar writes:** `autopilot.json` and stage invalidation use
   temp-file + `os.replace` atomic publish (mini-WAL; cross-file WAL still planned).
 - **Resume bundle v1:** `omg resume` emits partial `resume_bundle`

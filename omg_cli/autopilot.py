@@ -165,6 +165,27 @@ _IMPLEMENT_FINGERPRINT_ROOTS: tuple[str, ...] = (
     "templates",
 )
 
+# Generated/ignored directory names that must never affect the implement-gate
+# fingerprint — mirrors this repo's own ``.gitignore`` cache entries
+# (``__pycache__/``, ``.pytest_cache/``, ``.ruff_cache/``, ``.mypy_cache/``,
+# ``*.egg-info/``). Without this, merely running tests or importing an
+# ``omg_cli`` module during ``implement`` (which writes/updates ``.pyc``
+# bytecode) would register as "product work" with zero source edits.
+_IMPLEMENT_FINGERPRINT_EXCLUDED_DIRS: frozenset[str] = frozenset(
+    {"__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache"}
+)
+
+
+def _is_fingerprint_excluded(rel_parts: tuple[str, ...]) -> bool:
+    """True when a path (relative to root, as ``.parts``) is a generated
+    cache artifact that must be excluded from the implement-gate fingerprint."""
+    for part in rel_parts:
+        if part in _IMPLEMENT_FINGERPRINT_EXCLUDED_DIRS:
+            return True
+        if part.endswith(".egg-info"):
+            return True
+    return bool(rel_parts) and rel_parts[-1].endswith(".pyc")
+
 
 def _implement_workspace_fingerprint(root: Path | str) -> str:
     """Stable hash of curated product surfaces for the implement→review gate.
@@ -173,7 +194,11 @@ def _implement_workspace_fingerprint(root: Path | str) -> str:
     work confined to non-Python product surfaces (``plugin.json``, ``hooks/``,
     ``skills/``, ``agents/``, ``templates/``, or non-``.py`` files under
     ``omg_cli/``) must still register as work here, without touching
-    ``qa.product_hash``'s narrower semantics used for QA/acceptance.
+    ``qa.product_hash``'s narrower semantics used for QA/acceptance. Generated
+    caches (``__pycache__/``, ``.pytest_cache/``, ``.ruff_cache/``,
+    ``.mypy_cache/``, ``*.egg-info/``, ``*.pyc``) are excluded — see
+    ``_is_fingerprint_excluded`` — since they mutate from merely running
+    code/tests, not from durable product edits.
     """
     root = Path(root).resolve()
     files: set[Path] = set()
@@ -186,7 +211,12 @@ def _implement_workspace_fingerprint(root: Path | str) -> str:
         if target.is_file():
             files.add(target)
         elif target.is_dir():
-            files.update(fp for fp in target.rglob("*") if fp.is_file())
+            for fp in target.rglob("*"):
+                if not fp.is_file():
+                    continue
+                if _is_fingerprint_excluded(fp.relative_to(root).parts):
+                    continue
+                files.add(fp)
     if not any_root_present:
         # Fixture/non-product root (e.g. unit-test tmp_path with none of the
         # curated roots present): fall back to hashing every file so
@@ -195,8 +225,12 @@ def _implement_workspace_fingerprint(root: Path | str) -> str:
         skip = {".omg", ".git"}
         for fp in root.rglob("*"):
             if fp.is_file() and not fp.is_symlink():
-                if not any(part in skip for part in fp.relative_to(root).parts):
-                    files.add(fp)
+                rel_parts = fp.relative_to(root).parts
+                if any(part in skip for part in rel_parts):
+                    continue
+                if _is_fingerprint_excluded(rel_parts):
+                    continue
+                files.add(fp)
     h = hashlib.sha256()
     for fp in sorted(files):
         if fp.is_symlink():
@@ -480,6 +514,17 @@ def transition(
             # for a later qa/acceptance gate — closes the
             # qa→blocked→implement→blocked→qa false-green round-trip.
             invalidate_quality_stages(
+                root, run_id, reason=f"(re)implement from {src}"
+            )
+            # A receipt stamped during a prior implement cycle must not
+            # unlock review for this new cycle just because the workspace
+            # fingerprint happens to still match (e.g. review→ralplan→
+            # implement with no new product changes) — closes the stale-
+            # receipt round-trip. Bind receipts to the current cycle by
+            # invalidating any leftover one on entry.
+            from omg_cli.implementation import invalidate_implementation_receipt
+
+            invalidate_implementation_receipt(
                 root, run_id, reason=f"(re)implement from {src}"
             )
             state["implement_workspace_fp"] = _implement_workspace_fingerprint(root)

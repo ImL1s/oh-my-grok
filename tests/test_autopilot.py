@@ -610,6 +610,101 @@ def test_implement_to_review_rejects_stale_on_disk_receipt(tmp_path: Path) -> No
     assert status_autopilot(tmp_path, rid)["phase"] == "implement"
 
 
+def test_implement_reentry_invalidates_stale_receipt_with_unchanged_fingerprint(
+    tmp_path: Path,
+) -> None:
+    """P2 (Codex): a receipt stamped in one implement cycle must not unlock
+    review in a later cycle whose fingerprint still matches — e.g.
+    review → ralplan → implement with no new product work. The stale
+    receipt must be invalidated on the new implement entry, not silently
+    accepted just because content_sha256 still equals the (unchanged)
+    current fingerprint."""
+    from omg_cli.autopilot import _implement_workspace_fingerprint
+    from omg_cli.implementation import (
+        read_implementation_receipt,
+        stamp_implementation_receipt,
+    )
+
+    st = start_autopilot(tmp_path, "stale receipt cycle bind", skip_interview=True)
+    rid = st["run_id"]
+
+    # Cycle 1: enter implement, do real product work, stamp a matching receipt.
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    (tmp_path / "changed.py").write_text("# product change\n", encoding="utf-8")
+    fp1 = _implement_workspace_fingerprint(tmp_path)
+    stamp_implementation_receipt(tmp_path, rid, content_sha256=fp1, note="cycle 1 work")
+    transition(tmp_path, rid, "review")
+    assert status_autopilot(tmp_path, rid)["phase"] == "review"
+
+    # Replan back to ralplan, then re-enter implement with NO new product
+    # work — the workspace fingerprint is unchanged from cycle 1.
+    transition(tmp_path, rid, "ralplan", reason="replan")
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+
+    # The old receipt from cycle 1 must be invalidated by the new implement
+    # entry, even though its content_sha256 still equals the current fp.
+    assert read_implementation_receipt(tmp_path, rid) is None
+
+    with pytest.raises(AutopilotError, match="implementation|no_change"):
+        transition(tmp_path, rid, "review")
+    assert status_autopilot(tmp_path, rid)["phase"] == "implement"
+
+
+def test_implement_workspace_fingerprint_excludes_generated_caches(
+    tmp_path: Path,
+) -> None:
+    """P2 (Codex): __pycache__/*.pyc, .pytest_cache/, .ruff_cache/,
+    .mypy_cache/, and *.egg-info/ must never affect the implement-gate
+    fingerprint — running tests or importing a module during implement
+    writes these with zero durable product change."""
+    from omg_cli.autopilot import _implement_workspace_fingerprint
+
+    omg_cli_dir = tmp_path / "omg_cli"
+    omg_cli_dir.mkdir()
+    (omg_cli_dir / "core.py").write_text("x = 1\n", encoding="utf-8")
+
+    fp_before = _implement_workspace_fingerprint(tmp_path)
+
+    (omg_cli_dir / "__pycache__").mkdir()
+    (omg_cli_dir / "__pycache__" / "core.cpython-312.pyc").write_bytes(b"\x00\x01")
+    (omg_cli_dir / "core.pyc").write_bytes(b"\x00\x01")
+    pytest_cache = omg_cli_dir / ".pytest_cache" / "v" / "cache"
+    pytest_cache.mkdir(parents=True)
+    (pytest_cache / "lastfailed").write_text("{}", encoding="utf-8")
+    (omg_cli_dir / ".ruff_cache").mkdir()
+    (omg_cli_dir / ".ruff_cache" / "content").write_text("cache", encoding="utf-8")
+    mypy_cache = omg_cli_dir / ".mypy_cache" / "3.12"
+    mypy_cache.mkdir(parents=True)
+    (mypy_cache / "core.data.json").write_text("{}", encoding="utf-8")
+    egg_info = omg_cli_dir / "omg_cli.egg-info"
+    egg_info.mkdir()
+    (egg_info / "PKG-INFO").write_text("meta", encoding="utf-8")
+
+    fp_after = _implement_workspace_fingerprint(tmp_path)
+    assert fp_after == fp_before
+
+    # Sanity: a real source edit is still detected (caches aren't masking
+    # everything).
+    (omg_cli_dir / "core.py").write_text("x = 2\n", encoding="utf-8")
+    fp_changed = _implement_workspace_fingerprint(tmp_path)
+    assert fp_changed != fp_before
+
+
+def test_implement_to_review_blocked_by_only_pycache_change(tmp_path: Path) -> None:
+    """Real gate path: writing/updating __pycache__ bytecode alone (e.g. from
+    running tests during implement) must not register as implementation
+    work (P2)."""
+    st = start_autopilot(tmp_path, "pycache noise", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    cache_dir = tmp_path / "omg_cli" / "__pycache__"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "core.cpython-312.pyc").write_bytes(b"\x00\x01\x02")
+    with pytest.raises(AutopilotError, match="implementation|no_change"):
+        transition(tmp_path, rid, "review")
+    assert status_autopilot(tmp_path, rid)["phase"] == "implement"
+
+
 def test_try_advance_after_launch_stalls_implement_without_work_evidence(
     tmp_path: Path,
 ) -> None:
