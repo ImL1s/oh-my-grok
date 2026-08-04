@@ -70,8 +70,15 @@ def _read_stage_json(path: Path) -> dict[str, Any] | None:
 
 
 def stage_review_is_clean(root: Path | str, run_id: str) -> bool:
-    """True only when CLI-stamped structured_review.json is clean for this run."""
-    from omg_cli.review import review_state_path
+    """True only when CLI-stamped structured_review.json is clean for this run.
+
+    Also rechecks the declared top-level ``diff_hash`` against the diff_hash
+    actually approved by each nested lane stamp (``code_reviewer_stamp`` /
+    ``architect_stamp``) via the same ``evaluate_lane`` comparison the review
+    writer uses. A drift (e.g. on-disk tampering) between the two makes the
+    stamp stale, not clean.
+    """
+    from omg_cli.review import evaluate_lane, review_state_path
 
     data = _read_stage_json(review_state_path(root, run_id))
     if not data:
@@ -82,12 +89,32 @@ def stage_review_is_clean(root: Path | str, run_id: str) -> bool:
         return False
     if data.get("invalidated") is True:
         return False
-    return data.get("clean") is True
+    if data.get("clean") is not True:
+        return False
+    diff_hash = data.get("diff_hash")
+    cr_stamp = data.get("code_reviewer_stamp")
+    ar_stamp = data.get("architect_stamp")
+    if not diff_hash or not isinstance(cr_stamp, dict) or not isinstance(ar_stamp, dict):
+        # Legacy stamp without hash fields: keep prior clean-flag-only behavior.
+        return True
+    cr = evaluate_lane(
+        role="code-reviewer", expected_diff_hash=diff_hash, proposal=None, stamped=cr_stamp
+    )
+    ar = evaluate_lane(
+        role="architect", expected_diff_hash=diff_hash, proposal=None, stamped=ar_stamp
+    )
+    return cr.get("clean") is True and ar.get("clean") is True
 
 
 def stage_qa_is_clean(root: Path | str, run_id: str) -> bool:
-    """True only when CLI-stamped ultraqa.json is clean (never implies verified)."""
-    from omg_cli.qa import qa_state_path
+    """True only when CLI-stamped ultraqa.json is clean (never implies verified).
+
+    Also rechecks the ``product_hash`` recorded on the last clean cycle
+    against a fresh recompute of the current workspace product hash — a
+    drift means the on-disk stamp is stale for the workspace it now claims
+    to describe.
+    """
+    from omg_cli.qa import product_hash, qa_state_path
 
     data = _read_stage_json(qa_state_path(root, run_id))
     if not data:
@@ -98,7 +125,19 @@ def stage_qa_is_clean(root: Path | str, run_id: str) -> bool:
         return False
     if data.get("invalidated") is True:
         return False
-    return data.get("clean") is True and data.get("status") == "clean"
+    if not (data.get("clean") is True and data.get("status") == "clean"):
+        return False
+    cycles = data.get("cycles") or []
+    if cycles and isinstance(cycles[-1], dict):
+        recorded_hash = cycles[-1].get("product_hash")
+        if recorded_hash:
+            try:
+                current_hash = product_hash(root)
+            except OSError:
+                return False
+            if current_hash != recorded_hash:
+                return False
+    return True
 
 
 def invalidate_quality_stages(root: Path | str, run_id: str, *, reason: str) -> None:
@@ -304,13 +343,17 @@ def transition(
             if not stage_review_is_clean(root, run_id):
                 raise AutopilotError(
                     "no clean review → no QA "
-                    "(requires CLI-stamped stages/structured_review.json clean=true)"
+                    "(requires CLI-stamped stages/structured_review.json "
+                    "clean=true with a diff_hash fingerprint matching its "
+                    "stamped lanes; stale/drifted diff_hash is rejected)"
                 )
         if next_phase == "acceptance":
             if not stage_qa_is_clean(root, run_id):
                 raise AutopilotError(
                     "no clean QA → no acceptance "
-                    "(requires CLI-stamped stages/ultraqa.json status=clean)"
+                    "(requires CLI-stamped stages/ultraqa.json status=clean "
+                    "with a product_hash fingerprint matching the current "
+                    "workspace; stale/drifted product_hash is rejected)"
                 )
         if next_phase == "implement":
             # Any (re-)entry into implement produces new, unreviewed product

@@ -412,6 +412,49 @@ def test_rework_invalidates_review_stamp(tmp_path: Path) -> None:
     transition(tmp_path, rid, "qa")
 
 
+def test_stale_review_stamp_rejected_when_diff_hash_drifts(tmp_path: Path) -> None:
+    """A structured_review.json whose declared diff_hash no longer matches
+    the diff_hash actually approved by its own CLI-stamped lanes must be
+    treated as stale, not clean — closes an on-disk tamper/drift gap."""
+    st = start_autopilot(tmp_path, "stale review", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    transition(tmp_path, rid, "review")
+    _stamp_review_clean(tmp_path, rid, diff="original diff")
+    # Mutate the stamp's recorded top-level diff_hash so it no longer matches
+    # what the nested code_reviewer_stamp/architect_stamp lanes approved.
+    from omg_cli.review import review_state_path
+    import json
+
+    path = review_state_path(tmp_path, rid)
+    data = json.loads(path.read_text())
+    data["diff_hash"] = "0" * 64  # force mismatch vs recomputed
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    with pytest.raises(AutopilotError, match="stale|fingerprint|diff_hash"):
+        transition(tmp_path, rid, "qa")
+
+
+def test_stale_qa_stamp_rejected_when_product_hash_drifts(tmp_path: Path) -> None:
+    """An ultraqa.json clean stamp whose recorded product_hash no longer
+    matches the current workspace must be treated as stale, not clean."""
+    st = start_autopilot(tmp_path, "stale qa", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    transition(tmp_path, rid, "review")
+    _stamp_review_clean(tmp_path, rid)
+    transition(tmp_path, rid, "qa")
+    _stamp_qa_clean(tmp_path, rid)
+    from omg_cli.qa import qa_state_path
+    import json
+
+    path = qa_state_path(tmp_path, rid)
+    data = json.loads(path.read_text())
+    data["cycles"][-1]["product_hash"] = "0" * 64  # force mismatch vs recomputed
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    with pytest.raises(AutopilotError, match="stale|fingerprint|product_hash"):
+        transition(tmp_path, rid, "acceptance")
+
+
 def test_legacy_v1_refused(tmp_path: Path) -> None:
     run = create_run(tmp_path, mode="autopilot", goal="legacy")
     with pytest.raises(AutopilotError):
