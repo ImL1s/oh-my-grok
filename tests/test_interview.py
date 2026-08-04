@@ -290,6 +290,116 @@ def test_cli_routes_start_status_pressure_and_close(tmp_path: Path) -> None:
     assert json.loads(closed.stdout)["status"] == "complete"
 
 
+def test_interview_attach_run_writes_envelope_for_autopilot(tmp_path: Path) -> None:
+    """R4-2: ``start_interview(..., attach_run_id=...)`` seeds interview.json
+    under an existing autopilot run_id (phase=="interview") instead of
+    creating a separate mode=="interview" run, and the real close path
+    produces a genuine envelope that ``_interview_complete`` (and thus
+    ``transition(..., "ralplan")``) accepts."""
+    from omg_cli.autopilot import _interview_complete, start_autopilot, status_autopilot, transition
+    from omg_cli.state import load_active_run, load_run
+
+    (tmp_path / ".git").mkdir()
+    st = start_autopilot(tmp_path, _clear_task(), skip_interview=False)
+    rid = st["run_id"]
+    assert st["phase"] == "interview"
+
+    started = start_interview(tmp_path, "", attach_run_id=rid)
+    assert started["run_id"] == rid
+    assert started["status"] == "ready_for_pressure_pass"
+
+    run = load_run(tmp_path, rid)
+    assert run["mode"] == "autopilot"
+    persisted = _state(tmp_path, rid)
+    assert persisted["task"] == _clear_task()
+
+    pressured = pressure_pass_interview(
+        tmp_path,
+        rid,
+        "Pressure test confirms compatibility and CLI authority outweigh automatic conversational convenience.",
+    )
+    assert pressured["status"] == "ready_to_close"
+
+    closed = close_interview(tmp_path, rid)
+    assert closed["status"] == "complete"
+    assert _interview_complete(tmp_path, rid) is True
+
+    # Attaching to an autopilot run must not clear its active pointer or
+    # touch its own phase file — only ``transition()`` may advance phase.
+    active = load_active_run(tmp_path)
+    assert active is not None and active["run_id"] == rid
+    assert status_autopilot(tmp_path, rid)["phase"] == "interview"
+
+    out = transition(tmp_path, rid, "ralplan")
+    assert out["phase"] == "ralplan"
+
+
+def test_interview_attach_rejects_wrong_phase_and_mode(tmp_path: Path) -> None:
+    """Fail-closed: attaching requires an autopilot run currently parked at
+    phase=="interview" — a later phase or a non-autopilot mode is refused."""
+    from omg_cli.autopilot import start_autopilot
+
+    ralplan_phase = start_autopilot(tmp_path, "skip to ralplan", skip_interview=True)
+    with pytest.raises(InterviewError, match="interview phase"):
+        start_interview(tmp_path, "some task", attach_run_id=ralplan_phase["run_id"])
+
+    wrong_mode = create_run(
+        tmp_path,
+        mode="ralph",
+        goal="not autopilot",
+        extra={"schema_version": 2, "lifecycle_version": 2},
+        force=True,
+    )
+    with pytest.raises(InterviewError, match="requires an autopilot run"):
+        start_interview(tmp_path, "some task", attach_run_id=wrong_mode["run_id"])
+
+    # Answering/closing on a non-interview, non-attachable run is likewise refused.
+    with pytest.raises(InterviewError, match="wrong run mode"):
+        interview_status(tmp_path, wrong_mode["run_id"])
+
+
+def test_bare_start_without_attach_still_creates_interview_mode_run(
+    tmp_path: Path,
+) -> None:
+    started = start_interview(tmp_path, "Fix it", context_type="greenfield")
+    from omg_cli.state import load_run
+
+    run = load_run(tmp_path, started["run_id"])
+    assert run["mode"] == "interview"
+
+
+def test_cli_attach_run_writes_interview_envelope_for_autopilot(tmp_path: Path) -> None:
+    from omg_cli.autopilot import _interview_complete, start_autopilot
+
+    (tmp_path / ".git").mkdir()
+    st = start_autopilot(tmp_path, _clear_task(), skip_interview=False)
+    rid = st["run_id"]
+
+    started = _run_omg("interview", "start", "--attach-run", rid, cwd=tmp_path)
+    assert started.returncode == 0, started.stderr + started.stdout
+    start_data = json.loads(started.stdout)
+    assert start_data["run_id"] == rid
+    assert start_data["status"] == "ready_for_pressure_pass"
+
+    pressured = _run_omg(
+        "interview",
+        "pressure-pass",
+        "--run",
+        rid,
+        "--text",
+        "The explicit trade-off keeps the primitive deterministic and rejects hidden model authority.",
+        cwd=tmp_path,
+    )
+    assert pressured.returncode == 0, pressured.stderr + pressured.stdout
+    assert json.loads(pressured.stdout)["status"] == "ready_to_close"
+
+    closed = _run_omg("interview", "close", "--run", rid, cwd=tmp_path)
+    assert closed.returncode == 0, closed.stderr + closed.stdout
+    assert json.loads(closed.stdout)["status"] == "complete"
+
+    assert _interview_complete(tmp_path, rid) is True
+
+
 def test_cli_help_lists_consistent_interview_actions(tmp_path: Path) -> None:
     help_result = _run_omg("interview", "--help", cwd=tmp_path)
     assert help_result.returncode == 0

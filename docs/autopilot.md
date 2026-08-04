@@ -106,6 +106,11 @@ omg autopilot start "ship feature X" --skip-interview
 
 RUN=…   # from start JSON: run_id
 
+# … drive the interview under this same run_id (attach — no separate mode=interview run):
+omg interview start --attach-run "$RUN"    # task defaults to the autopilot goal
+omg interview answer --run "$RUN" --question-id ... --text ...
+omg interview close --run "$RUN"
+
 # … after interview closed (preferred: omg interview * writes CLI envelope):
 omg autopilot transition --run "$RUN" --phase ralplan --reason "interview closed"
 # break-glass only (audited):

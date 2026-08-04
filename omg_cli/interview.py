@@ -244,9 +244,28 @@ def _refresh(state: dict[str, Any], invocation_id: str) -> None:
         state["blocker"] = {"code": code, "reasons": reasons}
     state["revision"] += 1
     state["updated_at"] = _now()
+def _authorize_run_mode(root: Path, run: Mapping[str, Any]) -> None:
+    """Fail-closed gate: interview ops are legal on ``mode=="interview"`` runs,
+    or on an ``mode=="autopilot"`` run currently parked at ``phase=="interview"``
+    (autopilot embeds interview state under its own run_id — see
+    ``autopilot._interview_complete``). Anything else is rejected."""
+    mode = run.get("mode")
+    if mode == "interview":
+        return
+    if mode == "autopilot":
+        from omg_cli.autopilot import AutopilotError, load_autopilot
+
+        try:
+            autopilot_state = load_autopilot(root, str(run.get("run_id")))
+        except AutopilotError as exc:
+            raise InterviewError(f"cannot verify autopilot interview phase: {exc}") from exc
+        phase = autopilot_state.get("phase")
+        if phase == "interview":
+            return
+        raise InterviewError(f"autopilot run not in interview phase: {phase!r}")
+    raise InterviewError(f"wrong run mode: {mode!r}")
 def _validate(root: Path, run: Mapping[str, Any], state: dict[str, Any]) -> None:
-    if run.get("mode") != "interview":
-        raise InterviewError(f"wrong run mode: {run.get('mode')!r}")
+    _authorize_run_mode(root, run)
     if state.get("writer") != CLI_WRITER or state.get("schema_version") != 2:
         raise InterviewError("invalid interview authority/schema")
     if state.get("run_id") != run.get("run_id") or state.get("task") != run.get("goal"):
@@ -295,8 +314,7 @@ def _load(root: Path, run_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
         raise InterviewError(f"invalid run schema: {exc}") from exc
     if schema is not RunSchema.STRICT_V2:
         raise InterviewError("interview requires strict-v2 run")
-    if run.get("mode") != "interview":
-        raise InterviewError(f"wrong run mode: {run.get('mode')!r}")
+    _authorize_run_mode(root, run)
     state = _read_json(interview_state_path(root, run_id), "interview state")
     _validate(root, run, state)
     return run, state
@@ -322,19 +340,49 @@ def _status_extra(state: Mapping[str, Any]) -> dict[str, Any]:
         "blocker": state.get("blocker"),
         "next_action": state.get("resume_command"),
     }
-def start_interview(root: Path | str, task: str, *, profile: str = "standard", context_type: str | None = None, force: bool = False) -> dict[str, Any]:
+def _attach_interview_run(root: Path, attach_run_id: str, task: str, *, force: bool) -> tuple[dict[str, Any], str]:
+    """Load an existing autopilot run parked at phase=="interview" to seed
+    interview.json under its own run_id (no ``create_run``). Fail-closed on
+    any other mode/phase. Returns ``(run, task)`` with ``task`` defaulted
+    from the run's goal when the caller omitted it."""
+    run_id = validate_identifier(attach_run_id, label="run_id")
+    run = load_run(root, run_id)
+    if run is None:
+        raise InterviewError(f"no or corrupt run found: {run_id}")
+    try:
+        schema = classify_run_schema(run)
+    except (TypeError, ValueError) as exc:
+        raise InterviewError(f"invalid run schema: {exc}") from exc
+    if schema is not RunSchema.STRICT_V2:
+        raise InterviewError("interview requires strict-v2 run")
+    if run.get("mode") != "autopilot":
+        raise InterviewError(f"--attach-run requires an autopilot run (got mode={run.get('mode')!r})")
+    _authorize_run_mode(root, run)
+    if interview_state_path(root, run_id).exists() and not force:
+        raise InterviewError(f"interview already started for run: {run_id}; pass force=True to reseed")
+    if not task:
+        task = str(run.get("goal") or "").strip()
+    return run, task
+def start_interview(root: Path | str, task: str, *, profile: str = "standard", context_type: str | None = None, force: bool = False, attach_run_id: str | None = None) -> dict[str, Any]:
     root = Path(root).resolve()
     task = (task or "").strip()
-    if not task or profile not in PROFILE_CONFIG:
-        raise InterviewError("valid task text and profile are required")
     assert_safe_supervised_parent()
-    try:
-        run = create_run(root, mode="interview", goal=task, force=force, extra={
-            "schema_version": 2, "lifecycle_version": 2, "interview_profile": profile,
-        })
-    except RuntimeError as exc:
-        raise InterviewError(str(exc)) from exc
-    run_id, session_id = run["run_id"], str(uuid.uuid4())
+    if attach_run_id is not None:
+        run, task = _attach_interview_run(root, attach_run_id, task, force=force)
+        run_id = run["run_id"]
+        if not task or profile not in PROFILE_CONFIG:
+            raise InterviewError("valid task text and profile are required")
+    else:
+        if not task or profile not in PROFILE_CONFIG:
+            raise InterviewError("valid task text and profile are required")
+        try:
+            run = create_run(root, mode="interview", goal=task, force=force, extra={
+                "schema_version": 2, "lifecycle_version": 2, "interview_profile": profile,
+            })
+        except RuntimeError as exc:
+            raise InterviewError(str(exc)) from exc
+        run_id = run["run_id"]
+    session_id = str(uuid.uuid4())
     with execution_lease(root, run_id, intent="interview-start") as lease:
         topology = build_topology(root, context_type=context_type)
         scores = {name: 0.0 for name in topology["active_dimensions"]}
@@ -426,7 +474,7 @@ def pressure_pass_interview(root: Path | str, run_id: str, text: str) -> dict[st
 def close_interview(root: Path | str, run_id: str) -> dict[str, Any]:
     root = Path(root).resolve()
     assert_safe_supervised_parent()
-    _, current = _load(root, run_id)
+    run, current = _load(root, run_id)
     if current["status"] == "complete":
         return _result(current)
     with execution_lease(root, run_id, intent="interview-close") as lease:
@@ -473,7 +521,11 @@ def close_interview(root: Path | str, run_id: str) -> dict[str, Any]:
         state["updated_at"] = _now()
         _save(root, state, lease)
         write_status(root, run_id, "running", extra={**_status_extra(state), "stage": "interview_complete"}, lease=lease)
-    clear_active(root, run_id)
+    if run.get("mode") == "interview":
+        # An autopilot-attached interview keeps the autopilot run active —
+        # closing it must not clear the active pointer out from under
+        # in-flight autopilot orchestration.
+        clear_active(root, run_id)
     return _result(state)
 def interview_status(root: Path | str, run_id: str | None = None) -> dict[str, Any]:
     root = Path(root).resolve()
