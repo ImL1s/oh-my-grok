@@ -29,15 +29,18 @@ from omg_cli.state import (
 # it is commit-only via ``complete_with_acceptance`` (same-process acceptance).
 MANUAL_TRANSITIONS: dict[str, frozenset[str]] = {
     "init": frozenset({"interview", "ralplan"}),  # interview skip only if forced clear
-    "interview": frozenset({"ralplan", "blocked", "cancelled"}),
-    "ralplan": frozenset({"implement", "blocked", "cancelled"}),
-    "implement": frozenset({"review", "blocked", "cancelled"}),
-    "review": frozenset({"qa", "rework", "ralplan", "blocked", "cancelled"}),
-    "rework": frozenset({"review", "blocked", "cancelled"}),
-    "qa": frozenset({"acceptance", "ralplan", "rework", "blocked", "cancelled"}),
-    "acceptance": frozenset({"blocked", "cancelled"}),
+    "interview": frozenset({"ralplan", "blocked"}),
+    "ralplan": frozenset({"implement", "blocked"}),
+    "implement": frozenset({"review", "blocked"}),
+    "review": frozenset({"qa", "rework", "ralplan", "blocked"}),
+    "rework": frozenset({"review", "blocked"}),
+    "qa": frozenset({"acceptance", "ralplan", "rework", "blocked"}),
+    "acceptance": frozenset({"blocked"}),
     "verified": frozenset(),
-    "blocked": frozenset({"interview", "ralplan", "implement", "review", "qa", "cancelled"}),
+    "blocked": frozenset({"interview", "ralplan", "implement", "review", "qa"}),
+    # "cancelled" is a terminal node reachable only via ``omg cancel`` /
+    # ``cancel_run`` (status.json), never as a generic transition() edge —
+    # kept here so LEGAL_TRANSITIONS / introspection still document it.
     "cancelled": frozenset(),
 }
 

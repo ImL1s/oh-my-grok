@@ -16,6 +16,7 @@ from omg_cli.autopilot import (
     autopilot_context_pack,
     build_phase_prompt,
     complete_with_acceptance,
+    load_autopilot,
     run_autopilot,
     set_awaiting_confirmation,
     start_autopilot,
@@ -132,6 +133,47 @@ def test_legal_transition_table() -> None:
     assert "verified" in LEGAL_TRANSITIONS["acceptance"]
     assert "verified" not in MANUAL_TRANSITIONS["acceptance"]
     assert COMMIT_ONLY_TRANSITIONS["acceptance"] == frozenset({"verified"})
+
+
+def test_cancelled_not_in_manual_or_legal_transitions() -> None:
+    """R7-1: cancellation is exclusively an ``omg cancel`` / ``cancel_run``
+    (status.json) concern — no phase may advertise "cancelled" as a manual
+    ``transition()`` edge, and the conceptual graph mirrors that (only the
+    "cancelled" node itself, which is terminal, remains)."""
+    for phase, dests in MANUAL_TRANSITIONS.items():
+        assert "cancelled" not in dests, f"{phase} still allows -> cancelled"
+    for phase, dests in LEGAL_TRANSITIONS.items():
+        assert "cancelled" not in dests, f"{phase} still allows -> cancelled"
+    assert MANUAL_TRANSITIONS["cancelled"] == frozenset()
+    with pytest.raises(AutopilotError):
+        assert_legal_transition("interview", "cancelled")
+    with pytest.raises(AutopilotError):
+        assert_legal_transition("blocked", "cancelled")
+
+
+def test_transition_to_cancelled_raises_and_does_not_mutate_state(
+    tmp_path: Path,
+) -> None:
+    """R7-1: ``transition(..., "cancelled")`` must raise a clean
+    AutopilotError without mutating the autopilot.json phase sidecar or the
+    run status — cancellation only via ``omg cancel`` / ``cancel_run``."""
+    st = start_autopilot(tmp_path, "no generic cancel via transition")
+    rid = st["run_id"]
+
+    before_state = load_autopilot(tmp_path, rid)
+    before_run = load_run(tmp_path, rid)
+    assert before_state["phase"] == "interview"
+    assert before_run["status"] == "running"
+
+    with pytest.raises(AutopilotError, match="illegal transition"):
+        transition(tmp_path, rid, "cancelled")
+
+    after_state = load_autopilot(tmp_path, rid)
+    after_run = load_run(tmp_path, rid)
+    assert after_state["phase"] == "interview"
+    assert after_state == before_state
+    assert after_run["status"] == "running"
+    assert after_run.get("autopilot_phase") == "interview"
 
 
 def test_interview_complete_rejects_bare_status_string(tmp_path: Path) -> None:
