@@ -822,6 +822,37 @@ def test_stale_qa_stamp_rejected_when_product_hash_drifts(tmp_path: Path) -> Non
         transition(tmp_path, rid, "acceptance")
 
 
+def test_stale_qa_stamp_rejected_when_workspace_fp_drifts_on_non_python_surface(
+    tmp_path: Path,
+) -> None:
+    """QA-side analog of the implement→review P1 fingerprint gap (R2-1):
+    qa.product_hash only covers omg_cli/**/*.py, so a change confined to a
+    curated non-Python product surface (hooks/) after QA went clean must
+    still be caught via the broader implement-workspace fingerprint snapshot
+    recorded on the clean cycle."""
+    from omg_cli.qa import product_hash
+
+    st = start_autopilot(tmp_path, "stale qa workspace fp", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "hooks.json").write_text('{"v": 1}\n', encoding="utf-8")
+    transition(tmp_path, rid, "review")
+    _stamp_review_clean(tmp_path, rid)
+    transition(tmp_path, rid, "qa")
+    _stamp_qa_clean(tmp_path, rid, tmp_path=tmp_path)
+
+    hash_before = product_hash(tmp_path)
+    (hooks_dir / "hooks.json").write_text('{"v": 2}\n', encoding="utf-8")
+    # Confirms product_hash really is blind to this change — proof the QA
+    # gate needed the broader fingerprint rather than reusing product_hash.
+    assert product_hash(tmp_path) == hash_before
+
+    with pytest.raises(AutopilotError, match="stale|fingerprint|product_hash"):
+        transition(tmp_path, rid, "acceptance")
+
+
 def test_review_stamp_rejected_when_diff_hash_present_but_lane_stamps_stripped(
     tmp_path: Path,
 ) -> None:

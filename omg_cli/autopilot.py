@@ -139,13 +139,26 @@ def stage_qa_is_clean(root: Path | str, run_id: str) -> bool:
         return False
     cycles = data.get("cycles") or []
     if cycles and isinstance(cycles[-1], dict):
-        recorded_hash = cycles[-1].get("product_hash")
+        last_cycle = cycles[-1]
+        recorded_hash = last_cycle.get("product_hash")
         if recorded_hash:
             try:
                 current_hash = product_hash(root)
             except OSError:
                 return False
             if current_hash != recorded_hash:
+                return False
+        # Broader implement-gate fingerprint snapshot (curated non-Python
+        # product surfaces too) recorded at clean-cycle time — drift here
+        # means product/config changed since QA went clean, even when
+        # product_hash's narrower omg_cli/**/*.py view is unaffected.
+        recorded_fp = last_cycle.get("implement_workspace_fp")
+        if recorded_fp:
+            try:
+                current_fp = _implement_workspace_fingerprint(root)
+            except OSError:
+                return False
+            if current_fp != recorded_fp:
                 return False
     return True
 
