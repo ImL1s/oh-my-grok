@@ -15,6 +15,7 @@ from omg_cli.evidence import (
     validate_identifier,
 )
 from omg_cli.state import (
+    TERMINAL_STATUSES,
     RunSchema,
     classify_run_schema,
     clear_active,
@@ -369,6 +370,27 @@ def _attach_interview_run(root: Path, attach_run_id: str, task: str, *, force: b
             f"--attach-run task must match the run's goal; got {task!r}, expected {goal!r}"
         )
     return run, goal
+def _reauthorize_attach(root: Path, run_id: str, task: str) -> None:
+    """Re-verify attach-run authorization under the execution lease.
+
+    ``_attach_interview_run`` makes its checks before the lease is held, so
+    a concurrent transition/cancel could race between that check and the
+    write. Re-load the run fresh and repeat every check that matters: mode
+    still interview-capable (autopilot parked at phase=="interview", or
+    bare mode=="interview"), run not terminal/cancelled, and the goal has
+    not drifted from the attach task."""
+    run = load_run(root, run_id)
+    if run is None:
+        raise InterviewError(f"no or corrupt run found: {run_id}")
+    _authorize_run_mode(root, run)
+    status = str(run.get("status") or "")
+    if status in TERMINAL_STATUSES:
+        raise InterviewError(f"attach-run is terminal under lease: status={status!r}")
+    goal = str(run.get("goal") or "").strip()
+    if goal != task:
+        raise InterviewError(
+            f"attach-run goal drifted under lease; expected {task!r}, got {goal!r}"
+        )
 def start_interview(root: Path | str, task: str, *, profile: str = "standard", context_type: str | None = None, force: bool = False, attach_run_id: str | None = None) -> dict[str, Any]:
     root = Path(root).resolve()
     task = (task or "").strip()
@@ -390,12 +412,15 @@ def start_interview(root: Path | str, task: str, *, profile: str = "standard", c
         run_id = run["run_id"]
     session_id = str(uuid.uuid4())
     with execution_lease(root, run_id, intent="interview-start") as lease:
-        if attach_run_id is not None and interview_state_path(root, run_id).exists() and not force:
-            # Re-check the reseed guard under the execution lease: the earlier
-            # existence check in ``_attach_interview_run`` ran before this lock
-            # was held, so a concurrent attach could otherwise race past it and
-            # double-seed interview.json.
-            raise InterviewError(f"interview already started for run: {run_id}; pass force=True to reseed")
+        if attach_run_id is not None:
+            # Re-verify authorization under the execution lease: the earlier
+            # checks in ``_attach_interview_run`` (mode/phase/goal) and the
+            # reseed-exists check below both ran before this lock was held,
+            # so a concurrent transition/cancel/attach could otherwise race
+            # past them and write a stale or double-seeded interview.json.
+            _reauthorize_attach(root, run_id, task)
+            if interview_state_path(root, run_id).exists() and not force:
+                raise InterviewError(f"interview already started for run: {run_id}; pass force=True to reseed")
         topology = build_topology(root, context_type=context_type)
         scores = {name: 0.0 for name in topology["active_dimensions"]}
         sections = {name: "" for name in REQUIRED}

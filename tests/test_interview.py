@@ -397,6 +397,70 @@ def test_interview_attach_reseed_guard_still_enforced_under_lease(tmp_path: Path
     assert reseeded["run_id"] == rid
 
 
+def test_interview_attach_reauthorizes_phase_under_lease_on_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R5-3: a concurrent phase transition landing between the pre-lease
+    ``_attach_interview_run`` check and the lease-protected write must still
+    be caught — ``start_interview`` re-authorizes mode/phase fresh under the
+    lease before writing anything."""
+    import omg_cli.interview as interview_mod
+    from omg_cli.autopilot import start_autopilot, transition
+
+    st = start_autopilot(tmp_path, "phase drift task", skip_interview=False)
+    rid = st["run_id"]
+
+    original_attach = interview_mod._attach_interview_run
+
+    def racy_attach(root, attach_run_id, task, *, force):
+        result = original_attach(root, attach_run_id, task, force=force)
+        # Simulate a concurrent transition landing after the pre-lease check
+        # passed but before the lease-protected re-check below runs.
+        transition(root, attach_run_id, "blocked", reason="race")
+        return result
+
+    monkeypatch.setattr(interview_mod, "_attach_interview_run", racy_attach)
+
+    with pytest.raises(InterviewError, match="interview phase"):
+        interview_mod.start_interview(tmp_path, "", attach_run_id=rid)
+
+    assert not interview_state_path(tmp_path, rid).exists()
+
+
+def test_interview_attach_reauthorize_rejects_terminal_run_under_lease(
+    tmp_path: Path,
+) -> None:
+    """R5-3: a run cancelled between the pre-lease attach check and the
+    lease-protected write must be rejected — status and autopilot phase are
+    independent, so a still-``phase=="interview"`` run can be terminal."""
+    from omg_cli.autopilot import start_autopilot
+    from omg_cli.state import cancel_run
+
+    st = start_autopilot(tmp_path, "terminal drift task", skip_interview=False)
+    rid = st["run_id"]
+
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+
+    with pytest.raises(InterviewError, match="terminal under lease"):
+        start_interview(tmp_path, "", attach_run_id=rid)
+
+    assert not interview_state_path(tmp_path, rid).exists()
+
+
+def test_reauthorize_attach_rejects_goal_drift_under_lease(tmp_path: Path) -> None:
+    """R5-3: ``_reauthorize_attach`` defends in depth against a stale task
+    snapshot disagreeing with a fresh reload of the run's goal — the same
+    check ``start_interview`` re-runs under the execution lease."""
+    import omg_cli.interview as interview_mod
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "original goal text", skip_interview=False)
+    rid = st["run_id"]
+
+    with pytest.raises(InterviewError, match="goal drifted"):
+        interview_mod._reauthorize_attach(tmp_path, rid, "a different stale task text")
+
+
 def test_authorize_run_mode_fails_closed_on_corrupt_autopilot_state(tmp_path: Path) -> None:
     """IMPORTANT: a corrupt/unreadable autopilot state file must raise a
     clean InterviewError instead of an unhandled json.JSONDecodeError."""
