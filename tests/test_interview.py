@@ -358,6 +358,59 @@ def test_interview_attach_rejects_wrong_phase_and_mode(tmp_path: Path) -> None:
         interview_status(tmp_path, wrong_mode["run_id"])
 
 
+def test_interview_attach_rejects_mismatched_task(tmp_path: Path) -> None:
+    """CRITICAL: a non-empty --attach-run task that disagrees with the
+    autopilot run's goal must fail fast, before any interview.json is
+    written — attach always uses the run's own goal, never a custom task."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "the real autopilot goal", skip_interview=False)
+    rid = st["run_id"]
+
+    with pytest.raises(InterviewError, match="must match the run's goal"):
+        start_interview(tmp_path, "a different task text", attach_run_id=rid)
+
+    assert not interview_state_path(tmp_path, rid).exists()
+
+    # The matching-task and omitted-task forms both succeed and seed the
+    # real run goal.
+    started = start_interview(tmp_path, "the real autopilot goal", attach_run_id=rid)
+    assert started["run_id"] == rid
+    persisted = _state(tmp_path, rid)
+    assert persisted["task"] == "the real autopilot goal"
+
+
+def test_interview_attach_reseed_guard_still_enforced_under_lease(tmp_path: Path) -> None:
+    """IMPORTANT TOCTOU fix: the reseed guard now runs inside the execution
+    lease. Functionally it must still refuse a second unforced attach and
+    still allow a forced reseed."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "reseed guard task", skip_interview=False)
+    rid = st["run_id"]
+
+    start_interview(tmp_path, "", attach_run_id=rid)
+    with pytest.raises(InterviewError, match="already started"):
+        start_interview(tmp_path, "", attach_run_id=rid)
+
+    reseeded = start_interview(tmp_path, "", attach_run_id=rid, force=True)
+    assert reseeded["run_id"] == rid
+
+
+def test_authorize_run_mode_fails_closed_on_corrupt_autopilot_state(tmp_path: Path) -> None:
+    """IMPORTANT: a corrupt/unreadable autopilot state file must raise a
+    clean InterviewError instead of an unhandled json.JSONDecodeError."""
+    from omg_cli.autopilot import autopilot_state_path, start_autopilot
+
+    st = start_autopilot(tmp_path, "corrupt state task", skip_interview=False)
+    rid = st["run_id"]
+
+    autopilot_state_path(tmp_path, rid).write_text("{not valid json", encoding="utf-8")
+
+    with pytest.raises(InterviewError, match="cannot verify autopilot interview phase"):
+        start_interview(tmp_path, "", attach_run_id=rid)
+
+
 def test_bare_start_without_attach_still_creates_interview_mode_run(
     tmp_path: Path,
 ) -> None:

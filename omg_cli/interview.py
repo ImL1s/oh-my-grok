@@ -257,7 +257,7 @@ def _authorize_run_mode(root: Path, run: Mapping[str, Any]) -> None:
 
         try:
             autopilot_state = load_autopilot(root, str(run.get("run_id")))
-        except AutopilotError as exc:
+        except (AutopilotError, json.JSONDecodeError, OSError) as exc:
             raise InterviewError(f"cannot verify autopilot interview phase: {exc}") from exc
         phase = autopilot_state.get("phase")
         if phase == "interview":
@@ -343,8 +343,13 @@ def _status_extra(state: Mapping[str, Any]) -> dict[str, Any]:
 def _attach_interview_run(root: Path, attach_run_id: str, task: str, *, force: bool) -> tuple[dict[str, Any], str]:
     """Load an existing autopilot run parked at phase=="interview" to seed
     interview.json under its own run_id (no ``create_run``). Fail-closed on
-    any other mode/phase. Returns ``(run, task)`` with ``task`` defaulted
-    from the run's goal when the caller omitted it."""
+    any other mode/phase. The run's ``goal`` is always the attached task —
+    a non-empty caller-supplied ``task`` that differs from it is rejected
+    rather than silently overridden, so an attach can never seed a spec
+    under a task text that disagrees with the autopilot run it belongs to.
+    Existence of a prior ``interview.json`` (reseed guard) is intentionally
+    NOT checked here — the caller must re-check it under the execution
+    lease to avoid a TOCTOU race between concurrent attaches."""
     run_id = validate_identifier(attach_run_id, label="run_id")
     run = load_run(root, run_id)
     if run is None:
@@ -358,11 +363,12 @@ def _attach_interview_run(root: Path, attach_run_id: str, task: str, *, force: b
     if run.get("mode") != "autopilot":
         raise InterviewError(f"--attach-run requires an autopilot run (got mode={run.get('mode')!r})")
     _authorize_run_mode(root, run)
-    if interview_state_path(root, run_id).exists() and not force:
-        raise InterviewError(f"interview already started for run: {run_id}; pass force=True to reseed")
-    if not task:
-        task = str(run.get("goal") or "").strip()
-    return run, task
+    goal = str(run.get("goal") or "").strip()
+    if task and task != goal:
+        raise InterviewError(
+            f"--attach-run task must match the run's goal; got {task!r}, expected {goal!r}"
+        )
+    return run, goal
 def start_interview(root: Path | str, task: str, *, profile: str = "standard", context_type: str | None = None, force: bool = False, attach_run_id: str | None = None) -> dict[str, Any]:
     root = Path(root).resolve()
     task = (task or "").strip()
@@ -384,6 +390,12 @@ def start_interview(root: Path | str, task: str, *, profile: str = "standard", c
         run_id = run["run_id"]
     session_id = str(uuid.uuid4())
     with execution_lease(root, run_id, intent="interview-start") as lease:
+        if attach_run_id is not None and interview_state_path(root, run_id).exists() and not force:
+            # Re-check the reseed guard under the execution lease: the earlier
+            # existence check in ``_attach_interview_run`` ran before this lock
+            # was held, so a concurrent attach could otherwise race past it and
+            # double-seed interview.json.
+            raise InterviewError(f"interview already started for run: {run_id}; pass force=True to reseed")
         topology = build_topology(root, context_type=context_type)
         scores = {name: 0.0 for name in topology["active_dimensions"]}
         sections = {name: "" for name in REQUIRED}
@@ -522,9 +534,10 @@ def close_interview(root: Path | str, run_id: str) -> dict[str, Any]:
         _save(root, state, lease)
         write_status(root, run_id, "running", extra={**_status_extra(state), "stage": "interview_complete"}, lease=lease)
     if run.get("mode") == "interview":
-        # An autopilot-attached interview keeps the autopilot run active —
-        # closing it must not clear the active pointer out from under
-        # in-flight autopilot orchestration.
+        # Only a standalone interview (created by bare `start_interview`, not
+        # `--attach-run`) owns the active pointer here. An autopilot-attached
+        # interview (mode=="autopilot") must skip this: clearing it would yank
+        # the active pointer out from under in-flight autopilot orchestration.
         clear_active(root, run_id)
     return _result(state)
 def interview_status(root: Path | str, run_id: str | None = None) -> dict[str, Any]:
