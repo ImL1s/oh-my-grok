@@ -116,6 +116,36 @@ def save_ralplan_state(root: Path, run_id: str, state: dict[str, Any]) -> Path:
     return path
 
 
+def invalidate_ralplan_consensus(
+    root: Path | str, run_id: str, *, reason: str
+) -> None:
+    """Mark any existing ralplan.json stamp stale on replan (CLI write).
+
+    A prior ``accepted: true`` stamp must never unlock ``implement`` for a
+    later ralplan cycle after review/qa bumps back into replan — mirrors
+    ``autopilot.invalidate_quality_stages`` / ``implementation.
+    invalidate_implementation_receipt``: mark in place (audit trail
+    preserved) rather than delete. No-op when no ralplan.json exists yet.
+    Also clears ``status.ralplan_consensus`` via ``merge_status_fields``
+    when a status.json exists for this run.
+    """
+    root = Path(root).resolve()
+    data = load_ralplan_state(root, run_id)
+    if data is not None:
+        data["accepted"] = False
+        data["invalidated"] = True
+        data["invalidated_reason"] = reason
+        data["invalidated_at"] = _utc_now()
+        save_ralplan_state(root, run_id, data)
+
+    from omg_cli.state import merge_status_fields
+
+    try:
+        merge_status_fields(root, run_id, {"ralplan_consensus": False})
+    except (OSError, ValueError):
+        pass
+
+
 def initial_ralplan_state(
     *,
     run_id: str,
@@ -1140,6 +1170,7 @@ __all__ = [
     "artifact_contains_approve",
     "build_stage_prompt",
     "initial_ralplan_state",
+    "invalidate_ralplan_consensus",
     "load_ralplan_state",
     "ralplan_state_path",
     "run_ralplan",

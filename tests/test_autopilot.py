@@ -236,6 +236,63 @@ def test_consensus_stamp_unlocks_implement_without_boolean(tmp_path: Path) -> No
     assert not any(h.get("gate_audit") for h in hist if h.get("phase") == "implement")
 
 
+def test_replan_invalidates_accepted_ralplan_stamp(tmp_path: Path) -> None:
+    """R4-1: review/qa → ralplan replan must invalidate the prior accepted
+    ralplan.json stamp — a stale accepted consensus must not silently
+    unlock implement again without a fresh non-invalidated stamp."""
+    import json as _json
+
+    from omg_cli.autopilot import _consensus_ready
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.ralplan import ralplan_state_path
+
+    st = start_autopilot(tmp_path, "replan invalidate", skip_interview=True)
+    rid = st["run_id"]
+
+    path = ralplan_state_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _stamp_accepted() -> None:
+        path.write_text(
+            _json.dumps(
+                {
+                    "writer": CLI_WRITER,
+                    "run_id": rid,
+                    "accepted": True,
+                    "status": "accepted",
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    _stamp_accepted()
+    assert _consensus_ready(tmp_path, rid) is True
+
+    # Enough work to reach review, then replan back to ralplan (bumps
+    # cycles.ralplan) — this must invalidate the prior accepted stamp.
+    transition(tmp_path, rid, "implement")
+    (tmp_path / "changed.py").write_text("# product change\n", encoding="utf-8")
+    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "ralplan", reason="replan from review")
+
+    assert _consensus_ready(tmp_path, rid) is False
+    data = _json.loads(path.read_text(encoding="utf-8"))
+    assert data.get("accepted") is False
+    assert data.get("invalidated") is True
+    assert data.get("invalidated_reason")
+    assert data.get("invalidated_at")
+
+    with pytest.raises(AutopilotError, match="consensus"):
+        transition(tmp_path, rid, "implement")
+
+    # A fresh, non-invalidated accepted stamp unblocks implement again.
+    _stamp_accepted()
+    transition(tmp_path, rid, "implement")
+    assert status_autopilot(tmp_path, rid)["phase"] == "implement"
+
+
 def test_status_legal_next_excludes_verified(tmp_path: Path) -> None:
     st = start_autopilot(tmp_path, "legal next contract", skip_interview=True)
     rid = st["run_id"]

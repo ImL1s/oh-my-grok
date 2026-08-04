@@ -565,6 +565,13 @@ def transition(
             invalidate_quality_stages(
                 root, run_id, reason=f"replan from {src}"
             )
+            # A prior accepted ralplan.json stamp must not silently unlock
+            # implement again for this new replan cycle.
+            from omg_cli.ralplan import invalidate_ralplan_consensus
+
+            invalidate_ralplan_consensus(
+                root, run_id, reason=f"replan from {src}"
+            )
         if next_phase == "rework":
             state["cycles"]["review"] = int(state["cycles"].get("review") or 0) + 1
             invalidate_quality_stages(
@@ -1039,6 +1046,8 @@ def _consensus_ready(root: Path, run_id: str) -> bool:
     if data.get("writer") != CLI_WRITER:
         return False
     if data.get("run_id") != run_id:
+        return False
+    if data.get("invalidated") is True:
         return False
     return data.get("accepted") is True
 
