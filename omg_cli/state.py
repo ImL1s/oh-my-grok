@@ -43,6 +43,14 @@ except ImportError:  # pragma: no cover — non-POSIX
 _SYSTEM_POPEN = subprocess.Popen
 
 
+FORCE_VERIFIED_ENV = "OMG_INTERNAL_FORCE_VERIFIED"
+"""Env var required (value ``"1"``) for ``set_verified(..., force=True)``.
+
+No argparse command exposes ``force``; this is a second, independent gate so
+a future CLI wiring mistake still cannot forge ``verified`` without an
+operator/test deliberately setting this process env var.
+"""
+
 OMG_SUBDIRS = (
     "state",
     "state/runs",
@@ -1483,7 +1491,10 @@ def set_verified(
     Requires ``acceptance.result.json`` with ``writer=="omg-cli"``, ``passed``
     true, matching frozen manifest sha, **and** a process-local token from
     ``run_acceptance`` in this process. Disk-only forgeries are rejected.
-    force is intentionally not exposed by the CLI router.
+    force is intentionally not exposed by the CLI router, and is additionally
+    confined behind the ``OMG_INTERNAL_FORCE_VERIFIED=1`` process env var
+    (see ``FORCE_VERIFIED_ENV``) so tests can opt in explicitly while a
+    future CLI wiring mistake still cannot forge ``verified``.
 
     Strict-v2 commits require an execution lease. Callers that already hold one
     should pass ``lease=...``. When ``lease is None``, a short-lived lease with
@@ -1496,6 +1507,11 @@ def set_verified(
     from omg_cli.acceptance import refuse_if_mcp_server
 
     refuse_if_mcp_server("set_verified")
+    if force and os.environ.get(FORCE_VERIFIED_ENV) != "1":
+        raise PermissionError(
+            f"refusing force=True set_verified without {FORCE_VERIFIED_ENV}=1 "
+            f"in this process env for run_id={run_id!r}"
+        )
     root = Path(root)
     current = load_run(root, run_id)
     if current is None:

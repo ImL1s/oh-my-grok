@@ -554,6 +554,29 @@ def test_write_status(tmp_path):
     assert verified["status"] == "verified"
 
 
+def test_set_verified_force_requires_env_confinement(tmp_path, monkeypatch):
+    """force=True is confined behind OMG_INTERNAL_FORCE_VERIFIED=1 (no argparse
+    path forwards this; only tests/internal callers opt in via process env)."""
+    from omg_cli.state import FORCE_VERIFIED_ENV
+
+    run = create_run(tmp_path, mode="ralph", goal="force confine")
+    rid = run["run_id"]
+
+    monkeypatch.delenv(FORCE_VERIFIED_ENV, raising=False)
+    with pytest.raises(PermissionError, match=FORCE_VERIFIED_ENV):
+        set_verified(tmp_path, rid, force=True)
+    assert load_run(tmp_path, rid).get("verified") is not True
+
+    monkeypatch.setenv(FORCE_VERIFIED_ENV, "0")
+    with pytest.raises(PermissionError, match=FORCE_VERIFIED_ENV):
+        set_verified(tmp_path, rid, force=True)
+
+    monkeypatch.setenv(FORCE_VERIFIED_ENV, "1")
+    verified = set_verified(tmp_path, rid, force=True)
+    assert verified["verified"] is True
+    assert verified["status"] == "verified"
+
+
 def test_set_verified_strict_v2_auto_acquires_lease(tmp_path):
     """After run_acceptance, set_verified without caller lease succeeds on strict-v2."""
     from omg_cli.acceptance import freeze_and_run
