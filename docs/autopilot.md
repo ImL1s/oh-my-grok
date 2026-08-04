@@ -162,7 +162,7 @@ as `gate_audit` (for example `break_glass:consensus`, `break_glass:no_change`).
 |-------------|-------------------------|------------------------|
 | `ralplan` from `interview` | CLI interview `status=complete` | `interview_complete` + `break_glass` |
 | `implement` | CLI `ralplan` accepted / `ralplan_consensus` | `consensus` + `break_glass` |
-| `review` from `implement` | Workspace fingerprint drift since implement entry, **or** on-disk CLI implementation receipt | `no_change_reason` + `break_glass`, **or** inline `implementation_receipt` + `break_glass` |
+| `review` from `implement` | Workspace fingerprint drift (curated product surfaces) since implement entry, **or** on-disk CLI implementation receipt | `no_change_reason` + `break_glass`, **or** inline `implementation_receipt` + `break_glass` |
 | `qa` | CLI `stages/structured_review.json` clean (see fingerprint recheck below) | — |
 | `acceptance` | CLI `stages/ultraqa.json` status `clean` (see fingerprint recheck below) | — |
 | `verified` | **Only** `omg autopilot complete` after same-process accept | — |
@@ -176,8 +176,15 @@ Leaving `implement` for `review` requires evidence that work happened (or an
 explicit audited no-op):
 
 1. **Workspace fingerprint drift** — on entering `implement`, the CLI records
-   `implement_workspace_fp` (same `product_hash` helper as UltraQA). A later
-   transition to `review` passes if the current workspace hash differs.
+   `implement_workspace_fp` via a **dedicated**
+   `autopilot._implement_workspace_fingerprint` helper (curated product
+   surfaces: `omg_cli/` in full, `plugin.json`, `hooks/`, `skills/`,
+   `agents/`, `templates/`). A later transition to `review` passes if the
+   current fingerprint differs. This is a separate helper from
+   `qa.product_hash` (which only hashes `omg_cli/**/*.py` and also backs
+   UltraQA's acceptance repair-cycle semantics) — implementation work
+   confined to non-Python product surfaces would otherwise be invisible to
+   this gate without ever changing QA's own hash semantics.
 2. **On-disk CLI stamp** — a real implementation receipt under `.omg/state/…`
    (not forged inline JSON).
 3. **Break-glass no-change** — `evidence.no_change_reason` + `break_glass=true`

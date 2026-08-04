@@ -471,6 +471,52 @@ def test_implement_to_review_rejects_inline_receipt_without_break_glass(
     assert status_autopilot(tmp_path, rid)["phase"] == "implement"
 
 
+def test_implement_fingerprint_covers_non_python_product_surfaces(
+    tmp_path: Path,
+) -> None:
+    """P1 regression: qa.product_hash only hashes omg_cli/**/*.py, so a
+    change confined to plugin.json / hooks/ / skills/ / agents/ / templates/
+    (or a non-.py file under omg_cli/) is invisible to it. The implement-gate
+    fingerprint must still detect such a change."""
+    from omg_cli.autopilot import _implement_workspace_fingerprint
+    from omg_cli.qa import product_hash
+
+    (tmp_path / "omg_cli").mkdir()
+    (tmp_path / "omg_cli" / "core.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "hooks").mkdir()
+    (tmp_path / "hooks" / "hooks.json").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "plugin.json").write_text('{"v": 1}\n', encoding="utf-8")
+
+    fp_before = _implement_workspace_fingerprint(tmp_path)
+    qa_before = product_hash(tmp_path)
+
+    (tmp_path / "plugin.json").write_text('{"v": 2}\n', encoding="utf-8")
+    (tmp_path / "hooks" / "hooks.json").write_text('{"changed": true}\n', encoding="utf-8")
+
+    fp_after = _implement_workspace_fingerprint(tmp_path)
+    qa_after = product_hash(tmp_path)
+
+    assert fp_after != fp_before
+    # Confirms the narrower QA hash really is blind to this change — proof
+    # the implement gate needed its own helper rather than reusing it.
+    assert qa_after == qa_before
+
+
+def test_implement_to_review_allows_non_python_product_change(
+    tmp_path: Path,
+) -> None:
+    """Real gate path: a change confined to a curated non-.py product
+    surface (hooks/) must register as implementation work (P1)."""
+    st = start_autopilot(tmp_path, "non-py product change", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "hooks.json").write_text('{"changed": true}\n', encoding="utf-8")
+    transition(tmp_path, rid, "review")
+    assert status_autopilot(tmp_path, rid)["phase"] == "review"
+
+
 def test_try_advance_after_launch_stalls_implement_without_work_evidence(
     tmp_path: Path,
 ) -> None:

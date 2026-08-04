@@ -28,6 +28,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   implement entry, a real on-disk CLI implementation receipt, or audited
   `no_change_reason` / inline receipt with `break_glass=true`; unattended
   auto-advance records `gate_failure` instead of silently skipping.
+- **Implement-gate fingerprint (Codex PR review P1):** the implement→review
+  work gate no longer reuses `qa.product_hash` (which only hashes
+  `omg_cli/**/*.py`, missing changes confined to `plugin.json`, `hooks/`,
+  `skills/`, `agents/`, `templates/`, or non-`.py` files under `omg_cli/`).
+  A dedicated `autopilot._implement_workspace_fingerprint` helper covers
+  those curated product surfaces without changing `qa.product_hash`
+  semantics used for UltraQA acceptance.
 - **Autopilot sidecar writes:** `autopilot.json` and stage invalidation use
   temp-file + `os.replace` atomic publish (mini-WAL; cross-file WAL still planned).
 - **Resume bundle v1:** `omg resume` emits partial `resume_bundle`

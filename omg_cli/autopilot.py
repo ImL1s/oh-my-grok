@@ -6,6 +6,7 @@ Does not write verified except via same-process set_verified after acceptance.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import datetime, timezone
@@ -149,11 +150,69 @@ def stage_qa_is_clean(root: Path | str, run_id: str) -> bool:
     return True
 
 
-def _workspace_fingerprint(root: Path | str) -> str:
-    """Stable hash of tracked product files, reusing ``qa.product_hash``."""
-    from omg_cli.qa import product_hash
+# Curated product surfaces for the implement→review work gate. Deliberately
+# broader than ``qa.product_hash`` (which only covers ``omg_cli/**/*.py`` and
+# also backs UltraQA acceptance repair-cycle semantics — this helper must
+# never change that hash's behavior, or ultraqa's "unchanged hash" repair
+# check would silently break). ``omg_cli`` is hashed in full (not just
+# ``*.py``) since it is small enough to be cheap (~200 files).
+_IMPLEMENT_FINGERPRINT_ROOTS: tuple[str, ...] = (
+    "omg_cli",
+    "plugin.json",
+    "hooks",
+    "skills",
+    "agents",
+    "templates",
+)
 
-    return product_hash(root)
+
+def _implement_workspace_fingerprint(root: Path | str) -> str:
+    """Stable hash of curated product surfaces for the implement→review gate.
+
+    A separate helper from ``qa.product_hash`` on purpose: implementation
+    work confined to non-Python product surfaces (``plugin.json``, ``hooks/``,
+    ``skills/``, ``agents/``, ``templates/``, or non-``.py`` files under
+    ``omg_cli/``) must still register as work here, without touching
+    ``qa.product_hash``'s narrower semantics used for QA/acceptance.
+    """
+    root = Path(root).resolve()
+    files: set[Path] = set()
+    any_root_present = False
+    for name in _IMPLEMENT_FINGERPRINT_ROOTS:
+        target = root / name
+        if not target.exists():
+            continue
+        any_root_present = True
+        if target.is_file():
+            files.add(target)
+        elif target.is_dir():
+            files.update(fp for fp in target.rglob("*") if fp.is_file())
+    if not any_root_present:
+        # Fixture/non-product root (e.g. unit-test tmp_path with none of the
+        # curated roots present): fall back to hashing every file so
+        # fingerprint drift is still detected, mirroring qa.product_hash's
+        # own temp-fixture fallback.
+        skip = {".omg", ".git"}
+        for fp in root.rglob("*"):
+            if fp.is_file() and not fp.is_symlink():
+                if not any(part in skip for part in fp.relative_to(root).parts):
+                    files.add(fp)
+    h = hashlib.sha256()
+    for fp in sorted(files):
+        if fp.is_symlink():
+            continue
+        try:
+            rel = str(fp.relative_to(root))
+        except ValueError:
+            rel = str(fp)
+        h.update(rel.encode("utf-8"))
+        h.update(b"\0")
+        try:
+            h.update(fp.read_bytes())
+        except OSError:
+            continue
+        h.update(b"\0")
+    return h.hexdigest()
 
 
 def _implementation_work_evidence(
@@ -165,6 +224,9 @@ def _implementation_work_evidence(
     break_glass: bool,
 ) -> tuple[bool, str | None]:
     """True + optional gate_audit label when implement→review has proof of work."""
+    stored_fp = state.get("implement_workspace_fp")
+    if stored_fp is not None and _implement_workspace_fingerprint(root) != stored_fp:
+        return True, None
     receipt = ev.get("implementation_receipt")
     if isinstance(receipt, dict) and receipt.get("writer") == CLI_WRITER:
         if break_glass:
@@ -172,9 +234,6 @@ def _implementation_work_evidence(
             # CLI stamp — writer=="omg-cli" here is unauthenticated and
             # trivially forgeable, so it is audited the same as no_change.
             return True, "break_glass:implementation_receipt"
-    stored_fp = state.get("implement_workspace_fp")
-    if stored_fp is not None and _workspace_fingerprint(root) != stored_fp:
-        return True, None
     if ev.get("no_change_reason") and break_glass:
         return True, "break_glass:no_change"
     return False, None
@@ -413,7 +472,7 @@ def transition(
             invalidate_quality_stages(
                 root, run_id, reason=f"(re)implement from {src}"
             )
-            state["implement_workspace_fp"] = _workspace_fingerprint(root)
+            state["implement_workspace_fp"] = _implement_workspace_fingerprint(root)
         if next_phase == "ralplan" and src in {"review", "qa"}:
             state["cycles"]["ralplan"] = int(state["cycles"].get("ralplan") or 0) + 1
             # Stale clean stamps must not open QA/acceptance after replan
