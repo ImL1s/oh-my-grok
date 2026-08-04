@@ -153,6 +153,21 @@ def invalidate_ralplan_consensus(
         pass
 
 
+def _clear_invalidation(state: dict[str, Any]) -> None:
+    """Drop stale ``invalidated``/``invalidated_reason``/``invalidated_at``.
+
+    Called on every accept write (legacy + strict-v2) and at the start of a
+    fresh strict-v2 consensus attempt so a prior replan's invalidation stamp
+    never survives past its purpose: once a genuinely fresh cycle produces a
+    new ``accepted: true`` (or begins a new attempt after invalidation),
+    ``_consensus_ready`` must stop being fenced by history it no longer
+    reflects.
+    """
+    state.pop("invalidated", None)
+    state.pop("invalidated_reason", None)
+    state.pop("invalidated_at", None)
+
+
 def initial_ralplan_state(
     *,
     run_id: str,
@@ -665,6 +680,7 @@ def _run_ralplan_v1(
         state["status"] = "accepted"
         state["accepted"] = True
         state["stage"] = "accepted"
+        _clear_invalidation(state)
         save_ralplan_state(root_path, run_id, state)
         write_status(
             root_path,
@@ -934,6 +950,12 @@ def _run_ralplan_v2(
                 return 1
             if state.get("accepted") is True:
                 return 0
+            if state.get("invalidated") is True:
+                # Fresh consensus attempt under lease: a mid-run replan must
+                # not stay fenced by a stale invalidation stamp once a new
+                # attempt actually begins (clear-on-accept below is the
+                # primary guard; this covers the window before it).
+                _clear_invalidation(state)
             state["max_rounds"] = ceiling
             save_ralplan_state(root, run_id, state)
 
@@ -1040,6 +1062,7 @@ def _run_ralplan_v2(
                             state.update(
                                 {"status": "accepted", "stage": "accepted", "accepted": True}
                             )
+                            _clear_invalidation(state)
                             save_ralplan_state(root, run_id, state)
                             write_status(
                                 root,

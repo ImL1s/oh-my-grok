@@ -70,6 +70,193 @@ def test_invalidate_ralplan_consensus_mutates_valid_cli_stamp(tmp_path):
     assert on_disk.get("invalidated") is True
 
 
+def _v2_approve_payload(stage: str, *, run_id: str, round_n: int, **identity):
+    """Full structured proposal accepted by ``_validate_v2_proposal``."""
+    payload = {
+        "schema_version": 2,
+        "run_id": run_id,
+        "stage": stage,
+        "role": stage,
+        "round": round_n,
+        **identity,
+    }
+    if stage == "planner":
+        payload.update(
+            {
+                "verdict": "READY",
+                "plan": "do the thing",
+                "principles": "kiss",
+                "drivers": "ship it",
+                "options": "one viable path",
+                "acceptance": "tests pass",
+            }
+        )
+    elif stage == "architect":
+        payload.update(
+            {
+                "verdict": "APPROVE",
+                "steelman": "strongest viable interpretation",
+                "tradeoff": "safety before breadth",
+                "synthesis": "use the strict lifecycle",
+            }
+        )
+    elif stage == "critic":
+        payload.update(
+            {
+                "verdict": "APPROVE",
+                "options_assessment": "reviewed",
+                "premortem": "no blockers found",
+                "acceptance_assessment": "meets acceptance bar",
+                "test_plan": "unit + integration",
+                "synthesis": "approve",
+            }
+        )
+    return payload
+
+
+def _v2_full_approve_executor():
+    """Real-shaped stage executor: planner READY, architect/critic APPROVE."""
+
+    def execute(stage, **kwargs):
+        payload = _v2_approve_payload(
+            stage,
+            run_id=kwargs["run_id"],
+            round_n=kwargs["round_n"],
+            invocation_id=kwargs["invocation_id"],
+            session_id=kwargs["session_id"],
+            input_sha256=kwargs["input_sha256"],
+        )
+        artifact = stage_artifact_json_path(
+            Path(kwargs["root"]), kwargs["run_id"], stage, kwargs["round_n"]
+        )
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        return 0
+
+    return execute
+
+
+def test_fresh_accept_clears_invalidation_strict_v2(tmp_path):
+    """R5-1: a fresh ``accepted: true`` write must clear a prior
+    ``invalidated``/``invalidated_reason``/``invalidated_at`` stamp so
+    ``_consensus_ready`` unlocks again — mirrors the real accept path used
+    by autopilot's ralplan phase (strict-v2 consensus), not a hand-crafted
+    stamp overwrite."""
+    from omg_cli.autopilot import _consensus_ready
+    from omg_cli.state import create_run
+
+    goal = "clear invalidation on fresh accept"
+    run = create_run(
+        tmp_path,
+        mode="ralplan",
+        goal=goal,
+        extra={"schema_version": 2, "lifecycle_version": 2},
+    )
+    run_id = run["run_id"]
+
+    rc = run_ralplan(
+        goal,
+        root=tmp_path,
+        existing_run_id=run_id,
+        dry_run=True,
+        stage_executor=_v2_full_approve_executor(),
+    )
+    assert rc == 0
+    state = load_ralplan_state(tmp_path, run_id)
+    assert state is not None
+    assert state["accepted"] is True
+    assert _consensus_ready(tmp_path, run_id) is True
+
+    invalidate_ralplan_consensus(tmp_path, run_id, reason="replan from review")
+    state = load_ralplan_state(tmp_path, run_id)
+    assert state is not None
+    assert state["accepted"] is False
+    assert state["invalidated"] is True
+    assert state["invalidated_reason"]
+    assert state["invalidated_at"]
+    assert _consensus_ready(tmp_path, run_id) is False
+
+    # Fresh consensus attempt (round 2) via the real strict-v2 accept path —
+    # not a hand-crafted stamp — must clear the invalidation on accept.
+    rc = run_ralplan(
+        goal,
+        root=tmp_path,
+        existing_run_id=run_id,
+        dry_run=True,
+        stage_executor=_v2_full_approve_executor(),
+    )
+    assert rc == 0
+
+    state = load_ralplan_state(tmp_path, run_id)
+    assert state is not None
+    assert state["accepted"] is True
+    assert "invalidated" not in state
+    assert "invalidated_reason" not in state
+    assert "invalidated_at" not in state
+    assert _consensus_ready(tmp_path, run_id) is True
+
+
+def test_invalidated_flag_cleared_at_fresh_v2_cycle_start(tmp_path):
+    """R5-1: entering a new strict-v2 consensus attempt under lease while
+    ``invalidated=True``/``accepted=False`` must clear the invalidation
+    stamp at cycle start — a mid-run resume must not stay fenced by stale
+    invalidation history even before any new accept happens."""
+    from omg_cli.evidence import CLI_WRITER
+
+    goal = "clear invalidation at cycle start"
+    from omg_cli.state import create_run
+
+    run = create_run(
+        tmp_path,
+        mode="ralplan",
+        goal=goal,
+        extra={"schema_version": 2, "lifecycle_version": 2},
+    )
+    run_id = run["run_id"]
+
+    path = ralplan_state_path(tmp_path, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stale_state = {
+        "writer": CLI_WRITER,
+        "schema_version": 2,
+        "lifecycle_version": 2,
+        "run_id": run_id,
+        "goal": goal,
+        "status": "draft",
+        "stage": "draft",
+        "round": 0,
+        "max_rounds": 5,
+        "history": [],
+        "sessions": {
+            role: {"session_id": "s-" + role, "attempts": 0}
+            for role in ("planner", "architect", "critic")
+        },
+        "accepted": False,
+        "invalidated": True,
+        "invalidated_reason": "stale replan",
+        "invalidated_at": "2026-01-01T00:00:00+00:00",
+    }
+    path.write_text(json.dumps(stale_state), encoding="utf-8")
+
+    # Executor that never writes a proposal: this cycle does not accept, it
+    # only proves the invalidation stamp is cleared at cycle start.
+    rc = run_ralplan(
+        goal,
+        root=tmp_path,
+        existing_run_id=run_id,
+        max_rounds=1,
+        dry_run=True,
+        stage_executor=lambda stage, **kwargs: 0,
+    )
+    assert rc != 0  # no APPROVE produced; consensus not reached this cycle
+
+    state = load_ralplan_state(tmp_path, run_id)
+    assert state is not None
+    assert "invalidated" not in state
+    assert "invalidated_reason" not in state
+    assert "invalidated_at" not in state
+
+
 def test_artifact_approve_detection(tmp_path):
     md = tmp_path / "v.md"
     md.write_text("## Verdict\nAPPROVE\n\nAll good.\n", encoding="utf-8")
