@@ -103,6 +103,27 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `omg interview start --attach-run RUN_ID` to seed CLI interview envelopes
   under an existing autopilot run in phase `interview` (task defaults to
   the run goal; fail-closed on phase/mode mismatch or task/goal disagreement).
+- **Ralplan invalidation cleared on fresh accept (Round 5 / R5-1):** writing
+  `accepted=true` to CLI `ralplan.json` (legacy + strict-v2 paths) clears
+  `invalidated` / `invalidated_reason` / `invalidated_at`; a new strict-v2
+  consensus attempt also clears stale invalidation at cycle start so a prior
+  replan fence does not block a genuinely fresh ralplan round.
+- **Ralplan invalidation on any re-entry with prior stamp (Round 5 / R5-2):**
+  entering `ralplan` when a CLI-owned `ralplan.json` already exists for the
+  run_id invalidates that stamp and review/QA stamps regardless of `src` —
+  closes `review→blocked→interview→ralplan` bypass where a detour through
+  `interview` made `src=="interview"` again while a stale accepted stamp
+  still sat on disk; first `interview→ralplan` with no stamp remains a no-op.
+- **Interview attach-run re-authorize under lease (Round 5 / R5-3):**
+  `omg interview start --attach-run` re-loads the run and re-checks
+  mode/phase/non-terminal/goal match after acquiring the execution lease,
+  closing a TOCTOU race between pre-lease attach checks and the interview
+  envelope write.
+- **Embedded ralplan bound to frozen autopilot goal + phase (Round 5 / R5-4):**
+  `omg ralplan * --run RUN` against an autopilot run requires
+  `phase==ralplan` and a `--run` goal that exactly matches the frozen run
+  goal; `_consensus_ready` also rejects accepted stamps whose `goal` field
+  disagrees with the current run goal (defense in depth).
 
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —

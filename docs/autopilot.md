@@ -206,9 +206,23 @@ omg autopilot transition --run "$RUN" --phase review \
 Re-entering `review` from `blocked` (or `rework` / `implement`) invalidates
 prior review/QA stamps so a pre-block clean stamp cannot reopen `qa`.
 
-Re-entering `ralplan` from any non-interview source (e.g. `review`, `qa`,
-`blocked`) invalidates the prior accepted `ralplan.json` stamp and review/QA
-stamps — a fresh ralplan consensus is required before `implement` again.
+Re-entering `ralplan` when a CLI-owned `ralplan.json` stamp already exists
+for the run invalidates that stamp and review/QA stamps — regardless of
+`src`. This closes detours such as `review→blocked→interview→ralplan` where
+`src` is `interview` again but a stale accepted stamp from before the
+blocked excursion still sits on disk. Only the first `interview→ralplan`
+handoff (no stamp yet) is a no-op. A fresh accept write clears
+`invalidated` on the stamp; a new strict-v2 consensus attempt also clears
+stale invalidation at cycle start.
+
+`omg ralplan * --run RUN` embedded in an autopilot run is fail-closed:
+the autopilot FSM must be at `phase==ralplan`, and the CLI goal must match
+the frozen run goal exactly. `_consensus_ready` additionally rejects
+accepted stamps whose `goal` field disagrees with the current run goal.
+
+`omg interview start --attach-run RUN` re-verifies mode/phase/non-terminal/
+goal match **under the execution lease** after pre-lease attach checks,
+closing a TOCTOU race before writing `interview.json`.
 
 ### Implement → review work gate
 
