@@ -317,7 +317,11 @@ def _default_process_identity_matches(pid: int, process_start_identity: str) -> 
         observed = process_starttime(pid)
     except Exception:  # pragma: no cover - platform fallback
         observed = None
-    return observed is None or observed == process_start_identity
+    # Fail-closed: an unavailable start time is unknown, not a match — a live
+    # PID alone cannot rule out reuse, so treat it the same as a mismatch
+    # (caller falls back to generation-fenced takeover instead of assuming
+    # the existing lease owner is still the same process).
+    return observed is not None and observed == process_start_identity
 
 
 def _validate_hud_lease(lease: Mapping[str, Any]) -> dict[str, Any]:
