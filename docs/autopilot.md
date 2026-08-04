@@ -210,7 +210,8 @@ work happened (or an explicit audited no-op):
    `implement_workspace_fp` via a **dedicated**
    `autopilot._implement_workspace_fingerprint` helper (curated product
    surfaces: `omg_cli/` in full, `plugin.json`, `hooks/`, `skills/`,
-   `agents/`, `templates/`). A later transition to `review` passes if the
+   `agents/`, `templates/`, `scripts/`, `bin/`). A later transition to
+   `review` passes if the
    current fingerprint differs. This is a separate helper from
    `qa.product_hash` (which only hashes `omg_cli/**/*.py` and also backs
    UltraQA's acceptance repair-cycle semantics) — implementation work

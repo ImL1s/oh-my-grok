@@ -89,6 +89,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   CLI `ralplan.json` with `writer`, `run_id`, and `accepted=true`;
   `status.ralplan_consensus` and artifact markers alone no longer unlock
   `implement`.
+- **Implement-gate fingerprint entrypoints (Round 3 / R3-1):**
+  `_implement_workspace_fingerprint` now includes `scripts/` and `bin/` so
+  install/CLI surface edits register as implement work and bind review/QA
+  freshness rechecks — previously those paths were omitted from the curated
+  fingerprint tuple.
 
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —
