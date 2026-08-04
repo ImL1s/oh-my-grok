@@ -125,13 +125,20 @@ def invalidate_ralplan_consensus(
     later ralplan cycle after review/qa bumps back into replan — mirrors
     ``autopilot.invalidate_quality_stages`` / ``implementation.
     invalidate_implementation_receipt``: mark in place (audit trail
-    preserved) rather than delete. No-op when no ralplan.json exists yet.
+    preserved) rather than delete. No-op when no ralplan.json exists yet,
+    or when the on-disk stamp is not a valid CLI-owned record for this run
+    (wrong ``writer`` or ``run_id`` mismatch) — same fail-closed guard as
+    ``invalidate_implementation_receipt``.
     Also clears ``status.ralplan_consensus`` via ``merge_status_fields``
     when a status.json exists for this run.
     """
     root = Path(root).resolve()
     data = load_ralplan_state(root, run_id)
-    if data is not None:
+    if (
+        data is not None
+        and data.get("writer") == CLI_WRITER
+        and data.get("run_id") == run_id
+    ):
         data["accepted"] = False
         data["invalidated"] = True
         data["invalidated_reason"] = reason

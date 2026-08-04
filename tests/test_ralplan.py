@@ -10,6 +10,7 @@ from omg_cli.ralplan import (
     READ_ONLY_STAGES,
     artifact_contains_approve,
     build_stage_prompt,
+    invalidate_ralplan_consensus,
     load_ralplan_state,
     ralplan_state_path,
     run_ralplan,
@@ -23,6 +24,50 @@ from omg_cli.state import load_active_run
 
 def test_default_max_rounds_is_three():
     assert DEFAULT_MAX_ROUNDS == 3
+
+
+def test_invalidate_ralplan_consensus_fail_closed_on_writer_mismatch(tmp_path):
+    """Mirrors invalidate_implementation_receipt's fail-closed guard: only
+    mutate a stamp that is actually CLI-owned for this run — an untrusted
+    or foreign-run stamp must be left alone rather than silently rewritten."""
+    path = ralplan_state_path(tmp_path, "run-a")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    forged = {"writer": "not-omg-cli", "run_id": "run-a", "accepted": True}
+    path.write_text(json.dumps(forged), encoding="utf-8")
+
+    invalidate_ralplan_consensus(tmp_path, "run-a", reason="test")
+
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk == forged  # untouched: wrong writer
+
+
+def test_invalidate_ralplan_consensus_fail_closed_on_run_id_mismatch(tmp_path):
+    path = ralplan_state_path(tmp_path, "run-a")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    from omg_cli.evidence import CLI_WRITER
+
+    foreign = {"writer": CLI_WRITER, "run_id": "some-other-run", "accepted": True}
+    path.write_text(json.dumps(foreign), encoding="utf-8")
+
+    invalidate_ralplan_consensus(tmp_path, "run-a", reason="test")
+
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk == foreign  # untouched: run_id mismatch
+
+
+def test_invalidate_ralplan_consensus_mutates_valid_cli_stamp(tmp_path):
+    path = ralplan_state_path(tmp_path, "run-a")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    from omg_cli.evidence import CLI_WRITER
+
+    valid = {"writer": CLI_WRITER, "run_id": "run-a", "accepted": True}
+    path.write_text(json.dumps(valid), encoding="utf-8")
+
+    invalidate_ralplan_consensus(tmp_path, "run-a", reason="test")
+
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk.get("accepted") is False
+    assert on_disk.get("invalidated") is True
 
 
 def test_artifact_approve_detection(tmp_path):

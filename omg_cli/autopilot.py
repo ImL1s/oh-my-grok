@@ -559,7 +559,14 @@ def transition(
                 root, run_id, reason=f"(re)implement from {src}"
             )
             state["implement_workspace_fp"] = _implement_workspace_fingerprint(root)
-        if next_phase == "ralplan" and src in {"review", "qa"}:
+        if next_phase == "ralplan" and src not in {"interview", "init"}:
+            # Any non-linear (re-)entry into ralplan — review/qa replan,
+            # AND blocked→ralplan (blocked can be reached from review/qa/
+            # implement, so a stale accepted stamp may still be sitting
+            # there) — must not leave stale stamps behind. Only the first
+            # linear interview→ralplan handoff (and init→ralplan, the
+            # skip-interview creation edge) is exempt: nothing has been
+            # accepted yet on that path.
             state["cycles"]["ralplan"] = int(state["cycles"].get("ralplan") or 0) + 1
             # Stale clean stamps must not open QA/acceptance after replan
             invalidate_quality_stages(
