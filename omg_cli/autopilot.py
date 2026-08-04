@@ -98,9 +98,13 @@ def stage_review_is_clean(root: Path | str, run_id: str) -> bool:
     diff_hash = data.get("diff_hash")
     cr_stamp = data.get("code_reviewer_stamp")
     ar_stamp = data.get("architect_stamp")
-    if not diff_hash or not isinstance(cr_stamp, dict) or not isinstance(ar_stamp, dict):
-        # Legacy stamp without hash fields: keep prior clean-flag-only behavior.
+    if not diff_hash and cr_stamp is None and ar_stamp is None:
+        # Legacy stamp without any hash/lane fields: keep prior clean-flag-only behavior.
         return True
+    if not diff_hash or not isinstance(cr_stamp, dict) or not isinstance(ar_stamp, dict):
+        # diff_hash present but lane stamps missing/malformed (or vice versa):
+        # fail closed rather than falling back to legacy clean-flag-only trust.
+        return False
     cr = evaluate_lane(
         role="code-reviewer", expected_diff_hash=diff_hash, proposal=None, stamped=cr_stamp
     )

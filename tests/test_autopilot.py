@@ -455,6 +455,37 @@ def test_stale_qa_stamp_rejected_when_product_hash_drifts(tmp_path: Path) -> Non
         transition(tmp_path, rid, "acceptance")
 
 
+def test_review_stamp_rejected_when_diff_hash_present_but_lane_stamps_stripped(
+    tmp_path: Path,
+) -> None:
+    """diff_hash present + clean=true but code_reviewer_stamp/architect_stamp
+    stripped/malformed must fail closed, not fall back to legacy
+    clean-flag-only trust — closes a downgrade gap where an attacker (or a
+    buggy writer) drops the lane stamps while keeping the top-level fields
+    that used to be sufficient on their own."""
+    from omg_cli.autopilot import stage_review_is_clean
+    from omg_cli.review import review_state_path
+    import json
+
+    st = start_autopilot(tmp_path, "stripped lane stamps", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    transition(tmp_path, rid, "review")
+    _stamp_review_clean(tmp_path, rid)
+    assert stage_review_is_clean(tmp_path, rid) is True
+
+    path = review_state_path(tmp_path, rid)
+    data = json.loads(path.read_text())
+    assert data.get("diff_hash")
+    data["code_reviewer_stamp"] = None
+    data["architect_stamp"] = None
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+    assert stage_review_is_clean(tmp_path, rid) is False
+    with pytest.raises(AutopilotError, match="structured_review"):
+        transition(tmp_path, rid, "qa")
+
+
 def test_legacy_v1_refused(tmp_path: Path) -> None:
     run = create_run(tmp_path, mode="autopilot", goal="legacy")
     with pytest.raises(AutopilotError):
