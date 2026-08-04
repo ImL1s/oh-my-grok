@@ -1066,6 +1066,11 @@ def _consensus_ready(root: Path, run_id: str) -> bool:
     a prior accepted round's flag surviving a later replan) without a
     matching on-disk stamp; the ``ralplan.json`` stamp is the source of
     truth and must show ``writer``, ``run_id``, and ``accepted`` together.
+
+    Defense in depth (R5-4): when the stamp carries a ``goal`` field, it
+    must match this run's frozen goal — closes a foreign/mistargeted stamp
+    even when writer/run_id/accepted otherwise look valid. Stamps without
+    a ``goal`` field (legacy shape) are unaffected.
     """
     from omg_cli.ralplan import ralplan_state_path
 
@@ -1078,7 +1083,15 @@ def _consensus_ready(root: Path, run_id: str) -> bool:
         return False
     if data.get("invalidated") is True:
         return False
-    return data.get("accepted") is True
+    if data.get("accepted") is not True:
+        return False
+    goal = data.get("goal")
+    if goal is not None:
+        run = load_run(root, run_id)
+        frozen_goal = str((run or {}).get("goal") or "").strip()
+        if str(goal).strip() != frozen_goal:
+            return False
+    return True
 
 
 def _record_gate_failure(

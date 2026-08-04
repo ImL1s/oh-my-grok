@@ -748,3 +748,46 @@ def test_ralplan_run_allows_autopilot_embed(tmp_path):
     assert active is not None
     assert active["run_id"] == rid
     assert active.get("mode") == "autopilot"
+
+
+def test_ralplan_run_rejects_mismatched_goal_for_autopilot(tmp_path, capsys):
+    """R5-4: embedding ralplan into an autopilot run must bind to the
+    frozen run goal — a mismatched CLI goal is rejected rather than
+    silently re-targeting a running autopilot's plan."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "embed me", skip_interview=True)
+    rid = st["run_id"]
+    rc = run_ralplan(
+        "a totally different goal",
+        root=tmp_path,
+        dry_run=True,
+        max_rounds=1,
+        existing_run_id=rid,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "goal" in err.lower()
+    assert not (tmp_path / ".omg" / "state" / "runs" / rid / "ralplan.json").is_file()
+
+
+def test_ralplan_run_rejects_wrong_autopilot_phase(tmp_path, capsys):
+    """R5-4: embedding ralplan into an autopilot run parked outside the
+    ``ralplan`` phase (e.g. still at ``interview``) must be rejected —
+    the CLI FSM must never rewrite a phase it does not own."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "embed me", skip_interview=False)
+    rid = st["run_id"]
+    assert st["phase"] == "interview"
+    rc = run_ralplan(
+        "embed me",
+        root=tmp_path,
+        dry_run=True,
+        max_rounds=1,
+        existing_run_id=rid,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "phase" in err.lower()
+    assert not (tmp_path / ".omg" / "state" / "runs" / rid / "ralplan.json").is_file()

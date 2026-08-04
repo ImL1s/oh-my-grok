@@ -356,6 +356,47 @@ def test_blocked_to_ralplan_invalidates_accepted_ralplan_stamp(
     assert status_autopilot(tmp_path, rid)["phase"] == "implement"
 
 
+def test_consensus_ready_rejects_goal_mismatch(tmp_path: Path) -> None:
+    """R5-4 defense-in-depth: an accepted ``ralplan.json`` stamp whose
+    ``goal`` field disagrees with the frozen autopilot run goal must not
+    unlock implement — closes a foreign/mistargeted stamp even when
+    writer/run_id/accepted otherwise look valid. Stamps with no ``goal``
+    field (legacy shape) are unaffected."""
+    import json as _json
+
+    from omg_cli.autopilot import _consensus_ready
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.ralplan import ralplan_state_path
+
+    st = start_autopilot(tmp_path, "bind to frozen goal", skip_interview=True)
+    rid = st["run_id"]
+
+    path = ralplan_state_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _stamp(goal: str) -> None:
+        path.write_text(
+            _json.dumps(
+                {
+                    "writer": CLI_WRITER,
+                    "run_id": rid,
+                    "goal": goal,
+                    "accepted": True,
+                    "status": "accepted",
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    _stamp("a different goal entirely")
+    assert _consensus_ready(tmp_path, rid) is False
+
+    _stamp("bind to frozen goal")
+    assert _consensus_ready(tmp_path, rid) is True
+
+
 def test_blocked_interview_ralplan_invalidates_accepted_ralplan_stamp(
     tmp_path: Path,
 ) -> None:

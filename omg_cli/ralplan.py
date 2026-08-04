@@ -153,6 +153,43 @@ def invalidate_ralplan_consensus(
         pass
 
 
+def _authorize_autopilot_embedding(
+    root: Path, run: dict[str, Any], goal: str
+) -> None:
+    """Fail-closed gate when embedding ralplan into an autopilot run.
+
+    No-op unless ``run['mode'] == 'autopilot'``. When it is:
+
+    - the CLI-supplied ``goal`` must equal the frozen run goal exactly —
+      a mismatched goal is rejected rather than silently re-targeting a
+      running autopilot's plan;
+    - the autopilot FSM must currently be parked at ``phase == 'ralplan'``
+      (mirrors ``interview._authorize_run_mode``'s embedding gate).
+
+    Raises ``ValueError`` with a clear message on any violation.
+    """
+    if run.get("mode") != "autopilot":
+        return
+    frozen_goal = str(run.get("goal") or "").strip()
+    requested_goal = (goal or "").strip()
+    if requested_goal != frozen_goal:
+        raise ValueError(
+            "--run goal must match the frozen autopilot goal; "
+            f"got {requested_goal!r}, expected {frozen_goal!r}"
+        )
+
+    from omg_cli.autopilot import AutopilotError, load_autopilot
+
+    run_id = str(run.get("run_id"))
+    try:
+        autopilot_state = load_autopilot(root, run_id)
+    except (AutopilotError, json.JSONDecodeError, OSError) as exc:
+        raise ValueError(f"cannot verify autopilot ralplan phase: {exc}") from exc
+    phase = autopilot_state.get("phase")
+    if phase != "ralplan":
+        raise ValueError(f"autopilot run not in ralplan phase: {phase!r}")
+
+
 def _clear_invalidation(state: dict[str, Any]) -> None:
     """Drop stale ``invalidated``/``invalidated_reason``/``invalidated_at``.
 
@@ -937,6 +974,20 @@ def _run_ralplan_v2(
         with execution_lease(
             root, run_id, intent="ralplan-v2-consensus", timeout_s=5.0
         ) as lease:
+            current_run = load_run(root, run_id)
+            if current_run is None:
+                print(f"omg ralplan: no run found: {run_id!r}", file=sys.stderr)
+                return 1
+            try:
+                # Re-check under the execution lease: the outer authorization
+                # in run_ralplan() ran before this lock was held, so a
+                # concurrent autopilot transition could otherwise race the
+                # phase check past it (goal is frozen at run creation and
+                # cannot race, but phase can).
+                _authorize_autopilot_embedding(root, current_run, goal)
+            except ValueError as exc:
+                print(f"omg ralplan: {exc}", file=sys.stderr)
+                return 1
             stages_dir(root, run_id).mkdir(parents=True, exist_ok=True)
             state = load_ralplan_state(root, run_id)
             if state is None:
@@ -1160,6 +1211,11 @@ def run_ralplan(
             f"only embeddable for {sorted(_EMBEDDABLE_RALPLAN_MODES)}",
             file=sys.stderr,
         )
+        return 1
+    try:
+        _authorize_autopilot_embedding(root_path, run, goal)
+    except ValueError as exc:
+        print(f"omg ralplan: {exc}", file=sys.stderr)
         return 1
     try:
         schema = classify_run_schema(run)
