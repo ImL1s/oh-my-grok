@@ -148,6 +148,33 @@ def stage_qa_is_clean(root: Path | str, run_id: str) -> bool:
     return True
 
 
+def _workspace_fingerprint(root: Path | str) -> str:
+    """Stable hash of tracked product files, reusing ``qa.product_hash``."""
+    from omg_cli.qa import product_hash
+
+    return product_hash(root)
+
+
+def _implementation_work_evidence(
+    root: Path,
+    run_id: str,
+    state: Mapping[str, Any],
+    ev: Mapping[str, Any],
+    *,
+    break_glass: bool,
+) -> tuple[bool, str | None]:
+    """True + optional gate_audit label when implement→review has proof of work."""
+    receipt = ev.get("implementation_receipt")
+    if isinstance(receipt, dict) and receipt.get("writer") == CLI_WRITER:
+        return True, None
+    stored_fp = state.get("implement_workspace_fp")
+    if stored_fp is not None and _workspace_fingerprint(root) != stored_fp:
+        return True, None
+    if ev.get("no_change_reason") and break_glass:
+        return True, "break_glass:no_change"
+    return False, None
+
+
 def invalidate_quality_stages(root: Path | str, run_id: str, *, reason: str) -> None:
     """Mark review/QA stage stamps stale after rework or replan (CLI write)."""
     from omg_cli.qa import qa_state_path
@@ -363,6 +390,24 @@ def transition(
                     "with a product_hash fingerprint matching the current "
                     "workspace; stale/drifted product_hash is rejected)"
                 )
+        if next_phase == "review" and src == "implement":
+            # implement→review must not silently pass with zero product
+            # change: require a workspace fingerprint drift since entering
+            # implement, a CLI-writer implementation_receipt, or an audited
+            # break_glass no_change_reason.
+            has_work, work_audit = _implementation_work_evidence(
+                root, run_id, state, ev, break_glass=break_glass
+            )
+            if not has_work:
+                raise AutopilotError(
+                    "no evidence of implementation work → no review "
+                    "(need a workspace fingerprint change since entering "
+                    "implement, evidence.implementation_receipt with "
+                    "writer=omg-cli, or evidence.no_change_reason + "
+                    "break_glass=true)"
+                )
+            if work_audit:
+                gate_audit = work_audit
         if next_phase == "implement":
             # Any (re-)entry into implement produces new, unreviewed product
             # code. Prior clean review/QA stamps must never remain authoritative
@@ -371,6 +416,7 @@ def transition(
             invalidate_quality_stages(
                 root, run_id, reason=f"(re)implement from {src}"
             )
+            state["implement_workspace_fp"] = _workspace_fingerprint(root)
         if next_phase == "ralplan" and src in {"review", "qa"}:
             state["cycles"]["ralplan"] = int(state["cycles"].get("ralplan") or 0) + 1
             # Stale clean stamps must not open QA/acceptance after replan

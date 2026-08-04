@@ -41,6 +41,11 @@ def _ev_consensus_bg() -> dict:
     return {"consensus": True, "break_glass": True}
 
 
+def _ev_no_change_bg(reason: str = "no product change") -> dict:
+    """Test-only break-glass no-change gate for implement→review."""
+    return {"no_change_reason": reason, "break_glass": True}
+
+
 
 def _goal_bound_prd(tmp_path: Path, goal: str) -> dict:
     test_file = tmp_path / "tests" / "test_ok.py"
@@ -107,7 +112,7 @@ def _stamp_qa_clean(root: Path, run_id: str, *, tmp_path: Path | None = None) ->
 
 def _walk_to_acceptance(root: Path, rid: str, *, tmp_path: Path | None = None) -> None:
     transition(root, rid, "implement", evidence=_ev_consensus_bg())
-    transition(root, rid, "review")
+    transition(root, rid, "review", evidence=_ev_no_change_bg())
     _stamp_review_clean(root, rid)
     transition(root, rid, "qa")
     _stamp_qa_clean(root, rid, tmp_path=tmp_path)
@@ -215,7 +220,7 @@ def test_start_and_gated_transitions(tmp_path: Path) -> None:
         "implement",
         evidence=_ev_consensus_bg(),
     )
-    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
 
     # evidence_json alone cannot open QA — needs staged structured_review
     with pytest.raises(AutopilotError, match="structured_review"):
@@ -266,7 +271,7 @@ def test_complete_without_prd_or_ultraqa_refuses(tmp_path: Path) -> None:
     st = start_autopilot(tmp_path, "no prd no qa", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
     _stamp_review_clean(tmp_path, rid)
     transition(tmp_path, rid, "qa")
     # Frozen but never run → not clean; transition to acceptance requires clean
@@ -288,7 +293,7 @@ def test_try_advance_records_gate_failure(tmp_path: Path) -> None:
     st = start_autopilot(tmp_path, "gate failure surface", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
     _stamp_review_clean(tmp_path, rid)
     transition(tmp_path, rid, "qa")
     _stamp_qa_clean(tmp_path, rid)
@@ -378,7 +383,7 @@ def test_blocked_to_qa_still_requires_review(tmp_path: Path) -> None:
     st = start_autopilot(tmp_path, "blocked qa", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
     transition(tmp_path, rid, "blocked", reason="ops")
     with pytest.raises(AutopilotError, match="structured_review"):
         transition(tmp_path, rid, "qa")
@@ -392,6 +397,73 @@ def test_blocked_to_implement_requires_consensus(tmp_path: Path) -> None:
         transition(tmp_path, rid, "implement")
 
 
+def test_implement_to_review_requires_evidence_of_work(tmp_path: Path) -> None:
+    """implement→review must not silently pass with zero product change."""
+    st = start_autopilot(tmp_path, "impl gate", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    with pytest.raises(AutopilotError, match="implementation|no_change"):
+        transition(tmp_path, rid, "review")  # no receipt / no_change_reason
+    transition(
+        tmp_path,
+        rid,
+        "review",
+        evidence={"no_change_reason": "dry-run scaffold only", "break_glass": True},
+    )
+    assert status_autopilot(tmp_path, rid)["phase"] == "review"
+
+
+def test_implement_to_review_allows_workspace_fingerprint_change(
+    tmp_path: Path,
+) -> None:
+    """A real workspace change since entering implement is sufficient on its
+    own — no receipt or break_glass no_change needed."""
+    st = start_autopilot(tmp_path, "impl gate fp", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    (tmp_path / "changed.py").write_text("# product change\n", encoding="utf-8")
+    transition(tmp_path, rid, "review")
+    assert status_autopilot(tmp_path, rid)["phase"] == "review"
+
+
+def test_implement_to_review_allows_implementation_receipt(tmp_path: Path) -> None:
+    """A CLI-writer implementation_receipt is sufficient without a fp change."""
+    from omg_cli.evidence import CLI_WRITER
+
+    st = start_autopilot(tmp_path, "impl gate receipt", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    transition(
+        tmp_path,
+        rid,
+        "review",
+        evidence={
+            "implementation_receipt": {"writer": CLI_WRITER, "note": "work done"}
+        },
+    )
+    assert status_autopilot(tmp_path, rid)["phase"] == "review"
+
+
+def test_try_advance_after_launch_stalls_implement_without_work_evidence(
+    tmp_path: Path,
+) -> None:
+    """No silent advance: implement→review gate failure must stay on implement
+    and surface a gate_failure, not fall through to review."""
+    from omg_cli.autopilot import _try_advance_after_launch
+
+    st = start_autopilot(tmp_path, "impl gate stall", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    out = _try_advance_after_launch(tmp_path, rid, "implement")
+    assert out == "implement"
+    st2 = status_autopilot(tmp_path, rid)
+    assert st2["phase"] == "implement"
+    gate = st2.get("gate_failure")
+    assert isinstance(gate, dict)
+    assert gate.get("phase") == "implement"
+    assert gate.get("message")
+
+
 def test_rework_invalidates_review_stamp(tmp_path: Path) -> None:
     """After rework, a previous clean structured_review must not open QA."""
     from omg_cli.autopilot import stage_review_is_clean
@@ -399,7 +471,7 @@ def test_rework_invalidates_review_stamp(tmp_path: Path) -> None:
     st = start_autopilot(tmp_path, "rework stamp", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
     _stamp_review_clean(tmp_path, rid)
     assert stage_review_is_clean(tmp_path, rid) is True
     transition(tmp_path, rid, "rework", reason="findings")
@@ -419,7 +491,7 @@ def test_stale_review_stamp_rejected_when_diff_hash_drifts(tmp_path: Path) -> No
     st = start_autopilot(tmp_path, "stale review", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
     _stamp_review_clean(tmp_path, rid, diff="original diff")
     # Mutate the stamp's recorded top-level diff_hash so it no longer matches
     # what the nested code_reviewer_stamp/architect_stamp lanes approved.
@@ -440,7 +512,7 @@ def test_stale_qa_stamp_rejected_when_product_hash_drifts(tmp_path: Path) -> Non
     st = start_autopilot(tmp_path, "stale qa", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
     _stamp_review_clean(tmp_path, rid)
     transition(tmp_path, rid, "qa")
     _stamp_qa_clean(tmp_path, rid)
@@ -470,7 +542,7 @@ def test_review_stamp_rejected_when_diff_hash_present_but_lane_stamps_stripped(
     st = start_autopilot(tmp_path, "stripped lane stamps", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
     _stamp_review_clean(tmp_path, rid)
     assert stage_review_is_clean(tmp_path, rid) is True
 
@@ -499,7 +571,7 @@ def test_blocked_implement_roundtrip_invalidates_stale_stamps(tmp_path: Path) ->
     rid = st["run_id"]
     # Reach a clean qa the legitimate way.
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
     _stamp_review_clean(tmp_path, rid)
     transition(tmp_path, rid, "qa")
     _stamp_qa_clean(tmp_path, rid)
@@ -583,7 +655,7 @@ def test_qa_blocked_review_roundtrip_invalidates_review_stamp(tmp_path: Path) ->
     rid = st["run_id"]
     # Reach a clean qa the legitimate way.
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
     _stamp_review_clean(tmp_path, rid)
     assert stage_review_is_clean(tmp_path, rid) is True
     transition(tmp_path, rid, "qa")
@@ -612,6 +684,12 @@ def _stamp_gate_for(root: Path, kw: dict) -> int:
     phase = status_autopilot(root, run_id)["phase"]
     if phase == "ralplan":
         merge_status_fields(root, run_id, {"ralplan_consensus": True})
+    elif phase == "implement":
+        # Simulate grok producing a real product change so implement→review
+        # has workspace-fingerprint evidence of work.
+        (root / f"_autopilot_work_{run_id}.py").write_text(
+            "# simulated implementation work\n", encoding="utf-8"
+        )
     elif phase == "review":
         _stamp_review_clean(root, run_id)
     elif phase == "qa":
@@ -709,7 +787,7 @@ def test_run_autopilot_pauses_when_awaiting(
     st = start_autopilot(tmp_path, "ship it", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
     set_awaiting_confirmation(tmp_path, rid, True, reason="cli:pause")
     launched: list[bool] = []
 
@@ -742,7 +820,7 @@ def test_run_resume_reenters_current_phase(
     st = start_autopilot(tmp_path, "resume goal", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
     phases_seen: list[str] = []
 
     def _fake_launch(argv, **kw):
@@ -774,7 +852,7 @@ def test_run_autopilot_unattended_relaunches_on_stall(
     st = start_autopilot(tmp_path, "keep going", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
     launches = 0
 
     def _fake_launch(argv, **kw):
@@ -804,7 +882,7 @@ def test_run_autopilot_unattended_still_pauses_on_await(
     st = start_autopilot(tmp_path, "pause me", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
     set_awaiting_confirmation(tmp_path, rid, True, reason="need human")
     launches = 0
 
