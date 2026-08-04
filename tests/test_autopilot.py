@@ -389,6 +389,22 @@ def test_blocked_to_qa_still_requires_review(tmp_path: Path) -> None:
         transition(tmp_path, rid, "qa")
 
 
+def test_blocked_to_review_requires_work_evidence(tmp_path: Path) -> None:
+    """R2-3: recovering blocked→review must not bypass the implement→review
+    work-evidence gate — no fp drift/receipt/break_glass means no review."""
+    st = start_autopilot(tmp_path, "blocked review probe", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    transition(tmp_path, rid, "blocked", reason="ops")
+    with pytest.raises(AutopilotError, match="implementation|no_change"):
+        transition(tmp_path, rid, "review")
+    assert status_autopilot(tmp_path, rid)["phase"] == "blocked"
+    # A genuine workspace change (or break_glass no_change) still unlocks it.
+    (tmp_path / "changed.py").write_text("# product change\n", encoding="utf-8")
+    transition(tmp_path, rid, "review")
+    assert status_autopilot(tmp_path, rid)["phase"] == "review"
+
+
 def test_blocked_to_implement_requires_consensus(tmp_path: Path) -> None:
     st = start_autopilot(tmp_path, "blocked impl", skip_interview=True)
     rid = st["run_id"]
@@ -1031,10 +1047,12 @@ def test_qa_blocked_review_roundtrip_invalidates_review_stamp(tmp_path: Path) ->
     _stamp_review_clean(tmp_path, rid)
     assert stage_review_is_clean(tmp_path, rid) is True
     transition(tmp_path, rid, "qa")
-    # Detour that re-enters review without new product code, but still must
-    # not reopen qa on a pre-block stamp.
+    # Detour that re-enters review without new product code (R2-3: blocked→
+    # review now re-applies the work-evidence gate too, so an audited
+    # break_glass no_change is required here), but still must not reopen qa
+    # on a pre-block stamp.
     transition(tmp_path, rid, "blocked", reason="ops hiccup")
-    transition(tmp_path, rid, "review")
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
     assert stage_review_is_clean(tmp_path, rid) is False
     with pytest.raises(AutopilotError, match="review"):
         transition(tmp_path, rid, "qa")

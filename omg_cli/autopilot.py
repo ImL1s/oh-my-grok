@@ -516,11 +516,14 @@ def transition(
                     "with a product_hash fingerprint matching the current "
                     "workspace; stale/drifted product_hash is rejected)"
                 )
-        if next_phase == "review" and src == "implement":
-            # implement→review must not silently pass with zero product
+        if next_phase == "review" and src in {"implement", "blocked"}:
+            # implement→review (and blocked→review recovering from a paused
+            # implement cycle) must not silently pass with zero product
             # change: require a workspace fingerprint drift since entering
             # implement, a CLI-writer implementation_receipt, or an audited
-            # break_glass no_change_reason.
+            # break_glass no_change_reason. rework→review is intentionally
+            # excluded — rework already forces a fresh review stamp via the
+            # invalidation below without demanding new workspace evidence.
             has_work, work_audit = _implementation_work_evidence(
                 root, run_id, state, ev, break_glass=break_glass
             )
