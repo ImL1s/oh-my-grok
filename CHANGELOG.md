@@ -35,6 +35,15 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   A dedicated `autopilot._implement_workspace_fingerprint` helper covers
   those curated product surfaces without changing `qa.product_hash`
   semantics used for UltraQA acceptance.
+- **Implementation receipt now real (Codex PR review P2):** added
+  `omg_cli/implementation.py` with `stamp_implementation_receipt` /
+  `read_implementation_receipt`, writing a CLI-owned
+  `stages/implementation.json` (`writer=omg-cli`, `content_sha256`,
+  `stamped_at`) under `.omg/state/runs/<run_id>/`. The implement→review gate
+  now actually loads and trusts this on-disk stamp (fingerprint-rechecked)
+  without `break_glass` — previously the docs advertised this path but no
+  producer/reader existed, so it always fell through to the unauthenticated
+  inline-receipt break-glass path.
 - **Autopilot sidecar writes:** `autopilot.json` and stage invalidation use
   temp-file + `os.replace` atomic publish (mini-WAL; cross-file WAL still planned).
 - **Resume bundle v1:** `omg resume` emits partial `resume_bundle`

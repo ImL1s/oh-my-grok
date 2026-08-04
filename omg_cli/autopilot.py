@@ -225,8 +225,18 @@ def _implementation_work_evidence(
 ) -> tuple[bool, str | None]:
     """True + optional gate_audit label when implement→review has proof of work."""
     stored_fp = state.get("implement_workspace_fp")
-    if stored_fp is not None and _implement_workspace_fingerprint(root) != stored_fp:
+    current_fp = _implement_workspace_fingerprint(root)
+    if stored_fp is not None and current_fp != stored_fp:
         return True, None
+    from omg_cli.implementation import read_implementation_receipt
+
+    on_disk_receipt = read_implementation_receipt(root, run_id)
+    if isinstance(on_disk_receipt, dict):
+        # Trusted CLI-side stamp (writer verified by the reader itself, not
+        # caller-supplied evidence) — accepted without break_glass, but only
+        # while it still describes the current workspace.
+        if on_disk_receipt.get("content_sha256") == current_fp:
+            return True, "cli_receipt:implementation.json"
     receipt = ev.get("implementation_receipt")
     if isinstance(receipt, dict) and receipt.get("writer") == CLI_WRITER:
         if break_glass:

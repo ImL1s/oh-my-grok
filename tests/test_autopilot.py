@@ -517,6 +517,99 @@ def test_implement_to_review_allows_non_python_product_change(
     assert status_autopilot(tmp_path, rid)["phase"] == "review"
 
 
+def test_stamp_and_read_implementation_receipt_roundtrip(tmp_path: Path) -> None:
+    """P2: a real on-disk CLI implementation receipt round-trips and is
+    recognized as CLI-writer authoritative."""
+    from omg_cli.implementation import (
+        read_implementation_receipt,
+        stamp_implementation_receipt,
+    )
+
+    digest = "0" * 64
+    stamped = stamp_implementation_receipt(
+        tmp_path, "run-x", content_sha256=digest, note="worker finished"
+    )
+    assert stamped["writer"] == "omg-cli"
+    receipt = read_implementation_receipt(tmp_path, "run-x")
+    assert receipt is not None
+    assert receipt["writer"] == "omg-cli"
+    assert receipt["run_id"] == "run-x"
+    assert receipt["content_sha256"] == digest
+    assert receipt["note"] == "worker finished"
+
+
+def test_stamp_implementation_receipt_rejects_malformed_hash(tmp_path: Path) -> None:
+    from omg_cli.implementation import stamp_implementation_receipt
+
+    with pytest.raises(ValueError):
+        stamp_implementation_receipt(tmp_path, "run-x", content_sha256="not-a-hash")
+
+
+def test_read_implementation_receipt_rejects_forged_writer(tmp_path: Path) -> None:
+    """Fail-closed: a hand-written file claiming to be the receipt but with
+    the wrong writer must never be trusted."""
+    import json
+
+    from omg_cli.implementation import (
+        implementation_receipt_path,
+        read_implementation_receipt,
+    )
+
+    path = implementation_receipt_path(tmp_path, "run-x")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {"writer": "not-omg-cli", "run_id": "run-x", "content_sha256": "0" * 64}
+        ),
+        encoding="utf-8",
+    )
+    assert read_implementation_receipt(tmp_path, "run-x") is None
+
+
+def test_read_implementation_receipt_rejects_run_id_mismatch(tmp_path: Path) -> None:
+    """A receipt stamped for one run must not be readable under another."""
+    from omg_cli.implementation import (
+        read_implementation_receipt,
+        stamp_implementation_receipt,
+    )
+
+    stamp_implementation_receipt(tmp_path, "run-a", content_sha256="0" * 64)
+    assert read_implementation_receipt(tmp_path, "run-b") is None
+
+
+def test_implement_to_review_accepts_on_disk_cli_receipt_without_break_glass(
+    tmp_path: Path,
+) -> None:
+    """P2: a trusted on-disk CLI implementation receipt satisfies the
+    implement→review work gate on its own — no break_glass required."""
+    from omg_cli.autopilot import _implement_workspace_fingerprint, load_autopilot
+    from omg_cli.implementation import stamp_implementation_receipt
+
+    st = start_autopilot(tmp_path, "cli receipt gate", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    fp = _implement_workspace_fingerprint(tmp_path)
+    stamp_implementation_receipt(tmp_path, rid, content_sha256=fp, note="worker finished")
+    transition(tmp_path, rid, "review")  # no evidence, no break_glass
+    assert status_autopilot(tmp_path, rid)["phase"] == "review"
+    history = load_autopilot(tmp_path, rid)["history"]
+    assert history[-1].get("gate_audit") == "cli_receipt:implementation.json"
+
+
+def test_implement_to_review_rejects_stale_on_disk_receipt(tmp_path: Path) -> None:
+    """A receipt whose content_sha256 no longer matches the current
+    workspace must not satisfy the gate (stale stamp, not proof of work)."""
+    from omg_cli.implementation import stamp_implementation_receipt
+
+    st = start_autopilot(tmp_path, "stale cli receipt", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    stamp_implementation_receipt(tmp_path, rid, content_sha256="0" * 64)
+    with pytest.raises(AutopilotError, match="implementation|no_change"):
+        transition(tmp_path, rid, "review")
+    assert status_autopilot(tmp_path, rid)["phase"] == "implement"
+
+
 def test_try_advance_after_launch_stalls_implement_without_work_evidence(
     tmp_path: Path,
 ) -> None:

@@ -162,7 +162,7 @@ as `gate_audit` (for example `break_glass:consensus`, `break_glass:no_change`).
 |-------------|-------------------------|------------------------|
 | `ralplan` from `interview` | CLI interview `status=complete` | `interview_complete` + `break_glass` |
 | `implement` | CLI `ralplan` accepted / `ralplan_consensus` | `consensus` + `break_glass` |
-| `review` from `implement` | Workspace fingerprint drift (curated product surfaces) since implement entry, **or** on-disk CLI implementation receipt | `no_change_reason` + `break_glass`, **or** inline `implementation_receipt` + `break_glass` |
+| `review` from `implement` | Workspace fingerprint drift (curated product surfaces) since implement entry, **or** on-disk CLI implementation receipt (`stages/implementation.json`, fingerprint-rechecked) | `no_change_reason` + `break_glass`, **or** inline `implementation_receipt` + `break_glass` |
 | `qa` | CLI `stages/structured_review.json` clean (see fingerprint recheck below) | — |
 | `acceptance` | CLI `stages/ultraqa.json` status `clean` (see fingerprint recheck below) | — |
 | `verified` | **Only** `omg autopilot complete` after same-process accept | — |
@@ -185,8 +185,16 @@ explicit audited no-op):
    UltraQA's acceptance repair-cycle semantics) — implementation work
    confined to non-Python product surfaces would otherwise be invisible to
    this gate without ever changing QA's own hash semantics.
-2. **On-disk CLI stamp** — a real implementation receipt under `.omg/state/…`
-   (not forged inline JSON).
+2. **On-disk CLI stamp** — `omg_cli.implementation.stamp_implementation_receipt`
+   writes a real, CLI-owned `stages/implementation.json`
+   (`writer=omg-cli`, `content_sha256`, `stamped_at`) under
+   `.omg/state/runs/<run_id>/stages/`. `read_implementation_receipt` verifies
+   `writer`/`run_id` before trusting it, and the gate additionally rechecks
+   `content_sha256` against a fresh `_implement_workspace_fingerprint(root)`
+   recompute — a stale/tampered receipt does not satisfy the gate. Accepted
+   **without** `break_glass` (audited as `cli_receipt:implementation.json`).
+   No CLI subcommand calls the stamper yet; it exists for direct/test use
+   until a phase writer wires it in.
 3. **Break-glass no-change** — `evidence.no_change_reason` + `break_glass=true`
    (audited as `break_glass:no_change`).
 4. **Break-glass inline receipt** — `evidence.implementation_receipt` with
@@ -344,6 +352,7 @@ ResumeBundle fields are planned for a later hardening round.
 .omg/state/runs/<run_id>/
   status.json              # verified, autopilot_phase, autopilot_gate_failure, …
   stages/autopilot.json    # phase, history, history[].gate_audit, implement_workspace_fp, …
+  stages/implementation.json  # optional; CLI-stamped implementation receipt (writer, content_sha256)
   stages/structured_review.json
   stages/ultraqa.json
   prd.json                 # optional; may be materialized from ultraqa
