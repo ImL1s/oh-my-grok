@@ -1434,6 +1434,139 @@ def test_pin_transition_dag_walk_hard_fails_on_git_error(tmp_path: Path) -> None
         )
 
 
+def test_pin_transition_hard_fails_on_malformed_historical_catalog(
+    tmp_path: Path,
+) -> None:
+    """P1: invalid catalog at pin-transition child must not soft-fallback to worktree."""
+    from omg_cli.parity_claim_gate import assert_pin_transitions_reviewed
+    from omg_cli.parity_refresh import write_committed_refresh_review
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+    _write_inventory(tmp_path, inventory)
+    _init_git_repo(tmp_path)
+    base_sha = _git_commit_all(tmp_path, "C0 base pin")
+
+    new_pin = "cccccccccccccccccccccccccccccccccccccccc"
+    bumped = copy.deepcopy(inventory)
+    _bump_omc_pin(bumped, new_pin)
+    _write_inventory(tmp_path, bumped)
+    _write_required_snapshots(tmp_path, bumped)
+    # Commit a malformed OMC catalog at the transition child.
+    omc_catalog = tmp_path / "docs" / "parity" / "upstream-snapshots" / "OMC.json"
+    omc_catalog.write_text("{not-valid-json\n", encoding="utf-8")
+    child_sha = _git_commit_all(tmp_path, "C1 pin bump + malformed catalog")
+
+    # Repair worktree catalog + write a matching review so soft-fallback would pass.
+    _write_required_snapshots(tmp_path, bumped)
+    worktree_catalogs = {
+        source: load_json_object(
+            tmp_path / "docs" / "parity" / "upstream-snapshots" / f"{source}.json"
+        )
+        for source in REQUIRED_SNAPSHOT_SOURCES
+    }
+    plan = build_refresh_plan(
+        inventory=inventory,
+        upstream_catalog=worktree_catalogs["OMC"],
+        source="OMC",
+        new_pin=new_pin,
+        generated_at=FIXED_NOW,
+    )
+    write_committed_refresh_review(tmp_path, plan)
+    _git_commit_all(tmp_path, "C2 repair catalog + review (must not mask C1)")
+
+    candidate = load_json_object(tmp_path / "docs" / "parity" / "omg-parity.json")
+    with pytest.raises(
+        ContractValidationError,
+        match=r"invalid catalog|catalog JSON|git show failed",
+    ):
+        assert_pin_transitions_reviewed(
+            inventory=candidate,
+            base_inventory=inventory,
+            repo_root=tmp_path,
+            catalogs_by_source=worktree_catalogs,
+            base_ref=base_sha,
+        )
+    # Sanity: the malformed blob is still reachable at the transition child.
+    bad = subprocess.run(
+        ["git", "-C", str(tmp_path), "show", f"{child_sha}:docs/parity/upstream-snapshots/OMC.json"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert bad.returncode == 0
+    assert "not-valid-json" in bad.stdout
+
+
+def test_resolve_base_inventory_hard_fails_on_invalid_selected_tag(
+    tmp_path: Path,
+) -> None:
+    """P1: invalid inventory at previous v* tag must not advance base to main."""
+    from omg_cli.parity_claim_gate import resolve_base_inventory
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    _write_inventory(tmp_path, inventory)
+    _init_git_repo(tmp_path)
+    _git(tmp_path, "checkout", "-b", "main")
+    # C0 tagged release with malformed inventory JSON.
+    inv_path = tmp_path / "docs" / "parity" / "omg-parity.json"
+    inv_path.write_text("{not-valid-inventory\n", encoding="utf-8")
+    _git_commit_all(tmp_path, "C0 tagged with bad inventory")
+    _git(tmp_path, "tag", "v0.0.1")
+
+    # Later main tip is valid — soft fallback would wrongly select it.
+    _write_inventory(tmp_path, inventory)
+    _git_commit_all(tmp_path, "C1 main repaired inventory")
+
+    with pytest.raises(
+        ContractValidationError,
+        match=r"invalid inventory JSON|empty inventory blob",
+    ):
+        resolve_base_inventory(tmp_path, require=True)
+
+
+def test_resolve_base_inventory_hard_fails_on_explicit_invalid_base_ref(
+    tmp_path: Path,
+) -> None:
+    """P1: explicit --base-ref with invalid inventory must hard-fail (no main hop)."""
+    from omg_cli.parity_claim_gate import resolve_base_inventory
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    _write_inventory(tmp_path, inventory)
+    _init_git_repo(tmp_path)
+    _git(tmp_path, "checkout", "-b", "main")
+    inv_path = tmp_path / "docs" / "parity" / "omg-parity.json"
+    inv_path.write_text("{not-valid-inventory\n", encoding="utf-8")
+    bad_sha = _git_commit_all(tmp_path, "bad inventory commit")
+    _write_inventory(tmp_path, inventory)
+    _git_commit_all(tmp_path, "repaired tip")
+
+    with pytest.raises(
+        ContractValidationError,
+        match=r"invalid inventory JSON|empty inventory blob",
+    ):
+        resolve_base_inventory(tmp_path, base_ref=bad_sha, require=True)
+
+
+def test_resolve_base_inventory_skips_missing_ref_then_uses_next(
+    tmp_path: Path,
+) -> None:
+    """Missing candidate refs remain soft; only present-but-invalid hard-fails."""
+    from omg_cli.parity_claim_gate import resolve_base_inventory
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    _write_inventory(tmp_path, inventory)
+    _init_git_repo(tmp_path)
+    _git(tmp_path, "checkout", "-b", "main")
+    _git_commit_all(tmp_path, "C0 on main")
+
+    resolved = resolve_base_inventory(tmp_path, require=True)
+    assert resolved is not None
+    assert resolved.git_ref == "main"
+
+
 def test_pin_transition_rejects_symlink_review_ledger(tmp_path: Path) -> None:
     """P2: symlink at expected ledger path must not satisfy HEAD blob verify."""
     from omg_cli.parity_refresh import write_committed_refresh_review

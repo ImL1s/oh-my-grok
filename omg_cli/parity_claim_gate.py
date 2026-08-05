@@ -333,45 +333,6 @@ def assert_upstream_drift_resolved(
         )
 
 
-def _git_show_text(repo_root: Path, object_spec: str) -> str | None:
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(repo_root), "show", object_spec],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except OSError:
-        return None
-    if proc.returncode != 0:
-        return None
-    return proc.stdout
-
-
-def _git_show_inventory(repo_root: Path, git_ref: str) -> dict[str, Any] | None:
-    text = _git_show_text(repo_root, f"{git_ref}:docs/parity/omg-parity.json")
-    if text is None or not text.strip():
-        return None
-    try:
-        return json_loads_object(text)
-    except (ContractValidationError, ValueError):
-        return None
-
-
-def _git_show_catalog(
-    repo_root: Path, git_ref: str, source: str
-) -> dict[str, Any] | None:
-    text = _git_show_text(
-        repo_root, f"{git_ref}:docs/parity/upstream-snapshots/{source}.json"
-    )
-    if text is None or not text.strip():
-        return None
-    try:
-        return validate_upstream_catalog(json_loads_object(text))
-    except (ContractValidationError, ValueError):
-        return None
-
-
 def _previous_release_tag(repo_root: Path) -> str | None:
     """Return the newest v* tag reachable from HEAD^ (durable release base)."""
     try:
@@ -457,6 +418,48 @@ def _git_show_inventory_strict(repo_root: Path, git_ref: str) -> dict[str, Any]:
     except (ContractValidationError, ValueError) as exc:
         raise ContractValidationError(
             f"invalid inventory JSON at {git_ref}:{_INVENTORY_GIT_PATH}: {exc}"
+        ) from exc
+
+
+def _git_show_inventory_if_present(
+    repo_root: Path, git_ref: str
+) -> dict[str, Any] | None:
+    """Load inventory at ref when the blob exists.
+
+    Missing ref / missing path → ``None`` (candidate skip). Empty blob or
+    invalid JSON → ``ContractValidationError`` (never soft-skip to a newer base).
+    """
+    object_spec = f"{git_ref}:{_INVENTORY_GIT_PATH}"
+    proc = _run_git(repo_root, "show", object_spec, label=f"show {object_spec}")
+    if proc.returncode != 0:
+        return None
+    text = proc.stdout
+    if not text.strip():
+        raise ContractValidationError(f"empty inventory blob at {object_spec}")
+    try:
+        return json_loads_object(text)
+    except (ContractValidationError, ValueError) as exc:
+        raise ContractValidationError(
+            f"invalid inventory JSON at {object_spec}: {exc}"
+        ) from exc
+
+
+_CATALOG_GIT_PATH_TMPL = "docs/parity/upstream-snapshots/{source}.json"
+
+
+def _git_show_catalog_strict(
+    repo_root: Path, git_ref: str, source: str
+) -> dict[str, Any]:
+    """Load + validate historical upstream catalog; git/JSON errors hard-fail."""
+    object_spec = f"{git_ref}:{_CATALOG_GIT_PATH_TMPL.format(source=source)}"
+    text = _git_show_text_strict(repo_root, object_spec)
+    if not text.strip():
+        raise ContractValidationError(f"empty catalog blob at {object_spec}")
+    try:
+        return validate_upstream_catalog(json_loads_object(text))
+    except (ContractValidationError, ValueError) as exc:
+        raise ContractValidationError(
+            f"invalid catalog JSON at {object_spec}: {exc}"
         ) from exc
 
 
@@ -635,9 +638,16 @@ def resolve_base_inventory(
     else:
         refs.extend(["HEAD^", "origin/main", "main"])
     for ref in refs:
-        loaded = _git_show_inventory(repo_root, ref)
+        # Missing ref/path → try next candidate. Present-but-invalid JSON/empty
+        # blob raises (must not advance base to a newer main and hide transitions).
+        loaded = _git_show_inventory_if_present(repo_root, ref)
         if loaded is not None:
             return BaseInventoryResolution(inventory=loaded, git_ref=ref)
+        if explicit:
+            raise ContractValidationError(
+                f"base inventory missing at explicit base_ref {ref!r} "
+                f"({ref}:{_INVENTORY_GIT_PATH})"
+            )
     if require:
         raise ContractValidationError(
             "pin-transition gate requires base inventory "
@@ -716,10 +726,14 @@ def _catalog_for_transition(
     at_ref: str | None,
     fallback: Mapping[str, dict[str, Any]],
 ) -> dict[str, Any]:
+    """Resolve catalog for a pin transition.
+
+    When ``at_ref`` is set (historical DAG edge), load that commit's snapshot
+    catalog strictly — never soft-fallback to the worktree catalog, which could
+    hide a missing/invalid snapshot at the transition child.
+    """
     if at_ref:
-        loaded = _git_show_catalog(repo_root, at_ref, source)
-        if loaded is not None:
-            return loaded
+        return _git_show_catalog_strict(repo_root, at_ref, source)
     catalog = fallback.get(source)
     if catalog is None:
         raise ContractValidationError(
