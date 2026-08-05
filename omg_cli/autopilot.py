@@ -1417,16 +1417,19 @@ def run_autopilot(
     ``max_stall_relaunches`` exhausted. Does **not** claim infinite Stop pin.
     """
     import json
+    import subprocess
     import sys
 
     from omg_cli.modes import (
         _launch_grok,
         _run_dir,
+        _spawn_grok_process,
+        _wait_grok_process,
         build_grok_argv,
         resolve_launch_timeout,
     )
     from omg_cli.resume import write_resume_md
-    from omg_cli.state import load_active_run
+    from omg_cli.state import load_active_run, transition_guard
 
     root_path = Path(root).resolve()
     assert_safe_supervised_parent()
@@ -1629,13 +1632,43 @@ def run_autopilot(
                         )
                     },
                 )
-                rc = _launch_grok(
-                    argv,
-                    cwd=root_path,
-                    run_dir=run_dir,
-                    timeout=launch_timeout,
-                    dry_run=dry_run,
-                )
+                # R13-2: linearize cancel re-check + Popen + pid.json under
+                # transition_guard so cancel cannot miss a newly spawned grok.
+                # Wait (and timeout killpg) happens *after* the guard releases.
+                proc: subprocess.Popen[Any] | None = None
+                rc: int
+                with transition_guard(root_path, run_id):
+                    refuse = _launch_refused_for_cancel(root_path, run_id)
+                    if refuse is not None:
+                        print(f"omg autopilot run: {refuse}", file=sys.stderr)
+                        return 1
+                    if dry_run:
+                        rc = _launch_grok(
+                            argv,
+                            cwd=root_path,
+                            run_dir=run_dir,
+                            timeout=launch_timeout,
+                            dry_run=True,
+                        )
+                    else:
+                        try:
+                            proc = _spawn_grok_process(
+                                argv, cwd=root_path, run_dir=run_dir
+                            )
+                        except OSError:
+                            write_resume_md(root_path, run_id)
+                            return 127
+                        except Exception as exc:
+                            print(
+                                f"omg autopilot run: spawn failed: {exc}",
+                                file=sys.stderr,
+                            )
+                            write_resume_md(root_path, run_id)
+                            return 1
+                if proc is not None:
+                    rc = _wait_grok_process(
+                        proc, run_dir=run_dir, timeout=launch_timeout
+                    )
                 if rc != 0:
                     write_resume_md(root_path, run_id)
                     return int(rc)

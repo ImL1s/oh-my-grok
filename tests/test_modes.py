@@ -570,6 +570,66 @@ def test_launch_grok_uses_start_new_session_on_posix(monkeypatch, tmp_path):
         assert "start_new_session" not in captured
 
 
+def test_spawn_grok_process_kills_child_when_pid_metadata_fails(
+    monkeypatch, tmp_path
+):
+    """R13-1: pid.json publish failure must kill the child (no orphan) and raise."""
+    from omg_cli.modes import _spawn_grok_process
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    mock_proc = MagicMock()
+    mock_proc.pid = 7777
+    killed: list[int] = []
+
+    def fake_popen(argv, **kwargs):
+        return mock_proc
+
+    def boom_write(*_a, **_k):
+        raise OSError("disk full")
+
+    def fake_killpg(pid, _sig):
+        killed.append(pid)
+
+    real = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", _selective_popen(real, fake_popen))
+    monkeypatch.setattr("omg_cli.state.write_pid_metadata", boom_write)
+    monkeypatch.setattr("os.killpg", fake_killpg)
+
+    with pytest.raises(OSError, match="disk full"):
+        _spawn_grok_process(["grok", "-p", "hi"], cwd=tmp_path, run_dir=run_dir)
+
+    assert killed == [7777] or mock_proc.kill.called
+    assert not (run_dir / "pid.json").is_file()
+
+
+def test_launch_grok_still_spawn_then_wait(monkeypatch, tmp_path):
+    """R13-1: ``_launch_grok`` remains spawn+wait for ralplan/dual_review callers."""
+    from omg_cli.modes import _launch_grok
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    mock_proc = MagicMock()
+    mock_proc.pid = 8888
+    mock_proc.wait.return_value = 0
+    real = subprocess.Popen
+    monkeypatch.setattr(
+        subprocess, "Popen", _selective_popen(real, lambda *_a, **_k: mock_proc)
+    )
+
+    rc = _launch_grok(
+        ["grok", "-p", "hello"],
+        cwd=tmp_path,
+        run_dir=run_dir,
+        timeout=None,
+        dry_run=False,
+    )
+    assert rc == 0
+    mock_proc.wait.assert_called()
+    assert (run_dir / "pid.json").is_file()
+    assert (run_dir / "last_argv.json").is_file()
+
+
 def test_run_mode_mutex_blocks_second_active(monkeypatch, tmp_path):
     """Second run_mode while first is non-terminal returns non-zero (mutex)."""
     real = subprocess.Popen

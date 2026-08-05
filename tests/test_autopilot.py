@@ -219,6 +219,30 @@ def _write_pending_cancel_request(tmp_path: Path, run_id: str) -> None:
     )
 
 
+def _install_fake_autopilot_spawn(
+    monkeypatch: pytest.MonkeyPatch, handler
+) -> None:
+    """Patch non-dry autopilot launch (``_spawn_grok_process`` + wait).
+
+    ``handler(argv, **kw) -> int`` mirrors the old ``_launch_grok`` fake shape
+    (``kw`` includes ``cwd`` / ``run_dir``). Side effects run at spawn time.
+    """
+    from unittest.mock import MagicMock
+
+    def fake_spawn(argv, *, cwd, run_dir):
+        rc = int(handler(argv, cwd=cwd, run_dir=run_dir) or 0)
+        proc = MagicMock()
+        proc.pid = 4242
+        proc._omg_rc = rc
+        return proc
+
+    def fake_wait(proc, *, run_dir=None, timeout=None):
+        return int(getattr(proc, "_omg_rc", 0))
+
+    monkeypatch.setattr("omg_cli.modes._spawn_grok_process", fake_spawn)
+    monkeypatch.setattr("omg_cli.modes._wait_grok_process", fake_wait)
+
+
 def test_transition_rejects_pending_cancellation_request_under_lease(
     tmp_path: Path,
 ) -> None:
@@ -276,7 +300,7 @@ def test_run_autopilot_refuses_resume_on_terminal_status(tmp_path: Path) -> None
 def test_run_autopilot_cancel_then_resume_does_not_launch_grok(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """R11-3: cancel then resume must refuse spawn — ``_launch_grok`` must
+    """R11-3: cancel then resume must refuse spawn — ``_spawn_grok_process`` must
     never be called (terminal status or pending cancel.request)."""
     from omg_cli.state import cancel_run
 
@@ -290,7 +314,7 @@ def test_run_autopilot_cancel_then_resume_does_not_launch_grok(
         launched.append(True)
         return 0
 
-    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    _install_fake_autopilot_spawn(monkeypatch, _fake_launch)
     rc = run_autopilot(tmp_path, "", resume_run_id=rid)
     assert rc != 0
     assert not launched
@@ -300,7 +324,7 @@ def test_run_autopilot_pending_cancel_refuses_launch_grok(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """R11-3: a pending cancel.request (status not yet terminal) must still
-    refuse ``_launch_grok`` at the pre-spawn gate."""
+    refuse spawn at the pre-spawn / in-guard gate."""
     st = start_autopilot(
         tmp_path, "pending cancel refuses launch", skip_interview=True
     )
@@ -313,10 +337,81 @@ def test_run_autopilot_pending_cancel_refuses_launch_grok(
         launched.append(True)
         return 0
 
-    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    _install_fake_autopilot_spawn(monkeypatch, _fake_launch)
     rc = run_autopilot(tmp_path, "", resume_run_id=rid)
     assert rc != 0
     assert not launched
+
+
+def test_run_autopilot_in_guard_refuse_prevents_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R13-2: cancel re-check under ``transition_guard`` must prevent spawn.
+
+    Prefer unit proof that the spawn path re-checks while the guard is held.
+    """
+    from omg_cli.state import transition_guard_held
+
+    st = start_autopilot(tmp_path, "r13 in-guard refuse", skip_interview=True)
+    rid = st["run_id"]
+
+    events: list[tuple[str, bool]] = []
+
+    def fake_refuse(root, run_id):
+        held = transition_guard_held()
+        events.append(("refuse", held))
+        if held:
+            return "pending cancellation request; refusing grok launch"
+        return None
+
+    def fake_spawn(*_a, **_k):
+        events.append(("spawn", transition_guard_held()))
+        raise AssertionError("must not spawn after in-guard refuse")
+
+    monkeypatch.setattr(
+        "omg_cli.autopilot._launch_refused_for_cancel", fake_refuse
+    )
+    monkeypatch.setattr("omg_cli.modes._spawn_grok_process", fake_spawn)
+
+    rc = run_autopilot(tmp_path, "", resume_run_id=rid)
+    assert rc != 0
+    assert ("spawn", True) not in events
+    assert ("spawn", False) not in events
+    assert ("refuse", True) in events
+
+
+def test_run_autopilot_spawn_under_guard_wait_outside(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R13-2: ``_spawn_grok_process`` runs while guard held; wait runs outside."""
+    from unittest.mock import MagicMock
+
+    from omg_cli.state import transition_guard_held
+
+    st = start_autopilot(tmp_path, "r13 spawn/wait split", skip_interview=True)
+    rid = st["run_id"]
+
+    events: list[tuple[str, bool]] = []
+
+    def fake_spawn(argv, *, cwd, run_dir):
+        events.append(("spawn", transition_guard_held()))
+        proc = MagicMock()
+        proc.pid = 4242
+        proc._omg_rc = 0
+        return proc
+
+    def fake_wait(proc, *, run_dir=None, timeout=None):
+        events.append(("wait", transition_guard_held()))
+        return 0
+
+    monkeypatch.setattr("omg_cli.modes._spawn_grok_process", fake_spawn)
+    monkeypatch.setattr("omg_cli.modes._wait_grok_process", fake_wait)
+
+    rc = run_autopilot(tmp_path, "", resume_run_id=rid)
+    # Stall pause after one launch without gate progress — rc 0 with pause.
+    assert rc == 0
+    assert ("spawn", True) in events
+    assert ("wait", False) in events
 
 
 @pytest.mark.skipif(
@@ -342,7 +437,7 @@ def test_run_autopilot_driver_flock_blocks_second_resume(
         launched.append(True)
         return 0
 
-    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    _install_fake_autopilot_spawn(monkeypatch, _fake_launch)
 
     with lock_path.open("a+", encoding="utf-8") as holder:
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -2468,7 +2563,7 @@ def test_run_autopilot_walks_to_verified_with_mocked_launches(
         _stamp_gate_for(tmp_path, kw)
         return 0
 
-    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    _install_fake_autopilot_spawn(monkeypatch, _fake_launch)
     rc = run_autopilot(
         tmp_path, "add pure add(a,b) with test", skip_interview=True
     )
@@ -2499,7 +2594,7 @@ def test_run_autopilot_pauses_when_awaiting(
         launched.append(True)
         return 0
 
-    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    _install_fake_autopilot_spawn(monkeypatch, _fake_launch)
     rc = run_autopilot(tmp_path, "", resume_run_id=rid)
     assert rc == 0
     assert not launched
@@ -2532,7 +2627,7 @@ def test_run_resume_reenters_current_phase(
         phases_seen.append(status_autopilot(tmp_path, run_id)["phase"])
         return 0
 
-    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    _install_fake_autopilot_spawn(monkeypatch, _fake_launch)
     rc = run_autopilot(tmp_path, "", resume_run_id=rid)
     assert rc == 0
     assert phases_seen == ["review"]
@@ -2565,7 +2660,7 @@ def test_run_autopilot_unattended_relaunches_on_stall(
         # Never advance phase → stall path.
         return 0
 
-    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    _install_fake_autopilot_spawn(monkeypatch, _fake_launch)
     rc = run_autopilot(
         tmp_path,
         "",
@@ -2595,7 +2690,7 @@ def test_run_autopilot_unattended_still_pauses_on_await(
         launches += 1
         return 0
 
-    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    _install_fake_autopilot_spawn(monkeypatch, _fake_launch)
     rc = run_autopilot(
         tmp_path, "", resume_run_id=rid, unattended=True, max_stall_relaunches=5
     )

@@ -548,20 +548,10 @@ def _materialize_prompt_file(argv: list[str], run_dir: Path) -> list[str]:
     return out
 
 
-def _launch_grok(
-    argv: list[str],
-    *,
-    cwd: Path,
-    run_dir: Path,
-    timeout: float | None,
-    dry_run: bool,
-) -> int:
-    """Run grok argv (or dry-run). Writes pid file when a process starts.
-
-    Returns process exit code (0 for dry_run).
-    """
+def _prepare_grok_argv(argv: list[str], run_dir: Path) -> list[str]:
+    """Materialize ``-p`` bodies to ``--prompt-file`` and record last_argv."""
+    run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    # Convert -p skill bodies to --prompt-file before exec / record
     argv = _materialize_prompt_file(list(argv), run_dir)
     (run_dir / "last_argv.json").write_text(
         json.dumps(argv, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
@@ -576,10 +566,41 @@ def _launch_grok(
                 )
         except (ValueError, OSError, IndexError):
             pass
+    return argv
 
-    if dry_run:
-        (run_dir / "dry_run").write_text("1\n", encoding="utf-8")
-        return 0
+
+def _kill_spawned_proc(proc: subprocess.Popen[Any]) -> None:
+    """Best-effort kill of a just-spawned grok (process group on POSIX)."""
+    try:
+        if os.name == "posix":
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                proc.kill()
+        else:
+            proc.kill()
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        proc.wait(timeout=5)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
+def _spawn_grok_process(
+    argv: list[str],
+    *,
+    cwd: Path,
+    run_dir: Path,
+) -> subprocess.Popen[Any]:
+    """Materialize prompt, write last_argv, Popen, publish pid metadata.
+
+    On pid-metadata write failure the child is killed and the exception is
+    re-raised (do not leave an orphan without cancel-visible ``pid.json``).
+    On Popen ``OSError``, writes ``launch_error`` and re-raises.
+    """
+    run_dir = Path(run_dir)
+    argv = _prepare_grok_argv(argv, run_dir)
 
     # Prefer Popen so we can record child PID. OSError (e.g. FileNotFoundError
     # when grok is missing) must not leave status stuck at "running".
@@ -598,7 +619,7 @@ def _launch_grok(
         proc = subprocess.Popen(argv, **popen_kwargs)
     except OSError as exc:
         (run_dir / "launch_error").write_text(f"{exc}\n", encoding="utf-8")
-        return 127
+        raise
 
     # Record pid + starttime + pgid so cancel can refuse PID-reused kills.
     try:
@@ -616,8 +637,19 @@ def _launch_grok(
             pgid=pgid,
         )
     except Exception:
-        # Never fail the launch because metadata write failed; keep legacy pid.
-        (run_dir / "pid").write_text(f"{proc.pid}\n", encoding="utf-8")
+        _kill_spawned_proc(proc)
+        raise
+    return proc
+
+
+def _wait_grok_process(
+    proc: subprocess.Popen[Any],
+    *,
+    run_dir: Path,
+    timeout: float | None,
+) -> int:
+    """Wait on a spawned grok; on timeout killpg and return 124."""
+    run_dir = Path(run_dir)
     try:
         return int(proc.wait(timeout=timeout))
     except subprocess.TimeoutExpired:
@@ -638,6 +670,37 @@ def _launch_grok(
             pass
         (run_dir / "timeout").write_text("1\n", encoding="utf-8")
         return 124
+
+
+def _launch_grok(
+    argv: list[str],
+    *,
+    cwd: Path,
+    run_dir: Path,
+    timeout: float | None,
+    dry_run: bool,
+) -> int:
+    """Run grok argv (or dry-run). Writes pid file when a process starts.
+
+    Returns process exit code (0 for dry_run). Spawn vs wait are split so
+    callers (autopilot) can hold ``transition_guard`` only around spawn.
+    """
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    if dry_run:
+        _prepare_grok_argv(argv, run_dir)
+        (run_dir / "dry_run").write_text("1\n", encoding="utf-8")
+        return 0
+
+    try:
+        proc = _spawn_grok_process(argv, cwd=cwd, run_dir=run_dir)
+    except OSError:
+        return 127
+    except Exception:
+        # pid-metadata publish failed after child was killed — no orphan.
+        return 1
+    return _wait_grok_process(proc, run_dir=run_dir, timeout=timeout)
 
 
 def run_mode(
