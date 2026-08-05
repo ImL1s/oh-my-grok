@@ -18,9 +18,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   success also requires a consistent aggregate matrix (`strict=0` ⇒
   `relaxed=None` + `rc=0`; soft ⇒ `rc=2`) so contradictory evidence cannot
   classify as installed. Exact same-digest installs reuse a receipt only when
-  mode, release asset/checksum evidence, and status authority match; otherwise
-  they re-attest (development→release promotion writes a release receipt without
-  host churn, and warning status is never downgraded). Gate failures print a
+  mode, release asset/checksum evidence, status authority, and live Grok host
+  plugin path/enabled authority match; otherwise they re-attest
+  (development→release promotion writes a release receipt without host churn,
+  and warning status is never downgraded) or fall through to a full
+  uninstall/install/enable transaction when the host path has drifted or the
+  plugin is disabled. Gate failures print a
   bounded (64 KiB) non-strict doctor transcript. Authoritative receipts record
   pending + post-publication probe hashes and the stricter status. `omg update`
   uses one `VerifiedCurrentInstall` authority; release receipts and

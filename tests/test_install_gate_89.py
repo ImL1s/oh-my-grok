@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -695,3 +696,143 @@ def test_same_digest_release_idempotent_reuses_compatible_receipt(tmp_path, monk
     assert again["status"] == "already_installed"
     assert again["receipt_path"] == first["receipt_path"]
     assert again["receipt_hash"] == first["receipt_hash"]
+
+
+def test_same_digest_host_path_drift_forces_reinstall(tmp_path, monkeypatch):
+    """Exact digest must not reuse/re-attest when Grok inventory path drifted (#90 Pro P2)."""
+
+    home = tmp_path / "home"
+    grok_home = tmp_path / "grok"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    asset = _patch_release_archive(monkeypatch, tmp_path)
+    host = FakeGrok()
+
+    first = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=lambda *_a, **_k: _dual_pass_ok(),
+        mode="release",
+        asset=asset,
+        source_uri=f"https://github.com/ImL1s/oh-my-grok/releases/download/v{VERSION}/x.tar.gz",
+        source_tag=f"v{VERSION}",
+    )
+    assert first["status"] == "installed"
+    receipt = read_install_receipt(Path(first["receipt_path"]))
+    original_plugin = Path(receipt["installed"]["plugin_realpath"])
+    assert host.installed == original_plugin
+
+    drifted = grok_home / "installed-plugins" / "oh-my-grok-drift"
+    drifted.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(original_plugin, drifted)
+    assert compute_package_identity(drifted)["digest"] == first["package_digest"]
+    host.installed = drifted.resolve()
+
+    mutations_before = [
+        call
+        for call in host.calls
+        if call[:3]
+        in (
+            ["grok", "plugin", "install"],
+            ["grok", "plugin", "uninstall"],
+            ["grok", "plugin", "enable"],
+        )
+    ]
+    again = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=lambda *_a, **_k: _dual_pass_ok(),
+        mode="release",
+        asset=asset,
+        source_uri=f"https://github.com/ImL1s/oh-my-grok/releases/download/v{VERSION}/x.tar.gz",
+        source_tag=f"v{VERSION}",
+    )
+    mutations_after = [
+        call
+        for call in host.calls
+        if call[:3]
+        in (
+            ["grok", "plugin", "install"],
+            ["grok", "plugin", "uninstall"],
+            ["grok", "plugin", "enable"],
+        )
+    ]
+    assert again["status"] != "already_installed"
+    assert mutations_after != mutations_before
+    assert ["grok", "plugin", "uninstall", "oh-my-grok", "--confirm"] in mutations_after
+    assert any(call[:3] == ["grok", "plugin", "install"] for call in mutations_after)
+    assert any(call[:3] == ["grok", "plugin", "enable"] for call in mutations_after)
+    new_receipt = read_install_receipt(Path(again["receipt_path"]))
+    assert Path(new_receipt["installed"]["plugin_realpath"]).resolve() == host.installed.resolve()
+    assert host.installed.resolve() == Path(first["stage_path"]).resolve()
+    assert host.enabled is True
+
+
+def test_same_digest_disabled_host_forces_reinstall(tmp_path, monkeypatch):
+    """Exact digest must not skip enable when inventory reports disabled (#90 Pro P2)."""
+
+    home = tmp_path / "home"
+    grok_home = tmp_path / "grok"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    asset = _patch_release_archive(monkeypatch, tmp_path)
+    host = FakeGrok()
+
+    first = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=lambda *_a, **_k: _dual_pass_ok(),
+        mode="release",
+        asset=asset,
+        source_uri=f"https://github.com/ImL1s/oh-my-grok/releases/download/v{VERSION}/x.tar.gz",
+        source_tag=f"v{VERSION}",
+    )
+    assert first["status"] == "installed"
+    assert host.enabled is True
+    host.enabled = False
+
+    mutations_before = len(
+        [
+            call
+            for call in host.calls
+            if call[:3]
+            in (
+                ["grok", "plugin", "install"],
+                ["grok", "plugin", "uninstall"],
+                ["grok", "plugin", "enable"],
+            )
+        ]
+    )
+    again = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=lambda *_a, **_k: _dual_pass_ok(),
+        mode="release",
+        asset=asset,
+        source_uri=f"https://github.com/ImL1s/oh-my-grok/releases/download/v{VERSION}/x.tar.gz",
+        source_tag=f"v{VERSION}",
+    )
+    mutations_after = [
+        call
+        for call in host.calls
+        if call[:3]
+        in (
+            ["grok", "plugin", "install"],
+            ["grok", "plugin", "uninstall"],
+            ["grok", "plugin", "enable"],
+        )
+    ]
+    assert again["status"] != "already_installed"
+    assert len(mutations_after) > mutations_before
+    assert ["grok", "plugin", "enable", "oh-my-grok"] in mutations_after
+    assert host.enabled is True
+    new_receipt = read_install_receipt(Path(again["receipt_path"]))
+    assert Path(new_receipt["installed"]["plugin_realpath"]).resolve() == host.installed.resolve()

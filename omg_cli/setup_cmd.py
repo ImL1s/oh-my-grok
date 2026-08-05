@@ -913,6 +913,46 @@ def _stricter_install_status(left: str, right: str) -> str:
     return right
 
 
+def _bind_exact_digest_host_authority(
+    *,
+    prior_plugin_path: Path | None,
+    prior_entry: Mapping[str, Any] | None,
+    receipt: Mapping[str, Any],
+    stage: Path,
+    grok_home: Path,
+) -> Path:
+    """Bind live Grok plugin authority before exact-digest reuse / re-attest.
+
+    Digest equality alone is insufficient: the host inventory path must match
+    the receipt's ``plugin_realpath``, stay confined to the immutable stage or
+    ``$GROK_HOME/installed-plugins``, and report enabled.  Callers that cannot
+    attest this must fall through to a full uninstall/install/enable transaction
+    instead of minting a receipt that lies about runtime location.
+    """
+
+    if prior_plugin_path is None or prior_entry is None:
+        raise InstallError("exact-digest install missing host plugin authority")
+    _verify_host_plugin_path(
+        prior_plugin_path,
+        stage=stage,
+        grok_home=grok_home,
+    )
+    installed = receipt.get("installed")
+    if not isinstance(installed, dict):
+        raise InstallError("current receipt installed record is malformed")
+    plugin_raw = installed.get("plugin_realpath")
+    if not isinstance(plugin_raw, str) or not plugin_raw:
+        raise InstallError("current receipt host plugin path is malformed")
+    receipt_plugin = Path(plugin_raw)
+    if not receipt_plugin.is_absolute():
+        raise InstallError("current receipt host plugin path must be absolute")
+    if prior_plugin_path.resolve() != receipt_plugin.resolve():
+        raise InstallError("host plugin path differs from current receipt")
+    if not _plugin_entry_is_enabled(prior_entry, grok_home=grok_home):
+        raise InstallError("host plugin is disabled")
+    return prior_plugin_path.resolve()
+
+
 def _exact_idempotent_receipt_reusable(
     receipt: Mapping[str, Any],
     *,
@@ -1550,8 +1590,11 @@ def install_package(
         cli_target = str(current / "bin" / "omg")
 
         # Exact byte match: skip host uninstall/install.  Reuse the receipt only
-        # when mode, release evidence, and status authority also match; otherwise
-        # write a fresh authoritative receipt (e.g. development→release promote).
+        # when mode, release evidence, status authority, *and* live Grok plugin
+        # path/enabled authority also match; otherwise write a fresh receipt
+        # (e.g. development→release promote) or fall through to a full
+        # uninstall/install/enable transaction when host authority cannot be
+        # attested.
         if (
             current_snapshot["kind"] == "symlink"
             and Path(str(current_snapshot["target"])).resolve() == stage
@@ -1586,73 +1629,87 @@ def install_package(
                 receipt = verified_existing.receipt
                 if receipt["installed"]["package_digest"] != identity["digest"]:
                     raise InstallError("current receipt identity differs from exact install")
-                if _exact_idempotent_receipt_reusable(
-                    receipt,
-                    mode=mode,
-                    probe_status=probe_status,
-                    asset_evidence=asset_evidence,
-                ):
+                try:
+                    bound_plugin_path = _bind_exact_digest_host_authority(
+                        prior_plugin_path=prior_plugin_path,
+                        prior_entry=prior_rows[0] if prior_rows else None,
+                        receipt=receipt,
+                        stage=stage,
+                        grok_home=grok_path,
+                    )
+                except InstallError:
+                    # Host path/enabled authority cannot be attested — do not
+                    # reuse or re-attest a receipt that would misstate runtime.
+                    bound_plugin_path = None
+                if bound_plugin_path is not None:
+                    if _exact_idempotent_receipt_reusable(
+                        receipt,
+                        mode=mode,
+                        probe_status=probe_status,
+                        asset_evidence=asset_evidence,
+                    ):
+                        return {
+                            "ok": True,
+                            "status": "already_installed",
+                            "stage_path": str(stage),
+                            "receipt_path": str(receipt_path),
+                            "receipt_hash": receipt["receipt_hash"],
+                            "package_digest": identity["digest"],
+                        }
+
+                    # Bytes + host path match but authority differs (mode
+                    # promotion, missing release evidence, or a stricter probe
+                    # status).  Re-attest without host uninstall/install and
+                    # publish a new receipt bound to the live host path.
+                    prior_status = receipt.get("status")
+                    if isinstance(prior_status, str) and prior_status in _INSTALL_STATUS_RANK:
+                        status_value = _stricter_install_status(prior_status, probe_status)
+                    else:
+                        status_value = probe_status
+                    existing_owned = receipt.get("owned_inventory")
+                    if isinstance(existing_owned, list) and all(
+                        isinstance(row, dict) for row in existing_owned
+                    ):
+                        reattest_owned = [dict(row) for row in existing_owned]
+                        for row in reattest_owned:
+                            if row.get("kind") == "host_plugin":
+                                row["path"] = str(bound_plugin_path)
+                                row["identity"] = str(identity["digest"])
+                    else:
+                        reattest_owned = list(owned_inventory)
+                        reattest_owned.append(
+                            {
+                                "path": str(bound_plugin_path),
+                                "kind": "host_plugin",
+                                "identity": str(identity["digest"]),
+                            }
+                        )
+                    reattest_tid = uuid.uuid4().hex
+                    reattest_material = _receipt_material(
+                        transaction_id=reattest_tid,
+                        status=status_value,
+                        mode=mode,
+                        source=identity,
+                        stage=stage,
+                        plugin_path=bound_plugin_path,
+                        asset=asset_evidence,
+                        source_uri=source_uri,
+                        source_tag=source_tag,
+                        commands=list(commands),
+                        owned_inventory=reattest_owned,
+                    )
+                    new_receipt_path, new_receipt = _write_install_receipt(
+                        receipts, reattest_material
+                    )
+                    _atomic_symlink(str(new_receipt_path), receipt_pointer)
                     return {
                         "ok": True,
-                        "status": "already_installed",
+                        "status": status_value,
                         "stage_path": str(stage),
-                        "receipt_path": str(receipt_path),
-                        "receipt_hash": receipt["receipt_hash"],
+                        "receipt_path": str(new_receipt_path),
+                        "receipt_hash": new_receipt["receipt_hash"],
                         "package_digest": identity["digest"],
                     }
-
-                # Bytes match but authority differs (mode promotion, missing
-                # release evidence, or a stricter probe status).  Re-attest
-                # without host uninstall/install and publish a new receipt.
-                plugin_raw = receipt["installed"].get("plugin_realpath")
-                if not isinstance(plugin_raw, str) or not plugin_raw:
-                    raise InstallError("current receipt host plugin path is malformed")
-                plugin_path = Path(plugin_raw)
-                prior_status = receipt.get("status")
-                if isinstance(prior_status, str) and prior_status in _INSTALL_STATUS_RANK:
-                    status_value = _stricter_install_status(prior_status, probe_status)
-                else:
-                    status_value = probe_status
-                existing_owned = receipt.get("owned_inventory")
-                if isinstance(existing_owned, list) and all(
-                    isinstance(row, dict) for row in existing_owned
-                ):
-                    reattest_owned = [dict(row) for row in existing_owned]
-                else:
-                    reattest_owned = list(owned_inventory)
-                    reattest_owned.append(
-                        {
-                            "path": str(plugin_path),
-                            "kind": "host_plugin",
-                            "identity": str(identity["digest"]),
-                        }
-                    )
-                reattest_tid = uuid.uuid4().hex
-                reattest_material = _receipt_material(
-                    transaction_id=reattest_tid,
-                    status=status_value,
-                    mode=mode,
-                    source=identity,
-                    stage=stage,
-                    plugin_path=plugin_path,
-                    asset=asset_evidence,
-                    source_uri=source_uri,
-                    source_tag=source_tag,
-                    commands=list(commands),
-                    owned_inventory=reattest_owned,
-                )
-                new_receipt_path, new_receipt = _write_install_receipt(
-                    receipts, reattest_material
-                )
-                _atomic_symlink(str(new_receipt_path), receipt_pointer)
-                return {
-                    "ok": True,
-                    "status": status_value,
-                    "stage_path": str(stage),
-                    "receipt_path": str(new_receipt_path),
-                    "receipt_hash": new_receipt["receipt_hash"],
-                    "package_digest": identity["digest"],
-                }
             except Exception:
                 for snapshot in reversed(global_snapshots):
                     _restore_file(snapshot)
