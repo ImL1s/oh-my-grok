@@ -203,6 +203,20 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   immediately before every ``save_ralplan_state`` (not only the accept
   write) so a mid-round ``omg cancel`` cannot land a history/stage save
   on a cancelled run.
+- **Resume preflight advance completed interview (Round 11 / R11-1):**
+  ``run_autopilot`` advances a completed interview to ralplan before any
+  Grok launch so ``--resume`` does not spawn an unnecessary interview
+  session.
+- **Stricter missing ``ralplan_epoch`` migration (Round 11 / R11-2):**
+  migrate missing epoch to ``0`` only when phase is interview, no CLI
+  ralplan stamp, ``cycles.ralplan==0``, history has no post-interview
+  phases (missing/corrupt history fails closed to >=1), and no clean
+  review/QA stamps or implementation receipt; otherwise migrate to >=1.
+  Persists ``ralplan_epoch_source`` (``native`` / ``migrated``).
+- **Refuse grok launch on cancel (Round 11 / R11-3):**
+  ``_launch_grok`` / resume launch re-checks ``status.json`` and pending
+  ``cancel.request.json`` and refuses Popen when the run is terminal or
+  has a pending cancellation request.
 
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —

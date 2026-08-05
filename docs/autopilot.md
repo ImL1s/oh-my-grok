@@ -217,13 +217,16 @@ and break-glass consensus paths with no stamp yet. Only the first
 `interview→ralplan` handoff (epoch 0→1) is a no-op; `--skip-interview` starts
 at epoch 1 so the next ralplan entry always invalidates.
 
-**Pre-R7 epoch migration (Round 9):** sidecars that predate the
-`ralplan_epoch` field no longer default missing values to `0`. Only a run
-still at `phase==interview` with no CLI `ralplan.json` stamp and
-`cycles.ralplan==0` migrates to epoch `0`; every other missing-epoch run
-migrates to at least `1` so the next ralplan entry is treated as re-entry,
-not the harmless first handoff. Present values must be plain `int >= 0`
-(bool/float/negative rejected).
+**Pre-R7 epoch migration (Round 9, tightened Round 11):** sidecars that
+predate the `ralplan_epoch` field no longer default missing values to `0`.
+Migrate to epoch `0` only when **all** hold: `phase==interview`, no CLI
+`ralplan.json` stamp, `cycles.ralplan==0`, readable history with no
+post-interview phases (missing/corrupt history fails closed to >=1), and
+no clean review/QA stamps or CLI implementation receipt. Every other
+missing-epoch run migrates to at least `1` so the next ralplan entry is
+treated as re-entry, not the harmless first handoff. Persists
+`ralplan_epoch_source` (`native` / `migrated`). Present values must be
+plain `int >= 0` (bool/float/negative rejected).
 
 A fresh accept write clears
 `invalidated` on the stamp; a new strict-v2 consensus attempt also clears
@@ -253,14 +256,21 @@ sidecar writes when the run is terminal or has a pending cancellation
 request (same gate, immediately before each save — Round 10 extended
 beyond attach/close).
 
-**Terminal/cancel gates on transition/resume (Round 9):** `transition()`
-re-checks `status.json` under the execution lease and refuses any sidecar
-write when the run is terminal (`cancelled` / `completed` / `failed` /
-`verified`) or has a pending cancellation request — the sidecar `phase` alone
-must never unlock a transition after cancel. `omg autopilot run --resume`
-prefers terminal `status.json` over a stale non-terminal sidecar phase and
-refuses to launch Grok on a cancelled run. `omg autopilot status` returns
-empty `legal_next` for terminal runs.
+**Terminal/cancel gates on transition/resume (Round 9 + Round 11):**
+`transition()` re-checks `status.json` under the execution lease and
+refuses any sidecar write when the run is terminal (`cancelled` /
+`completed` / `failed` / `verified`) or has a pending cancellation
+request — the sidecar `phase` alone must never unlock a transition after
+cancel. `omg autopilot run --resume` prefers terminal `status.json` over
+a stale non-terminal sidecar phase. Immediately before each `_launch_grok`
+/ Popen (Round 11), the driver re-checks status and any pending
+`cancel.request.json` and refuses spawn when cancelled or cancel-pending.
+`omg autopilot status` returns empty `legal_next` for terminal runs.
+
+**Resume interview preflight (Round 11):** when `--resume` finds
+`phase==interview` and the interview is already complete, the driver
+advances to ralplan (via the post-launch advance path) **before** launching
+Grok, so a closed interview does not spawn a redundant interview session.
 
 Attach-mode `omg interview close` sets `resume_command` to
 `omg autopilot run --resume RUN` (idempotent; re-close refreshes stale
