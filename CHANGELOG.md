@@ -10,6 +10,22 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Fixed
+- **Process-fanout cancel linearization (Round 18 / R18-1):** each
+  ``run_process_fanout`` worker's cancel recheck → ``Popen`` → PID publish
+  runs under the same per-run ``transition_guard`` as ``_launch_grok``
+  (``launch_refused_for_cancel``); refused spawns do not Popen and roll back
+  prior workers (R15-4). Closes Pro R17b P1 where legacy cancel could miss a
+  later fanout worker.
+- **Legacy ``set_verified`` cancelled absorbing (Round 18 / R18-2):** legacy-v1
+  ``set_verified`` re-reads under ``transition_guard`` and refuses
+  ``cancelled`` → ``verified`` unless ``force=True`` with the in-process force
+  capability; already-``verified`` is idempotent. Closes the product bypass
+  where post-cancel ULW acceptance could still stamp verified.
+- **``clear_active`` / ``create_run`` create.lock (Round 18 / R18-3):**
+  ``active.json`` read/compare/unlink shares ``.omg/state/create.lock`` with
+  ``create_run``; legacy cancel clears active only after releasing
+  ``transition_guard`` (no create-while-transition lock-order reversal).
+  Prevents cancel from unlinking a newer run's active pointer.
 - **Legacy cancel / launch linearization (Round 17 / R17-1):**
   ``_cancel_run_legacy`` now acquires the same per-run ``transition_guard`` as
   ``_launch_grok``: commit ``cancelled`` + snapshot PIDs under the guard, then

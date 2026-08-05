@@ -231,6 +231,11 @@ Popen; legacy `write_status` treats terminal statuses as absorbing (no
 resurrection). Product pipeline/ULW stay legacy-v1 — upgrading them to
 strict-v2 is not cheap (every stage `write_status` would need an
 `execution_lease`); linearized legacy cancel is the supported closure.
+Round 18: process-fanout worker spawn uses the same cancel-check → Popen →
+PID publish `transition_guard` as `_launch_grok`; legacy `set_verified`
+refuses `cancelled` → `verified` (force+capability break-glass only);
+`clear_active` shares `create.lock` with `create_run` so cancel cannot unlink
+a newer active pointer (clear runs after releasing transition).
 
 | Family | Allowed | Denied |
 |--------|---------|--------|
