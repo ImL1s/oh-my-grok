@@ -1802,43 +1802,107 @@ def test_implement_to_review_allows_non_python_product_change(
     assert status_autopilot(tmp_path, rid)["phase"] == "review"
 
 
+def _strict_run_for_receipt(tmp_path: Path) -> str:
+    """Create a strict-v2 run suitable for acquiring an ExecutionLease."""
+    run = create_run(
+        tmp_path,
+        mode="ralph",
+        goal="impl receipt",
+        extra={"schema_version": 2, "lifecycle_version": 2},
+    )
+    return str(run["run_id"])
+
+
+def _stamp_impl_receipt(
+    root: Path,
+    run_id: str,
+    *,
+    content_sha256: str,
+    note: str | None = None,
+    sync_expected: bool = False,
+) -> dict:
+    """Stamp under a live execution lease; optionally bind autopilot expected."""
+    from omg_cli.autopilot import _save
+    from omg_cli.implementation import stamp_implementation_receipt
+    from omg_cli.state import execution_lease
+
+    with execution_lease(root, run_id, intent="impl-receipt") as lease:
+        stamped = stamp_implementation_receipt(
+            root,
+            run_id,
+            content_sha256=content_sha256,
+            lease=lease,
+            note=note,
+        )
+        if sync_expected:
+            state = load_autopilot(root, run_id)
+            state["implement_expected_invocation_id"] = lease.invocation_id
+            state["implement_expected_lease_generation"] = lease.generation
+            _save(root, run_id, state, lease)
+        return stamped
+
+
 def test_stamp_and_read_implementation_receipt_roundtrip(tmp_path: Path) -> None:
     """P2: a real on-disk CLI implementation receipt round-trips and is
-    recognized as CLI-writer authoritative."""
-    from omg_cli.implementation import (
-        read_implementation_receipt,
-        stamp_implementation_receipt,
-    )
+    recognized as CLI-writer authoritative (requires live ExecutionLease)."""
+    from omg_cli.implementation import read_implementation_receipt
 
+    rid = _strict_run_for_receipt(tmp_path)
     digest = "0" * 64
-    stamped = stamp_implementation_receipt(
-        tmp_path,
-        "run-x",
-        content_sha256=digest,
-        invocation_id="inv-stamp-1",
-        note="worker finished",
-    )
+    stamped = _stamp_impl_receipt(tmp_path, rid, content_sha256=digest, note="worker finished")
     assert stamped["writer"] == "omg-cli"
-    assert stamped["invocation_id"] == "inv-stamp-1"
-    receipt = read_implementation_receipt(tmp_path, "run-x")
+    assert isinstance(stamped["invocation_id"], str) and stamped["invocation_id"]
+    assert isinstance(stamped["lease_generation"], int) and stamped["lease_generation"] >= 1
+    receipt = read_implementation_receipt(tmp_path, rid)
     assert receipt is not None
     assert receipt["writer"] == "omg-cli"
-    assert receipt["run_id"] == "run-x"
-    assert receipt["invocation_id"] == "inv-stamp-1"
+    assert receipt["run_id"] == rid
+    assert receipt["invocation_id"] == stamped["invocation_id"]
+    assert receipt["lease_generation"] == stamped["lease_generation"]
     assert receipt["content_sha256"] == digest
     assert receipt["note"] == "worker finished"
 
 
+def test_stamp_implementation_receipt_requires_live_lease(tmp_path: Path) -> None:
+    """R14-2: stamp without a held ExecutionLease must raise (TypeError or
+    FencingError) — free-form invocation_id is no longer accepted."""
+    from omg_cli.implementation import stamp_implementation_receipt
+    from omg_cli.state import ExecutionLease, FencingError, execution_lease
+
+    rid = _strict_run_for_receipt(tmp_path)
+    digest = "0" * 64
+    with pytest.raises(TypeError):
+        stamp_implementation_receipt(  # type: ignore[call-arg]
+            tmp_path, rid, content_sha256=digest
+        )
+    # Unacquired lease object must fail assert_current before write.
+    bare = ExecutionLease(root=tmp_path, run_id=rid, intent="not-held")
+    with pytest.raises(FencingError):
+        stamp_implementation_receipt(
+            tmp_path, rid, content_sha256=digest, lease=bare
+        )
+    # Released lease is also fenced.
+    with execution_lease(tmp_path, rid, intent="held-then-released") as lease:
+        pass
+    with pytest.raises(FencingError):
+        stamp_implementation_receipt(
+            tmp_path, rid, content_sha256=digest, lease=lease
+        )
+
+
 def test_stamp_implementation_receipt_rejects_malformed_hash(tmp_path: Path) -> None:
     from omg_cli.implementation import stamp_implementation_receipt
+    from omg_cli.state import execution_lease
 
-    with pytest.raises(ValueError):
-        stamp_implementation_receipt(
-            tmp_path,
-            "run-x",
-            content_sha256="not-a-hash",
-            invocation_id="inv-1",
-        )
+    rid = _strict_run_for_receipt(tmp_path)
+    with execution_lease(tmp_path, rid, intent="bad-hash") as lease:
+        with pytest.raises(ValueError):
+            stamp_implementation_receipt(
+                tmp_path,
+                rid,
+                content_sha256="not-a-hash",
+                lease=lease,
+            )
 
 
 def test_read_implementation_receipt_rejects_forged_writer(tmp_path: Path) -> None:
@@ -1859,6 +1923,7 @@ def test_read_implementation_receipt_rejects_forged_writer(tmp_path: Path) -> No
                 "writer": "not-omg-cli",
                 "run_id": "run-x",
                 "invocation_id": "inv-1",
+                "lease_generation": 1,
                 "content_sha256": "0" * 64,
             }
         ),
@@ -1886,6 +1951,47 @@ def test_read_implementation_receipt_rejects_missing_invocation_id(
             {
                 "writer": "omg-cli",
                 "run_id": "run-x",
+                "lease_generation": 1,
+                "content_sha256": "0" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert read_implementation_receipt(tmp_path, "run-x") is None
+
+
+def test_read_implementation_receipt_rejects_missing_lease_generation(
+    tmp_path: Path,
+) -> None:
+    """R14-2: receipt without integer lease_generation >= 1 is untrusted."""
+    import json
+
+    from omg_cli.implementation import (
+        implementation_receipt_path,
+        read_implementation_receipt,
+    )
+
+    path = implementation_receipt_path(tmp_path, "run-x")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "writer": "omg-cli",
+                "run_id": "run-x",
+                "invocation_id": "inv-1",
+                "content_sha256": "0" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert read_implementation_receipt(tmp_path, "run-x") is None
+    path.write_text(
+        json.dumps(
+            {
+                "writer": "omg-cli",
+                "run_id": "run-x",
+                "invocation_id": "inv-1",
+                "lease_generation": 0,
                 "content_sha256": "0" * 64,
             }
         ),
@@ -1896,36 +2002,71 @@ def test_read_implementation_receipt_rejects_missing_invocation_id(
 
 def test_read_implementation_receipt_rejects_run_id_mismatch(tmp_path: Path) -> None:
     """A receipt stamped for one run must not be readable under another."""
-    from omg_cli.implementation import (
-        read_implementation_receipt,
-        stamp_implementation_receipt,
-    )
+    from omg_cli.implementation import read_implementation_receipt
 
-    stamp_implementation_receipt(
-        tmp_path, "run-a", content_sha256="0" * 64, invocation_id="inv-a"
-    )
+    rid = _strict_run_for_receipt(tmp_path)
+    _stamp_impl_receipt(tmp_path, rid, content_sha256="0" * 64)
     assert read_implementation_receipt(tmp_path, "run-b") is None
 
 
 def test_implement_to_review_accepts_on_disk_cli_receipt_without_break_glass(
     tmp_path: Path,
 ) -> None:
-    """P2: a trusted on-disk CLI implementation receipt satisfies the
-    implement→review work gate on its own — no break_glass required."""
-    from omg_cli.autopilot import _implement_workspace_fingerprint, load_autopilot
-    from omg_cli.implementation import stamp_implementation_receipt
+    """P2/R14-2: a trusted on-disk CLI receipt stamped under a live lease
+    with matching implement_expected_* on state satisfies implement→review
+    without break_glass."""
+    from omg_cli.autopilot import _implement_workspace_fingerprint
 
     st = start_autopilot(tmp_path, "cli receipt gate", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    ap = load_autopilot(tmp_path, rid)
+    assert ap.get("implement_expected_invocation_id")
+    assert isinstance(ap.get("implement_expected_lease_generation"), int)
+    assert ap["implement_expected_lease_generation"] >= 1
     fp = _implement_workspace_fingerprint(tmp_path)
-    stamp_implementation_receipt(
-        tmp_path, rid, content_sha256=fp, invocation_id="inv-cli-1", note="worker finished"
+    _stamp_impl_receipt(
+        tmp_path, rid, content_sha256=fp, note="worker finished", sync_expected=True
     )
     transition(tmp_path, rid, "review")  # no evidence, no break_glass
     assert status_autopilot(tmp_path, rid)["phase"] == "review"
     history = load_autopilot(tmp_path, rid)["history"]
     assert history[-1].get("gate_audit") == "cli_receipt:implementation.json"
+
+
+def test_implement_to_review_rejects_hand_forged_receipt_with_fake_invocation(
+    tmp_path: Path,
+) -> None:
+    """R14-2: hand-forged writer=omg-cli + arbitrary non-empty invocation_id
+    + lease_generation + current fingerprint must NOT unlock implement→review."""
+    import json
+
+    from omg_cli.autopilot import _implement_workspace_fingerprint
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.implementation import implementation_receipt_path
+
+    st = start_autopilot(tmp_path, "forged receipt gate", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    fp = _implement_workspace_fingerprint(tmp_path)
+    path = implementation_receipt_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "writer": CLI_WRITER,
+                "run_id": rid,
+                "invocation_id": "hand-forged-inv-not-from-lease",
+                "lease_generation": 1,
+                "content_sha256": fp,
+                "note": "forged without live lease",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(AutopilotError, match="implementation|no_change"):
+        transition(tmp_path, rid, "review")
+    assert status_autopilot(tmp_path, rid)["phase"] == "implement"
 
 
 def test_implement_to_review_rejects_handwritten_receipt_without_invocation_id(
@@ -1961,16 +2102,37 @@ def test_implement_to_review_rejects_handwritten_receipt_without_invocation_id(
     assert status_autopilot(tmp_path, rid)["phase"] == "implement"
 
 
+def test_implement_to_review_rejects_stale_generation_or_foreign_invocation(
+    tmp_path: Path,
+) -> None:
+    """R14-2: receipt stamped under a live lease but with wrong/stale
+    generation or foreign invocation_id vs implement_expected_* must not
+    unlock (expected fields left as set on implement entry)."""
+    from omg_cli.autopilot import _implement_workspace_fingerprint
+
+    st = start_autopilot(tmp_path, "stale lease bind", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    expected = load_autopilot(tmp_path, rid)
+    exp_inv = expected["implement_expected_invocation_id"]
+    exp_gen = expected["implement_expected_lease_generation"]
+    fp = _implement_workspace_fingerprint(tmp_path)
+    # Stamp under a *new* lease without syncing expected → foreign inv/gen.
+    stamped = _stamp_impl_receipt(tmp_path, rid, content_sha256=fp, sync_expected=False)
+    assert stamped["invocation_id"] != exp_inv or stamped["lease_generation"] != exp_gen
+    with pytest.raises(AutopilotError, match="implementation|no_change"):
+        transition(tmp_path, rid, "review")
+    assert status_autopilot(tmp_path, rid)["phase"] == "implement"
+
+
 def test_implement_to_review_rejects_stale_on_disk_receipt(tmp_path: Path) -> None:
     """A receipt whose content_sha256 no longer matches the current
     workspace must not satisfy the gate (stale stamp, not proof of work)."""
-    from omg_cli.implementation import stamp_implementation_receipt
-
     st = start_autopilot(tmp_path, "stale cli receipt", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    stamp_implementation_receipt(
-        tmp_path, rid, content_sha256="0" * 64, invocation_id="inv-stale"
+    _stamp_impl_receipt(
+        tmp_path, rid, content_sha256="0" * 64, sync_expected=True
     )
     with pytest.raises(AutopilotError, match="implementation|no_change"):
         transition(tmp_path, rid, "review")
@@ -1987,10 +2149,7 @@ def test_implement_reentry_invalidates_stale_receipt_with_unchanged_fingerprint(
     accepted just because content_sha256 still equals the (unchanged)
     current fingerprint."""
     from omg_cli.autopilot import _implement_workspace_fingerprint
-    from omg_cli.implementation import (
-        read_implementation_receipt,
-        stamp_implementation_receipt,
-    )
+    from omg_cli.implementation import read_implementation_receipt
 
     st = start_autopilot(tmp_path, "stale receipt cycle bind", skip_interview=True)
     rid = st["run_id"]
@@ -1999,8 +2158,8 @@ def test_implement_reentry_invalidates_stale_receipt_with_unchanged_fingerprint(
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
     (tmp_path / "changed.py").write_text("# product change\n", encoding="utf-8")
     fp1 = _implement_workspace_fingerprint(tmp_path)
-    stamp_implementation_receipt(
-        tmp_path, rid, content_sha256=fp1, invocation_id="inv-cycle-1", note="cycle 1 work"
+    _stamp_impl_receipt(
+        tmp_path, rid, content_sha256=fp1, note="cycle 1 work", sync_expected=True
     )
     transition(tmp_path, rid, "review")
     assert status_autopilot(tmp_path, rid)["phase"] == "review"

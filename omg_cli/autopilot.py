@@ -298,10 +298,23 @@ def _implementation_work_evidence(
 
     on_disk_receipt = read_implementation_receipt(root, run_id)
     if isinstance(on_disk_receipt, dict):
-        # Trusted CLI-side stamp (writer verified by the reader itself, not
-        # caller-supplied evidence) — accepted without break_glass, but only
-        # while it still describes the current workspace.
-        if on_disk_receipt.get("content_sha256") == current_fp:
+        # Trusted CLI-side stamp (writer + lease fields verified by the
+        # reader) — accepted without break_glass only when it still describes
+        # the current workspace AND matches the implement-cycle expected
+        # invocation/generation persisted on (re)entry to implement. Missing
+        # expected fields → fail closed (no unlock via receipt alone).
+        expected_inv = state.get("implement_expected_invocation_id")
+        expected_gen = state.get("implement_expected_lease_generation")
+        if (
+            isinstance(expected_inv, str)
+            and expected_inv.strip()
+            and isinstance(expected_gen, int)
+            and not isinstance(expected_gen, bool)
+            and expected_gen >= 1
+            and on_disk_receipt.get("invocation_id") == expected_inv
+            and on_disk_receipt.get("lease_generation") == expected_gen
+            and on_disk_receipt.get("content_sha256") == current_fp
+        ):
             return True, "cli_receipt:implementation.json"
     receipt = ev.get("implementation_receipt")
     if isinstance(receipt, dict) and receipt.get("writer") == CLI_WRITER:
@@ -681,6 +694,11 @@ def transition(
             invalidate_implementation_receipt(
                 root, run_id, reason=f"(re)implement from {src}"
             )
+            # Bind the next CLI implementation receipt to this implement
+            # cycle's live lease — a hand-forged writer=omg-cli receipt with
+            # an arbitrary invocation_id must not unlock review.
+            state["implement_expected_invocation_id"] = lease.invocation_id
+            state["implement_expected_lease_generation"] = lease.generation
             state["implement_workspace_fp"] = _implement_workspace_fingerprint(root)
         if next_phase == "ralplan":
             # ralplan_epoch is a monotonic re-entry counter, not a stamp

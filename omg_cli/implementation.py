@@ -6,18 +6,21 @@ JSON, only accepted under the audited ``break_glass`` escape hatch — see
 ``autopilot._implementation_work_evidence``). This module writes/reads a real
 on-disk stamp under ``.omg/state/runs/<run_id>/stages/implementation.json``
 with ``writer == "omg-cli"``. The gate trusts this file without break_glass
-because only ``stamp_implementation_receipt`` (a CLI-side helper, never driven
-by raw model/host JSON) can create it — the same authority model as the
-review/QA stage stamps.
+only when it was produced under a live ``ExecutionLease`` (``assert_current``)
+and matches the implement-cycle expected invocation/generation persisted on
+autopilot state — the same authority model as the review/QA stage stamps.
 """
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from omg_cli.evidence import CLI_WRITER, _atomic_write_json, validate_identifier
+
+if TYPE_CHECKING:
+    from omg_cli.state import ExecutionLease
 
 
 def _utc_now() -> str:
@@ -42,23 +45,28 @@ def stamp_implementation_receipt(
     run_id: str,
     *,
     content_sha256: str,
-    invocation_id: str,
+    lease: ExecutionLease,
     note: str | None = None,
 ) -> dict[str, Any]:
-    """Write a CLI-owned implementation receipt (same-process trust only).
+    """Write a CLI-owned implementation receipt under a live execution lease.
 
     ``content_sha256`` must be a workspace/product fingerprint the CLI itself
     recomputed (e.g. ``autopilot._implement_workspace_fingerprint(root)``) —
     never a caller-supplied hash, or this would just be a laundered version
     of the unauthenticated inline ``evidence.implementation_receipt`` path.
 
-    ``invocation_id`` must be the active execution-lease id (binds the receipt
-    to a real CLI invocation so a hand-written ``writer=omg-cli`` file cannot
-    forge the gate).
+    ``lease`` must be a held ``ExecutionLease`` (``assert_current``); the
+    receipt records ``invocation_id`` and ``lease_generation`` from that
+    lease so a hand-written ``writer=omg-cli`` file cannot forge the gate
+    without matching the implement-cycle expected binding on autopilot state.
     """
+    lease.assert_current()
     root = Path(root).resolve()
     run_id = validate_identifier(run_id, label="run_id")
-    invocation_id = validate_identifier(invocation_id, label="invocation_id")
+    invocation_id = validate_identifier(lease.invocation_id, label="invocation_id")
+    generation = lease.generation
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+        raise ValueError("lease.generation must be an int >= 1")
     digest = (content_sha256 or "").strip().lower()
     if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
         raise ValueError("content_sha256 must be 64 lowercase hex characters")
@@ -67,6 +75,7 @@ def stamp_implementation_receipt(
         "schema_version": 1,
         "run_id": run_id,
         "invocation_id": invocation_id,
+        "lease_generation": generation,
         "content_sha256": digest,
         "stamped_at": _utc_now(),
     }
@@ -83,9 +92,9 @@ def read_implementation_receipt(
     """Return the on-disk receipt only if it is a validly CLI-stamped record.
 
     Fail-closed: malformed JSON, wrong writer, run_id mismatch, missing or
-    empty ``invocation_id``, or an ``invalidated`` record all read as "no
-    receipt" rather than raising — callers treat this the same as an absent
-    file.
+    empty ``invocation_id``, missing/non-int/``<1`` ``lease_generation``, or
+    an ``invalidated`` record all read as "no receipt" rather than raising —
+    callers treat this the same as an absent file.
     """
     run_id = validate_identifier(run_id, label="run_id")
     path = implementation_receipt_path(root, run_id)
@@ -101,6 +110,9 @@ def read_implementation_receipt(
         return None
     inv = data.get("invocation_id")
     if not isinstance(inv, str) or not inv.strip():
+        return None
+    gen = data.get("lease_generation")
+    if isinstance(gen, bool) or not isinstance(gen, int) or gen < 1:
         return None
     if data.get("invalidated") is True:
         return None
