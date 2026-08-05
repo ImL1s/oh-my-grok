@@ -510,6 +510,112 @@ def test_reauthorize_attach_rejects_goal_drift_under_lease(tmp_path: Path) -> No
         interview_mod._reauthorize_attach(tmp_path, rid, "a different stale task text")
 
 
+def _write_pending_cancel_request(tmp_path: Path, run_id: str) -> None:
+    request_path = (
+        tmp_path / ".omg" / "state" / "runs" / run_id / "cancel.request.json"
+    )
+    request_path.write_text(
+        json.dumps(
+            {
+                "writer": "omg-cli",
+                "run_id": run_id,
+                "request_id": "pending-request",
+                "requested_at": "2026-08-05T00:00:00+00:00",
+                "observed_generation": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_interview_attach_reauthorize_rejects_pending_cancellation_request_under_lease(
+    tmp_path: Path,
+) -> None:
+    """R8-3 (P2-2): a cancellation request committed (but not yet finalized
+    to a terminal ``status``) between the pre-lease attach check and the
+    lease-protected write must also be rejected — ``omg cancel`` commits
+    its request under the distinct transition lock, so there is a real
+    window where the request exists but status has not flipped to
+    cancelled yet. Fail closed in that window too, not just once terminal."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "cancel request drift task", skip_interview=False)
+    rid = st["run_id"]
+
+    _write_pending_cancel_request(tmp_path, rid)
+
+    with pytest.raises(InterviewError, match="cancellation"):
+        start_interview(tmp_path, "", attach_run_id=rid)
+
+    assert not interview_state_path(tmp_path, rid).exists()
+
+
+def test_reauthorize_attach_rejects_pending_cancellation_request(tmp_path: Path) -> None:
+    """R8-3 (P2-2): unit-level check that ``_reauthorize_attach`` itself
+    (the helper both the attach path and ``_assert_run_writable`` share)
+    rejects a pending cancellation request, not just a terminal status."""
+    import omg_cli.interview as interview_mod
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "cancel unit task", skip_interview=False)
+    rid = st["run_id"]
+
+    _write_pending_cancel_request(tmp_path, rid)
+
+    with pytest.raises(InterviewError, match="cancellation"):
+        interview_mod._reauthorize_attach(tmp_path, rid, "cancel unit task")
+
+
+def test_close_interview_rejects_terminal_run_under_lease(tmp_path: Path) -> None:
+    """R8-3 (P2-2), TDD core case: a run cancelled between the outer
+    readiness snapshot and the lease-protected write must be rejected —
+    close_interview must not leave a complete spec/status envelope on disk
+    for a run that is terminal by the time the write would happen."""
+    from omg_cli.state import cancel_run
+
+    (tmp_path / ".git").mkdir()
+    started = start_interview(tmp_path, _clear_task(), profile="standard")
+    rid = started["run_id"]
+    pressure_pass_interview(
+        tmp_path,
+        rid,
+        "The assumption is that a deterministic CLI is sufficient; reject an automatic LLM engine to preserve auditable authority.",
+    )
+
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+
+    with pytest.raises(InterviewError, match="terminal under lease"):
+        close_interview(tmp_path, rid)
+
+    assert not interview_spec_path(tmp_path, rid).exists()
+    assert _state(tmp_path, rid)["status"] != "complete"
+
+
+def test_close_interview_rejects_pending_cancellation_request_under_lease(
+    tmp_path: Path,
+) -> None:
+    """R8-3 (P2-2), TDD core case: a committed-but-not-yet-finalized
+    cancellation request must also block close — the same window
+    ``_authorize_autopilot_embedding`` (R8-2) defends against. No complete
+    envelope (spec artifact or status) may land on disk."""
+    (tmp_path / ".git").mkdir()
+    started = start_interview(tmp_path, _clear_task(), profile="standard")
+    rid = started["run_id"]
+    pressure_pass_interview(
+        tmp_path,
+        rid,
+        "The assumption is that a deterministic CLI is sufficient; reject an automatic LLM engine to preserve auditable authority.",
+    )
+
+    _write_pending_cancel_request(tmp_path, rid)
+
+    with pytest.raises(InterviewError, match="cancellation"):
+        close_interview(tmp_path, rid)
+
+    assert not interview_spec_path(tmp_path, rid).exists()
+    assert _state(tmp_path, rid)["status"] != "complete"
+
+
 def test_authorize_run_mode_fails_closed_on_corrupt_autopilot_state(tmp_path: Path) -> None:
     """IMPORTANT: a corrupt/unreadable autopilot state file must raise a
     clean InterviewError instead of an unhandled json.JSONDecodeError."""

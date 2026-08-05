@@ -370,6 +370,34 @@ def _attach_interview_run(root: Path, attach_run_id: str, task: str, *, force: b
             f"--attach-run task must match the run's goal; got {task!r}, expected {goal!r}"
         )
     return run, goal
+def _assert_run_writable(root: Path, run: Mapping[str, Any]) -> None:
+    """Fail-closed gate shared by every interview sidecar write path.
+
+    Re-checks, using a ``run`` freshly reloaded under the execution lease,
+    that the run has not gone terminal (``status`` in
+    ``omg_cli.state.TERMINAL_STATUSES``) and has no pending cancellation
+    request committed (``load_cancellation_request``). ``omg cancel``
+    commits its request under the distinct transition lock, so it can land
+    at any point while an interview write (state save or spec artifact) is
+    in flight under this lease — fail closed rather than race it.
+
+    Callers must invoke this immediately before every ``_save`` /
+    interview-spec write, with a freshly reloaded ``run`` — not just once
+    at lease entry — since a concurrent cancellation can commit between
+    entry and that write. Raises ``InterviewError`` on any violation;
+    writes no sidecar."""
+    from omg_cli.state import load_cancellation_request
+
+    run_id = str(run.get("run_id"))
+    status = str(run.get("status") or "")
+    if status in TERMINAL_STATUSES:
+        raise InterviewError(
+            f"run is terminal under lease; refusing interview write: status={status!r}"
+        )
+    if load_cancellation_request(root, run_id) is not None:
+        raise InterviewError(
+            "run has a pending cancellation request; refusing interview write"
+        )
 def _reauthorize_attach(root: Path, run_id: str, task: str) -> None:
     """Re-verify attach-run authorization under the execution lease.
 
@@ -377,15 +405,14 @@ def _reauthorize_attach(root: Path, run_id: str, task: str) -> None:
     a concurrent transition/cancel could race between that check and the
     write. Re-load the run fresh and repeat every check that matters: mode
     still interview-capable (autopilot parked at phase=="interview", or
-    bare mode=="interview"), run not terminal/cancelled, and the goal has
-    not drifted from the attach task."""
+    bare mode=="interview"), run not terminal/cancelled and no pending
+    cancellation request (``_assert_run_writable``), and the goal has not
+    drifted from the attach task."""
     run = load_run(root, run_id)
     if run is None:
         raise InterviewError(f"no or corrupt run found: {run_id}")
     _authorize_run_mode(root, run)
-    status = str(run.get("status") or "")
-    if status in TERMINAL_STATUSES:
-        raise InterviewError(f"attach-run is terminal under lease: status={status!r}")
+    _assert_run_writable(root, run)
     goal = str(run.get("goal") or "").strip()
     if goal != task:
         raise InterviewError(
@@ -515,7 +542,13 @@ def close_interview(root: Path | str, run_id: str) -> dict[str, Any]:
     if current["status"] == "complete":
         return _result(current)
     with execution_lease(root, run_id, intent="interview-close") as lease:
-        _, state = _load(root, run_id)
+        fresh_run, state = _load(root, run_id)
+        # Re-check terminal/cancellation under the lease, immediately before
+        # any write below (blocked-status save on incomplete readiness, or
+        # the complete spec artifact + state + status on success) — a
+        # concurrent ``omg cancel`` commits its request under the distinct
+        # transition lock and can land after the outer, pre-lease `_load`.
+        _assert_run_writable(root, fresh_run)
         reasons = _readiness(state)
         if reasons:
             state["pending_question"] = None
