@@ -99,6 +99,14 @@ class InterviewIncomplete(InterviewError):
         self.result = result
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+def _autopilot_resume_command(run_id: str) -> str:
+    """Single idempotent resume entry for an autopilot-attached interview.
+
+    ``omg autopilot run --resume`` reads the sidecar's own phase and
+    dispatches accordingly, so it is safe to hand out unconditionally
+    (R9-3) instead of the older two-step
+    ``omg autopilot transition ... && omg ralplan ... --run ...``."""
+    return f"omg autopilot run --resume {run_id}"
 def _run_dir(root: Path, run_id: str) -> Path:
     from omg_cli.state import _safe_run_id
 
@@ -540,6 +548,29 @@ def close_interview(root: Path | str, run_id: str) -> dict[str, Any]:
     assert_safe_supervised_parent()
     run, current = _load(root, run_id)
     if current["status"] == "complete":
+        expected_resume = (
+            _autopilot_resume_command(run_id)
+            if run.get("mode") == "autopilot"
+            else f"omg ralplan {shlex.quote(current['task'])}"
+        )
+        if current.get("resume_command") != expected_resume:
+            # Pre-R7 runs may still carry the old two-step
+            # ``transition && ralplan`` (or bare ``ralplan``) resume hint;
+            # migrate it to the current idempotent form on next close call.
+            # Best-effort: a concurrent cancel/terminal transition simply
+            # leaves the stale hint in place rather than raising here.
+            try:
+                with execution_lease(root, run_id, intent="interview-close-migrate") as lease:
+                    fresh_run, fresh_state = _load(root, run_id)
+                    _assert_run_writable(root, fresh_run)
+                    if fresh_state["status"] == "complete" and fresh_state.get("resume_command") != expected_resume:
+                        fresh_state["resume_command"] = expected_resume
+                        fresh_state["revision"] += 1
+                        fresh_state["updated_at"] = _now()
+                        _save(root, fresh_state, lease)
+                    current = fresh_state
+            except InterviewError:
+                pass
         return _result(current)
     with execution_lease(root, run_id, intent="interview-close") as lease:
         fresh_run, state = _load(root, run_id)
@@ -585,20 +616,17 @@ def close_interview(root: Path | str, run_id: str) -> dict[str, Any]:
         _atomic_write_json(path, artifact)
         state.update(status="complete", pending_question=None, blocker=None)
         state["spec_path"] = str(path.relative_to(root))
-        quoted_task = shlex.quote(state["task"])
         if run.get("mode") == "autopilot":
             # An attached interview lives under the autopilot run's own
             # run_id (see ``_attach_interview_run``): resuming must reuse
             # that run_id, not spawn a fresh, orphaned ralplan run. The
-            # autopilot phase sidecar is still "interview" at this point, so
-            # a bare `omg ralplan --run` would be rejected by embedding
-            # (phase mismatch) — advance to "ralplan" first.
-            state["resume_command"] = (
-                f"omg autopilot transition --run {run_id} --phase ralplan "
-                f"&& omg ralplan {quoted_task} --run {run_id}"
-            )
+            # autopilot phase sidecar is still "interview" at this point;
+            # `omg autopilot run --resume` is a single idempotent entry
+            # that itself advances the sidecar to "ralplan" and launches —
+            # no separate `transition && ralplan` two-step needed.
+            state["resume_command"] = _autopilot_resume_command(run_id)
         else:
-            state["resume_command"] = f"omg ralplan {quoted_task}"
+            state["resume_command"] = f"omg ralplan {shlex.quote(state['task'])}"
         state["closed_by_invocation_id"] = lease.invocation_id
         state["revision"] += 1
         state["updated_at"] = _now()

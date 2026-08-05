@@ -338,13 +338,13 @@ def test_interview_attach_run_writes_envelope_for_autopilot(tmp_path: Path) -> N
 def test_attach_close_resume_command_targets_same_autopilot_run(
     tmp_path: Path,
 ) -> None:
-    """R6-2/R7-0: closing an attached (mode=="autopilot") interview must
-    advertise a resume_command that keeps the same run_id — bare
+    """R6-2/R7-0/R9-3: closing an attached (mode=="autopilot") interview
+    must advertise a resume_command that keeps the same run_id — bare
     `omg ralplan <goal>` would start a brand-new run and orphan the
-    autopilot run's evidence. It must also transition the autopilot phase
-    sidecar to "ralplan" first, since the phase is still "interview" at
-    close time and a bare `omg ralplan --run` would be rejected by
-    embedding (phase mismatch)."""
+    autopilot run's evidence. It must be the single idempotent
+    `omg autopilot run --resume <rid>` entry, which itself advances the
+    phase sidecar from "interview" to "ralplan" and launches — not the
+    older two-step `transition && ralplan`."""
     from omg_cli.autopilot import start_autopilot
 
     (tmp_path / ".git").mkdir()
@@ -359,10 +359,43 @@ def test_attach_close_resume_command_targets_same_autopilot_run(
     )
     closed = close_interview(tmp_path, rid)
     assert closed["status"] == "complete"
-    assert closed["resume_command"] == (
-        f"omg autopilot transition --run {rid} --phase ralplan "
-        f"&& omg ralplan {shlex.quote(_clear_task())} --run {rid}"
+    assert closed["resume_command"] == f"omg autopilot run --resume {rid}"
+
+
+def test_close_interview_migrates_stale_autopilot_resume_command_on_reclose(
+    tmp_path: Path,
+) -> None:
+    """R9-3: a pre-R7 autopilot-attached ``interview.json`` may still carry
+    the old two-step ``transition && ralplan`` (or even older bare
+    ``ralplan``) resume_command on disk. Re-closing an already-complete run
+    (the early-return path) must migrate the stale hint to the current
+    single idempotent ``omg autopilot run --resume <rid>`` form and persist
+    that migration on disk, not just paper over it in the returned dict."""
+    from omg_cli.autopilot import start_autopilot
+
+    (tmp_path / ".git").mkdir()
+    st = start_autopilot(tmp_path, _clear_task(), skip_interview=False)
+    rid = st["run_id"]
+
+    start_interview(tmp_path, "", attach_run_id=rid)
+    pressure_pass_interview(
+        tmp_path,
+        rid,
+        "Pressure test confirms compatibility and CLI authority outweighs automatic conversational convenience.",
     )
+    closed = close_interview(tmp_path, rid)
+    assert closed["status"] == "complete"
+
+    stale_state = _state(tmp_path, rid)
+    stale_state["resume_command"] = f"omg ralplan {shlex.quote(_clear_task())}"
+    interview_state_path(tmp_path, rid).write_text(
+        json.dumps(stale_state), encoding="utf-8"
+    )
+
+    expected = f"omg autopilot run --resume {rid}"
+    reclosed = close_interview(tmp_path, rid)
+    assert reclosed["resume_command"] == expected
+    assert _state(tmp_path, rid)["resume_command"] == expected
 
 
 def test_bare_interview_close_resume_command_has_no_run_flag(
