@@ -402,3 +402,88 @@ def test_incomplete_inventory_cannot_emit_percentage_or_checkmark(tmp_path: Path
         marker = claim_marker_for_capability(row, inventory=validated)
         assert "%" not in str(marker)
         assert marker not in {"✅", "✓"}
+
+
+def test_alias_maturity_cannot_outrank_canonical(tmp_path: Path) -> None:
+    inventory = _base_v2_inventory(tmp_path)
+    inventory["capabilities"][0]["classification"] = "host_impossible"
+    inventory["capabilities"][0]["maturity"] = {"grok": "catalogued"}
+    inventory["capabilities"].append(
+        {
+            "id": "agy.provider.alias",
+            "category": "antigravity",
+            "promise": "Alias that overclaims vs host_impossible canonical",
+            "classification": "alias",
+            "alias_of": "antigravity.provider.adapter",
+            "upstream": {
+                "source": "Antigravity",
+                "revision": "dddddddddddddddddddddddddddddddddddddddd",
+                "source_paths": ["src/adapter.ts"],
+            },
+            "omg_paths": [],
+            "runtime_owner": "omg",
+            "maturity": {"grok": "healthy"},
+            "evidence": {
+                "tests": ["tests/test_parity_inventory_v2.py"],
+                "docs": ["docs/parity/README.md"],
+                "live": [],
+                "configured_paths": ["omg_cli/ask/providers.py"],
+                "install_evidence": ["plugin.json"],
+                "enabled_evidence": ["hooks/hooks.json"],
+                "loadable_evidence": ["omg_cli/__init__.py"],
+                "observed_evidence": ["docs/parity/omg-parity.json"],
+                "healthy_evidence": ["tests/test_parity_inventory_v2.py"],
+            },
+            "issues": ["#67"],
+            "gap": "alias overclaim must be rejected",
+        }
+    )
+    with pytest.raises(ContractValidationError, match="alias"):
+        _validate(inventory, tmp_path)
+
+    # Even if schema were bypassed, markers derive from the canonical target.
+    inventory["capabilities"][-1]["maturity"] = {"grok": "catalogued"}
+    inventory["capabilities"][-1]["evidence"] = {"tests": [], "docs": [], "live": []}
+    validated = _validate(inventory, tmp_path)
+    alias = next(row for row in validated["capabilities"] if row["id"] == "agy.provider.alias")
+    marker = claim_marker_for_capability(alias, inventory=validated)
+    assert marker == "host_impossible"
+
+
+def test_alias_maturity_cannot_exceed_canonical_runtime_rank(tmp_path: Path) -> None:
+    inventory = _base_v2_inventory(tmp_path)
+    inventory["capabilities"][0]["maturity"] = {"grok": "configured"}
+    inventory["capabilities"][0]["evidence"] = {
+        "tests": [],
+        "docs": [],
+        "live": [],
+        "configured_paths": ["omg_cli/ask/providers.py"],
+    }
+    inventory["capabilities"].append(
+        {
+            "id": "agy.provider.alias",
+            "category": "antigravity",
+            "promise": "Alias with higher maturity than canonical",
+            "classification": "alias",
+            "alias_of": "antigravity.provider.adapter",
+            "upstream": {
+                "source": "Antigravity",
+                "revision": "dddddddddddddddddddddddddddddddddddddddd",
+                "source_paths": ["src/adapter.ts"],
+            },
+            "omg_paths": [],
+            "runtime_owner": "omg",
+            "maturity": {"grok": "installed"},
+            "evidence": {
+                "tests": [],
+                "docs": [],
+                "live": [],
+                "configured_paths": ["omg_cli/ask/providers.py"],
+                "install_evidence": ["plugin.json"],
+            },
+            "issues": ["#67"],
+            "gap": "",
+        }
+    )
+    with pytest.raises(ContractValidationError, match="exceeds canonical"):
+        _validate(inventory, tmp_path)

@@ -17,6 +17,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `--strict` gate. Issue #78 remains open for #78-B/#78-C.
 
 ### Fixed
+- **Parity claimability / upgrade safety (PR #85 Pro re-audit):** upgrade from
+  older managed installs tolerates missing newly required shipping roots
+  (`docs/parity`) on prior identity/rollback while still requiring them on the
+  candidate package; alias maturity cannot outrank its canonical target (and
+  cannot positive-claim when the target is host_impossible/excluded/
+  optional_unclaimed); `--strict` requires non-empty `omg_paths` for claimable
+  classifications and repo-verifiable `healthy_evidence` for healthy/
+  live_verified.
 - **Process-fanout cancel linearization (Round 18 / R18-1):** each
   ``run_process_fanout`` worker's cancel recheck → ``Popen`` → PID publish
   runs under the same per-run ``transition_guard`` as ``_launch_grok``

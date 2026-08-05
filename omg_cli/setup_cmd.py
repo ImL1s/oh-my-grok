@@ -68,6 +68,10 @@ SHIPPING_ROOTS = (
     "templates",
     "scripts",
 )
+# Roots required for packages being installed, but older managed installs may
+# lack them. Prior-plugin identity / rollback staging tolerates these missing;
+# the candidate package under install is still validated against full SHIPPING_ROOTS.
+LEGACY_TOLERATED_MISSING_SHIPPING_ROOTS = frozenset({"docs/parity"})
 _IGNORED_PACKAGE_NAMES = {"__pycache__", ".DS_Store"}
 _IGNORED_PACKAGE_SUFFIXES = {".pyc", ".pyo"}
 
@@ -254,8 +258,13 @@ def _safe_package_rel(relative: str) -> str:
     return relative
 
 
-def _iter_shipping_files(root: Path) -> list[tuple[str, Path]]:
+def _iter_shipping_files(
+    root: Path,
+    *,
+    tolerate_missing: frozenset[str] | set[str] | None = None,
+) -> list[tuple[str, Path]]:
     root = root.resolve()
+    tolerated = frozenset(tolerate_missing or ())
     rows: list[tuple[str, Path]] = []
 
     def visit(path: Path, relative: str) -> None:
@@ -284,14 +293,25 @@ def _iter_shipping_files(root: Path) -> list[tuple[str, Path]]:
             # Documentation translations are optional; runtime identity is not.
             if relative.startswith("docs/readme/README.zh"):
                 continue
+            if relative in tolerated:
+                continue
             raise InstallError(f"required shipping path missing: {relative}")
         visit(path, relative)
     rows.sort(key=lambda row: row[0].encode("utf-8"))
     return rows
 
 
-def compute_package_identity(root: Path | str) -> dict[str, Any]:
-    """Hash deterministic shipping bytes and their executable-mode contract."""
+def compute_package_identity(
+    root: Path | str,
+    *,
+    tolerate_missing_roots: frozenset[str] | set[str] | None = None,
+) -> dict[str, Any]:
+    """Hash deterministic shipping bytes and their executable-mode contract.
+
+    ``tolerate_missing_roots`` is for reading older managed installs that
+    predate newly required shipping roots. Packages being installed must pass
+    with the default (strict) root set.
+    """
 
     package_root = Path(root).resolve()
     try:
@@ -309,7 +329,9 @@ def compute_package_identity(root: Path | str) -> dict[str, Any]:
     if not isinstance(lock, dict) or lock.get("version") != version:
         raise InstallError("capability lock version differs from plugin version")
     inventory: list[dict[str, Any]] = []
-    for relative, path in _iter_shipping_files(package_root):
+    for relative, path in _iter_shipping_files(
+        package_root, tolerate_missing=tolerate_missing_roots
+    ):
         body = path.read_bytes()
         executable = bool(path.stat().st_mode & 0o111)
         inventory.append(
@@ -462,7 +484,13 @@ def extract_release_archive(asset: Path | str, destination: Path | str) -> Path:
     return valid[0]
 
 
-def _copy_package_to_stage(source: Path, destination: Path, identity: Mapping[str, Any]) -> None:
+def _copy_package_to_stage(
+    source: Path,
+    destination: Path,
+    identity: Mapping[str, Any],
+    *,
+    tolerate_missing_roots: frozenset[str] | set[str] | None = None,
+) -> None:
     temporary = destination.with_name(f".{destination.name}.stage-{uuid.uuid4().hex}")
     temporary.mkdir(parents=True, mode=0o700)
     try:
@@ -473,7 +501,9 @@ def _copy_package_to_stage(source: Path, destination: Path, identity: Mapping[st
             dst.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
             dst.write_bytes(src.read_bytes())
             dst.chmod(0o755 if row["executable"] else 0o644)
-        staged = compute_package_identity(temporary)
+        staged = compute_package_identity(
+            temporary, tolerate_missing_roots=tolerate_missing_roots
+        )
         if staged["digest"] != identity["digest"] or staged["version"] != identity["version"]:
             raise InstallError("staged package identity differs from source")
         for directory in sorted(
@@ -490,7 +520,9 @@ def _copy_package_to_stage(source: Path, destination: Path, identity: Mapping[st
             os.replace(temporary, destination)
         except OSError as exc:
             if destination.exists():
-                existing = compute_package_identity(destination)
+                existing = compute_package_identity(
+                    destination, tolerate_missing_roots=tolerate_missing_roots
+                )
                 if existing["digest"] == identity["digest"]:
                     shutil.rmtree(temporary, ignore_errors=True)
                     return
@@ -506,10 +538,17 @@ def _copy_package_to_stage(source: Path, destination: Path, identity: Mapping[st
         raise
 
 
-def _verify_immutable_stage(stage: Path, identity: Mapping[str, Any]) -> None:
+def _verify_immutable_stage(
+    stage: Path,
+    identity: Mapping[str, Any],
+    *,
+    tolerate_missing_roots: frozenset[str] | set[str] | None = None,
+) -> None:
     """Reread staged bytes/type/mode inventory exactly before any switch."""
 
-    actual = compute_package_identity(stage)
+    actual = compute_package_identity(
+        stage, tolerate_missing_roots=tolerate_missing_roots
+    )
     if actual["digest"] != identity["digest"] or actual["inventory"] != identity["inventory"]:
         raise InstallError("immutable stage inventory readback differs from source")
     for row in identity["inventory"]:
@@ -525,21 +564,36 @@ def _verify_immutable_stage(stage: Path, identity: Mapping[str, Any]) -> None:
 def stage_immutable_package(
     source_root: Path | str,
     releases_dir: Path | str,
+    *,
+    tolerate_missing_roots: frozenset[str] | set[str] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     source = Path(source_root).resolve()
-    identity = compute_package_identity(source)
+    identity = compute_package_identity(
+        source, tolerate_missing_roots=tolerate_missing_roots
+    )
     releases = Path(releases_dir).resolve()
     releases.mkdir(parents=True, exist_ok=True, mode=0o700)
     destination = releases / f"{identity['version']}-{identity['digest'][:16]}"
     if destination.exists():
         if destination.is_symlink() or not destination.is_dir():
             raise InstallError("immutable stage path is not a regular directory")
-        installed = compute_package_identity(destination)
+        installed = compute_package_identity(
+            destination, tolerate_missing_roots=tolerate_missing_roots
+        )
         if installed["digest"] != identity["digest"]:
             raise InstallError("immutable stage path already contains different bytes")
     else:
-        _copy_package_to_stage(source, destination, identity)
-    _verify_immutable_stage(destination, identity)
+        _copy_package_to_stage(
+            source,
+            destination,
+            identity,
+            tolerate_missing_roots=tolerate_missing_roots,
+        )
+    _verify_immutable_stage(
+        destination,
+        identity,
+        tolerate_missing_roots=tolerate_missing_roots,
+    )
     return destination.resolve(), identity
 
 
@@ -720,6 +774,7 @@ def _resolve_entry_identity(
     entry: Mapping[str, Any],
     *,
     allow_source_fallback: bool,
+    tolerate_missing_roots: frozenset[str] | set[str] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """Resolve host identity without masking an invalid installed snapshot.
 
@@ -727,6 +782,9 @@ def _resolve_entry_identity(
     Once one is present, malformed or missing bytes are a hard failure; a valid
     ``source`` must never hide corruption in the host-managed copy.  Source-only
     fallback is reserved for explicitly legacy/pre-mutation inventory reads.
+
+    ``tolerate_missing_roots`` applies when reading prior managed installs that
+    may predate newly required shipping roots (upgrade / rollback path only).
     """
 
     for key in ("installPath", "install_path", "path"):
@@ -737,7 +795,9 @@ def _resolve_entry_identity(
             raise InstallError("authoritative installed plugin path is malformed")
         candidate = Path(os.path.expanduser(raw)).absolute()
         try:
-            identity = compute_package_identity(candidate)
+            identity = compute_package_identity(
+                candidate, tolerate_missing_roots=tolerate_missing_roots
+            )
         except InstallError as exc:
             raise InstallError("authoritative installed plugin identity is unresolved") from exc
         return candidate.resolve(), identity
@@ -746,7 +806,9 @@ def _resolve_entry_identity(
         if isinstance(raw_source, str) and raw_source.strip():
             source = Path(os.path.expanduser(raw_source)).absolute()
             try:
-                return source.resolve(), compute_package_identity(source)
+                return source.resolve(), compute_package_identity(
+                    source, tolerate_missing_roots=tolerate_missing_roots
+                )
             except InstallError as exc:
                 raise InstallError("plugin source fallback identity is unresolved") from exc
     raise InstallError("authoritative installed plugin path is missing")
@@ -1239,14 +1301,20 @@ def install_package(
         prior_plugin_path: Path | None = None
         prior_plugin_identity: dict[str, Any] | None = None
         prior_restore_path: Path | None = None
+        # Prior installs may predate newly required shipping roots; tolerate
+        # those on prior identity / rollback staging only. The candidate
+        # package above is still validated against the full SHIPPING_ROOTS set.
+        prior_tolerate = LEGACY_TOLERATED_MISSING_SHIPPING_ROOTS
         if prior_rows:
             prior_plugin_path, prior_plugin_identity = _resolve_entry_identity(
                 prior_rows[0],
                 allow_source_fallback=True,
+                tolerate_missing_roots=prior_tolerate,
             )
             prior_restore_path, restore_identity = stage_immutable_package(
                 prior_plugin_path,
                 releases,
+                tolerate_missing_roots=prior_tolerate,
             )
             if restore_identity["digest"] != prior_plugin_identity["digest"]:
                 raise InstallError("prior plugin rollback snapshot differs from host bytes")
@@ -1506,6 +1574,7 @@ def install_package(
                         restored_plugin_path, restored_identity = _resolve_entry_identity(
                             restored_rows[0],
                             allow_source_fallback=False,
+                            tolerate_missing_roots=prior_tolerate,
                         )
                         _verify_host_plugin_path(
                             restored_plugin_path,

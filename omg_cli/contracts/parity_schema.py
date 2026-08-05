@@ -53,6 +53,16 @@ UPSTREAM_PIN_IDS = (
 INVENTORY_STATUS_VALUES = ("bootstrapping", "complete")
 CATEGORY_STATUS_VALUES = ("bootstrapping", "complete")
 NON_POSITIVE_CLASSIFICATIONS = frozenset({"host_impossible", "excluded"})
+# Classifications that may emit positive claim markers and must point at OMG
+# implementation paths under strict (repo_root) validation. Alias / host_owned /
+# optional_unclaimed / non-positive classes are excluded.
+CLAIMABLE_IMPLEMENTATION_CLASSIFICATIONS = frozenset(
+    {"faithful", "antigravity_native", "omg_native"}
+)
+# Canonical targets that forbid any positive maturity on an alias row.
+ALIAS_NON_POSITIVE_TARGETS = frozenset(
+    {"host_impossible", "excluded", "optional_unclaimed"}
+)
 POSITIVE_CLAIM_MIN_MATURITY = "healthy"
 DEFAULT_LIVE_EVIDENCE_MAX_AGE_DAYS = 30
 # User-observable capability IDs: dotted lowercase segments (not DUAL-001).
@@ -633,6 +643,16 @@ def claim_marker_for_capability(
 ) -> str | None:
     """Derived claimability marker for docs/CLI. Never overclaims."""
     classification = row.get("classification")
+    if classification == "alias":
+        target_id = row.get("alias_of")
+        capabilities = inventory.get("capabilities")
+        if isinstance(capabilities, list) and isinstance(target_id, str):
+            for candidate in capabilities:
+                if isinstance(candidate, Mapping) and candidate.get("id") == target_id:
+                    return claim_marker_for_capability(
+                        candidate, inventory=inventory
+                    )
+        return "catalogued"
     if classification in NON_POSITIVE_CLASSIFICATIONS:
         return str(classification)
     if not inventory_completion_claims_allowed(inventory):
@@ -872,10 +892,12 @@ def _validate_parity_inventory_v2(
                 raise ContractValidationError(
                     f"alias {row['id']!r} requires existing canonical target"
                 )
-            if id_to_row[target]["classification"] == "alias":
+            canonical = id_to_row[target]
+            if canonical["classification"] == "alias":
                 raise ContractValidationError(
                     f"alias {row['id']!r} cannot target another alias"
                 )
+            _assert_alias_maturity_bounded(row, canonical)
 
     gaps = inventory["gaps"]
     if not isinstance(gaps, list):
@@ -1002,6 +1024,15 @@ def _validate_capability_row_v2(
         _require_relative_posix(relative, label="omg_path")
         if repo_root is not None and not _path_exists(repo_root, relative):
             raise ContractValidationError(f"omg implementation path missing: {relative}")
+    if (
+        repo_root is not None
+        and classification in CLAIMABLE_IMPLEMENTATION_CLASSIFICATIONS
+        and not omg_paths
+    ):
+        raise ContractValidationError(
+            f"strict mode requires non-empty omg_paths for {classification} "
+            f"capability {cap_id!r}"
+        )
 
     require_nonempty_string(row["runtime_owner"], label="runtime_owner")
     maturity = require_object(row["maturity"], label="maturity")
@@ -1034,7 +1065,7 @@ def _validate_capability_row_v2(
         raise ContractValidationError("evidence.live must be an array")
 
     peak = max_runtime_maturity(row)
-    _assert_maturity_prerequisites(row, peak=peak)
+    _assert_maturity_prerequisites(row, peak=peak, repo_root=repo_root)
 
     if classification in NON_POSITIVE_CLASSIFICATIONS:
         if maturity_rank(peak) >= maturity_rank(POSITIVE_CLAIM_MIN_MATURITY):
@@ -1059,7 +1090,45 @@ def _validate_capability_row_v2(
     return row
 
 
-def _assert_maturity_prerequisites(row: Mapping[str, Any], *, peak: str) -> None:
+def _assert_alias_maturity_bounded(
+    alias_row: Mapping[str, Any],
+    canonical: Mapping[str, Any],
+) -> None:
+    """Alias maturity/claimability must not exceed the canonical target."""
+    alias_id = alias_row["id"]
+    target_id = canonical["id"]
+    target_class = canonical["classification"]
+    alias_maturity = require_object(alias_row["maturity"], label="alias.maturity")
+    target_maturity = require_object(canonical["maturity"], label="canonical.maturity")
+    for runtime, level in alias_maturity.items():
+        require_nonempty_string(runtime, label="alias maturity runtime")
+        require_nonempty_string(level, label="alias maturity level")
+        target_level = target_maturity.get(runtime)
+        if not isinstance(target_level, str) or not target_level:
+            raise ContractValidationError(
+                f"alias {alias_id!r} runtime {runtime!r} missing on canonical "
+                f"{target_id!r}"
+            )
+        if maturity_rank(level) > maturity_rank(target_level):
+            raise ContractValidationError(
+                f"alias {alias_id!r} maturity {level!r} exceeds canonical "
+                f"{target_id!r} maturity {target_level!r} for runtime {runtime!r}"
+            )
+    if target_class in ALIAS_NON_POSITIVE_TARGETS:
+        peak = max_runtime_maturity(alias_row)
+        if maturity_rank(peak) >= maturity_rank(POSITIVE_CLAIM_MIN_MATURITY):
+            raise ContractValidationError(
+                f"alias {alias_id!r} cannot claim positive maturity when "
+                f"canonical {target_id!r} is {target_class}"
+            )
+
+
+def _assert_maturity_prerequisites(
+    row: Mapping[str, Any],
+    *,
+    peak: str,
+    repo_root: Path | None = None,
+) -> None:
     if peak == "catalogued":
         return
     required_fields = _MATURITY_EVIDENCE_FIELDS.get(peak)
@@ -1079,6 +1148,25 @@ def _assert_maturity_prerequisites(row: Mapping[str, Any], *, peak: str) -> None
             raise ContractValidationError(
                 "maturity prerequisite missing: live evidence required for live_verified"
             )
+    if (
+        repo_root is not None
+        and maturity_rank(peak) >= maturity_rank(POSITIVE_CLAIM_MIN_MATURITY)
+    ):
+        healthy = evidence.get("healthy_evidence")
+        if not isinstance(healthy, list) or not healthy:
+            raise ContractValidationError(
+                "strict mode requires verifiable healthy_evidence for "
+                f"{peak} capability {row.get('id')!r}"
+            )
+        paths = require_string_list(
+            healthy, label="evidence.healthy_evidence", unique=True
+        )
+        for relative in paths:
+            _require_relative_posix(relative, label="evidence.healthy_evidence")
+            if not _path_exists(repo_root, relative):
+                raise ContractValidationError(
+                    f"healthy_evidence path missing under repo: {relative}"
+                )
 
 
 def _assert_fresh_live_evidence(

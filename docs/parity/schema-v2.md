@@ -35,3 +35,9 @@ python3 scripts/check_parity_inventory.py --strict
 ```
 
 `--strict` validates schema + local OMG path existence + overclaim rules. It does **not** require all gaps to be closed.
+
+Under `--strict` (validator `repo_root` set):
+
+- Claimable classifications (`faithful` / `omg_native` / `antigravity_native`) require non-empty `omg_paths` that exist under the repo.
+- `healthy` / `live_verified` require `healthy_evidence` entries that are existing repo-relative paths (opaque strings like `"x"` fail closed).
+- Alias rows may not exceed canonical maturity per runtime; aliases of `host_impossible` / `excluded` / `optional_unclaimed` cannot claim positive maturity. Claim markers for aliases derive from the canonical target.

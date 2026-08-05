@@ -82,6 +82,46 @@ def test_strict_requires_existing_omg_paths(tmp_path: Path) -> None:
         check_parity_inventory(inventory_path=path, repo_root=ROOT, strict=True)
 
 
+def test_strict_rejects_empty_omg_paths_for_claimable_classifications(
+    tmp_path: Path,
+) -> None:
+    inventory = load_json_object(INVENTORY)
+    broken = copy.deepcopy(inventory)
+    broken["capabilities"][0]["omg_paths"] = []
+    path = tmp_path / "omg-parity.json"
+    path.write_text(json.dumps(broken), encoding="utf-8")
+
+    check_parity_inventory(inventory_path=path, repo_root=ROOT, strict=False)
+    with pytest.raises(ContractValidationError, match="non-empty omg_paths"):
+        check_parity_inventory(inventory_path=path, repo_root=ROOT, strict=True)
+
+
+def test_strict_rejects_unverifiable_healthy_evidence(tmp_path: Path) -> None:
+    inventory = load_json_object(INVENTORY)
+    broken = copy.deepcopy(inventory)
+    row = broken["capabilities"][0]
+    row["maturity"] = {"grok": "healthy"}
+    row["evidence"] = {
+        "tests": ["tests/test_parity_check.py"],
+        "docs": ["docs/parity/README.md"],
+        "live": [],
+        "configured_paths": ["omg_cli/ask/providers.py"],
+        "install_evidence": ["plugin.json"],
+        "enabled_evidence": ["hooks/hooks.json"],
+        "loadable_evidence": ["omg_cli/__init__.py"],
+        "observed_evidence": ["docs/parity/omg-parity.json"],
+        "healthy_evidence": ["x"],
+    }
+    path = tmp_path / "omg-parity.json"
+    path.write_text(json.dumps(broken), encoding="utf-8")
+
+    # Schema-only (no repo_root) still accepts opaque evidence strings.
+    validate_parity_inventory(broken)
+
+    with pytest.raises(ContractValidationError, match="healthy_evidence"):
+        check_parity_inventory(inventory_path=path, repo_root=ROOT, strict=True)
+
+
 def test_filter_parity_gaps_defaults_to_open_only() -> None:
     inventory = load_json_object(INVENTORY)
     inventory = copy.deepcopy(inventory)
