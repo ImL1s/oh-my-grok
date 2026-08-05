@@ -698,3 +698,236 @@ def test_run_mode_mutex_blocks_second_active(monkeypatch, tmp_path):
     still = load_active_run(tmp_path)
     assert still is not None
     assert still["run_id"] == active["run_id"]
+
+
+def test_launch_grok_refuses_live_leader_pid_match(
+    monkeypatch, tmp_path, capsys
+):
+    """R15-3: live MATCH pid.json must refuse `_launch_grok` spawn (no Popen)."""
+    import os
+
+    from omg_cli.modes import _launch_grok, _run_dir
+    from omg_cli.state import create_run, process_starttime, write_pid_metadata
+
+    run = create_run(tmp_path, mode="ralph", goal="r15 live match")
+    rid = run["run_id"]
+    run_dir = _run_dir(tmp_path, rid)
+    our_pid = os.getpid()
+    start = process_starttime(our_pid)
+    assert start is not None and start.strip()
+    write_pid_metadata(run_dir / "pid.json", pid=our_pid, pgid=our_pid, starttime=start)
+
+    launched: list[bool] = []
+
+    def fake_popen(*_a, **_k):
+        launched.append(True)
+        raise AssertionError("must not spawn")
+
+    real = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", _selective_popen(real, fake_popen))
+
+    rc = _launch_grok(
+        ["grok", "-p", "hello"],
+        cwd=tmp_path,
+        run_dir=run_dir,
+        timeout=None,
+        dry_run=False,
+    )
+    assert rc != 0
+    assert not launched
+    assert (run_dir / "pid.json").is_file()
+    err = capsys.readouterr().err
+    assert "live leader" in err.lower() or "pid" in err.lower()
+
+
+def test_launch_grok_refuses_live_leader_missing_starttime(
+    monkeypatch, tmp_path, capsys
+):
+    """R15-3: live PID without recorded starttime must refuse (do not clear)."""
+    import json
+    import os
+
+    from omg_cli.modes import _launch_grok, _run_dir
+    from omg_cli.state import create_run
+
+    run = create_run(tmp_path, mode="ralph", goal="r15 missing starttime")
+    rid = run["run_id"]
+    run_dir = _run_dir(tmp_path, rid)
+    our_pid = os.getpid()
+    (run_dir / "pid.json").write_text(
+        json.dumps({"pid": our_pid, "starttime": None, "pgid": our_pid}) + "\n",
+        encoding="utf-8",
+    )
+
+    launched: list[bool] = []
+
+    def fake_popen(*_a, **_k):
+        launched.append(True)
+        raise AssertionError("must not spawn")
+
+    real = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", _selective_popen(real, fake_popen))
+
+    rc = _launch_grok(
+        ["grok", "-p", "hello"],
+        cwd=tmp_path,
+        run_dir=run_dir,
+        timeout=None,
+        dry_run=False,
+    )
+    assert rc != 0
+    assert not launched
+    assert (run_dir / "pid.json").is_file()
+    err = capsys.readouterr().err
+    assert "starttime" in err.lower() or "live leader" in err.lower()
+
+
+def test_launch_grok_refuses_unknown_starttime_probe(
+    monkeypatch, tmp_path, capsys
+):
+    """R15-3: alive + recorded starttime + process_starttime=None → refuse."""
+    import os
+
+    from omg_cli import state as state_mod
+    from omg_cli.modes import _launch_grok, _run_dir
+    from omg_cli.state import create_run, write_pid_metadata
+
+    run = create_run(tmp_path, mode="ralph", goal="r15 unknown probe")
+    rid = run["run_id"]
+    run_dir = _run_dir(tmp_path, rid)
+    our_pid = os.getpid()
+    write_pid_metadata(
+        run_dir / "pid.json",
+        pid=our_pid,
+        pgid=our_pid,
+        starttime="Mon Jan  1 00:00:00 2000",
+    )
+    monkeypatch.setattr(state_mod, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(state_mod, "process_starttime", lambda _pid: None)
+
+    launched: list[bool] = []
+
+    def fake_popen(*_a, **_k):
+        launched.append(True)
+        raise AssertionError("must not spawn")
+
+    real = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", _selective_popen(real, fake_popen))
+
+    rc = _launch_grok(
+        ["grok", "-p", "hello"],
+        cwd=tmp_path,
+        run_dir=run_dir,
+        timeout=None,
+        dry_run=False,
+    )
+    assert rc != 0
+    assert not launched
+    assert (run_dir / "pid.json").is_file()
+    err = capsys.readouterr().err
+    assert "unknown" in err.lower() or "live leader" in err.lower()
+
+
+def test_launch_grok_clears_stale_dead_leader_then_spawns(monkeypatch, tmp_path):
+    """R15-3: dead PID in pid.json is stale — clear then allow spawn."""
+    from omg_cli.modes import _launch_grok, _run_dir
+    from omg_cli.state import create_run, write_pid_metadata
+
+    run = create_run(tmp_path, mode="ralph", goal="r15 stale dead")
+    rid = run["run_id"]
+    run_dir = _run_dir(tmp_path, rid)
+    dead_pid = 2_000_000_001
+    write_pid_metadata(
+        run_dir / "pid.json",
+        pid=dead_pid,
+        pgid=dead_pid,
+        starttime="Mon Jan  1 00:00:00 1970",
+    )
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 9991
+    mock_proc.wait.return_value = 0
+    cleared_before_spawn: list[bool] = []
+
+    def fake_popen(*_a, **_k):
+        cleared_before_spawn.append(not (run_dir / "pid.json").exists())
+        return mock_proc
+
+    real = subprocess.Popen
+    _stub_process_starttime(monkeypatch)
+    monkeypatch.setattr(subprocess, "Popen", _selective_popen(real, fake_popen))
+
+    rc = _launch_grok(
+        ["grok", "-p", "hello"],
+        cwd=tmp_path,
+        run_dir=run_dir,
+        timeout=None,
+        dry_run=False,
+    )
+    assert rc == 0
+    assert cleared_before_spawn == [True]
+
+
+def test_ralph_resume_refuses_live_leader_pid(monkeypatch, tmp_path, capsys):
+    """R15-3: ralph/run_mode launch refuses when live leader pid still matches."""
+    import os
+
+    from omg_cli.host_session import allocate_host_session
+    from omg_cli.modes import _run_dir
+    from omg_cli.state import (
+        create_run,
+        execution_lease,
+        process_starttime,
+        write_pid_metadata,
+        write_status,
+    )
+
+    run = create_run(
+        tmp_path,
+        mode="ralph",
+        goal="r15 ralph resume live",
+        extra={"schema_version": 2, "lifecycle_version": 2, "max_iter": 3},
+    )
+    rid = run["run_id"]
+    binding = allocate_host_session()
+    with execution_lease(tmp_path, rid, intent="test-seed", timeout_s=5.0) as lease:
+        write_status(
+            tmp_path,
+            rid,
+            "running",
+            extra={
+                **binding.status_fields(),
+                "iterations_completed": 0,
+                "max_iter": 3,
+            },
+            lease=lease,
+        )
+    run_dir = _run_dir(tmp_path, rid)
+    our_pid = os.getpid()
+    start = process_starttime(our_pid)
+    assert start is not None
+    write_pid_metadata(run_dir / "pid.json", pid=our_pid, pgid=our_pid, starttime=start)
+
+    launched: list[bool] = []
+
+    def fake_popen(*_a, **_k):
+        launched.append(True)
+        raise AssertionError("must not spawn on live leader")
+
+    real = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", _selective_popen(real, fake_popen))
+
+    rc = run_mode(
+        "ralph",
+        "",
+        root=tmp_path,
+        resume_run_id=rid,
+        max_iter=3,
+        dry_run=False,
+        require_acceptance=False,
+    )
+    assert rc != 0
+    assert not launched
+    assert (run_dir / "pid.json").is_file()
+    err = capsys.readouterr().err
+    assert "live leader" in err.lower() or "pid" in err.lower()

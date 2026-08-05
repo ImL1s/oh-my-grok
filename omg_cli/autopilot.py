@@ -1601,9 +1601,8 @@ def run_autopilot(
     )
     from omg_cli.resume import write_resume_md
     from omg_cli.state import (
-        clear_pid_metadata,
-        live_leader_pid_conflict,
         load_active_run,
+        prepare_leader_spawn,
         transition_guard,
     )
 
@@ -1818,14 +1817,13 @@ def run_autopilot(
                     if refuse is not None:
                         print(f"omg autopilot run: {refuse}", file=sys.stderr)
                         return 1
-                    # R14-3 / R15-1: refuse spawn on MATCH or UNKNOWN (do not
-                    # clear). Only clear when conflict is None (DEAD/MISMATCH
-                    # stale) so a fresh spawn can publish new pid.json.
-                    conflict = live_leader_pid_conflict(root_path, run_id)
+                    # R14-3 / R15-1 / R15-3: shared prepare_leader_spawn —
+                    # refuse MATCH/UNKNOWN/missing-starttime (do not clear);
+                    # clear only on DEAD/MISMATCH stale.
+                    conflict = prepare_leader_spawn(root_path, run_id)
                     if conflict is not None:
                         print(f"omg autopilot run: {conflict}", file=sys.stderr)
                         return 1
-                    clear_pid_metadata(root_path, run_id)
                     if dry_run:
                         rc = _launch_grok(
                             argv,

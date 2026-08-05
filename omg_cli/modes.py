@@ -672,6 +672,21 @@ def _wait_grok_process(
         return 124
 
 
+def _resolve_run_identity(run_dir: Path) -> tuple[Path, str] | None:
+    """Map ``root/.omg/state/runs/<run_id>`` → ``(root, run_id)``, else None."""
+    run_dir = Path(run_dir).resolve()
+    parts = run_dir.parts
+    if (
+        len(parts) >= 4
+        and parts[-1]
+        and parts[-2] == "runs"
+        and parts[-3] == "state"
+        and parts[-4] == ".omg"
+    ):
+        return Path(*parts[:-4]) if len(parts) > 4 else Path("/"), run_dir.name
+    return None
+
+
 def _launch_grok(
     argv: list[str],
     *,
@@ -684,9 +699,36 @@ def _launch_grok(
 
     Returns process exit code (0 for dry_run). Spawn vs wait are split so
     callers (autopilot) can hold ``transition_guard`` only around spawn.
+
+    R15-3: when ``run_dir`` is a standard run path, refuse spawn on a live
+    leader ``pid.json`` (MATCH / UNKNOWN / missing-starttime) under a short
+    ``transition_guard``; clear only when stale (DEAD / MISMATCH).
     """
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    identity = _resolve_run_identity(run_dir)
+    if identity is not None:
+        from omg_cli.state import prepare_leader_spawn, transition_guard
+
+        root_for_gate, run_id_for_gate = identity
+        with transition_guard(root_for_gate, run_id_for_gate):
+            refuse = prepare_leader_spawn(root_for_gate, run_id_for_gate)
+            if refuse is not None:
+                print(f"omg launch: {refuse}", file=sys.stderr)
+                return 1
+            if dry_run:
+                _prepare_grok_argv(argv, run_dir)
+                (run_dir / "dry_run").write_text("1\n", encoding="utf-8")
+                return 0
+            try:
+                proc = _spawn_grok_process(argv, cwd=cwd, run_dir=run_dir)
+            except OSError:
+                return 127
+            except Exception:
+                # pid-metadata publish failed after child was killed — no orphan.
+                return 1
+        return _wait_grok_process(proc, run_dir=run_dir, timeout=timeout)
 
     if dry_run:
         _prepare_grok_argv(argv, run_dir)

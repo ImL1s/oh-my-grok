@@ -547,6 +547,22 @@ def live_leader_pid_conflict(root: Path, run_id: str) -> str | None:
     return None
 
 
+def prepare_leader_spawn(root: Path, run_id: str) -> str | None:
+    """Pre-spawn gate: refuse live leader, else clear stale ``pid.json``.
+
+    Call under ``transition_guard`` immediately before ``_spawn_grok_process``
+    (autopilot and ``modes._launch_grok`` share this helper).
+
+    Returns a refuse reason string, or ``None`` when spawn may proceed (any
+    stale pid metadata has been cleared).
+    """
+    conflict = live_leader_pid_conflict(root, run_id)
+    if conflict is not None:
+        return conflict
+    clear_pid_metadata(root, run_id)
+    return None
+
+
 def _require_posix_flock() -> None:
     if os.name != "posix" or fcntl is None:
         raise LockUnavailableError(
