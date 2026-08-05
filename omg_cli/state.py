@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -1290,12 +1291,31 @@ def write_status(
                 lease=lease,
             )
 
-    # Frozen v1 adapter: preserve historical write behavior exactly.
-    updated = _apply_status_fields(current, status, extra=extra)
-    if updated.get("verified") is True and not _has_acceptance_artifact(root, run_id):
-        updated["verified"] = False
-    _atomic_write_json(path, updated)
-    return updated
+    # Frozen v1 adapter (R17): linearize under transition_guard and treat
+    # terminal statuses as absorbing so post-launch writers cannot resurrect
+    # cancelled/verified/completed/failed after a concurrent cancel.
+    guard_cm = (
+        nullcontext()
+        if transition_guard_held()
+        else transition_guard(root, run_id)
+    )
+    with guard_cm:
+        current = _read_json(path)
+        if current is None:
+            raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
+        current_status = str(current.get("status") or "")
+        if current_status in TERMINAL_STATUSES:
+            if status == current_status:
+                return current
+            # Fail-closed absorbing no-op: keep terminal bytes.
+            return current
+        updated = _apply_status_fields(current, status, extra=extra)
+        if updated.get("verified") is True and not _has_acceptance_artifact(
+            root, run_id
+        ):
+            updated["verified"] = False
+        _atomic_write_json(path, updated)
+        return updated
 
 
 def load_run(root: Path, run_id: str) -> dict[str, Any] | None:
@@ -1495,22 +1515,52 @@ def _cancel_run_legacy(
     *,
     kill_grace_s: float = 0.0,
 ) -> dict[str, Any]:
-    current = load_run(root, run_id)
-    if current is None:
-        raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
-    kill_actions = _signal_cancel_targets(
-        _cancel_targets_snapshot(root, run_id), kill_grace_s=kill_grace_s
-    )
+    """Linearize legacy cancel with ``_launch_grok`` via ``transition_guard``.
 
-    current["status"] = "cancelled"
-    current["verified"] = False
-    current["updated_at"] = _utc_now()
-    current["cancelled_at"] = current["updated_at"]
-    if kill_actions:
+    Same ordering as strict cancel: commit terminal + snapshot PIDs under the
+    guard, release, then signal outside so cancel cannot miss a newly spawned
+    Grok and launch cannot Popen after ``cancelled`` is committed.
+    """
+    with transition_guard(root, run_id):
+        current = load_run(root, run_id)
+        if current is None:
+            raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
+        if current.get("status") == "verified" or current.get("verified") is True:
+            result = dict(current)
+            result["cancel_outcome"] = "already complete"
+            return result
+        if current.get("status") == "cancelled":
+            result = dict(current)
+            result["cancel_outcome"] = "already cancelled"
+            return result
+
+        targets = _cancel_targets_snapshot(root, run_id)
+        updated = dict(current)
+        updated["status"] = "cancelled"
+        updated["verified"] = False
+        updated["updated_at"] = _utc_now()
+        updated["cancelled_at"] = updated["updated_at"]
+        updated["cancel_outcome"] = "cancelled"
+        _atomic_write_json(_status_path(root, run_id), updated)
+        clear_active(root, run_id)
+        cancelled = updated
+
+    # Intentionally outside transition.lock (never signal while guard held).
+    kill_actions = _signal_cancel_targets(targets, kill_grace_s=kill_grace_s)
+    if not kill_actions:
+        return cancelled
+
+    with transition_guard(root, run_id):
+        current = load_run(root, run_id)
+        if current is None or current.get("status") != "cancelled":
+            cancelled = dict(cancelled)
+            cancelled["kill_actions"] = kill_actions
+            return cancelled
+        current = dict(current)
         current["kill_actions"] = kill_actions
-    _atomic_write_json(_status_path(root, run_id), current)
-    clear_active(root, run_id)
-    return current
+        current["updated_at"] = _utc_now()
+        _atomic_write_json(_status_path(root, run_id), current)
+        return current
 
 
 def _cancel_run_strict(
@@ -1608,9 +1658,11 @@ def cancel_run(
 ) -> dict[str, Any]:
     """Cancel a run without deleting artifacts.
 
-    Legacy-v1 preserves the historical mark-and-signal behavior.  Strict-v2
-    commits a durable request and every status replacement under the distinct
-    short transition guard, then releases it before signalling/waiting.
+    Legacy-v1 (R17) linearizes mark-and-signal under the same per-run
+    ``transition_guard`` as ``_launch_grok`` (commit cancelled + snapshot PIDs
+    under guard; signal outside).  Strict-v2 commits a durable request and
+    every status replacement under the distinct short transition guard, then
+    releases it before signalling/waiting.
     """
     root = Path(root)
     if run_id is None:

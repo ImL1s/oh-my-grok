@@ -956,3 +956,94 @@ def test_projector_view_is_manifest_bound_cas_and_cannot_write_acceptance(tmp_pa
             manifest_binding=binding,
             expected_projection_revision=0,
         )
+
+
+def test_legacy_cancel_commits_under_transition_guard_before_signal(
+    tmp_path, monkeypatch
+):
+    """R17-1: legacy cancel writes cancelled under guard, signals only after release."""
+    import omg_cli.state as state_mod
+
+    run = create_run(tmp_path, mode="ulw", goal="r17 legacy cancel order")
+    rid = run["run_id"]
+    assert classify_run_schema(run) is RunSchema.LEGACY_V1
+
+    events: list[tuple[str, bool, str | None]] = []
+
+    def tracking_signal(targets, *, kill_grace_s):
+        events.append(
+            (
+                "signal",
+                transition_guard_held(),
+                (load_run(tmp_path, rid) or {}).get("status"),
+            )
+        )
+        return ["leader:killpg:SIGTERM"]
+
+    original_atomic = state_mod._atomic_write_json
+
+    def tracking_write(path, data):
+        if path.name == "status.json" and data.get("status") == "cancelled":
+            events.append(
+                ("commit_cancelled", transition_guard_held(), data.get("status"))
+            )
+        return original_atomic(path, data)
+
+    monkeypatch.setattr(state_mod, "_signal_cancel_targets", tracking_signal)
+    monkeypatch.setattr(state_mod, "_atomic_write_json", tracking_write)
+
+    cancelled = cancel_run(tmp_path, rid, kill_grace_s=0)
+    assert cancelled["status"] == "cancelled"
+    assert cancelled.get("cancel_outcome") == "cancelled"
+    kinds = [e[0] for e in events]
+    assert kinds[0] == "commit_cancelled"
+    assert kinds[1] == "signal"
+    assert events[0][1] is True  # commit under guard
+    assert events[1][1] is False  # signal outside guard
+    assert events[1][2] == "cancelled"  # status already terminal before signal
+    # Optional second guarded write records kill_actions after signal.
+    if len(kinds) > 2:
+        assert kinds[2] == "commit_cancelled"
+        assert events[2][1] is True
+    assert cancelled.get("kill_actions") == ["leader:killpg:SIGTERM"]
+
+
+def test_legacy_write_status_cannot_resurrect_cancelled(tmp_path):
+    """R17-2: legacy write_status must not overwrite cancelled → running."""
+    run = create_run(tmp_path, mode="pipeline", goal="r17 no resurrect")
+    rid = run["run_id"]
+    assert classify_run_schema(run) is RunSchema.LEGACY_V1
+
+    write_status(tmp_path, rid, "running", extra={"stage": "implement"})
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+    assert load_run(tmp_path, rid)["status"] == "cancelled"
+
+    resurrected = write_status(
+        tmp_path, rid, "running", extra={"stage": "post-cancel"}
+    )
+    assert resurrected["status"] == "cancelled"
+    assert load_run(tmp_path, rid)["status"] == "cancelled"
+    assert "post-cancel" not in (resurrected.get("stage") or "")
+
+
+def test_legacy_write_status_idempotent_same_terminal(tmp_path):
+    """R17-2: rewriting the same terminal status is a no-op identity return."""
+    run = create_run(tmp_path, mode="ulw", goal="r17 terminal idempotent")
+    rid = run["run_id"]
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+    before = load_run(tmp_path, rid)
+    again = write_status(tmp_path, rid, "cancelled", extra={"note": "ignored"})
+    assert again["status"] == "cancelled"
+    assert again.get("cancelled_at") == before.get("cancelled_at")
+    assert again.get("note") != "ignored"
+
+
+def test_legacy_cancel_idempotent_already_cancelled(tmp_path):
+    """R17-1: second legacy cancel is idempotent (no re-signal required)."""
+    run = create_run(tmp_path, mode="ulw", goal="r17 cancel idempotent")
+    rid = run["run_id"]
+    first = cancel_run(tmp_path, rid, kill_grace_s=0)
+    second = cancel_run(tmp_path, rid, kill_grace_s=0)
+    assert first["status"] == "cancelled"
+    assert second["status"] == "cancelled"
+    assert second.get("cancel_outcome") == "already cancelled"

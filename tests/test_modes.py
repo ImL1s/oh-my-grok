@@ -677,20 +677,23 @@ def test_launch_grok_still_spawn_then_wait(monkeypatch, tmp_path):
 
 def test_run_mode_mutex_blocks_second_active(monkeypatch, tmp_path):
     """Second run_mode while first is non-terminal returns non-zero (mutex)."""
+    from omg_cli.state import create_run, write_status
+
+    # R17: terminal statuses are absorbing via write_status — seed a live
+    # non-terminal run directly instead of reopening completed → running.
+    first = create_run(tmp_path, mode="ulw", goal="first")
+    write_status(tmp_path, first["run_id"], "running")
+    active = load_active_run(tmp_path)
+    assert active is not None
+    assert active["run_id"] == first["run_id"]
+    assert active["status"] == "running"
+
     real = subprocess.Popen
 
     def boom_grok(*_a, **_k):
         raise AssertionError("no popen")
 
     monkeypatch.setattr(subprocess, "Popen", _selective_popen(real, boom_grok))
-    rc = run_mode("ulw", "first", root=tmp_path, dry_run=True)
-    assert rc == 0
-    # dry_run ends as completed (terminal) — re-open as running to simulate active
-    active = load_active_run(tmp_path)
-    assert active is not None
-    from omg_cli.state import write_status
-
-    write_status(tmp_path, active["run_id"], "running")
 
     rc2 = run_mode("ralph", "second", root=tmp_path, dry_run=True)
     assert rc2 != 0
@@ -1027,3 +1030,126 @@ def test_ralph_resume_refuses_live_leader_pid(monkeypatch, tmp_path, capsys):
     assert (run_dir / "pid.json").is_file()
     err = capsys.readouterr().err
     assert "live leader" in err.lower() or "pid" in err.lower()
+
+
+def test_legacy_cancel_then_launch_refuses_spawn(monkeypatch, tmp_path, capsys):
+    """R17-1: legacy cancel-first linearization → `_launch_grok` refuses Popen."""
+    from omg_cli.modes import _launch_grok, _run_dir
+    from omg_cli.state import cancel_run, create_run, load_run
+
+    run = create_run(tmp_path, mode="ulw", goal="r17 cancel-first")
+    rid = run["run_id"]
+    run_dir = _run_dir(tmp_path, rid)
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+    assert load_run(tmp_path, rid)["status"] == "cancelled"
+
+    launched: list[bool] = []
+
+    def fake_popen(*_a, **_k):
+        launched.append(True)
+        raise AssertionError("must not spawn after legacy cancel")
+
+    real = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", _selective_popen(real, fake_popen))
+
+    rc = _launch_grok(
+        ["grok", "-p", "hello"],
+        cwd=tmp_path,
+        run_dir=run_dir,
+        timeout=None,
+        dry_run=False,
+    )
+    assert rc != 0
+    assert not launched
+    assert "terminal" in capsys.readouterr().err.lower()
+
+
+def test_legacy_cancel_vs_launch_launch_holds_guard_then_cancel_sees_pid(
+    monkeypatch, tmp_path
+):
+    """R17-1: launch holds transition_guard through cancel-check; cancel waits,
+    then sees published PID and signals after launch releases."""
+    import os
+    import threading
+
+    import omg_cli.state as state_mod
+    from omg_cli.modes import _launch_grok, _run_dir
+    from omg_cli.state import (
+        create_run,
+        launch_refused_for_cancel,
+        load_run,
+        transition_guard_held,
+    )
+
+    run = create_run(tmp_path, mode="ulw", goal="r17 launch-holds-guard")
+    rid = run["run_id"]
+    run_dir = _run_dir(tmp_path, rid)
+
+    barrier = threading.Barrier(2)
+    events: list[str] = []
+    killpgs: list[int] = []
+    starttime = "Wed Aug  5 12:00:00 2026"
+
+    original_refused = launch_refused_for_cancel
+
+    def refused_then_barrier(root, run_id):
+        result = original_refused(root, run_id)
+        if result is None:
+            assert transition_guard_held()
+            events.append("launch_checked")
+            barrier.wait(timeout=5)
+            # Cancel thread is now blocked on transition_guard; proceed to Popen.
+        return result
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 424242
+    mock_proc.wait.return_value = 0
+
+    def fake_popen(*_a, **_k):
+        events.append("popen")
+        return mock_proc
+
+    def fake_killpg(pgid, _sig):
+        killpgs.append(pgid)
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            return  # pretend alive for cancel identity check
+        killpgs.append(pid)
+
+    monkeypatch.setattr(state_mod, "launch_refused_for_cancel", refused_then_barrier)
+    _stub_process_starttime(monkeypatch, starttime)
+    real = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", _selective_popen(real, fake_popen))
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr(os, "kill", fake_kill)
+    monkeypatch.setattr(state_mod, "process_starttime", lambda _pid: starttime)
+
+    cancel_result: dict = {}
+
+    def cancel_worker() -> None:
+        barrier.wait(timeout=5)
+        from omg_cli.state import cancel_run
+
+        cancel_result.update(cancel_run(tmp_path, rid, kill_grace_s=0))
+        events.append("cancel_done")
+
+    t = threading.Thread(target=cancel_worker)
+    t.start()
+    rc = _launch_grok(
+        ["grok", "-p", "hello"],
+        cwd=tmp_path,
+        run_dir=run_dir,
+        timeout=None,
+        dry_run=False,
+    )
+    t.join(timeout=10)
+    assert not t.is_alive()
+
+    assert rc == 0
+    assert "popen" in events
+    assert cancel_result.get("status") == "cancelled"
+    assert load_run(tmp_path, rid)["status"] == "cancelled"
+    # Cancel must have observed the published leader pid (kill attempted).
+    assert killpgs, cancel_result.get("kill_actions")
+    assert (run_dir / "pid.json").is_file()
