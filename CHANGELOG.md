@@ -171,6 +171,24 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   paths call `_assert_run_writable` under the execution lease immediately
   before every sidecar write — terminal runs and pending cancellation
   requests fail closed without writing `interview.json` or spec artifacts.
+- **Missing ralplan_epoch conservative migration (Round 9 / R9-1):**
+  pre-R7 ``autopilot.json`` sidecars that lack ``ralplan_epoch`` no longer
+  default to ``0`` on load — only a run still at ``phase==interview`` with
+  no CLI ``ralplan.json`` stamp and ``cycles.ralplan==0`` migrates to ``0``;
+  every other missing-epoch run migrates to at least ``1`` so re-entry
+  invalidates stale consensus/quality stamps. Present values must be plain
+  ``int >= 0`` (bool/float/negative rejected).
+- **Terminal/cancel gates on transition/resume (Round 9 / R9-2):**
+  ``transition()`` re-checks ``status.json`` under the execution lease and
+  refuses sidecar writes when the run is terminal or has a pending
+  cancellation request; ``omg autopilot run --resume`` prefers terminal
+  ``status.json`` over a stale non-terminal sidecar ``phase``;
+  ``status_autopilot`` returns empty ``legal_next`` for terminal runs.
+- **Idempotent attach interview resume (Round 9 / R9-3):** attach-mode
+  ``omg interview close`` sets ``resume_command`` to
+  ``omg autopilot run --resume <run_id>`` (single idempotent entry); re-close
+  of an already-complete interview migrates stale two-step resume commands on
+  disk to the current form.
 
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —

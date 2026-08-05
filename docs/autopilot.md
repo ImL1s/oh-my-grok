@@ -110,9 +110,9 @@ RUN=…   # from start JSON: run_id
 omg interview start --attach-run "$RUN"    # task defaults to the autopilot goal
 omg interview answer --run "$RUN" --question-id ... --text ...
 omg interview close --run "$RUN"
-# close JSON `resume_command` for attach mode chains transition then ralplan:
-# `omg autopilot transition --run "$RUN" --phase ralplan && omg ralplan <goal> --run "$RUN"`
-# (phase is still "interview" at close; bare embedded ralplan would fail).
+# close JSON `resume_command` for attach mode is a single idempotent entry:
+# `omg autopilot run --resume "$RUN"` (outer driver reads sidecar phase and
+# dispatches; re-close migrates stale two-step resume commands on disk).
 
 # … after interview closed (preferred: omg interview * writes CLI envelope):
 omg autopilot transition --run "$RUN" --phase ralplan --reason "interview closed"
@@ -215,7 +215,17 @@ Re-entering `ralplan` when `ralplan_epoch ≥ 1` invalidates any CLI-owned
 stamp existence. This closes detours such as `review→blocked→interview→ralplan`
 and break-glass consensus paths with no stamp yet. Only the first
 `interview→ralplan` handoff (epoch 0→1) is a no-op; `--skip-interview` starts
-at epoch 1 so the next ralplan entry always invalidates. A fresh accept write clears
+at epoch 1 so the next ralplan entry always invalidates.
+
+**Pre-R7 epoch migration (Round 9):** sidecars that predate the
+`ralplan_epoch` field no longer default missing values to `0`. Only a run
+still at `phase==interview` with no CLI `ralplan.json` stamp and
+`cycles.ralplan==0` migrates to epoch `0`; every other missing-epoch run
+migrates to at least `1` so the next ralplan entry is treated as re-entry,
+not the harmless first handoff. Present values must be plain `int >= 0`
+(bool/float/negative rejected).
+
+A fresh accept write clears
 `invalidated` on the stamp; a new strict-v2 consensus attempt also clears
 stale invalidation at cycle start. A fresh strict-v2 attempt also resets
 `history`, per-session `attempts`, and `round` so prior rounds past the
@@ -236,6 +246,19 @@ goal match **under the execution lease** after pre-lease attach checks,
 closing a TOCTOU race before writing `interview.json`. Attach start and
 `close_interview` also refuse sidecar writes when the run is terminal or has
 a pending cancellation request (same gate, immediately before each save).
+
+**Terminal/cancel gates on transition/resume (Round 9):** `transition()`
+re-checks `status.json` under the execution lease and refuses any sidecar
+write when the run is terminal (`cancelled` / `completed` / `failed` /
+`verified`) or has a pending cancellation request — the sidecar `phase` alone
+must never unlock a transition after cancel. `omg autopilot run --resume`
+prefers terminal `status.json` over a stale non-terminal sidecar phase and
+refuses to launch Grok on a cancelled run. `omg autopilot status` returns
+empty `legal_next` for terminal runs.
+
+Attach-mode `omg interview close` sets `resume_command` to
+`omg autopilot run --resume RUN` (idempotent; re-close refreshes stale
+two-step commands on disk).
 
 ### Implement → review work gate
 
