@@ -176,6 +176,31 @@ def _load_catalog(*, pin_revision: str = NEW_PIN) -> dict:
     return catalog
 
 
+def _scaffold_inventory_paths(tmp_path: Path, inventory: dict) -> None:
+    """Create stub files for omg_paths and evidence paths under tmp_path."""
+    paths: set[str] = set()
+    for row in inventory.get("capabilities", []):
+        if not isinstance(row, dict):
+            continue
+        for rel in row.get("omg_paths", []):
+            if isinstance(rel, str):
+                paths.add(rel)
+        evidence = row.get("evidence", {})
+        if isinstance(evidence, dict):
+            for key, values in evidence.items():
+                if key == "live":
+                    continue
+                if isinstance(values, list):
+                    for rel in values:
+                        if isinstance(rel, str):
+                            paths.add(rel)
+    for rel in paths:
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            target.write_text("", encoding="utf-8")
+
+
 def _live_verified_row(row: dict, *, days_ago: float = 1.0) -> None:
     row["maturity"] = {"grok": "live_verified"}
     row["evidence"] = {
@@ -209,25 +234,34 @@ def _honest_docs(tmp_path: Path) -> None:
     )
 
 
-def _ack_review(plan: dict, *, indices: list[int] | None = None) -> dict:
+def _ack_review(
+    plan: dict,
+    *,
+    indices: list[int] | None = None,
+    use_acknowledgments_key: bool = False,
+) -> dict:
     """Build review artifact with acknowledged dispositions for plan changes."""
     changes = plan["changes"]
     if indices is None:
         indices = list(range(len(changes)))
-    return {
+    acked = [{**changes[i], "disposition": "acknowledged"} for i in indices]
+    payload: dict = {
         "store_kind": "parity_refresh_review",
         "schema_version": 1,
         "source": plan["source"],
-        "changes": [
-            {**changes[i], "disposition": "acknowledged"} for i in indices
-        ],
     }
+    if use_acknowledgments_key:
+        payload["acknowledgments"] = acked
+    else:
+        payload["changes"] = acked
+    return payload
 
 
 def test_release_gate_rejects_expired_live_evidence(tmp_path: Path) -> None:
     inventory = _bootstrapping_inventory(tmp_path)
     _live_verified_row(inventory["capabilities"][0], days_ago=90)
     inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
     _honest_docs(tmp_path)
 
     with pytest.raises(ContractValidationError, match="fresh"):
@@ -241,6 +275,7 @@ def test_release_gate_rejects_expired_live_evidence(tmp_path: Path) -> None:
 def test_release_gate_rejects_readme_overclaim(tmp_path: Path) -> None:
     inventory = _bootstrapping_inventory(tmp_path)
     inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
     (tmp_path / "docs" / "parity").mkdir(parents=True, exist_ok=True)
     (tmp_path / "README.md").write_text(
         OVERCLAIM_README.read_text(encoding="utf-8"), encoding="utf-8"
@@ -260,6 +295,7 @@ def test_release_gate_rejects_readme_overclaim(tmp_path: Path) -> None:
 def test_release_gate_rejects_unresolved_upstream_add(tmp_path: Path) -> None:
     inventory = _minimal_inventory()
     inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
     _honest_docs(tmp_path)
     catalog = _load_catalog()
     catalog = copy.deepcopy(catalog)
@@ -284,6 +320,7 @@ def test_release_gate_rejects_unresolved_upstream_add(tmp_path: Path) -> None:
 def test_release_gate_rejects_unresolved_upstream_delete(tmp_path: Path) -> None:
     inventory = _minimal_inventory()
     inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
     _honest_docs(tmp_path)
     catalog = _load_catalog()
     catalog = copy.deepcopy(catalog)
@@ -304,6 +341,7 @@ def test_release_gate_rejects_unresolved_upstream_delete(tmp_path: Path) -> None
 def test_release_gate_rejects_unresolved_upstream_rename(tmp_path: Path) -> None:
     inventory = _minimal_inventory()
     inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
     _honest_docs(tmp_path)
     catalog = _load_catalog()
     catalog = copy.deepcopy(catalog)
@@ -322,9 +360,33 @@ def test_release_gate_rejects_unresolved_upstream_rename(tmp_path: Path) -> None
         )
 
 
+def test_release_gate_rejects_unresolved_upstream_changed(tmp_path: Path) -> None:
+    inventory = _minimal_inventory()
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    catalog = _load_catalog()
+    catalog = copy.deepcopy(catalog)
+    for cap in catalog["capabilities"]:
+        if cap["id"] == "team.plane_v3":
+            cap["promise"] = "Updated promise text"
+            cap["source_paths"] = ["README.md", "skills/team/SKILL.md"]
+            break
+    cat_path = _write_catalog(tmp_path, catalog)
+
+    with pytest.raises(ContractValidationError, match="upstream drift"):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            upstream_catalog_path=cat_path,
+            now=FIXED_NOW,
+        )
+
+
 def test_release_gate_passes_honest_bootstrapping_inventory(tmp_path: Path) -> None:
     inventory = _bootstrapping_inventory(tmp_path)
     inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
     _honest_docs(tmp_path)
 
     payload = check_parity_release_claims(
@@ -336,11 +398,52 @@ def test_release_gate_passes_honest_bootstrapping_inventory(tmp_path: Path) -> N
     assert payload["ok"] is True
     assert payload["inventory_status"] == "bootstrapping"
     assert payload["overclaims"] == 0
+    assert payload["upstream_drift_checked"] is False
+    assert payload["upstream_drift_resolved"] is False
+
+
+def test_release_gate_rejects_missing_healthy_evidence_path(tmp_path: Path) -> None:
+    inventory = _bootstrapping_inventory(tmp_path)
+    _live_verified_row(inventory["capabilities"][0], days_ago=1.0)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    healthy = tmp_path / "tests/test_parity_claim_gate.py"
+    if healthy.is_file():
+        healthy.unlink()
+    _honest_docs(tmp_path)
+
+    with pytest.raises(ContractValidationError, match="healthy_evidence"):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            now=FIXED_NOW,
+        )
+
+
+def test_release_gate_rejects_case_insensitive_full_one_to_one(tmp_path: Path) -> None:
+    inventory = _bootstrapping_inventory(tmp_path)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    (tmp_path / "docs" / "parity").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "README.md").write_text(
+        "# oh-my-grok\n\nWe target FULL 1:1 coverage.\n", encoding="utf-8"
+    )
+    (tmp_path / "docs" / "parity" / "SUMMARY.md").write_text(
+        "Bootstrapping inventory.\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ContractValidationError, match="overclaim"):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            now=FIXED_NOW,
+        )
 
 
 def test_upstream_drift_passes_when_acknowledged(tmp_path: Path) -> None:
     inventory = _minimal_inventory()
     inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
     _honest_docs(tmp_path)
     catalog = _load_catalog()
     catalog = copy.deepcopy(catalog)
@@ -361,6 +464,80 @@ def test_upstream_drift_passes_when_acknowledged(tmp_path: Path) -> None:
     )
     review_path = tmp_path / "review.json"
     review_path.write_text(json.dumps(_ack_review(plan), indent=2), encoding="utf-8")
+
+    payload = check_parity_release_claims(
+        inventory_path=inv_path,
+        repo_root=tmp_path,
+        upstream_catalog_path=cat_path,
+        review_artifact_path=review_path,
+        now=FIXED_NOW,
+    )
+    assert payload["ok"] is True
+    assert payload["upstream_drift_checked"] is True
+    assert payload["upstream_drift_resolved"] is True
+
+
+def test_upstream_drift_passes_when_rename_acknowledged(tmp_path: Path) -> None:
+    inventory = _minimal_inventory()
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    catalog = _load_catalog()
+    catalog = copy.deepcopy(catalog)
+    for cap in catalog["capabilities"]:
+        if cap["id"] == "omc.cli.session_surfaces":
+            cap["id"] = "omc.cli.session_surfaces_v2"
+            break
+    cat_path = _write_catalog(tmp_path, catalog)
+    plan = build_refresh_plan(
+        inventory=inventory,
+        upstream_catalog=catalog,
+        source="OMC",
+        new_pin=NEW_PIN,
+        generated_at=FIXED_NOW,
+    )
+    review_path = tmp_path / "review.json"
+    review_path.write_text(json.dumps(_ack_review(plan), indent=2), encoding="utf-8")
+
+    payload = check_parity_release_claims(
+        inventory_path=inv_path,
+        repo_root=tmp_path,
+        upstream_catalog_path=cat_path,
+        review_artifact_path=review_path,
+        now=FIXED_NOW,
+    )
+    assert payload["ok"] is True
+    assert payload["upstream_drift_checked"] is True
+    assert payload["upstream_drift_resolved"] is True
+
+
+def test_upstream_drift_passes_when_acknowledgments_key_used(tmp_path: Path) -> None:
+    inventory = _minimal_inventory()
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    catalog = _load_catalog()
+    catalog = copy.deepcopy(catalog)
+    catalog["capabilities"].append(
+        {
+            "id": "omc.new.capability",
+            "source_paths": ["skills/new/SKILL.md"],
+            "promise": "Brand new upstream capability",
+        }
+    )
+    cat_path = _write_catalog(tmp_path, catalog)
+    plan = build_refresh_plan(
+        inventory=inventory,
+        upstream_catalog=catalog,
+        source="OMC",
+        new_pin=NEW_PIN,
+        generated_at=FIXED_NOW,
+    )
+    review_path = tmp_path / "review.json"
+    review_path.write_text(
+        json.dumps(_ack_review(plan, use_acknowledgments_key=True), indent=2),
+        encoding="utf-8",
+    )
 
     payload = check_parity_release_claims(
         inventory_path=inv_path,

@@ -26,7 +26,7 @@ _DOC_SCAN_RELATIVE = (
 )
 _FORBIDDEN_PHRASE_PATTERNS = (
     re.compile(r"(?i)live[ _-]?verified"),
-    re.compile(r"full 1:1"),
+    re.compile(r"(?i)full 1:1"),
     re.compile(r"(?i)complete parity"),
     re.compile(r"✅"),
     re.compile(r"(?i)parity \d+%"),
@@ -133,9 +133,18 @@ def scan_docs_for_overclaims(*, repo_root: Path, inventory: dict) -> list[str]:
     return violations
 
 
-def assert_live_evidence_fresh(inventory: dict, *, now: datetime | None = None) -> None:
-    """Fail closed when live_verified rows carry stale evidence."""
-    validate_parity_inventory(inventory, now=_now_or_utc(now))
+def assert_live_evidence_fresh(
+    inventory: dict,
+    *,
+    repo_root: Path | str | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Fail closed when live_verified rows carry stale or unverifiable evidence."""
+    validate_parity_inventory(
+        inventory,
+        repo_root=repo_root,
+        now=_now_or_utc(now),
+    )
 
 
 def _change_identity(change: Mapping[str, Any]) -> tuple[Any, ...]:
@@ -148,11 +157,12 @@ def _change_identity(change: Mapping[str, Any]) -> tuple[Any, ...]:
 def _review_change_entries(review_artifact: dict[str, Any] | None) -> list[dict[str, Any]]:
     if not review_artifact:
         return []
+    entries: list[dict[str, Any]] = []
     for key in ("changes", "acknowledgments"):
-        entries = review_artifact.get(key)
-        if isinstance(entries, list):
-            return [entry for entry in entries if isinstance(entry, dict)]
-    return []
+        raw = review_artifact.get(key)
+        if isinstance(raw, list) and raw:
+            entries.extend(entry for entry in raw if isinstance(entry, dict))
+    return entries
 
 
 def _is_change_acknowledged(
@@ -232,7 +242,7 @@ def check_parity_release_claims(
     path = Path(inventory_path)
     when = _now_or_utc(now)
     raw = load_json_object(path)
-    inventory = validate_parity_inventory(raw, now=when)
+    inventory = validate_parity_inventory(raw, repo_root=root, now=when)
 
     overclaims = scan_docs_for_overclaims(repo_root=root, inventory=inventory)
     if overclaims:
@@ -240,21 +250,21 @@ def check_parity_release_claims(
             "release overclaim gate failed: " + "; ".join(overclaims)
         )
 
-    assert_live_evidence_fresh(inventory, now=when)
-
     review_artifact = _load_optional_json(
         Path(review_artifact_path) if review_artifact_path is not None else None
     )
     catalog_paths = _iter_upstream_catalog_paths(root, upstream_catalog_path)
-    upstream_checked = False
-    for catalog_path in catalog_paths:
-        upstream_checked = True
-        catalog = load_json_object(catalog_path)
-        assert_upstream_drift_resolved(
-            inventory=inventory,
-            upstream_catalog=catalog,
-            review_artifact=review_artifact,
-        )
+    upstream_checked = bool(catalog_paths)
+    upstream_resolved = False
+    if upstream_checked:
+        for catalog_path in catalog_paths:
+            catalog = load_json_object(catalog_path)
+            assert_upstream_drift_resolved(
+                inventory=inventory,
+                upstream_catalog=catalog,
+                review_artifact=review_artifact,
+            )
+        upstream_resolved = True
 
     try:
         relative = path.resolve().relative_to(root.resolve()).as_posix()
@@ -266,6 +276,7 @@ def check_parity_release_claims(
         "inventory_status": inventory.get("inventory_status"),
         "schema_version": inventory.get("schema_version"),
         "overclaims": 0,
-        "upstream_drift_resolved": upstream_checked,
+        "upstream_drift_checked": upstream_checked,
+        "upstream_drift_resolved": upstream_resolved,
         "inventory_path": relative,
     }
