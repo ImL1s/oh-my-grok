@@ -24,6 +24,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from omg_cli.evidence import CLI_WRITER
 from omg_cli.modes import (
     DEFAULT_TIMEOUT,
     _launch_grok,
@@ -115,6 +116,171 @@ def save_ralplan_state(root: Path, run_id: str, state: dict[str, Any]) -> Path:
     return path
 
 
+def invalidate_ralplan_consensus(
+    root: Path | str, run_id: str, *, reason: str
+) -> None:
+    """Mark any existing ralplan.json stamp stale on replan (CLI write).
+
+    A prior ``accepted: true`` stamp must never unlock ``implement`` for a
+    later ralplan cycle after review/qa bumps back into replan — mirrors
+    ``autopilot.invalidate_quality_stages`` / ``implementation.
+    invalidate_implementation_receipt``: mark in place (audit trail
+    preserved) rather than delete. No-op when no ralplan.json exists yet,
+    or when the on-disk stamp is not a valid CLI-owned record for this run
+    (wrong ``writer`` or ``run_id`` mismatch) — same fail-closed guard as
+    ``invalidate_implementation_receipt``.
+    Also clears ``status.ralplan_consensus`` via ``merge_status_fields``
+    when a status.json exists for this run.
+    """
+    root = Path(root).resolve()
+    data = load_ralplan_state(root, run_id)
+    if (
+        data is not None
+        and data.get("writer") == CLI_WRITER
+        and data.get("run_id") == run_id
+    ):
+        data["accepted"] = False
+        data["invalidated"] = True
+        data["invalidated_reason"] = reason
+        data["invalidated_at"] = _utc_now()
+        save_ralplan_state(root, run_id, data)
+
+    from omg_cli.state import merge_status_fields
+
+    try:
+        merge_status_fields(root, run_id, {"ralplan_consensus": False})
+    except (OSError, ValueError):
+        pass
+
+
+def _authorize_autopilot_embedding(
+    root: Path, run: dict[str, Any], goal: str
+) -> None:
+    """Fail-closed gate when embedding ralplan into an autopilot run.
+
+    No-op unless ``run['mode'] == 'autopilot'``. When it is:
+
+    - the run must not be terminal (``status`` in
+      ``omg_cli.state.TERMINAL_STATUSES`` — cancelled/completed/failed/
+      verified) — a dead run's plan is never a valid embedding target;
+    - there must be no pending cancellation request committed for the run
+      (``load_cancellation_request``) — ``omg cancel`` commits its request
+      under the distinct transition lock, so it can land even while a
+      ralplan embedding holds the execution lease across a long-running
+      stage; fail closed rather than race it to ``accepted``;
+    - the CLI-supplied ``goal`` must equal the frozen run goal exactly —
+      a mismatched goal is rejected rather than silently re-targeting a
+      running autopilot's plan;
+    - the autopilot FSM must currently be parked at ``phase == 'ralplan'``
+      (mirrors ``interview._authorize_run_mode``'s embedding gate).
+
+    Callers that hold the execution lease across multiple stages/rounds
+    must re-invoke this (with a freshly reloaded ``run``) immediately
+    before any accept/terminal write — not just once at entry — since a
+    concurrent cancellation can commit at any point during that window.
+
+    Raises ``ValueError`` with a clear message on any violation.
+    """
+    if run.get("mode") != "autopilot":
+        return
+
+    from omg_cli.state import TERMINAL_STATUSES, load_cancellation_request
+
+    run_id = str(run.get("run_id"))
+    status = str(run.get("status") or "")
+    if status in TERMINAL_STATUSES:
+        raise ValueError(
+            f"autopilot run is terminal; refusing ralplan embedding: status={status!r}"
+        )
+    if load_cancellation_request(root, run_id) is not None:
+        raise ValueError(
+            "autopilot run has a pending cancellation request; "
+            "refusing ralplan embedding"
+        )
+
+    frozen_goal = str(run.get("goal") or "").strip()
+    requested_goal = (goal or "").strip()
+    if requested_goal != frozen_goal:
+        raise ValueError(
+            "--run goal must match the frozen autopilot goal; "
+            f"got {requested_goal!r}, expected {frozen_goal!r}"
+        )
+
+    from omg_cli.autopilot import AutopilotError, load_autopilot
+
+    try:
+        autopilot_state = load_autopilot(root, run_id)
+    except (AutopilotError, json.JSONDecodeError, OSError) as exc:
+        raise ValueError(f"cannot verify autopilot ralplan phase: {exc}") from exc
+    phase = autopilot_state.get("phase")
+    if phase != "ralplan":
+        raise ValueError(f"autopilot run not in ralplan phase: {phase!r}")
+
+
+def _assert_autopilot_still_writable(root: Path, run_id: str, goal: str) -> None:
+    """Reload the run and re-run the autopilot embedding gate.
+
+    Thin wrapper over ``_authorize_autopilot_embedding`` for callers that
+    hold the ralplan-v2 execution lease across many stages: ``omg cancel``
+    commits its cancellation request under the distinct transition lock
+    and can land at any point during that long-running window, so a single
+    authorization check at lease entry is not enough. Callers must invoke
+    this immediately before every ``save_ralplan_state`` (and before the
+    accept write) with a fresh reload — not reuse a run loaded earlier in
+    the same call. No-op for non-autopilot runs (delegated to
+    ``_authorize_autopilot_embedding``). Raises ``ValueError`` if the run
+    has disappeared or fails the gate; writes no sidecar itself.
+    """
+    run = load_run(root, run_id)
+    if run is None:
+        raise ValueError(f"run disappeared: {run_id!r}")
+    _authorize_autopilot_embedding(root, run, goal)
+
+
+def _clear_invalidation(state: dict[str, Any]) -> None:
+    """Drop stale ``invalidated``/``invalidated_reason``/``invalidated_at``.
+
+    Called on every accept write (legacy + strict-v2) and at the start of a
+    fresh strict-v2 consensus attempt so a prior replan's invalidation stamp
+    never survives past its purpose: once a genuinely fresh cycle produces a
+    new ``accepted: true`` (or begins a new attempt after invalidation),
+    ``_consensus_ready`` must stop being fenced by history it no longer
+    reflects.
+    """
+    state.pop("invalidated", None)
+    state.pop("invalidated_reason", None)
+    state.pop("invalidated_at", None)
+
+
+def _reset_for_fresh_cycle(state: dict[str, Any]) -> None:
+    """Reset progress counters so a fresh strict-v2 cycle starts at round 1.
+
+    Called alongside :func:`_clear_invalidation` when a new consensus
+    attempt begins against a state left ``invalidated: True`` by a prior
+    replan. ``first_round`` in ``_run_ralplan_v2`` is derived from the max
+    round already present in ``history`` — without wiping ``history`` (and
+    the per-session ``attempts`` counters, and ``round``) here, a state with
+    prior history past the configured ``max_rounds`` ceiling would stay
+    pinned past that ceiling forever: every future replan would immediately
+    block with zero stages executed instead of actually re-running
+    planner/architect/critic. Identity fields (``run_id``, ``goal``,
+    ``writer``, ``schema_version``, ``lifecycle_version``) are left
+    untouched — only progress state resets.
+
+    Each role's ``session_id`` is also re-minted (not reused): a fresh cycle
+    must start every planner/architect/critic session from scratch rather
+    than resuming the prior cycle's session with ``attempts`` reset to 0
+    (P2-5) — reusing the old UUID would let the executor treat this as a
+    continuation of the invalidated session instead of a genuinely new one.
+    """
+    state["history"] = []
+    state["round"] = 0
+    for binding in state.get("sessions", {}).values():
+        if isinstance(binding, dict):
+            binding["session_id"] = str(uuid.uuid4())
+            binding["attempts"] = 0
+
+
 def initial_ralplan_state(
     *,
     run_id: str,
@@ -123,6 +289,7 @@ def initial_ralplan_state(
 ) -> dict[str, Any]:
     now = _utc_now()
     return {
+        "writer": CLI_WRITER,
         "run_id": run_id,
         "goal": goal,
         "status": "draft",
@@ -626,6 +793,7 @@ def _run_ralplan_v1(
         state["status"] = "accepted"
         state["accepted"] = True
         state["stage"] = "accepted"
+        _clear_invalidation(state)
         save_ralplan_state(root_path, run_id, state)
         write_status(
             root_path,
@@ -837,6 +1005,7 @@ def _initial_v2_state(
 ) -> dict[str, Any]:
     now = _utc_now()
     return {
+        "writer": CLI_WRITER,
         "schema_version": 2,
         "lifecycle_version": 2,
         "run_id": run_id,
@@ -877,10 +1046,39 @@ def _run_ralplan_v2(
         max(1, V2_MAX_ROUNDS if max_rounds is None else int(max_rounds)),
     )
     executor = stage_executor or _execute_stage
+
+    def _reauthorize_or_fail() -> int | None:
+        # Re-checked immediately before every save_ralplan_state below: the
+        # lease is held across many stages/rounds, and ``omg cancel``
+        # commits its request under the distinct transition lock, so it
+        # can land at any point during that window — fail closed rather
+        # than let a stale authorization from lease entry cover a write
+        # that happens much later.
+        try:
+            _assert_autopilot_still_writable(root, run_id, goal)
+        except ValueError as exc:
+            print(f"omg ralplan: {exc}", file=sys.stderr)
+            return 1
+        return None
+
     try:
         with execution_lease(
             root, run_id, intent="ralplan-v2-consensus", timeout_s=5.0
         ) as lease:
+            current_run = load_run(root, run_id)
+            if current_run is None:
+                print(f"omg ralplan: no run found: {run_id!r}", file=sys.stderr)
+                return 1
+            try:
+                # Re-check under the execution lease: the outer authorization
+                # in run_ralplan() ran before this lock was held, so a
+                # concurrent autopilot transition could otherwise race the
+                # phase check past it (goal is frozen at run creation and
+                # cannot race, but phase can).
+                _authorize_autopilot_embedding(root, current_run, goal)
+            except ValueError as exc:
+                print(f"omg ralplan: {exc}", file=sys.stderr)
+                return 1
             stages_dir(root, run_id).mkdir(parents=True, exist_ok=True)
             state = load_ralplan_state(root, run_id)
             if state is None:
@@ -894,7 +1092,20 @@ def _run_ralplan_v2(
                 return 1
             if state.get("accepted") is True:
                 return 0
+            if state.get("invalidated") is True:
+                # Fresh consensus attempt under lease: a mid-run replan must
+                # not stay fenced by a stale invalidation stamp once a new
+                # attempt actually begins (clear-on-accept below is the
+                # primary guard; this covers the window before it). Also
+                # reset history/round/session-attempts so first_round becomes
+                # 1 and the configured ceiling is usable again (R6-1) —
+                # identity fields are untouched.
+                _clear_invalidation(state)
+                _reset_for_fresh_cycle(state)
             state["max_rounds"] = ceiling
+            guard_rc = _reauthorize_or_fail()
+            if guard_rc is not None:
+                return guard_rc
             save_ralplan_state(root, run_id, state)
 
             prior_rounds = [
@@ -922,6 +1133,9 @@ def _run_ralplan_v2(
                     invocation_id = str(uuid.uuid4())
                     input_sha256 = _v2_input_hash(state, stage, round_n)
                     state.update({"status": stage, "stage": stage, "round": round_n})
+                    guard_rc = _reauthorize_or_fail()
+                    if guard_rc is not None:
+                        return guard_rc
                     save_ralplan_state(root, run_id, state)
                     write_status(
                         root,
@@ -988,6 +1202,9 @@ def _run_ralplan_v2(
                         "at": _utc_now(),
                     }
                     state["history"].append(entry)
+                    guard_rc = _reauthorize_or_fail()
+                    if guard_rc is not None:
+                        return guard_rc
                     save_ralplan_state(root, run_id, state)
                     if rc != 0:
                         break
@@ -997,9 +1214,21 @@ def _run_ralplan_v2(
                         break
                     if stage == "critic":
                         if entry["valid"] and entry["verdict"] == "APPROVE":
+                            # Re-authorize once more, immediately before the
+                            # accept write: the lease has been held across
+                            # every stage this round, but ``omg cancel``
+                            # commits its request under the distinct
+                            # transition lock and can land at any point
+                            # during that (potentially long-running) window.
+                            # Fail closed rather than accept a plan for a
+                            # run that is now terminal/cancelled.
+                            guard_rc = _reauthorize_or_fail()
+                            if guard_rc is not None:
+                                return guard_rc
                             state.update(
                                 {"status": "accepted", "stage": "accepted", "accepted": True}
                             )
+                            _clear_invalidation(state)
                             save_ralplan_state(root, run_id, state)
                             write_status(
                                 root,
@@ -1032,6 +1261,9 @@ def _run_ralplan_v2(
                     },
                 }
             )
+            guard_rc = _reauthorize_or_fail()
+            if guard_rc is not None:
+                return guard_rc
             save_ralplan_state(root, run_id, state)
             write_status(
                 root,
@@ -1099,9 +1331,23 @@ def run_ralplan(
         )
         return 1
     try:
+        _authorize_autopilot_embedding(root_path, run, goal)
+    except ValueError as exc:
+        print(f"omg ralplan: {exc}", file=sys.stderr)
+        return 1
+    try:
         schema = classify_run_schema(run)
     except (TypeError, ValueError) as exc:
         print(f"omg ralplan: refusing malformed run schema: {exc}", file=sys.stderr)
+        return 1
+    if mode == "autopilot" and schema is not RunSchema.STRICT_V2:
+        print(
+            f"omg ralplan: --run {existing_run_id!r} is mode=autopilot with "
+            f"schema={schema.value!r}; autopilot embedding requires strict-v2 "
+            "(schema_version=2, lifecycle_version=2) and cannot fall back to "
+            "the legacy v1 FSM",
+            file=sys.stderr,
+        )
         return 1
     if schema is RunSchema.LEGACY_V1:
         return _run_ralplan_v1(
@@ -1137,6 +1383,7 @@ __all__ = [
     "artifact_contains_approve",
     "build_stage_prompt",
     "initial_ralplan_state",
+    "invalidate_ralplan_consensus",
     "load_ralplan_state",
     "ralplan_state_path",
     "run_ralplan",

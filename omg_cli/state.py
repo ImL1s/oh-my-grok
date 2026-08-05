@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -41,6 +42,43 @@ except ImportError:  # pragma: no cover — non-POSIX
 # callers commonly monkeypatch ``subprocess.Popen`` to isolate Grok launches;
 # that must not corrupt the lifecycle owner's own start-time identity.
 _SYSTEM_POPEN = subprocess.Popen
+
+
+FORCE_VERIFIED_ENV = "OMG_INTERNAL_FORCE_VERIFIED"
+"""Deprecated no-op: formerly gated ``set_verified(..., force=True)``.
+
+Env alone no longer unlocks force. Tests must call
+``enable_force_verified_for_tests()`` so a process-private capability token is
+issued in-process. Kept as a named constant for docs/grep honesty.
+"""
+
+# Process-private capability for set_verified(force=True). Env alone is never
+# sufficient. Only enable_force_verified_for_tests() may issue a token.
+_FORCE_VERIFIED_CAPABILITY: object | None = None
+
+
+def enable_force_verified_for_tests() -> object:
+    """Issue an in-process capability that unlocks ``set_verified(force=True)``.
+
+    **Tests only.** Creates a unique token object and stores it module-privately.
+    Call ``disable_force_verified_for_tests()`` in fixture teardown so capability
+    does not leak across tests. Production / CLI code must never call this.
+    """
+    global _FORCE_VERIFIED_CAPABILITY
+    token = object()
+    _FORCE_VERIFIED_CAPABILITY = token
+    return token
+
+
+def disable_force_verified_for_tests() -> None:
+    """Clear the force-verified test capability (fixture teardown)."""
+    global _FORCE_VERIFIED_CAPABILITY
+    _FORCE_VERIFIED_CAPABILITY = None
+
+
+def _force_verified_capability_enabled() -> bool:
+    """True iff an in-process capability token is currently held."""
+    return _FORCE_VERIFIED_CAPABILITY is not None
 
 
 OMG_SUBDIRS = (
@@ -215,6 +253,11 @@ def _push_lock(kind: str) -> None:
             "lock-order violation: execution.lock cannot be acquired while "
             "transition.lock is held"
         )
+    if kind == "create" and "transition" in stack:
+        raise LifecycleLockError(
+            "lock-order violation: create.lock cannot be acquired while "
+            "transition.lock is held"
+        )
     stack.append(kind)
 
 
@@ -228,6 +271,11 @@ def _pop_lock(kind: str) -> None:
 def transition_guard_held() -> bool:
     """Diagnostic/test hook: true only inside the current thread's short guard."""
     return "transition" in _held_lock_kinds()
+
+
+def create_lock_held() -> bool:
+    """True while this thread holds ``.omg/state/create.lock``."""
+    return "create" in _held_lock_kinds()
 
 
 def classify_run_schema(run: dict[str, Any]) -> RunSchema:
@@ -332,10 +380,18 @@ def write_pid_metadata(
     """Write ``pid.json`` (and legacy plain ``pid`` file when path is run-dir pid.json).
 
     Shape: ``{pid, starttime, pgid}``. Used by leader launch and workers/*.pid.json.
+
+    Requires a non-empty ``starttime`` (explicit or from ``process_starttime``).
+    Refuses to publish when starttime cannot be established — callers such as
+    ``_spawn_grok_process`` kill the child on this failure.
     """
     path = Path(path)
     if starttime is None:
         starttime = process_starttime(pid)
+    if not starttime:
+        raise RuntimeError(
+            f"cannot publish pid metadata for pid={pid}: process starttime unavailable"
+        )
     if pgid is None and os.name == "posix":
         try:
             pgid = os.getpgid(pid)
@@ -384,32 +440,155 @@ def read_pid_metadata(root: Path, run_id: str) -> dict[str, Any] | None:
     return None
 
 
+class PidIdentity(str, Enum):
+    """Tri-state live-PID identity vs a recorded ``ps`` starttime.
+
+    * ``MATCH`` — same process (alive + starttime equals recorded).
+    * ``DEAD`` — PID gone (ESRCH); safe to clear / reclaim.
+    * ``MISMATCH`` — PID alive (or liveness uncertain) but starttime differs
+      (PID reuse); safe to clear / reclaim.
+    * ``UNKNOWN`` — cannot decide (missing recorded starttime, invalid pid,
+      or ``process_starttime`` returned ``None`` while recorded is present).
+      Kill paths and spawn-conflict paths must fail closed: do not signal,
+      do not clear as "stale".
+    """
+
+    MATCH = "match"
+    DEAD = "dead"
+    MISMATCH = "mismatch"
+    UNKNOWN = "unknown"
+
+
+def classify_pid_identity(
+    pid: int,
+    recorded_starttime: str | None,
+) -> PidIdentity:
+    """Classify whether *pid* is the same process as *recorded_starttime*.
+
+    Distinguishes ``UNKNOWN`` (probe failed) from ``MISMATCH`` (proven reuse)
+    so spawn/clear callers do not treat a failed ``ps`` probe as stale.
+    """
+    if pid <= 0:
+        return PidIdentity.UNKNOWN
+    if not recorded_starttime:
+        return PidIdentity.UNKNOWN
+    alive = _pid_alive(pid)
+    if alive is False:
+        return PidIdentity.DEAD
+    current = process_starttime(pid)
+    if current is None:
+        # Alive (or liveness uncertain) but ps failed — not mismatch.
+        return PidIdentity.UNKNOWN
+    if current == recorded_starttime:
+        return PidIdentity.MATCH
+    return PidIdentity.MISMATCH
+
+
 def pid_matches_recorded(
     pid: int,
     recorded_starttime: str | None,
 ) -> bool:
     """True when it is safe to signal *pid* for this recorded starttime.
 
-    Fail-closed (strictest kill safety):
-    * No recorded starttime (legacy plain ``pid`` file) → **False** — never
-      auto-kill without a starttime identity check.
-    * ``ps`` fails / unavailable → **False** — do not signal on uncertainty.
-    * Process dead (ESRCH) → **False**.
-    * starttime mismatch → **False** (PID reuse).
-    * Alive + matching ``ps -o lstart=`` → **True**.
+    Fail-closed (strictest kill safety): only ``PidIdentity.MATCH`` is True.
+    ``UNKNOWN`` (ps unavailable), ``DEAD``, ``MISMATCH``, and missing
+    recorded starttime are all False — never auto-kill on uncertainty.
     """
+    return classify_pid_identity(pid, recorded_starttime) is PidIdentity.MATCH
+
+
+def clear_pid_metadata(root: Path, run_id: str) -> None:
+    """Remove ``pid.json`` and legacy plain ``pid`` sibling for *run_id*."""
+    root = Path(root)
+    for path in (_run_pid_json_path(root, run_id), _run_pid_path(root, run_id)):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def live_leader_pid_conflict(root: Path, run_id: str) -> str | None:
+    """Refuse reason when ``pid.json`` still identifies a live leader process.
+
+    Refuse (do not clear) when:
+    * ``MATCH`` — recorded PID alive with matching starttime, **or**
+    * ``UNKNOWN`` — alive/uncertain + recorded starttime present but
+      ``process_starttime`` returned ``None`` (probe failure ≠ reuse), **or**
+    * recorded starttime is missing/null/empty while PID is not proven dead
+      (legacy incomplete metadata — cannot prove identity).
+
+    Only treat as stale (return ``None`` so the caller may clear) on
+    ``DEAD`` or ``MISMATCH`` (proven PID reuse). R14-4 requires starttime on
+    new publications; the missing-starttime branch covers older incomplete
+    ``pid.json``.
+    """
+    meta = read_pid_metadata(Path(root), run_id)
+    if meta is None:
+        return None
+    try:
+        pid = int(meta["pid"])
+    except (KeyError, TypeError, ValueError):
+        return None
     if pid <= 0:
-        return False
-    if not recorded_starttime:
-        return False
+        return None
     alive = _pid_alive(pid)
     if alive is False:
-        return False
-    current = process_starttime(pid)
-    if current is None:
-        # ps failed — fail-closed, do not kill
-        return False
-    return current == recorded_starttime
+        return None
+    recorded = meta.get("starttime")
+    recorded_s = recorded if isinstance(recorded, str) and recorded else None
+    if not recorded_s:
+        # Live (or liveness uncertain) without starttime — refuse spawn rather
+        # than clear/overwrite incomplete legacy metadata.
+        return (
+            f"live leader pid without recorded starttime "
+            f"(pid={pid}); refusing grok spawn"
+        )
+    identity = classify_pid_identity(pid, recorded_s)
+    if identity is PidIdentity.MATCH:
+        return (
+            f"live leader pid still matches pid.json "
+            f"(pid={pid}); refusing grok spawn"
+        )
+    if identity is PidIdentity.UNKNOWN:
+        return (
+            f"live leader pid starttime probe unknown "
+            f"(pid={pid}); refusing grok spawn"
+        )
+    # DEAD or MISMATCH — stale; caller may clear.
+    return None
+
+
+def launch_refused_for_cancel(root: Path | str, run_id: str) -> str | None:
+    """Return a refusal reason if the run must not spawn grok, else None.
+
+    Re-checks ``status.json`` and any pending ``cancel.request.json`` so a
+    cancel committed after loop entry (or before resume) cannot race a
+    ``_launch_grok`` / Popen. Call under ``transition_guard`` (or already-held
+    guard) immediately before ``prepare_leader_spawn``.
+    """
+    run = load_run(Path(root), run_id) or {}
+    status = str(run.get("status") or "")
+    if status in TERMINAL_STATUSES:
+        return f"run is terminal (status={status!r}); refusing grok launch"
+    if load_cancellation_request(root, run_id) is not None:
+        return "pending cancellation request; refusing grok launch"
+    return None
+
+
+def prepare_leader_spawn(root: Path, run_id: str) -> str | None:
+    """Pre-spawn gate: refuse live leader, else clear stale ``pid.json``.
+
+    Call under ``transition_guard`` immediately before ``_spawn_grok_process``
+    (autopilot and ``modes._launch_grok`` share this helper).
+
+    Returns a refuse reason string, or ``None`` when spawn may proceed (any
+    stale pid metadata has been cleared).
+    """
+    conflict = live_leader_pid_conflict(root, run_id)
+    if conflict is not None:
+        return conflict
+    clear_pid_metadata(root, run_id)
+    return None
 
 
 def _require_posix_flock() -> None:
@@ -725,7 +904,9 @@ def is_stale_run(root: Path, run_id: str) -> bool:
 
     No pid file, unreadable pid, or indeterminate liveness → not stale
     (mutex still applies unless force supersede). When starttime is recorded
-    and no longer matches (PID reuse), treat as stale so create can proceed.
+    and identity is ``DEAD`` or ``MISMATCH`` (PID reuse), treat as stale so
+    create can proceed. ``UNKNOWN`` (ps probe failed) is **not** stale —
+    unknown ≠ reclaimable.
     """
     meta = read_pid_metadata(Path(root), run_id)
     if meta is None:
@@ -733,9 +914,12 @@ def is_stale_run(root: Path, run_id: str) -> bool:
     pid = int(meta["pid"])
     recorded = meta.get("starttime")
     recorded_s = recorded if isinstance(recorded, str) and recorded else None
-    if recorded_s and not pid_matches_recorded(pid, recorded_s):
-        # Dead or PID reused under a recorded starttime → reclaimable
-        return True
+    if recorded_s:
+        identity = classify_pid_identity(pid, recorded_s)
+        if identity in (PidIdentity.DEAD, PidIdentity.MISMATCH):
+            return True
+        # MATCH or UNKNOWN — not reclaimable
+        return False
     return _pid_alive(pid) is False
 
 
@@ -822,6 +1006,9 @@ def create_run(
       dead run is cancelled and create proceeds without force.
 
     Terminal statuses (cancelled/completed/failed/verified) do not block.
+
+    ``clear_active`` shares this same ``create.lock`` so cancel cannot unlink a
+    newer run's ``active.json`` (R18-3).
     """
     root = Path(root)
     ensure_omg_dirs(root)
@@ -841,6 +1028,7 @@ def create_run(
 
     with lock_path.open("a+", encoding="utf-8") as lockf:
         fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
+        _push_lock("create")
         try:
             return _create_run_unlocked(
                 root,
@@ -851,6 +1039,7 @@ def create_run(
                 kill_grace_s=kill_grace_s,
             )
         finally:
+            _pop_lock("create")
             fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
 
 
@@ -1117,12 +1306,32 @@ def write_status(
                 lease=lease,
             )
 
-    # Frozen v1 adapter: preserve historical write behavior exactly.
-    updated = _apply_status_fields(current, status, extra=extra)
-    if updated.get("verified") is True and not _has_acceptance_artifact(root, run_id):
-        updated["verified"] = False
-    _atomic_write_json(path, updated)
-    return updated
+    # Frozen v1 adapter (R17): linearize under transition_guard. Absorb
+    # cancelled/verified only — those must not be resurrected to running by
+    # post-launch writers. completed/failed remain writable (team stop may
+    # move completed → blocked).
+    guard_cm = (
+        nullcontext()
+        if transition_guard_held()
+        else transition_guard(root, run_id)
+    )
+    with guard_cm:
+        current = _read_json(path)
+        if current is None:
+            raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
+        current_status = str(current.get("status") or "")
+        if current_status in ("cancelled", "verified"):
+            if status == current_status:
+                return current
+            # Fail-closed absorbing no-op: keep cancelled/verified bytes.
+            return current
+        updated = _apply_status_fields(current, status, extra=extra)
+        if updated.get("verified") is True and not _has_acceptance_artifact(
+            root, run_id
+        ):
+            updated["verified"] = False
+        _atomic_write_json(path, updated)
+        return updated
 
 
 def load_run(root: Path, run_id: str) -> dict[str, Any] | None:
@@ -1165,8 +1374,33 @@ def load_cancellation_request(root: Path, run_id: str) -> dict[str, Any] | None:
 
 
 def clear_active(root: Path, run_id: str | None = None) -> None:
-    """Clear active pointer if it matches run_id (or always if run_id is None)."""
+    """Clear active pointer if it matches run_id (or always if run_id is None).
+
+    R18-3: serialized with ``create_run`` via ``.omg/state/create.lock`` so a
+    cancel clearing run A cannot unlink a newer run B's ``active.json``.
+    Must not be called while ``transition.lock`` is held unless ``create.lock``
+    is already held (force-create: create → cancel → transition). Prefer
+    releasing transition first, then clearing under create lock.
+    """
     root = Path(root)
+    if fcntl is None or create_lock_held():
+        _clear_active_unlocked(root, run_id)
+        return
+
+    lock_path = _create_lock_path(root)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lockf:
+        fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
+        _push_lock("create")
+        try:
+            _clear_active_unlocked(root, run_id)
+        finally:
+            _pop_lock("create")
+            fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
+
+
+def _clear_active_unlocked(root: Path, run_id: str | None = None) -> None:
+    """Read/compare/unlink ``active.json`` (caller holds create.lock when available)."""
     path = _active_path(root)
     if not path.exists():
         return
@@ -1322,22 +1556,58 @@ def _cancel_run_legacy(
     *,
     kill_grace_s: float = 0.0,
 ) -> dict[str, Any]:
-    current = load_run(root, run_id)
-    if current is None:
-        raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
-    kill_actions = _signal_cancel_targets(
-        _cancel_targets_snapshot(root, run_id), kill_grace_s=kill_grace_s
-    )
+    """Linearize legacy cancel with ``_launch_grok`` via ``transition_guard``.
 
-    current["status"] = "cancelled"
-    current["verified"] = False
-    current["updated_at"] = _utc_now()
-    current["cancelled_at"] = current["updated_at"]
-    if kill_actions:
-        current["kill_actions"] = kill_actions
-    _atomic_write_json(_status_path(root, run_id), current)
+    Same ordering as strict cancel: commit terminal + snapshot PIDs under the
+    guard, release, then signal outside so cancel cannot miss a newly spawned
+    Grok and launch cannot Popen after ``cancelled`` is committed.
+
+    R18-3: ``clear_active`` runs **after** releasing transition (under
+    ``create.lock``) so force-create's create→transition lock order is never
+    reversed.
+    """
+    with transition_guard(root, run_id):
+        current = load_run(root, run_id)
+        if current is None:
+            raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
+        if current.get("status") == "verified" or current.get("verified") is True:
+            result = dict(current)
+            result["cancel_outcome"] = "already complete"
+            return result
+        if current.get("status") == "cancelled":
+            result = dict(current)
+            result["cancel_outcome"] = "already cancelled"
+            return result
+
+        targets = _cancel_targets_snapshot(root, run_id)
+        updated = dict(current)
+        updated["status"] = "cancelled"
+        updated["verified"] = False
+        updated["updated_at"] = _utc_now()
+        updated["cancelled_at"] = updated["updated_at"]
+        updated["cancel_outcome"] = "cancelled"
+        _atomic_write_json(_status_path(root, run_id), updated)
+        cancelled = updated
+
+    # Outside transition.lock: clear active under create.lock, then signal.
     clear_active(root, run_id)
-    return current
+
+    # Intentionally outside transition.lock (never signal while guard held).
+    kill_actions = _signal_cancel_targets(targets, kill_grace_s=kill_grace_s)
+    if not kill_actions:
+        return cancelled
+
+    with transition_guard(root, run_id):
+        current = load_run(root, run_id)
+        if current is None or current.get("status") != "cancelled":
+            cancelled = dict(cancelled)
+            cancelled["kill_actions"] = kill_actions
+            return cancelled
+        current = dict(current)
+        current["kill_actions"] = kill_actions
+        current["updated_at"] = _utc_now()
+        _atomic_write_json(_status_path(root, run_id), current)
+        return current
 
 
 def _cancel_run_strict(
@@ -1435,9 +1705,11 @@ def cancel_run(
 ) -> dict[str, Any]:
     """Cancel a run without deleting artifacts.
 
-    Legacy-v1 preserves the historical mark-and-signal behavior.  Strict-v2
-    commits a durable request and every status replacement under the distinct
-    short transition guard, then releases it before signalling/waiting.
+    Legacy-v1 (R17) linearizes mark-and-signal under the same per-run
+    ``transition_guard`` as ``_launch_grok`` (commit cancelled + snapshot PIDs
+    under guard; signal outside).  Strict-v2 commits a durable request and
+    every status replacement under the distinct short transition guard, then
+    releases it before signalling/waiting.
     """
     root = Path(root)
     if run_id is None:
@@ -1483,7 +1755,10 @@ def set_verified(
     Requires ``acceptance.result.json`` with ``writer=="omg-cli"``, ``passed``
     true, matching frozen manifest sha, **and** a process-local token from
     ``run_acceptance`` in this process. Disk-only forgeries are rejected.
-    force is intentionally not exposed by the CLI router.
+    force is intentionally not exposed by the CLI router, and is additionally
+    confined behind an in-process capability issued only by
+    ``enable_force_verified_for_tests()`` (tests). ``FORCE_VERIFIED_ENV`` is a
+    deprecated no-op — setting the env alone does **not** unlock force.
 
     Strict-v2 commits require an execution lease. Callers that already hold one
     should pass ``lease=...``. When ``lease is None``, a short-lived lease with
@@ -1496,10 +1771,37 @@ def set_verified(
     from omg_cli.acceptance import refuse_if_mcp_server
 
     refuse_if_mcp_server("set_verified")
+    if force and not _force_verified_capability_enabled():
+        raise PermissionError(
+            "refusing force=True set_verified without in-process force-verified "
+            f"capability (call enable_force_verified_for_tests() in tests only) "
+            f"for run_id={run_id!r}"
+        )
     root = Path(root)
     current = load_run(root, run_id)
     if current is None:
         raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
+    if not force:
+        # Autopilot verified only via complete_with_acceptance after phase
+        # reaches acceptance (FSM), with matching authority_nonce between
+        # status.json and the autopilot sidecar. Sidecar presence / mode /
+        # nonce field all trigger the check (mode-flip alone must not bypass).
+        from omg_cli.autopilot import (
+            assert_autopilot_accept_authority,
+            autopilot_state_path,
+        )
+
+        if (
+            autopilot_state_path(root, run_id).is_file()
+            or current.get("mode") == "autopilot"
+            or current.get("autopilot_authority_nonce")
+        ):
+            assert_autopilot_accept_authority(
+                root,
+                run_id,
+                status=current,
+                require_acceptance_phase=True,
+            )
     if not force and not _has_acceptance_artifact(root, run_id):
         raise PermissionError(
             "refusing to set verified=true without trusted CLI acceptance "
@@ -1536,12 +1838,32 @@ def set_verified(
         with execution_lease(root, run_id, intent="accept") as owned_lease:
             return _commit_verified(owned_lease)
 
-    current["verified"] = True
-    current["status"] = "verified"
-    current["updated_at"] = _utc_now()
-    current["verified_at"] = current["updated_at"]
-    _atomic_write_json(_status_path(root, run_id), current)
-    return current
+    # Legacy-v1 (R18-2): re-read under transition_guard. cancelled is absorbing
+    # unless force=True with in-process force capability; verified is idempotent.
+    from contextlib import nullcontext
+
+    guard_cm = (
+        nullcontext() if transition_guard_held() else transition_guard(root, run_id)
+    )
+    with guard_cm:
+        current = load_run(root, run_id)
+        if current is None:
+            raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
+        status_now = str(current.get("status") or "")
+        if status_now == "verified" or current.get("verified") is True:
+            return current
+        if status_now == "cancelled" and not force:
+            raise PermissionError(
+                "cancelled is absorbing; refusing set_verified without force "
+                f"capability for run_id={run_id!r}"
+            )
+        current = dict(current)
+        current["verified"] = True
+        current["status"] = "verified"
+        current["updated_at"] = _utc_now()
+        current["verified_at"] = current["updated_at"]
+        _atomic_write_json(_status_path(root, run_id), current)
+        return current
 
 
 def _projector_view_path(root: Path | str, run_id: str) -> Path:

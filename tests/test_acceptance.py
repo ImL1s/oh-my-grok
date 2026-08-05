@@ -498,6 +498,11 @@ def test_modes_ralph_with_passing_prd_verifies(monkeypatch, tmp_path):
     from omg_cli.modes import run_mode
     from omg_cli.state import load_active_run
 
+    # Hermetic pid.json publish for mock PID 55 (R14-4 requires starttime).
+    monkeypatch.setattr(
+        "omg_cli.state.process_starttime", lambda _pid: "fake-start"
+    )
+
     mock_proc = MagicMock()
     mock_proc.pid = 55
     mock_proc.wait.return_value = 0

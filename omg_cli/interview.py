@@ -15,6 +15,7 @@ from omg_cli.evidence import (
     validate_identifier,
 )
 from omg_cli.state import (
+    TERMINAL_STATUSES,
     RunSchema,
     classify_run_schema,
     clear_active,
@@ -98,6 +99,14 @@ class InterviewIncomplete(InterviewError):
         self.result = result
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+def _autopilot_resume_command(run_id: str) -> str:
+    """Single idempotent resume entry for an autopilot-attached interview.
+
+    ``omg autopilot run --resume`` reads the sidecar's own phase and
+    dispatches accordingly, so it is safe to hand out unconditionally
+    (R9-3) instead of the older two-step
+    ``omg autopilot transition ... && omg ralplan ... --run ...``."""
+    return f"omg autopilot run --resume {run_id}"
 def _run_dir(root: Path, run_id: str) -> Path:
     from omg_cli.state import _safe_run_id
 
@@ -244,9 +253,28 @@ def _refresh(state: dict[str, Any], invocation_id: str) -> None:
         state["blocker"] = {"code": code, "reasons": reasons}
     state["revision"] += 1
     state["updated_at"] = _now()
+def _authorize_run_mode(root: Path, run: Mapping[str, Any]) -> None:
+    """Fail-closed gate: interview ops are legal on ``mode=="interview"`` runs,
+    or on an ``mode=="autopilot"`` run currently parked at ``phase=="interview"``
+    (autopilot embeds interview state under its own run_id — see
+    ``autopilot._interview_complete``). Anything else is rejected."""
+    mode = run.get("mode")
+    if mode == "interview":
+        return
+    if mode == "autopilot":
+        from omg_cli.autopilot import AutopilotError, load_autopilot
+
+        try:
+            autopilot_state = load_autopilot(root, str(run.get("run_id")))
+        except (AutopilotError, json.JSONDecodeError, OSError) as exc:
+            raise InterviewError(f"cannot verify autopilot interview phase: {exc}") from exc
+        phase = autopilot_state.get("phase")
+        if phase == "interview":
+            return
+        raise InterviewError(f"autopilot run not in interview phase: {phase!r}")
+    raise InterviewError(f"wrong run mode: {mode!r}")
 def _validate(root: Path, run: Mapping[str, Any], state: dict[str, Any]) -> None:
-    if run.get("mode") != "interview":
-        raise InterviewError(f"wrong run mode: {run.get('mode')!r}")
+    _authorize_run_mode(root, run)
     if state.get("writer") != CLI_WRITER or state.get("schema_version") != 2:
         raise InterviewError("invalid interview authority/schema")
     if state.get("run_id") != run.get("run_id") or state.get("task") != run.get("goal"):
@@ -295,8 +323,7 @@ def _load(root: Path, run_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
         raise InterviewError(f"invalid run schema: {exc}") from exc
     if schema is not RunSchema.STRICT_V2:
         raise InterviewError("interview requires strict-v2 run")
-    if run.get("mode") != "interview":
-        raise InterviewError(f"wrong run mode: {run.get('mode')!r}")
+    _authorize_run_mode(root, run)
     state = _read_json(interview_state_path(root, run_id), "interview state")
     _validate(root, run, state)
     return run, state
@@ -322,20 +349,122 @@ def _status_extra(state: Mapping[str, Any]) -> dict[str, Any]:
         "blocker": state.get("blocker"),
         "next_action": state.get("resume_command"),
     }
-def start_interview(root: Path | str, task: str, *, profile: str = "standard", context_type: str | None = None, force: bool = False) -> dict[str, Any]:
+def _attach_interview_run(root: Path, attach_run_id: str, task: str, *, force: bool) -> tuple[dict[str, Any], str]:
+    """Load an existing autopilot run parked at phase=="interview" to seed
+    interview.json under its own run_id (no ``create_run``). Fail-closed on
+    any other mode/phase. The run's ``goal`` is always the attached task —
+    a non-empty caller-supplied ``task`` that differs from it is rejected
+    rather than silently overridden, so an attach can never seed a spec
+    under a task text that disagrees with the autopilot run it belongs to.
+    Existence of a prior ``interview.json`` (reseed guard) is intentionally
+    NOT checked here — the caller must re-check it under the execution
+    lease to avoid a TOCTOU race between concurrent attaches."""
+    run_id = validate_identifier(attach_run_id, label="run_id")
+    run = load_run(root, run_id)
+    if run is None:
+        raise InterviewError(f"no or corrupt run found: {run_id}")
+    try:
+        schema = classify_run_schema(run)
+    except (TypeError, ValueError) as exc:
+        raise InterviewError(f"invalid run schema: {exc}") from exc
+    if schema is not RunSchema.STRICT_V2:
+        raise InterviewError("interview requires strict-v2 run")
+    if run.get("mode") != "autopilot":
+        raise InterviewError(f"--attach-run requires an autopilot run (got mode={run.get('mode')!r})")
+    _authorize_run_mode(root, run)
+    goal = str(run.get("goal") or "").strip()
+    if task and task != goal:
+        raise InterviewError(
+            f"--attach-run task must match the run's goal; got {task!r}, expected {goal!r}"
+        )
+    return run, goal
+def _assert_run_writable(root: Path, run: Mapping[str, Any]) -> None:
+    """Fail-closed gate shared by every interview sidecar write path.
+
+    Re-checks, using a ``run`` freshly reloaded under the execution lease,
+    that the run has not gone terminal (``status`` in
+    ``omg_cli.state.TERMINAL_STATUSES``) and has no pending cancellation
+    request committed (``load_cancellation_request``). ``omg cancel``
+    commits its request under the distinct transition lock, so it can land
+    at any point while an interview write (state save or spec artifact) is
+    in flight under this lease — fail closed rather than race it.
+
+    Callers must invoke this immediately before every ``_save`` /
+    interview-spec write, with a freshly reloaded ``run`` — not just once
+    at lease entry — since a concurrent cancellation can commit between
+    entry and that write. Raises ``InterviewError`` on any violation;
+    writes no sidecar."""
+    from omg_cli.state import load_cancellation_request
+
+    run_id = str(run.get("run_id"))
+    status = str(run.get("status") or "")
+    if status in TERMINAL_STATUSES:
+        raise InterviewError(
+            f"run is terminal under lease; refusing interview write: status={status!r}"
+        )
+    if load_cancellation_request(root, run_id) is not None:
+        raise InterviewError(
+            "run has a pending cancellation request; refusing interview write"
+        )
+def _reauthorize_attach(root: Path, run_id: str, task: str) -> None:
+    """Re-verify attach-run authorization under the execution lease.
+
+    ``_attach_interview_run`` makes its checks before the lease is held, so
+    a concurrent transition/cancel could race between that check and the
+    write. Re-load the run fresh and repeat every check that matters: mode
+    still interview-capable (autopilot parked at phase=="interview", or
+    bare mode=="interview"), run not terminal/cancelled and no pending
+    cancellation request (``_assert_run_writable``), and the goal has not
+    drifted from the attach task."""
+    run = load_run(root, run_id)
+    if run is None:
+        raise InterviewError(f"no or corrupt run found: {run_id}")
+    _authorize_run_mode(root, run)
+    _assert_run_writable(root, run)
+    goal = str(run.get("goal") or "").strip()
+    if goal != task:
+        raise InterviewError(
+            f"attach-run goal drifted under lease; expected {task!r}, got {goal!r}"
+        )
+def start_interview(root: Path | str, task: str, *, profile: str = "standard", context_type: str | None = None, force: bool = False, attach_run_id: str | None = None) -> dict[str, Any]:
     root = Path(root).resolve()
     task = (task or "").strip()
-    if not task or profile not in PROFILE_CONFIG:
-        raise InterviewError("valid task text and profile are required")
     assert_safe_supervised_parent()
-    try:
-        run = create_run(root, mode="interview", goal=task, force=force, extra={
-            "schema_version": 2, "lifecycle_version": 2, "interview_profile": profile,
-        })
-    except RuntimeError as exc:
-        raise InterviewError(str(exc)) from exc
-    run_id, session_id = run["run_id"], str(uuid.uuid4())
+    if attach_run_id is not None:
+        run, task = _attach_interview_run(root, attach_run_id, task, force=force)
+        run_id = run["run_id"]
+        if not task or profile not in PROFILE_CONFIG:
+            raise InterviewError("valid task text and profile are required")
+    else:
+        if not task or profile not in PROFILE_CONFIG:
+            raise InterviewError("valid task text and profile are required")
+        try:
+            run = create_run(root, mode="interview", goal=task, force=force, extra={
+                "schema_version": 2, "lifecycle_version": 2, "interview_profile": profile,
+            })
+        except RuntimeError as exc:
+            raise InterviewError(str(exc)) from exc
+        run_id = run["run_id"]
+    session_id = str(uuid.uuid4())
     with execution_lease(root, run_id, intent="interview-start") as lease:
+        if attach_run_id is not None:
+            # Re-verify authorization under the execution lease: the earlier
+            # checks in ``_attach_interview_run`` (mode/phase/goal) and the
+            # reseed-exists check below both ran before this lock was held,
+            # so a concurrent transition/cancel/attach could otherwise race
+            # past them and write a stale or double-seeded interview.json.
+            _reauthorize_attach(root, run_id, task)
+            if interview_state_path(root, run_id).exists() and not force:
+                raise InterviewError(f"interview already started for run: {run_id}; pass force=True to reseed")
+        else:
+            # Re-verify the freshly created run is still writable under the
+            # lease: ``create_run`` above ran before this lock was held, so a
+            # concurrent ``omg cancel`` could in principle land on the new
+            # run_id before this write — fail closed rather than race it.
+            fresh_run = load_run(root, run_id)
+            if fresh_run is None:
+                raise InterviewError(f"no or corrupt run found: {run_id}")
+            _assert_run_writable(root, fresh_run)
         topology = build_topology(root, context_type=context_type)
         scores = {name: 0.0 for name in topology["active_dimensions"]}
         sections = {name: "" for name in REQUIRED}
@@ -386,7 +515,8 @@ def answer_interview(root: Path | str, run_id: str, text: str, *, question_id: s
     if question_id is not None and question_id != pending["question_id"]:
         raise InterviewError(f"stale question_id {question_id!r}; current is {pending['question_id']!r}")
     with execution_lease(root, run_id, intent="interview-answer") as lease:
-        _, state = _load(root, run_id)
+        fresh_run, state = _load(root, run_id)
+        _assert_run_writable(root, fresh_run)
         question = state.get("pending_question")
         if not question or (question_id is not None and question_id != question["question_id"]):
             raise InterviewError("stale pending question")
@@ -411,7 +541,8 @@ def pressure_pass_interview(root: Path | str, run_id: str, text: str) -> dict[st
     assert_safe_supervised_parent()
     _load(root, run_id)
     with execution_lease(root, run_id, intent="interview-pressure-pass") as lease:
-        _, state = _load(root, run_id)
+        fresh_run, state = _load(root, run_id)
+        _assert_run_writable(root, fresh_run)
         for key, value in _labeled(text).items():
             _apply_text(state, f"{key.replace('_', ' ')}: {value}", key)
         state["pressure_passes"].append({
@@ -426,11 +557,40 @@ def pressure_pass_interview(root: Path | str, run_id: str, text: str) -> dict[st
 def close_interview(root: Path | str, run_id: str) -> dict[str, Any]:
     root = Path(root).resolve()
     assert_safe_supervised_parent()
-    _, current = _load(root, run_id)
+    run, current = _load(root, run_id)
     if current["status"] == "complete":
+        expected_resume = (
+            _autopilot_resume_command(run_id)
+            if run.get("mode") == "autopilot"
+            else f"omg ralplan {shlex.quote(current['task'])}"
+        )
+        if current.get("resume_command") != expected_resume:
+            # Pre-R7 runs may still carry the old two-step
+            # ``transition && ralplan`` (or bare ``ralplan``) resume hint;
+            # migrate it to the current idempotent form on next close call.
+            # Best-effort: a concurrent cancel/terminal transition simply
+            # leaves the stale hint in place rather than raising here.
+            try:
+                with execution_lease(root, run_id, intent="interview-close-migrate") as lease:
+                    fresh_run, fresh_state = _load(root, run_id)
+                    _assert_run_writable(root, fresh_run)
+                    if fresh_state["status"] == "complete" and fresh_state.get("resume_command") != expected_resume:
+                        fresh_state["resume_command"] = expected_resume
+                        fresh_state["revision"] += 1
+                        fresh_state["updated_at"] = _now()
+                        _save(root, fresh_state, lease)
+                    current = fresh_state
+            except InterviewError:
+                pass
         return _result(current)
     with execution_lease(root, run_id, intent="interview-close") as lease:
-        _, state = _load(root, run_id)
+        fresh_run, state = _load(root, run_id)
+        # Re-check terminal/cancellation under the lease, immediately before
+        # any write below (blocked-status save on incomplete readiness, or
+        # the complete spec artifact + state + status on success) — a
+        # concurrent ``omg cancel`` commits its request under the distinct
+        # transition lock and can land after the outer, pre-lease `_load`.
+        _assert_run_writable(root, fresh_run)
         reasons = _readiness(state)
         if reasons:
             state["pending_question"] = None
@@ -467,13 +627,28 @@ def close_interview(root: Path | str, run_id: str) -> dict[str, Any]:
         _atomic_write_json(path, artifact)
         state.update(status="complete", pending_question=None, blocker=None)
         state["spec_path"] = str(path.relative_to(root))
-        state["resume_command"] = f"omg ralplan {shlex.quote(state['task'])}"
+        if run.get("mode") == "autopilot":
+            # An attached interview lives under the autopilot run's own
+            # run_id (see ``_attach_interview_run``): resuming must reuse
+            # that run_id, not spawn a fresh, orphaned ralplan run. The
+            # autopilot phase sidecar is still "interview" at this point;
+            # `omg autopilot run --resume` is a single idempotent entry
+            # that itself advances the sidecar to "ralplan" and launches —
+            # no separate `transition && ralplan` two-step needed.
+            state["resume_command"] = _autopilot_resume_command(run_id)
+        else:
+            state["resume_command"] = f"omg ralplan {shlex.quote(state['task'])}"
         state["closed_by_invocation_id"] = lease.invocation_id
         state["revision"] += 1
         state["updated_at"] = _now()
         _save(root, state, lease)
         write_status(root, run_id, "running", extra={**_status_extra(state), "stage": "interview_complete"}, lease=lease)
-    clear_active(root, run_id)
+    if run.get("mode") == "interview":
+        # Only a standalone interview (created by bare `start_interview`, not
+        # `--attach-run`) owns the active pointer here. An autopilot-attached
+        # interview (mode=="autopilot") must skip this: clearing it would yank
+        # the active pointer out from under in-flight autopilot orchestration.
+        clear_active(root, run_id)
     return _result(state)
 def interview_status(root: Path | str, run_id: str | None = None) -> dict[str, Any]:
     root = Path(root).resolve()

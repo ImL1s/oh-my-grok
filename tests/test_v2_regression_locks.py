@@ -468,11 +468,22 @@ def test_request_first_barrier_prevents_late_non_cancel_status(tmp_path: Path) -
     assert final.get("iteration") != 99
 
 
-def test_verified_first_barrier_refuses_late_cancel(tmp_path: Path) -> None:
+def test_verified_first_barrier_refuses_late_cancel(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from omg_cli.state import (
+        disable_force_verified_for_tests,
+        enable_force_verified_for_tests,
+    )
+
     run = _strict_run(tmp_path, mode="autopilot", goal="verified wins")
     run_id = run["run_id"]
-    with execution_lease(tmp_path, run_id, intent="test-verified-first") as lease:
-        set_verified(tmp_path, run_id, force=True, lease=lease)
+    enable_force_verified_for_tests()
+    try:
+        with execution_lease(tmp_path, run_id, intent="test-verified-first") as lease:
+            set_verified(tmp_path, run_id, force=True, lease=lease)
+    finally:
+        disable_force_verified_for_tests()
 
     result = cancel_run(tmp_path, run_id)
 

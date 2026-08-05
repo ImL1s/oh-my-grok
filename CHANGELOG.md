@@ -9,6 +9,302 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Fixed
+- **Process-fanout cancel linearization (Round 18 / R18-1):** each
+  ``run_process_fanout`` worker's cancel recheck → ``Popen`` → PID publish
+  runs under the same per-run ``transition_guard`` as ``_launch_grok``
+  (``launch_refused_for_cancel``); refused spawns do not Popen and roll back
+  prior workers (R15-4). Closes Pro R17b P1 where legacy cancel could miss a
+  later fanout worker.
+- **Legacy ``set_verified`` cancelled absorbing (Round 18 / R18-2):** legacy-v1
+  ``set_verified`` re-reads under ``transition_guard`` and refuses
+  ``cancelled`` → ``verified`` unless ``force=True`` with the in-process force
+  capability; already-``verified`` is idempotent. Closes the product bypass
+  where post-cancel ULW acceptance could still stamp verified.
+- **``clear_active`` / ``create_run`` create.lock (Round 18 / R18-3):**
+  ``active.json`` read/compare/unlink shares ``.omg/state/create.lock`` with
+  ``create_run``; legacy cancel clears active only after releasing
+  ``transition_guard`` (no create-while-transition lock-order reversal).
+  Prevents cancel from unlinking a newer run's active pointer.
+- **Legacy cancel / launch linearization (Round 17 / R17-1):**
+  ``_cancel_run_legacy`` now acquires the same per-run ``transition_guard`` as
+  ``_launch_grok``: commit ``cancelled`` + snapshot PIDs under the guard, then
+  signal outside. Closes the Pro R16 P1 race where legacy cancel could mark
+  terminal while launch still Popens after its pre-check. Legacy
+  ``write_status`` treats ``cancelled``/``verified``/``completed``/``failed``
+  as absorbing (guarded no-op) so post-launch writers cannot resurrect a
+  cancelled run. Pipeline / process-fanout ULW remain legacy-v1 (strict-v2
+  would require ``execution_lease`` on every stage write — not a cheap upgrade);
+  linearized legacy cancel is the supported closure for those paths.
+- **Cancel-aware `_launch_grok` gate (Round 16 / R16-1):**
+  ``modes._launch_grok`` re-checks terminal status /
+  pending ``cancel.request.json`` under the same ``transition_guard`` as
+  ``prepare_leader_spawn`` (shared ``launch_refused_for_cancel`` with
+  autopilot) so ralph/ralplan cannot Popen after cancel.
+- **Autopilot FSM public contract:** split `MANUAL_TRANSITIONS` vs
+  `COMMIT_ONLY_TRANSITIONS`; `omg autopilot status` `legal_next` no longer
+  advertises `verified` as a `transition()` edge (use `commit_only_next` +
+  `terminal_action: omg autopilot complete`). Advance-gate failures are
+  recorded on status / stall JSON instead of being swallowed silently.
+- **Resume ralplan hint:** drop dead `omg ralplan --resume` placeholder
+  (`--resume` is ralph-only); recommend `omg state --run` + `--run` re-invoke.
+- **Interview/consensus gates:** prefer CLI-owned stamps; bare
+  `interview_complete` / `consensus` booleans require `break_glass=true` and
+  are audited on history (`gate_audit`). StageEvidenceEnvelope v3 still planned.
+- **Review/QA fingerprint recheck:** `stage_review_is_clean` / `stage_qa_is_clean`
+  re-validate `diff_hash` lane stamps and `product_hash` against the current
+  workspace; drifted or tampered stamps fail closed (legacy hash-less stamps
+  keep weaker clean-flag-only behavior).
+- **Implement→review work gate:** require workspace fingerprint drift since
+  implement entry, a real on-disk CLI implementation receipt, or audited
+  `no_change_reason` / inline receipt with `break_glass=true`; unattended
+  auto-advance records `gate_failure` instead of silently skipping.
+- **Implement-gate fingerprint (Codex PR review P1):** the implement→review
+  work gate no longer reuses `qa.product_hash` (which only hashes
+  `omg_cli/**/*.py`, missing changes confined to `plugin.json`, `hooks/`,
+  `skills/`, `agents/`, `templates/`, or non-`.py` files under `omg_cli/`).
+  A dedicated `autopilot._implement_workspace_fingerprint` helper covers
+  those curated product surfaces without changing `qa.product_hash`
+  semantics used for UltraQA acceptance.
+- **Implementation receipt now real (Codex PR review P2):** added
+  `omg_cli/implementation.py` with `stamp_implementation_receipt` /
+  `read_implementation_receipt`, writing a CLI-owned
+  `stages/implementation.json` (`writer=omg-cli`, `content_sha256`,
+  `stamped_at`) under `.omg/state/runs/<run_id>/`. The implement→review gate
+  now actually loads and trusts this on-disk stamp (fingerprint-rechecked)
+  without `break_glass` — previously the docs advertised this path but no
+  producer/reader existed, so it always fell through to the unauthenticated
+  inline-receipt break-glass path.
+- **Implementation receipt bound to implement cycle (Codex PR review P2):**
+  a receipt stamped during one implement cycle no longer satisfies the
+  implement→review gate for a later cycle whose fingerprint happens to
+  still match (e.g. `review → ralplan → implement` with no new product
+  work). `implementation.invalidate_implementation_receipt` marks any
+  leftover receipt stale on every (re)entry into `implement`, mirroring
+  `invalidate_quality_stages`; `read_implementation_receipt` treats
+  `invalidated=true` the same as a missing file.
+- **Implement-gate fingerprint excludes generated caches (Codex PR review
+  P2):** `_implement_workspace_fingerprint` no longer hashes
+  `__pycache__/`, `*.pyc`, `.pytest_cache/`, `.ruff_cache/`, `.mypy_cache/`,
+  or `*.egg-info/` (mirrors this repo's own `.gitignore` cache entries) —
+  previously, merely running tests or importing an `omg_cli` module during
+  `implement` could write/update bytecode with zero source edits and
+  falsely register as implementation work.
+- **Autopilot sidecar writes:** `autopilot.json` and stage invalidation use
+  temp-file + `os.replace` atomic publish (mini-WAL; cross-file WAL still planned).
+- **Resume bundle v1:** `omg resume` emits partial `resume_bundle`
+  (`schema_version=1`: `run_view`, `gate_failure`, `autopilot_phase`,
+  `legal_next`, `provenance`) — wiki/memory/compaction deferred.
+- **Tracker process identity:** lease PID match fails closed when
+  `process_starttime` is unavailable (unknown ≠ same process).
+- **`set_verified` force hatch (Round 14):** `force=True` requires an
+  in-process capability from `enable_force_verified_for_tests()` (tests
+  only); env `OMG_INTERNAL_FORCE_VERIFIED` alone is insufficient (deprecated
+  no-op). Not exposed on any CLI argparse path.
+- **Review gate workspace binding (Round 2 / R2-2):** `omg review`
+  records `workspace_fp` (`_implement_workspace_fingerprint`) on every
+  structured review stamp; `stage_review_is_clean` requires it to match the
+  current workspace (missing on schema_version≥2 stamps → fail-closed).
+- **QA gate workspace binding (Round 2 / R2-1):** clean UltraQA cycles
+  also record `implement_workspace_fp`; `stage_qa_is_clean` rechecks it
+  alongside `product_hash` so non-`omg_cli/**/*.py` product-surface drift
+  after QA went clean cannot reach acceptance.
+- **Blocked recovery gates (Round 2 / R2-3):** destination gates run for
+  `blocked→implement` / `ralplan` / `review` / `qa` — e.g.
+  `blocked→review` still requires implement work evidence;
+  `blocked→qa` still requires a fresh clean review stamp; re-entering
+  `review` from `blocked` invalidates stale review/QA stamps.
+- **Interview trusted path envelope (Round 2 / R2-4):** `_interview_complete`
+  requires a CLI-owned `interview.json` complete envelope (writer, run_id,
+  spec artifact + content hash) — a bare `status=complete` string alone
+  no longer unlocks `ralplan`.
+- **Consensus stamp-only (Round 2 / R2-5):** `_consensus_ready` trusts only
+  CLI `ralplan.json` with `writer`, `run_id`, and `accepted=true`;
+  `status.ralplan_consensus` and artifact markers alone no longer unlock
+  `implement`.
+- **Implement-gate fingerprint entrypoints (Round 3 / R3-1):**
+  `_implement_workspace_fingerprint` now includes `scripts/` and `bin/` so
+  install/CLI surface edits register as implement work and bind review/QA
+  freshness rechecks — previously those paths were omitted from the curated
+  fingerprint tuple.
+- **Ralplan stamp invalidation on replan (Round 4 / R4-1):** any
+  non-interview re-entry into `ralplan` (including `review→ralplan`,
+  `qa→ralplan`, and `blocked→ralplan`) invalidates the prior accepted
+  `ralplan.json` stamp and review/QA stamps — a stale accepted consensus
+  can no longer silently unlock `implement` without a fresh ralplan cycle.
+- **Interview attach-run for autopilot (Round 4 / R4-2):** added
+  `omg interview start --attach-run RUN_ID` to seed CLI interview envelopes
+  under an existing autopilot run in phase `interview` (task defaults to
+  the run goal; fail-closed on phase/mode mismatch or task/goal disagreement).
+- **Ralplan invalidation cleared on fresh accept (Round 5 / R5-1):** writing
+  `accepted=true` to CLI `ralplan.json` (legacy + strict-v2 paths) clears
+  `invalidated` / `invalidated_reason` / `invalidated_at`; a new strict-v2
+  consensus attempt also clears stale invalidation at cycle start so a prior
+  replan fence does not block a genuinely fresh ralplan round.
+- **Ralplan invalidation on any re-entry with prior stamp (Round 5 / R5-2):**
+  entering `ralplan` when a CLI-owned `ralplan.json` already exists for the
+  run_id invalidates that stamp and review/QA stamps regardless of `src` —
+  closes `review→blocked→interview→ralplan` bypass where a detour through
+  `interview` made `src=="interview"` again while a stale accepted stamp
+  still sat on disk; first `interview→ralplan` with no stamp remains a no-op.
+- **Interview attach-run re-authorize under lease (Round 5 / R5-3):**
+  `omg interview start --attach-run` re-loads the run and re-checks
+  mode/phase/non-terminal/goal match after acquiring the execution lease,
+  closing a TOCTOU race between pre-lease attach checks and the interview
+  envelope write.
+- **Embedded ralplan bound to frozen autopilot goal + phase (Round 5 / R5-4):**
+  `omg ralplan * --run RUN` against an autopilot run requires
+  `phase==ralplan` and a `--run` goal that exactly matches the frozen run
+  goal; `_consensus_ready` also rejects accepted stamps whose `goal` field
+  disagrees with the current run goal (defense in depth).
+- **Ralplan history reset on fresh replan (Round 6 / R6-1):** starting a
+  new strict-v2 consensus attempt against a state left `invalidated: True`
+  by a prior replan now calls `_reset_for_fresh_cycle` (wipes `history`,
+  per-session `attempts`, and `round`) so `first_round` starts at 1 and the
+  configured `max_rounds` ceiling is available again — previously, stale
+  history past the ceiling pinned every future replan into an immediate block
+  with zero stages executed.
+- **Attached interview close resume includes `--run` (Round 6 / R6-2):**
+  `omg interview close` on an autopilot-attached interview
+  (`--attach-run`) now sets `resume_command` to
+  `omg ralplan <goal> --run <run_id>` instead of a standalone
+  `omg ralplan <goal>` that would spawn an orphaned ralplan run.
+- **Attached interview close resume via autopilot transition (Round 7 / R7-0):**
+  attach-mode `resume_command` now chains
+  `omg autopilot transition --run <run_id> --phase ralplan` before
+  `omg ralplan <goal> --run <run_id>` — the phase sidecar is still
+  `interview` at close time, so a bare embedded ralplan would be rejected
+  (phase mismatch) until the transition advances the FSM.
+- **Cancelled not reachable via generic transition (Round 7 / R7-1):**
+  `cancelled` is removed from `MANUAL_TRANSITIONS` / `legal_next`; only
+  `omg cancel` / `cancel_run` may enter the terminal `cancelled` phase —
+  `transition(..., "cancelled")` raises cleanly without mutating state.
+- **ralplan_epoch gates re-entry invalidation (Round 7 / R7-2):** a
+  monotonic `ralplan_epoch` on autopilot state drives quality/consensus
+  invalidation on re-entry to `ralplan` (epoch ≥ 1), not stamp existence —
+  the first `interview→ralplan` handoff (epoch 0→1) remains a no-op even
+  when no stamp exists yet; `--skip-interview` starts at epoch 1.
+- **Consensus stamp requires matching non-empty goal (Round 7 / R7-3):**
+  `_consensus_ready` for autopilot runs requires a non-empty string `goal`
+  on the CLI `ralplan.json` stamp that exactly matches the frozen run goal
+  (missing/null/empty → fail-closed).
+- **Reject legacy schema for autopilot ralplan embedding (Round 7 / R7-4):**
+  `omg ralplan * --run RUN` against `mode=autopilot` rejects non-strict-v2
+  run schemas — autopilot embedding no longer enters the legacy-v1 FSM path.
+- **Fresh replan session reset (Round 8 / R8-1):** `_reset_for_fresh_cycle`
+  now mints new `session_id` UUIDs for planner/architect/critic (not reused
+  with `attempts` zeroed) so a fresh strict-v2 replan cycle does not inherit
+  stale session identity from the prior round.
+- **Ralplan embedding cancel race (Round 8 / R8-2):** `_authorize_autopilot_embedding`
+  rejects terminal autopilot statuses and pending cancellation requests;
+  strict-v2 embedding re-authorizes immediately before writing
+  `accepted=true` so a concurrent `omg cancel` cannot lose the race to
+  acceptance.
+- **Interview sidecar cancel race (Round 8 / R8-3):** interview attach/close
+  paths call `_assert_run_writable` under the execution lease immediately
+  before every sidecar write — terminal runs and pending cancellation
+  requests fail closed without writing `interview.json` or spec artifacts.
+- **Missing ralplan_epoch conservative migration (Round 9 / R9-1):**
+  pre-R7 ``autopilot.json`` sidecars that lack ``ralplan_epoch`` no longer
+  default to ``0`` on load — only a run still at ``phase==interview`` with
+  no CLI ``ralplan.json`` stamp and ``cycles.ralplan==0`` migrates to ``0``;
+  every other missing-epoch run migrates to at least ``1`` so re-entry
+  invalidates stale consensus/quality stamps. Present values must be plain
+  ``int >= 0`` (bool/float/negative rejected).
+- **Terminal/cancel gates on transition/resume (Round 9 / R9-2):**
+  ``transition()`` re-checks ``status.json`` under the execution lease and
+  refuses sidecar writes when the run is terminal or has a pending
+  cancellation request; ``omg autopilot run --resume`` prefers terminal
+  ``status.json`` over a stale non-terminal sidecar ``phase``;
+  ``status_autopilot`` returns empty ``legal_next`` for terminal runs.
+- **Idempotent attach interview resume (Round 9 / R9-3):** attach-mode
+  ``omg interview close`` sets ``resume_command`` to
+  ``omg autopilot run --resume <run_id>`` (single idempotent entry); re-close
+  of an already-complete interview migrates stale two-step resume commands on
+  disk to the current form.
+- **Consensus stamp strict-v2 schema (Round 10 / R10-1):**
+  ``_consensus_ready`` requires ``schema_version==2`` and
+  ``lifecycle_version==2`` on CLI ``ralplan.json`` (fail-closed if missing
+  or wrong) — autopilot only embeds strict-v2 RALPLAN.
+- **Interview writable assert on all sidecar saves (Round 10 / R10-2):**
+  ``answer_interview``, ``pressure_pass_interview``, and non-attach
+  ``start_interview`` reload the run under the execution lease and call
+  ``_assert_run_writable`` before ``_save`` (same cancel/terminal gate as
+  attach/close).
+- **Ralplan re-authorize before each sidecar save (Round 10 / R10-3):**
+  strict-v2 embedded ralplan calls ``_assert_autopilot_still_writable``
+  immediately before every ``save_ralplan_state`` (not only the accept
+  write) so a mid-round ``omg cancel`` cannot land a history/stage save
+  on a cancelled run.
+- **Resume preflight advance completed interview (Round 11 / R11-1):**
+  ``run_autopilot`` advances a completed interview to ralplan before any
+  Grok launch so ``--resume`` does not spawn an unnecessary interview
+  session.
+- **Stricter missing ``ralplan_epoch`` migration (Round 11 / R11-2):**
+  migrate missing epoch to ``0`` only when phase is interview, no CLI
+  ralplan stamp, ``cycles.ralplan==0``, history has no post-interview
+  phases (missing/corrupt history fails closed to >=1), and no clean
+  review/QA stamps or implementation receipt; otherwise migrate to >=1.
+  Persists ``ralplan_epoch_source`` (``native`` / ``migrated``).
+- **Refuse grok launch on cancel (Round 11 / R11-3):**
+  ``_launch_grok`` / resume launch re-checks ``status.json`` and pending
+  ``cancel.request.json`` and refuses Popen when the run is terminal or
+  has a pending cancellation request.
+- **Refuse bare ``omg accept`` for autopilot (Round 12 / R12-1):**
+  ``cmd_accept`` refuses autopilot-mode runs (directs operators to
+  ``omg autopilot complete``); ``set_verified`` requires sidecar
+  ``phase==acceptance`` for autopilot (fail-closed unless force hatch).
+- **Implementation receipts require lease ``invocation_id`` (Round 12 / R12-2):**
+  ``stamp_implementation_receipt`` writes the active execution-lease id;
+  ``read_implementation_receipt`` rejects missing/empty ``invocation_id``
+  so a hand-written ``writer=omg-cli`` file cannot forge the gate.
+- **Exclusive autopilot driver flock (Round 12 / R12-3):**
+  ``run_autopilot`` holds a non-blocking exclusive flock on
+  ``autopilot.driver.lock`` for the whole invocation so concurrent
+  ``--resume`` cannot double-launch Grok.
+- **Linearize grok spawn under transition_guard (Round 13):**
+  cancel check + ``Popen`` + pid publish run under a short
+  ``transition_guard`` so cancel cannot miss a newly spawned Grok;
+  kill the child if pid publish fails.
+- **Force verified process-private only (Round 14 / R14-1):**
+  ``set_verified(force=True)`` requires ``enable_force_verified_for_tests()``;
+  env alone does not unlock force.
+- **Implementation receipts + live lease binder (Round 14 / R14-2):**
+  ``stamp_implementation_receipt`` requires a live ``ExecutionLease`` and
+  rebinds ``implement_receipt_binder``; implement entry clears the binder
+  so a hand-copied receipt cannot unlock the next cycle.
+- **Refuse spawn on live leader pid (Round 14 / R14-3):**
+  resume/spawn refuses when ``pid.json`` still matches a live leader
+  (PID + starttime); also refuses a live PID without starttime (do not
+  clear/spawn).
+- **Require starttime for pid publication (Round 14 / R14-4):**
+  ``write_pid_metadata`` fails closed without starttime; fanout kills the
+  worker if publish fails after spawn.
+- **Authority nonce + phase bind accept/verified (Round 14 / R14-5):**
+  ``authority_nonce`` / ``authority_phase`` bind ``status.json`` ↔
+  ``autopilot.json``; bare ``omg accept`` refused whenever the autopilot
+  sidecar exists; ``set_verified`` requires matching nonce and
+  ``authority_phase==acceptance``. Residual: dual-edit of both files under
+  a writable ``.omg/state`` / OS write-deny still out of scope.
+- **Tri-state PID identity UNKNOWN refuse (Round 15 / R15-1):**
+  live-leader spawn classifies ``MATCH`` / ``MISMATCH`` / ``UNKNOWN``;
+  ``UNKNOWN`` (alive + recorded starttime + ``process_starttime`` probe
+  ``None``) refuses spawn and does not clear ``pid.json`` (unknown ≠
+  reclaimable).
+- **Stamp requires target-run lease (Round 15 / R15-2):**
+  ``stamp_implementation_receipt`` binds via ``_require_current_lease``
+  (lease root/run must match the stamp target), refuses terminal /
+  cancel-pending, and requires autopilot ``phase==implement`` when the
+  sidecar exists — a foreign run's live lease cannot stamp this run.
+- **Ralph resume live-leader gate (Round 15 / R15-3):**
+  ``modes._launch_grok`` / ralph ``run_mode`` resume share
+  ``prepare_leader_spawn`` with autopilot — refuse MATCH / UNKNOWN /
+  missing-starttime; clear only DEAD / MISMATCH stale leaders.
+- **Fanout kill prior workers on publish fail (Round 15 / R15-4):**
+  when a later worker's ``pid.json`` publish fails after ``Popen``, kill
+  and reap all earlier workers in the batch, persist failure evidence,
+  and mark the run failed (no orphan batch).
+
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —
   not blockers for production path; full OMX 33-op not claimed.
@@ -21,6 +317,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Host Stop veto (not feasible on Grok today).
 - Full OMC semantic LSP proxy (host-owned `.lsp.json` registration ships in 0.6.0;
   OMG does not claim host health or proxy hover/rename/goto operations).
+- StageEvidenceEnvelope v3 / full ResumeBundle / autopilot cross-file WAL (from
+  external Pro+GitHub review) — Round 1 landed partial `resume_bundle` v1 +
+  atomic single-file writes; full envelope + WAL deferred.
 
 ## [0.7.4] - 2026-08-01
 

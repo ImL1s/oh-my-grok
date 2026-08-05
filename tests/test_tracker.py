@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -7,6 +8,7 @@ from omg_cli.contracts.tracker_contract import make_role_receipt
 from omg_cli.runtime_events import normalize_lifecycle_event
 from omg_cli.tracker import (
     TrackerLeaseBusy,
+    _default_process_identity_matches,
     acquire_tracker_lease,
     load_tracker_projection,
     load_spawn_receipt_pair,
@@ -116,6 +118,20 @@ def test_stalled_primary_takeover_is_single_winner_and_hud_lease_is_separate(tmp
     )
     assert hud["owner_token"] == "hud-owner"
     assert primary["owner_token"] != hud["owner_token"]
+
+
+def test_default_process_identity_matches_fails_closed_when_starttime_unavailable(
+    monkeypatch,
+) -> None:
+    live_pid = os.getpid()
+    monkeypatch.setattr("omg_cli.state.process_starttime", lambda _pid: None)
+    # Fail-closed: a live PID with no recoverable start time is unknown
+    # identity, not an assumed match (prevents PID-reuse false positives).
+    assert _default_process_identity_matches(live_pid, "any-identity") is False
+
+    monkeypatch.setattr("omg_cli.state.process_starttime", lambda _pid: "start-a")
+    assert _default_process_identity_matches(live_pid, "start-a") is True
+    assert _default_process_identity_matches(live_pid, "start-b") is False
 
 
 def test_reconciliation_reports_missing_child_until_projected(tmp_path) -> None:

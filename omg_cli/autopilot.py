@@ -6,36 +6,67 @@ Does not write verified except via same-process set_verified after acceptance.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping, MutableMapping
 
 from omg_cli.evidence import CLI_WRITER, assert_safe_supervised_parent, validate_identifier
 from omg_cli.state import (
     RunSchema,
+    _atomic_write_json,
     classify_run_schema,
     create_run,
     execution_lease,
+    launch_refused_for_cancel as _launch_refused_for_cancel,
     load_run,
     write_status,
 )
 
+# Authority nonce + authority_phase bind status.json ↔ autopilot.json for
+# accept/verified. OS-level deny of `.omg/state/**` writes is still out of
+# scope; together they make casual dual-edit harder and block mode-flip + bare
+# accept and phase-flip without matching CLI transition markers (nonce +
+# authority_phase). Dual-edit of both files' authority fields remains residual.
 
-# Legal forward edges for strict v2 autopilot phases
-LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
+
+# Edges ``transition()`` may take (machine-callable). ``verified`` is NOT here —
+# it is commit-only via ``complete_with_acceptance`` (same-process acceptance).
+MANUAL_TRANSITIONS: dict[str, frozenset[str]] = {
     "init": frozenset({"interview", "ralplan"}),  # interview skip only if forced clear
-    "interview": frozenset({"ralplan", "blocked", "cancelled"}),
-    "ralplan": frozenset({"implement", "blocked", "cancelled"}),
-    "implement": frozenset({"review", "blocked", "cancelled"}),
-    "review": frozenset({"qa", "rework", "ralplan", "blocked", "cancelled"}),
-    "rework": frozenset({"review", "blocked", "cancelled"}),
-    "qa": frozenset({"acceptance", "ralplan", "rework", "blocked", "cancelled"}),
-    "acceptance": frozenset({"verified", "blocked", "cancelled"}),
+    "interview": frozenset({"ralplan", "blocked"}),
+    "ralplan": frozenset({"implement", "blocked"}),
+    "implement": frozenset({"review", "blocked"}),
+    "review": frozenset({"qa", "rework", "ralplan", "blocked"}),
+    "rework": frozenset({"review", "blocked"}),
+    "qa": frozenset({"acceptance", "ralplan", "rework", "blocked"}),
+    "acceptance": frozenset({"blocked"}),
     "verified": frozenset(),
-    "blocked": frozenset({"interview", "ralplan", "implement", "review", "qa", "cancelled"}),
+    "blocked": frozenset({"interview", "ralplan", "implement", "review", "qa"}),
+    # "cancelled" is a terminal node reachable only via ``omg cancel`` /
+    # ``cancel_run`` (status.json), never as a generic transition() edge —
+    # kept here so LEGAL_TRANSITIONS / introspection still document it.
     "cancelled": frozenset(),
 }
+
+# Conceptual commit-only edges (status may advertise; ``transition()`` never takes them).
+COMMIT_ONLY_TRANSITIONS: dict[str, frozenset[str]] = {
+    "acceptance": frozenset({"verified"}),
+}
+
+# Full phase graph for docs / introspection (= manual ∪ commit-only).
+LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
+    phase: MANUAL_TRANSITIONS.get(phase, frozenset())
+    | COMMIT_ONLY_TRANSITIONS.get(phase, frozenset())
+    for phase in MANUAL_TRANSITIONS
+}
+
+
+logger = logging.getLogger(__name__)
 
 
 class AutopilotError(ValueError):
@@ -57,8 +88,15 @@ def _read_stage_json(path: Path) -> dict[str, Any] | None:
 
 
 def stage_review_is_clean(root: Path | str, run_id: str) -> bool:
-    """True only when CLI-stamped structured_review.json is clean for this run."""
-    from omg_cli.review import review_state_path
+    """True only when CLI-stamped structured_review.json is clean for this run.
+
+    Also rechecks the declared top-level ``diff_hash`` against the diff_hash
+    actually approved by each nested lane stamp (``code_reviewer_stamp`` /
+    ``architect_stamp``) via the same ``evaluate_lane`` comparison the review
+    writer uses. A drift (e.g. on-disk tampering) between the two makes the
+    stamp stale, not clean.
+    """
+    from omg_cli.review import evaluate_lane, review_state_path
 
     data = _read_stage_json(review_state_path(root, run_id))
     if not data:
@@ -69,12 +107,49 @@ def stage_review_is_clean(root: Path | str, run_id: str) -> bool:
         return False
     if data.get("invalidated") is True:
         return False
-    return data.get("clean") is True
+    if data.get("clean") is not True:
+        return False
+    # Bind to the current workspace fingerprint: run_structured_review has
+    # written this on every stamp since schema_version 2, so its absence on
+    # a schema_version>=2 stamp is itself stale/tampered, not legacy — fail
+    # closed rather than trusting a clean flag with no workspace binding.
+    workspace_fp = data.get("workspace_fp")
+    if not workspace_fp:
+        return False
+    try:
+        current_workspace_fp = _implement_workspace_fingerprint(root)
+    except OSError:
+        return False
+    if current_workspace_fp != workspace_fp:
+        return False
+    diff_hash = data.get("diff_hash")
+    cr_stamp = data.get("code_reviewer_stamp")
+    ar_stamp = data.get("architect_stamp")
+    if not diff_hash and cr_stamp is None and ar_stamp is None:
+        # Legacy stamp without any hash/lane fields: keep prior clean-flag-only behavior.
+        return True
+    if not diff_hash or not isinstance(cr_stamp, dict) or not isinstance(ar_stamp, dict):
+        # diff_hash present but lane stamps missing/malformed (or vice versa):
+        # fail closed rather than falling back to legacy clean-flag-only trust.
+        return False
+    cr = evaluate_lane(
+        role="code-reviewer", expected_diff_hash=diff_hash, proposal=None, stamped=cr_stamp
+    )
+    ar = evaluate_lane(
+        role="architect", expected_diff_hash=diff_hash, proposal=None, stamped=ar_stamp
+    )
+    return cr.get("clean") is True and ar.get("clean") is True
 
 
 def stage_qa_is_clean(root: Path | str, run_id: str) -> bool:
-    """True only when CLI-stamped ultraqa.json is clean (never implies verified)."""
-    from omg_cli.qa import qa_state_path
+    """True only when CLI-stamped ultraqa.json is clean (never implies verified).
+
+    Also rechecks the ``product_hash`` recorded on the last clean cycle
+    against a fresh recompute of the current workspace product hash — a
+    drift means the on-disk stamp is stale for the workspace it now claims
+    to describe.
+    """
+    from omg_cli.qa import product_hash, qa_state_path
 
     data = _read_stage_json(qa_state_path(root, run_id))
     if not data:
@@ -85,7 +160,189 @@ def stage_qa_is_clean(root: Path | str, run_id: str) -> bool:
         return False
     if data.get("invalidated") is True:
         return False
-    return data.get("clean") is True and data.get("status") == "clean"
+    if not (data.get("clean") is True and data.get("status") == "clean"):
+        return False
+    cycles = data.get("cycles") or []
+    if cycles and isinstance(cycles[-1], dict):
+        last_cycle = cycles[-1]
+        recorded_hash = last_cycle.get("product_hash")
+        if recorded_hash:
+            try:
+                current_hash = product_hash(root)
+            except OSError:
+                return False
+            if current_hash != recorded_hash:
+                return False
+        # Broader implement-gate fingerprint snapshot (curated non-Python
+        # product surfaces too) recorded at clean-cycle time — drift here
+        # means product/config changed since QA went clean, even when
+        # product_hash's narrower omg_cli/**/*.py view is unaffected.
+        recorded_fp = last_cycle.get("implement_workspace_fp")
+        if recorded_fp:
+            try:
+                current_fp = _implement_workspace_fingerprint(root)
+            except OSError:
+                return False
+            if current_fp != recorded_fp:
+                return False
+    return True
+
+
+# Curated product surfaces for the implement→review work gate. Deliberately
+# broader than ``qa.product_hash`` (which only covers ``omg_cli/**/*.py`` and
+# also backs UltraQA acceptance repair-cycle semantics — this helper must
+# never change that hash's behavior, or ultraqa's "unchanged hash" repair
+# check would silently break). ``omg_cli`` is hashed in full (not just
+# ``*.py``) since it is small enough to be cheap (~200 files).
+_IMPLEMENT_FINGERPRINT_ROOTS: tuple[str, ...] = (
+    "omg_cli",
+    "plugin.json",
+    "hooks",
+    "skills",
+    "agents",
+    "templates",
+    "scripts",
+    "bin",
+)
+
+# Generated/ignored directory names that must never affect the implement-gate
+# fingerprint — mirrors this repo's own ``.gitignore`` cache entries
+# (``__pycache__/``, ``.pytest_cache/``, ``.ruff_cache/``, ``.mypy_cache/``,
+# ``*.egg-info/``). Without this, merely running tests or importing an
+# ``omg_cli`` module during ``implement`` (which writes/updates ``.pyc``
+# bytecode) would register as "product work" with zero source edits.
+_IMPLEMENT_FINGERPRINT_EXCLUDED_DIRS: frozenset[str] = frozenset(
+    {"__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache"}
+)
+
+
+def _is_fingerprint_excluded(rel_parts: tuple[str, ...]) -> bool:
+    """True when a path (relative to root, as ``.parts``) is a generated
+    cache artifact that must be excluded from the implement-gate fingerprint."""
+    for part in rel_parts:
+        if part in _IMPLEMENT_FINGERPRINT_EXCLUDED_DIRS:
+            return True
+        if part.endswith(".egg-info"):
+            return True
+    return bool(rel_parts) and rel_parts[-1].endswith(".pyc")
+
+
+def _implement_workspace_fingerprint(root: Path | str) -> str:
+    """Stable hash of curated product surfaces for the implement→review gate.
+
+    A separate helper from ``qa.product_hash`` on purpose: implementation
+    work confined to non-Python product surfaces (``plugin.json``, ``hooks/``,
+    ``skills/``, ``agents/``, ``templates/``, ``scripts/``, ``bin/``, or non-``.py`` files under
+    ``omg_cli/``) must still register as work here, without touching
+    ``qa.product_hash``'s narrower semantics used for QA/acceptance. Generated
+    caches (``__pycache__/``, ``.pytest_cache/``, ``.ruff_cache/``,
+    ``.mypy_cache/``, ``*.egg-info/``, ``*.pyc``) are excluded — see
+    ``_is_fingerprint_excluded`` — since they mutate from merely running
+    code/tests, not from durable product edits.
+    """
+    root = Path(root).resolve()
+    files: set[Path] = set()
+    any_root_present = False
+    for name in _IMPLEMENT_FINGERPRINT_ROOTS:
+        target = root / name
+        if not target.exists():
+            continue
+        any_root_present = True
+        if target.is_file():
+            files.add(target)
+        elif target.is_dir():
+            for fp in target.rglob("*"):
+                if not fp.is_file():
+                    continue
+                if _is_fingerprint_excluded(fp.relative_to(root).parts):
+                    continue
+                files.add(fp)
+    if not any_root_present:
+        # Fixture/non-product root (e.g. unit-test tmp_path with none of the
+        # curated roots present): fall back to hashing every file so
+        # fingerprint drift is still detected, mirroring qa.product_hash's
+        # own temp-fixture fallback.
+        skip = {".omg", ".git"}
+        for fp in root.rglob("*"):
+            if fp.is_file() and not fp.is_symlink():
+                rel_parts = fp.relative_to(root).parts
+                if any(part in skip for part in rel_parts):
+                    continue
+                if _is_fingerprint_excluded(rel_parts):
+                    continue
+                files.add(fp)
+    h = hashlib.sha256()
+    for fp in sorted(files):
+        if fp.is_symlink():
+            continue
+        try:
+            rel = str(fp.relative_to(root))
+        except ValueError:
+            rel = str(fp)
+        h.update(rel.encode("utf-8"))
+        h.update(b"\0")
+        try:
+            h.update(fp.read_bytes())
+        except OSError:
+            continue
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def _implementation_work_evidence(
+    root: Path,
+    run_id: str,
+    state: Mapping[str, Any],
+    ev: Mapping[str, Any],
+    *,
+    break_glass: bool,
+) -> tuple[bool, str | None]:
+    """True + optional gate_audit label when implement→review has proof of work."""
+    stored_fp = state.get("implement_workspace_fp")
+    current_fp = _implement_workspace_fingerprint(root)
+    if stored_fp is not None and current_fp != stored_fp:
+        return True, None
+    from omg_cli.implementation import read_implementation_receipt
+
+    on_disk_receipt = read_implementation_receipt(root, run_id)
+    if isinstance(on_disk_receipt, dict):
+        # Trusted CLI-side stamp: require (1) implement_expected_* match,
+        # (2) implement_receipt_binder present with matching content_sha256
+        # (written only by stamp_implementation_receipt under lease), and
+        # (3) content_sha256 == current workspace fingerprint.
+        # Implement entry clears binder to null so copying expected_* onto a
+        # hand-written receipt alone cannot unlock until a real stamp.
+        # Residual: dual hand-edit of autopilot.json + implementation.json
+        # under writable .omg/state (R14-5 / host deny) — not claimed closed.
+        expected_inv = state.get("implement_expected_invocation_id")
+        expected_gen = state.get("implement_expected_lease_generation")
+        binder = state.get("implement_receipt_binder")
+        receipt_fp = on_disk_receipt.get("content_sha256")
+        if (
+            isinstance(expected_inv, str)
+            and expected_inv.strip()
+            and isinstance(expected_gen, int)
+            and not isinstance(expected_gen, bool)
+            and expected_gen >= 1
+            and isinstance(binder, dict)
+            and binder.get("invocation_id") == expected_inv
+            and binder.get("lease_generation") == expected_gen
+            and binder.get("content_sha256") == receipt_fp
+            and on_disk_receipt.get("invocation_id") == expected_inv
+            and on_disk_receipt.get("lease_generation") == expected_gen
+            and receipt_fp == current_fp
+        ):
+            return True, "cli_receipt:implementation.json"
+    receipt = ev.get("implementation_receipt")
+    if isinstance(receipt, dict) and receipt.get("writer") == CLI_WRITER:
+        if break_glass:
+            # Inline evidence is caller-supplied JSON, not a verified on-disk
+            # CLI stamp — writer=="omg-cli" here is unauthenticated and
+            # trivially forgeable, so it is audited the same as no_change.
+            return True, "break_glass:implementation_receipt"
+    if ev.get("no_change_reason") and break_glass:
+        return True, "break_glass:no_change"
+    return False, None
 
 
 def invalidate_quality_stages(root: Path | str, run_id: str, *, reason: str) -> None:
@@ -105,11 +362,98 @@ def invalidate_quality_stages(root: Path | str, run_id: str, *, reason: str) -> 
         data["writer"] = CLI_WRITER
         if "status" in data and data.get("status") == "clean":
             data["status"] = "invalidated"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        _atomic_write_json(path, data)
+
+
+# Phases that prove a run has left the genuine first-interview handoff.
+# Presence anywhere in history (or on-disk quality/impl receipts) means a
+# missing ``ralplan_epoch`` must migrate to >=1, never 0.
+_POST_INTERVIEW_PHASES: frozenset[str] = frozenset(
+    {"ralplan", "implement", "review", "rework", "qa", "acceptance"}
+)
+
+
+def _history_has_post_interview_phases(history: Any) -> bool | None:
+    """Return whether history lists a post-interview phase.
+
+    ``None`` means history is missing/unreadable — callers must fail closed
+    (migrate to >=1). ``False`` means a readable list with no such phases.
+    """
+    if not isinstance(history, list):
+        return None
+    for entry in history:
+        if not isinstance(entry, dict):
+            return None
+        phase = entry.get("phase")
+        if isinstance(phase, str) and phase in _POST_INTERVIEW_PHASES:
+            return True
+    return False
+
+
+def _normalize_ralplan_epoch(
+    state: MutableMapping[str, Any], root: Path | str, run_id: str
+) -> int:
+    """Return a trustworthy ``ralplan_epoch``, migrating pre-R9 state that
+    predates the field (added in da0fc52) without blindly treating a
+    missing value as ``0``.
+
+    ``ralplan_epoch`` is the re-entry gate that decides whether the next
+    ``next_phase == "ralplan"`` transition is the harmless first
+    interview→ralplan handoff (epoch==0 → no-op) or a real replan that must
+    invalidate stale review/QA/consensus stamps (epoch>=1). A run created
+    before this field existed but that already advanced past interview —
+    e.g. it already has an accepted CLI-owned ``ralplan.json`` stamp, or
+    ``cycles.ralplan`` is already nonzero — must never be silently treated
+    as epoch==0 on load; that would resurrect the no-op path and let a
+    stale accepted stamp unlock implement again without invalidation.
+
+    Missing-epoch migration to ``0`` requires ALL of:
+    - ``phase == interview``
+    - no CLI-owned ``ralplan.json`` stamp
+    - ``cycles.ralplan == 0``
+    - readable history with no post-interview phases (missing/corrupt
+      history fails closed to >=1)
+    - no on-disk clean review/QA stamp and no CLI implementation receipt
+
+    Sets ``ralplan_epoch_source`` on ``state`` to ``"native"`` (field was
+    present) or ``"migrated"`` (value inferred) for the caller to persist.
+    """
+    raw = state.get("ralplan_epoch")
+    if raw is not None:
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            raise AutopilotError(
+                f"corrupt autopilot state: ralplan_epoch must be int >= 0, "
+                f"got {raw!r}"
+            )
+        state["ralplan_epoch_source"] = "native"
+        return raw
+
+    from omg_cli.implementation import read_implementation_receipt
+    from omg_cli.ralplan import ralplan_state_path
+
+    root = Path(root).resolve()
+    cycles = state.get("cycles") or {}
+    ralplan_cycles = int(cycles.get("ralplan") or 0)
+    stamp = _read_stage_json(ralplan_state_path(root, run_id))
+    has_cli_stamp = bool(
+        stamp and stamp.get("writer") == CLI_WRITER and stamp.get("run_id") == run_id
+    )
+    history_post = _history_has_post_interview_phases(state.get("history"))
+    has_quality_or_impl_receipt = (
+        stage_review_is_clean(root, run_id)
+        or stage_qa_is_clean(root, run_id)
+        or read_implementation_receipt(root, run_id) is not None
+    )
+    state["ralplan_epoch_source"] = "migrated"
+    if (
+        str(state.get("phase") or "init") == "interview"
+        and not has_cli_stamp
+        and ralplan_cycles == 0
+        and history_post is False
+        and not has_quality_or_impl_receipt
+    ):
+        return 0
+    return max(1, ralplan_cycles or 1)
 
 
 def autopilot_state_path(root: Path | str, run_id: str) -> Path:
@@ -125,19 +469,19 @@ def autopilot_state_path(root: Path | str, run_id: str) -> Path:
     )
 
 
+def _new_authority_nonce() -> str:
+    return str(uuid.uuid4())
+
+
 def _save(root: Path, run_id: str, state: dict[str, Any], lease: Any) -> None:
     lease.assert_current()
     path = autopilot_state_path(root, run_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
     state = dict(state)
     state["writer"] = CLI_WRITER
     state["updated_at"] = _utc_now()
     state["execution_generation"] = getattr(lease, "generation", None)
     state["execution_owner_invocation_id"] = getattr(lease, "invocation_id", None)
-    path.write_text(
-        json.dumps(state, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    _atomic_write_json(path, state)
 
 
 def load_autopilot(root: Path | str, run_id: str) -> dict[str, Any]:
@@ -150,8 +494,95 @@ def load_autopilot(root: Path | str, run_id: str) -> dict[str, Any]:
     return data
 
 
+def assert_autopilot_accept_authority(
+    root: Path | str,
+    run_id: str,
+    *,
+    status: Mapping[str, Any] | None = None,
+    require_acceptance_phase: bool = True,
+) -> dict[str, Any]:
+    """Fail closed when autopilot accept/verified authority does not bind.
+
+    Triggered when the autopilot sidecar exists, ``status.mode==autopilot``, or
+    authority markers are present on status. Requires a CLI-written sidecar with
+    matching ``run_id``, matching authority nonce vs status, and (unless skipped)
+    ``phase`` / ``authority_phase`` / ``autopilot_authority_phase`` all
+    ``acceptance``. Hand-editing ``phase`` alone leaves ``authority_phase`` at
+    the prior CLI value and is refused.
+    """
+    root = Path(root).resolve()
+    run_id = validate_identifier(run_id, label="run_id")
+    run = dict(status) if status is not None else (load_run(root, run_id) or {})
+    sidecar_path = autopilot_state_path(root, run_id)
+    needs_check = (
+        sidecar_path.is_file()
+        or run.get("mode") == "autopilot"
+        or bool(run.get("autopilot_authority_nonce"))
+        or bool(run.get("autopilot_authority_phase"))
+    )
+    if not needs_check:
+        return {}
+
+    try:
+        ap = load_autopilot(root, run_id)
+    except AutopilotError as exc:
+        raise PermissionError(
+            f"autopilot accept/verified authority check failed for "
+            f"run_id={run_id!r}: {exc}"
+        ) from exc
+    if str(ap.get("run_id") or "") != run_id:
+        raise PermissionError(
+            "autopilot sidecar run_id mismatch for "
+            f"run_id={run_id!r} (got {ap.get('run_id')!r})"
+        )
+    if require_acceptance_phase:
+        phase = str(ap.get("phase") or "")
+        side_auth_phase = str(ap.get("authority_phase") or "")
+        status_auth_phase = str(run.get("autopilot_authority_phase") or "")
+        if phase != "acceptance":
+            raise PermissionError(
+                "refusing set_verified for autopilot run unless "
+                f"autopilot phase is 'acceptance' (got {phase!r}); "
+                f"use omg autopilot complete for run_id={run_id!r}"
+            )
+        if side_auth_phase != "acceptance" or status_auth_phase != "acceptance":
+            raise PermissionError(
+                "refusing set_verified for autopilot run unless CLI "
+                f"authority_phase is 'acceptance' "
+                f"(sidecar={side_auth_phase!r}, "
+                f"status.autopilot_authority_phase={status_auth_phase!r}); "
+                f"hand-edited phase without CLI transition is refused "
+                f"for run_id={run_id!r}"
+            )
+    side_nonce = ap.get("authority_nonce")
+    status_nonce = run.get("autopilot_authority_nonce")
+    if (
+        not isinstance(side_nonce, str)
+        or not side_nonce
+        or not isinstance(status_nonce, str)
+        or not status_nonce
+        or side_nonce != status_nonce
+    ):
+        raise PermissionError(
+            "autopilot authority_nonce mismatch between sidecar and "
+            f"status.autopilot_authority_nonce for run_id={run_id!r}"
+        )
+    return ap
+
+
 def assert_legal_transition(src: str, dst: str) -> None:
-    allowed = LEGAL_TRANSITIONS.get(src)
+    """Raise unless ``src → dst`` is a manual ``transition()`` edge.
+
+    Commit-only destinations (``verified``) are rejected here — callers that
+    need the conceptual graph should read ``LEGAL_TRANSITIONS`` /
+    ``COMMIT_ONLY_TRANSITIONS``, not this assert.
+    """
+    if dst in COMMIT_ONLY_TRANSITIONS.get(src, frozenset()):
+        raise AutopilotError(
+            f"commit-only transition {src!r} -> {dst!r} "
+            "(use complete_with_acceptance / omg autopilot complete)"
+        )
+    allowed = MANUAL_TRANSITIONS.get(src)
     if allowed is None:
         raise AutopilotError(f"unknown phase {src!r}")
     if dst not in allowed:
@@ -185,6 +616,7 @@ def start_autopilot(
     run_id = run["run_id"]
     phase = "ralplan" if skip_interview else "interview"
     with execution_lease(root, run_id, intent="autopilot-start") as lease:
+        authority_nonce = _new_authority_nonce()
         state = {
             "writer": CLI_WRITER,
             "schema_version": 2,
@@ -192,10 +624,19 @@ def start_autopilot(
             "run_id": run_id,
             "goal": goal,
             "phase": phase,
+            # Monotonic re-entry counter for the ralplan phase: 0 means the
+            # interview→ralplan handoff hasn't happened yet (skip_interview
+            # starts already past it, at 1). Gates invalidation on
+            # transition() re-entry, not on stamp *existence*.
+            "ralplan_epoch": 1 if skip_interview else 0,
             "cycles": {"review": 0, "qa": 0, "ralplan": 0},
             "history": [{"phase": phase, "at": _utc_now(), "event": "start"}],
             "blocker": None,
             "verified": False,
+            "authority_nonce": authority_nonce,
+            # CLI transition marker (rotated with nonce). Hand-editing ``phase``
+            # alone does not update this — accept/verified require it.
+            "authority_phase": phase,
             "created_at": _utc_now(),
         }
         _save(root, run_id, state, lease)
@@ -206,6 +647,8 @@ def start_autopilot(
             extra={
                 "stage": "autopilot",
                 "autopilot_phase": phase,
+                "autopilot_authority_nonce": authority_nonce,
+                "autopilot_authority_phase": phase,
             },
             lease=lease,
         )
@@ -239,37 +682,105 @@ def transition(
         raise AutopilotError(f"wrong mode: {run.get('mode')!r}")
 
     with execution_lease(root, run_id, intent=f"autopilot-{next_phase}") as lease:
+        # Re-check terminal/cancellation freshly under the lease — the
+        # ``run`` loaded above (pre-lease) can be stale if a concurrent
+        # ``omg cancel`` commits status.json / the cancellation request
+        # between that load and lease acquisition. Fail closed before any
+        # state mutation or sidecar write: a run that has gone terminal
+        # (``omg_cli.state.TERMINAL_STATUSES`` — cancelled/completed/
+        # failed/verified) or has a pending cancellation request must
+        # never accept a further phase transition.
+        from omg_cli.state import TERMINAL_STATUSES, load_cancellation_request
+
+        fresh_run = load_run(root, run_id) or {}
+        fresh_status = str(fresh_run.get("status") or "")
+        if fresh_status in TERMINAL_STATUSES:
+            raise AutopilotError(
+                "autopilot run is terminal under lease; refusing transition: "
+                f"status={fresh_status!r}"
+            )
+        if load_cancellation_request(root, run_id) is not None:
+            raise AutopilotError(
+                "autopilot run has a pending cancellation request; "
+                "refusing transition"
+            )
+
         state = load_autopilot(root, run_id)
         src = str(state.get("phase") or "init")
         assert_legal_transition(src, next_phase)
 
         # Gate by DESTINATION phase (not only specific src) so blocked→qa
         # / blocked→implement cannot skip quality or consensus gates.
+        # Interview/consensus: prefer CLI-owned stamps; bare booleans are
+        # break-glass only (must set evidence.break_glass=true + audit).
+        ev = dict(evidence or {})
+        break_glass = ev.get("break_glass") is True
+        gate_audit: str | None = None
+
         if next_phase == "ralplan":
-            # First entry from interview needs evidence; recovery from later
-            # phases may re-enter ralplan with replan reason.
-            if src == "interview" and not (evidence or {}).get("interview_complete"):
-                raise AutopilotError("no interview gate → no ralplan handoff")
+            # First entry from interview needs a trusted gate; recovery from
+            # later phases may re-enter ralplan with replan reason.
+            if src == "interview":
+                if _interview_complete(root, run_id):
+                    pass
+                elif ev.get("interview_complete") and break_glass:
+                    gate_audit = "break_glass:interview_complete"
+                else:
+                    raise AutopilotError(
+                        "no interview gate → no ralplan handoff "
+                        "(need CLI interview status=complete, or "
+                        "evidence.interview_complete + break_glass=true)"
+                    )
         if next_phase == "implement":
-            if not (evidence or {}).get("consensus"):
-                raise AutopilotError("no consensus → no implementation")
+            if _consensus_ready(root, run_id):
+                pass
+            elif ev.get("consensus") and break_glass:
+                gate_audit = "break_glass:consensus"
+            else:
+                raise AutopilotError(
+                    "no consensus → no implementation "
+                    "(need CLI ralplan accepted / ralplan_consensus, or "
+                    "evidence.consensus + break_glass=true)"
+                )
         if next_phase == "qa":
             if not stage_review_is_clean(root, run_id):
                 raise AutopilotError(
                     "no clean review → no QA "
-                    "(requires CLI-stamped stages/structured_review.json clean=true)"
+                    "(requires CLI-stamped stages/structured_review.json "
+                    "clean=true with a diff_hash fingerprint matching its "
+                    "stamped lanes; stale/drifted diff_hash is rejected)"
                 )
         if next_phase == "acceptance":
             if not stage_qa_is_clean(root, run_id):
                 raise AutopilotError(
                     "no clean QA → no acceptance "
-                    "(requires CLI-stamped stages/ultraqa.json status=clean)"
+                    "(requires CLI-stamped stages/ultraqa.json status=clean "
+                    "with a product_hash fingerprint matching the current "
+                    "workspace; stale/drifted product_hash is rejected)"
                 )
-        if next_phase == "verified":
-            raise AutopilotError(
-                "verified only via complete_with_acceptance (same-process)"
+        if next_phase == "review" and src in {"implement", "blocked"}:
+            # implement→review (and blocked→review recovering from a paused
+            # implement cycle) must not silently pass with zero product
+            # change: require a workspace fingerprint drift since entering
+            # implement, a CLI-writer implementation_receipt, or an audited
+            # break_glass no_change_reason. rework→review is intentionally
+            # excluded — rework already forces a fresh review stamp via the
+            # invalidation below without demanding new workspace evidence.
+            has_work, work_audit = _implementation_work_evidence(
+                root, run_id, state, ev, break_glass=break_glass
             )
-
+            if not has_work:
+                raise AutopilotError(
+                    "no evidence of implementation work → no review "
+                    "(need a workspace fingerprint change since entering "
+                    "implement, a lease-bound CLI implementation receipt "
+                    "with matching implement_receipt_binder, "
+                    "evidence.implementation_receipt with writer=omg-cli + "
+                    "break_glass, or evidence.no_change_reason + "
+                    "break_glass=true)"
+                )
+            if work_audit:
+                gate_audit = work_audit
         if next_phase == "implement":
             # Any (re-)entry into implement produces new, unreviewed product
             # code. Prior clean review/QA stamps must never remain authoritative
@@ -278,12 +789,60 @@ def transition(
             invalidate_quality_stages(
                 root, run_id, reason=f"(re)implement from {src}"
             )
-        if next_phase == "ralplan" and src in {"review", "qa"}:
-            state["cycles"]["ralplan"] = int(state["cycles"].get("ralplan") or 0) + 1
-            # Stale clean stamps must not open QA/acceptance after replan
-            invalidate_quality_stages(
-                root, run_id, reason=f"replan from {src}"
+            # A receipt stamped during a prior implement cycle must not
+            # unlock review for this new cycle just because the workspace
+            # fingerprint happens to still match (e.g. review→ralplan→
+            # implement with no new product changes) — closes the stale-
+            # receipt round-trip. Bind receipts to the current cycle by
+            # invalidating any leftover one on entry.
+            from omg_cli.implementation import invalidate_implementation_receipt
+
+            invalidate_implementation_receipt(
+                root, run_id, reason=f"(re)implement from {src}"
             )
+            # Bind the next CLI implementation receipt to this implement
+            # cycle's live lease. Clear binder so a hand-forged receipt that
+            # merely copies implement_expected_* cannot unlock until
+            # stamp_implementation_receipt writes a fresh binder under lease.
+            state["implement_expected_invocation_id"] = lease.invocation_id
+            state["implement_expected_lease_generation"] = lease.generation
+            state["implement_receipt_binder"] = None
+            state["implement_workspace_fp"] = _implement_workspace_fingerprint(root)
+        if next_phase == "ralplan":
+            # ralplan_epoch is a monotonic re-entry counter, not a stamp
+            # *existence* check — gating on stamp existence (the old
+            # ``_ralplan_stamp_exists`` rule) let a break-glass consensus
+            # path that never wrote a ralplan.json stamp skip invalidation
+            # entirely on replan. epoch==0 means the interview→ralplan
+            # handoff hasn't happened yet (skip_interview starts at 1, past
+            # it already) — that first handoff is a no-op. Every entry after
+            # that (epoch>=1), regardless of ``src`` or stamp existence,
+            # invalidates stale quality/consensus stamps before bumping.
+            # A missing field (pre-R9 state) is migrated conservatively by
+            # ``_normalize_ralplan_epoch`` rather than defaulting to 0 —
+            # blindly treating "missing" as "0" would let a run that
+            # already has an accepted stamp / prior replan cycle re-enter
+            # the no-op branch and skip invalidation.
+            epoch = _normalize_ralplan_epoch(state, root, run_id)
+            if epoch == 0:
+                state["ralplan_epoch"] = 1
+            else:
+                state["cycles"]["ralplan"] = (
+                    int(state["cycles"].get("ralplan") or 0) + 1
+                )
+                # Stale clean stamps must not open QA/acceptance after replan
+                invalidate_quality_stages(
+                    root, run_id, reason=f"replan from {src}"
+                )
+                # A prior accepted ralplan.json stamp must not silently
+                # unlock implement again for this new replan cycle — no-op
+                # when no stamp exists yet (e.g. break-glass consensus path).
+                from omg_cli.ralplan import invalidate_ralplan_consensus
+
+                invalidate_ralplan_consensus(
+                    root, run_id, reason=f"replan from {src}"
+                )
+                state["ralplan_epoch"] = epoch + 1
         if next_phase == "rework":
             state["cycles"]["review"] = int(state["cycles"].get("review") or 0) + 1
             invalidate_quality_stages(
@@ -301,15 +860,16 @@ def transition(
         if src == "qa" and next_phase == "ralplan":
             state["cycles"]["qa"] = int(state["cycles"].get("qa") or 0) + 1
 
+        hist_entry: dict[str, Any] = {
+            "from": src,
+            "phase": next_phase,
+            "reason": reason,
+            "at": _utc_now(),
+        }
+        if gate_audit:
+            hist_entry["gate_audit"] = gate_audit
         state["phase"] = next_phase
-        state["history"] = list(state.get("history") or []) + [
-            {
-                "from": src,
-                "phase": next_phase,
-                "reason": reason,
-                "at": _utc_now(),
-            }
-        ]
+        state["history"] = list(state.get("history") or []) + [hist_entry]
         if next_phase == "blocked":
             state["blocker"] = {"reason": reason or "blocked", "from": src}
             status = "blocked"
@@ -318,6 +878,9 @@ def transition(
         else:
             state["blocker"] = None
             status = "running"
+        authority_nonce = _new_authority_nonce()
+        state["authority_nonce"] = authority_nonce
+        state["authority_phase"] = next_phase
         _save(root, run_id, state, lease)
         write_status(
             root,
@@ -327,6 +890,8 @@ def transition(
                 "stage": "autopilot",
                 "autopilot_phase": next_phase,
                 "blocker": state.get("blocker"),
+                "autopilot_authority_nonce": authority_nonce,
+                "autopilot_authority_phase": next_phase,
             },
             lease=lease,
         )
@@ -343,12 +908,17 @@ def _sync_autopilot_verified(
     """Mark autopilot phase verified + align status.autopilot_phase (lease held).
 
     Does not re-commit verified status (use set_verified first when needed).
+    Rotates authority_nonce + authority_phase on both sidecar and status under
+    the lease.
     """
     from omg_cli.state import merge_status_fields
 
     state = load_autopilot(root, run_id)
+    authority_nonce = _new_authority_nonce()
     state["phase"] = "verified"
     state["verified"] = True
+    state["authority_nonce"] = authority_nonce
+    state["authority_phase"] = "verified"
     state["history"] = list(state.get("history") or []) + [
         {
             "phase": "verified",
@@ -364,6 +934,8 @@ def _sync_autopilot_verified(
             "stage": "autopilot",
             "autopilot_phase": "verified",
             "blocker": None,
+            "autopilot_authority_nonce": authority_nonce,
+            "autopilot_authority_phase": "verified",
         },
         lease=lease,
     )
@@ -411,6 +983,20 @@ def complete_with_acceptance(
             f"acceptance only from acceptance phase (got {phase!r})"
         )
 
+    # Bind accept/verified to CLI transition markers (authority nonce).
+    # Phase==verified short-circuit above already returned; for acceptance
+    # (and verified-but-not-yet-synced) require matching nonce.
+    if phase == "acceptance":
+        try:
+            assert_autopilot_accept_authority(
+                root,
+                run_id,
+                status=run_pre,
+                require_acceptance_phase=True,
+            )
+        except PermissionError as exc:
+            raise AutopilotError(str(exc)) from exc
+
     with execution_lease(root, run_id, intent="autopilot-accept") as lease:
         state = load_autopilot(root, run_id)
         phase2 = str(state.get("phase") or "")
@@ -422,6 +1008,16 @@ def complete_with_acceptance(
 
         if already and phase2 in ("acceptance", "verified"):
             # omg accept already verified; do not re-run freeze_and_run.
+            if phase2 == "acceptance":
+                try:
+                    assert_autopilot_accept_authority(
+                        root,
+                        run_id,
+                        status=run_now,
+                        require_acceptance_phase=True,
+                    )
+                except PermissionError as exc:
+                    raise AutopilotError(str(exc)) from exc
             return _sync_autopilot_verified(
                 root,
                 run_id,
@@ -433,6 +1029,16 @@ def complete_with_acceptance(
             raise AutopilotError(
                 f"acceptance only from acceptance phase (got {phase2!r})"
             )
+
+        try:
+            assert_autopilot_accept_authority(
+                root,
+                run_id,
+                status=run_now,
+                require_acceptance_phase=True,
+            )
+        except PermissionError as exc:
+            raise AutopilotError(str(exc)) from exc
 
         prd_obj: dict[str, Any] | None = dict(prd) if prd is not None else None
         if prd_obj is None:
@@ -550,9 +1156,22 @@ def set_awaiting_confirmation(
 
 
 def status_autopilot(root: Path | str, run_id: str) -> dict[str, Any]:
+    from omg_cli.state import TERMINAL_STATUSES
+
     state = load_autopilot(root, run_id)
     run = load_run(root, run_id) or {}
-    return {
+    phase = str(state.get("phase") or "")
+    run_status = str(run.get("status") or "")
+    # A terminal run (cancelled/completed/failed/verified) has no legal next
+    # phase — the sidecar's ``phase`` field alone must never advertise a
+    # transition that ``transition()`` will now refuse under lease.
+    if run_status in TERMINAL_STATUSES:
+        legal_next: list[str] = []
+        commit_only_next: list[str] = []
+    else:
+        legal_next = sorted(MANUAL_TRANSITIONS.get(phase, frozenset()))
+        commit_only_next = sorted(COMMIT_ONLY_TRANSITIONS.get(phase, frozenset()))
+    out: dict[str, Any] = {
         "run_id": run_id,
         "phase": state.get("phase"),
         "goal": state.get("goal"),
@@ -560,8 +1179,17 @@ def status_autopilot(root: Path | str, run_id: str) -> dict[str, Any]:
         "blocker": state.get("blocker"),
         "verified": bool(run.get("verified") or state.get("verified")),
         "run_status": run.get("status"),
-        "legal_next": sorted(LEGAL_TRANSITIONS.get(str(state.get("phase")), frozenset())),
+        # Only edges ``transition()`` can take — never advertise commit-only
+        # ``verified`` as a manual next phase (use terminal_action instead).
+        "legal_next": legal_next,
     }
+    if commit_only_next:
+        out["commit_only_next"] = commit_only_next
+        out["terminal_action"] = "omg autopilot complete"
+    gate = run.get("autopilot_gate_failure")
+    if isinstance(gate, dict) and gate:
+        out["gate_failure"] = gate
+    return out
 
 
 # Phase → skill body for outer-driver prompt injection
@@ -675,26 +1303,149 @@ def build_phase_prompt(
 
 
 def _interview_complete(root: Path, run_id: str) -> bool:
-    from omg_cli.stop_gate import _read_interview_status
+    """True only when a CLI-owned interview.json for *this* run_id records a
+    genuine complete envelope — not a bare ``status`` string, which is
+    trivially forgeable by writing an untrusted ``interview.json``.
 
-    status = _read_interview_status(root, run_id)
-    return status == "complete"
+    Mirrors ``interview.py``'s own envelope validation for status=="complete"
+    (CLI writer, run_id binding, and a matching CLI-stamped interview-spec
+    artifact whose content hash/writer/run_id all check out) without
+    requiring the *autopilot* run's own mode to be ``interview`` — autopilot
+    embeds interview state under its own run_id rather than reusing a
+    separate ``omg interview start`` run.
+    """
+    from omg_cli.interview import interview_spec_path, interview_state_path
+
+    root_path = Path(root).resolve()
+    data = _read_stage_json(interview_state_path(root_path, run_id))
+    if not data:
+        return False
+    if data.get("writer") != CLI_WRITER:
+        return False
+    if data.get("run_id") != run_id:
+        return False
+    if data.get("status") != "complete":
+        return False
+    spec_rel = data.get("spec_path")
+    if not spec_rel:
+        return False
+    expected_path = interview_spec_path(root_path, run_id)
+    if str(spec_rel) != str(expected_path.relative_to(root_path)):
+        return False
+    artifact = _read_stage_json(expected_path)
+    if not artifact:
+        return False
+    content = artifact.get("content")
+    stamp = artifact.get("stamp")
+    if not isinstance(content, dict) or not isinstance(stamp, dict):
+        return False
+    if stamp.get("writer") != CLI_WRITER or not stamp.get("invocation_id"):
+        return False
+    canonical = (
+        json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8")
+    from omg_cli.evidence import sha256_bytes
+
+    if sha256_bytes(canonical) != stamp.get("content_sha256"):
+        return False
+    if content.get("run_id") != run_id or stamp.get("run_id") != run_id:
+        return False
+    return True
 
 
 def _consensus_ready(root: Path, run_id: str) -> bool:
-    """True when CLI-owned consensus is present for *this* run_id.
+    """True only when the CLI-owned ``ralplan.json`` stamp for *this*
+    run_id records genuine accepted consensus.
 
     Workers may write proposal artifacts under ``.omg/artifacts/``; those do
-    **not** unlock implement. Acceptance comes from ``omg ralplan --run``
-    (status ``ralplan_consensus`` or CLI-written ``ralplan.json`` accepted).
+    **not** unlock implement. ``status.ralplan_consensus`` alone is also
+    insufficient — it is a plain status.json field that can go stale (e.g.
+    a prior accepted round's flag surviving a later replan) without a
+    matching on-disk stamp; the ``ralplan.json`` stamp is the source of
+    truth and must show ``writer``, ``run_id``, and ``accepted`` together.
+
+    Defense in depth (R5-4/R7-3): the stamp must carry a non-empty string
+    ``goal`` matching this run's frozen goal — closes a foreign/mistargeted
+    stamp even when writer/run_id/accepted otherwise look valid. A missing,
+    null, or empty ``goal`` is fail-closed (rejected), not treated as a
+    legacy/unaffected shape.
+
+    Defense in depth (R10-1/P2-R8-D): the stamp must also carry
+    ``schema_version == 2`` and ``lifecycle_version == 2`` — autopilot only
+    ever embeds strict-v2 RALPLAN (see ``_run_ralplan_v2``), so a legacy-v1
+    or otherwise malformed/missing-schema stamp is fail-closed (rejected),
+    not treated as a legacy/unaffected shape.
     """
-    run = load_run(root, run_id) or {}
-    if run.get("ralplan_consensus") is True:
-        return True
     from omg_cli.ralplan import ralplan_state_path
 
     data = _read_stage_json(ralplan_state_path(root, run_id))
-    return bool(data and data.get("accepted") is True)
+    if not data:
+        return False
+    if data.get("writer") != CLI_WRITER:
+        return False
+    if data.get("run_id") != run_id:
+        return False
+    if data.get("schema_version") != 2:
+        return False
+    if data.get("lifecycle_version") != 2:
+        return False
+    if data.get("invalidated") is True:
+        return False
+    if data.get("accepted") is not True:
+        return False
+    goal = data.get("goal")
+    if not isinstance(goal, str) or not goal.strip():
+        return False
+    run = load_run(root, run_id)
+    frozen_goal = str((run or {}).get("goal") or "").strip()
+    if goal.strip() != frozen_goal:
+        return False
+    return True
+
+
+def _record_gate_failure(
+    root: Path,
+    run_id: str,
+    phase: str,
+    message: str,
+) -> None:
+    """Persist last advance-gate failure for status / stall payloads (best-effort)."""
+    from omg_cli.state import merge_status_fields
+
+    try:
+        merge_status_fields(
+            root,
+            run_id,
+            {
+                "autopilot_gate_failure": {
+                    "phase": phase,
+                    "message": message,
+                    "at": _utc_now(),
+                }
+            },
+        )
+    except Exception:
+        # Never block the outer driver on status merge failures.
+        logger.warning(
+            "autopilot: failed to record gate_failure for run_id=%s phase=%s",
+            run_id,
+            phase,
+            exc_info=True,
+        )
+        return
+
+
+def _clear_gate_failure(root: Path, run_id: str) -> None:
+    from omg_cli.state import merge_status_fields
+
+    try:
+        merge_status_fields(root, run_id, {"autopilot_gate_failure": {}})
+    except Exception:
+        logger.debug(
+            "autopilot: failed to clear gate_failure for run_id=%s", run_id, exc_info=True
+        )
+        return
 
 
 def _try_advance_after_launch(root: Path, run_id: str, phase: str) -> str:
@@ -706,18 +1457,18 @@ def _try_advance_after_launch(root: Path, run_id: str, phase: str) -> str:
                 root,
                 run_id,
                 "ralplan",
-                evidence={"interview_complete": True},
                 reason="interview complete",
             )
+            _clear_gate_failure(root, run_id)
             return "ralplan"
         if phase == "ralplan" and _consensus_ready(root, run_id):
             transition(
                 root,
                 run_id,
                 "implement",
-                evidence={"consensus": True},
                 reason="ralplan consensus",
             )
+            _clear_gate_failure(root, run_id)
             return "implement"
         if phase == "implement":
             # Recheck live phase: launch/side-effects may have moved to
@@ -732,9 +1483,11 @@ def _try_advance_after_launch(root: Path, run_id: str, phase: str) -> str:
                 "review",
                 reason="implementation ready for review",
             )
+            _clear_gate_failure(root, run_id)
             return "review"
         if phase == "review" and stage_review_is_clean(root, run_id):
             transition(root, run_id, "qa", reason="structured review clean")
+            _clear_gate_failure(root, run_id)
             return "qa"
         if phase == "qa" and stage_qa_is_clean(root, run_id):
             transition(
@@ -743,14 +1496,51 @@ def _try_advance_after_launch(root: Path, run_id: str, phase: str) -> str:
                 "acceptance",
                 reason="ultraqa clean",
             )
+            _clear_gate_failure(root, run_id)
             return "acceptance"
         if phase == "acceptance":
             out = complete_with_acceptance(root, run_id)
             if out.get("phase") == "verified":
+                _clear_gate_failure(root, run_id)
                 return "verified"
-    except AutopilotError:
-        pass
+            msg = (
+                "acceptance complete did not reach verified "
+                f"(phase={out.get('phase')!r})"
+            )
+            _record_gate_failure(root, run_id, phase, msg)
+            return phase
+    except AutopilotError as exc:
+        _record_gate_failure(root, run_id, phase, str(exc))
+        return phase
     return phase
+
+
+@contextmanager
+def _autopilot_driver_lock(run_dir: Path) -> Iterator[Path]:
+    """Exclusive non-blocking flock on ``autopilot.driver.lock`` for one driver.
+
+    Separate from ``execution_lease`` — serializes whole ``run_autopilot``
+    invocations so dual resume cannot double-launch. Raises ``BlockingIOError``
+    when another process already holds the lock.
+    """
+    import fcntl
+
+    lock_path = Path(run_dir) / "autopilot.driver.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lockf = lock_path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(lockf.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lockf.close()
+        raise
+    try:
+        yield lock_path
+    finally:
+        try:
+            fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        lockf.close()
 
 
 def run_autopilot(
@@ -780,16 +1570,23 @@ def run_autopilot(
     ``max_stall_relaunches`` exhausted. Does **not** claim infinite Stop pin.
     """
     import json
+    import subprocess
     import sys
 
     from omg_cli.modes import (
         _launch_grok,
         _run_dir,
+        _spawn_grok_process,
+        _wait_grok_process,
         build_grok_argv,
         resolve_launch_timeout,
     )
     from omg_cli.resume import write_resume_md
-    from omg_cli.state import load_active_run
+    from omg_cli.state import (
+        load_active_run,
+        prepare_leader_spawn,
+        transition_guard,
+    )
 
     root_path = Path(root).resolve()
     assert_safe_supervised_parent()
@@ -818,6 +1615,20 @@ def run_autopilot(
                 file=sys.stderr,
             )
             return 1
+        from omg_cli.state import TERMINAL_STATUSES
+
+        run_status = str(run.get("status") or "")
+        if run_status in TERMINAL_STATUSES:
+            # status.json is authoritative over the autopilot sidecar's
+            # ``phase`` field — a terminal run (e.g. cancelled) must never
+            # launch grok again just because the sidecar still parks at a
+            # non-terminal phase.
+            print(
+                f"omg autopilot run: run {resume_run_id!r} is terminal "
+                f"(status={run_status!r}); refusing to resume",
+                file=sys.stderr,
+            )
+            return 1
         run_id = str(run["run_id"])
         frozen_goal = str(run.get("goal") or "").strip()
         if requested_goal and requested_goal != frozen_goal:
@@ -842,177 +1653,252 @@ def run_autopilot(
 
     launch_timeout = resolve_launch_timeout(timeout, dry_run=dry_run)
     run_dir = _run_dir(root_path, run_id)
-    phase_cycles: dict[str, int] = {}
-    stall_relaunches = 0
-    max_stall = max(1, int(max_stall_relaunches))
-    resume_cmd = (
-        f"omg autopilot run --resume {run_id}"
-        + (" --unattended" if unattended else "")
-    )
-
-    while True:
-        st = status_autopilot(root_path, run_id)
-        phase = str(st.get("phase") or "")
-        run_row = load_run(root_path, run_id) or {}
-        if run_row.get("autopilot_awaiting"):
-            write_resume_md(root_path, run_id)
-            clear_cmd = f"omg autopilot await --clear --run {run_id}"
-            reason = run_row.get("autopilot_awaiting_reason")
-            if isinstance(reason, str) and reason.strip():
-                print(f"{clear_cmd}  # reason: {reason.strip()}", file=sys.stderr)
-            else:
-                print(clear_cmd, file=sys.stderr)
-            print(resume_cmd, file=sys.stderr)
-            print(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "pause": "awaiting",
-                        "run_id": run_id,
-                        "resume_command": resume_cmd,
-                    },
-                    ensure_ascii=False,
-                )
+    try:
+        with _autopilot_driver_lock(run_dir):
+            phase_cycles: dict[str, int] = {}
+            stall_relaunches = 0
+            max_stall = max(1, int(max_stall_relaunches))
+            resume_cmd = (
+                f"omg autopilot run --resume {run_id}"
+                + (" --unattended" if unattended else "")
             )
-            return 0
-        if phase == "verified":
-            write_resume_md(root_path, run_id)
-            print(
-                json.dumps(
-                    {"ok": True, "phase": "verified", "run_id": run_id},
-                    ensure_ascii=False,
-                )
-            )
-            return 0
-        if phase in ("blocked", "cancelled"):
-            write_resume_md(root_path, run_id)
-            print(
-                json.dumps(
-                    {"ok": False, "phase": phase, "run_id": run_id},
-                    ensure_ascii=False,
-                )
-            )
-            return 1
-        if phase == "interview" and not _interview_complete(root_path, run_id):
-            write_resume_md(root_path, run_id)
-            print(resume_cmd, file=sys.stderr)
-            print(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "pause": "interview",
-                        "run_id": run_id,
-                        "resume_command": resume_cmd,
-                    },
-                    ensure_ascii=False,
-                )
-            )
-            return 0
 
-        phase_cycles[phase] = int(phase_cycles.get(phase, 0)) + 1
-        if phase_cycles[phase] > max(1, int(max_phase_cycles)):
-            try:
-                transition(
-                    root_path,
-                    run_id,
-                    "blocked",
-                    reason=f"max_phase_cycles={max_phase_cycles}",
-                )
-            except AutopilotError:
-                pass
-            write_resume_md(root_path, run_id)
-            return 1
-
-        write_resume_md(root_path, run_id)
-
-        prompt = build_phase_prompt(phase, root=root_path, goal=goal, run_id=run_id)
-        argv = build_grok_argv(
-            "ralplan",
-            goal,
-            yolo=yolo,
-            safe=safe,
-            cwd=root_path,
-            project_root=root_path,
-            run_id=run_id,
-            prompt=prompt,
-            skill_root=_plugin_root(),
-            **{
-                k: v
-                for k, v in launch_kw.items()
-                if k
-                in (
-                    "extra",
-                    "output_format",
-                    "disallow_shell",
-                    "new_session_id",
-                    "resume_session_id",
-                )
-            },
-        )
-        rc = _launch_grok(
-            argv,
-            cwd=root_path,
-            run_dir=run_dir,
-            timeout=launch_timeout,
-            dry_run=dry_run,
-        )
-        if rc != 0:
-            write_resume_md(root_path, run_id)
-            return int(rc)
-
-        new_phase = _try_advance_after_launch(root_path, run_id, phase)
-        if dry_run:
-            return 0
-        if new_phase == phase:
-            # No gate progress this launch — host turn likely ended (Stop cap).
-            if unattended:
-                stall_relaunches += 1
-                if stall_relaunches > max_stall:
-                    try:
-                        transition(
-                            root_path,
-                            run_id,
-                            "blocked",
-                            reason=f"max_stall_relaunches={max_stall}",
-                        )
-                    except AutopilotError:
-                        pass
+            while True:
+                st = status_autopilot(root_path, run_id)
+                phase = str(st.get("phase") or "")
+                run_row = load_run(root_path, run_id) or {}
+                if run_row.get("autopilot_awaiting"):
                     write_resume_md(root_path, run_id)
+                    clear_cmd = f"omg autopilot await --clear --run {run_id}"
+                    reason = run_row.get("autopilot_awaiting_reason")
+                    if isinstance(reason, str) and reason.strip():
+                        print(f"{clear_cmd}  # reason: {reason.strip()}", file=sys.stderr)
+                    else:
+                        print(clear_cmd, file=sys.stderr)
+                    print(resume_cmd, file=sys.stderr)
                     print(
                         json.dumps(
                             {
-                                "ok": False,
-                                "phase": phase,
+                                "ok": True,
+                                "pause": "awaiting",
                                 "run_id": run_id,
-                                "error": "max_stall_relaunches",
                                 "resume_command": resume_cmd,
                             },
                             ensure_ascii=False,
                         )
                     )
+                    return 0
+                if phase == "verified":
+                    write_resume_md(root_path, run_id)
+                    print(
+                        json.dumps(
+                            {"ok": True, "phase": "verified", "run_id": run_id},
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 0
+                if phase in ("blocked", "cancelled"):
+                    write_resume_md(root_path, run_id)
+                    print(
+                        json.dumps(
+                            {"ok": False, "phase": phase, "run_id": run_id},
+                            ensure_ascii=False,
+                        )
+                    )
                     return 1
-                # Re-launch same phase without requiring human "go" (#40).
-                continue
-            write_resume_md(root_path, run_id)
-            print(resume_cmd, file=sys.stderr)
-            print(
-                json.dumps(
-                    {
+                if phase == "interview" and not _interview_complete(root_path, run_id):
+                    write_resume_md(root_path, run_id)
+                    print(resume_cmd, file=sys.stderr)
+                    print(
+                        json.dumps(
+                            {
+                                "ok": True,
+                                "pause": "interview",
+                                "run_id": run_id,
+                                "resume_command": resume_cmd,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 0
+
+                # Preflight: completed interview must advance before any launch so
+                # resume does not spawn an unnecessary interview Grok session.
+                if phase == "interview" and _interview_complete(root_path, run_id):
+                    new_phase = _try_advance_after_launch(root_path, run_id, phase)
+                    if new_phase != phase:
+                        continue
+                    write_resume_md(root_path, run_id)
+                    print(resume_cmd, file=sys.stderr)
+                    print(
+                        json.dumps(
+                            {
+                                "ok": True,
+                                "pause": "stall",
+                                "phase": phase,
+                                "run_id": run_id,
+                                "resume_command": resume_cmd,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 0
+
+                phase_cycles[phase] = int(phase_cycles.get(phase, 0)) + 1
+                if phase_cycles[phase] > max(1, int(max_phase_cycles)):
+                    try:
+                        transition(
+                            root_path,
+                            run_id,
+                            "blocked",
+                            reason=f"max_phase_cycles={max_phase_cycles}",
+                        )
+                    except AutopilotError:
+                        pass
+                    write_resume_md(root_path, run_id)
+                    return 1
+
+                write_resume_md(root_path, run_id)
+
+                refuse = _launch_refused_for_cancel(root_path, run_id)
+                if refuse is not None:
+                    print(f"omg autopilot run: {refuse}", file=sys.stderr)
+                    return 1
+
+                prompt = build_phase_prompt(phase, root=root_path, goal=goal, run_id=run_id)
+                argv = build_grok_argv(
+                    "ralplan",
+                    goal,
+                    yolo=yolo,
+                    safe=safe,
+                    cwd=root_path,
+                    project_root=root_path,
+                    run_id=run_id,
+                    prompt=prompt,
+                    skill_root=_plugin_root(),
+                    **{
+                        k: v
+                        for k, v in launch_kw.items()
+                        if k
+                        in (
+                            "extra",
+                            "output_format",
+                            "disallow_shell",
+                            "new_session_id",
+                            "resume_session_id",
+                        )
+                    },
+                )
+                # R13-2: linearize cancel re-check + Popen + pid.json under
+                # transition_guard so cancel cannot miss a newly spawned grok.
+                # Wait (and timeout killpg) happens *after* the guard releases.
+                proc: subprocess.Popen[Any] | None = None
+                rc: int
+                with transition_guard(root_path, run_id):
+                    refuse = _launch_refused_for_cancel(root_path, run_id)
+                    if refuse is not None:
+                        print(f"omg autopilot run: {refuse}", file=sys.stderr)
+                        return 1
+                    # R14-3 / R15-1 / R15-3: shared prepare_leader_spawn —
+                    # refuse MATCH/UNKNOWN/missing-starttime (do not clear);
+                    # clear only on DEAD/MISMATCH stale.
+                    conflict = prepare_leader_spawn(root_path, run_id)
+                    if conflict is not None:
+                        print(f"omg autopilot run: {conflict}", file=sys.stderr)
+                        return 1
+                    if dry_run:
+                        rc = _launch_grok(
+                            argv,
+                            cwd=root_path,
+                            run_dir=run_dir,
+                            timeout=launch_timeout,
+                            dry_run=True,
+                        )
+                    else:
+                        try:
+                            proc = _spawn_grok_process(
+                                argv, cwd=root_path, run_dir=run_dir
+                            )
+                        except OSError:
+                            write_resume_md(root_path, run_id)
+                            return 127
+                        except Exception as exc:
+                            print(
+                                f"omg autopilot run: spawn failed: {exc}",
+                                file=sys.stderr,
+                            )
+                            write_resume_md(root_path, run_id)
+                            return 1
+                if proc is not None:
+                    rc = _wait_grok_process(
+                        proc, run_dir=run_dir, timeout=launch_timeout
+                    )
+                if rc != 0:
+                    write_resume_md(root_path, run_id)
+                    return int(rc)
+
+                new_phase = _try_advance_after_launch(root_path, run_id, phase)
+                if dry_run:
+                    return 0
+                if new_phase == phase:
+                    # No gate progress this launch — host turn likely ended (Stop cap)
+                    # or a destination gate failed (see gate_failure on status).
+                    run_now = load_run(root_path, run_id) or {}
+                    gate = run_now.get("autopilot_gate_failure")
+                    gate_payload = gate if isinstance(gate, dict) and gate else None
+                    if unattended:
+                        stall_relaunches += 1
+                        if stall_relaunches > max_stall:
+                            try:
+                                transition(
+                                    root_path,
+                                    run_id,
+                                    "blocked",
+                                    reason=f"max_stall_relaunches={max_stall}",
+                                )
+                            except AutopilotError:
+                                pass
+                            write_resume_md(root_path, run_id)
+                            stall_body: dict[str, Any] = {
+                                "ok": False,
+                                "phase": phase,
+                                "run_id": run_id,
+                                "error": "max_stall_relaunches",
+                                "resume_command": resume_cmd,
+                            }
+                            if gate_payload:
+                                stall_body["gate_failure"] = gate_payload
+                            print(json.dumps(stall_body, ensure_ascii=False))
+                            return 1
+                        # Re-launch same phase without requiring human "go" (#40).
+                        continue
+                    write_resume_md(root_path, run_id)
+                    print(resume_cmd, file=sys.stderr)
+                    stall_ok: dict[str, Any] = {
                         "ok": True,
                         "pause": "stall",
                         "phase": phase,
                         "run_id": run_id,
                         "resume_command": resume_cmd,
-                    },
-                    ensure_ascii=False,
-                )
-            )
-            return 0
-        stall_relaunches = 0
+                    }
+                    if gate_payload:
+                        stall_ok["gate_failure"] = gate_payload
+                    print(json.dumps(stall_ok, ensure_ascii=False))
+                    return 0
+                stall_relaunches = 0
+    except BlockingIOError:
+        print(
+            f"omg autopilot run: already running for {run_id}",
+            file=sys.stderr,
+        )
+        return 1
+
 
 
 __all__ = [
+    "COMMIT_ONLY_TRANSITIONS",
     "LEGAL_TRANSITIONS",
+    "MANUAL_TRANSITIONS",
     "AutopilotError",
     "assert_legal_transition",
     "autopilot_context_pack",

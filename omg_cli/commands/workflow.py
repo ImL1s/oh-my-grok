@@ -171,6 +171,7 @@ def cmd_interview(args: argparse.Namespace) -> int:
                 " ".join(args.task or []).strip(),
                 profile=args.profile,
                 force=bool(getattr(args, "force", False)),
+                attach_run_id=getattr(args, "attach_run_id", None),
             )
         elif action == "answer":
             result = answer_interview(
@@ -381,7 +382,11 @@ def register_workflow_parsers(
             parents=[common],
             help="start one-question-at-a-time requirements convergence",
         )
-        p_i_start.add_argument("task", nargs="+", help="task or labeled requirements")
+        p_i_start.add_argument(
+            "task",
+            nargs="*",
+            help="task or labeled requirements (optional with --attach-run: defaults to the run's goal)",
+        )
         p_i_start.add_argument(
             "--profile",
             choices=("quick", "standard", "deep"),
@@ -391,7 +396,16 @@ def register_workflow_parsers(
         p_i_start.add_argument(
             "--force",
             action="store_true",
-            help="supersede an existing active run",
+            help="supersede an existing active run (or reseed an attached run's interview.json)",
+        )
+        p_i_start.add_argument(
+            "--attach-run",
+            dest="attach_run_id",
+            default=None,
+            help=(
+                "attach to an existing autopilot run_id currently in phase=interview "
+                "instead of creating a new mode=interview run"
+            ),
         )
         p_i_start.set_defaults(func=cmd_interview, interview_action="start")
 

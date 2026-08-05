@@ -63,6 +63,18 @@ def test_recommend_commands_includes_autopilot_run_resume() -> None:
     )
 
 
+def test_recommend_commands_ralplan_uses_run_not_fake_resume() -> None:
+    run = {
+        "mode": "ralplan",
+        "run_id": "rp1",
+        "status": "running",
+    }
+    cmds = recommend_commands(run)
+    assert any(c == "omg state --run rp1" for c in cmds)
+    assert any("--run rp1" in c and "ralplan" in c for c in cmds)
+    assert not any("ralplan --resume" in c for c in cmds)
+
+
 def test_recommend_commands_awaiting_puts_clear_before_resume() -> None:
     run = {
         "mode": "autopilot",
@@ -93,6 +105,20 @@ def test_recommend_ralph_includes_session(tmp_path):
     cmds = recommend_commands(status)
     assert any("omg ralph --resume r1" in c for c in cmds)
     assert any("grok --resume" in c for c in cmds)
+
+
+def test_resume_pack_includes_bundle_keys(tmp_path):
+    run = create_run(tmp_path, mode="autopilot", goal="bundle")
+    rid = run["run_id"]
+    write_status(tmp_path, rid, "running", extra={"stage": "autopilot", "autopilot_phase": "review"})
+    pack = build_resume_pack(tmp_path, rid)
+    assert pack["ok"] is True
+    bundle = pack["resume_bundle"]
+    assert bundle["schema_version"] == 1
+    assert "run_view" in bundle
+    assert "gate_failure" in bundle  # may be null
+    assert "provenance" in bundle
+    assert bundle["provenance"]["run_id"] == rid
 
 
 def test_cli_resume_json(tmp_path, monkeypatch):

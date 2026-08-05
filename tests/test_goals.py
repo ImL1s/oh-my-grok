@@ -199,7 +199,7 @@ def test_block_resume_and_multi_run_link(tmp_path: Path) -> None:
     assert st2["event_count"] == st["event_count"]
 
 
-def test_verify_requires_cli_verified_linked_run(tmp_path: Path) -> None:
+def test_verify_requires_cli_verified_linked_run(tmp_path: Path, monkeypatch) -> None:
     init_goal(
         tmp_path,
         "g3",
@@ -235,7 +235,16 @@ def test_verify_requires_cli_verified_linked_run(tmp_path: Path) -> None:
         verify_goal(tmp_path, "g3")
 
     # Disk-only verified without acceptance.result must not promote the goal
-    set_verified(tmp_path, run["run_id"], force=True)
+    from omg_cli.state import (
+        disable_force_verified_for_tests,
+        enable_force_verified_for_tests,
+    )
+
+    enable_force_verified_for_tests()
+    try:
+        set_verified(tmp_path, run["run_id"], force=True)
+    finally:
+        disable_force_verified_for_tests()
     with pytest.raises(GoalError, match="CLI acceptance"):
         verify_goal(tmp_path, "g3")
 

@@ -32,7 +32,7 @@ Also: `/loop`, outer `omg ralph "…"`.
 | Human pause (requirements unclear) | **`ask_user_question` + interview** | Gate yields; not mid-phase chat |
 | Destructive / credential pause | **`omg autopilot await`** | Sets `autopilot_awaiting`; gate yields |
 | Cancel sticky mode | **`omg cancel`** | Not “unblock Stop” |
-| Verified done | **`omg accept` / `omg autopilot complete`** | CLI only |
+| Verified done | **`omg autopilot complete`** (autopilot); **`omg accept`** (non-autopilot) | CLI only |
 
 **Runtime precedence:** When a host `/goal` is **Active**, it dominates continuation and the Stop gate is not consulted until the goal releases; the Stop pin then enforces remaining autopilot gates.
 
@@ -106,14 +106,29 @@ omg autopilot start "ship feature X" --skip-interview
 
 RUN=…   # from start JSON: run_id
 
-# … after interview closed:
-omg autopilot transition --run "$RUN" --phase ralplan \
-  --evidence-json '{"interview_complete":true}' --reason "interview closed"
+# … drive the interview under this same run_id (attach — no separate mode=interview run):
+omg interview start --attach-run "$RUN"    # task defaults to the autopilot goal
+omg interview answer --run "$RUN" --question-id ... --text ...
+omg interview close --run "$RUN"
+# close JSON `resume_command` for attach mode is a single idempotent entry:
+# `omg autopilot run --resume "$RUN"` (outer driver reads sidecar phase and
+# dispatches; re-close migrates stale two-step resume commands on disk).
 
-# … after plan APPROVE:
-omg autopilot transition --run "$RUN" --phase implement \
-  --evidence-json '{"consensus":true}' --reason "ralplan APPROVE"
+# … after interview closed (preferred: omg interview * writes CLI envelope):
+omg autopilot transition --run "$RUN" --phase ralplan --reason "interview closed"
+# break-glass only (audited):
+# omg autopilot transition --run "$RUN" --phase ralplan \
+#   --evidence-json '{"interview_complete":true,"break_glass":true}' \
+#   --reason "interview closed (break-glass)"
 
+# … after plan APPROVE (preferred: omg ralplan * writes accepted ralplan.json stamp):
+omg autopilot transition --run "$RUN" --phase implement --reason "ralplan APPROVE"
+# break-glass only (audited):
+# omg autopilot transition --run "$RUN" --phase implement \
+#   --evidence-json '{"consensus":true,"break_glass":true}' \
+#   --reason "ralplan APPROVE (break-glass)"
+
+# review requires work evidence (fp drift, CLI receipt, or break_glass no_change):
 omg autopilot transition --run "$RUN" --phase review --reason "impl ready"
 # stamp review via omg review …
 omg autopilot transition --run "$RUN" --phase qa --reason "review clean"
@@ -134,14 +149,234 @@ interview → ralplan → implement → review → (rework) → qa → acceptanc
 ```
 
 Also: `blocked`, `cancelled` (see `omg_cli/autopilot.py` `LEGAL_TRANSITIONS`).
+`cancelled` is terminal-only — use `omg cancel`; it is **not** reachable via
+`omg autopilot transition --phase cancelled` (`MANUAL_TRANSITIONS` excludes it).
 
-| Enter phase | Required evidence / stamp |
-|-------------|---------------------------|
-| `ralplan` from `interview` | `interview_complete: true` |
-| `implement` | `consensus: true` |
-| `qa` | CLI `stages/structured_review.json` clean |
-| `acceptance` | CLI `stages/ultraqa.json` status `clean` |
-| `verified` | **Only** `omg autopilot complete` after same-process accept — never `transition … verified` |
+### `legal_next` vs `commit_only_next` / `terminal_action`
+
+`omg autopilot status` exposes two different “what’s next?” contracts:
+
+| Field | Meaning |
+|-------|---------|
+| **`legal_next`** | Phases `omg autopilot transition --phase …` may take **now** (manual edges only). Never includes `verified`. |
+| **`commit_only_next`** | Phases reachable only via a commit-style terminal step (today: `verified` from `acceptance`). |
+| **`terminal_action`** | Human hint when `commit_only_next` is non-empty (today: `omg autopilot complete`). |
+
+Do **not** call `transition --phase verified` — it is illegal. At `acceptance`, run
+`omg autopilot complete`. Bare `omg accept` is **refused** whenever the autopilot
+sidecar exists (Round 12 + Round 14 — not only when `status.mode` still says
+autopilot); use complete so freeze/run + `set_verified` stay on the FSM path.
+`set_verified` / complete also require matching `authority_nonce` and
+`authority_phase==acceptance` on both `status.json` and `autopilot.json`
+(hand-editing display `phase` alone is refused).
+
+### Stamp-first gates and `break_glass` audit
+
+Destination-phase gates prefer **CLI-owned on-disk stamps** over caller-supplied
+JSON booleans. Bare `evidence.interview_complete` / `evidence.consensus` /
+inline `implementation_receipt` / `no_change_reason` are accepted only with
+`evidence.break_glass=true`; each such bypass is recorded on autopilot history
+as `gate_audit` (for example `break_glass:consensus`, `break_glass:no_change`).
+
+| Enter phase | Preferred (stamp-first) | Break-glass (audited) |
+|-------------|-------------------------|------------------------|
+| `ralplan` from `interview` | CLI interview envelope: `interview.json` with `writer=omg-cli`, `status=complete`, and a matching CLI-stamped spec artifact (`spec_path` + content hash) | `interview_complete` + `break_glass` |
+| `implement` | CLI `stages/ralplan.json` stamp with `writer=omg-cli`, `run_id` match, `accepted=true`, and strict-v2 `schema_version`/`lifecycle_version` both `==2` (not `status.ralplan_consensus` alone) | `consensus` + `break_glass` |
+| `review` from `implement` **or** `blocked` | Workspace fingerprint drift (curated product surfaces) since implement entry, **or** on-disk CLI implementation receipt (`stages/implementation.json`, fingerprint-rechecked) | `no_change_reason` + `break_glass`, **or** inline `implementation_receipt` + `break_glass` |
+| `qa` | CLI `stages/structured_review.json` clean (see fingerprint recheck below) | — |
+| `acceptance` | CLI `stages/ultraqa.json` status `clean` (see fingerprint recheck below) | — |
+| `verified` | **Only** `omg autopilot complete` (same-process freeze/run + `set_verified`; bare `omg accept` refused if sidecar exists; `authority_nonce` / `authority_phase` must match) | — |
+
+Break-glass is an operator-intent escape hatch, not a silent trust path. See
+[`security-model.md`](./security-model.md#autopilot-break_glass-vs-cli-stamps).
+
+### Blocked recovery re-applies destination gates (Round 2)
+
+`blocked` is a pause, not a bypass. Transitions **from** `blocked` to
+`implement`, `ralplan`, `review`, or `qa` run the same destination gates as
+the linear path — gates key off **target phase**, not only `src`:
+
+| Edge | Gate (same as linear path) |
+|------|------------------------------|
+| `blocked → implement` | `_consensus_ready` (CLI `ralplan.json` `accepted=true`) or audited `consensus` + `break_glass` |
+| `blocked → ralplan` | `_interview_complete` (CLI interview envelope) when recovering from `interview`, or replan from later phases |
+| `blocked → review` | Implement→review work evidence (fingerprint drift, CLI receipt, or audited `no_change`) |
+| `blocked → qa` | `stage_review_is_clean` (fresh structured review stamp + workspace binding) |
+
+Example: recovering `blocked → review` without product work still needs audited
+break-glass (same as `implement → review`):
+
+```bash
+omg autopilot transition --run "$RUN" --phase review \
+  --evidence-json '{"no_change_reason":"resume without new diff","break_glass":true}' \
+  --reason "blocked recovery"
+```
+
+Re-entering `review` from `blocked` (or `rework` / `implement`) invalidates
+prior review/QA stamps so a pre-block clean stamp cannot reopen `qa`.
+
+Re-entering `ralplan` when `ralplan_epoch ≥ 1` invalidates any CLI-owned
+`ralplan.json` stamp and review/QA stamps — gating is by epoch counter, not
+stamp existence. This closes detours such as `review→blocked→interview→ralplan`
+and break-glass consensus paths with no stamp yet. Only the first
+`interview→ralplan` handoff (epoch 0→1) is a no-op; `--skip-interview` starts
+at epoch 1 so the next ralplan entry always invalidates.
+
+**Pre-R7 epoch migration (Round 9, tightened Round 11):** sidecars that
+predate the `ralplan_epoch` field no longer default missing values to `0`.
+Migrate to epoch `0` only when **all** hold: `phase==interview`, no CLI
+`ralplan.json` stamp, `cycles.ralplan==0`, readable history with no
+post-interview phases (missing/corrupt history fails closed to >=1), and
+no clean review/QA stamps or CLI implementation receipt. Every other
+missing-epoch run migrates to at least `1` so the next ralplan entry is
+treated as re-entry, not the harmless first handoff. Persists
+`ralplan_epoch_source` (`native` / `migrated`). Present values must be
+plain `int >= 0` (bool/float/negative rejected).
+
+A fresh accept write clears
+`invalidated` on the stamp; a new strict-v2 consensus attempt also clears
+stale invalidation at cycle start. A fresh strict-v2 attempt also resets
+`history`, per-session `attempts`, and `round` so prior rounds past the
+configured ceiling do not pin every future replan into an immediate block;
+each role's `session_id` is re-minted (not reused) on that reset.
+
+`omg ralplan * --run RUN` embedded in an autopilot run is fail-closed:
+the run must use strict-v2 schema, the autopilot FSM must be at
+`phase==ralplan`, the CLI goal must match the frozen run goal exactly, and
+the run must be non-terminal with no pending cancellation request. Strict-v2
+embedding re-checks those gates immediately before **every** sidecar save
+(initial/per-stage/history/accept/blocked — Round 10) so a concurrent
+`omg cancel` cannot race a mid-round write, not only the final
+`accepted=true` stamp.
+`_consensus_ready` additionally requires a non-empty stamp `goal` matching
+the frozen run goal (missing/null/empty → rejected) and, as of Round 10,
+`schema_version==2` plus `lifecycle_version==2` on the stamp (legacy/v1
+shapes fail closed).
+
+`omg interview start --attach-run RUN` re-verifies mode/phase/non-terminal/
+goal match **under the execution lease** after pre-lease attach checks,
+closing a TOCTOU race before writing `interview.json`. Interview writers
+(`start`, attach start, `answer`, `pressure-pass`, and `close`) refuse
+sidecar writes when the run is terminal or has a pending cancellation
+request (same gate, immediately before each save — Round 10 extended
+beyond attach/close).
+
+**Terminal/cancel gates on transition/resume (Round 9 + Round 11 + Round 13):**
+`transition()` re-checks `status.json` under the execution lease and
+refuses any sidecar write when the run is terminal (`cancelled` /
+`completed` / `failed` / `verified`) or has a pending cancellation
+request — the sidecar `phase` alone must never unlock a transition after
+cancel. `omg autopilot run --resume` prefers terminal `status.json` over
+a stale non-terminal sidecar phase. Immediately before each `_launch_grok`
+/ Popen (Round 11), the driver re-checks status and any pending
+`cancel.request.json` and refuses spawn when cancelled or cancel-pending.
+As of Round 13, cancel check + `Popen` + pid publish are linearized under a
+short `transition_guard` so a concurrent cancel cannot miss a newly spawned
+Grok; if pid publish fails after `Popen`, the child is killed.
+Round 14 also refuses resume/spawn when `pid.json` still identifies a **live**
+leader (PID alive + matching starttime), and refuses a live PID without
+starttime (stale/dead metadata is cleared; live conflict is not). Pid
+publication itself requires a non-empty process starttime.
+Round 15 extends identity to tri-state `MATCH` / `MISMATCH` / `UNKNOWN`: a
+failed starttime probe while the PID is still live refuses spawn and does
+**not** clear `pid.json`. The same `prepare_leader_spawn` gate applies to
+ralph / `run_mode` resume (not only autopilot). Implementation receipts must
+be stamped under a lease bound to the target run (foreign-run lease refused).
+`omg autopilot status` returns empty `legal_next` for terminal runs.
+
+**Resume interview preflight (Round 11):** when `--resume` finds
+`phase==interview` and the interview is already complete, the driver
+advances to ralplan (via the post-launch advance path) **before** launching
+Grok, so a closed interview does not spawn a redundant interview session.
+
+**Driver flock (Round 12):** `run_autopilot` acquires an exclusive non-blocking
+flock on `.omg/state/runs/<run_id>/autopilot.driver.lock` for the whole
+invocation (separate from the execution lease). A second concurrent
+`--resume` fails with “already running” and does not launch Grok.
+
+Attach-mode `omg interview close` sets `resume_command` to
+`omg autopilot run --resume RUN` (idempotent; re-close refreshes stale
+two-step commands on disk).
+
+### Implement → review work gate
+
+Leaving `implement` (or recovering `blocked → review`) requires evidence that
+work happened (or an explicit audited no-op):
+
+1. **Workspace fingerprint drift** — on entering `implement`, the CLI records
+   `implement_workspace_fp` via a **dedicated**
+   `autopilot._implement_workspace_fingerprint` helper (curated product
+   surfaces: `omg_cli/` in full, `plugin.json`, `hooks/`, `skills/`,
+   `agents/`, `templates/`, `scripts/`, `bin/`). A later transition to
+   `review` passes if the
+   current fingerprint differs. This is a separate helper from
+   `qa.product_hash` (which only hashes `omg_cli/**/*.py` and also backs
+   UltraQA's acceptance repair-cycle semantics) — implementation work
+   confined to non-Python product surfaces would otherwise be invisible to
+   this gate without ever changing QA's own hash semantics. Generated
+   caches (`__pycache__/`, `*.pyc`, `.pytest_cache/`, `.ruff_cache/`,
+   `.mypy_cache/`, `*.egg-info/` — mirroring this repo's `.gitignore`) are
+   excluded, so merely running tests/importing a module during `implement`
+   never counts as product work on its own.
+2. **On-disk CLI stamp** — `omg_cli.implementation.stamp_implementation_receipt`
+   requires a live `ExecutionLease` bound to the *target* root/run via
+   `_require_current_lease` (not merely `assert_current` on another run —
+   Round 15), writes a
+   CLI-owned `stages/implementation.json`
+   (`writer=omg-cli`, `content_sha256`, `stamped_at`, lease `invocation_id`
+   + `lease_generation` — Round 12 + Round 14) under
+   `.omg/state/runs/<run_id>/stages/`, and rebinds autopilot
+   `implement_receipt_binder` under the same lease. `read_implementation_receipt`
+   verifies `writer`/`run_id`, a non-empty `invocation_id`, and a valid
+   `lease_generation` before trusting it (hand-written receipts without lease
+   fields read as absent). The gate additionally rechecks `content_sha256`
+   against a fresh `_implement_workspace_fingerprint(root)` recompute and
+   requires the binder to match — a stale/tampered receipt does not satisfy
+   the gate. Accepted **without** `break_glass`
+   (audited as `cli_receipt:implementation.json`). No CLI subcommand calls
+   the stamper yet; it exists for direct/test use until a phase writer wires
+   it in. The receipt is bound to its implement cycle:
+   `implementation.invalidate_implementation_receipt` marks any leftover
+   receipt `invalidated=true` on every (re)entry into `implement`, and
+   implement entry **clears** `implement_receipt_binder` to null, so a
+   receipt (or binder copy) from a prior cycle can never satisfy the gate for
+   a later cycle even if the fingerprint still happens to match (e.g.
+   `review → ralplan → implement` with no new work).
+3. **Break-glass no-change** — `evidence.no_change_reason` + `break_glass=true`
+   (audited as `break_glass:no_change`).
+4. **Break-glass inline receipt** — `evidence.implementation_receipt` with
+   `writer=omg-cli` **and** `break_glass=true` (inline JSON is trivially
+   forgeable; audited as `break_glass:implementation_receipt`).
+
+The outer `omg autopilot run --unattended` driver records `gate_failure` on
+status when auto-advance stalls here instead of silently skipping review.
+
+Example (dry-run / scaffold only):
+
+```bash
+omg autopilot transition --run "$RUN" --phase review \
+  --evidence-json '{"no_change_reason":"dry-run scaffold only","break_glass":true}' \
+  --reason "no product diff"
+```
+
+### Review / QA fingerprint recheck (honesty limits)
+
+When advancing to `qa` or `acceptance`, the CLI re-validates stage stamps against
+the **current** workspace — a prior `clean=true` alone is not enough:
+
+| Stage file | Recheck | Legacy behavior |
+|------------|---------|-----------------|
+| `structured_review.json` | Top-level `diff_hash` must match nested `code_reviewer_stamp` / `architect_stamp` lane evaluations (same logic as `omg review`). **`workspace_fp`** (recorded by `omg review` at stamp time via `_implement_workspace_fingerprint`) must match a fresh recompute — catches drift on non-Python product surfaces (`hooks/`, `skills/`, …) that `diff_hash` alone might miss. Missing `workspace_fp` on schema_version≥2 stamps → fail-closed. | Stamps with **no** `diff_hash`, **no** lane stamps, and **no** `workspace_fp`: clean flag only (weaker). |
+| `ultraqa.json` | Last clean cycle’s `product_hash` must match a fresh `product_hash(root)` recompute. **`implement_workspace_fp`** on the clean cycle (same broader fingerprint as the implement→review gate) must also match — closes the gap where `product_hash` only covers `omg_cli/**/*.py` but config/plugin surfaces changed after QA went clean. | Cycles without `product_hash` / `implement_workspace_fp`: clean flag only (weaker). |
+
+**Limits (Round 2 honesty):** rechecks bind stamps to workspace fingerprints and
+lane/hash consistency, but are still not a full cross-file transaction WAL.
+Concurrent partial writes, TOCTOU outside the stamp fields, or adversarial
+workspace races may still require operator `omg doctor` / manual recovery. Full
+StageEvidenceEnvelope v3 + cross-file WAL is planned, not claimed here.
+
+Re-entering `implement` invalidates prior review/QA stamps (`invalidated=true`) so
+a `qa→blocked→implement→…→qa` loop cannot reuse stale quality gates.
 
 **QA clean ≠ verified.** UltraQA never sets `verified`.
 
@@ -155,11 +390,11 @@ Normative copy for agents is the skill file; this is the human-readable map.
 |-------|---------------|-----|
 | Bootstrap | — | `omg doctor`, `omg setup`, `omg autopilot status` |
 | interview | `omg-deep-interview` | `omg interview *` → transition `ralplan` |
-| ralplan | `omg-ralplan` + critic/verifier **read-only** | transition `implement` + consensus evidence |
+| ralplan | `omg-ralplan` + critic/verifier **read-only** | `omg ralplan *` → accepted stamp → transition `implement` |
 | implement | `omg-ultrawork` / `omg-ralph` + executor **read-write** | transition `review` |
 | review | `omg-dual-review` or `omg review` | clean → transition `qa`; else `rework` |
 | qa | `omg-ultraqa` | freeze (allowlisted cmds) → run → clean → transition `acceptance` |
-| acceptance | — | `omg autopilot complete` (preferred) or `omg accept` then complete |
+| acceptance | — | `omg autopilot complete` only (bare `omg accept` refused for autopilot) |
 | cancel | `omg-cancel` | `omg cancel` |
 
 ### Spawn rules (HARD)
@@ -181,18 +416,23 @@ omg qa run --run "$RUN"
 
 After clean UltraQA, **`prd.json` is optional** — accept/complete materialize from scenarios (do not overwrite an existing operator PRD).
 
-### Complete / short-circuit (v0.3.2+)
+### Complete / short-circuit (v0.3.2+; Round 12 + Round 14 accept gate)
 
 ```bash
-# Preferred terminal step (same-process freeze_and_run + set_verified):
+# Only terminal step for autopilot (same-process freeze_and_run + set_verified).
+# Bare `omg accept` is refused whenever autopilot.json exists — use complete.
+# complete/set_verified also bind authority_nonce + authority_phase==acceptance.
 omg autopilot complete --run "$RUN"
 
-# If you already ran omg accept --yes successfully, complete only syncs
-# autopilot phase (no second full test suite).
 omg autopilot status --run "$RUN"
 # expect: phase=verified, run_status=verified, autopilot_phase=verified
 ```
 
+**Authority binding (Round 14):** CLI transitions rotate `authority_nonce` and
+set `authority_phase` on both the sidecar and `status.json`. Complete is the
+path that reaches `authority_phase=acceptance` then `verified`. Dual-edit of
+both files under a writable `.omg/state` remains an honesty residual (see
+[`security-model.md`](./security-model.md)).
 ---
 
 ## Repository workflows are a separate layer
@@ -230,12 +470,31 @@ Agents (plugin): `omg-orchestrator`, `omg-executor`, `omg-critic`, `omg-verifier
 
 - Claiming “done” without CLI stamps / `omg autopilot status` showing `verified`
 - `transition --phase verified` (illegal)
-- Lying in `--evidence-json` to skip interview/ralplan
+- Lying in `--evidence-json` to skip interview/ralplan (bare booleans without `break_glass`, or trusting `status.ralplan_consensus` without `ralplan.json`)
 - Self-approve after implement (skip dual-review / structured review)
 - Infinite skill self-loop without status (prefer status + user “continue”)
 - External agent CLIs as workers
 - Claiming the Stop pin is infinite or works on grok <0.2.107
-- Freezing UltraQA with `grep` / `python -c` / `omg doctor` as argv0 (use project `.py` / pytest)
+- Transitioning `implement → review` without workspace change, CLI receipt, or audited `break_glass` no_change
+
+---
+
+## Resume bundle (`omg resume`)
+
+`omg resume [--run RUN]` includes a partial **`resume_bundle`** object
+(`schema_version=1`) for cross-turn continuity:
+
+| Key | Contents |
+|-----|----------|
+| `run_view` | Existing resume view (mode, status, goal, commands, …) |
+| `autopilot_phase` / `legal_next` | Best-effort from `omg autopilot status` when `mode=autopilot` |
+| `gate_failure` | Last advance-gate stall payload (from status or autopilot status) |
+| `provenance` | `{generated_at, run_id, selector}` |
+
+**Round 1 scope:** schema v1 is a skeleton — it does **not** yet embed wiki,
+project memory, compaction checkpoints, or full StageEvidence envelopes. Missing
+autopilot sidecars must not break the generic pack (best-effort only). Fuller
+ResumeBundle fields are planned for a later hardening round.
 
 ---
 
@@ -243,8 +502,10 @@ Agents (plugin): `omg-orchestrator`, `omg-executor`, `omg-critic`, `omg-verifier
 
 ```text
 .omg/state/runs/<run_id>/
-  status.json              # verified, autopilot_phase, …
-  stages/autopilot.json    # phase, history, goal
+  status.json              # verified, autopilot_phase, autopilot_gate_failure, …
+  stages/autopilot.json    # phase, history, history[].gate_audit, implement_workspace_fp, …
+  stages/implementation.json  # optional; CLI receipt (writer, content_sha256, invocation_id)
+  autopilot.driver.lock       # exclusive flock while run_autopilot is driving
   stages/structured_review.json
   stages/ultraqa.json
   prd.json                 # optional; may be materialized from ultraqa
@@ -269,7 +530,7 @@ omg autopilot start "goal" --skip-interview
 omg autopilot transition --run RUN --phase PHASE --evidence-json '{…}' --reason "…"
 omg autopilot status --run RUN
 omg autopilot await --run RUN --set   # pause for destructive/credential confirm
-omg accept --run RUN --yes
-omg autopilot complete --run RUN
+omg autopilot complete --run RUN   # not bare omg accept (refused for autopilot)
+omg resume [--run RUN]
 omg cancel
 ```

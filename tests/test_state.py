@@ -12,17 +12,22 @@ from omg_cli.state import (
     FencingError,
     LifecycleLockError,
     LockUnavailableError,
+    PidIdentity,
     RunSchema,
     cancel_run,
+    classify_pid_identity,
     classify_run_schema,
     create_run,
     execution_lease,
     is_stale_run,
+    live_leader_pid_conflict,
     load_active_run,
     load_run,
+    pid_matches_recorded,
     set_verified,
     transition_guard,
     transition_guard_held,
+    write_pid_metadata,
     write_status,
 )
 
@@ -173,6 +178,51 @@ def test_create_run_allows_when_stale_pid_esrch(tmp_path, monkeypatch):
     assert second["run_id"] != first["run_id"]
     assert load_active_run(tmp_path)["run_id"] == second["run_id"]
     assert load_run(tmp_path, first["run_id"])["status"] == "cancelled"
+
+
+def test_classify_pid_identity_tri_state(monkeypatch):
+    """R15-1: MATCH / DEAD / MISMATCH / UNKNOWN are distinct."""
+    from omg_cli import state as state_mod
+
+    monkeypatch.setattr(state_mod, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(state_mod, "process_starttime", lambda _pid: "start-a")
+    assert classify_pid_identity(42, "start-a") is PidIdentity.MATCH
+    assert pid_matches_recorded(42, "start-a") is True
+
+    monkeypatch.setattr(state_mod, "process_starttime", lambda _pid: "start-b")
+    assert classify_pid_identity(42, "start-a") is PidIdentity.MISMATCH
+    assert pid_matches_recorded(42, "start-a") is False
+
+    monkeypatch.setattr(state_mod, "process_starttime", lambda _pid: None)
+    assert classify_pid_identity(42, "start-a") is PidIdentity.UNKNOWN
+    assert pid_matches_recorded(42, "start-a") is False
+
+    monkeypatch.setattr(state_mod, "_pid_alive", lambda _pid: False)
+    assert classify_pid_identity(42, "start-a") is PidIdentity.DEAD
+    assert classify_pid_identity(42, None) is PidIdentity.UNKNOWN
+
+
+def test_is_stale_run_unknown_starttime_probe_not_reclaimable(
+    tmp_path, monkeypatch
+):
+    """R15-1: UNKNOWN (alive + recorded + ps None) is not stale."""
+    from omg_cli import state as state_mod
+
+    run = create_run(tmp_path, mode="ulw", goal="unknown-stale")
+    rid = run["run_id"]
+    write_status(tmp_path, rid, "running")
+    write_pid_metadata(
+        tmp_path / ".omg" / "state" / "runs" / rid / "pid.json",
+        pid=424242,
+        pgid=424242,
+        starttime="Mon Jan  1 00:00:00 2000",
+    )
+    monkeypatch.setattr(state_mod, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(state_mod, "process_starttime", lambda _pid: None)
+    assert is_stale_run(tmp_path, rid) is False
+    reason = live_leader_pid_conflict(tmp_path, rid)
+    assert reason is not None
+    assert "unknown" in reason.lower()
 
 
 def test_create_run_mutex_blocks_verifying(tmp_path):
@@ -493,6 +543,48 @@ def test_write_pid_metadata_shape(tmp_path, monkeypatch):
     assert (tmp_path / "pid").read_text(encoding="utf-8").strip() == "12345"
 
 
+def test_write_pid_metadata_requires_starttime(tmp_path, monkeypatch):
+    """R14-4: refuse pid.json when process_starttime is unavailable."""
+    from omg_cli.state import write_pid_metadata
+
+    monkeypatch.setattr("omg_cli.state.process_starttime", lambda pid: None)
+    path = tmp_path / "pid.json"
+    with pytest.raises(RuntimeError, match="starttime"):
+        write_pid_metadata(path, pid=12345, pgid=12345)
+    assert not path.exists()
+    assert not (tmp_path / "pid").exists()
+
+
+def test_write_pid_metadata_explicit_starttime_skips_lookup(tmp_path, monkeypatch):
+    """R14-4: explicit non-empty starttime still publishes without ps lookup."""
+    from omg_cli.state import write_pid_metadata
+
+    def boom(_pid: int) -> None:
+        raise AssertionError("process_starttime must not be called")
+
+    monkeypatch.setattr("omg_cli.state.process_starttime", boom)
+    path = tmp_path / "pid.json"
+    meta = write_pid_metadata(
+        path, pid=999, pgid=999, starttime="Mon Jan  1 00:00:00 1970"
+    )
+    assert meta["starttime"] == "Mon Jan  1 00:00:00 1970"
+    assert path.is_file()
+
+
+def test_write_pid_metadata_rejects_empty_explicit_starttime(tmp_path, monkeypatch):
+    """R14-4: empty explicit starttime must not publish pid.json."""
+    from omg_cli.state import write_pid_metadata
+
+    monkeypatch.setattr(
+        "omg_cli.state.process_starttime",
+        lambda pid: "should-not-matter",
+    )
+    path = tmp_path / "pid.json"
+    with pytest.raises(RuntimeError, match="starttime"):
+        write_pid_metadata(path, pid=1, pgid=1, starttime="")
+    assert not path.exists()
+
+
 def test_write_status(tmp_path):
     """write_status: reserved keys protected; verified only via set_verified + acceptance."""
     run = create_run(tmp_path, mode="ralph", goal="v")
@@ -552,6 +644,56 @@ def test_write_status(tmp_path):
     verified = set_verified(tmp_path, rid)
     assert verified["verified"] is True
     assert verified["status"] == "verified"
+
+
+def test_set_verified_force_ignores_env_var(tmp_path, monkeypatch):
+    """Env OMG_INTERNAL_FORCE_VERIFIED alone must NOT unlock force=True."""
+    from omg_cli.state import FORCE_VERIFIED_ENV, disable_force_verified_for_tests
+
+    disable_force_verified_for_tests()
+    run = create_run(tmp_path, mode="ralph", goal="force env alone")
+    rid = run["run_id"]
+
+    monkeypatch.setenv(FORCE_VERIFIED_ENV, "1")
+    with pytest.raises(PermissionError, match="force"):
+        set_verified(tmp_path, rid, force=True)
+    assert load_run(tmp_path, rid).get("verified") is not True
+
+
+def test_set_verified_force_requires_process_capability(tmp_path, monkeypatch):
+    """force=True requires in-process enable_force_verified_for_tests() (tests only)."""
+    from omg_cli.state import (
+        FORCE_VERIFIED_ENV,
+        disable_force_verified_for_tests,
+        enable_force_verified_for_tests,
+    )
+
+    disable_force_verified_for_tests()
+    run = create_run(tmp_path, mode="ralph", goal="force confine")
+    rid = run["run_id"]
+
+    monkeypatch.delenv(FORCE_VERIFIED_ENV, raising=False)
+    with pytest.raises(PermissionError, match="force"):
+        set_verified(tmp_path, rid, force=True)
+    assert load_run(tmp_path, rid).get("verified") is not True
+
+    monkeypatch.setenv(FORCE_VERIFIED_ENV, "0")
+    with pytest.raises(PermissionError, match="force"):
+        set_verified(tmp_path, rid, force=True)
+
+    # Env alone still refuses; capability is required.
+    monkeypatch.setenv(FORCE_VERIFIED_ENV, "1")
+    with pytest.raises(PermissionError, match="force"):
+        set_verified(tmp_path, rid, force=True)
+
+    try:
+        token = enable_force_verified_for_tests()
+        assert token is not None
+        verified = set_verified(tmp_path, rid, force=True)
+        assert verified["verified"] is True
+        assert verified["status"] == "verified"
+    finally:
+        disable_force_verified_for_tests()
 
 
 def test_set_verified_strict_v2_auto_acquires_lease(tmp_path):
@@ -814,3 +956,232 @@ def test_projector_view_is_manifest_bound_cas_and_cannot_write_acceptance(tmp_pa
             manifest_binding=binding,
             expected_projection_revision=0,
         )
+
+
+def test_legacy_cancel_commits_under_transition_guard_before_signal(
+    tmp_path, monkeypatch
+):
+    """R17-1: legacy cancel writes cancelled under guard, signals only after release."""
+    import omg_cli.state as state_mod
+
+    run = create_run(tmp_path, mode="ulw", goal="r17 legacy cancel order")
+    rid = run["run_id"]
+    assert classify_run_schema(run) is RunSchema.LEGACY_V1
+
+    events: list[tuple[str, bool, str | None]] = []
+
+    def tracking_signal(targets, *, kill_grace_s):
+        events.append(
+            (
+                "signal",
+                transition_guard_held(),
+                (load_run(tmp_path, rid) or {}).get("status"),
+            )
+        )
+        return ["leader:killpg:SIGTERM"]
+
+    original_atomic = state_mod._atomic_write_json
+
+    def tracking_write(path, data):
+        if path.name == "status.json" and data.get("status") == "cancelled":
+            events.append(
+                ("commit_cancelled", transition_guard_held(), data.get("status"))
+            )
+        return original_atomic(path, data)
+
+    monkeypatch.setattr(state_mod, "_signal_cancel_targets", tracking_signal)
+    monkeypatch.setattr(state_mod, "_atomic_write_json", tracking_write)
+
+    cancelled = cancel_run(tmp_path, rid, kill_grace_s=0)
+    assert cancelled["status"] == "cancelled"
+    assert cancelled.get("cancel_outcome") == "cancelled"
+    kinds = [e[0] for e in events]
+    assert kinds[0] == "commit_cancelled"
+    assert kinds[1] == "signal"
+    assert events[0][1] is True  # commit under guard
+    assert events[1][1] is False  # signal outside guard
+    assert events[1][2] == "cancelled"  # status already terminal before signal
+    # Optional second guarded write records kill_actions after signal.
+    if len(kinds) > 2:
+        assert kinds[2] == "commit_cancelled"
+        assert events[2][1] is True
+    assert cancelled.get("kill_actions") == ["leader:killpg:SIGTERM"]
+
+
+def test_legacy_write_status_cannot_resurrect_cancelled(tmp_path):
+    """R17-2: legacy write_status must not overwrite cancelled → running."""
+    run = create_run(tmp_path, mode="pipeline", goal="r17 no resurrect")
+    rid = run["run_id"]
+    assert classify_run_schema(run) is RunSchema.LEGACY_V1
+
+    write_status(tmp_path, rid, "running", extra={"stage": "implement"})
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+    assert load_run(tmp_path, rid)["status"] == "cancelled"
+
+    resurrected = write_status(
+        tmp_path, rid, "running", extra={"stage": "post-cancel"}
+    )
+    assert resurrected["status"] == "cancelled"
+    assert load_run(tmp_path, rid)["status"] == "cancelled"
+    assert "post-cancel" not in (resurrected.get("stage") or "")
+
+
+def test_legacy_write_status_idempotent_same_terminal(tmp_path):
+    """R17-2: rewriting the same terminal status is a no-op identity return."""
+    run = create_run(tmp_path, mode="ulw", goal="r17 terminal idempotent")
+    rid = run["run_id"]
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+    before = load_run(tmp_path, rid)
+    again = write_status(tmp_path, rid, "cancelled", extra={"note": "ignored"})
+    assert again["status"] == "cancelled"
+    assert again.get("cancelled_at") == before.get("cancelled_at")
+    assert again.get("note") != "ignored"
+
+
+def test_legacy_cancel_idempotent_already_cancelled(tmp_path):
+    """R17-1: second legacy cancel is idempotent (no re-signal required)."""
+    run = create_run(tmp_path, mode="ulw", goal="r17 cancel idempotent")
+    rid = run["run_id"]
+    first = cancel_run(tmp_path, rid, kill_grace_s=0)
+    second = cancel_run(tmp_path, rid, kill_grace_s=0)
+    assert first["status"] == "cancelled"
+    assert second["status"] == "cancelled"
+    assert second.get("cancel_outcome") == "already cancelled"
+
+
+def test_legacy_set_verified_refuses_cancelled(tmp_path):
+    """R18-2: legacy set_verified must not overwrite cancelled → verified."""
+    from omg_cli.acceptance import freeze_and_run
+
+    run = create_run(tmp_path, mode="ulw", goal="r18 set_verified cancelled")
+    rid = run["run_id"]
+    assert classify_run_schema(run) is RunSchema.LEGACY_V1
+
+    prd = {
+        "version": 1,
+        "goal": "r18",
+        "stories": [
+            {"id": "s1", "title": "ok", "commands": [["true"]]}
+        ],
+        "global_commands": [],
+    }
+    assert freeze_and_run(tmp_path, rid, prd) is True
+
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+    assert load_run(tmp_path, rid)["status"] == "cancelled"
+
+    with pytest.raises(PermissionError, match="cancelled"):
+        set_verified(tmp_path, rid)
+    assert load_run(tmp_path, rid)["status"] == "cancelled"
+    assert load_run(tmp_path, rid).get("verified") is not True
+
+
+def test_legacy_set_verified_idempotent_when_already_verified(tmp_path):
+    """R18-2: set_verified on already-verified legacy run is idempotent."""
+    from omg_cli.acceptance import freeze_and_run
+
+    run = create_run(tmp_path, mode="ulw", goal="r18 set_verified idempotent")
+    rid = run["run_id"]
+    prd = {
+        "version": 1,
+        "goal": "r18",
+        "stories": [
+            {"id": "s1", "title": "ok", "commands": [["true"]]}
+        ],
+        "global_commands": [],
+    }
+    assert freeze_and_run(tmp_path, rid, prd) is True
+    first = set_verified(tmp_path, rid)
+    assert first["status"] == "verified"
+    second = set_verified(tmp_path, rid)
+    assert second["status"] == "verified"
+    assert second.get("verified_at") == first.get("verified_at")
+
+
+def test_legacy_set_verified_force_capability_may_override_cancelled(tmp_path):
+    """R18-2: force=True + in-process capability is the cancelled→verified break-glass."""
+    from omg_cli.state import (
+        disable_force_verified_for_tests,
+        enable_force_verified_for_tests,
+    )
+
+    disable_force_verified_for_tests()
+    run = create_run(tmp_path, mode="ulw", goal="r18 force override cancelled")
+    rid = run["run_id"]
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+    assert load_run(tmp_path, rid)["status"] == "cancelled"
+
+    with pytest.raises(PermissionError, match="force"):
+        set_verified(tmp_path, rid, force=True)
+
+    try:
+        enable_force_verified_for_tests()
+        verified = set_verified(tmp_path, rid, force=True)
+        assert verified["status"] == "verified"
+        assert verified["verified"] is True
+    finally:
+        disable_force_verified_for_tests()
+
+
+def test_clear_active_cannot_unlink_newer_run_active(tmp_path, monkeypatch):
+    """R18-3: clear_active(A) must not delete active.json after create_run(B).
+
+    Interleaving without create.lock: clear reads A, create publishes B, clear
+    unlinks (deletes B). With shared create.lock around read/compare/unlink,
+    create blocks until clear finishes (or clear re-checks under lock) so B
+    remains active.
+    """
+    import omg_cli.state as state_mod
+    from omg_cli.state import clear_active
+
+    first = create_run(tmp_path, mode="ulw", goal="r18 clear race A")
+    rid_a = first["run_id"]
+    write_status(tmp_path, rid_a, "cancelled")
+    state_mod._atomic_write_json(
+        state_mod._active_path(tmp_path),
+        {"run_id": rid_a, "updated_at": "2026-08-05T00:00:00+00:00"},
+    )
+    assert load_active_run(tmp_path)["run_id"] == rid_a
+
+    barrier = threading.Barrier(2)
+    events: list[str] = []
+    original_read = state_mod._read_json
+
+    def paused_read(path):
+        data = original_read(path)
+        if path.name == "active.json" and data and data.get("run_id") == rid_a:
+            events.append("clear_saw_a")
+            barrier.wait(timeout=5)
+            events.append("clear_resume")
+        return data
+
+    monkeypatch.setattr(state_mod, "_read_json", paused_read)
+
+    create_result: dict = {}
+    create_err: list[BaseException] = []
+
+    def create_worker() -> None:
+        try:
+            barrier.wait(timeout=5)
+            create_result.update(
+                create_run(tmp_path, mode="ralph", goal="r18 clear race B")
+            )
+            events.append("created_b")
+        except BaseException as exc:  # noqa: BLE001
+            create_err.append(exc)
+
+    t = threading.Thread(target=create_worker)
+    t.start()
+    clear_active(tmp_path, rid_a)
+    events.append("clear_done")
+    t.join(timeout=10)
+    assert not t.is_alive()
+    assert not create_err, create_err
+
+    rid_b = create_result["run_id"]
+    assert rid_b != rid_a
+    active = load_active_run(tmp_path)
+    assert active is not None, events
+    assert active["run_id"] == rid_b, events
+    assert "clear_saw_a" in events
+    assert "created_b" in events

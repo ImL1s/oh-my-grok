@@ -10,6 +10,7 @@ from omg_cli.ralplan import (
     READ_ONLY_STAGES,
     artifact_contains_approve,
     build_stage_prompt,
+    invalidate_ralplan_consensus,
     load_ralplan_state,
     ralplan_state_path,
     run_ralplan,
@@ -23,6 +24,341 @@ from omg_cli.state import load_active_run
 
 def test_default_max_rounds_is_three():
     assert DEFAULT_MAX_ROUNDS == 3
+
+
+def test_invalidate_ralplan_consensus_fail_closed_on_writer_mismatch(tmp_path):
+    """Mirrors invalidate_implementation_receipt's fail-closed guard: only
+    mutate a stamp that is actually CLI-owned for this run — an untrusted
+    or foreign-run stamp must be left alone rather than silently rewritten."""
+    path = ralplan_state_path(tmp_path, "run-a")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    forged = {"writer": "not-omg-cli", "run_id": "run-a", "accepted": True}
+    path.write_text(json.dumps(forged), encoding="utf-8")
+
+    invalidate_ralplan_consensus(tmp_path, "run-a", reason="test")
+
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk == forged  # untouched: wrong writer
+
+
+def test_invalidate_ralplan_consensus_fail_closed_on_run_id_mismatch(tmp_path):
+    path = ralplan_state_path(tmp_path, "run-a")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    from omg_cli.evidence import CLI_WRITER
+
+    foreign = {"writer": CLI_WRITER, "run_id": "some-other-run", "accepted": True}
+    path.write_text(json.dumps(foreign), encoding="utf-8")
+
+    invalidate_ralplan_consensus(tmp_path, "run-a", reason="test")
+
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk == foreign  # untouched: run_id mismatch
+
+
+def test_invalidate_ralplan_consensus_mutates_valid_cli_stamp(tmp_path):
+    path = ralplan_state_path(tmp_path, "run-a")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    from omg_cli.evidence import CLI_WRITER
+
+    valid = {"writer": CLI_WRITER, "run_id": "run-a", "accepted": True}
+    path.write_text(json.dumps(valid), encoding="utf-8")
+
+    invalidate_ralplan_consensus(tmp_path, "run-a", reason="test")
+
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk.get("accepted") is False
+    assert on_disk.get("invalidated") is True
+
+
+def _v2_approve_payload(stage: str, *, run_id: str, round_n: int, **identity):
+    """Full structured proposal accepted by ``_validate_v2_proposal``."""
+    payload = {
+        "schema_version": 2,
+        "run_id": run_id,
+        "stage": stage,
+        "role": stage,
+        "round": round_n,
+        **identity,
+    }
+    if stage == "planner":
+        payload.update(
+            {
+                "verdict": "READY",
+                "plan": "do the thing",
+                "principles": "kiss",
+                "drivers": "ship it",
+                "options": "one viable path",
+                "acceptance": "tests pass",
+            }
+        )
+    elif stage == "architect":
+        payload.update(
+            {
+                "verdict": "APPROVE",
+                "steelman": "strongest viable interpretation",
+                "tradeoff": "safety before breadth",
+                "synthesis": "use the strict lifecycle",
+            }
+        )
+    elif stage == "critic":
+        payload.update(
+            {
+                "verdict": "APPROVE",
+                "options_assessment": "reviewed",
+                "premortem": "no blockers found",
+                "acceptance_assessment": "meets acceptance bar",
+                "test_plan": "unit + integration",
+                "synthesis": "approve",
+            }
+        )
+    return payload
+
+
+def _v2_full_approve_executor():
+    """Real-shaped stage executor: planner READY, architect/critic APPROVE."""
+
+    def execute(stage, **kwargs):
+        payload = _v2_approve_payload(
+            stage,
+            run_id=kwargs["run_id"],
+            round_n=kwargs["round_n"],
+            invocation_id=kwargs["invocation_id"],
+            session_id=kwargs["session_id"],
+            input_sha256=kwargs["input_sha256"],
+        )
+        artifact = stage_artifact_json_path(
+            Path(kwargs["root"]), kwargs["run_id"], stage, kwargs["round_n"]
+        )
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        return 0
+
+    return execute
+
+
+def test_fresh_accept_clears_invalidation_strict_v2(tmp_path):
+    """R5-1: a fresh ``accepted: true`` write must clear a prior
+    ``invalidated``/``invalidated_reason``/``invalidated_at`` stamp so
+    ``_consensus_ready`` unlocks again — mirrors the real accept path used
+    by autopilot's ralplan phase (strict-v2 consensus), not a hand-crafted
+    stamp overwrite."""
+    from omg_cli.autopilot import _consensus_ready
+    from omg_cli.state import create_run
+
+    goal = "clear invalidation on fresh accept"
+    run = create_run(
+        tmp_path,
+        mode="ralplan",
+        goal=goal,
+        extra={"schema_version": 2, "lifecycle_version": 2},
+    )
+    run_id = run["run_id"]
+
+    rc = run_ralplan(
+        goal,
+        root=tmp_path,
+        existing_run_id=run_id,
+        dry_run=True,
+        stage_executor=_v2_full_approve_executor(),
+    )
+    assert rc == 0
+    state = load_ralplan_state(tmp_path, run_id)
+    assert state is not None
+    assert state["accepted"] is True
+    assert _consensus_ready(tmp_path, run_id) is True
+
+    invalidate_ralplan_consensus(tmp_path, run_id, reason="replan from review")
+    state = load_ralplan_state(tmp_path, run_id)
+    assert state is not None
+    assert state["accepted"] is False
+    assert state["invalidated"] is True
+    assert state["invalidated_reason"]
+    assert state["invalidated_at"]
+    assert _consensus_ready(tmp_path, run_id) is False
+
+    # Fresh consensus attempt (round 2) via the real strict-v2 accept path —
+    # not a hand-crafted stamp — must clear the invalidation on accept.
+    rc = run_ralplan(
+        goal,
+        root=tmp_path,
+        existing_run_id=run_id,
+        dry_run=True,
+        stage_executor=_v2_full_approve_executor(),
+    )
+    assert rc == 0
+
+    state = load_ralplan_state(tmp_path, run_id)
+    assert state is not None
+    assert state["accepted"] is True
+    assert "invalidated" not in state
+    assert "invalidated_reason" not in state
+    assert "invalidated_at" not in state
+    assert _consensus_ready(tmp_path, run_id) is True
+
+
+def test_invalidated_flag_cleared_at_fresh_v2_cycle_start(tmp_path):
+    """R5-1: entering a new strict-v2 consensus attempt under lease while
+    ``invalidated=True``/``accepted=False`` must clear the invalidation
+    stamp at cycle start — a mid-run resume must not stay fenced by stale
+    invalidation history even before any new accept happens."""
+    from omg_cli.evidence import CLI_WRITER
+
+    goal = "clear invalidation at cycle start"
+    from omg_cli.state import create_run
+
+    run = create_run(
+        tmp_path,
+        mode="ralplan",
+        goal=goal,
+        extra={"schema_version": 2, "lifecycle_version": 2},
+    )
+    run_id = run["run_id"]
+
+    path = ralplan_state_path(tmp_path, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stale_state = {
+        "writer": CLI_WRITER,
+        "schema_version": 2,
+        "lifecycle_version": 2,
+        "run_id": run_id,
+        "goal": goal,
+        "status": "draft",
+        "stage": "draft",
+        "round": 0,
+        "max_rounds": 5,
+        "history": [],
+        "sessions": {
+            role: {"session_id": "s-" + role, "attempts": 0}
+            for role in ("planner", "architect", "critic")
+        },
+        "accepted": False,
+        "invalidated": True,
+        "invalidated_reason": "stale replan",
+        "invalidated_at": "2026-01-01T00:00:00+00:00",
+    }
+    path.write_text(json.dumps(stale_state), encoding="utf-8")
+
+    # Executor that never writes a proposal: this cycle does not accept, it
+    # only proves the invalidation stamp is cleared at cycle start.
+    rc = run_ralplan(
+        goal,
+        root=tmp_path,
+        existing_run_id=run_id,
+        max_rounds=1,
+        dry_run=True,
+        stage_executor=lambda stage, **kwargs: 0,
+    )
+    assert rc != 0  # no APPROVE produced; consensus not reached this cycle
+
+    state = load_ralplan_state(tmp_path, run_id)
+    assert state is not None
+    assert "invalidated" not in state
+    assert "invalidated_reason" not in state
+    assert "invalidated_at" not in state
+
+
+def test_reset_for_fresh_cycle_mints_new_session_ids_and_zeroes_attempts():
+    """R8-1/P2-5: ``_reset_for_fresh_cycle`` must mint a brand-new
+    ``session_id`` per role, not just zero ``attempts`` on the old one —
+    reusing the prior cycle's UUID with a reset counter would let the
+    executor mistake this for a continuation of the invalidated session."""
+    from omg_cli import ralplan as rp
+
+    old_session_ids = {
+        role: f"old-{role}" for role in ("planner", "architect", "critic")
+    }
+    state = {
+        "sessions": {
+            role: {"session_id": old_session_ids[role], "attempts": 3}
+            for role in ("planner", "architect", "critic")
+        },
+    }
+
+    rp._reset_for_fresh_cycle(state)
+
+    for role in ("planner", "architect", "critic"):
+        binding = state["sessions"][role]
+        assert binding["session_id"] != old_session_ids[role]
+        assert binding["attempts"] == 0
+
+
+def test_high_prior_history_invalidate_rerun_still_executes_stages(tmp_path):
+    """R6-1: seeded history through round 5 + invalidate + a low-ceiling
+    re-run must still execute stages, not immediately block with zero
+    stages. Without resetting history/round/session-attempts on a fresh
+    cycle, ``first_round`` (derived from max prior history round + 1) stays
+    pinned past the configured ceiling forever, so every future replan
+    instantly blocks. Identity fields (run_id/goal/writer/schema) must
+    survive the reset."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.state import create_run
+
+    goal = "reset history on fresh replan cycle"
+    run = create_run(
+        tmp_path,
+        mode="ralplan",
+        goal=goal,
+        extra={"schema_version": 2, "lifecycle_version": 2},
+    )
+    run_id = run["run_id"]
+
+    path = ralplan_state_path(tmp_path, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    prior_history = [
+        {
+            "stage": stage,
+            "role": stage,
+            "round": 5,
+            "verdict": "APPROVE" if stage != "planner" else "READY",
+            "exit_code": 0,
+            "valid": True,
+        }
+        for stage in ("planner", "architect", "critic")
+    ]
+    stale_state = {
+        "writer": CLI_WRITER,
+        "schema_version": 2,
+        "lifecycle_version": 2,
+        "run_id": run_id,
+        "goal": goal,
+        "status": "critic",
+        "stage": "critic",
+        "round": 5,
+        "max_rounds": 5,
+        "history": prior_history,
+        "sessions": {
+            role: {"session_id": "s-" + role, "attempts": 5}
+            for role in ("planner", "architect", "critic")
+        },
+        "accepted": False,
+        "invalidated": True,
+        "invalidated_reason": "stale replan",
+        "invalidated_at": "2026-01-01T00:00:00+00:00",
+    }
+    path.write_text(json.dumps(stale_state), encoding="utf-8")
+
+    rc = run_ralplan(
+        goal,
+        root=tmp_path,
+        existing_run_id=run_id,
+        max_rounds=1,
+        dry_run=True,
+        stage_executor=_v2_full_approve_executor(),
+    )
+    assert rc == 0  # a fresh round 1 must be able to reach APPROVE, not block
+
+    state = load_ralplan_state(tmp_path, run_id)
+    assert state is not None
+    assert state["accepted"] is True
+    # Identity fields survive the reset untouched.
+    assert state["run_id"] == run_id
+    assert state["goal"] == goal
+    assert state["writer"] == CLI_WRITER
+    assert state["schema_version"] == 2
+    # New stages actually executed at round 1 (not stuck past the ceiling).
+    new_rounds = {item["round"] for item in state["history"]}
+    assert new_rounds == {1}
+    assert "invalidated" not in state
 
 
 def test_artifact_approve_detection(tmp_path):
@@ -516,3 +852,278 @@ def test_ralplan_run_allows_autopilot_embed(tmp_path):
     assert active is not None
     assert active["run_id"] == rid
     assert active.get("mode") == "autopilot"
+
+
+def test_ralplan_run_rejects_mismatched_goal_for_autopilot(tmp_path, capsys):
+    """R5-4: embedding ralplan into an autopilot run must bind to the
+    frozen run goal — a mismatched CLI goal is rejected rather than
+    silently re-targeting a running autopilot's plan."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "embed me", skip_interview=True)
+    rid = st["run_id"]
+    rc = run_ralplan(
+        "a totally different goal",
+        root=tmp_path,
+        dry_run=True,
+        max_rounds=1,
+        existing_run_id=rid,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "goal" in err.lower()
+    assert not (tmp_path / ".omg" / "state" / "runs" / rid / "ralplan.json").is_file()
+
+
+def test_ralplan_run_rejects_wrong_autopilot_phase(tmp_path, capsys):
+    """R5-4: embedding ralplan into an autopilot run parked outside the
+    ``ralplan`` phase (e.g. still at ``interview``) must be rejected —
+    the CLI FSM must never rewrite a phase it does not own."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "embed me", skip_interview=False)
+    rid = st["run_id"]
+    assert st["phase"] == "interview"
+    rc = run_ralplan(
+        "embed me",
+        root=tmp_path,
+        dry_run=True,
+        max_rounds=1,
+        existing_run_id=rid,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "phase" in err.lower()
+    assert not (tmp_path / ".omg" / "state" / "runs" / rid / "ralplan.json").is_file()
+
+
+def test_ralplan_run_rejects_legacy_schema_for_autopilot(tmp_path, capsys):
+    """R7-4: autopilot embedding must require strict-v2 — a legacy-v1
+    autopilot run (e.g. pre-migration status.json missing schema_version)
+    must be rejected with a clear error, never silently downgraded into
+    ``_run_ralplan_v1``'s frozen single-run FSM."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "embed me", skip_interview=True)
+    rid = st["run_id"]
+
+    status_path = tmp_path / ".omg" / "state" / "runs" / rid / "status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status.get("schema_version") == 2  # sanity: real autopilot starts strict-v2
+    del status["schema_version"]
+    del status["lifecycle_version"]
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+
+    rc = run_ralplan(
+        "embed me",
+        root=tmp_path,
+        dry_run=True,
+        max_rounds=1,
+        existing_run_id=rid,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "autopilot" in err.lower()
+    assert "strict-v2" in err.lower()
+    assert not (tmp_path / ".omg" / "state" / "runs" / rid / "ralplan.json").is_file()
+
+
+def test_ralplan_run_rejects_terminal_autopilot_run(tmp_path, capsys):
+    """R8-2 (P2-3): an autopilot run that has already reached a terminal
+    status (cancelled/completed/failed/verified) must never accept a new
+    ralplan embedding — a dead run's plan is not a valid target."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "embed me", skip_interview=True)
+    rid = st["run_id"]
+
+    status_path = tmp_path / ".omg" / "state" / "runs" / rid / "status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    status["status"] = "cancelled"
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+
+    rc = run_ralplan(
+        "embed me",
+        root=tmp_path,
+        dry_run=True,
+        max_rounds=1,
+        existing_run_id=rid,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "terminal" in err.lower()
+    assert not (tmp_path / ".omg" / "state" / "runs" / rid / "ralplan.json").is_file()
+
+
+def test_ralplan_run_rejects_pending_cancellation_request(tmp_path, capsys):
+    """R8-2 (P2-3): a committed-but-not-yet-finalized cancellation request
+    must also block embedding. ``omg cancel`` commits its request under
+    the distinct transition lock; there is a real window where the request
+    exists but ``status`` has not flipped to ``cancelled`` yet — the CLI
+    must fail closed in that window too, not just once status is terminal."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "embed me", skip_interview=True)
+    rid = st["run_id"]
+
+    request_path = tmp_path / ".omg" / "state" / "runs" / rid / "cancel.request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "writer": "omg-cli",
+                "run_id": rid,
+                "request_id": "pending-request",
+                "requested_at": "2026-08-05T00:00:00+00:00",
+                "observed_generation": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = run_ralplan(
+        "embed me",
+        root=tmp_path,
+        dry_run=True,
+        max_rounds=1,
+        existing_run_id=rid,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "cancellation" in err.lower()
+    assert not (tmp_path / ".omg" / "state" / "runs" / rid / "ralplan.json").is_file()
+
+
+def test_ralplan_v2_reauthorizes_before_accept_rejects_mid_round_cancellation(
+    tmp_path, capsys
+):
+    """R8-2 (P2-3), TDD core case: a strict-v2 ralplan embedding holds the
+    execution lease across the planner/architect/critic stages of a round.
+    A concurrent ``omg cancel`` commits its request under the distinct
+    transition lock mid-round (simulated here by the critic-stage
+    executor), landing *after* the lease-scoped authorization at loop entry
+    but *before* the accepted=True write. The re-authorization immediately
+    before that write must catch it: run_ralplan must return non-zero and
+    must not stamp accepted=True even though critic itself returned
+    APPROVE."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "embed me", skip_interview=True)
+    rid = st["run_id"]
+    request_path = tmp_path / ".omg" / "state" / "runs" / rid / "cancel.request.json"
+
+    def exec_with_cancel_race(stage, **kwargs):
+        payload = _v2_approve_payload(
+            stage,
+            run_id=kwargs["run_id"],
+            round_n=kwargs["round_n"],
+            invocation_id=kwargs["invocation_id"],
+            session_id=kwargs["session_id"],
+            input_sha256=kwargs["input_sha256"],
+        )
+        artifact = stage_artifact_json_path(
+            Path(kwargs["root"]), kwargs["run_id"], stage, kwargs["round_n"]
+        )
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        if stage == "critic":
+            request_path.write_text(
+                json.dumps(
+                    {
+                        "writer": "omg-cli",
+                        "run_id": kwargs["run_id"],
+                        "request_id": "race-request",
+                        "requested_at": "2026-08-05T00:00:00+00:00",
+                        "observed_generation": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return 0
+
+    rc = run_ralplan(
+        "embed me",
+        root=tmp_path,
+        dry_run=True,
+        existing_run_id=rid,
+        stage_executor=exec_with_cancel_race,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "cancellation" in err.lower()
+
+    state = load_ralplan_state(tmp_path, rid)
+    assert state is not None
+    assert state.get("accepted") is not True
+
+    status = json.loads(
+        (tmp_path / ".omg" / "state" / "runs" / rid / "status.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert status.get("ralplan_status") != "accepted"
+
+
+def test_ralplan_v2_reauthorizes_before_every_sidecar_save_mid_round(
+    tmp_path, capsys
+):
+    """R10-3 (P2-R8-B): re-authorization must happen before *every*
+    ``save_ralplan_state`` under the held lease, not just the accept write.
+    Here the cancellation request lands during the ``architect`` stage
+    (round 1), well before ``critic`` ever runs. The guard immediately
+    before persisting architect's history entry must catch it: run_ralplan
+    must return non-zero, the architect entry must never be recorded, and
+    critic must never execute."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "embed me", skip_interview=True)
+    rid = st["run_id"]
+    request_path = tmp_path / ".omg" / "state" / "runs" / rid / "cancel.request.json"
+
+    def exec_with_cancel_after_architect(stage, **kwargs):
+        payload = _v2_approve_payload(
+            stage,
+            run_id=kwargs["run_id"],
+            round_n=kwargs["round_n"],
+            invocation_id=kwargs["invocation_id"],
+            session_id=kwargs["session_id"],
+            input_sha256=kwargs["input_sha256"],
+        )
+        artifact = stage_artifact_json_path(
+            Path(kwargs["root"]), kwargs["run_id"], stage, kwargs["round_n"]
+        )
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        if stage == "architect":
+            request_path.write_text(
+                json.dumps(
+                    {
+                        "writer": "omg-cli",
+                        "run_id": kwargs["run_id"],
+                        "request_id": "race-request-2",
+                        "requested_at": "2026-08-05T00:00:00+00:00",
+                        "observed_generation": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        if stage == "critic":
+            raise AssertionError("critic must never run once cancellation lands")
+        return 0
+
+    rc = run_ralplan(
+        "embed me",
+        root=tmp_path,
+        dry_run=True,
+        existing_run_id=rid,
+        stage_executor=exec_with_cancel_after_architect,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "cancellation" in err.lower()
+
+    state = load_ralplan_state(tmp_path, rid)
+    assert state is not None
+    assert state.get("accepted") is not True
+    recorded_stages = [item.get("stage") for item in state.get("history", [])]
+    assert "architect" not in recorded_stages
+    assert "critic" not in recorded_stages

@@ -350,6 +350,15 @@ def run_qa_cycle(
         state.pop("invalidated", None)
         state.pop("invalidated_reason", None)
         state.pop("invalidated_at", None)
+        # Snapshot the broader implement-gate fingerprint (not just
+        # product_hash's narrower omg_cli/**/*.py view) so stage_qa_is_clean
+        # can detect drift on curated non-Python product surfaces
+        # (plugin.json/hooks/skills/agents/templates) that happen after this
+        # clean cycle but before acceptance — closes the QA-side analog of
+        # the implement→review P1 fingerprint gap.
+        from omg_cli.autopilot import _implement_workspace_fingerprint
+
+        cycle["implement_workspace_fp"] = _implement_workspace_fingerprint(root)
         _save(root, run_id, state)
         return state
 

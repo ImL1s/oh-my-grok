@@ -1,7 +1,10 @@
 """U-09 structured hash-bound review gate."""
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
+
+import pytest
 
 from omg_cli.review import (
     compute_diff_hash,
@@ -31,6 +34,44 @@ def test_clean_requires_approve_and_clear_on_current_hash(tmp_path: Path) -> Non
     assert st["disposition"] == "clean"
     assert st["diff_hash"] == compute_diff_hash(diff)
     assert st["writer"] == "omg-cli"
+
+
+def test_run_structured_review_records_workspace_fingerprint(tmp_path: Path) -> None:
+    """R2-2: every stamp records the current implement-workspace fingerprint
+    so the autopilot review gate can bind clean=true to the workspace it
+    actually describes."""
+    from omg_cli.autopilot import _implement_workspace_fingerprint
+
+    run = create_run(tmp_path, mode="dual-review", goal="fp")
+    rid = run["run_id"]
+    st = run_structured_review(
+        tmp_path,
+        rid,
+        diff_text="diff body",
+        code_reviewer_payload={"verdict": "APPROVE", "findings": []},
+        architect_payload={"verdict": "CLEAR", "findings": []},
+    )
+    assert st["workspace_fp"] == _implement_workspace_fingerprint(tmp_path)
+
+
+def test_cmd_review_rejects_empty_diff_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """R2-2: --diff-text must be non-empty on the CLI path — a clean stamp
+    bound to an empty diff hash is not a real per-diff review."""
+    from omg_cli.commands import modes as modes_cmds
+
+    monkeypatch.setattr(modes_cmds, "project_root", lambda: tmp_path)
+    run = create_run(tmp_path, mode="dual-review", goal="empty diff")
+    ns = argparse.Namespace(
+        run_id=run["run_id"],
+        diff_text="   ",
+        code_reviewer_json="{}",
+        architect_json="{}",
+    )
+    rc = modes_cmds.cmd_review(ns)
+    assert rc == 2
+    assert "diff-text" in capsys.readouterr().err
 
 
 def test_stale_hash_and_wrong_role_fail(tmp_path: Path) -> None:
