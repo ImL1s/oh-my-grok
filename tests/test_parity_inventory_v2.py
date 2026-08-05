@@ -649,6 +649,36 @@ ISSUE_78_OMC_MINIMUM_IDS = frozenset(
     }
 )
 
+# Issue #78-B OMX minimum capability IDs (catalogue seed; not claim completeness).
+ISSUE_78_OMX_MINIMUM_IDS = frozenset(
+    {
+        "omx.launch.worktree_tmux_hud",
+        "omx.workflow.deep_interview_ralplan",
+        "omx.research.modes",
+        "omx.team.worker_mailbox_question",
+        "omx.agents.reviewer_product_catalog",
+        "omx.goal.stop_lock_recovery",
+        "omx.plugin.setup_update_migrate",
+        "omx.quality.visual_modes",
+    }
+)
+
+# Issue #78-B OmO minimum capability IDs (catalogue seed; not claim completeness).
+ISSUE_78_OMO_MINIMUM_IDS = frozenset(
+    {
+        "omo.agents.discipline_routing",
+        "omo.rules.intent_gate",
+        "omo.agents.background",
+        "omo.team.hyperplan_security",
+        "omo.goal.todo_continuation",
+        "omo.edit.hash_anchored",
+        "omo.tools.lsp_ast_codegraph_mcp",
+        "omo.quality.comment_hygiene",
+        "omo.ulw.ultrawork_loop",
+        "omo.compat.tmux_plugin",
+    }
+)
+
 
 def test_required_category_taxonomy_constant_matches_issue_78b() -> None:
     expected = frozenset(
@@ -689,3 +719,27 @@ def test_omc_inventory_rows_cover_issue_78_minimum_ids() -> None:
             continue
         assert row["upstream"]["source"] == "OMC"
         assert row["upstream"]["revision"] == inv["upstream_pins"]["OMC"]["revision"]
+
+
+def test_omx_inventory_rows_cover_issue_78_minimum_ids() -> None:
+    inv = load_json_object(ROOT / "docs/parity/omg-parity.json")
+    ids = {row["id"] for row in inv["capabilities"]}
+    missing = ISSUE_78_OMX_MINIMUM_IDS - ids
+    assert not missing, f"missing OMX minimum capability ids: {sorted(missing)}"
+    for row in inv["capabilities"]:
+        if row["id"] not in ISSUE_78_OMX_MINIMUM_IDS:
+            continue
+        assert row["upstream"]["source"] == "OMX"
+        assert row["upstream"]["revision"] == inv["upstream_pins"]["OMX"]["revision"]
+
+
+def test_omo_inventory_rows_cover_issue_78_minimum_ids() -> None:
+    inv = load_json_object(ROOT / "docs/parity/omg-parity.json")
+    ids = {row["id"] for row in inv["capabilities"]}
+    missing = ISSUE_78_OMO_MINIMUM_IDS - ids
+    assert not missing, f"missing OmO minimum capability ids: {sorted(missing)}"
+    for row in inv["capabilities"]:
+        if row["id"] not in ISSUE_78_OMO_MINIMUM_IDS:
+            continue
+        assert row["upstream"]["source"] == "OmO"
+        assert row["upstream"]["revision"] == inv["upstream_pins"]["OmO"]["revision"]

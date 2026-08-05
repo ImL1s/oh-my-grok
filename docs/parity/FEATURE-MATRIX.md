@@ -21,6 +21,24 @@
 | `omc.memory.wiki_hud_notify` | state_memory_observability | omg_native | grok=catalogued | catalogued | #78 |
 | `omc.goal.ralph_autopilot_ultra` | runtime_orchestration | omg_native | grok=catalogued | catalogued | #78 |
 | `omc.quality.visual_release` | quality_visual_edit_safety | omg_native | grok=catalogued | catalogued | #78 |
+| `omx.launch.worktree_tmux_hud` | state_memory_observability | omg_native | grok=catalogued | catalogued | #69, #78 |
+| `omx.workflow.deep_interview_ralplan` | runtime_orchestration | omg_native | grok=catalogued | catalogued | #78 |
+| `omx.research.modes` | runtime_orchestration | optional_unclaimed | grok=catalogued | optional_unclaimed | #78 |
+| `omx.team.worker_mailbox_question` | team | omg_native | grok=catalogued | catalogued | #69, #78 |
+| `omx.agents.reviewer_product_catalog` | agents_routing | omg_native | grok=catalogued | catalogued | #78 |
+| `omx.goal.stop_lock_recovery` | runtime_orchestration | omg_native | grok=catalogued | catalogued | #78 |
+| `omx.plugin.setup_update_migrate` | install_update | omg_native | grok=catalogued | catalogued | #78 |
+| `omx.quality.visual_modes` | quality_visual_edit_safety | omg_native | grok=catalogued | catalogued | #78 |
+| `omo.agents.discipline_routing` | agents_routing | omg_native | grok=catalogued | catalogued | #78 |
+| `omo.rules.intent_gate` | hooks | omg_native | grok=catalogued | catalogued | #78 |
+| `omo.agents.background` | jobs | optional_unclaimed | grok=catalogued | optional_unclaimed | #68, #78 |
+| `omo.team.hyperplan_security` | team | omg_native | grok=catalogued | catalogued | #69, #78 |
+| `omo.goal.todo_continuation` | runtime_orchestration | host_impossible | grok=catalogued | host_impossible | #78 |
+| `omo.edit.hash_anchored` | quality_visual_edit_safety | optional_unclaimed | grok=catalogued | optional_unclaimed | #78 |
+| `omo.tools.lsp_ast_codegraph_mcp` | tools_mcp | omg_native | grok=catalogued | catalogued | #78 |
+| `omo.quality.comment_hygiene` | quality_visual_edit_safety | optional_unclaimed | grok=catalogued | optional_unclaimed | #78 |
+| `omo.ulw.ultrawork_loop` | runtime_orchestration | omg_native | grok=catalogued | catalogued | #78 |
+| `omo.compat.tmux_plugin` | team | omg_native | grok=catalogued | catalogued | #69, #78 |
 
 ## Category status
 

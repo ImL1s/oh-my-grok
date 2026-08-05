@@ -7,4 +7,13 @@
 
 | Capability | Category | Status | Maturity | Marker | Gap |
 | --- | --- | --- | --- | --- | --- |
-| _(none)_ | — | — | — | — | — |
+| `omo.agents.discipline_routing` | agents_routing | bootstrapping | grok=catalogued | catalogued | Static omg-* agent catalog exists; OmO discipline/category routing engine is not mirrored (#78). |
+| `omo.rules.intent_gate` | hooks | bootstrapping | grok=catalogued | catalogued | Rules-file + PreToolUse soft-gate substitute IntentGate; Grok cannot inject via UserPromptSubmit (#78). |
+| `omo.agents.background` | jobs | bootstrapping | grok=catalogued | optional_unclaimed | No OmO-style background agents; durable jobs plane tracked under #68 (jobs.durable_background). |
+| `omo.team.hyperplan_security` | team | bootstrapping | grok=catalogued | catalogued | Team + ralplan + security-reviewer substitute hyperplan/security-research; Team v3 remains #69. |
+| `omo.goal.todo_continuation` | runtime_orchestration | bootstrapping | grok=catalogued | host_impossible | OmO client session.prompt inject has no Grok host equivalent; Stop soft-pin is not todo-continuation (#78). |
+| `omo.edit.hash_anchored` | quality_visual_edit_safety | bootstrapping | grok=catalogued | optional_unclaimed | No hash-anchored edit surface in OMG; host edit tools are used as-is (#78). |
+| `omo.tools.lsp_ast_codegraph_mcp` | tools_mcp | bootstrapping | grok=catalogued | catalogued | Local omg lsp + MCP probe exist; no full AST/CodeGraph MCP bridge (#78). |
+| `omo.quality.comment_hygiene` | quality_visual_edit_safety | bootstrapping | grok=catalogued | optional_unclaimed | No dedicated OmO-style comment-hygiene checker claimed in OMG (#78). |
+| `omo.ulw.ultrawork_loop` | runtime_orchestration | bootstrapping | grok=catalogued | catalogued | ULW fan-out/workers/integrate exist; OmO ulw-loop host APIs are not 1:1 (#78). |
+| `omo.compat.tmux_plugin` | team | bootstrapping | grok=catalogued | catalogued | Default-on tmux team plane + plugin hooks exist; OmO host-plugin compat matrix is partial (#69/#78). |
