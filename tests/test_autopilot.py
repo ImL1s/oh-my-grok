@@ -2366,6 +2366,100 @@ def test_stamp_implementation_receipt_rejects_malformed_hash(tmp_path: Path) -> 
             )
 
 
+def test_stamp_implementation_receipt_rejects_foreign_run_lease(
+    tmp_path: Path,
+) -> None:
+    """R15-2: run A lease must not stamp run B (target-run lease binding)."""
+    from omg_cli.implementation import (
+        implementation_receipt_path,
+        stamp_implementation_receipt,
+    )
+    from omg_cli.state import FencingError, clear_active, execution_lease
+
+    rid_a = _strict_run_for_receipt(tmp_path)
+    clear_active(tmp_path, rid_a)  # allow a second concurrent run without supersede
+    rid_b = _strict_run_for_receipt(tmp_path)
+    digest = "a" * 64
+    path_b = implementation_receipt_path(tmp_path, rid_b)
+
+    with execution_lease(tmp_path, rid_a, intent="stamp-foreign-run") as lease_a:
+        with pytest.raises(FencingError, match="different root or run"):
+            stamp_implementation_receipt(
+                tmp_path, rid_b, content_sha256=digest, lease=lease_a
+            )
+
+    assert not path_b.is_file()
+
+
+def test_stamp_implementation_receipt_rejects_foreign_root_lease(
+    tmp_path: Path,
+) -> None:
+    """R15-2: root A lease must not stamp root B."""
+    from omg_cli.implementation import (
+        implementation_receipt_path,
+        stamp_implementation_receipt,
+    )
+    from omg_cli.state import FencingError, execution_lease
+
+    root_a = tmp_path / "root-a"
+    root_b = tmp_path / "root-b"
+    root_a.mkdir()
+    root_b.mkdir()
+    st_a = start_autopilot(root_a, "r15 stamp foreign root A", skip_interview=True)
+    st_b = start_autopilot(root_b, "r15 stamp foreign root B", skip_interview=True)
+    rid_a, rid_b = st_a["run_id"], st_b["run_id"]
+    transition(root_a, rid_a, "implement", evidence=_ev_consensus_bg())
+    transition(root_b, rid_b, "implement", evidence=_ev_consensus_bg())
+    digest = "b" * 64
+    path_b = implementation_receipt_path(root_b, rid_b)
+    binder_before = load_autopilot(root_b, rid_b).get("implement_receipt_binder")
+
+    with execution_lease(root_a, rid_a, intent="stamp-foreign-root") as lease_a:
+        with pytest.raises(FencingError, match="different root or run"):
+            stamp_implementation_receipt(
+                root_b, rid_b, content_sha256=digest, lease=lease_a
+            )
+
+    assert not path_b.is_file()
+    assert load_autopilot(root_b, rid_b).get("implement_receipt_binder") == binder_before
+
+
+def test_stamp_implementation_receipt_rejects_non_implement_phase_rebind(
+    tmp_path: Path,
+) -> None:
+    """R15-2: non-implement phase must not rebind implement_receipt_binder."""
+    from omg_cli.autopilot import _implement_workspace_fingerprint
+    from omg_cli.implementation import stamp_implementation_receipt
+    from omg_cli.state import execution_lease
+
+    st = start_autopilot(tmp_path, "r15 stamp non-implement", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    fp = _implement_workspace_fingerprint(tmp_path)
+    with execution_lease(tmp_path, rid, intent="stamp-while-implement") as lease:
+        stamp_implementation_receipt(
+            tmp_path, rid, content_sha256=fp, lease=lease, note="ok in implement"
+        )
+    binder_ok = load_autopilot(tmp_path, rid).get("implement_receipt_binder")
+    assert isinstance(binder_ok, dict)
+    assert binder_ok.get("content_sha256") == fp
+
+    transition(tmp_path, rid, "review")
+    assert status_autopilot(tmp_path, rid)["phase"] == "review"
+    binder_before = dict(load_autopilot(tmp_path, rid)["implement_receipt_binder"])
+    forged = "c" * 64
+
+    with execution_lease(tmp_path, rid, intent="stamp-while-review") as lease:
+        with pytest.raises(PermissionError, match="implement"):
+            stamp_implementation_receipt(
+                tmp_path, rid, content_sha256=forged, lease=lease
+            )
+
+    binder_after = load_autopilot(tmp_path, rid).get("implement_receipt_binder")
+    assert binder_after == binder_before
+    assert binder_after.get("content_sha256") == fp
+
+
 def test_read_implementation_receipt_rejects_forged_writer(tmp_path: Path) -> None:
     """Fail-closed: a hand-written file claiming to be the receipt but with
     the wrong writer must never be trusted."""

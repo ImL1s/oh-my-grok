@@ -46,6 +46,51 @@ def implementation_receipt_path(root: Path | str, run_id: str) -> Path:
     )
 
 
+def _assert_receipt_stamp_allowed(
+    root: Path,
+    run_id: str,
+    lease: ExecutionLease,
+    *,
+    require_implement_phase: bool,
+) -> None:
+    """Fail-closed preconditions for ``stamp_implementation_receipt``.
+
+    Binds the lease to the *target* root/run via ``_require_current_lease``,
+    refuses terminal status / pending cancel, and (when an autopilot sidecar
+    is being rebound) requires ``phase == "implement"``.
+    """
+    from omg_cli.state import (
+        TERMINAL_STATUSES,
+        _require_current_lease,
+        load_cancellation_request,
+        load_run,
+    )
+
+    _require_current_lease(root, run_id, lease)
+    run = load_run(root, run_id) or {}
+    status = str(run.get("status") or "")
+    if status in TERMINAL_STATUSES:
+        raise PermissionError(
+            "run is terminal; refusing implementation receipt stamp: "
+            f"status={status!r}"
+        )
+    if load_cancellation_request(root, run_id) is not None:
+        raise PermissionError(
+            "run has a pending cancellation request; "
+            "refusing implementation receipt stamp"
+        )
+    if require_implement_phase:
+        from omg_cli.autopilot import load_autopilot
+
+        state = load_autopilot(root, run_id)
+        phase = str(state.get("phase") or "")
+        if phase != "implement":
+            raise PermissionError(
+                "autopilot phase must be 'implement' to stamp/rebind "
+                f"implementation receipt; got phase={phase!r}"
+            )
+
+
 def stamp_implementation_receipt(
     root: Path | str,
     run_id: str,
@@ -61,22 +106,40 @@ def stamp_implementation_receipt(
     never a caller-supplied hash, or this would just be a laundered version
     of the unauthenticated inline ``evidence.implementation_receipt`` path.
 
-    ``lease`` must be a held ``ExecutionLease`` (``assert_current``). After
-    writing the receipt, when an autopilot sidecar exists this also rebinds
-    ``implement_expected_*`` and ``implement_receipt_binder`` under the same
-    lease + ``transition_guard`` so the implement→review gate can require
-    both the on-disk receipt and the CLI-written binder (not receipt alone).
+    ``lease`` must be a held ``ExecutionLease`` bound to the *target*
+    ``root``/``run_id`` (``_require_current_lease`` — not merely
+    ``assert_current`` on some other run's lease). Refuses terminal status,
+    pending cancellation, and (when an autopilot sidecar exists) any phase
+    other than ``implement``. After writing the receipt, the sidecar path
+    rebinds ``implement_expected_*`` and ``implement_receipt_binder`` under
+    the same lease + ``transition_guard`` (re-checking the same invariants)
+    so the implement→review gate can require both the on-disk receipt and
+    the CLI-written binder (not receipt alone).
     """
-    lease.assert_current()
     root = Path(root).resolve()
     run_id = validate_identifier(run_id, label="run_id")
-    invocation_id = validate_identifier(lease.invocation_id, label="invocation_id")
-    generation = lease.generation
-    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
-        raise ValueError("lease.generation must be an int >= 1")
     digest = (content_sha256 or "").strip().lower()
     if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
         raise ValueError("content_sha256 must be 64 lowercase hex characters")
+
+    from omg_cli.autopilot import (
+        _save,
+        autopilot_state_path,
+        load_autopilot,
+    )
+    from omg_cli.state import transition_guard
+
+    has_sidecar = autopilot_state_path(root, run_id).is_file()
+    # Before any write: bind lease to *this* root/run and refuse unsafe state.
+    # Must precede generation/invocation reads so an unheld lease raises
+    # FencingError (not a misleading ValueError on generation=0).
+    _assert_receipt_stamp_allowed(
+        root, run_id, lease, require_implement_phase=has_sidecar
+    )
+    generation = lease.generation
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+        raise ValueError("lease.generation must be an int >= 1")
+    invocation_id = validate_identifier(lease.invocation_id, label="invocation_id")
     record: dict[str, Any] = {
         "writer": CLI_WRITER,
         "schema_version": 1,
@@ -95,16 +158,11 @@ def stamp_implementation_receipt(
     # later process can gate on durable CLI-written fields (not a
     # process-private secret). Skip when no autopilot sidecar (e.g. bare
     # receipt unit tests on a non-autopilot run).
-    from omg_cli.autopilot import (
-        _save,
-        autopilot_state_path,
-        load_autopilot,
-    )
-    from omg_cli.state import transition_guard
-
-    if autopilot_state_path(root, run_id).is_file():
+    if has_sidecar:
         with transition_guard(root, run_id):
-            lease.assert_current()
+            _assert_receipt_stamp_allowed(
+                root, run_id, lease, require_implement_phase=True
+            )
             state = load_autopilot(root, run_id)
             state["implement_expected_invocation_id"] = invocation_id
             state["implement_expected_lease_generation"] = generation
