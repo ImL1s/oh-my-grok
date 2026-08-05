@@ -870,3 +870,34 @@ def test_ralplan_run_rejects_wrong_autopilot_phase(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "phase" in err.lower()
     assert not (tmp_path / ".omg" / "state" / "runs" / rid / "ralplan.json").is_file()
+
+
+def test_ralplan_run_rejects_legacy_schema_for_autopilot(tmp_path, capsys):
+    """R7-4: autopilot embedding must require strict-v2 — a legacy-v1
+    autopilot run (e.g. pre-migration status.json missing schema_version)
+    must be rejected with a clear error, never silently downgraded into
+    ``_run_ralplan_v1``'s frozen single-run FSM."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "embed me", skip_interview=True)
+    rid = st["run_id"]
+
+    status_path = tmp_path / ".omg" / "state" / "runs" / rid / "status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status.get("schema_version") == 2  # sanity: real autopilot starts strict-v2
+    del status["schema_version"]
+    del status["lifecycle_version"]
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+
+    rc = run_ralplan(
+        "embed me",
+        root=tmp_path,
+        dry_run=True,
+        max_rounds=1,
+        existing_run_id=rid,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "autopilot" in err.lower()
+    assert "strict-v2" in err.lower()
+    assert not (tmp_path / ".omg" / "state" / "runs" / rid / "ralplan.json").is_file()

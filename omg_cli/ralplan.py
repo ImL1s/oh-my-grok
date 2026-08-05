@@ -1248,6 +1248,15 @@ def run_ralplan(
     except (TypeError, ValueError) as exc:
         print(f"omg ralplan: refusing malformed run schema: {exc}", file=sys.stderr)
         return 1
+    if mode == "autopilot" and schema is not RunSchema.STRICT_V2:
+        print(
+            f"omg ralplan: --run {existing_run_id!r} is mode=autopilot with "
+            f"schema={schema.value!r}; autopilot embedding requires strict-v2 "
+            "(schema_version=2, lifecycle_version=2) and cannot fall back to "
+            "the legacy v1 FSM",
+            file=sys.stderr,
+        )
+        return 1
     if schema is RunSchema.LEGACY_V1:
         return _run_ralplan_v1(
             goal,
