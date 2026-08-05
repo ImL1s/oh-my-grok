@@ -59,6 +59,23 @@ def test_readme_display_versions_match_plugin_manifest() -> None:
         assert expected in (ROOT / relative).read_text(encoding="utf-8")
 
 
+def test_packaged_install_contains_canonical_parity_inventory() -> None:
+    import hashlib
+
+    from omg_cli.setup_cmd import SHIPPING_ROOTS, compute_package_identity
+
+    assert "docs/parity" in SHIPPING_ROOTS
+    inventory_path = ROOT / "docs" / "parity" / "omg-parity.json"
+    assert inventory_path.is_file()
+    identity = compute_package_identity(ROOT)
+    relative = "docs/parity/omg-parity.json"
+    row = next(item for item in identity["inventory"] if item["path"] == relative)
+    assert row["sha256"] == hashlib.sha256(inventory_path.read_bytes()).hexdigest()
+    payload = json.loads(inventory_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 2
+    assert "OMG" not in payload["upstream_pins"]
+
+
 def test_grok_plugin_mcp_and_lsp_manifests() -> None:
     mcp = json.loads((ROOT / ".mcp.json").read_text(encoding="utf-8"))
     server = mcp["mcpServers"]["omg"]

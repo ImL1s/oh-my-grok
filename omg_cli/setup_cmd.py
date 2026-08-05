@@ -58,6 +58,7 @@ SHIPPING_ROOTS = (
     "README.md",
     "docs/readme/README.zh.md",
     "docs/readme/README.zh-TW.md",
+    "docs/parity",
     "LICENSE",
     "bin",
     "omg_cli",

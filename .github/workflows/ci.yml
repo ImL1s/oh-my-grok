@@ -35,7 +35,8 @@ jobs:
           pip install 'ruff==0.15.22' 'mypy==2.3.0'
       - name: Static parity contracts
         run: |
-          python scripts/check_parity_inventory.py
+          python scripts/check_parity_inventory.py --strict
+          python scripts/generate_parity_docs.py --check
           python scripts/check_traceability.py
           # check_writer_ownership.py is a release-transaction gate: it diffs the
           # candidate against the frozen release base and requires every changed

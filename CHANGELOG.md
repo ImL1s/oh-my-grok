@@ -9,6 +9,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Added
+- **Parity inventory v2 (#78-A):** claimability-safe schema with ordered maturity,
+  expanded classifications, bootstrapping canonical inventory for open P0 gaps
+  (#67/#68/#69/#78 remaining), `omg parity check|gaps`, generated
+  `FEATURE-MATRIX.md`/`GAPS.md` (no percentages while bootstrapping), and CI
+  `--strict` gate. Issue #78 remains open for #78-B/#78-C.
+
 ### Fixed
 - **Process-fanout cancel linearization (Round 18 / R18-1):** each
   ``run_process_fanout`` worker's cancel recheck → ``Popen`` → PID publish
