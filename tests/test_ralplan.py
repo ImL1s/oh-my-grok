@@ -257,6 +257,31 @@ def test_invalidated_flag_cleared_at_fresh_v2_cycle_start(tmp_path):
     assert "invalidated_at" not in state
 
 
+def test_reset_for_fresh_cycle_mints_new_session_ids_and_zeroes_attempts():
+    """R8-1/P2-5: ``_reset_for_fresh_cycle`` must mint a brand-new
+    ``session_id`` per role, not just zero ``attempts`` on the old one —
+    reusing the prior cycle's UUID with a reset counter would let the
+    executor mistake this for a continuation of the invalidated session."""
+    from omg_cli import ralplan as rp
+
+    old_session_ids = {
+        role: f"old-{role}" for role in ("planner", "architect", "critic")
+    }
+    state = {
+        "sessions": {
+            role: {"session_id": old_session_ids[role], "attempts": 3}
+            for role in ("planner", "architect", "critic")
+        },
+    }
+
+    rp._reset_for_fresh_cycle(state)
+
+    for role in ("planner", "architect", "critic"):
+        binding = state["sessions"][role]
+        assert binding["session_id"] != old_session_ids[role]
+        assert binding["attempts"] == 0
+
+
 def test_high_prior_history_invalidate_rerun_still_executes_stages(tmp_path):
     """R6-1: seeded history through round 5 + invalidate + a low-ceiling
     re-run must still execute stages, not immediately block with zero

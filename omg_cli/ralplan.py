@@ -219,11 +219,18 @@ def _reset_for_fresh_cycle(state: dict[str, Any]) -> None:
     planner/architect/critic. Identity fields (``run_id``, ``goal``,
     ``writer``, ``schema_version``, ``lifecycle_version``) are left
     untouched — only progress state resets.
+
+    Each role's ``session_id`` is also re-minted (not reused): a fresh cycle
+    must start every planner/architect/critic session from scratch rather
+    than resuming the prior cycle's session with ``attempts`` reset to 0
+    (P2-5) — reusing the old UUID would let the executor treat this as a
+    continuation of the invalidated session instead of a genuinely new one.
     """
     state["history"] = []
     state["round"] = 0
     for binding in state.get("sessions", {}).values():
         if isinstance(binding, dict):
+            binding["session_id"] = str(uuid.uuid4())
             binding["attempts"] = 0
 
 
