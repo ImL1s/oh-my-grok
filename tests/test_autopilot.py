@@ -512,7 +512,8 @@ def test_run_autopilot_clears_stale_mismatched_starttime_then_spawns(
 
 
 def test_live_leader_pid_conflict_helper(tmp_path: Path) -> None:
-    """R14-3: helper returns refuse reason only for live matching starttime."""
+    """R14-3: helper refuses live match or live-without-starttime; stale → None."""
+    import json
     import os
 
     from omg_cli.state import (
@@ -551,6 +552,53 @@ def test_live_leader_pid_conflict_helper(tmp_path: Path) -> None:
         starttime="Mon Jan  1 00:00:00 1970",
     )
     assert live_leader_pid_conflict(tmp_path, rid) is None
+
+    # Live PID + missing starttime → refuse (legacy incomplete metadata)
+    (run_dir / "pid.json").write_text(
+        json.dumps({"pid": our_pid, "starttime": None, "pgid": our_pid}) + "\n",
+        encoding="utf-8",
+    )
+    reason_missing = live_leader_pid_conflict(tmp_path, rid)
+    assert reason_missing is not None
+    assert "starttime" in reason_missing.lower() or "live leader" in reason_missing.lower()
+
+
+def test_run_autopilot_refuses_spawn_when_live_leader_missing_starttime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """R14-3 Important: live pid without starttime must refuse (do not clear/spawn)."""
+    import json
+    import os
+
+    from omg_cli.modes import _run_dir
+
+    st = start_autopilot(
+        tmp_path, "r14 live leader missing starttime", skip_interview=True
+    )
+    rid = st["run_id"]
+    run_dir = _run_dir(tmp_path, rid)
+    our_pid = os.getpid()
+    (run_dir / "pid.json").write_text(
+        json.dumps({"pid": our_pid, "starttime": None, "pgid": our_pid}) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "pid").write_text(f"{our_pid}\n", encoding="utf-8")
+
+    launched: list[bool] = []
+
+    def _fake_launch(argv, **kw):
+        launched.append(True)
+        return 0
+
+    _install_fake_autopilot_spawn(monkeypatch, _fake_launch)
+    rc = run_autopilot(tmp_path, "", resume_run_id=rid)
+    assert rc != 0
+    assert not launched
+    err = capsys.readouterr().err.lower()
+    assert "live leader" in err or "starttime" in err
+    # Must not clear pid.json on refuse
+    assert (run_dir / "pid.json").is_file()
+    assert (run_dir / "pid").is_file()
 
 
 @pytest.mark.skipif(

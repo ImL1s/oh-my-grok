@@ -470,10 +470,14 @@ def clear_pid_metadata(root: Path, run_id: str) -> None:
 def live_leader_pid_conflict(root: Path, run_id: str) -> str | None:
     """Refuse reason when ``pid.json`` still identifies a live leader process.
 
-    Returns a human-readable refuse string when the recorded PID is alive **and**
-    its current ``ps`` starttime matches the recorded value. Dead PIDs and
-    starttime mismatches (PID reuse) are treated as stale — return ``None`` so
-    the caller may clear metadata and spawn.
+    Refuse when the recorded PID is alive **and**:
+    * its current ``ps`` starttime matches the recorded value, **or**
+    * recorded starttime is missing/null/empty (legacy incomplete metadata —
+      cannot prove identity; do not clear and overwrite).
+
+    Only treat as stale (return ``None`` so the caller may clear) when the PID
+    is dead **or** starttime mismatches (PID reuse). R14-4 requires starttime
+    on new publications; this branch covers older incomplete ``pid.json``.
     """
     meta = read_pid_metadata(Path(root), run_id)
     if meta is None:
@@ -484,14 +488,24 @@ def live_leader_pid_conflict(root: Path, run_id: str) -> str | None:
         return None
     if pid <= 0:
         return None
+    alive = _pid_alive(pid)
+    if alive is False:
+        return None
     recorded = meta.get("starttime")
     recorded_s = recorded if isinstance(recorded, str) and recorded else None
-    if not pid_matches_recorded(pid, recorded_s):
-        return None
-    return (
-        f"live leader pid still matches pid.json "
-        f"(pid={pid}); refusing grok spawn"
-    )
+    if not recorded_s:
+        # Live (or liveness uncertain) without starttime — refuse spawn rather
+        # than clear/overwrite incomplete legacy metadata.
+        return (
+            f"live leader pid without recorded starttime "
+            f"(pid={pid}); refusing grok spawn"
+        )
+    if pid_matches_recorded(pid, recorded_s):
+        return (
+            f"live leader pid still matches pid.json "
+            f"(pid={pid}); refusing grok spawn"
+        )
+    return None
 
 
 def _require_posix_flock() -> None:
