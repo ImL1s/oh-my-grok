@@ -1638,13 +1638,19 @@ def test_stamp_and_read_implementation_receipt_roundtrip(tmp_path: Path) -> None
 
     digest = "0" * 64
     stamped = stamp_implementation_receipt(
-        tmp_path, "run-x", content_sha256=digest, note="worker finished"
+        tmp_path,
+        "run-x",
+        content_sha256=digest,
+        invocation_id="inv-stamp-1",
+        note="worker finished",
     )
     assert stamped["writer"] == "omg-cli"
+    assert stamped["invocation_id"] == "inv-stamp-1"
     receipt = read_implementation_receipt(tmp_path, "run-x")
     assert receipt is not None
     assert receipt["writer"] == "omg-cli"
     assert receipt["run_id"] == "run-x"
+    assert receipt["invocation_id"] == "inv-stamp-1"
     assert receipt["content_sha256"] == digest
     assert receipt["note"] == "worker finished"
 
@@ -1653,7 +1659,12 @@ def test_stamp_implementation_receipt_rejects_malformed_hash(tmp_path: Path) -> 
     from omg_cli.implementation import stamp_implementation_receipt
 
     with pytest.raises(ValueError):
-        stamp_implementation_receipt(tmp_path, "run-x", content_sha256="not-a-hash")
+        stamp_implementation_receipt(
+            tmp_path,
+            "run-x",
+            content_sha256="not-a-hash",
+            invocation_id="inv-1",
+        )
 
 
 def test_read_implementation_receipt_rejects_forged_writer(tmp_path: Path) -> None:
@@ -1670,7 +1681,39 @@ def test_read_implementation_receipt_rejects_forged_writer(tmp_path: Path) -> No
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
-            {"writer": "not-omg-cli", "run_id": "run-x", "content_sha256": "0" * 64}
+            {
+                "writer": "not-omg-cli",
+                "run_id": "run-x",
+                "invocation_id": "inv-1",
+                "content_sha256": "0" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert read_implementation_receipt(tmp_path, "run-x") is None
+
+
+def test_read_implementation_receipt_rejects_missing_invocation_id(
+    tmp_path: Path,
+) -> None:
+    """R12-2 / Codex P2: hand-written writer=omg-cli receipt without
+    invocation_id is untrusted (forgeable without a lease)."""
+    import json
+
+    from omg_cli.implementation import (
+        implementation_receipt_path,
+        read_implementation_receipt,
+    )
+
+    path = implementation_receipt_path(tmp_path, "run-x")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "writer": "omg-cli",
+                "run_id": "run-x",
+                "content_sha256": "0" * 64,
+            }
         ),
         encoding="utf-8",
     )
@@ -1684,7 +1727,9 @@ def test_read_implementation_receipt_rejects_run_id_mismatch(tmp_path: Path) -> 
         stamp_implementation_receipt,
     )
 
-    stamp_implementation_receipt(tmp_path, "run-a", content_sha256="0" * 64)
+    stamp_implementation_receipt(
+        tmp_path, "run-a", content_sha256="0" * 64, invocation_id="inv-a"
+    )
     assert read_implementation_receipt(tmp_path, "run-b") is None
 
 
@@ -1700,11 +1745,46 @@ def test_implement_to_review_accepts_on_disk_cli_receipt_without_break_glass(
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
     fp = _implement_workspace_fingerprint(tmp_path)
-    stamp_implementation_receipt(tmp_path, rid, content_sha256=fp, note="worker finished")
+    stamp_implementation_receipt(
+        tmp_path, rid, content_sha256=fp, invocation_id="inv-cli-1", note="worker finished"
+    )
     transition(tmp_path, rid, "review")  # no evidence, no break_glass
     assert status_autopilot(tmp_path, rid)["phase"] == "review"
     history = load_autopilot(tmp_path, rid)["history"]
     assert history[-1].get("gate_audit") == "cli_receipt:implementation.json"
+
+
+def test_implement_to_review_rejects_handwritten_receipt_without_invocation_id(
+    tmp_path: Path,
+) -> None:
+    """R12-2: forgeable on-disk receipt (writer=omg-cli, matching fp, but no
+    lease invocation_id) must not satisfy the implement→review gate."""
+    import json
+
+    from omg_cli.autopilot import _implement_workspace_fingerprint
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.implementation import implementation_receipt_path
+
+    st = start_autopilot(tmp_path, "forgeable receipt gate", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    fp = _implement_workspace_fingerprint(tmp_path)
+    path = implementation_receipt_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "writer": CLI_WRITER,
+                "run_id": rid,
+                "content_sha256": fp,
+                "note": "forged without lease",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(AutopilotError, match="implementation|no_change"):
+        transition(tmp_path, rid, "review")
+    assert status_autopilot(tmp_path, rid)["phase"] == "implement"
 
 
 def test_implement_to_review_rejects_stale_on_disk_receipt(tmp_path: Path) -> None:
@@ -1715,7 +1795,9 @@ def test_implement_to_review_rejects_stale_on_disk_receipt(tmp_path: Path) -> No
     st = start_autopilot(tmp_path, "stale cli receipt", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    stamp_implementation_receipt(tmp_path, rid, content_sha256="0" * 64)
+    stamp_implementation_receipt(
+        tmp_path, rid, content_sha256="0" * 64, invocation_id="inv-stale"
+    )
     with pytest.raises(AutopilotError, match="implementation|no_change"):
         transition(tmp_path, rid, "review")
     assert status_autopilot(tmp_path, rid)["phase"] == "implement"
@@ -1743,7 +1825,9 @@ def test_implement_reentry_invalidates_stale_receipt_with_unchanged_fingerprint(
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
     (tmp_path / "changed.py").write_text("# product change\n", encoding="utf-8")
     fp1 = _implement_workspace_fingerprint(tmp_path)
-    stamp_implementation_receipt(tmp_path, rid, content_sha256=fp1, note="cycle 1 work")
+    stamp_implementation_receipt(
+        tmp_path, rid, content_sha256=fp1, invocation_id="inv-cycle-1", note="cycle 1 work"
+    )
     transition(tmp_path, rid, "review")
     assert status_autopilot(tmp_path, rid)["phase"] == "review"
 

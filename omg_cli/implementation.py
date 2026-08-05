@@ -42,6 +42,7 @@ def stamp_implementation_receipt(
     run_id: str,
     *,
     content_sha256: str,
+    invocation_id: str,
     note: str | None = None,
 ) -> dict[str, Any]:
     """Write a CLI-owned implementation receipt (same-process trust only).
@@ -50,9 +51,14 @@ def stamp_implementation_receipt(
     recomputed (e.g. ``autopilot._implement_workspace_fingerprint(root)``) —
     never a caller-supplied hash, or this would just be a laundered version
     of the unauthenticated inline ``evidence.implementation_receipt`` path.
+
+    ``invocation_id`` must be the active execution-lease id (binds the receipt
+    to a real CLI invocation so a hand-written ``writer=omg-cli`` file cannot
+    forge the gate).
     """
     root = Path(root).resolve()
     run_id = validate_identifier(run_id, label="run_id")
+    invocation_id = validate_identifier(invocation_id, label="invocation_id")
     digest = (content_sha256 or "").strip().lower()
     if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
         raise ValueError("content_sha256 must be 64 lowercase hex characters")
@@ -60,6 +66,7 @@ def stamp_implementation_receipt(
         "writer": CLI_WRITER,
         "schema_version": 1,
         "run_id": run_id,
+        "invocation_id": invocation_id,
         "content_sha256": digest,
         "stamped_at": _utc_now(),
     }
@@ -75,9 +82,10 @@ def read_implementation_receipt(
 ) -> dict[str, Any] | None:
     """Return the on-disk receipt only if it is a validly CLI-stamped record.
 
-    Fail-closed: malformed JSON, wrong writer, run_id mismatch, or an
-    ``invalidated`` record all read as "no receipt" rather than raising —
-    callers treat this the same as an absent file.
+    Fail-closed: malformed JSON, wrong writer, run_id mismatch, missing or
+    empty ``invocation_id``, or an ``invalidated`` record all read as "no
+    receipt" rather than raising — callers treat this the same as an absent
+    file.
     """
     run_id = validate_identifier(run_id, label="run_id")
     path = implementation_receipt_path(root, run_id)
@@ -90,6 +98,9 @@ def read_implementation_receipt(
     if not isinstance(data, dict):
         return None
     if data.get("writer") != CLI_WRITER or data.get("run_id") != run_id:
+        return None
+    inv = data.get("invocation_id")
+    if not isinstance(inv, str) or not inv.strip():
         return None
     if data.get("invalidated") is True:
         return None
