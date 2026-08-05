@@ -320,7 +320,7 @@ omg {setup,doctor,update,uninstall,note,state,cancel,resume,wiki,hud,lsp,
 | Command | Purpose |
 |---------|---------|
 | `omg setup` / `omg doctor` | Scaffold `.omg/` + install `~/.grok/rules/omg.md` · health (+ `--strict`) |
-| `omg update` / `omg uninstall` | git pull + refresh plugin snapshot · remove plugin/hook/rules block (`--yes`; never `.omg/`) |
+| `omg update` / `omg uninstall` | managed release refresh or proven source refresh · remove plugin/hook/rules block (`--yes`; never `.omg/`) |
 | `omg note "…"` | Durable project note in `.omg/notepad.md` (`--priority` = permanent, `--show` prints, `--prune` drops expired 7d) |
 | `omg state` / `omg cancel` | Active run · process-group cancel |
 | `omg resume` | Smart resume routing + explicit `.omg/state/RESUME.md` continuity pack |
