@@ -43,6 +43,19 @@ def test_main_reexports_inspect_handlers() -> None:
     assert inspect_cmds.register_inspect_parsers is not None
 
 
+def _subparser_choices(parser, dest_cmd: str) -> set[str]:
+    import argparse
+
+    for act in parser._actions:
+        if isinstance(act, argparse._SubParsersAction):
+            top = act.choices
+            if dest_cmd in top:
+                for a2 in top[dest_cmd]._actions:
+                    if isinstance(a2, argparse._SubParsersAction):
+                        return set(a2.choices.keys())
+    return set()
+
+
 def test_parser_wires_inspect_handlers() -> None:
     parser = build_parser()
     samples = {
@@ -59,6 +72,12 @@ def test_parser_wires_inspect_handlers() -> None:
         assert callable(getattr(ns, "func", None))
         # Must be the inspect-module implementation
         assert ns.func.__module__ == "omg_cli.commands.inspect", name
+    assert "refresh" in _subparser_choices(parser, "parity")
+    ns = parser.parse_args(
+        ["parity", "refresh", "--source", "OMC", "--pin", "a" * 40]
+    )
+    assert ns.func is inspect_cmds.cmd_parity
+    assert ns.parity_action == "refresh"
 
 
 def test_inspect_help_lists_primary_commands() -> None:

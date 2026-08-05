@@ -422,14 +422,22 @@ def cmd_parity(args: argparse.Namespace) -> int:
         from omg_cli.parity_refresh import build_refresh_plan, write_refresh_review_artifact
 
         if not getattr(args, "plan", False):
-            print(
-                "omg parity refresh: --plan is required (plan-only; no inventory mutation)",
-                file=sys.stderr,
+            emit_data(
+                args,
+                "parity.refresh",
+                {
+                    "ok": False,
+                    "error": "--plan is required (plan-only; no inventory mutation)",
+                },
             )
             return 1
         catalog_arg = getattr(args, "catalog", None)
         if not catalog_arg:
-            print("omg parity refresh: --catalog is required", file=sys.stderr)
+            emit_data(
+                args,
+                "parity.refresh",
+                {"ok": False, "error": "--catalog is required"},
+            )
             return 1
         root = plugin_root()
         proj = project_root()
@@ -456,15 +464,12 @@ def cmd_parity(args: argparse.Namespace) -> int:
                 "change_count": len(plan["changes"]),
                 "guards": plan["guards"],
             }
-        except ContractValidationError as exc:
+        except (OSError, ValueError, ContractValidationError) as exc:
             emit_data(
                 args,
                 "parity.refresh",
                 {"ok": False, "error": str(exc)},
             )
-            return 1
-        except (OSError, ValueError) as exc:
-            print(f"omg parity: {exc}", file=sys.stderr)
             return 1
         emit_data(args, "parity.refresh", result)
         return 0

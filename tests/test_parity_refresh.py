@@ -375,7 +375,7 @@ def test_parity_refresh_without_plan_flag_exits_nonzero(
         ]
     )
 
-    assert code != 0
+    assert code == 1
     assert INVENTORY.read_bytes() == before
     assert not (tmp_path / ".omg" / "artifacts" / "parity").exists()
 
