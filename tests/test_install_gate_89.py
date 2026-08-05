@@ -531,10 +531,8 @@ def test_managed_development_status_failure_falls_back_to_stage_installer(tmp_pa
     assert not any("fetch" in c or "pull" in c for c in calls)
 
 
-def test_same_digest_development_to_release_reattests_with_checksum_evidence(
-    tmp_path, monkeypatch
-):
-    """Same package bytes: development receipt must not be reused for release (#89 Pro P2)."""
+def test_same_digest_development_to_release_reattests_receipt(tmp_path, monkeypatch):
+    """Same package bytes must not reuse a development receipt for release (#89 Pro P2)."""
 
     home = tmp_path / "home"
     grok_home = tmp_path / "grok"
@@ -553,12 +551,21 @@ def test_same_digest_development_to_release_reattests_with_checksum_evidence(
     first_receipt = read_install_receipt(Path(first["receipt_path"]))
     assert first_receipt["mode"] == "development"
     assert first_receipt["status"] == "completed_with_warning"
-    assert not first_receipt["source"].get("asset_sha256")
+    assert first_receipt["source"].get("asset_sha256") in (None, "")
 
     asset = _patch_release_archive(monkeypatch, tmp_path)
+    mutations_before = [
+        call
+        for call in host.calls
+        if call[:3]
+        in (
+            ["grok", "plugin", "install"],
+            ["grok", "plugin", "uninstall"],
+        )
+    ]
 
-    # Promotion probe is clean install — prior warning must not be demoted.
-    second = install_package(
+    # Promotion probe is clean — prior warning must not be demoted.
+    promoted = install_package(
         ROOT,
         home=home,
         grok_home=grok_home,
@@ -569,19 +576,33 @@ def test_same_digest_development_to_release_reattests_with_checksum_evidence(
         source_uri=f"https://github.com/ImL1s/oh-my-grok/releases/download/v{VERSION}/x.tar.gz",
         source_tag=f"v{VERSION}",
     )
-    assert second["status"] == "completed_with_warning"
-    assert second["status"] != "already_installed"
-    assert second["receipt_path"] != first["receipt_path"]
-    receipt = read_install_receipt(Path(second["receipt_path"]))
+    mutations_after = [
+        call
+        for call in host.calls
+        if call[:3]
+        in (
+            ["grok", "plugin", "install"],
+            ["grok", "plugin", "uninstall"],
+        )
+    ]
+    assert mutations_after == mutations_before
+    assert promoted["status"] == "completed_with_warning"
+    assert promoted["status"] != "already_installed"
+    assert promoted["receipt_path"] != first["receipt_path"]
+    assert promoted["stage_path"] == first["stage_path"]
+
+    receipt = read_install_receipt(Path(promoted["receipt_path"]))
     assert receipt["mode"] == "release"
     assert receipt["status"] == "completed_with_warning"
+    assert receipt["source"]["asset_name"] == asset.name
     assert receipt["source"]["asset_sha256"] == "a" * 64
     assert receipt["source"]["checksums_sha256"] == "b" * 64
-    assert receipt["source"]["asset_name"] == asset.name
-    assert receipt["installed"]["package_digest"] == first["package_digest"]
+    assert receipt["installed"]["package_digest"] == first_receipt["installed"]["package_digest"]
+    current_receipt = (grok_home / "omg" / "current-receipt").resolve()
+    assert current_receipt == Path(promoted["receipt_path"]).resolve()
 
     # Matching release authority on the same digest is truly idempotent.
-    third = install_package(
+    again = install_package(
         ROOT,
         home=home,
         grok_home=grok_home,
@@ -592,8 +613,8 @@ def test_same_digest_development_to_release_reattests_with_checksum_evidence(
         source_uri=f"https://github.com/ImL1s/oh-my-grok/releases/download/v{VERSION}/x.tar.gz",
         source_tag=f"v{VERSION}",
     )
-    assert third["status"] == "already_installed"
-    assert third["receipt_path"] == second["receipt_path"]
+    assert again["status"] == "already_installed"
+    assert again["receipt_path"] == promoted["receipt_path"]
 
 
 def test_same_digest_release_reattests_when_probe_is_stricter(tmp_path, monkeypatch):
@@ -637,75 +658,6 @@ def test_same_digest_release_reattests_when_probe_is_stricter(tmp_path, monkeypa
     assert receipt["mode"] == "release"
     assert receipt["status"] == "completed_with_warning"
     assert receipt["source"]["asset_sha256"] == "a" * 64
-
-
-def test_same_digest_development_to_release_reattests_receipt(tmp_path, monkeypatch):
-    """Same package bytes must not reuse a development receipt for release (#89 Pro P2)."""
-
-    home = tmp_path / "home"
-    grok_home = tmp_path / "grok"
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("GROK_HOME", str(grok_home))
-    host = FakeGrok()
-
-    first = install_package(
-        ROOT,
-        home=home,
-        grok_home=grok_home,
-        runner=host,
-        doctor_probe=lambda *_a, **_k: _dual_pass_soft(),
-        mode="development",
-    )
-    first_receipt = read_install_receipt(Path(first["receipt_path"]))
-    assert first_receipt["mode"] == "development"
-    assert first_receipt["status"] == "completed_with_warning"
-    assert first_receipt["source"].get("asset_sha256") in (None, "")
-
-    asset = _patch_release_archive(monkeypatch, tmp_path)
-    mutations_before = [
-        call
-        for call in host.calls
-        if call[:3]
-        in (
-            ["grok", "plugin", "install"],
-            ["grok", "plugin", "uninstall"],
-        )
-    ]
-
-    promoted = install_package(
-        ROOT,
-        home=home,
-        grok_home=grok_home,
-        runner=host,
-        doctor_probe=lambda *_a, **_k: _dual_pass_ok(),
-        mode="release",
-        asset=asset,
-        source_uri=f"https://github.com/ImL1s/oh-my-grok/releases/download/v{VERSION}/x.tar.gz",
-        source_tag=f"v{VERSION}",
-    )
-    mutations_after = [
-        call
-        for call in host.calls
-        if call[:3]
-        in (
-            ["grok", "plugin", "install"],
-            ["grok", "plugin", "uninstall"],
-        )
-    ]
-    assert mutations_after == mutations_before
-    assert promoted["status"] == "completed_with_warning"
-    assert promoted["receipt_path"] != first["receipt_path"]
-    assert promoted["stage_path"] == first["stage_path"]
-
-    receipt = read_install_receipt(Path(promoted["receipt_path"]))
-    assert receipt["mode"] == "release"
-    assert receipt["status"] == "completed_with_warning"
-    assert receipt["source"]["asset_name"] == asset.name
-    assert receipt["source"]["asset_sha256"] == "a" * 64
-    assert receipt["source"]["checksums_sha256"] == "b" * 64
-    assert receipt["installed"]["package_digest"] == first_receipt["installed"]["package_digest"]
-    current_receipt = (grok_home / "omg" / "current-receipt").resolve()
-    assert current_receipt == Path(promoted["receipt_path"]).resolve()
 
 
 def test_same_digest_release_idempotent_reuses_compatible_receipt(tmp_path, monkeypatch):
