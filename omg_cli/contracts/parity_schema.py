@@ -445,6 +445,8 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "__init__.py",
                 "main.py",
                 "autopilot.py",
+                "implementation.py",
+                "interview.py",
                 "modes.py",
                 "pipeline.py",
                 "ralplan.py",
@@ -559,6 +561,7 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             (
                 "test_cli_router.py",
                 "test_autopilot.py",
+                "test_interview.py",
                 "test_modes.py",
                 "test_pipeline.py",
                 "test_ralplan.py",
