@@ -189,6 +189,77 @@ def test_process_fanout_child_env_strips_omg_allow(monkeypatch, tmp_path):
     assert os.environ.get("OMG_ALLOW_UNSAFE_SPAWN") == "1"
 
 
+def test_process_fanout_kills_prior_workers_when_later_pid_publish_fails(
+    monkeypatch, tmp_path
+):
+    """R15-4: second worker pid publish fail must kill worker 1 + mark failed."""
+    children: list[MagicMock] = []
+    killed_pids: list[int] = []
+    write_calls = {"n": 0}
+    real_write = None
+
+    def fake_popen(argv, **kwargs):
+        mock = MagicMock()
+        mock.pid = 3100 + len(children)
+        mock.wait.return_value = 0
+        children.append(mock)
+        return mock
+
+    def tracking_write(path, **kwargs):
+        write_calls["n"] += 1
+        if write_calls["n"] >= 2:
+            raise OSError("disk full on w02 pid publish")
+        return real_write(path, **kwargs)
+
+    def fake_killpg(pid, _sig):
+        killed_pids.append(pid)
+
+    real = subprocess.Popen
+
+    def selective(argv, *a, **k):
+        if argv and argv[0] in ("git", "ps"):
+            return real(argv, *a, **k)
+        return fake_popen(argv, **k)
+
+    import omg_cli.fanout as fanout_mod
+    import omg_cli.state as state_mod
+
+    real_write = state_mod.write_pid_metadata
+    monkeypatch.setattr(subprocess, "Popen", selective)
+    monkeypatch.setattr(fanout_mod, "write_pid_metadata", tracking_write)
+    monkeypatch.setattr("os.killpg", fake_killpg)
+    monkeypatch.setattr(
+        "omg_cli.state.process_starttime", lambda _pid: "fake-start"
+    )
+
+    rc = run_process_fanout(
+        "rollback prior workers",
+        workers=2,
+        root=tmp_path,
+        dry_run=False,
+    )
+    assert rc != 0
+    assert len(children) == 2
+    # Both children must be dead (killpg and/or .kill)
+    assert 3100 in killed_pids or children[0].kill.called
+    assert 3101 in killed_pids or children[1].kill.called
+    run_dirs = list((tmp_path / ".omg" / "state" / "runs").iterdir())
+    assert len(run_dirs) == 1
+    rid = run_dirs[0].name
+    status = json.loads(
+        (run_dirs[0] / "status.json").read_text(encoding="utf-8")
+    )
+    assert status.get("status") == "failed"
+    assert status.get("pid_publish_failed") is True
+    fmeta = json.loads(fanout_meta_path(tmp_path, rid).read_text(encoding="utf-8"))
+    assert fmeta.get("pid_publish_failed") is True
+    assert fmeta.get("failed_worker") == "w02"
+    assert "disk full" in str(fmeta.get("error", "")).lower()
+    statuses = {r["worker_id"]: r["status"] for r in fmeta["records"]}
+    assert statuses["w01"] == "rolled_back"
+    assert statuses["w02"] == "pid_publish_failed"
+
+
 def test_cli_ulw_fanout_process_requires_env_gate(tmp_path):
     """Without OMG_EXPERIMENTAL_PROCESS_FANOUT=1 → exit 2; no run created."""
     import os

@@ -134,6 +134,24 @@ def _write_worker_argv(wdir: Path, worker_id: str, argv: list[str]) -> Path:
     return path
 
 
+def _kill_spawned_worker(proc: subprocess.Popen[Any]) -> None:
+    """Best-effort kill + reap a fanout worker (process group on POSIX)."""
+    try:
+        if os.name == "posix":
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                proc.kill()
+        else:
+            proc.kill()
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        proc.wait(timeout=5)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
 def _spawn_worker_process(
     argv: list[str],
     *,
@@ -194,20 +212,8 @@ def _spawn_worker_process(
     except Exception:
         # Mirror modes._spawn_grok_process: never leave a live worker without
         # cancel-visible pid metadata (e.g. starttime lookup failure).
-        try:
-            if os.name == "posix":
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except (ProcessLookupError, OSError):
-                    proc.kill()
-            else:
-                proc.kill()
-        except (ProcessLookupError, OSError):
-            pass
-        try:
-            proc.wait(timeout=5)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
+        # Caller must also kill any earlier workers in this launch batch.
+        _kill_spawned_worker(proc)
         raise
     # Note: timeout is applied at wait time by caller
     return proc, None
@@ -241,21 +247,71 @@ def _wait_proc(
             raise subprocess.TimeoutExpired(proc.args, 0)
         return int(proc.wait(timeout=wait_timeout))
     except subprocess.TimeoutExpired:
-        try:
-            if os.name == "posix":
-                os.killpg(proc.pid, signal.SIGKILL)
-            else:
-                proc.kill()
-        except (ProcessLookupError, OSError):
-            try:
-                proc.kill()
-            except (ProcessLookupError, OSError):
-                pass
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+        _kill_spawned_worker(proc)
         return 124
+
+
+def _rollback_fanout_workers(
+    procs: list[tuple[str, subprocess.Popen[Any]]],
+    *,
+    root_path: Path,
+    run_id: str,
+    n: int,
+    worker_records: list[dict[str, Any]],
+    failed_wid: str,
+    exc: BaseException,
+) -> int:
+    """Kill all already-started workers after a mid-batch pid-publish failure."""
+    for _wid, prior in procs:
+        _kill_spawned_worker(prior)
+    exit_codes: dict[str, int] = {wid: 1 for wid, _ in procs}
+    exit_codes[failed_wid] = 1
+    for rec in worker_records:
+        wid = str(rec.get("worker_id") or "")
+        if wid in exit_codes:
+            rec["exit_code"] = 1
+            rec["status"] = (
+                "pid_publish_failed" if wid == failed_wid else "rolled_back"
+            )
+    meta = {
+        "version": 1,
+        "run_id": run_id,
+        "fanout": FANOUT_PROCESS,
+        "workers": n,
+        "dry_run": False,
+        "records": worker_records,
+        "exit_codes": exit_codes,
+        "pid_publish_failed": True,
+        "failed_worker": failed_wid,
+        "error": str(exc),
+        "note": (
+            "process fanout aborted: later worker pid publish failed; "
+            "prior workers killed"
+        ),
+    }
+    fanout_meta_path(root_path, run_id).write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    write_status(
+        root_path,
+        run_id,
+        "failed",
+        extra={
+            "fanout": FANOUT_PROCESS,
+            "workers": n,
+            "exit_code": 1,
+            "exit_codes": exit_codes,
+            "pid_publish_failed": True,
+            "failed_worker": failed_wid,
+            "error": str(exc),
+        },
+    )
+    print(
+        f"omg ulw fanout: pid publish failed for {failed_wid}; "
+        f"killed {len(procs)} prior worker(s); run {run_id} failed: {exc}",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def run_process_fanout(
@@ -372,19 +428,41 @@ def run_process_fanout(
         # Also stash prompt for debug
         (wdir / f"{wid}.prompt.md").write_text(prompt, encoding="utf-8")
 
-        proc, early_rc = _spawn_worker_process(
-            argv,
-            cwd=root_path,
-            pid_path=pid_path,
-            timeout=launch_timeout,
-            dry_run=dry_run,
-        )
         rec: dict[str, Any] = {
             "worker_id": wid,
             "index": i,
             "argv_path": str(argv_path.relative_to(run_dir)),
             "pid_path": str(pid_path.relative_to(run_dir)),
         }
+        try:
+            proc, early_rc = _spawn_worker_process(
+                argv,
+                cwd=root_path,
+                pid_path=pid_path,
+                timeout=launch_timeout,
+                dry_run=dry_run,
+            )
+        except Exception as exc:
+            # R15-4: later worker pid publish failed after Popen — current
+            # worker already killed inside _spawn_worker_process; also kill
+            # every earlier successfully published worker in this batch.
+            worker_records.append(
+                {
+                    **rec,
+                    "status": "pid_publish_failed",
+                    "exit_code": 1,
+                    "error": str(exc),
+                }
+            )
+            return _rollback_fanout_workers(
+                procs,
+                root_path=root_path,
+                run_id=run_id,
+                n=n,
+                worker_records=worker_records,
+                failed_wid=wid,
+                exc=exc,
+            )
         if early_rc is not None:
             exit_codes[wid] = early_rc
             rec["exit_code"] = early_rc
