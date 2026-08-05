@@ -110,8 +110,9 @@ RUN=…   # from start JSON: run_id
 omg interview start --attach-run "$RUN"    # task defaults to the autopilot goal
 omg interview answer --run "$RUN" --question-id ... --text ...
 omg interview close --run "$RUN"
-# close JSON `resume_command` for attach mode includes `--run "$RUN"` (not a
-# standalone `omg ralplan <goal>` that would orphan a fresh ralplan run).
+# close JSON `resume_command` for attach mode chains transition then ralplan:
+# `omg autopilot transition --run "$RUN" --phase ralplan && omg ralplan <goal> --run "$RUN"`
+# (phase is still "interview" at close; bare embedded ralplan would fail).
 
 # … after interview closed (preferred: omg interview * writes CLI envelope):
 omg autopilot transition --run "$RUN" --phase ralplan --reason "interview closed"
@@ -147,8 +148,9 @@ Illegal transitions fail closed (CLI prints error, phase unchanged).
 interview → ralplan → implement → review → (rework) → qa → acceptance → verified
 ```
 
-Also: `blocked`, `cancelled` (see `omg_cli/autopilot.py` `LEGAL_TRANSITIONS` /
-`MANUAL_TRANSITIONS`).
+Also: `blocked`, `cancelled` (see `omg_cli/autopilot.py` `LEGAL_TRANSITIONS`).
+`cancelled` is terminal-only — use `omg cancel`; it is **not** reachable via
+`omg autopilot transition --phase cancelled` (`MANUAL_TRANSITIONS` excludes it).
 
 ### `legal_next` vs `commit_only_next` / `terminal_action`
 
@@ -208,21 +210,22 @@ omg autopilot transition --run "$RUN" --phase review \
 Re-entering `review` from `blocked` (or `rework` / `implement`) invalidates
 prior review/QA stamps so a pre-block clean stamp cannot reopen `qa`.
 
-Re-entering `ralplan` when a CLI-owned `ralplan.json` stamp already exists
-for the run invalidates that stamp and review/QA stamps — regardless of
-`src`. This closes detours such as `review→blocked→interview→ralplan` where
-`src` is `interview` again but a stale accepted stamp from before the
-blocked excursion still sits on disk. Only the first `interview→ralplan`
-handoff (no stamp yet) is a no-op. A fresh accept write clears
+Re-entering `ralplan` when `ralplan_epoch ≥ 1` invalidates any CLI-owned
+`ralplan.json` stamp and review/QA stamps — gating is by epoch counter, not
+stamp existence. This closes detours such as `review→blocked→interview→ralplan`
+and break-glass consensus paths with no stamp yet. Only the first
+`interview→ralplan` handoff (epoch 0→1) is a no-op; `--skip-interview` starts
+at epoch 1 so the next ralplan entry always invalidates. A fresh accept write clears
 `invalidated` on the stamp; a new strict-v2 consensus attempt also clears
 stale invalidation at cycle start. A fresh strict-v2 attempt also resets
 `history`, per-session `attempts`, and `round` so prior rounds past the
 configured ceiling do not pin every future replan into an immediate block.
 
 `omg ralplan * --run RUN` embedded in an autopilot run is fail-closed:
-the autopilot FSM must be at `phase==ralplan`, and the CLI goal must match
-the frozen run goal exactly. `_consensus_ready` additionally rejects
-accepted stamps whose `goal` field disagrees with the current run goal.
+the run must use strict-v2 schema, the autopilot FSM must be at
+`phase==ralplan`, and the CLI goal must match the frozen run goal exactly.
+`_consensus_ready` additionally requires a non-empty stamp `goal` matching
+the frozen run goal (missing/null/empty → rejected).
 
 `omg interview start --attach-run RUN` re-verifies mode/phase/non-terminal/
 goal match **under the execution lease** after pre-lease attach checks,

@@ -136,6 +136,28 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   (`--attach-run`) now sets `resume_command` to
   `omg ralplan <goal> --run <run_id>` instead of a standalone
   `omg ralplan <goal>` that would spawn an orphaned ralplan run.
+- **Attached interview close resume via autopilot transition (Round 7 / R7-0):**
+  attach-mode `resume_command` now chains
+  `omg autopilot transition --run <run_id> --phase ralplan` before
+  `omg ralplan <goal> --run <run_id>` — the phase sidecar is still
+  `interview` at close time, so a bare embedded ralplan would be rejected
+  (phase mismatch) until the transition advances the FSM.
+- **Cancelled not reachable via generic transition (Round 7 / R7-1):**
+  `cancelled` is removed from `MANUAL_TRANSITIONS` / `legal_next`; only
+  `omg cancel` / `cancel_run` may enter the terminal `cancelled` phase —
+  `transition(..., "cancelled")` raises cleanly without mutating state.
+- **ralplan_epoch gates re-entry invalidation (Round 7 / R7-2):** a
+  monotonic `ralplan_epoch` on autopilot state drives quality/consensus
+  invalidation on re-entry to `ralplan` (epoch ≥ 1), not stamp existence —
+  the first `interview→ralplan` handoff (epoch 0→1) remains a no-op even
+  when no stamp exists yet; `--skip-interview` starts at epoch 1.
+- **Consensus stamp requires matching non-empty goal (Round 7 / R7-3):**
+  `_consensus_ready` for autopilot runs requires a non-empty string `goal`
+  on the CLI `ralplan.json` stamp that exactly matches the frozen run goal
+  (missing/null/empty → fail-closed).
+- **Reject legacy schema for autopilot ralplan embedding (Round 7 / R7-4):**
+  `omg ralplan * --run RUN` against `mode=autopilot` rejects non-strict-v2
+  run schemas — autopilot embedding no longer enters the legacy-v1 FSM path.
 
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —
