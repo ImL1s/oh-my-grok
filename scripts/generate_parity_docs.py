@@ -167,26 +167,16 @@ def render_source_matrix(inventory: dict, source: str) -> str:
         f"# {source} parity matrix",
         "",
     ]
-    if source_status == "bootstrapping" or not complete:
-        lines.extend(
-            [
-                f"> **Source status: bootstrapping.** `{source}` inventory is incomplete.",
-                "> Parity percentages and green checkmarks are intentionally omitted.",
-                "",
-            ]
+    lines.append(f"> Source status: **{source_status}**.")
+    if not complete:
+        lines.append(
+            "> Inventory still incomplete overall — "
+            "parity percentages and green checkmarks are intentionally omitted."
         )
-    else:
-        lines.extend(
-            [
-                f"> Source status: **{source_status}**.",
-                "",
-            ]
-        )
+    lines.append("")
 
     lines.extend(
         [
-            f"Source status: **{source_status}**.",
-            "",
             "| Capability | Category | Status | Maturity | Marker | Gap |",
             "| --- | --- | --- | --- | --- | --- |",
         ]

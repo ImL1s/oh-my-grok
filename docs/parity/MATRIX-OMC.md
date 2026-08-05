@@ -2,10 +2,8 @@
 
 # OMC parity matrix
 
-> **Source status: bootstrapping.** `OMC` inventory is incomplete.
-> Parity percentages and green checkmarks are intentionally omitted.
-
-Source status: **bootstrapping**.
+> Source status: **bootstrapping**.
+> Inventory still incomplete overall — parity percentages and green checkmarks are intentionally omitted.
 
 | Capability | Category | Status | Maturity | Marker | Gap |
 | --- | --- | --- | --- | --- | --- |
