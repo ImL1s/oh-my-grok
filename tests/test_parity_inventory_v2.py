@@ -9,8 +9,10 @@ from pathlib import Path
 import pytest
 
 from omg_cli.contracts.parity_schema import (
+    PARITY_CATEGORY_TAXONOMY,
     PARITY_MATURITY_LEVELS,
     PARITY_V2_CLASSIFICATIONS,
+    SOURCE_STATUS_IDS,
     claim_marker_for_capability,
     inventory_completion_claims_allowed,
     load_json_object,
@@ -102,6 +104,12 @@ def _base_v2_inventory(tmp_path: Path) -> dict:
             "jobs": "bootstrapping",
             "team": "bootstrapping",
             "parity_governance": "bootstrapping",
+        },
+        "source_status": {
+            "OMC": "bootstrapping",
+            "OMX": "bootstrapping",
+            "OmO": "bootstrapping",
+            "Antigravity": "bootstrapping",
         },
         "live_evidence_max_age_days": 30,
         "capabilities": [
@@ -373,6 +381,8 @@ def test_optional_unclaimed_cannot_generate_positive_claim(tmp_path: Path) -> No
     inventory["inventory_status"] = "complete"
     for cat in inventory["category_status"]:
         inventory["category_status"][cat] = "complete"
+    for source in inventory["source_status"]:
+        inventory["source_status"][source] = "complete"
     inventory["capabilities"][0]["classification"] = "optional_unclaimed"
     inventory["capabilities"][0]["maturity"] = {"grok": "catalogued"}
     validated = _validate(inventory, tmp_path)
@@ -546,3 +556,102 @@ def test_alias_maturity_cannot_exceed_canonical_runtime_rank(tmp_path: Path) -> 
     )
     with pytest.raises(ContractValidationError, match="exceeds canonical"):
         _validate(inventory, tmp_path)
+
+
+def test_source_status_required_for_upstream_inventory_sources(tmp_path: Path) -> None:
+    inventory = _base_v2_inventory(tmp_path)
+    inventory.pop("source_status", None)
+    with pytest.raises(ContractValidationError, match="source_status"):
+        _validate(inventory, tmp_path)
+
+
+def test_source_status_rejects_unknown_or_omg_keys(tmp_path: Path) -> None:
+    inventory = _base_v2_inventory(tmp_path)
+    inventory["source_status"] = {
+        source: "bootstrapping" for source in SOURCE_STATUS_IDS
+    }
+    inventory["source_status"]["OMG"] = "bootstrapping"
+    with pytest.raises(ContractValidationError, match="source_status"):
+        _validate(inventory, tmp_path)
+
+    inventory["source_status"] = {
+        source: "bootstrapping" for source in SOURCE_STATUS_IDS
+    }
+    inventory["source_status"]["GROK_BUILD"] = "bootstrapping"
+    with pytest.raises(ContractValidationError, match="source_status"):
+        _validate(inventory, tmp_path)
+
+    inventory["source_status"] = {
+        source: "bootstrapping" for source in SOURCE_STATUS_IDS
+    }
+    inventory["source_status"]["not_a_source"] = "complete"
+    with pytest.raises(ContractValidationError, match="source_status"):
+        _validate(inventory, tmp_path)
+
+    inventory["source_status"] = {
+        source: "bootstrapping" for source in SOURCE_STATUS_IDS
+    }
+    del inventory["source_status"]["OMC"]
+    with pytest.raises(ContractValidationError, match="source_status"):
+        _validate(inventory, tmp_path)
+
+    inventory["source_status"] = {
+        source: "bootstrapping" for source in SOURCE_STATUS_IDS
+    }
+    inventory["source_status"]["OMC"] = "done"
+    with pytest.raises(ContractValidationError, match="source_status"):
+        _validate(inventory, tmp_path)
+
+
+def test_claims_forbidden_when_any_source_bootstrapping(tmp_path: Path) -> None:
+    inventory = _base_v2_inventory(tmp_path)
+    inventory["inventory_status"] = "complete"
+    for cat in inventory["category_status"]:
+        inventory["category_status"][cat] = "complete"
+    inventory["source_status"] = {source: "complete" for source in SOURCE_STATUS_IDS}
+    inventory["source_status"]["OMC"] = "bootstrapping"
+    validated = _validate(inventory, tmp_path)
+    assert inventory_completion_claims_allowed(validated) is False
+    for row in validated["capabilities"]:
+        marker = claim_marker_for_capability(row, inventory=validated)
+        assert "%" not in str(marker)
+        assert marker not in {"✅", "✓"}
+
+
+def test_claims_forbidden_when_any_category_bootstrapping(tmp_path: Path) -> None:
+    inventory = _base_v2_inventory(tmp_path)
+    inventory["inventory_status"] = "complete"
+    inventory["source_status"] = {source: "complete" for source in SOURCE_STATUS_IDS}
+    for cat in inventory["category_status"]:
+        inventory["category_status"][cat] = "complete"
+    inventory["category_status"]["jobs"] = "bootstrapping"
+    validated = _validate(inventory, tmp_path)
+    assert inventory_completion_claims_allowed(validated) is False
+    for row in validated["capabilities"]:
+        marker = claim_marker_for_capability(row, inventory=validated)
+        assert "%" not in str(marker)
+        assert marker not in {"✅", "✓"}
+
+
+def test_required_category_taxonomy_constant_matches_issue_78b() -> None:
+    expected = frozenset(
+        {
+            "runtime_orchestration",
+            "skills",
+            "agents_routing",
+            "team",
+            "jobs",
+            "hooks",
+            "tools_mcp",
+            "state_memory_observability",
+            "install_update",
+            "quality_visual_edit_safety",
+            "antigravity",
+            "platform_live_evidence",
+            "parity_governance",
+        }
+    )
+    assert frozenset(PARITY_CATEGORY_TAXONOMY) == expected
+    assert "OMG" not in SOURCE_STATUS_IDS
+    assert "GROK_BUILD" not in SOURCE_STATUS_IDS
+    assert tuple(SOURCE_STATUS_IDS) == ("OMC", "OMX", "OmO", "Antigravity")

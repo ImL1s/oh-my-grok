@@ -7,6 +7,19 @@ Authoritative validator: `omg_cli.contracts.parity_schema.validate_parity_invent
 - `PARITY_MATURITY_LEVELS` — ordered maturity enum
 - `PARITY_V2_CLASSIFICATIONS` — claimability classifications
 - `UPSTREAM_PIN_IDS` — `OMC`, `OMX`, `OmO`, `Antigravity`, `GROK_BUILD` (no `OMG`)
+- `SOURCE_STATUS_IDS` — `OMC`, `OMX`, `OmO`, `Antigravity` (no `OMG`, no `GROK_BUILD`)
+- `PARITY_CATEGORY_TAXONOMY` — required #78-B category keys (`runtime_orchestration`, `skills`, `agents_routing`, `team`, `jobs`, `hooks`, `tools_mcp`, `state_memory_observability`, `install_update`, `quality_visual_edit_safety`, `antigravity`, `platform_live_evidence`, `parity_governance`)
+- `CATEGORY_STATUS_VALUES` — `bootstrapping` \| `complete` (shared by `category_status` and `source_status`)
+
+## Top-level v2 fields
+
+| Field | Notes |
+| --- | --- |
+| `inventory_status` | `bootstrapping` \| `complete` |
+| `category_status` | map of category → status; non-empty; values ∈ `CATEGORY_STATUS_VALUES` |
+| `source_status` | exact keys = `SOURCE_STATUS_IDS`; values ∈ `CATEGORY_STATUS_VALUES` |
+
+`inventory_is_complete` / `inventory_completion_claims_allowed` require `inventory_status == complete` **and** every `category_status` **and** every `source_status` value == `complete`. Percent / green-check claims stay forbidden while any source or category is still bootstrapping.
 
 ## Validation entry points
 
@@ -24,7 +37,7 @@ validate_parity_inventory(
 
 ## Claim helpers
 
-- `inventory_completion_claims_allowed(inventory)` — false while bootstrapping
+- `inventory_completion_claims_allowed(inventory)` — false while inventory/category/source status is bootstrapping
 - `claim_marker_for_capability(row, inventory=...)` — never emits `%` / ✅ while incomplete; never positive-claims `host_impossible` / `excluded`
 
 ## Strict check
