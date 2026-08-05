@@ -1458,6 +1458,51 @@ def test_autopilot_complete_rejects_analyze_only_acceptance(tmp_path: Path) -> N
         complete_with_acceptance(tmp_path, rid, prd=prd)
 
 
+def test_cmd_accept_refuses_autopilot_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """R12-1: bare omg accept must not verify autopilot runs."""
+    monkeypatch.chdir(tmp_path)
+    clear_cli_acceptance_tokens()
+    st = start_autopilot(tmp_path, "refuse bare accept", skip_interview=True)
+    rid = st["run_id"]
+    _walk_to_acceptance(tmp_path, rid, tmp_path=tmp_path)
+
+    rc = main(["accept", "--run", rid, "--yes"])
+    assert rc == 1
+    err = capsys.readouterr().err.lower()
+    assert "autopilot complete" in err
+    run = load_run(tmp_path, rid)
+    assert run is not None
+    assert run.get("verified") is not True
+    assert run.get("status") != "verified"
+
+
+def test_set_verified_refuses_autopilot_before_acceptance_phase(
+    tmp_path: Path,
+) -> None:
+    """R12-1: set_verified on autopilot requires sidecar phase==acceptance."""
+    from omg_cli.acceptance import freeze_and_run
+    from omg_cli.state import set_verified
+
+    clear_cli_acceptance_tokens()
+    st = start_autopilot(tmp_path, "refuse set_verified early", skip_interview=True)
+    rid = st["run_id"]
+    # Reach implement (not acceptance) but obtain a real acceptance stamp so the
+    # refusal is specifically the autopilot phase gate, not missing artifacts.
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    assert load_autopilot(tmp_path, rid)["phase"] == "implement"
+    prd = _goal_bound_prd(tmp_path, "refuse set_verified early")
+    assert freeze_and_run(tmp_path, rid, prd) is True
+
+    with pytest.raises(PermissionError, match="autopilot.*phase|phase.*acceptance"):
+        set_verified(tmp_path, rid, force=False)
+    run = load_run(tmp_path, rid)
+    assert run is not None
+    assert run.get("verified") is not True
+    assert run.get("status") != "verified"
+
+
 def test_blocked_to_qa_still_requires_review(tmp_path: Path) -> None:
     """Destination gates apply even when recovering from blocked."""
     st = start_autopilot(tmp_path, "blocked qa", skip_interview=True)
