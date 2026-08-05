@@ -346,7 +346,6 @@ def cmd_capabilities(args: argparse.Namespace) -> int:
 def cmd_parity(args: argparse.Namespace) -> int:
     """Run-manifest, release-readback, inventory check, and gap listing."""
     from omg_cli.contracts.parity_schema import (
-        inventory_completion_claims_allowed,
         load_json_object,
         validate_parity_inventory,
     )
@@ -354,6 +353,7 @@ def cmd_parity(args: argparse.Namespace) -> int:
     from omg_cli.contracts.run_manifest import main as run_manifest_main
     from omg_cli.contracts.state_schemas import ContractValidationError
     from omg_cli.contracts.writer_chain import sha256_hex
+    from omg_cli.parity_check import check_parity_inventory, filter_parity_gaps
     from omg_cli.setup_cmd import plugin_root
 
     action = getattr(args, "parity_action", None)
@@ -363,10 +363,12 @@ def cmd_parity(args: argparse.Namespace) -> int:
     if action == "check":
         root = plugin_root()
         inventory_path = root / "docs" / "parity" / "omg-parity.json"
+        strict = bool(getattr(args, "strict", False))
         try:
-            inventory = validate_parity_inventory(
-                load_json_object(inventory_path),
-                repo_root=root if getattr(args, "strict", False) else root,
+            result = check_parity_inventory(
+                inventory_path=inventory_path,
+                repo_root=root,
+                strict=strict,
             )
         except ContractValidationError as exc:
             emit_data(
@@ -375,25 +377,10 @@ def cmd_parity(args: argparse.Namespace) -> int:
                 {
                     "ok": False,
                     "error": str(exc),
-                    "strict": bool(getattr(args, "strict", False)),
+                    "strict": strict,
                 },
             )
             return 1
-        open_gaps = [
-            gap
-            for gap in inventory.get("gaps", [])
-            if isinstance(gap, dict) and gap.get("status") == "open"
-        ]
-        result = {
-            "ok": True,
-            "schema_version": inventory["schema_version"],
-            "inventory_status": inventory.get("inventory_status"),
-            "capabilities": len(inventory.get("capabilities", [])),
-            "open_gaps": len(open_gaps),
-            "completion_claims_allowed": inventory_completion_claims_allowed(inventory),
-            "strict": bool(getattr(args, "strict", False)),
-            "inventory_path": "docs/parity/omg-parity.json",
-        }
         emit_data(args, "parity.check", result)
         return 0
 
@@ -412,17 +399,18 @@ def cmd_parity(args: argparse.Namespace) -> int:
                 {"ok": False, "error": str(exc)},
             )
             return 1
-        gaps = [
-            gap
-            for gap in inventory.get("gaps", [])
-            if isinstance(gap, dict)
-        ]
         priority = getattr(args, "priority", None)
-        if priority:
-            gaps = [gap for gap in gaps if gap.get("priority") == priority]
+        include_all = bool(getattr(args, "all_gaps", False))
+        gaps = filter_parity_gaps(
+            inventory,
+            priority=priority,
+            include_all=include_all,
+        )
         result = {
             "ok": True,
             "priority": priority,
+            "include_all": include_all,
+            "open_only": not include_all,
             "count": len(gaps),
             "gaps": gaps,
             "inventory_status": inventory.get("inventory_status"),
@@ -591,7 +579,13 @@ def register_inspect_parsers(
         p_parity_gaps.add_argument(
             "--priority",
             default=None,
-            help="filter by priority (e.g. P0)",
+            help="filter by priority (e.g. P0); still open-only unless --all",
+        )
+        p_parity_gaps.add_argument(
+            "--all",
+            dest="all_gaps",
+            action="store_true",
+            help="include non-open gaps (closed/deferred)",
         )
         p_parity_gaps.set_defaults(func=cmd_parity, parity_action="gaps")
         p_parity.set_defaults(func=cmd_parity)
