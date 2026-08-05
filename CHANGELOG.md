@@ -9,6 +9,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Added
+- **Parity full upstream inventory (#78-B):** expand the v2 catalogue with
+  `source_status` (OMC/OMX/OmO/Antigravity), the #78-B category taxonomy,
+  minimum OMC/OMX/OmO/Antigravity capability rows (mostly `catalogued`; no
+  fake `live_verified`), generated per-source matrices + SUMMARY (EN/zh/zh-TW),
+  and NON-AUTHORITATIVE banners on historical research matrices. Inventory
+  completeness ≠ product parity — `inventory_status` stays `bootstrapping` while
+  `parity_governance` / `platform_live_evidence` remain open. Issue #78 stays
+  open for #78-C (pin refresh / live-evidence freshness / release claim gate).
+
 ## [0.7.5] - 2026-08-05
 
 ### Added

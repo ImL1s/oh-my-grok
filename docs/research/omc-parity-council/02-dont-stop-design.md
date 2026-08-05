@@ -1,3 +1,7 @@
+> **HISTORICAL / NON-AUTHORITATIVE.** This document predates the v2 parity inventory.
+> Current claimability truth: [`docs/parity/omg-parity.json`](../../parity/omg-parity.json)
+> and generated [`docs/parity/FEATURE-MATRIX.md`](../../parity/FEATURE-MATRIX.md).
+
 # Architect #2 — Grok-native「不要停到做完」設計（host-feasible）
 
 **date_utc:** 2026-07-20  

@@ -1,3 +1,7 @@
+> **HISTORICAL / NON-AUTHORITATIVE.** This document predates the v2 parity inventory.
+> Current claimability truth: [`docs/parity/omg-parity.json`](../../parity/omg-parity.json)
+> and generated [`docs/parity/FEATURE-MATRIX.md`](../../parity/FEATURE-MATRIX.md).
+
 # OMC parity multi-advisor council (2026-07-20)
 
 Research pack from the multi-Grok + external advisor audit of **oh-my-grok vs OMC-class** product completeness, host-feasible “don’t stop,” and post-audit shipping.

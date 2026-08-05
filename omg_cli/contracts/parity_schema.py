@@ -50,6 +50,31 @@ UPSTREAM_PIN_IDS = (
     "Antigravity",
     "GROK_BUILD",
 )
+# Inventory source coverage trackers (not pins): OMG/GROK_BUILD are not sources here.
+SOURCE_STATUS_IDS = (
+    "OMC",
+    "OMX",
+    "OmO",
+    "Antigravity",
+)
+# #78-B required category taxonomy (constant; inventory file may lag during bootstrap).
+PARITY_CATEGORY_TAXONOMY = frozenset(
+    {
+        "runtime_orchestration",
+        "skills",
+        "agents_routing",
+        "team",
+        "jobs",
+        "hooks",
+        "tools_mcp",
+        "state_memory_observability",
+        "install_update",
+        "quality_visual_edit_safety",
+        "antigravity",
+        "platform_live_evidence",
+        "parity_governance",
+    }
+)
 INVENTORY_STATUS_VALUES = ("bootstrapping", "complete")
 CATEGORY_STATUS_VALUES = ("bootstrapping", "complete")
 NON_POSITIVE_CLASSIFICATIONS = frozenset(
@@ -623,11 +648,20 @@ def inventory_is_complete(inventory: Mapping[str, Any]) -> bool:
     categories = inventory.get("category_status")
     if not isinstance(categories, Mapping) or not categories:
         return False
-    return all(status == "complete" for status in categories.values())
+    if PARITY_CATEGORY_TAXONOMY - set(categories):
+        return False
+    if not all(status == "complete" for status in categories.values()):
+        return False
+    sources = inventory.get("source_status")
+    if not isinstance(sources, Mapping) or not sources:
+        return False
+    if set(sources) != set(SOURCE_STATUS_IDS):
+        return False
+    return all(status == "complete" for status in sources.values())
 
 
 def inventory_completion_claims_allowed(inventory: Mapping[str, Any]) -> bool:
-    """Percentages / green checkmarks only when every category is complete."""
+    """Percentages / green checkmarks only when every category and source is complete."""
     return inventory_is_complete(inventory)
 
 
@@ -809,6 +843,7 @@ def _validate_parity_inventory_v2(
             "classifications",
             "upstream_pins",
             "category_status",
+            "source_status",
             "live_evidence_max_age_days",
             "capabilities",
             "gaps",
@@ -863,10 +898,26 @@ def _validate_parity_inventory_v2(
     categories = require_object(inventory["category_status"], label="category_status")
     if not categories:
         raise ContractValidationError("category_status must be non-empty")
+    missing = PARITY_CATEGORY_TAXONOMY - set(categories)
+    if missing:
+        raise ContractValidationError(
+            "category_status missing required taxonomy categories: "
+            + ", ".join(sorted(missing))
+        )
     for name, status in categories.items():
         require_nonempty_string(name, label="category_status key")
         if status not in CATEGORY_STATUS_VALUES:
             raise ContractValidationError(f"category_status[{name!r}] invalid")
+
+    sources = require_object(inventory["source_status"], label="source_status")
+    if set(sources) != set(SOURCE_STATUS_IDS):
+        raise ContractValidationError(
+            "source_status must be exactly " + ",".join(SOURCE_STATUS_IDS)
+        )
+    for source_id in SOURCE_STATUS_IDS:
+        status = sources[source_id]
+        if status not in CATEGORY_STATUS_VALUES:
+            raise ContractValidationError(f"source_status[{source_id!r}] invalid")
 
     capabilities = inventory["capabilities"]
     if not isinstance(capabilities, list) or not capabilities:

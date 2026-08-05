@@ -4,26 +4,8 @@
   "repository_id": "OMG",
   "ownership_manifest_id": "dual-parity-writers-v1",
   "inventory_status": "bootstrapping",
-  "maturity_levels": [
-    "catalogued",
-    "configured",
-    "installed",
-    "enabled",
-    "loadable",
-    "observed",
-    "healthy",
-    "live_verified"
-  ],
-  "classifications": [
-    "faithful",
-    "antigravity_native",
-    "omg_native",
-    "alias",
-    "host_owned",
-    "host_impossible",
-    "optional_unclaimed",
-    "excluded"
-  ],
+  "maturity_levels": ["catalogued", "configured", "installed", "enabled", "loadable", "observed", "healthy", "live_verified"],
+  "classifications": ["faithful", "antigravity_native", "omg_native", "alias", "host_owned", "host_impossible", "optional_unclaimed", "excluded"],
   "upstream_pins": {
     "OMC": {
       "repository": "https://github.com/Yeachan-Heo/oh-my-claudecode",
@@ -52,10 +34,25 @@
     }
   },
   "category_status": {
-    "antigravity": "bootstrapping",
-    "jobs": "bootstrapping",
+    "runtime_orchestration": "bootstrapping",
+    "skills": "bootstrapping",
+    "agents_routing": "bootstrapping",
     "team": "bootstrapping",
+    "jobs": "bootstrapping",
+    "hooks": "bootstrapping",
+    "tools_mcp": "bootstrapping",
+    "state_memory_observability": "bootstrapping",
+    "install_update": "bootstrapping",
+    "quality_visual_edit_safety": "bootstrapping",
+    "antigravity": "bootstrapping",
+    "platform_live_evidence": "bootstrapping",
     "parity_governance": "bootstrapping"
+  },
+  "source_status": {
+    "OMC": "bootstrapping",
+    "OMX": "bootstrapping",
+    "OmO": "bootstrapping",
+    "Antigravity": "bootstrapping"
   },
   "live_evidence_max_age_days": 30,
   "capabilities": [
@@ -69,10 +66,7 @@
         "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/ask/providers.py",
-        "omg_cli/team/providers.py"
-      ],
+      "omg_paths": ["omg_cli/ask/providers.py", "omg_cli/team/providers.py"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued",
@@ -119,10 +113,7 @@
         "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/team/plane.py",
-        "omg_cli/team/cli.py"
-      ],
+      "omg_paths": ["omg_cli/team/plane.py", "omg_cli/team/cli.py"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -145,25 +136,831 @@
         "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/contracts/parity_schema.py",
-        "docs/parity/omg-parity.json",
-        "scripts/check_parity_inventory.py"
-      ],
+      "omg_paths": ["omg_cli/contracts/parity_schema.py", "docs/parity/omg-parity.json", "scripts/check_parity_inventory.py"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
       },
       "evidence": {
-        "tests": [
-          "tests/test_parity_inventory.py",
-          "tests/test_parity_inventory_v2.py"
-        ],
+        "tests": ["tests/test_parity_inventory.py", "tests/test_parity_inventory_v2.py"],
         "docs": ["docs/parity/README.md", "docs/parity/schema-v2.md"],
         "live": []
       },
       "issues": ["#78"],
-      "gap": "#78-A substrate only; #78-B full upstream inventory and #78-C freshness/refresh remain open."
+      "gap": "#78-B catalogue inventory landed; #78-C live-evidence freshness/refresh remains."
+    },
+    {
+      "id": "omc.cli.session_surfaces",
+      "category": "runtime_orchestration",
+      "promise": "CLI and in-session launch surfaces with shared rules/guidance contract",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/guidance.py", "omg_cli/commands/install.py", "omg_cli/host_session.py"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_guidance.py"],
+        "docs": ["docs/cli-commands.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "OMG substitutes via guidance + host_session; OMC in-session MCP/tool surfaces are not 1:1."
+    },
+    {
+      "id": "omc.agents.catalog_routing",
+      "category": "agents_routing",
+      "promise": "Agent catalog with tier/discipline routing for multi-agent work",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["agents/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_skill_inventory.py"],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Grok plugin agents exist; OMC-style dynamic tier routing is not fully mirrored."
+    },
+    {
+      "id": "omc.skills.catalog_aliases",
+      "category": "skills",
+      "promise": "Skill catalog with aliases, pipelines, and resource loading",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["skills/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_skill_inventory.py"],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "OMG ships omg-* skills; OMC alias/pipeline breadth remains partially unclaimed."
+    },
+    {
+      "id": "omc.team.worktrees_mailbox",
+      "category": "team",
+      "promise": "Team worktrees, mailbox, and worker isolation plane",
+      "classification": "alias",
+      "alias_of": "team.plane_v3",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/team/", "omg_cli/workers.py", "omg_cli/integrate.py"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_team_plane.py", "tests/test_workers.py"],
+        "docs": ["docs/skills.md", "docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#69", "#78"],
+      "gap": "Catalogue alias of team.plane_v3; Team v3 gaps remain under #69."
+    },
+    {
+      "id": "omc.hooks.lifecycle",
+      "category": "hooks",
+      "promise": "Lifecycle hooks with Stop soft-pin honesty under Grok host constraints",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["hooks/hooks.json", "hooks/bin/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_lifecycle_hooks.py", "tests/test_stop_gate.py"],
+        "docs": ["docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Grok hooks are fail-open / stdout-ignored for most events; not OMC-equivalent injection."
+    },
+    {
+      "id": "omc.tools.lsp_ast",
+      "category": "tools_mcp",
+      "promise": "LSP/AST tooling and MCP tool surfaces for code intelligence",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/lsp_tools.py", "omg_cli/mcp/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_lsp_symbols.py", "tests/test_mcp_server.py"],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "omg lsp is a local probe; no full LSP/AST MCP bridge (host-honest substitute)."
+    },
+    {
+      "id": "omc.session.search_replay",
+      "category": "state_memory_observability",
+      "promise": "Session search, friction, replay, and observatory surfaces",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/host_session.py", "omg_cli/resume.py", "omg_cli/session_recovery.py", "omg_cli/workflows/replay.py"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_resume.py", "tests/test_session_recovery.py"],
+        "docs": ["docs/cli-commands.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Resume/recovery/workflow replay exist; OMC session-search/observatory breadth is not claimed."
+    },
+    {
+      "id": "omc.memory.wiki_hud_notify",
+      "category": "state_memory_observability",
+      "promise": "Project memory, wiki, HUD, and notification surfaces",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/wiki.py", "omg_cli/project_memory.py", "omg_cli/hud.py", "omg_cli/notify/", "skills/omg-wiki/", "skills/omg-hud/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_wiki_hud_lsp.py", "tests/test_project_memory.py"],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Core wiki/HUD/notify paths exist; OMC notepad/shared-memory breadth remains partial."
+    },
+    {
+      "id": "omc.goal.ralph_autopilot_ultra",
+      "category": "runtime_orchestration",
+      "promise": "Goal persistence via Ralph, autopilot FSM, UltraQA, and Ultragoal loops",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/autopilot.py", "omg_cli/modes.py", "omg_cli/pipeline.py", "skills/omg-ralph/", "skills/omg-ultraqa/", "skills/omg-ultragoal/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_autopilot.py", "tests/test_modes.py", "tests/test_pipeline.py"],
+        "docs": ["docs/autopilot.md", "docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "OMG modes/autopilot substitute OMC goal loops; Stop stickiness remains host-capped."
+    },
+    {
+      "id": "omc.quality.visual_release",
+      "category": "quality_visual_edit_safety",
+      "promise": "Visual verdict, dual-review, release packaging, and self-improve quality gates",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/dual_review.py", "omg_cli/verdict.py", "omg_cli/review.py", "omg_cli/package_release.py", "skills/omg-dual-review/", "skills/omg-ultraqa/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_review.py", "tests/test_package_release.py"],
+        "docs": ["docs/skills.md", "docs/RELEASE.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Dual-review/verdict/release exist; OMC visual-verdict / project-session-manager breadth is partial."
+    },
+    {
+      "id": "omx.launch.worktree_tmux_hud",
+      "category": "state_memory_observability",
+      "promise": "Launch surfaces with worktree isolation, tmux team panes, and HUD observability",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMX",
+        "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/hud.py", "omg_cli/workers.py", "omg_cli/team/tmux.py", "omg_cli/team/worktree.py", "skills/omg-hud/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_workers.py", "tests/test_team_plane.py"],
+        "docs": ["docs/skills.md", "docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#69", "#78"],
+      "gap": "HUD/worktree/tmux substitutes exist; OMX launch UX polish and Team v3 remain under #69/#78."
+    },
+    {
+      "id": "omx.workflow.deep_interview_ralplan",
+      "category": "runtime_orchestration",
+      "promise": "Deep-interview plus ralplan consensus workflow for planning gates",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMX",
+        "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/interview.py", "omg_cli/ralplan.py", "skills/omg-deep-interview/", "skills/omg-ralplan/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_interview.py", "tests/test_ralplan.py"],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Interview + ralplan CLI/skills exist; OMX prometheus-strict / ultragoal canonical chain breadth is partial."
+    },
+    {
+      "id": "omx.research.modes",
+      "category": "runtime_orchestration",
+      "promise": "Dedicated research / autoresearch mode surfaces",
+      "classification": "optional_unclaimed",
+      "upstream": {
+        "source": "OMX",
+        "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": [],
+        "docs": [],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "No first-class OMX-style research/autoresearch mode in OMG; ulw/ralph/ralplan/autopilot only (#78)."
+    },
+    {
+      "id": "omx.team.worker_mailbox_question",
+      "category": "team",
+      "promise": "Team workers, mailbox, and structured question operations",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMX",
+        "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/workers.py", "omg_cli/team/mailbox.py", "omg_cli/team/", "omg_cli/ask/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_workers.py", "tests/test_team_plane.py"],
+        "docs": ["docs/skills.md", "docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#69", "#78"],
+      "gap": "Worker/mailbox/ask substitutes exist; Team v3 job-backed panes remain under #69."
+    },
+    {
+      "id": "omx.agents.reviewer_product_catalog",
+      "category": "agents_routing",
+      "promise": "Reviewer and product-oriented agent catalog for multi-agent review",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMX",
+        "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["agents/", "agents/omg-code-reviewer.md", "agents/omg-security-reviewer.md", "agents/omg-critic.md"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_skill_inventory.py"],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Plugin reviewer agents exist; OMX product-catalog breadth and dynamic routing remain partial (#78)."
+    },
+    {
+      "id": "omx.goal.stop_lock_recovery",
+      "category": "runtime_orchestration",
+      "promise": "Goal persistence with Stop soft-pin, locking, and session recovery",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMX",
+        "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/stop_gate.py", "omg_cli/session_recovery.py", "hooks/", "omg_cli/autopilot.py"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_stop_gate.py", "tests/test_session_recovery.py"],
+        "docs": ["docs/security-model.md", "docs/autopilot.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Stop gate + recovery exist; Grok Stop pin is capped/fail-open (not OMX infinite stickiness) (#78)."
+    },
+    {
+      "id": "omx.plugin.setup_update_migrate",
+      "category": "install_update",
+      "promise": "Plugin setup, update, and migration surfaces for host install",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMX",
+        "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/commands/install.py", "omg_cli/guidance.py", "plugin.json", "scripts/install-plugin.sh"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_guidance.py"],
+        "docs": ["docs/cli-commands.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "omg setup/install + guidance rules exist; OMX migrate breadth is not 1:1 (#78)."
+    },
+    {
+      "id": "omx.quality.visual_modes",
+      "category": "quality_visual_edit_safety",
+      "promise": "Visual and quality modes (dual-review / verdict / UltraQA)",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMX",
+        "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/dual_review.py", "omg_cli/verdict.py", "skills/omg-dual-review/", "skills/omg-ultraqa/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_dual_review.py", "tests/test_review.py"],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Dual-review/verdict/UltraQA exist; OMX visual-mode catalog breadth remains partial (#78)."
+    },
+    {
+      "id": "omo.agents.discipline_routing",
+      "category": "agents_routing",
+      "promise": "Discipline agents with category routing for specialized work",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OmO",
+        "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["agents/", "plugin.json"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_skill_inventory.py"],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Static omg-* agent catalog exists; OmO discipline/category routing engine is not mirrored (#78)."
+    },
+    {
+      "id": "omo.rules.intent_gate",
+      "category": "hooks",
+      "promise": "IntentGate / rules injection before tool use",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OmO",
+        "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/guidance.py", "templates/omg-rules.md", "hooks/bin/pre_tool_use_deny.py", "omg_cli/deny.py"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_guidance.py"],
+        "docs": ["docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Rules-file + PreToolUse soft-gate substitute IntentGate; Grok cannot inject via UserPromptSubmit (#78)."
+    },
+    {
+      "id": "omo.agents.background",
+      "category": "jobs",
+      "promise": "Background agent / durable task execution plane",
+      "classification": "optional_unclaimed",
+      "upstream": {
+        "source": "OmO",
+        "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": [],
+        "docs": ["docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#68", "#78"],
+      "gap": "No OmO-style background agents; durable jobs plane tracked under #68 (jobs.durable_background)."
+    },
+    {
+      "id": "omo.team.hyperplan_security",
+      "category": "team",
+      "promise": "Team Mode with hyperplan and security-research workflows",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OmO",
+        "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/team/", "omg_cli/ralplan.py", "agents/omg-security-reviewer.md", "skills/omg-team/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_team_plane.py", "tests/test_ralplan.py"],
+        "docs": ["docs/skills.md", "docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#69", "#78"],
+      "gap": "Team + ralplan + security-reviewer substitute hyperplan/security-research; Team v3 remains #69."
+    },
+    {
+      "id": "omo.goal.todo_continuation",
+      "category": "runtime_orchestration",
+      "promise": "Todo-continuation enforcer that injects prompts when todos remain incomplete",
+      "classification": "host_impossible",
+      "upstream": {
+        "source": "OmO",
+        "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [],
+      "runtime_owner": "host",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": [],
+        "docs": ["docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "OmO client session.prompt inject has no Grok host equivalent; Stop soft-pin is not todo-continuation (#78)."
+    },
+    {
+      "id": "omo.edit.hash_anchored",
+      "category": "quality_visual_edit_safety",
+      "promise": "Hash-anchored edit safety for precise patch application",
+      "classification": "optional_unclaimed",
+      "upstream": {
+        "source": "OmO",
+        "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": [],
+        "docs": [],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "No hash-anchored edit surface in OMG; host edit tools are used as-is (#78)."
+    },
+    {
+      "id": "omo.tools.lsp_ast_codegraph_mcp",
+      "category": "tools_mcp",
+      "promise": "LSP/AST/CodeGraph MCP tooling for code intelligence",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OmO",
+        "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/lsp_tools.py", "omg_cli/mcp/", "skills/omg-lsp/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_lsp_symbols.py", "tests/test_mcp_server.py"],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Local omg lsp + MCP probe exist; no full AST/CodeGraph MCP bridge (#78)."
+    },
+    {
+      "id": "omo.quality.comment_hygiene",
+      "category": "quality_visual_edit_safety",
+      "promise": "Comment checker / code hygiene quality gates",
+      "classification": "optional_unclaimed",
+      "upstream": {
+        "source": "OmO",
+        "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": [],
+        "docs": [],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "No dedicated OmO-style comment-hygiene checker claimed in OMG (#78)."
+    },
+    {
+      "id": "omo.ulw.ultrawork_loop",
+      "category": "runtime_orchestration",
+      "promise": "Ultrawork / ULW parallel worker loop with fan-out and integrate",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OmO",
+        "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/fanout.py", "omg_cli/workers.py", "omg_cli/integrate.py", "omg_cli/modes.py", "skills/omg-ultrawork/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_fanout.py", "tests/test_workers.py", "tests/test_modes.py"],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "ULW fan-out/workers/integrate exist; OmO ulw-loop host APIs are not 1:1 (#78)."
+    },
+    {
+      "id": "omo.compat.tmux_plugin",
+      "category": "team",
+      "promise": "tmux and plugin compatibility for team / multi-pane execution",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OmO",
+        "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/team/tmux.py", "omg_cli/team/tmux_adapter.py", "plugin.json", "hooks/hooks.json"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_team_plane.py"],
+        "docs": ["docs/skills.md", "docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#69", "#78"],
+      "gap": "Default-on tmux team plane + plugin hooks exist; OmO host-plugin compat matrix is partial (#69/#78)."
+    },
+    {
+      "id": "antigravity.headless.structured_execution",
+      "category": "antigravity",
+      "promise": "Headless Antigravity structured execution with typed outputs and fail-closed exit codes",
+      "classification": "optional_unclaimed",
+      "upstream": {
+        "source": "Antigravity",
+        "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued",
+        "antigravity": "catalogued"
+      },
+      "evidence": {
+        "tests": [],
+        "docs": ["docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#67", "#78"],
+      "gap": "No Antigravity headless structured-execution adapter; Team/ask use argv builders only (#67/#78)."
+    },
+    {
+      "id": "antigravity.agents.markdown_custom",
+      "category": "agents_routing",
+      "promise": "Markdown-defined custom agents for Antigravity-style agent catalogs",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "Antigravity",
+        "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["agents/", "plugin.json"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued",
+        "antigravity": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_skill_inventory.py"],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#67", "#78"],
+      "gap": "Grok plugin markdown agents exist; Antigravity-native agent catalog wiring remains under #67/#78."
+    },
+    {
+      "id": "antigravity.skills.hooks_subagents_plugins_mcp",
+      "category": "skills",
+      "promise": "Skills, hooks, subagents, plugins, and MCP surfaces for Antigravity-shaped extension",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "Antigravity",
+        "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["skills/", "hooks/", "agents/", "plugin.json", "omg_cli/mcp/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued",
+        "antigravity": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_skill_inventory.py", "tests/test_mcp_server.py"],
+        "docs": ["docs/skills.md", "docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#67", "#78"],
+      "gap": "OMG skills/hooks/agents/MCP exist on Grok; Antigravity host plugin/MCP parity is not claimed (#67/#78)."
+    },
+    {
+      "id": "antigravity.jobs.background_tasks",
+      "category": "jobs",
+      "promise": "Antigravity background tasks / durable job execution",
+      "classification": "optional_unclaimed",
+      "upstream": {
+        "source": "Antigravity",
+        "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued",
+        "antigravity": "catalogued"
+      },
+      "evidence": {
+        "tests": [],
+        "docs": ["docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#68", "#78"],
+      "gap": "No Antigravity background-task plane; durable jobs tracked under #68 (jobs.durable_background)."
+    },
+    {
+      "id": "antigravity.runtime.model_effort_mode_perms",
+      "category": "antigravity",
+      "promise": "Model, effort, mode, and permission controls for Antigravity runtime",
+      "classification": "host_owned",
+      "upstream": {
+        "source": "Antigravity",
+        "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [],
+      "runtime_owner": "host",
+      "maturity": {
+        "grok": "catalogued",
+        "antigravity": "catalogued"
+      },
+      "evidence": {
+        "tests": [],
+        "docs": ["docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#67", "#78"],
+      "gap": "Model/effort/mode/perms are host-owned (Grok/Antigravity CLI); OMG does not claim a typed AG runtime control plane (#67/#78)."
+    },
+    {
+      "id": "antigravity.session.history_resume",
+      "category": "state_memory_observability",
+      "promise": "Session history and resume continuity for Antigravity-shaped workflows",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "Antigravity",
+        "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/resume.py", "omg_cli/session_recovery.py", "omg_cli/host_session.py"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued",
+        "antigravity": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_resume.py", "tests/test_session_recovery.py"],
+        "docs": ["docs/cli-commands.md"],
+        "live": []
+      },
+      "issues": ["#67", "#78"],
+      "gap": "OMG resume/recovery substitutes exist for Grok; Antigravity-native history APIs are not wired (#67/#78)."
+    },
+    {
+      "id": "antigravity.platform.version_matrix",
+      "category": "platform_live_evidence",
+      "promise": "Platform/runtime version matrix with live-evidence freshness policy",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "Antigravity",
+        "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/doctor.py", "scripts/check_version_consistency.py", "docs/parity/omg-parity.json"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued",
+        "antigravity": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_parity_inventory_v2.py"],
+        "docs": ["docs/parity/schema-v2.md", "docs/parity/README.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Doctor/version/pin catalogue exists; #78-C live-evidence freshness and refresh gate remain open."
     }
   ],
   "gaps": [
@@ -197,7 +994,47 @@
       "status": "open",
       "issues": ["#78"],
       "capability_ids": ["parity.inventory.governance"],
-      "summary": "#78-B full inventory and #78-C live-evidence freshness remain after #78-A"
+      "summary": "#78-B inventory landed; #78-C freshness/refresh remains"
+    },
+    {
+      "id": "gap.parity.platform_live_evidence",
+      "priority": "P1",
+      "status": "open",
+      "issues": ["#78"],
+      "capability_ids": ["antigravity.platform.version_matrix"],
+      "summary": "Platform/runtime live-evidence freshness and refresh gate not shipped (#78-C)"
+    },
+    {
+      "id": "gap.omo.todo_continuation",
+      "priority": "P1",
+      "status": "open",
+      "issues": ["#78"],
+      "capability_ids": ["omo.goal.todo_continuation"],
+      "summary": "OmO todo-continuation inject is host_impossible on Grok (no session.prompt API)"
+    },
+    {
+      "id": "gap.antigravity.headless_execution",
+      "priority": "P2",
+      "status": "open",
+      "issues": ["#67", "#78"],
+      "capability_ids": ["antigravity.headless.structured_execution", "antigravity.runtime.model_effort_mode_perms"],
+      "summary": "Antigravity headless structured execution and typed runtime controls unclaimed"
+    },
+    {
+      "id": "gap.omx.research.modes",
+      "priority": "P2",
+      "status": "open",
+      "issues": ["#78"],
+      "capability_ids": ["omx.research.modes"],
+      "summary": "OMX-style dedicated research/autoresearch mode surface unclaimed"
+    },
+    {
+      "id": "gap.omo.edit_and_hygiene",
+      "priority": "P2",
+      "status": "open",
+      "issues": ["#78"],
+      "capability_ids": ["omo.edit.hash_anchored", "omo.quality.comment_hygiene"],
+      "summary": "OmO hash-anchored edit and comment-hygiene quality surfaces unclaimed"
     }
   ]
 }

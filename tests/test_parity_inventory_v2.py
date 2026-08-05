@@ -9,8 +9,10 @@ from pathlib import Path
 import pytest
 
 from omg_cli.contracts.parity_schema import (
+    PARITY_CATEGORY_TAXONOMY,
     PARITY_MATURITY_LEVELS,
     PARITY_V2_CLASSIFICATIONS,
+    SOURCE_STATUS_IDS,
     claim_marker_for_capability,
     inventory_completion_claims_allowed,
     load_json_object,
@@ -98,10 +100,13 @@ def _base_v2_inventory(tmp_path: Path) -> dict:
             },
         },
         "category_status": {
-            "antigravity": "bootstrapping",
-            "jobs": "bootstrapping",
-            "team": "bootstrapping",
-            "parity_governance": "bootstrapping",
+            cat: "bootstrapping" for cat in sorted(PARITY_CATEGORY_TAXONOMY)
+        },
+        "source_status": {
+            "OMC": "bootstrapping",
+            "OMX": "bootstrapping",
+            "OmO": "bootstrapping",
+            "Antigravity": "bootstrapping",
         },
         "live_evidence_max_age_days": 30,
         "capabilities": [
@@ -373,6 +378,8 @@ def test_optional_unclaimed_cannot_generate_positive_claim(tmp_path: Path) -> No
     inventory["inventory_status"] = "complete"
     for cat in inventory["category_status"]:
         inventory["category_status"][cat] = "complete"
+    for source in inventory["source_status"]:
+        inventory["source_status"][source] = "complete"
     inventory["capabilities"][0]["classification"] = "optional_unclaimed"
     inventory["capabilities"][0]["maturity"] = {"grok": "catalogued"}
     validated = _validate(inventory, tmp_path)
@@ -546,3 +553,260 @@ def test_alias_maturity_cannot_exceed_canonical_runtime_rank(tmp_path: Path) -> 
     )
     with pytest.raises(ContractValidationError, match="exceeds canonical"):
         _validate(inventory, tmp_path)
+
+
+def test_source_status_required_for_upstream_inventory_sources(tmp_path: Path) -> None:
+    inventory = _base_v2_inventory(tmp_path)
+    inventory.pop("source_status", None)
+    with pytest.raises(ContractValidationError, match="source_status"):
+        _validate(inventory, tmp_path)
+
+
+def test_source_status_rejects_unknown_or_omg_keys(tmp_path: Path) -> None:
+    inventory = _base_v2_inventory(tmp_path)
+    inventory["source_status"] = {
+        source: "bootstrapping" for source in SOURCE_STATUS_IDS
+    }
+    inventory["source_status"]["OMG"] = "bootstrapping"
+    with pytest.raises(ContractValidationError, match="source_status"):
+        _validate(inventory, tmp_path)
+
+    inventory["source_status"] = {
+        source: "bootstrapping" for source in SOURCE_STATUS_IDS
+    }
+    inventory["source_status"]["GROK_BUILD"] = "bootstrapping"
+    with pytest.raises(ContractValidationError, match="source_status"):
+        _validate(inventory, tmp_path)
+
+    inventory["source_status"] = {
+        source: "bootstrapping" for source in SOURCE_STATUS_IDS
+    }
+    inventory["source_status"]["not_a_source"] = "complete"
+    with pytest.raises(ContractValidationError, match="source_status"):
+        _validate(inventory, tmp_path)
+
+    inventory["source_status"] = {
+        source: "bootstrapping" for source in SOURCE_STATUS_IDS
+    }
+    del inventory["source_status"]["OMC"]
+    with pytest.raises(ContractValidationError, match="source_status"):
+        _validate(inventory, tmp_path)
+
+    inventory["source_status"] = {
+        source: "bootstrapping" for source in SOURCE_STATUS_IDS
+    }
+    inventory["source_status"]["OMC"] = "done"
+    with pytest.raises(ContractValidationError, match="source_status"):
+        _validate(inventory, tmp_path)
+
+
+def test_claims_forbidden_when_any_source_bootstrapping(tmp_path: Path) -> None:
+    inventory = _base_v2_inventory(tmp_path)
+    inventory["inventory_status"] = "complete"
+    for cat in inventory["category_status"]:
+        inventory["category_status"][cat] = "complete"
+    inventory["source_status"] = {source: "complete" for source in SOURCE_STATUS_IDS}
+    inventory["source_status"]["OMC"] = "bootstrapping"
+    validated = _validate(inventory, tmp_path)
+    assert inventory_completion_claims_allowed(validated) is False
+    for row in validated["capabilities"]:
+        marker = claim_marker_for_capability(row, inventory=validated)
+        assert "%" not in str(marker)
+        assert marker not in {"✅", "✓"}
+
+
+def test_claims_forbidden_when_any_category_bootstrapping(tmp_path: Path) -> None:
+    inventory = _base_v2_inventory(tmp_path)
+    inventory["inventory_status"] = "complete"
+    inventory["source_status"] = {source: "complete" for source in SOURCE_STATUS_IDS}
+    for cat in inventory["category_status"]:
+        inventory["category_status"][cat] = "complete"
+    inventory["category_status"]["jobs"] = "bootstrapping"
+    validated = _validate(inventory, tmp_path)
+    assert inventory_completion_claims_allowed(validated) is False
+    for row in validated["capabilities"]:
+        marker = claim_marker_for_capability(row, inventory=validated)
+        assert "%" not in str(marker)
+        assert marker not in {"✅", "✓"}
+
+
+# Issue #78-B OMC minimum capability IDs (catalogue seed; not claim completeness).
+ISSUE_78_OMC_MINIMUM_IDS = frozenset(
+    {
+        "omc.cli.session_surfaces",
+        "omc.agents.catalog_routing",
+        "omc.skills.catalog_aliases",
+        "omc.team.worktrees_mailbox",
+        "omc.hooks.lifecycle",
+        "omc.tools.lsp_ast",
+        "omc.session.search_replay",
+        "omc.memory.wiki_hud_notify",
+        "omc.goal.ralph_autopilot_ultra",
+        "omc.quality.visual_release",
+    }
+)
+
+# Issue #78-B OMX minimum capability IDs (catalogue seed; not claim completeness).
+ISSUE_78_OMX_MINIMUM_IDS = frozenset(
+    {
+        "omx.launch.worktree_tmux_hud",
+        "omx.workflow.deep_interview_ralplan",
+        "omx.research.modes",
+        "omx.team.worker_mailbox_question",
+        "omx.agents.reviewer_product_catalog",
+        "omx.goal.stop_lock_recovery",
+        "omx.plugin.setup_update_migrate",
+        "omx.quality.visual_modes",
+    }
+)
+
+# Issue #78-B OmO minimum capability IDs (catalogue seed; not claim completeness).
+ISSUE_78_OMO_MINIMUM_IDS = frozenset(
+    {
+        "omo.agents.discipline_routing",
+        "omo.rules.intent_gate",
+        "omo.agents.background",
+        "omo.team.hyperplan_security",
+        "omo.goal.todo_continuation",
+        "omo.edit.hash_anchored",
+        "omo.tools.lsp_ast_codegraph_mcp",
+        "omo.quality.comment_hygiene",
+        "omo.ulw.ultrawork_loop",
+        "omo.compat.tmux_plugin",
+    }
+)
+
+# Issue #78-B Antigravity minimum capability IDs (keep adapter; catalogue seed).
+ISSUE_78_ANTIGRAVITY_MINIMUM_IDS = frozenset(
+    {
+        "antigravity.provider.adapter",
+        "antigravity.headless.structured_execution",
+        "antigravity.agents.markdown_custom",
+        "antigravity.skills.hooks_subagents_plugins_mcp",
+        "antigravity.jobs.background_tasks",
+        "antigravity.runtime.model_effort_mode_perms",
+        "antigravity.session.history_resume",
+        "antigravity.platform.version_matrix",
+    }
+)
+
+
+def test_required_category_taxonomy_constant_matches_issue_78b() -> None:
+    expected = frozenset(
+        {
+            "runtime_orchestration",
+            "skills",
+            "agents_routing",
+            "team",
+            "jobs",
+            "hooks",
+            "tools_mcp",
+            "state_memory_observability",
+            "install_update",
+            "quality_visual_edit_safety",
+            "antigravity",
+            "platform_live_evidence",
+            "parity_governance",
+        }
+    )
+    assert frozenset(PARITY_CATEGORY_TAXONOMY) == expected
+    assert "OMG" not in SOURCE_STATUS_IDS
+    assert "GROK_BUILD" not in SOURCE_STATUS_IDS
+    assert tuple(SOURCE_STATUS_IDS) == ("OMC", "OMX", "OmO", "Antigravity")
+
+
+
+def test_validator_rejects_inventory_missing_required_category_taxonomy(tmp_path: Path) -> None:
+    """Authoritative validator must enforce PARITY_CATEGORY_TAXONOMY coverage."""
+    inventory = _base_v2_inventory(tmp_path)
+    assert set(inventory["category_status"]) >= set(PARITY_CATEGORY_TAXONOMY)
+    victim = sorted(PARITY_CATEGORY_TAXONOMY)[0]
+    del inventory["category_status"][victim]
+    inventory["capabilities"] = [
+        row for row in inventory["capabilities"] if row.get("category") != victim
+    ]
+    with pytest.raises(ContractValidationError, match="category_status"):
+        _validate(inventory, tmp_path)
+
+
+def test_required_category_taxonomy_present_in_canonical_inventory() -> None:
+    inv = load_json_object(ROOT / "docs/parity/omg-parity.json")
+    assert set(inv["category_status"]) >= set(PARITY_CATEGORY_TAXONOMY)
+
+
+def test_omc_inventory_rows_cover_issue_78_minimum_ids() -> None:
+    inv = load_json_object(ROOT / "docs/parity/omg-parity.json")
+    ids = {row["id"] for row in inv["capabilities"]}
+    missing = ISSUE_78_OMC_MINIMUM_IDS - ids
+    assert not missing, f"missing OMC minimum capability ids: {sorted(missing)}"
+    for row in inv["capabilities"]:
+        if row["id"] not in ISSUE_78_OMC_MINIMUM_IDS:
+            continue
+        assert row["upstream"]["source"] == "OMC"
+        assert row["upstream"]["revision"] == inv["upstream_pins"]["OMC"]["revision"]
+
+
+def test_omx_inventory_rows_cover_issue_78_minimum_ids() -> None:
+    inv = load_json_object(ROOT / "docs/parity/omg-parity.json")
+    ids = {row["id"] for row in inv["capabilities"]}
+    missing = ISSUE_78_OMX_MINIMUM_IDS - ids
+    assert not missing, f"missing OMX minimum capability ids: {sorted(missing)}"
+    for row in inv["capabilities"]:
+        if row["id"] not in ISSUE_78_OMX_MINIMUM_IDS:
+            continue
+        assert row["upstream"]["source"] == "OMX"
+        assert row["upstream"]["revision"] == inv["upstream_pins"]["OMX"]["revision"]
+
+
+def test_omo_inventory_rows_cover_issue_78_minimum_ids() -> None:
+    inv = load_json_object(ROOT / "docs/parity/omg-parity.json")
+    ids = {row["id"] for row in inv["capabilities"]}
+    missing = ISSUE_78_OMO_MINIMUM_IDS - ids
+    assert not missing, f"missing OmO minimum capability ids: {sorted(missing)}"
+    for row in inv["capabilities"]:
+        if row["id"] not in ISSUE_78_OMO_MINIMUM_IDS:
+            continue
+        assert row["upstream"]["source"] == "OmO"
+        assert row["upstream"]["revision"] == inv["upstream_pins"]["OmO"]["revision"]
+
+
+def test_antigravity_inventory_rows_cover_issue_78_minimum_ids() -> None:
+    inv = load_json_object(ROOT / "docs/parity/omg-parity.json")
+    ids = {row["id"] for row in inv["capabilities"]}
+    missing = ISSUE_78_ANTIGRAVITY_MINIMUM_IDS - ids
+    assert not missing, f"missing Antigravity minimum capability ids: {sorted(missing)}"
+    for row in inv["capabilities"]:
+        if row["id"] not in ISSUE_78_ANTIGRAVITY_MINIMUM_IDS:
+            continue
+        assert row["upstream"]["source"] == "Antigravity"
+        assert (
+            row["upstream"]["revision"]
+            == inv["upstream_pins"]["Antigravity"]["revision"]
+        )
+
+
+def test_no_capability_row_is_fake_live_verified() -> None:
+    inv = validate_parity_inventory(
+        load_json_object(ROOT / "docs/parity/omg-parity.json"),
+        repo_root=ROOT,
+    )
+    for row in inv["capabilities"]:
+        for level in row["maturity"].values():
+            assert level != "live_verified"
+
+
+def test_canonical_inventory_stays_bootstrapping_without_completeness_gate() -> None:
+    """P1-2: catalogue seed ≠ complete; no source/category complete without #78-C gate."""
+    inv = load_json_object(ROOT / "docs/parity/omg-parity.json")
+    assert inv["inventory_status"] == "bootstrapping"
+    assert set(inv["source_status"]) == set(SOURCE_STATUS_IDS)
+    for source, status in inv["source_status"].items():
+        assert status == "bootstrapping", f"{source} must not claim complete yet"
+    for cat, status in inv["category_status"].items():
+        assert status == "bootstrapping", f"{cat} must not claim complete yet"
+    # Minimum-ID coverage must remain without requiring source_status complete.
+    ids = {row["id"] for row in inv["capabilities"]}
+    assert ISSUE_78_OMC_MINIMUM_IDS <= ids
+    assert ISSUE_78_OMX_MINIMUM_IDS <= ids
+    assert ISSUE_78_OMO_MINIMUM_IDS <= ids
+    assert ISSUE_78_ANTIGRAVITY_MINIMUM_IDS <= ids
