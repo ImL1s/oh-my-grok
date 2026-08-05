@@ -13,6 +13,15 @@ from omg_cli.contracts.parity_schema import (
     validate_parity_inventory,
 )
 from omg_cli.contracts.state_schemas import ContractValidationError
+from omg_cli.parity_claim_gate import check_parity_release_claims
+
+__all__ = [
+    "ARTIFACT_PATHS_RELATIVE",
+    "apply_strict_parity_gates",
+    "check_parity_inventory",
+    "check_parity_release_claims",
+    "filter_parity_gaps",
+]
 
 ARTIFACT_PATHS_RELATIVE = {
     "requirements": ".omx/plans/omg-oma-full-parity-requirements.md",
