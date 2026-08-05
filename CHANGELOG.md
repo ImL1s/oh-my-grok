@@ -10,6 +10,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Fixed
+- **Legacy cancel / launch linearization (Round 17 / R17-1):**
+  ``_cancel_run_legacy`` now acquires the same per-run ``transition_guard`` as
+  ``_launch_grok``: commit ``cancelled`` + snapshot PIDs under the guard, then
+  signal outside. Closes the Pro R16 P1 race where legacy cancel could mark
+  terminal while launch still Popens after its pre-check. Legacy
+  ``write_status`` treats ``cancelled``/``verified``/``completed``/``failed``
+  as absorbing (guarded no-op) so post-launch writers cannot resurrect a
+  cancelled run. Pipeline / process-fanout ULW remain legacy-v1 (strict-v2
+  would require ``execution_lease`` on every stage write — not a cheap upgrade);
+  linearized legacy cancel is the supported closure for those paths.
 - **Cancel-aware `_launch_grok` gate (Round 16 / R16-1):**
   ``modes._launch_grok`` re-checks terminal status /
   pending ``cancel.request.json`` under the same ``transition_guard`` as

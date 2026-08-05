@@ -222,7 +222,15 @@ treats starttime-probe `UNKNOWN` as refuse-do-not-clear (not reclaimable);
 implementation receipt stamps require a lease bound to the *target* root/run
 (`_require_current_lease`); ralph/`run_mode` resume shares the same
 live-leader gate as autopilot; process fanout rolls back by killing all
-already-started workers if a later worker's pid publish fails.
+already-started workers if a later worker's pid publish fails. Round 16:
+`_launch_grok` re-checks terminal status / pending `cancel.request.json` under
+the same guard before spawn. Round 17: legacy-v1 `_cancel_run_legacy` uses that
+same `transition_guard` (commit `cancelled` + PID snapshot under guard; signal
+outside) so pipeline / process-fanout ULW cancel cannot race a post-check
+Popen; legacy `write_status` treats terminal statuses as absorbing (no
+resurrection). Product pipeline/ULW stay legacy-v1 — upgrading them to
+strict-v2 is not cheap (every stage `write_status` would need an
+`execution_lease`); linearized legacy cancel is the supported closure.
 
 | Family | Allowed | Denied |
 |--------|---------|--------|
