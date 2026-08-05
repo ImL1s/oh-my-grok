@@ -367,6 +367,65 @@ def test_live_verified_requires_fresh_runtime_platform_evidence(tmp_path: Path) 
     _validate(inventory, tmp_path)
 
 
+def test_optional_unclaimed_cannot_generate_positive_claim(tmp_path: Path) -> None:
+    """Pro PR85c P2: optional_unclaimed must not emit healthy/live_verified markers."""
+    inventory = _base_v2_inventory(tmp_path)
+    inventory["inventory_status"] = "complete"
+    for cat in inventory["category_status"]:
+        inventory["category_status"][cat] = "complete"
+    inventory["capabilities"][0]["classification"] = "optional_unclaimed"
+    inventory["capabilities"][0]["maturity"] = {"grok": "catalogued"}
+    validated = _validate(inventory, tmp_path)
+    marker = claim_marker_for_capability(validated["capabilities"][0], inventory=validated)
+    assert marker == "optional_unclaimed"
+
+    inventory["capabilities"][0]["maturity"] = {"grok": "healthy"}
+    inventory["capabilities"][0]["evidence"] = {
+        "tests": ["tests/test_parity_inventory_v2.py"],
+        "docs": ["docs/parity/README.md"],
+        "configured_paths": ["omg_cli/ask/providers.py"],
+        "install_evidence": ["plugin.json"],
+        "enabled_evidence": ["hooks/hooks.json"],
+        "loadable_evidence": ["omg_cli/__init__.py"],
+        "observed_evidence": ["docs/parity/omg-parity.json"],
+        "healthy_evidence": ["tests/test_parity_inventory_v2.py"],
+        "live": [],
+    }
+    with pytest.raises(ContractValidationError, match="positive claim"):
+        _validate(inventory, tmp_path)
+
+    # Alias of optional_unclaimed healthy-canonical must not recurse to healthy.
+    inventory["capabilities"][0]["maturity"] = {"grok": "catalogued"}
+    inventory["capabilities"][0]["evidence"] = {
+        "tests": [],
+        "docs": ["docs/parity/README.md"],
+        "live": [],
+    }
+    inventory["capabilities"].append(
+        {
+            "id": "agy.provider.alias",
+            "category": "antigravity",
+            "promise": "Alias of optional_unclaimed",
+            "classification": "alias",
+            "alias_of": "antigravity.provider.adapter",
+            "upstream": {
+                "source": "Antigravity",
+                "revision": "dddddddddddddddddddddddddddddddddddddddd",
+                "source_paths": ["src/adapter.ts"],
+            },
+            "omg_paths": [],
+            "runtime_owner": "omg",
+            "maturity": {"grok": "catalogued"},
+            "evidence": {"tests": [], "docs": ["docs/parity/README.md"], "live": []},
+            "issues": ["#67"],
+            "gap": "alias of optional_unclaimed",
+        }
+    )
+    validated = _validate(inventory, tmp_path)
+    alias = next(c for c in validated["capabilities"] if c["id"] == "agy.provider.alias")
+    assert claim_marker_for_capability(alias, inventory=validated) == "optional_unclaimed"
+
+
 def test_host_impossible_cannot_generate_positive_claim(tmp_path: Path) -> None:
     inventory = _base_v2_inventory(tmp_path)
     inventory["capabilities"][0]["classification"] = "host_impossible"

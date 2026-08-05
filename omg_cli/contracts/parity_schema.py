@@ -52,7 +52,9 @@ UPSTREAM_PIN_IDS = (
 )
 INVENTORY_STATUS_VALUES = ("bootstrapping", "complete")
 CATEGORY_STATUS_VALUES = ("bootstrapping", "complete")
-NON_POSITIVE_CLASSIFICATIONS = frozenset({"host_impossible", "excluded"})
+NON_POSITIVE_CLASSIFICATIONS = frozenset(
+    {"host_impossible", "excluded", "optional_unclaimed"}
+)
 # Classifications that may emit positive claim markers and must point at OMG
 # implementation paths under strict (repo_root) validation. Alias / host_owned /
 # optional_unclaimed / non-positive classes are excluded.
