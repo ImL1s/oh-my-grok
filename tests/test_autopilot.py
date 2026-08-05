@@ -176,6 +176,103 @@ def test_transition_to_cancelled_raises_and_does_not_mutate_state(
     assert after_run.get("autopilot_phase") == "interview"
 
 
+def test_transition_rejects_terminal_run_under_lease(tmp_path: Path) -> None:
+    """R9-2 (P1-1), TDD core case: a run cancelled between the pre-lease
+    load and the lease-protected write must be rejected before any sidecar
+    mutation — ``status.json`` is authoritative over the autopilot phase
+    sidecar, so a still-``phase=="interview"`` run can be terminal."""
+    from omg_cli.state import cancel_run
+
+    st = start_autopilot(tmp_path, "terminal drift blocks transition")
+    rid = st["run_id"]
+
+    before_state = load_autopilot(tmp_path, rid)
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+
+    with pytest.raises(AutopilotError, match="terminal under lease"):
+        transition(tmp_path, rid, "blocked", reason="try after cancel")
+
+    after_state = load_autopilot(tmp_path, rid)
+    assert after_state == before_state
+    assert after_state["phase"] == "interview"
+    after_run = load_run(tmp_path, rid)
+    assert after_run["status"] == "cancelled"
+
+
+def _write_pending_cancel_request(tmp_path: Path, run_id: str) -> None:
+    import json
+
+    request_path = (
+        tmp_path / ".omg" / "state" / "runs" / run_id / "cancel.request.json"
+    )
+    request_path.write_text(
+        json.dumps(
+            {
+                "writer": "omg-cli",
+                "run_id": run_id,
+                "request_id": "pending-request",
+                "requested_at": "2026-08-05T00:00:00+00:00",
+                "observed_generation": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_transition_rejects_pending_cancellation_request_under_lease(
+    tmp_path: Path,
+) -> None:
+    """R9-2 (P1-1): a cancellation request committed (but not yet
+    finalized to a terminal ``status``) between the pre-lease load and the
+    lease-protected write must also be rejected — fail closed in that
+    window too, not just once terminal."""
+    st = start_autopilot(tmp_path, "pending cancel blocks transition")
+    rid = st["run_id"]
+
+    before_state = load_autopilot(tmp_path, rid)
+    _write_pending_cancel_request(tmp_path, rid)
+
+    with pytest.raises(AutopilotError, match="cancellation"):
+        transition(tmp_path, rid, "blocked", reason="try during pending cancel")
+
+    after_state = load_autopilot(tmp_path, rid)
+    assert after_state == before_state
+    assert after_state["phase"] == "interview"
+
+
+def test_status_autopilot_empty_legal_next_on_terminal_run(tmp_path: Path) -> None:
+    """R9-2 (P1-1): once a run is terminal, ``status_autopilot`` must not
+    advertise any manual or commit-only next phase — the sidecar's
+    ``phase`` field alone must never suggest a transition ``transition()``
+    will now refuse."""
+    from omg_cli.state import cancel_run
+
+    st = start_autopilot(tmp_path, "terminal run has no legal next")
+    rid = st["run_id"]
+
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+
+    out = status_autopilot(tmp_path, rid)
+    assert out["run_status"] == "cancelled"
+    assert out["legal_next"] == []
+    assert "commit_only_next" not in out
+
+
+def test_run_autopilot_refuses_resume_on_terminal_status(tmp_path: Path) -> None:
+    """R9-2 (P1-1): resume must prefer ``status.json`` terminal over the
+    autopilot sidecar phase alone — a cancelled run must never launch grok
+    again just because its sidecar still parks at a non-terminal phase."""
+    from omg_cli.state import cancel_run
+
+    st = start_autopilot(tmp_path, "terminal run refuses resume")
+    rid = st["run_id"]
+
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+
+    rc = run_autopilot(tmp_path, "", resume_run_id=rid, dry_run=True)
+    assert rc == 1
+
+
 def test_interview_complete_rejects_bare_status_string(tmp_path: Path) -> None:
     """R2-4: a forged interview.json with only status="complete" (no CLI
     writer, no spec artifact) must not unlock ralplan without break_glass —

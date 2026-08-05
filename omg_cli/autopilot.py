@@ -521,6 +521,29 @@ def transition(
         raise AutopilotError(f"wrong mode: {run.get('mode')!r}")
 
     with execution_lease(root, run_id, intent=f"autopilot-{next_phase}") as lease:
+        # Re-check terminal/cancellation freshly under the lease — the
+        # ``run`` loaded above (pre-lease) can be stale if a concurrent
+        # ``omg cancel`` commits status.json / the cancellation request
+        # between that load and lease acquisition. Fail closed before any
+        # state mutation or sidecar write: a run that has gone terminal
+        # (``omg_cli.state.TERMINAL_STATUSES`` — cancelled/completed/
+        # failed/verified) or has a pending cancellation request must
+        # never accept a further phase transition.
+        from omg_cli.state import TERMINAL_STATUSES, load_cancellation_request
+
+        fresh_run = load_run(root, run_id) or {}
+        fresh_status = str(fresh_run.get("status") or "")
+        if fresh_status in TERMINAL_STATUSES:
+            raise AutopilotError(
+                "autopilot run is terminal under lease; refusing transition: "
+                f"status={fresh_status!r}"
+            )
+        if load_cancellation_request(root, run_id) is not None:
+            raise AutopilotError(
+                "autopilot run has a pending cancellation request; "
+                "refusing transition"
+            )
+
         state = load_autopilot(root, run_id)
         src = str(state.get("phase") or "init")
         assert_legal_transition(src, next_phase)
@@ -917,11 +940,21 @@ def set_awaiting_confirmation(
 
 
 def status_autopilot(root: Path | str, run_id: str) -> dict[str, Any]:
+    from omg_cli.state import TERMINAL_STATUSES
+
     state = load_autopilot(root, run_id)
     run = load_run(root, run_id) or {}
     phase = str(state.get("phase") or "")
-    legal_next = sorted(MANUAL_TRANSITIONS.get(phase, frozenset()))
-    commit_only_next = sorted(COMMIT_ONLY_TRANSITIONS.get(phase, frozenset()))
+    run_status = str(run.get("status") or "")
+    # A terminal run (cancelled/completed/failed/verified) has no legal next
+    # phase — the sidecar's ``phase`` field alone must never advertise a
+    # transition that ``transition()`` will now refuse under lease.
+    if run_status in TERMINAL_STATUSES:
+        legal_next: list[str] = []
+        commit_only_next: list[str] = []
+    else:
+        legal_next = sorted(MANUAL_TRANSITIONS.get(phase, frozenset()))
+        commit_only_next = sorted(COMMIT_ONLY_TRANSITIONS.get(phase, frozenset()))
     out: dict[str, Any] = {
         "run_id": run_id,
         "phase": state.get("phase"),
@@ -1318,6 +1351,20 @@ def run_autopilot(
             print(
                 f"omg autopilot run: run {resume_run_id!r} is mode="
                 f"{run.get('mode')!r}",
+                file=sys.stderr,
+            )
+            return 1
+        from omg_cli.state import TERMINAL_STATUSES
+
+        run_status = str(run.get("status") or "")
+        if run_status in TERMINAL_STATUSES:
+            # status.json is authoritative over the autopilot sidecar's
+            # ``phase`` field — a terminal run (e.g. cancelled) must never
+            # launch grok again just because the sidecar still parks at a
+            # non-terminal phase.
+            print(
+                f"omg autopilot run: run {resume_run_id!r} is terminal "
+                f"(status={run_status!r}); refusing to resume",
                 file=sys.stderr,
             )
             return 1
