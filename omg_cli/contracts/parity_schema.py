@@ -197,14 +197,21 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             ),
         )
         + ["docs/parity/omg-parity.json", "docs/parity/omg-traceability.json"]
+        + ["docs/parity/README.md", "docs/parity/schema-v2.md"]
         + _paths(
             "scripts/",
-            ("check_parity_inventory.py", "check_traceability.py", "check_writer_ownership.py"),
+            (
+                "check_parity_inventory.py",
+                "check_traceability.py",
+                "check_writer_ownership.py",
+                "generate_parity_docs.py",
+            ),
         )
         + [
             "tests/fixtures/carrier/**",
             "tests/fixtures/recovery/**",
             "tests/fixtures/capabilities/**",
+            "tests/fixtures/parity/**",
             "tests/fixtures/release/**",
             "tests/fixtures/workflow/**",
         ]
