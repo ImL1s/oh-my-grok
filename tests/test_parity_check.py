@@ -53,6 +53,7 @@ def test_strict_gate_rejects_complete_inventory_with_open_p0(tmp_path: Path) -> 
     broken = copy.deepcopy(inventory)
     broken["inventory_status"] = "complete"
     broken["category_status"] = {key: "complete" for key in broken["category_status"]}
+    broken["source_status"] = {key: "complete" for key in broken["source_status"]}
     path = tmp_path / "omg-parity.json"
     path.write_text(json.dumps(broken), encoding="utf-8")
 
