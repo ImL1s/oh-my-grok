@@ -1063,10 +1063,11 @@ def _consensus_ready(root: Path, run_id: str) -> bool:
     matching on-disk stamp; the ``ralplan.json`` stamp is the source of
     truth and must show ``writer``, ``run_id``, and ``accepted`` together.
 
-    Defense in depth (R5-4): when the stamp carries a ``goal`` field, it
-    must match this run's frozen goal — closes a foreign/mistargeted stamp
-    even when writer/run_id/accepted otherwise look valid. Stamps without
-    a ``goal`` field (legacy shape) are unaffected.
+    Defense in depth (R5-4/R7-3): the stamp must carry a non-empty string
+    ``goal`` matching this run's frozen goal — closes a foreign/mistargeted
+    stamp even when writer/run_id/accepted otherwise look valid. A missing,
+    null, or empty ``goal`` is fail-closed (rejected), not treated as a
+    legacy/unaffected shape.
     """
     from omg_cli.ralplan import ralplan_state_path
 
@@ -1082,11 +1083,12 @@ def _consensus_ready(root: Path, run_id: str) -> bool:
     if data.get("accepted") is not True:
         return False
     goal = data.get("goal")
-    if goal is not None:
-        run = load_run(root, run_id)
-        frozen_goal = str((run or {}).get("goal") or "").strip()
-        if str(goal).strip() != frozen_goal:
-            return False
+    if not isinstance(goal, str) or not goal.strip():
+        return False
+    run = load_run(root, run_id)
+    frozen_goal = str((run or {}).get("goal") or "").strip()
+    if goal.strip() != frozen_goal:
+        return False
     return True
 
 

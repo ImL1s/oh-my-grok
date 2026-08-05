@@ -262,6 +262,7 @@ def test_consensus_stamp_unlocks_implement_without_boolean(tmp_path: Path) -> No
             {
                 "writer": CLI_WRITER,
                 "run_id": rid,
+                "goal": "stamp consensus",
                 "accepted": True,
                 "status": "accepted",
             },
@@ -300,6 +301,7 @@ def test_replan_invalidates_accepted_ralplan_stamp(tmp_path: Path) -> None:
                 {
                     "writer": CLI_WRITER,
                     "run_id": rid,
+                    "goal": "replan invalidate",
                     "accepted": True,
                     "status": "accepted",
                 },
@@ -362,6 +364,7 @@ def test_blocked_to_ralplan_invalidates_accepted_ralplan_stamp(
                 {
                     "writer": CLI_WRITER,
                     "run_id": rid,
+                    "goal": "blocked replan invalidate",
                     "accepted": True,
                     "status": "accepted",
                 },
@@ -402,8 +405,7 @@ def test_consensus_ready_rejects_goal_mismatch(tmp_path: Path) -> None:
     """R5-4 defense-in-depth: an accepted ``ralplan.json`` stamp whose
     ``goal`` field disagrees with the frozen autopilot run goal must not
     unlock implement — closes a foreign/mistargeted stamp even when
-    writer/run_id/accepted otherwise look valid. Stamps with no ``goal``
-    field (legacy shape) are unaffected."""
+    writer/run_id/accepted otherwise look valid."""
     import json as _json
 
     from omg_cli.autopilot import _consensus_ready
@@ -411,6 +413,108 @@ def test_consensus_ready_rejects_goal_mismatch(tmp_path: Path) -> None:
     from omg_cli.ralplan import ralplan_state_path
 
     st = start_autopilot(tmp_path, "bind to frozen goal", skip_interview=True)
+    rid = st["run_id"]
+
+    path = ralplan_state_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _stamp(goal) -> None:
+        path.write_text(
+            _json.dumps(
+                {
+                    "writer": CLI_WRITER,
+                    "run_id": rid,
+                    "goal": goal,
+                    "accepted": True,
+                    "status": "accepted",
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    _stamp("a different goal entirely")
+    assert _consensus_ready(tmp_path, rid) is False
+
+    _stamp("bind to frozen goal")
+    assert _consensus_ready(tmp_path, rid) is True
+
+
+def test_consensus_ready_rejects_missing_goal(tmp_path: Path) -> None:
+    """R7-3: an accepted ``ralplan.json`` stamp with no ``goal`` field at
+    all is fail-closed — a legacy/foreign stamp shape must not unlock
+    implement just because writer/run_id/accepted otherwise look valid."""
+    import json as _json
+
+    from omg_cli.autopilot import _consensus_ready
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.ralplan import ralplan_state_path
+
+    st = start_autopilot(tmp_path, "missing goal rejected", skip_interview=True)
+    rid = st["run_id"]
+
+    path = ralplan_state_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        _json.dumps(
+            {
+                "writer": CLI_WRITER,
+                "run_id": rid,
+                "accepted": True,
+                "status": "accepted",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert _consensus_ready(tmp_path, rid) is False
+
+
+def test_consensus_ready_rejects_null_goal(tmp_path: Path) -> None:
+    """R7-3: a ``goal`` field explicitly present but ``null`` is
+    fail-closed, same as a missing field."""
+    import json as _json
+
+    from omg_cli.autopilot import _consensus_ready
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.ralplan import ralplan_state_path
+
+    st = start_autopilot(tmp_path, "null goal rejected", skip_interview=True)
+    rid = st["run_id"]
+
+    path = ralplan_state_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        _json.dumps(
+            {
+                "writer": CLI_WRITER,
+                "run_id": rid,
+                "goal": None,
+                "accepted": True,
+                "status": "accepted",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert _consensus_ready(tmp_path, rid) is False
+
+
+def test_consensus_ready_rejects_empty_goal(tmp_path: Path) -> None:
+    """R7-3: an empty (or whitespace-only) string ``goal`` is fail-closed —
+    it is not a genuine match for the frozen run goal."""
+    import json as _json
+
+    from omg_cli.autopilot import _consensus_ready
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.ralplan import ralplan_state_path
+
+    st = start_autopilot(tmp_path, "empty goal rejected", skip_interview=True)
     rid = st["run_id"]
 
     path = ralplan_state_path(tmp_path, rid)
@@ -432,11 +536,11 @@ def test_consensus_ready_rejects_goal_mismatch(tmp_path: Path) -> None:
             encoding="utf-8",
         )
 
-    _stamp("a different goal entirely")
+    _stamp("")
     assert _consensus_ready(tmp_path, rid) is False
 
-    _stamp("bind to frozen goal")
-    assert _consensus_ready(tmp_path, rid) is True
+    _stamp("   ")
+    assert _consensus_ready(tmp_path, rid) is False
 
 
 def test_blocked_interview_ralplan_invalidates_accepted_ralplan_stamp(
@@ -470,6 +574,7 @@ def test_blocked_interview_ralplan_invalidates_accepted_ralplan_stamp(
                 {
                     "writer": CLI_WRITER,
                     "run_id": rid,
+                    "goal": "blocked interview replan invalidate",
                     "accepted": True,
                     "status": "accepted",
                 },
@@ -1535,7 +1640,8 @@ def _stamp_gate_for(root: Path, kw: dict) -> int:
     if phase == "ralplan":
         # Genuine CLI-owned ralplan.json stamp (writer/run_id/accepted) —
         # a bare status.ralplan_consensus boolean is no longer trusted
-        # alone (R2-5).
+        # alone (R2-5). goal must match the frozen run goal (R7-3).
+        run = load_run(root, run_id) or {}
         path = ralplan_state_path(root, run_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
@@ -1543,6 +1649,7 @@ def _stamp_gate_for(root: Path, kw: dict) -> int:
                 {
                     "writer": CLI_WRITER,
                     "run_id": run_id,
+                    "goal": run.get("goal"),
                     "accepted": True,
                     "status": "accepted",
                 },
@@ -1616,7 +1723,13 @@ def test_consensus_ready_ignores_artifact_marker(tmp_path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         __import__("json").dumps(
-            {"writer": CLI_WRITER, "run_id": rid, "accepted": True, "status": "accepted"},
+            {
+                "writer": CLI_WRITER,
+                "run_id": rid,
+                "goal": "artifact alone",
+                "accepted": True,
+                "status": "accepted",
+            },
             indent=2,
         )
         + "\n",
