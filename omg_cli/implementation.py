@@ -7,8 +7,14 @@ JSON, only accepted under the audited ``break_glass`` escape hatch — see
 on-disk stamp under ``.omg/state/runs/<run_id>/stages/implementation.json``
 with ``writer == "omg-cli"``. The gate trusts this file without break_glass
 only when it was produced under a live ``ExecutionLease`` (``assert_current``)
-and matches the implement-cycle expected invocation/generation persisted on
-autopilot state — the same authority model as the review/QA stage stamps.
+that also rebound autopilot ``implement_expected_*`` + ``implement_receipt_binder``
+in the same lease-guarded operation — the same authority model as the
+review/QA stage stamps.
+
+Honesty limit: dual hand-edit of ``autopilot.json`` + ``implementation.json``
+under a writable ``.omg/state`` tree remains residual (R14-5 / host deny);
+receipt-alone forgery after implement entry (binder cleared to null) is
+blocked.
 """
 from __future__ import annotations
 
@@ -55,10 +61,11 @@ def stamp_implementation_receipt(
     never a caller-supplied hash, or this would just be a laundered version
     of the unauthenticated inline ``evidence.implementation_receipt`` path.
 
-    ``lease`` must be a held ``ExecutionLease`` (``assert_current``); the
-    receipt records ``invocation_id`` and ``lease_generation`` from that
-    lease so a hand-written ``writer=omg-cli`` file cannot forge the gate
-    without matching the implement-cycle expected binding on autopilot state.
+    ``lease`` must be a held ``ExecutionLease`` (``assert_current``). After
+    writing the receipt, when an autopilot sidecar exists this also rebinds
+    ``implement_expected_*`` and ``implement_receipt_binder`` under the same
+    lease + ``transition_guard`` so the implement→review gate can require
+    both the on-disk receipt and the CLI-written binder (not receipt alone).
     """
     lease.assert_current()
     root = Path(root).resolve()
@@ -83,6 +90,31 @@ def stamp_implementation_receipt(
     if note:
         record["note"] = note
     _atomic_write_json(implementation_receipt_path(root, run_id), record)
+
+    # Rebind autopilot expected + binder under the same live lease so a
+    # later process can gate on durable CLI-written fields (not a
+    # process-private secret). Skip when no autopilot sidecar (e.g. bare
+    # receipt unit tests on a non-autopilot run).
+    from omg_cli.autopilot import (
+        _save,
+        autopilot_state_path,
+        load_autopilot,
+    )
+    from omg_cli.state import transition_guard
+
+    if autopilot_state_path(root, run_id).is_file():
+        with transition_guard(root, run_id):
+            lease.assert_current()
+            state = load_autopilot(root, run_id)
+            state["implement_expected_invocation_id"] = invocation_id
+            state["implement_expected_lease_generation"] = generation
+            state["implement_receipt_binder"] = {
+                "invocation_id": invocation_id,
+                "lease_generation": generation,
+                "content_sha256": digest,
+            }
+            _save(root, run_id, state, lease)
+
     return record
 
 

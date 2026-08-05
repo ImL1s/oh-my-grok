@@ -1819,27 +1819,19 @@ def _stamp_impl_receipt(
     *,
     content_sha256: str,
     note: str | None = None,
-    sync_expected: bool = False,
 ) -> dict:
-    """Stamp under a live execution lease; optionally bind autopilot expected."""
-    from omg_cli.autopilot import _save
+    """Stamp under a live execution lease (production path; rebinds expected)."""
     from omg_cli.implementation import stamp_implementation_receipt
     from omg_cli.state import execution_lease
 
     with execution_lease(root, run_id, intent="impl-receipt") as lease:
-        stamped = stamp_implementation_receipt(
+        return stamp_implementation_receipt(
             root,
             run_id,
             content_sha256=content_sha256,
             lease=lease,
             note=note,
         )
-        if sync_expected:
-            state = load_autopilot(root, run_id)
-            state["implement_expected_invocation_id"] = lease.invocation_id
-            state["implement_expected_lease_generation"] = lease.generation
-            _save(root, run_id, state, lease)
-        return stamped
 
 
 def test_stamp_and_read_implementation_receipt_roundtrip(tmp_path: Path) -> None:
@@ -2012,10 +2004,11 @@ def test_read_implementation_receipt_rejects_run_id_mismatch(tmp_path: Path) -> 
 def test_implement_to_review_accepts_on_disk_cli_receipt_without_break_glass(
     tmp_path: Path,
 ) -> None:
-    """P2/R14-2: a trusted on-disk CLI receipt stamped under a live lease
-    with matching implement_expected_* on state satisfies implement→review
-    without break_glass."""
+    """P2/R14-2: stamp under a live lease (rebinds expected+binder) then
+    implement→review unlocks without break_glass."""
     from omg_cli.autopilot import _implement_workspace_fingerprint
+    from omg_cli.implementation import stamp_implementation_receipt
+    from omg_cli.state import execution_lease
 
     st = start_autopilot(tmp_path, "cli receipt gate", skip_interview=True)
     rid = st["run_id"]
@@ -2024,10 +2017,15 @@ def test_implement_to_review_accepts_on_disk_cli_receipt_without_break_glass(
     assert ap.get("implement_expected_invocation_id")
     assert isinstance(ap.get("implement_expected_lease_generation"), int)
     assert ap["implement_expected_lease_generation"] >= 1
+    assert ap.get("implement_receipt_binder") is None
     fp = _implement_workspace_fingerprint(tmp_path)
-    _stamp_impl_receipt(
-        tmp_path, rid, content_sha256=fp, note="worker finished", sync_expected=True
-    )
+    with execution_lease(tmp_path, rid, intent="impl-receipt") as lease:
+        stamp_implementation_receipt(
+            tmp_path, rid, content_sha256=fp, lease=lease, note="worker finished"
+        )
+    binder = load_autopilot(tmp_path, rid).get("implement_receipt_binder")
+    assert isinstance(binder, dict)
+    assert binder.get("content_sha256") == fp
     transition(tmp_path, rid, "review")  # no evidence, no break_glass
     assert status_autopilot(tmp_path, rid)["phase"] == "review"
     history = load_autopilot(tmp_path, rid)["history"]
@@ -2064,7 +2062,48 @@ def test_implement_to_review_rejects_hand_forged_receipt_with_fake_invocation(
         ),
         encoding="utf-8",
     )
-    with pytest.raises(AutopilotError, match="implementation|no_change"):
+    with pytest.raises(AutopilotError, match="lease-bound|implementation|no_change|binder"):
+        transition(tmp_path, rid, "review")
+    assert status_autopilot(tmp_path, rid)["phase"] == "implement"
+
+
+def test_implement_to_review_rejects_copy_expected_when_binder_null(
+    tmp_path: Path,
+) -> None:
+    """R14-2 critical: after implement entry binder is null — hand-writing
+    implementation.json that copies implement_expected_* + current fp must
+    NOT unlock (binder required). Dual-edit of autopilot+receipt remains
+    residual under writable .omg/state."""
+    import json
+
+    from omg_cli.autopilot import _implement_workspace_fingerprint
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.implementation import implementation_receipt_path
+
+    st = start_autopilot(tmp_path, "copy expected null binder", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    ap = load_autopilot(tmp_path, rid)
+    assert ap.get("implement_receipt_binder") is None
+    exp_inv = ap["implement_expected_invocation_id"]
+    exp_gen = ap["implement_expected_lease_generation"]
+    fp = _implement_workspace_fingerprint(tmp_path)
+    path = implementation_receipt_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "writer": CLI_WRITER,
+                "run_id": rid,
+                "invocation_id": exp_inv,
+                "lease_generation": exp_gen,
+                "content_sha256": fp,
+                "note": "forged by copying expected with binder null",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(AutopilotError, match="lease-bound|implementation|no_change|binder"):
         transition(tmp_path, rid, "review")
     assert status_autopilot(tmp_path, rid)["phase"] == "implement"
 
@@ -2097,30 +2136,32 @@ def test_implement_to_review_rejects_handwritten_receipt_without_invocation_id(
         ),
         encoding="utf-8",
     )
-    with pytest.raises(AutopilotError, match="implementation|no_change"):
+    with pytest.raises(AutopilotError, match="lease-bound|implementation|no_change|binder"):
         transition(tmp_path, rid, "review")
     assert status_autopilot(tmp_path, rid)["phase"] == "implement"
 
 
-def test_implement_to_review_rejects_stale_generation_or_foreign_invocation(
+def test_implement_to_review_rejects_mutated_receipt_after_stamp(
     tmp_path: Path,
 ) -> None:
-    """R14-2: receipt stamped under a live lease but with wrong/stale
-    generation or foreign invocation_id vs implement_expected_* must not
-    unlock (expected fields left as set on implement entry)."""
-    from omg_cli.autopilot import _implement_workspace_fingerprint
+    """R14-2: after a real stamp, mutating receipt invocation_id / generation
+    away from expected+binder must not unlock."""
+    import json
 
-    st = start_autopilot(tmp_path, "stale lease bind", skip_interview=True)
+    from omg_cli.autopilot import _implement_workspace_fingerprint
+    from omg_cli.implementation import implementation_receipt_path
+
+    st = start_autopilot(tmp_path, "mutated receipt after stamp", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    expected = load_autopilot(tmp_path, rid)
-    exp_inv = expected["implement_expected_invocation_id"]
-    exp_gen = expected["implement_expected_lease_generation"]
     fp = _implement_workspace_fingerprint(tmp_path)
-    # Stamp under a *new* lease without syncing expected → foreign inv/gen.
-    stamped = _stamp_impl_receipt(tmp_path, rid, content_sha256=fp, sync_expected=False)
-    assert stamped["invocation_id"] != exp_inv or stamped["lease_generation"] != exp_gen
-    with pytest.raises(AutopilotError, match="implementation|no_change"):
+    stamped = _stamp_impl_receipt(tmp_path, rid, content_sha256=fp)
+    path = implementation_receipt_path(tmp_path, rid)
+    forged = dict(stamped)
+    forged["invocation_id"] = "foreign-after-stamp"
+    forged["lease_generation"] = int(stamped["lease_generation"]) + 99
+    path.write_text(json.dumps(forged), encoding="utf-8")
+    with pytest.raises(AutopilotError, match="lease-bound|implementation|no_change|binder"):
         transition(tmp_path, rid, "review")
     assert status_autopilot(tmp_path, rid)["phase"] == "implement"
 
@@ -2131,10 +2172,8 @@ def test_implement_to_review_rejects_stale_on_disk_receipt(tmp_path: Path) -> No
     st = start_autopilot(tmp_path, "stale cli receipt", skip_interview=True)
     rid = st["run_id"]
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
-    _stamp_impl_receipt(
-        tmp_path, rid, content_sha256="0" * 64, sync_expected=True
-    )
-    with pytest.raises(AutopilotError, match="implementation|no_change"):
+    _stamp_impl_receipt(tmp_path, rid, content_sha256="0" * 64)
+    with pytest.raises(AutopilotError, match="lease-bound|implementation|no_change|binder"):
         transition(tmp_path, rid, "review")
     assert status_autopilot(tmp_path, rid)["phase"] == "implement"
 
@@ -2158,9 +2197,7 @@ def test_implement_reentry_invalidates_stale_receipt_with_unchanged_fingerprint(
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
     (tmp_path / "changed.py").write_text("# product change\n", encoding="utf-8")
     fp1 = _implement_workspace_fingerprint(tmp_path)
-    _stamp_impl_receipt(
-        tmp_path, rid, content_sha256=fp1, note="cycle 1 work", sync_expected=True
-    )
+    _stamp_impl_receipt(tmp_path, rid, content_sha256=fp1, note="cycle 1 work")
     transition(tmp_path, rid, "review")
     assert status_autopilot(tmp_path, rid)["phase"] == "review"
 
@@ -2172,8 +2209,9 @@ def test_implement_reentry_invalidates_stale_receipt_with_unchanged_fingerprint(
     # The old receipt from cycle 1 must be invalidated by the new implement
     # entry, even though its content_sha256 still equals the current fp.
     assert read_implementation_receipt(tmp_path, rid) is None
+    assert load_autopilot(tmp_path, rid).get("implement_receipt_binder") is None
 
-    with pytest.raises(AutopilotError, match="implementation|no_change"):
+    with pytest.raises(AutopilotError, match="lease-bound|implementation|no_change|binder"):
         transition(tmp_path, rid, "review")
     assert status_autopilot(tmp_path, rid)["phase"] == "implement"
 

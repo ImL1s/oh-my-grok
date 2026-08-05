@@ -298,22 +298,31 @@ def _implementation_work_evidence(
 
     on_disk_receipt = read_implementation_receipt(root, run_id)
     if isinstance(on_disk_receipt, dict):
-        # Trusted CLI-side stamp (writer + lease fields verified by the
-        # reader) — accepted without break_glass only when it still describes
-        # the current workspace AND matches the implement-cycle expected
-        # invocation/generation persisted on (re)entry to implement. Missing
-        # expected fields → fail closed (no unlock via receipt alone).
+        # Trusted CLI-side stamp: require (1) implement_expected_* match,
+        # (2) implement_receipt_binder present with matching content_sha256
+        # (written only by stamp_implementation_receipt under lease), and
+        # (3) content_sha256 == current workspace fingerprint.
+        # Implement entry clears binder to null so copying expected_* onto a
+        # hand-written receipt alone cannot unlock until a real stamp.
+        # Residual: dual hand-edit of autopilot.json + implementation.json
+        # under writable .omg/state (R14-5 / host deny) — not claimed closed.
         expected_inv = state.get("implement_expected_invocation_id")
         expected_gen = state.get("implement_expected_lease_generation")
+        binder = state.get("implement_receipt_binder")
+        receipt_fp = on_disk_receipt.get("content_sha256")
         if (
             isinstance(expected_inv, str)
             and expected_inv.strip()
             and isinstance(expected_gen, int)
             and not isinstance(expected_gen, bool)
             and expected_gen >= 1
+            and isinstance(binder, dict)
+            and binder.get("invocation_id") == expected_inv
+            and binder.get("lease_generation") == expected_gen
+            and binder.get("content_sha256") == receipt_fp
             and on_disk_receipt.get("invocation_id") == expected_inv
             and on_disk_receipt.get("lease_generation") == expected_gen
-            and on_disk_receipt.get("content_sha256") == current_fp
+            and receipt_fp == current_fp
         ):
             return True, "cli_receipt:implementation.json"
     receipt = ev.get("implementation_receipt")
@@ -669,8 +678,10 @@ def transition(
                 raise AutopilotError(
                     "no evidence of implementation work → no review "
                     "(need a workspace fingerprint change since entering "
-                    "implement, evidence.implementation_receipt with "
-                    "writer=omg-cli, or evidence.no_change_reason + "
+                    "implement, a lease-bound CLI implementation receipt "
+                    "with matching implement_receipt_binder, "
+                    "evidence.implementation_receipt with writer=omg-cli + "
+                    "break_glass, or evidence.no_change_reason + "
                     "break_glass=true)"
                 )
             if work_audit:
@@ -695,10 +706,12 @@ def transition(
                 root, run_id, reason=f"(re)implement from {src}"
             )
             # Bind the next CLI implementation receipt to this implement
-            # cycle's live lease — a hand-forged writer=omg-cli receipt with
-            # an arbitrary invocation_id must not unlock review.
+            # cycle's live lease. Clear binder so a hand-forged receipt that
+            # merely copies implement_expected_* cannot unlock until
+            # stamp_implementation_receipt writes a fresh binder under lease.
             state["implement_expected_invocation_id"] = lease.invocation_id
             state["implement_expected_lease_generation"] = lease.generation
+            state["implement_receipt_binder"] = None
             state["implement_workspace_fp"] = _implement_workspace_fingerprint(root)
         if next_phase == "ralplan":
             # ralplan_epoch is a monotonic re-entry counter, not a stamp
