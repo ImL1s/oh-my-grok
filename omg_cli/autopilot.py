@@ -1154,6 +1154,12 @@ def _consensus_ready(root: Path, run_id: str) -> bool:
     stamp even when writer/run_id/accepted otherwise look valid. A missing,
     null, or empty ``goal`` is fail-closed (rejected), not treated as a
     legacy/unaffected shape.
+
+    Defense in depth (R10-1/P2-R8-D): the stamp must also carry
+    ``schema_version == 2`` and ``lifecycle_version == 2`` — autopilot only
+    ever embeds strict-v2 RALPLAN (see ``_run_ralplan_v2``), so a legacy-v1
+    or otherwise malformed/missing-schema stamp is fail-closed (rejected),
+    not treated as a legacy/unaffected shape.
     """
     from omg_cli.ralplan import ralplan_state_path
 
@@ -1163,6 +1169,10 @@ def _consensus_ready(root: Path, run_id: str) -> bool:
     if data.get("writer") != CLI_WRITER:
         return False
     if data.get("run_id") != run_id:
+        return False
+    if data.get("schema_version") != 2:
+        return False
+    if data.get("lifecycle_version") != 2:
         return False
     if data.get("invalidated") is True:
         return False

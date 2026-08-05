@@ -358,6 +358,8 @@ def test_consensus_stamp_unlocks_implement_without_boolean(tmp_path: Path) -> No
         __import__("json").dumps(
             {
                 "writer": CLI_WRITER,
+                "schema_version": 2,
+                "lifecycle_version": 2,
                 "run_id": rid,
                 "goal": "stamp consensus",
                 "accepted": True,
@@ -397,6 +399,8 @@ def test_replan_invalidates_accepted_ralplan_stamp(tmp_path: Path) -> None:
             _json.dumps(
                 {
                     "writer": CLI_WRITER,
+                    "schema_version": 2,
+                    "lifecycle_version": 2,
                     "run_id": rid,
                     "goal": "replan invalidate",
                     "accepted": True,
@@ -460,6 +464,8 @@ def test_blocked_to_ralplan_invalidates_accepted_ralplan_stamp(
             _json.dumps(
                 {
                     "writer": CLI_WRITER,
+                    "schema_version": 2,
+                    "lifecycle_version": 2,
                     "run_id": rid,
                     "goal": "blocked replan invalidate",
                     "accepted": True,
@@ -520,6 +526,8 @@ def test_consensus_ready_rejects_goal_mismatch(tmp_path: Path) -> None:
             _json.dumps(
                 {
                     "writer": CLI_WRITER,
+                    "schema_version": 2,
+                    "lifecycle_version": 2,
                     "run_id": rid,
                     "goal": goal,
                     "accepted": True,
@@ -557,6 +565,8 @@ def test_consensus_ready_rejects_missing_goal(tmp_path: Path) -> None:
         _json.dumps(
             {
                 "writer": CLI_WRITER,
+                "schema_version": 2,
+                "lifecycle_version": 2,
                 "run_id": rid,
                 "accepted": True,
                 "status": "accepted",
@@ -588,6 +598,8 @@ def test_consensus_ready_rejects_null_goal(tmp_path: Path) -> None:
         _json.dumps(
             {
                 "writer": CLI_WRITER,
+                "schema_version": 2,
+                "lifecycle_version": 2,
                 "run_id": rid,
                 "goal": None,
                 "accepted": True,
@@ -622,6 +634,8 @@ def test_consensus_ready_rejects_empty_goal(tmp_path: Path) -> None:
             _json.dumps(
                 {
                     "writer": CLI_WRITER,
+                    "schema_version": 2,
+                    "lifecycle_version": 2,
                     "run_id": rid,
                     "goal": goal,
                     "accepted": True,
@@ -638,6 +652,151 @@ def test_consensus_ready_rejects_empty_goal(tmp_path: Path) -> None:
 
     _stamp("   ")
     assert _consensus_ready(tmp_path, rid) is False
+
+
+def test_consensus_ready_rejects_missing_schema_version(tmp_path: Path) -> None:
+    """R10-1/P2-R8-D: an accepted ``ralplan.json`` stamp with no
+    ``schema_version`` field (legacy-v1 shape) is fail-closed — autopilot
+    only ever embeds strict-v2 RALPLAN, so a stamp missing the schema
+    marker must not unlock implement even when writer/run_id/goal/accepted
+    otherwise look valid."""
+    import json as _json
+
+    from omg_cli.autopilot import _consensus_ready
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.ralplan import ralplan_state_path
+
+    st = start_autopilot(
+        tmp_path, "missing schema version rejected", skip_interview=True
+    )
+    rid = st["run_id"]
+
+    path = ralplan_state_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        _json.dumps(
+            {
+                "writer": CLI_WRITER,
+                "lifecycle_version": 2,
+                "run_id": rid,
+                "goal": "missing schema version rejected",
+                "accepted": True,
+                "status": "accepted",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert _consensus_ready(tmp_path, rid) is False
+
+
+def test_consensus_ready_rejects_wrong_schema_version(tmp_path: Path) -> None:
+    """R10-1/P2-R8-D: ``schema_version`` present but not ``2`` is
+    fail-closed, same as a missing field."""
+    import json as _json
+
+    from omg_cli.autopilot import _consensus_ready
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.ralplan import ralplan_state_path
+
+    st = start_autopilot(
+        tmp_path, "wrong schema version rejected", skip_interview=True
+    )
+    rid = st["run_id"]
+
+    path = ralplan_state_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        _json.dumps(
+            {
+                "writer": CLI_WRITER,
+                "schema_version": 1,
+                "lifecycle_version": 2,
+                "run_id": rid,
+                "goal": "wrong schema version rejected",
+                "accepted": True,
+                "status": "accepted",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert _consensus_ready(tmp_path, rid) is False
+
+
+def test_consensus_ready_rejects_missing_lifecycle_version(tmp_path: Path) -> None:
+    """R10-1/P2-R8-D: an accepted ``ralplan.json`` stamp with
+    ``schema_version == 2`` but no ``lifecycle_version`` field is
+    fail-closed — both strict-v2 markers must be present together."""
+    import json as _json
+
+    from omg_cli.autopilot import _consensus_ready
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.ralplan import ralplan_state_path
+
+    st = start_autopilot(
+        tmp_path, "missing lifecycle version rejected", skip_interview=True
+    )
+    rid = st["run_id"]
+
+    path = ralplan_state_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        _json.dumps(
+            {
+                "writer": CLI_WRITER,
+                "schema_version": 2,
+                "run_id": rid,
+                "goal": "missing lifecycle version rejected",
+                "accepted": True,
+                "status": "accepted",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert _consensus_ready(tmp_path, rid) is False
+
+
+def test_consensus_ready_accepts_strict_v2_schema(tmp_path: Path) -> None:
+    """R10-1/P2-R8-D: with both ``schema_version == 2`` and
+    ``lifecycle_version == 2`` present alongside the existing checks,
+    ``_consensus_ready`` unlocks as before."""
+    import json as _json
+
+    from omg_cli.autopilot import _consensus_ready
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.ralplan import ralplan_state_path
+
+    st = start_autopilot(tmp_path, "strict v2 schema accepted", skip_interview=True)
+    rid = st["run_id"]
+
+    path = ralplan_state_path(tmp_path, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        _json.dumps(
+            {
+                "writer": CLI_WRITER,
+                "schema_version": 2,
+                "lifecycle_version": 2,
+                "run_id": rid,
+                "goal": "strict v2 schema accepted",
+                "accepted": True,
+                "status": "accepted",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert _consensus_ready(tmp_path, rid) is True
 
 
 def test_blocked_interview_ralplan_invalidates_accepted_ralplan_stamp(
@@ -670,6 +829,8 @@ def test_blocked_interview_ralplan_invalidates_accepted_ralplan_stamp(
             _json.dumps(
                 {
                     "writer": CLI_WRITER,
+                    "schema_version": 2,
+                    "lifecycle_version": 2,
                     "run_id": rid,
                     "goal": "blocked interview replan invalidate",
                     "accepted": True,
@@ -833,6 +994,8 @@ def test_missing_ralplan_epoch_migrates_conservatively_and_invalidates(
         _json.dumps(
             {
                 "writer": CLI_WRITER,
+                "schema_version": 2,
+                "lifecycle_version": 2,
                 "run_id": rid,
                 "goal": "pre-r7 epoch migration",
                 "accepted": True,
@@ -1821,6 +1984,8 @@ def _stamp_gate_for(root: Path, kw: dict) -> int:
             json.dumps(
                 {
                     "writer": CLI_WRITER,
+                    "schema_version": 2,
+                    "lifecycle_version": 2,
                     "run_id": run_id,
                     "goal": run.get("goal"),
                     "accepted": True,
@@ -1898,6 +2063,8 @@ def test_consensus_ready_ignores_artifact_marker(tmp_path: Path) -> None:
         __import__("json").dumps(
             {
                 "writer": CLI_WRITER,
+                "schema_version": 2,
+                "lifecycle_version": 2,
                 "run_id": rid,
                 "goal": "artifact alone",
                 "accepted": True,
