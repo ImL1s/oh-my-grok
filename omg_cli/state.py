@@ -1291,9 +1291,10 @@ def write_status(
                 lease=lease,
             )
 
-    # Frozen v1 adapter (R17): linearize under transition_guard and treat
-    # terminal statuses as absorbing so post-launch writers cannot resurrect
-    # cancelled/verified/completed/failed after a concurrent cancel.
+    # Frozen v1 adapter (R17): linearize under transition_guard. Absorb
+    # cancelled/verified only — those must not be resurrected to running by
+    # post-launch writers. completed/failed remain writable (team stop may
+    # move completed → blocked).
     guard_cm = (
         nullcontext()
         if transition_guard_held()
@@ -1304,10 +1305,10 @@ def write_status(
         if current is None:
             raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
         current_status = str(current.get("status") or "")
-        if current_status in TERMINAL_STATUSES:
+        if current_status in ("cancelled", "verified"):
             if status == current_status:
                 return current
-            # Fail-closed absorbing no-op: keep terminal bytes.
+            # Fail-closed absorbing no-op: keep cancelled/verified bytes.
             return current
         updated = _apply_status_fields(current, status, extra=extra)
         if updated.get("verified") is True and not _has_acceptance_artifact(
