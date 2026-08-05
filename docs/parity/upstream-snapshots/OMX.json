@@ -1,0 +1,69 @@
+{
+  "source": "OMX",
+  "pin_revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
+  "capabilities": [
+    {
+      "id": "jobs.durable_background",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Durable background job plane with start/list/status/wait/collect and fail-closed reconcile"
+    },
+    {
+      "id": "omx.agents.reviewer_product_catalog",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Reviewer and product-oriented agent catalog for multi-agent review"
+    },
+    {
+      "id": "omx.goal.stop_lock_recovery",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Goal persistence with Stop soft-pin, locking, and session recovery"
+    },
+    {
+      "id": "omx.launch.worktree_tmux_hud",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Launch surfaces with worktree isolation, tmux team panes, and HUD observability"
+    },
+    {
+      "id": "omx.plugin.setup_update_migrate",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Plugin setup, update, and migration surfaces for host install"
+    },
+    {
+      "id": "omx.quality.visual_modes",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Visual and quality modes (dual-review / verdict / UltraQA)"
+    },
+    {
+      "id": "omx.research.modes",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Dedicated research / autoresearch mode surfaces"
+    },
+    {
+      "id": "omx.team.worker_mailbox_question",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Team workers, mailbox, and structured question operations"
+    },
+    {
+      "id": "omx.workflow.deep_interview_ralplan",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Deep-interview plus ralplan consensus workflow for planning gates"
+    }
+  ]
+}

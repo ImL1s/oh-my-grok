@@ -1,0 +1,62 @@
+{
+  "source": "Antigravity",
+  "pin_revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+  "capabilities": [
+    {
+      "id": "antigravity.agents.markdown_custom",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Markdown-defined custom agents for Antigravity-style agent catalogs"
+    },
+    {
+      "id": "antigravity.headless.structured_execution",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Headless Antigravity structured execution with typed outputs and fail-closed exit codes"
+    },
+    {
+      "id": "antigravity.jobs.background_tasks",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Antigravity background tasks / durable job execution"
+    },
+    {
+      "id": "antigravity.platform.version_matrix",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Platform/runtime version matrix with live-evidence freshness policy"
+    },
+    {
+      "id": "antigravity.provider.adapter",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "First-class Antigravity provider adapter with typed capabilities and fail-closed ask/Team integration"
+    },
+    {
+      "id": "antigravity.runtime.model_effort_mode_perms",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Model, effort, mode, and permission controls for Antigravity runtime"
+    },
+    {
+      "id": "antigravity.session.history_resume",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Session history and resume continuity for Antigravity-shaped workflows"
+    },
+    {
+      "id": "antigravity.skills.hooks_subagents_plugins_mcp",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Skills, hooks, subagents, plugins, and MCP surfaces for Antigravity-shaped extension"
+    }
+  ]
+}

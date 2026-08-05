@@ -118,7 +118,8 @@ jobs:
           PY
       - name: Frozen parity and generated checks
         run: |
-          python scripts/check_parity_inventory.py
+          python scripts/check_parity_inventory.py --strict --release
+          python scripts/generate_parity_docs.py --check
           python scripts/check_traceability.py
           python scripts/check_writer_ownership.py
           python scripts/generate_standalone_hook.py --check

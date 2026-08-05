@@ -190,3 +190,10 @@ def test_script_check_parity_inventory_release_flag(tmp_path: Path) -> None:
     )
     assert script.returncode != 0
     assert "overclaim" in script.stderr.lower() or "overclaim" in script.stdout.lower()
+
+
+def test_release_yml_invokes_parity_release_gate() -> None:
+    """Workflow text includes check_parity_inventory.py --release (or omg parity check --release)."""
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert "check_parity_inventory.py" in workflow
+    assert "--release" in workflow

@@ -548,3 +548,19 @@ def test_upstream_drift_passes_when_acknowledgments_key_used(tmp_path: Path) -> 
     )
     assert payload["ok"] is True
     assert payload["upstream_drift_resolved"] is True
+
+
+def test_upstream_snapshots_match_inventory_pins() -> None:
+    """Each docs/parity/upstream-snapshots/*.json pin_revision equals upstream_pins[source].revision."""
+    inventory = load_json_object(INVENTORY)
+    pins = inventory["upstream_pins"]
+    snap_dir = ROOT / "docs" / "parity" / "upstream-snapshots"
+    assert snap_dir.is_dir(), "upstream-snapshots directory missing"
+    for path in sorted(snap_dir.glob("*.json")):
+        snapshot = load_json_object(path)
+        source = snapshot["source"]
+        assert source in pins, f"{path.name}: unknown source {source!r}"
+        assert snapshot["pin_revision"] == pins[source]["revision"], (
+            f"{path.name}: pin_revision {snapshot['pin_revision']!r} "
+            f"!= upstream_pins[{source!r}].revision {pins[source]['revision']!r}"
+        )

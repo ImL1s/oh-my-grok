@@ -18,6 +18,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   completeness ≠ product parity — `inventory_status` stays `bootstrapping` while
   `parity_governance` / `platform_live_evidence` remain open. Issue #78 stays
   open for #78-C (pin refresh / live-evidence freshness / release claim gate).
+- **Partial work for issue 78 (slice C / #78-C):** seed pinned upstream snapshot
+  catalogues (`docs/parity/upstream-snapshots/`), `omg parity refresh --plan`
+  review workflow, release claim gate (`--strict --release` in `release.yml`),
+  and live-evidence freshness enforcement. Completeness promotion and issue #78
+  remain open — no fake `live_verified` product claims.
 
 ## [0.7.5] - 2026-08-05
 

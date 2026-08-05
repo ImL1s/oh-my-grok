@@ -147,7 +147,7 @@
         "live": []
       },
       "issues": ["#78"],
-      "gap": "#78-B catalogue inventory landed; #78-C live-evidence freshness/refresh remains."
+      "gap": "#78-B catalogue inventory landed; #78-C refresh+claim gate landed; completeness promotion still manual."
     },
     {
       "id": "omc.cli.session_surfaces",
@@ -960,7 +960,7 @@
         "live": []
       },
       "issues": ["#78"],
-      "gap": "Doctor/version/pin catalogue exists; #78-C live-evidence freshness and refresh gate remain open."
+      "gap": "Doctor/version/pin catalogue exists; #78-C refresh+claim gate landed; completeness promotion still manual."
     }
   ],
   "gaps": [
@@ -994,7 +994,7 @@
       "status": "open",
       "issues": ["#78"],
       "capability_ids": ["parity.inventory.governance"],
-      "summary": "#78-B inventory landed; #78-C freshness/refresh remains"
+      "summary": "#78-B inventory landed; #78-C refresh+claim gate landed; completeness promotion still manual"
     },
     {
       "id": "gap.parity.platform_live_evidence",
@@ -1002,7 +1002,7 @@
       "status": "open",
       "issues": ["#78"],
       "capability_ids": ["antigravity.platform.version_matrix"],
-      "summary": "Platform/runtime live-evidence freshness and refresh gate not shipped (#78-C)"
+      "summary": "Platform/runtime live-evidence gate shipped (#78-C); completeness promotion still manual"
     },
     {
       "id": "gap.omo.todo_continuation",

@@ -17,8 +17,46 @@ Machine-readable claimability contract for oh-my-grok cross-runtime parity.
 | [`MATRIX-OmO.md`](MATRIX-OmO.md) | Generated `OmO` matrix |
 | [`MATRIX-Antigravity.md`](MATRIX-Antigravity.md) | Generated `Antigravity` matrix |
 | [`GAPS.md`](GAPS.md) | Generated open / tracked gaps |
+| [`upstream-snapshots/`](upstream-snapshots/) | Pinned upstream capability catalogues for release drift gate |
 
 Regenerate with `python3 scripts/generate_parity_docs.py` (drift-gated via `--check`).
+
+## Upstream snapshots and refresh
+
+Each file under [`upstream-snapshots/`](upstream-snapshots/) (`OMC.json`, `OMX.json`, `OmO.json`, `Antigravity.json`) is a **catalogue seed** at the pinned revision:
+
+```json
+{ "source": "OMC", "pin_revision": "<40-hex>", "capabilities": [ { "id", "source_paths", "promise" } ] }
+```
+
+`pin_revision` must equal `upstream_pins[source].revision` in [`omg-parity.json`](omg-parity.json). Capability rows are derived from inventory rows whose `upstream.source` matches.
+
+When upstream changes, run a **plan-only** refresh (inventory mutation is not automatic):
+
+```bash
+./bin/omg parity refresh --source OMC --pin <new-40-hex> --plan \
+  --catalog docs/parity/upstream-snapshots/OMC.json --json
+```
+
+Review the emitted plan, acknowledge drift in a review artifact, update the snapshot + inventory pins/rows, then re-run checks.
+
+## Release claim gate
+
+PR CI runs `--strict` only (schema, local paths, overclaim rules; gaps may remain open).
+
+Release workflow (`release.yml`) runs **`--strict --release`**, which additionally:
+
+- scans README / generated parity docs for forbidden overclaims while bootstrapping
+- enforces live-evidence freshness for any `live_verified` maturity
+- compares inventory upstream rows against `docs/parity/upstream-snapshots/*.json` (unresolved drift fails closed)
+
+```bash
+python3 scripts/check_parity_inventory.py --strict          # PR / local
+python3 scripts/check_parity_inventory.py --strict --release  # release tags
+./bin/omg parity check --strict --release --json
+```
+
+Seeding snapshots does **not** promote `inventory_status`, `source_status`, or `category_status` to `complete` — that requires a separate completeness promotion (#78 follow-up).
 
 ## Header
 
