@@ -156,17 +156,18 @@ def test_parity_check_strict_invokes_shared_gate(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """CLI --strict must call shared check_parity_inventory(strict=True)."""
-    calls: list[bool] = []
+    calls: list[dict[str, bool]] = []
     import omg_cli.parity_check as parity_check
 
     real = parity_check.check_parity_inventory
 
-    def wrapped(*, inventory_path, repo_root, strict=False):
-        calls.append(bool(strict))
+    def wrapped(*, inventory_path, repo_root, strict=False, release=False):
+        calls.append({"strict": bool(strict), "release": bool(release)})
         return real(
             inventory_path=inventory_path,
             repo_root=repo_root,
             strict=strict,
+            release=release,
         )
 
     monkeypatch.setattr(parity_check, "check_parity_inventory", wrapped)
@@ -175,14 +176,45 @@ def test_parity_check_strict_invokes_shared_gate(
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["data"]["strict"] is True
-    assert calls == [True]
+    assert payload["data"]["release"] is False
+    assert calls == [{"strict": True, "release": False}]
 
     calls.clear()
     code = main(["parity", "check", "--json"])
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["data"]["strict"] is False
-    assert calls == [False]
+    assert payload["data"]["release"] is False
+    assert calls == [{"strict": False, "release": False}]
+
+
+def test_parity_check_release_invokes_shared_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """CLI --release must call shared check_parity_inventory(release=True)."""
+    calls: list[dict[str, bool]] = []
+    import omg_cli.parity_check as parity_check
+
+    real = parity_check.check_parity_inventory
+
+    def wrapped(*, inventory_path, repo_root, strict=False, release=False):
+        calls.append({"strict": bool(strict), "release": bool(release)})
+        return real(
+            inventory_path=inventory_path,
+            repo_root=repo_root,
+            strict=strict,
+            release=release,
+        )
+
+    monkeypatch.setattr(parity_check, "check_parity_inventory", wrapped)
+
+    code = main(["parity", "check", "--release", "--json"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["release"] is True
+    assert payload["data"]["strict"] is True
+    assert calls == [{"strict": False, "release": True}]
 
 
 def test_parity_gaps_defaults_open_only(capsys: pytest.CaptureFixture[str]) -> None:

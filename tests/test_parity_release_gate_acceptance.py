@@ -140,6 +140,25 @@ def test_simulate_release_overclaim_makes_release_gate_nonzero(tmp_path: Path) -
         )
 
 
+def test_release_check_passes_honest_bootstrapping_inventory(tmp_path: Path) -> None:
+    inventory = _bootstrapping_inventory(tmp_path)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+
+    payload = check_parity_inventory(
+        inventory_path=inv_path,
+        repo_root=tmp_path,
+        release=True,
+    )
+
+    assert payload["ok"] is True
+    assert payload["release"] is True
+    assert payload["strict"] is True
+    assert payload["inventory_status"] == "bootstrapping"
+    assert payload["overclaims"] == 0
+
+
 def test_script_check_parity_inventory_release_flag(tmp_path: Path) -> None:
     inventory = _bootstrapping_inventory(tmp_path)
     inv_path = _write_inventory(tmp_path, inventory)

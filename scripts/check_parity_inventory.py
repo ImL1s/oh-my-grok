@@ -64,7 +64,18 @@ def main(argv: list[str] | None = None) -> int:
             release=bool(args.release),
         )
     except ContractValidationError as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True), file=sys.stderr)
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "strict": bool(args.strict) or bool(args.release),
+                    "release": bool(args.release),
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
         return 1
 
     print(json.dumps(payload, sort_keys=True))
