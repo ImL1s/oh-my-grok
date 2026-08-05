@@ -31,14 +31,17 @@ Each file under [`upstream-snapshots/`](upstream-snapshots/) (`OMC.json`, `OMX.j
 
 `pin_revision` must equal `upstream_pins[source].revision` in [`omg-parity.json`](omg-parity.json). Capability rows are derived from inventory rows whose `upstream.source` matches.
 
-When upstream changes, run a **plan-only** refresh (inventory mutation is not automatic):
+When upstream moves to a new revision, update the snapshot catalogue **first**, then plan:
 
 ```bash
+# 1) Refresh docs/parity/upstream-snapshots/OMC.json capabilities for the new
+#    upstream revision and set pin_revision to that same <new-40-hex>.
+# 2) Emit a plan-only review (pin must match the catalogue pin_revision):
 ./bin/omg parity refresh --source OMC --pin <new-40-hex> --plan \
   --catalog docs/parity/upstream-snapshots/OMC.json --json
 ```
 
-Review the emitted plan, acknowledge drift in a review artifact, update the snapshot + inventory pins/rows, then re-run checks.
+Review the emitted plan, acknowledge drift in a review artifact, update inventory pins/rows to match, then re-run checks. Plan-only refresh never mutates inventory maturity.
 
 ## Release claim gate
 
@@ -93,7 +96,7 @@ Each row binds upstream pin + source paths, OMG implementation paths, per-runtim
 
 ## Completeness honesty
 
-While the inventory header, any `category_status`, or any `source_status` is `bootstrapping`, generators must not emit parity percentages or green checkmarks (`%` / `✅` / `✓`). Open gaps are expected and listed honestly in [`GAPS.md`](GAPS.md). Do not treat historical research matrices as claimability truth — prefer this inventory.
+While the inventory header, any `category_status`, or any `source_status` is `bootstrapping`, generators must not emit parity percentages or green checkmark glyphs (`%` / checkmark / `✓`). Open gaps are expected and listed honestly in [`GAPS.md`](GAPS.md). Do not treat historical research matrices as claimability truth — prefer this inventory.
 
 `complete` on `source_status` / `category_status` requires a **reproducible upstream completeness gate** (catalogue seed ≠ completeness). #78-C landed plan-only refresh + the release claim gate; completeness promotion remains manual — until then the canonical inventory stays `bootstrapping`.
 

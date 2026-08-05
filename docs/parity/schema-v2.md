@@ -52,7 +52,7 @@ validate_parity_inventory(
 ## Claim helpers
 
 - `inventory_completion_claims_allowed(inventory)` — false while inventory/category/source status is bootstrapping
-- `claim_marker_for_capability(row, inventory=...)` — never emits `%` / ✅ while incomplete; never positive-claims `host_impossible` / `excluded`
+- `claim_marker_for_capability(row, inventory=...)` — never emits `%` / green-checkmark glyphs while incomplete; never positive-claims `host_impossible` / `excluded`
 
 ## Strict check
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import subprocess
 import sys
 from pathlib import Path
@@ -21,17 +20,10 @@ from tests.test_parity_claim_gate import (
     _minimal_inventory,
     _scaffold_inventory_paths,
     _write_inventory,
+    _write_required_snapshots,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def _write_upstream_snapshot(tmp_path: Path, catalog: dict) -> Path:
-    snap_dir = tmp_path / "docs" / "parity" / "upstream-snapshots"
-    snap_dir.mkdir(parents=True, exist_ok=True)
-    path = snap_dir / "omc.json"
-    path.write_text(json.dumps(catalog, indent=2), encoding="utf-8")
-    return path
 
 
 def _assert_release_gate_fails(
@@ -44,8 +36,10 @@ def _assert_release_gate_fails(
     inv_path = _write_inventory(tmp_path, inventory)
     _scaffold_inventory_paths(tmp_path, inventory)
     _honest_docs(tmp_path)
+    override = None
     if catalog is not None:
-        _write_upstream_snapshot(tmp_path, catalog)
+        override = {catalog["source"]: catalog}
+    _write_required_snapshots(tmp_path, inventory, override=override)
 
     with pytest.raises(ContractValidationError, match=error_pattern):
         check_parity_inventory(
@@ -57,7 +51,7 @@ def _assert_release_gate_fails(
 
 def test_simulate_upstream_add_makes_release_gate_nonzero(tmp_path: Path) -> None:
     inventory = _minimal_inventory()
-    catalog = _load_catalog()
+    catalog = _load_catalog(pin_revision=inventory["upstream_pins"]["OMC"]["revision"])
     catalog = copy.deepcopy(catalog)
     catalog["capabilities"].append(
         {
@@ -76,7 +70,7 @@ def test_simulate_upstream_add_makes_release_gate_nonzero(tmp_path: Path) -> Non
 
 def test_simulate_upstream_delete_makes_release_gate_nonzero(tmp_path: Path) -> None:
     inventory = _minimal_inventory()
-    catalog = _load_catalog()
+    catalog = _load_catalog(pin_revision=inventory["upstream_pins"]["OMC"]["revision"])
     catalog = copy.deepcopy(catalog)
     catalog["capabilities"] = [
         c for c in catalog["capabilities"] if c["id"] != "omc.cli.session_surfaces"
@@ -91,7 +85,7 @@ def test_simulate_upstream_delete_makes_release_gate_nonzero(tmp_path: Path) -> 
 
 def test_simulate_upstream_rename_makes_release_gate_nonzero(tmp_path: Path) -> None:
     inventory = _minimal_inventory()
-    catalog = _load_catalog()
+    catalog = _load_catalog(pin_revision=inventory["upstream_pins"]["OMC"]["revision"])
     catalog = copy.deepcopy(catalog)
     for cap in catalog["capabilities"]:
         if cap["id"] == "omc.cli.session_surfaces":
@@ -145,6 +139,7 @@ def test_release_check_passes_honest_bootstrapping_inventory(tmp_path: Path) -> 
     inv_path = _write_inventory(tmp_path, inventory)
     _scaffold_inventory_paths(tmp_path, inventory)
     _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
 
     payload = check_parity_inventory(
         inventory_path=inv_path,
@@ -157,6 +152,8 @@ def test_release_check_passes_honest_bootstrapping_inventory(tmp_path: Path) -> 
     assert payload["strict"] is True
     assert payload["inventory_status"] == "bootstrapping"
     assert payload["overclaims"] == 0
+    assert payload["upstream_drift_checked"] is True
+    assert payload["upstream_drift_resolved"] is True
 
 
 def test_script_check_parity_inventory_release_flag(tmp_path: Path) -> None:

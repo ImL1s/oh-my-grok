@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from omg_cli.contracts.parity_schema import (
+    SOURCE_STATUS_IDS,
     load_json_object,
     maturity_rank,
     max_runtime_maturity,
@@ -17,10 +18,20 @@ from omg_cli.contracts.parity_schema import (
 from omg_cli.contracts.state_schemas import ContractValidationError
 from omg_cli.parity_refresh import build_refresh_plan
 
+# Required upstream catalogue seeds for --release (GROK_BUILD is a pin, not a snapshot).
+REQUIRED_UPSTREAM_SNAPSHOT_SOURCES = tuple(SOURCE_STATUS_IDS)
+
 _DOC_SCAN_RELATIVE = (
     "README.md",
+    "docs/parity/README.md",
+    "docs/parity/schema-v2.md",
     "docs/parity/SUMMARY.md",
     "docs/parity/FEATURE-MATRIX.md",
+    "docs/parity/MATRIX-OMC.md",
+    "docs/parity/MATRIX-OMX.md",
+    "docs/parity/MATRIX-OmO.md",
+    "docs/parity/MATRIX-Antigravity.md",
+    "docs/parity/GAPS.md",
     "docs/parity/SUMMARY.zh.md",
     "docs/parity/SUMMARY.zh-TW.md",
 )
@@ -34,11 +45,22 @@ _FORBIDDEN_PHRASE_PATTERNS = (
 _CAPABILITY_CLAIM_RE = re.compile(
     r"(?i)\b(healthy|live[-_ ]?verified|implemented)\b"
 )
+_NEGATED_CLAIM_PREFIX_RE = re.compile(
+    r"(?i)\b(not(?:\s+\w+){0,3}|never)\s+$"
+)
+_FENCED_CODE_RE = re.compile(r"```[\s\S]*?```")
+_INLINE_CODE_RE = re.compile(r"`[^`]+`")
 _DRIFT_CHANGE_KINDS = frozenset({"added", "deleted", "renamed", "changed"})
 
 
 def _now_or_utc(now: datetime | None) -> datetime:
     return now or datetime.now(timezone.utc)
+
+
+def _strip_markdown_code(text: str) -> str:
+    """Remove fenced/inline code so schema vocabulary in backticks is not an overclaim."""
+    stripped = _FENCED_CODE_RE.sub("", text)
+    return _INLINE_CODE_RE.sub("", stripped)
 
 
 def _doc_restrictions_active(inventory: dict[str, Any]) -> bool:
@@ -85,8 +107,9 @@ def _scan_doc_text(
 ) -> list[str]:
     violations: list[str] = []
     if restrictions_active:
+        prose = _strip_markdown_code(text)
         for pattern in _FORBIDDEN_PHRASE_PATTERNS:
-            if pattern.search(text):
+            if pattern.search(prose):
                 violations.append(
                     f"forbidden phrase {pattern.pattern!r} in {relative}"
                 )
@@ -102,6 +125,8 @@ def _scan_doc_text(
             if cap_id not in line:
                 continue
             for match in _CAPABILITY_CLAIM_RE.finditer(line):
+                if _NEGATED_CLAIM_PREFIX_RE.search(line[: match.start(1)]):
+                    continue
                 claimed_rank = _claimed_maturity_rank(match.group(1))
                 if claimed_rank > peak_rank:
                     violations.append(
@@ -165,15 +190,52 @@ def _review_change_entries(review_artifact: dict[str, Any] | None) -> list[dict[
     return entries
 
 
-def _is_change_acknowledged(
-    change: dict[str, Any], review_artifact: dict[str, Any] | None
+def _review_binds_drift_context(
+    review_artifact: dict[str, Any],
+    *,
+    source: str,
+    from_revision: str,
+    to_revision: str,
 ) -> bool:
+    if review_artifact.get("store_kind") != "parity_refresh_review":
+        return False
+    if review_artifact.get("schema_version") != 1:
+        return False
+    if review_artifact.get("source") != source:
+        return False
+    if review_artifact.get("from_revision") != from_revision:
+        return False
+    if review_artifact.get("to_revision") != to_revision:
+        return False
+    return True
+
+
+def _is_change_acknowledged(
+    change: dict[str, Any],
+    review_artifact: dict[str, Any] | None,
+    *,
+    source: str,
+    from_revision: str,
+    to_revision: str,
+) -> bool:
+    if not review_artifact:
+        return False
+    if not _review_binds_drift_context(
+        review_artifact,
+        source=source,
+        from_revision=from_revision,
+        to_revision=to_revision,
+    ):
+        return False
     identity = _change_identity(change)
     for entry in _review_change_entries(review_artifact):
         if entry.get("disposition") != "acknowledged":
             continue
-        if _change_identity(entry) == identity:
-            return True
+        if _change_identity(entry) != identity:
+            continue
+        if entry.get("detail") != change.get("detail"):
+            continue
+        return True
     return False
 
 
@@ -195,6 +257,8 @@ def assert_upstream_drift_resolved(
         source=source,
         new_pin=new_pin,
     )
+    from_revision = plan["from_revision"]
+    to_revision = plan["to_revision"]
     unresolved: list[str] = []
     for change in plan.get("changes", []):
         if not isinstance(change, dict):
@@ -202,7 +266,13 @@ def assert_upstream_drift_resolved(
         kind = change.get("change_kind")
         if kind not in _DRIFT_CHANGE_KINDS:
             continue
-        if _is_change_acknowledged(change, review_artifact):
+        if _is_change_acknowledged(
+            change,
+            review_artifact,
+            source=source,
+            from_revision=from_revision,
+            to_revision=to_revision,
+        ):
             continue
         unresolved.append(str(change))
     if unresolved:
@@ -225,8 +295,46 @@ def _iter_upstream_catalog_paths(
         return [Path(upstream_catalog_path)]
     snapshots = repo_root / "docs" / "parity" / "upstream-snapshots"
     if not snapshots.is_dir():
-        return []
-    return sorted(path for path in snapshots.glob("*.json") if path.is_file())
+        raise ContractValidationError(
+            "missing docs/parity/upstream-snapshots directory required for --release"
+        )
+    missing: list[str] = []
+    paths: list[Path] = []
+    for source in REQUIRED_UPSTREAM_SNAPSHOT_SOURCES:
+        path = snapshots / f"{source}.json"
+        if not path.is_file():
+            missing.append(source)
+        else:
+            paths.append(path)
+    if missing:
+        raise ContractValidationError(
+            "missing required upstream snapshot(s): "
+            + ", ".join(missing)
+            + " (expected docs/parity/upstream-snapshots/{OMC,OMX,OmO,Antigravity}.json)"
+        )
+    return paths
+
+
+def _assert_snapshot_pin_matches_inventory(
+    *,
+    inventory: dict[str, Any],
+    upstream_catalog: dict[str, Any],
+) -> None:
+    source = upstream_catalog.get("source")
+    pin = upstream_catalog.get("pin_revision")
+    if not isinstance(source, str) or not isinstance(pin, str):
+        raise ContractValidationError("upstream catalog missing source or pin_revision")
+    pins = inventory.get("upstream_pins")
+    if not isinstance(pins, dict) or source not in pins:
+        raise ContractValidationError(
+            f"inventory missing upstream_pins entry for snapshot source {source!r}"
+        )
+    expected = pins[source].get("revision") if isinstance(pins[source], dict) else None
+    if pin != expected:
+        raise ContractValidationError(
+            f"upstream snapshot pin_revision {pin!r} != "
+            f"inventory upstream_pins[{source!r}].revision {expected!r}"
+        )
 
 
 def check_parity_release_claims(
@@ -254,17 +362,17 @@ def check_parity_release_claims(
         Path(review_artifact_path) if review_artifact_path is not None else None
     )
     catalog_paths = _iter_upstream_catalog_paths(root, upstream_catalog_path)
-    upstream_checked = bool(catalog_paths)
-    upstream_resolved = False
-    if upstream_checked:
-        for catalog_path in catalog_paths:
-            catalog = load_json_object(catalog_path)
-            assert_upstream_drift_resolved(
-                inventory=inventory,
-                upstream_catalog=catalog,
-                review_artifact=review_artifact,
-            )
-        upstream_resolved = True
+    for catalog_path in catalog_paths:
+        catalog = load_json_object(catalog_path)
+        _assert_snapshot_pin_matches_inventory(
+            inventory=inventory,
+            upstream_catalog=catalog,
+        )
+        assert_upstream_drift_resolved(
+            inventory=inventory,
+            upstream_catalog=catalog,
+            review_artifact=review_artifact,
+        )
 
     try:
         relative = path.resolve().relative_to(root.resolve()).as_posix()
@@ -276,7 +384,7 @@ def check_parity_release_claims(
         "inventory_status": inventory.get("inventory_status"),
         "schema_version": inventory.get("schema_version"),
         "overclaims": 0,
-        "upstream_drift_checked": upstream_checked,
-        "upstream_drift_resolved": upstream_resolved,
+        "upstream_drift_checked": True,
+        "upstream_drift_resolved": True,
         "inventory_path": relative,
     }

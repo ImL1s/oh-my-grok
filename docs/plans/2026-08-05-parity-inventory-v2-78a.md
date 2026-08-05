@@ -4,7 +4,7 @@
 
 **Goal:** Ship #78-A — a claimability-safe parity inventory v2 + strict local drift gate so later Antigravity/parity child PRs cannot overclaim.
 
-**Architecture:** Extend `omg_cli/contracts/parity_schema.py` with v2 schema (ordered maturity enum, expanded classifications, capability rows with upstream pins separate from OMG revision). Keep v1 fixture for migration tests. Add `omg parity check` / `omg parity gaps` over the existing `omg parity` command family. Generate FEATURE-MATRIX.md / GAPS.md without percentages when inventory is bootstrapping. Wire CI `--strict` check. Do **not** close #78/#79.
+**Architecture:** Extend `omg_cli/contracts/parity_schema.py` with v2 schema (ordered maturity enum, expanded classifications, capability rows with upstream pins separate from OMG revision). Keep v1 fixture for migration tests. Add `omg parity check` / `omg parity gaps` over the existing `omg parity` command family. Generate FEATURE-MATRIX.md / GAPS.md without percentages when inventory is bootstrapping. Wire CI `--strict` check. Issue #78/#79 remain open (do not auto-close).
 
 **Tech Stack:** Python 3.11+, pytest, existing `omg_cli/contracts/*`, `scripts/check_parity_inventory.py`, `omg_cli/commands/inspect.py`.
 
@@ -92,6 +92,6 @@ Tests: `test_generated_feature_matrix_is_current`, `test_generated_gap_report_co
 
 ### Task 6: Docs honesty + CHANGELOG + open PR
 
-CHANGELOG Unreleased; note #78 remains open. Open PR linking #78 (partial). Wait CI + Codex + GPT Pro; merge only if 「無 P2 以上問題」. Do not close #78.
+CHANGELOG Unreleased; note Issue 78 remains open. Open PR linking #78 (partial). Wait CI + Codex + GPT Pro; merge only if 「無 P2 以上問題」. Issue 78 remains open.
 
 ---
