@@ -913,6 +913,88 @@ def _stricter_install_status(left: str, right: str) -> str:
     return right
 
 
+def _exact_idempotent_receipt_reusable(
+    receipt: Mapping[str, Any],
+    *,
+    mode: str,
+    probe_status: str,
+    asset_evidence: Mapping[str, str] | None,
+) -> bool:
+    """True only when bytes *and* authority semantics already match this install.
+
+    Same package digest alone is not enough: a development receipt must not be
+    reused for a release promotion, release asset/checksum evidence must already
+    be complete and compatible, and an existing status must not be looser than
+    this probe's classification (so ``installed`` cannot mask a fresh warning).
+    """
+
+    if receipt.get("mode") != mode:
+        return False
+    existing_status = receipt.get("status")
+    if (
+        not isinstance(existing_status, str)
+        or existing_status not in _INSTALL_STATUS_RANK
+        or probe_status not in _INSTALL_STATUS_RANK
+    ):
+        return False
+    # Looser = lower rank (clean ``installed`` is looser than warning).
+    if _INSTALL_STATUS_RANK[existing_status] < _INSTALL_STATUS_RANK[probe_status]:
+        return False
+    if mode == "release":
+        if asset_evidence is None:
+            return False
+        source = receipt.get("source")
+        if not isinstance(source, dict):
+            return False
+        for key in ("asset_name", "asset_sha256"):
+            value = source.get(key)
+            expected = asset_evidence.get(key)
+            if (
+                not isinstance(value, str)
+                or not value
+                or not isinstance(expected, str)
+                or not expected
+                or value != expected
+            ):
+                return False
+        if not _SHA256_RE.fullmatch(str(source.get("asset_sha256") or "")):
+            return False
+        # Empty checksums_sha256 is a valid manual --asset-sha256 trust root
+        # (same policy as doctor release completeness); both sides must agree.
+        existing_sums = source.get("checksums_sha256")
+        expected_sums = asset_evidence.get("checksums_sha256")
+        if not isinstance(existing_sums, str) or not isinstance(expected_sums, str):
+            return False
+        if existing_sums != expected_sums:
+            return False
+        if existing_sums and not _SHA256_RE.fullmatch(existing_sums):
+            return False
+    return True
+
+
+def _dual_pass_probe_malformed(
+    *,
+    strict_rc: object,
+    relaxed_rc: object,
+    rc: object,
+) -> bool:
+    """True when dual-pass keys are present but the matrix is not a legal shape."""
+
+    if not (isinstance(strict_rc, int) and not isinstance(strict_rc, bool)):
+        return True
+    if not (isinstance(rc, int) and not isinstance(rc, bool)):
+        return True
+    if strict_rc == 0:
+        return relaxed_rc is not None or rc != 0
+    if strict_rc != 1:
+        return True
+    if not (isinstance(relaxed_rc, int) and not isinstance(relaxed_rc, bool)):
+        return True
+    if relaxed_rc == 0:
+        return rc != 2
+    return False
+
+
 def classify_doctor_probe(mode: str, probe: Mapping[str, Any]) -> str:
     from scripts.omg_install_classifier import classify_doctor_result
 
@@ -934,16 +1016,10 @@ def classify_doctor_probe(mode: str, probe: Mapping[str, Any]) -> str:
     )
     if classification == "hard_failure":
         _emit_doctor_probe_transcript(probe)
-        if dual_pass_keys_present and not (
-            isinstance(strict_rc, int)
-            and not isinstance(strict_rc, bool)
-            and (
-                strict_rc == 0
-                or (
-                    isinstance(relaxed_rc, int)
-                    and not isinstance(relaxed_rc, bool)
-                )
-            )
+        if dual_pass_keys_present and _dual_pass_probe_malformed(
+            strict_rc=strict_rc,
+            relaxed_rc=relaxed_rc,
+            rc=rc,
         ):
             raise InstallError("doctor output is malformed")
         shown = strict_rc if isinstance(strict_rc, int) and not isinstance(strict_rc, bool) else rc
@@ -1473,7 +1549,9 @@ def install_package(
         current_target = str(stage)
         cli_target = str(current / "bin" / "omg")
 
-        # Exact idempotent readback: no host uninstall/install and no receipt churn.
+        # Exact byte match: skip host uninstall/install.  Reuse the receipt only
+        # when mode, release evidence, and status authority also match; otherwise
+        # write a fresh authoritative receipt (e.g. development→release promote).
         if (
             current_snapshot["kind"] == "symlink"
             and Path(str(current_snapshot["target"])).resolve() == stage
@@ -1502,18 +1580,77 @@ def install_package(
                 )
                 probe = dict(doctor(stage, env))
                 commands.append(_probe_record(probe))
-                classify_doctor_probe(mode, probe)
+                probe_status = classify_doctor_probe(mode, probe)
                 verified_existing = verified_current_install(store, cli_pointer)
                 receipt_path = verified_existing.receipt_path
                 receipt = verified_existing.receipt
                 if receipt["installed"]["package_digest"] != identity["digest"]:
                     raise InstallError("current receipt identity differs from exact install")
+                if _exact_idempotent_receipt_reusable(
+                    receipt,
+                    mode=mode,
+                    probe_status=probe_status,
+                    asset_evidence=asset_evidence,
+                ):
+                    return {
+                        "ok": True,
+                        "status": "already_installed",
+                        "stage_path": str(stage),
+                        "receipt_path": str(receipt_path),
+                        "receipt_hash": receipt["receipt_hash"],
+                        "package_digest": identity["digest"],
+                    }
+
+                # Bytes match but authority differs (mode promotion, missing
+                # release evidence, or a stricter probe status).  Re-attest
+                # without host uninstall/install and publish a new receipt.
+                plugin_raw = receipt["installed"].get("plugin_realpath")
+                if not isinstance(plugin_raw, str) or not plugin_raw:
+                    raise InstallError("current receipt host plugin path is malformed")
+                plugin_path = Path(plugin_raw)
+                prior_status = receipt.get("status")
+                if isinstance(prior_status, str) and prior_status in _INSTALL_STATUS_RANK:
+                    status_value = _stricter_install_status(prior_status, probe_status)
+                else:
+                    status_value = probe_status
+                existing_owned = receipt.get("owned_inventory")
+                if isinstance(existing_owned, list) and all(
+                    isinstance(row, dict) for row in existing_owned
+                ):
+                    reattest_owned = [dict(row) for row in existing_owned]
+                else:
+                    reattest_owned = list(owned_inventory)
+                    reattest_owned.append(
+                        {
+                            "path": str(plugin_path),
+                            "kind": "host_plugin",
+                            "identity": str(identity["digest"]),
+                        }
+                    )
+                reattest_tid = uuid.uuid4().hex
+                reattest_material = _receipt_material(
+                    transaction_id=reattest_tid,
+                    status=status_value,
+                    mode=mode,
+                    source=identity,
+                    stage=stage,
+                    plugin_path=plugin_path,
+                    asset=asset_evidence,
+                    source_uri=source_uri,
+                    source_tag=source_tag,
+                    commands=list(commands),
+                    owned_inventory=reattest_owned,
+                )
+                new_receipt_path, new_receipt = _write_install_receipt(
+                    receipts, reattest_material
+                )
+                _atomic_symlink(str(new_receipt_path), receipt_pointer)
                 return {
                     "ok": True,
-                    "status": "already_installed",
+                    "status": status_value,
                     "stage_path": str(stage),
-                    "receipt_path": str(receipt_path),
-                    "receipt_hash": receipt["receipt_hash"],
+                    "receipt_path": str(new_receipt_path),
+                    "receipt_hash": new_receipt["receipt_hash"],
                     "package_digest": identity["digest"],
                 }
             except Exception:

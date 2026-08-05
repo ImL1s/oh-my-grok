@@ -45,9 +45,11 @@ class FakeGrok:
     def __init__(self) -> None:
         self.installed: Path | None = None
         self.enabled = False
+        self.calls: list[list[str]] = []
 
     def __call__(self, argv, **_kwargs):
         args = [str(item) for item in argv]
+        self.calls.append(args)
         if args[:4] == ["grok", "plugin", "list", "--json"]:
             rows = []
             if self.installed is not None:
@@ -114,6 +116,22 @@ def _dual_pass_soft(*, stdout: str = COEXISTENCE_STRICT_STDOUT) -> dict[str, obj
     }
 
 
+def _dual_pass_ok() -> dict[str, object]:
+    return {
+        "argv": ["omg", "doctor", "--strict"],
+        "argv_strict": ["omg", "doctor", "--strict"],
+        "argv_relaxed": None,
+        "rc": 0,
+        "strict_rc": 0,
+        "relaxed_rc": None,
+        "stdout": "ok\n",
+        "stderr": "",
+        "relaxed_stdout": "",
+        "relaxed_stderr": "",
+        "valid": True,
+    }
+
+
 def _dual_pass_hard(*, stdout: str = INTEGRITY_FAIL_STDOUT) -> dict[str, object]:
     return {
         "argv": ["omg", "doctor", "--strict"],
@@ -132,28 +150,90 @@ def _dual_pass_hard(*, stdout: str = INTEGRITY_FAIL_STDOUT) -> dict[str, object]
 
 def test_doctor_classifier_dual_pass_matrix():
     assert (
-        classify_doctor_result(mode="release", valid=True, strict_rc=0, relaxed_rc=None)
+        classify_doctor_result(
+            mode="release", valid=True, strict_rc=0, relaxed_rc=None, rc=0
+        )
         == "installed"
     )
     assert (
-        classify_doctor_result(mode="release", valid=True, strict_rc=1, relaxed_rc=0)
+        classify_doctor_result(
+            mode="release", valid=True, strict_rc=1, relaxed_rc=0, rc=2
+        )
         == "completed_with_warning"
     )
     assert (
-        classify_doctor_result(mode="development", valid=True, strict_rc=1, relaxed_rc=0)
+        classify_doctor_result(
+            mode="development", valid=True, strict_rc=1, relaxed_rc=0, rc=2
+        )
         == "completed_with_warning"
     )
     assert (
-        classify_doctor_result(mode="release", valid=True, strict_rc=1, relaxed_rc=1)
+        classify_doctor_result(
+            mode="release", valid=True, strict_rc=1, relaxed_rc=1, rc=1
+        )
         == "hard_failure"
     )
     # Bare rc=2 without dual-pass evidence must not bypass.
     assert classify_doctor_result(mode="release", valid=True, rc=2) == "hard_failure"
     assert classify_doctor_result(mode="development", valid=True, rc=2) == "hard_failure"
     assert classify_doctor_result(mode="release", valid=True, rc=0) == "installed"
-    assert classify_doctor_result(mode="release", valid=False, strict_rc=1, relaxed_rc=0) == (
-        "hard_failure"
+    assert classify_doctor_result(
+        mode="release", valid=False, strict_rc=1, relaxed_rc=0, rc=2
+    ) == ("hard_failure")
+    # Contradictory / malformed dual-pass must not classify as installed (#89 Pro P2).
+    assert (
+        classify_doctor_result(
+            mode="release", valid=True, strict_rc=0, relaxed_rc="0", rc=0
+        )
+        == "hard_failure"
     )
+    assert (
+        classify_doctor_result(
+            mode="release", valid=True, strict_rc=0, relaxed_rc=1, rc=0
+        )
+        == "hard_failure"
+    )
+    assert (
+        classify_doctor_result(
+            mode="release", valid=True, strict_rc=0, relaxed_rc=None, rc=1
+        )
+        == "hard_failure"
+    )
+    assert (
+        classify_doctor_result(
+            mode="release", valid=True, strict_rc=1, relaxed_rc=0, rc=0
+        )
+        == "hard_failure"
+    )
+
+
+def test_classify_doctor_probe_rejects_contradictory_dual_pass_success():
+    """Outer probe wrapper must hard-fail contradictory success-shaped evidence."""
+
+    with pytest.raises(InstallError, match="malformed"):
+        classify_doctor_probe(
+            "release",
+            {
+                "valid": True,
+                "strict_rc": 0,
+                "relaxed_rc": "0",
+                "rc": 1,
+                "stdout": "",
+                "stderr": "",
+            },
+        )
+    with pytest.raises(InstallError, match="malformed"):
+        classify_doctor_probe(
+            "release",
+            {
+                "valid": True,
+                "strict_rc": 0,
+                "relaxed_rc": None,
+                "rc": 1,
+                "stdout": "",
+                "stderr": "",
+            },
+        )
 
 
 def test_release_install_gate_allows_coexistence_warns(tmp_path, monkeypatch):
@@ -449,3 +529,217 @@ def test_managed_development_status_failure_falls_back_to_stage_installer(tmp_pa
     assert run_update(runner=runner, home=home, grok_home=grok_home) == 0
     assert ["bash", str(stage / "scripts" / "install.sh")] in calls
     assert not any("fetch" in c or "pull" in c for c in calls)
+
+
+def test_same_digest_development_to_release_reattests_with_checksum_evidence(
+    tmp_path, monkeypatch
+):
+    """Same package bytes: development receipt must not be reused for release (#89 Pro P2)."""
+
+    home = tmp_path / "home"
+    grok_home = tmp_path / "grok"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    host = FakeGrok()
+
+    first = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=lambda *_a, **_k: _dual_pass_soft(),
+        mode="development",
+    )
+    first_receipt = read_install_receipt(Path(first["receipt_path"]))
+    assert first_receipt["mode"] == "development"
+    assert first_receipt["status"] == "completed_with_warning"
+    assert not first_receipt["source"].get("asset_sha256")
+
+    asset = _patch_release_archive(monkeypatch, tmp_path)
+
+    # Promotion probe is clean install — prior warning must not be demoted.
+    second = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=lambda *_a, **_k: _dual_pass_ok(),
+        mode="release",
+        asset=asset,
+        source_uri=f"https://github.com/ImL1s/oh-my-grok/releases/download/v{VERSION}/x.tar.gz",
+        source_tag=f"v{VERSION}",
+    )
+    assert second["status"] == "completed_with_warning"
+    assert second["status"] != "already_installed"
+    assert second["receipt_path"] != first["receipt_path"]
+    receipt = read_install_receipt(Path(second["receipt_path"]))
+    assert receipt["mode"] == "release"
+    assert receipt["status"] == "completed_with_warning"
+    assert receipt["source"]["asset_sha256"] == "a" * 64
+    assert receipt["source"]["checksums_sha256"] == "b" * 64
+    assert receipt["source"]["asset_name"] == asset.name
+    assert receipt["installed"]["package_digest"] == first["package_digest"]
+
+    # Matching release authority on the same digest is truly idempotent.
+    third = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=lambda *_a, **_k: _dual_pass_ok(),
+        mode="release",
+        asset=asset,
+        source_uri=f"https://github.com/ImL1s/oh-my-grok/releases/download/v{VERSION}/x.tar.gz",
+        source_tag=f"v{VERSION}",
+    )
+    assert third["status"] == "already_installed"
+    assert third["receipt_path"] == second["receipt_path"]
+
+
+def test_same_digest_release_reattests_when_probe_is_stricter(tmp_path, monkeypatch):
+    """Existing clean release receipt must not mask a fresh soft-warning probe."""
+
+    home = tmp_path / "home"
+    grok_home = tmp_path / "grok"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    asset = _patch_release_archive(monkeypatch, tmp_path)
+    host = FakeGrok()
+
+    first = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=lambda *_a, **_k: _dual_pass_ok(),
+        mode="release",
+        asset=asset,
+        source_uri=f"https://github.com/ImL1s/oh-my-grok/releases/download/v{VERSION}/x.tar.gz",
+        source_tag=f"v{VERSION}",
+    )
+    assert first["status"] == "installed"
+    first_path = first["receipt_path"]
+
+    again = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=lambda *_a, **_k: _dual_pass_soft(),
+        mode="release",
+        asset=asset,
+        source_uri=f"https://github.com/ImL1s/oh-my-grok/releases/download/v{VERSION}/x.tar.gz",
+        source_tag=f"v{VERSION}",
+    )
+    assert again["status"] == "completed_with_warning"
+    assert again["receipt_path"] != first_path
+    receipt = read_install_receipt(Path(again["receipt_path"]))
+    assert receipt["mode"] == "release"
+    assert receipt["status"] == "completed_with_warning"
+    assert receipt["source"]["asset_sha256"] == "a" * 64
+
+
+def test_same_digest_development_to_release_reattests_receipt(tmp_path, monkeypatch):
+    """Same package bytes must not reuse a development receipt for release (#89 Pro P2)."""
+
+    home = tmp_path / "home"
+    grok_home = tmp_path / "grok"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    host = FakeGrok()
+
+    first = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=lambda *_a, **_k: _dual_pass_soft(),
+        mode="development",
+    )
+    first_receipt = read_install_receipt(Path(first["receipt_path"]))
+    assert first_receipt["mode"] == "development"
+    assert first_receipt["status"] == "completed_with_warning"
+    assert first_receipt["source"].get("asset_sha256") in (None, "")
+
+    asset = _patch_release_archive(monkeypatch, tmp_path)
+    mutations_before = [
+        call
+        for call in host.calls
+        if call[:3]
+        in (
+            ["grok", "plugin", "install"],
+            ["grok", "plugin", "uninstall"],
+        )
+    ]
+
+    promoted = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=lambda *_a, **_k: _dual_pass_ok(),
+        mode="release",
+        asset=asset,
+        source_uri=f"https://github.com/ImL1s/oh-my-grok/releases/download/v{VERSION}/x.tar.gz",
+        source_tag=f"v{VERSION}",
+    )
+    mutations_after = [
+        call
+        for call in host.calls
+        if call[:3]
+        in (
+            ["grok", "plugin", "install"],
+            ["grok", "plugin", "uninstall"],
+        )
+    ]
+    assert mutations_after == mutations_before
+    assert promoted["status"] == "completed_with_warning"
+    assert promoted["receipt_path"] != first["receipt_path"]
+    assert promoted["stage_path"] == first["stage_path"]
+
+    receipt = read_install_receipt(Path(promoted["receipt_path"]))
+    assert receipt["mode"] == "release"
+    assert receipt["status"] == "completed_with_warning"
+    assert receipt["source"]["asset_name"] == asset.name
+    assert receipt["source"]["asset_sha256"] == "a" * 64
+    assert receipt["source"]["checksums_sha256"] == "b" * 64
+    assert receipt["installed"]["package_digest"] == first_receipt["installed"]["package_digest"]
+    current_receipt = (grok_home / "omg" / "current-receipt").resolve()
+    assert current_receipt == Path(promoted["receipt_path"]).resolve()
+
+
+def test_same_digest_release_idempotent_reuses_compatible_receipt(tmp_path, monkeypatch):
+    """Release→release with matching evidence may keep already_installed."""
+
+    home = tmp_path / "home"
+    grok_home = tmp_path / "grok"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    asset = _patch_release_archive(monkeypatch, tmp_path)
+    host = FakeGrok()
+
+    first = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=lambda *_a, **_k: _dual_pass_ok(),
+        mode="release",
+        asset=asset,
+        source_uri=f"https://github.com/ImL1s/oh-my-grok/releases/download/v{VERSION}/x.tar.gz",
+        source_tag=f"v{VERSION}",
+    )
+    again = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=lambda *_a, **_k: _dual_pass_ok(),
+        mode="release",
+        asset=asset,
+        source_uri=f"https://github.com/ImL1s/oh-my-grok/releases/download/v{VERSION}/x.tar.gz",
+        source_tag=f"v{VERSION}",
+    )
+    assert again["status"] == "already_installed"
+    assert again["receipt_path"] == first["receipt_path"]
+    assert again["receipt_hash"] == first["receipt_hash"]

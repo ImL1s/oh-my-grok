@@ -133,17 +133,17 @@ def classify_doctor_result(
 ) -> str:
     """Lifecycle classifier for install doctor gates (development + release).
 
-    Preferred dual-pass evidence (#89 / Pro plan):
-      strict_rc=0                         → installed
-      strict_rc=1 and relaxed_rc=0        → completed_with_warning
-      strict_rc=1 and relaxed_rc=1        → hard_failure
-      timeout/malformed/other             → hard_failure
+    Preferred dual-pass evidence (#89 / Pro plan) — full matrix, fail-closed:
+      strict_rc=0, relaxed_rc=None, rc=0           → installed
+      strict_rc=1, relaxed_rc=0, rc=2              → completed_with_warning
+      strict_rc=1, relaxed_rc!=0                   → hard_failure
+      any malformed / contradictory dual-pass shape → hard_failure
 
     Legacy single-``rc`` probes remain accepted only when dual-pass keys are
     *absent* and ``rc=0`` (installed).  A bare ``rc=2`` without dual-pass
     evidence is hard_failure (no silent bypass).  When dual-pass keys are
-    present but malformed/non-int, classification is hard_failure — never
-    coerced into the legacy ``rc=0`` success path.
+    present, the entire schema (strict/relaxed/aggregate) is validated before
+    any success classification — never coerced into the legacy ``rc=0`` path.
     Interactive ``omg doctor --strict`` is unchanged by this classifier.
     """
 
@@ -154,15 +154,22 @@ def classify_doctor_result(
 
     has_dual = dual_pass_keys_present or strict_rc is not None or relaxed_rc is not None
     if has_dual:
-        if not _is_int_rc(strict_rc):
+        # Validate the full dual-pass schema up front.  A success branch must
+        # never accept string/bool RCs, a non-None relaxed result after strict
+        # success, or an aggregate ``rc`` that contradicts the matrix.
+        if not _is_int_rc(strict_rc) or not _is_int_rc(rc):
             return "hard_failure"
         if strict_rc == 0:
+            if relaxed_rc is not None or rc != 0:
+                return "hard_failure"
             return "installed"
         if strict_rc != 1:
             return "hard_failure"
         if not _is_int_rc(relaxed_rc):
             return "hard_failure"
         if relaxed_rc == 0:
+            if rc != 2:
+                return "hard_failure"
             return "completed_with_warning"
         return "hard_failure"
 

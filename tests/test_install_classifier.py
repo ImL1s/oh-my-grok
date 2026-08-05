@@ -13,15 +13,15 @@ from scripts.omg_install_classifier import (
 
 def test_doctor_result_classifier_dual_pass_and_legacy_rc0():
     assert classify_doctor_result(mode="release", valid=True, rc=0) == "installed"
-    assert classify_doctor_result(mode="release", valid=True, strict_rc=1, relaxed_rc=0) == (
-        "completed_with_warning"
-    )
-    assert classify_doctor_result(mode="development", valid=True, strict_rc=1, relaxed_rc=0) == (
-        "completed_with_warning"
-    )
-    assert classify_doctor_result(mode="release", valid=True, strict_rc=1, relaxed_rc=1) == (
-        "hard_failure"
-    )
+    assert classify_doctor_result(
+        mode="release", valid=True, strict_rc=1, relaxed_rc=0, rc=2
+    ) == ("completed_with_warning")
+    assert classify_doctor_result(
+        mode="development", valid=True, strict_rc=1, relaxed_rc=0, rc=2
+    ) == ("completed_with_warning")
+    assert classify_doctor_result(
+        mode="release", valid=True, strict_rc=1, relaxed_rc=1, rc=1
+    ) == ("hard_failure")
     # Bare rc=2 is not dual-pass evidence — fail closed.
     assert classify_doctor_result(mode="release", valid=True, rc=2) == "hard_failure"
     assert classify_doctor_result(mode="release", valid=False, rc=0) == "hard_failure"
@@ -48,6 +48,58 @@ def test_doctor_result_classifier_dual_pass_and_legacy_rc0():
             dual_pass_keys_present=True,
         )
         == "hard_failure"
+    )
+    # Success branch must not accept malformed/contradictory dual-pass evidence.
+    assert (
+        classify_doctor_result(
+            mode="release",
+            valid=True,
+            strict_rc=0,
+            relaxed_rc="0",
+            rc=0,
+        )
+        == "hard_failure"
+    )
+    assert (
+        classify_doctor_result(
+            mode="release",
+            valid=True,
+            strict_rc=0,
+            relaxed_rc=1,
+            rc=0,
+        )
+        == "hard_failure"
+    )
+    assert (
+        classify_doctor_result(
+            mode="release",
+            valid=True,
+            strict_rc=0,
+            relaxed_rc=None,
+            rc=1,
+        )
+        == "hard_failure"
+    )
+    assert (
+        classify_doctor_result(
+            mode="release",
+            valid=True,
+            strict_rc=1,
+            relaxed_rc=0,
+            rc=0,
+        )
+        == "hard_failure"
+    )
+    # Legal dual-pass success still requires the aggregate rc matrix.
+    assert (
+        classify_doctor_result(
+            mode="release",
+            valid=True,
+            strict_rc=0,
+            relaxed_rc=None,
+            rc=0,
+        )
+        == "installed"
     )
 
 
