@@ -32,7 +32,7 @@ Also: `/loop`, outer `omg ralph "…"`.
 | Human pause (requirements unclear) | **`ask_user_question` + interview** | Gate yields; not mid-phase chat |
 | Destructive / credential pause | **`omg autopilot await`** | Sets `autopilot_awaiting`; gate yields |
 | Cancel sticky mode | **`omg cancel`** | Not “unblock Stop” |
-| Verified done | **`omg accept` / `omg autopilot complete`** | CLI only |
+| Verified done | **`omg autopilot complete`** (autopilot); **`omg accept`** (non-autopilot) | CLI only |
 
 **Runtime precedence:** When a host `/goal` is **Active**, it dominates continuation and the Stop gate is not consulted until the goal releases; the Stop pin then enforces remaining autopilot gates.
 
@@ -163,7 +163,9 @@ Also: `blocked`, `cancelled` (see `omg_cli/autopilot.py` `LEGAL_TRANSITIONS`).
 | **`terminal_action`** | Human hint when `commit_only_next` is non-empty (today: `omg autopilot complete`). |
 
 Do **not** call `transition --phase verified` — it is illegal. At `acceptance`, run
-`omg autopilot complete` (or `omg accept --yes` then complete).
+`omg autopilot complete`. Bare `omg accept` is **refused** for autopilot-mode
+runs (Round 12); use complete so freeze/run + `set_verified` stay on the FSM
+path (`set_verified` also requires sidecar `phase==acceptance`).
 
 ### Stamp-first gates and `break_glass` audit
 
@@ -180,7 +182,7 @@ as `gate_audit` (for example `break_glass:consensus`, `break_glass:no_change`).
 | `review` from `implement` **or** `blocked` | Workspace fingerprint drift (curated product surfaces) since implement entry, **or** on-disk CLI implementation receipt (`stages/implementation.json`, fingerprint-rechecked) | `no_change_reason` + `break_glass`, **or** inline `implementation_receipt` + `break_glass` |
 | `qa` | CLI `stages/structured_review.json` clean (see fingerprint recheck below) | — |
 | `acceptance` | CLI `stages/ultraqa.json` status `clean` (see fingerprint recheck below) | — |
-| `verified` | **Only** `omg autopilot complete` after same-process accept | — |
+| `verified` | **Only** `omg autopilot complete` (same-process freeze/run + `set_verified`; bare `omg accept` refused) | — |
 
 Break-glass is an operator-intent escape hatch, not a silent trust path. See
 [`security-model.md`](./security-model.md#autopilot-break_glass-vs-cli-stamps).
@@ -272,6 +274,11 @@ a stale non-terminal sidecar phase. Immediately before each `_launch_grok`
 advances to ralplan (via the post-launch advance path) **before** launching
 Grok, so a closed interview does not spawn a redundant interview session.
 
+**Driver flock (Round 12):** `run_autopilot` acquires an exclusive non-blocking
+flock on `.omg/state/runs/<run_id>/autopilot.driver.lock` for the whole
+invocation (separate from the execution lease). A second concurrent
+`--resume` fails with “already running” and does not launch Grok.
+
 Attach-mode `omg interview close` sets `resume_command` to
 `omg autopilot run --resume RUN` (idempotent; re-close refreshes stale
 two-step commands on disk).
@@ -298,18 +305,21 @@ work happened (or an explicit audited no-op):
    never counts as product work on its own.
 2. **On-disk CLI stamp** — `omg_cli.implementation.stamp_implementation_receipt`
    writes a real, CLI-owned `stages/implementation.json`
-   (`writer=omg-cli`, `content_sha256`, `stamped_at`) under
+   (`writer=omg-cli`, `content_sha256`, `stamped_at`, and lease
+   `invocation_id` — Round 12) under
    `.omg/state/runs/<run_id>/stages/`. `read_implementation_receipt` verifies
-   `writer`/`run_id` before trusting it, and the gate additionally rechecks
-   `content_sha256` against a fresh `_implement_workspace_fingerprint(root)`
-   recompute — a stale/tampered receipt does not satisfy the gate. Accepted
-   **without** `break_glass` (audited as `cli_receipt:implementation.json`).
-   No CLI subcommand calls the stamper yet; it exists for direct/test use
-   until a phase writer wires it in. The receipt is bound to its implement
-   cycle: `implementation.invalidate_implementation_receipt` marks any
-   leftover receipt `invalidated=true` on every (re)entry into `implement`,
-   so a receipt from a prior cycle can never satisfy the gate for a later
-   cycle even if the fingerprint still happens to match (e.g.
+   `writer`/`run_id` and a non-empty `invocation_id` before trusting it
+   (hand-written receipts without a lease id read as absent), and the gate
+   additionally rechecks `content_sha256` against a fresh
+   `_implement_workspace_fingerprint(root)` recompute — a stale/tampered
+   receipt does not satisfy the gate. Accepted **without** `break_glass`
+   (audited as `cli_receipt:implementation.json`). No CLI subcommand calls
+   the stamper yet; it exists for direct/test use until a phase writer wires
+   it in. The receipt is bound to its implement cycle:
+   `implementation.invalidate_implementation_receipt` marks any leftover
+   receipt `invalidated=true` on every (re)entry into `implement`, so a
+   receipt from a prior cycle can never satisfy the gate for a later cycle
+   even if the fingerprint still happens to match (e.g.
    `review → ralplan → implement` with no new work).
 3. **Break-glass no-change** — `evidence.no_change_reason` + `break_glass=true`
    (audited as `break_glass:no_change`).
@@ -363,7 +373,7 @@ Normative copy for agents is the skill file; this is the human-readable map.
 | implement | `omg-ultrawork` / `omg-ralph` + executor **read-write** | transition `review` |
 | review | `omg-dual-review` or `omg review` | clean → transition `qa`; else `rework` |
 | qa | `omg-ultraqa` | freeze (allowlisted cmds) → run → clean → transition `acceptance` |
-| acceptance | — | `omg autopilot complete` (preferred) or `omg accept` then complete |
+| acceptance | — | `omg autopilot complete` only (bare `omg accept` refused for autopilot) |
 | cancel | `omg-cancel` | `omg cancel` |
 
 ### Spawn rules (HARD)
@@ -385,14 +395,13 @@ omg qa run --run "$RUN"
 
 After clean UltraQA, **`prd.json` is optional** — accept/complete materialize from scenarios (do not overwrite an existing operator PRD).
 
-### Complete / short-circuit (v0.3.2+)
+### Complete / short-circuit (v0.3.2+; Round 12 accept gate)
 
 ```bash
-# Preferred terminal step (same-process freeze_and_run + set_verified):
+# Only terminal step for autopilot (same-process freeze_and_run + set_verified).
+# Bare `omg accept` is refused for mode=autopilot — use complete.
 omg autopilot complete --run "$RUN"
 
-# If you already ran omg accept --yes successfully, complete only syncs
-# autopilot phase (no second full test suite).
 omg autopilot status --run "$RUN"
 # expect: phase=verified, run_status=verified, autopilot_phase=verified
 ```
@@ -468,7 +477,8 @@ ResumeBundle fields are planned for a later hardening round.
 .omg/state/runs/<run_id>/
   status.json              # verified, autopilot_phase, autopilot_gate_failure, …
   stages/autopilot.json    # phase, history, history[].gate_audit, implement_workspace_fp, …
-  stages/implementation.json  # optional; CLI-stamped implementation receipt (writer, content_sha256)
+  stages/implementation.json  # optional; CLI receipt (writer, content_sha256, invocation_id)
+  autopilot.driver.lock       # exclusive flock while run_autopilot is driving
   stages/structured_review.json
   stages/ultraqa.json
   prd.json                 # optional; may be materialized from ultraqa
@@ -493,8 +503,7 @@ omg autopilot start "goal" --skip-interview
 omg autopilot transition --run RUN --phase PHASE --evidence-json '{…}' --reason "…"
 omg autopilot status --run RUN
 omg autopilot await --run RUN --set   # pause for destructive/credential confirm
-omg accept --run RUN --yes
-omg autopilot complete --run RUN
+omg autopilot complete --run RUN   # not bare omg accept (refused for autopilot)
 omg resume [--run RUN]
 omg cancel
 ```

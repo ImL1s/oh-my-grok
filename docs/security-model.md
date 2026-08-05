@@ -152,7 +152,10 @@ markexpr for UX; coalescing is not a policy bypass.
 materialized from **CLI-stamped clean** UltraQA only (never overwrites an
 existing operator PRD). `omg autopilot complete` may short-circuit when the
 run is already disk-`verified` (phase sync only) — it does **not** create
-`verified` without a prior CLI accept path.
+`verified` without a prior CLI accept path. For **autopilot** runs (Round 12),
+bare `omg accept` is refused; terminal verify goes through
+`omg autopilot complete`, and `set_verified` requires sidecar
+`phase==acceptance` (fail-closed).
 
 **Goal verify multi-process residual:** `omg goal verify` may accept a disk
 CLI acceptance stamp (`require_token=False`) when the linked run is already
@@ -175,13 +178,19 @@ local debugging), they must pass `break_glass=true` on the transition evidence.
 The autopilot FSM records `gate_audit` on history (for example
 `break_glass:consensus`) so later forensics can distinguish stamp-backed advances
 from audited overrides. Break-glass does **not** weaken acceptance: `verified`
-still requires same-process `omg accept` / `omg autopilot complete` with
-command-policy checks — it only documents operator intent at earlier gates.
+still requires same-process `omg autopilot complete` (autopilot) or `omg accept`
+(non-autopilot) with command-policy checks — it only documents operator intent
+at earlier gates. Autopilot implementation receipts additionally require a
+lease `invocation_id` on the CLI stamp (Round 12) so a hand-written
+`writer=omg-cli` file cannot forge the implement→review gate.
 
 Review/QA **fingerprint rechecks** (Round 1) re-validate hash fields on existing
 CLI stamps against the current workspace; they do not grant trust to un-stamped
 inline JSON. Residual: single-file atomic writes and hash rechecks are not a full
-cross-file WAL or cryptographic writer identity (planned hardening).
+cross-file WAL or cryptographic writer identity (planned hardening). Concurrent
+`run_autopilot` invocations are serialized by an exclusive
+`autopilot.driver.lock` flock (Round 12) — integration isolation only, not an
+execution sandbox.
 
 | Family | Allowed | Denied |
 |--------|---------|--------|

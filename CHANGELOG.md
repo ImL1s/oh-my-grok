@@ -217,6 +217,18 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   ``_launch_grok`` / resume launch re-checks ``status.json`` and pending
   ``cancel.request.json`` and refuses Popen when the run is terminal or
   has a pending cancellation request.
+- **Refuse bare ``omg accept`` for autopilot (Round 12 / R12-1):**
+  ``cmd_accept`` refuses autopilot-mode runs (directs operators to
+  ``omg autopilot complete``); ``set_verified`` requires sidecar
+  ``phase==acceptance`` for autopilot (fail-closed unless force hatch).
+- **Implementation receipts require lease ``invocation_id`` (Round 12 / R12-2):**
+  ``stamp_implementation_receipt`` writes the active execution-lease id;
+  ``read_implementation_receipt`` rejects missing/empty ``invocation_id``
+  so a hand-written ``writer=omg-cli`` file cannot forge the gate.
+- **Exclusive autopilot driver flock (Round 12 / R12-3):**
+  ``run_autopilot`` holds a non-blocking exclusive flock on
+  ``autopilot.driver.lock`` for the whole invocation so concurrent
+  ``--resume`` cannot double-launch Grok.
 
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —
