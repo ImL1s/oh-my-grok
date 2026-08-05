@@ -44,12 +44,41 @@ _SYSTEM_POPEN = subprocess.Popen
 
 
 FORCE_VERIFIED_ENV = "OMG_INTERNAL_FORCE_VERIFIED"
-"""Env var required (value ``"1"``) for ``set_verified(..., force=True)``.
+"""Deprecated no-op: formerly gated ``set_verified(..., force=True)``.
 
-No argparse command exposes ``force``; this is a second, independent gate so
-a future CLI wiring mistake still cannot forge ``verified`` without an
-operator/test deliberately setting this process env var.
+Env alone no longer unlocks force. Tests must call
+``enable_force_verified_for_tests()`` so a process-private capability token is
+issued in-process. Kept as a named constant for docs/grep honesty.
 """
+
+# Process-private capability for set_verified(force=True). Env alone is never
+# sufficient. Only enable_force_verified_for_tests() may issue a token.
+_FORCE_VERIFIED_CAPABILITY: object | None = None
+
+
+def enable_force_verified_for_tests() -> object:
+    """Issue an in-process capability that unlocks ``set_verified(force=True)``.
+
+    **Tests only.** Creates a unique token object and stores it module-privately.
+    Call ``disable_force_verified_for_tests()`` in fixture teardown so capability
+    does not leak across tests. Production / CLI code must never call this.
+    """
+    global _FORCE_VERIFIED_CAPABILITY
+    token = object()
+    _FORCE_VERIFIED_CAPABILITY = token
+    return token
+
+
+def disable_force_verified_for_tests() -> None:
+    """Clear the force-verified test capability (fixture teardown)."""
+    global _FORCE_VERIFIED_CAPABILITY
+    _FORCE_VERIFIED_CAPABILITY = None
+
+
+def _force_verified_capability_enabled() -> bool:
+    """True iff an in-process capability token is currently held."""
+    return _FORCE_VERIFIED_CAPABILITY is not None
+
 
 OMG_SUBDIRS = (
     "state",
@@ -1492,9 +1521,9 @@ def set_verified(
     true, matching frozen manifest sha, **and** a process-local token from
     ``run_acceptance`` in this process. Disk-only forgeries are rejected.
     force is intentionally not exposed by the CLI router, and is additionally
-    confined behind the ``OMG_INTERNAL_FORCE_VERIFIED=1`` process env var
-    (see ``FORCE_VERIFIED_ENV``) so tests can opt in explicitly while a
-    future CLI wiring mistake still cannot forge ``verified``.
+    confined behind an in-process capability issued only by
+    ``enable_force_verified_for_tests()`` (tests). ``FORCE_VERIFIED_ENV`` is a
+    deprecated no-op — setting the env alone does **not** unlock force.
 
     Strict-v2 commits require an execution lease. Callers that already hold one
     should pass ``lease=...``. When ``lease is None``, a short-lived lease with
@@ -1507,10 +1536,11 @@ def set_verified(
     from omg_cli.acceptance import refuse_if_mcp_server
 
     refuse_if_mcp_server("set_verified")
-    if force and os.environ.get(FORCE_VERIFIED_ENV) != "1":
+    if force and not _force_verified_capability_enabled():
         raise PermissionError(
-            f"refusing force=True set_verified without {FORCE_VERIFIED_ENV}=1 "
-            f"in this process env for run_id={run_id!r}"
+            "refusing force=True set_verified without in-process force-verified "
+            f"capability (call enable_force_verified_for_tests() in tests only) "
+            f"for run_id={run_id!r}"
         )
     root = Path(root)
     current = load_run(root, run_id)

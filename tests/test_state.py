@@ -554,27 +554,54 @@ def test_write_status(tmp_path):
     assert verified["status"] == "verified"
 
 
-def test_set_verified_force_requires_env_confinement(tmp_path, monkeypatch):
-    """force=True is confined behind OMG_INTERNAL_FORCE_VERIFIED=1 (no argparse
-    path forwards this; only tests/internal callers opt in via process env)."""
-    from omg_cli.state import FORCE_VERIFIED_ENV
+def test_set_verified_force_ignores_env_var(tmp_path, monkeypatch):
+    """Env OMG_INTERNAL_FORCE_VERIFIED alone must NOT unlock force=True."""
+    from omg_cli.state import FORCE_VERIFIED_ENV, disable_force_verified_for_tests
 
+    disable_force_verified_for_tests()
+    run = create_run(tmp_path, mode="ralph", goal="force env alone")
+    rid = run["run_id"]
+
+    monkeypatch.setenv(FORCE_VERIFIED_ENV, "1")
+    with pytest.raises(PermissionError, match="force"):
+        set_verified(tmp_path, rid, force=True)
+    assert load_run(tmp_path, rid).get("verified") is not True
+
+
+def test_set_verified_force_requires_process_capability(tmp_path, monkeypatch):
+    """force=True requires in-process enable_force_verified_for_tests() (tests only)."""
+    from omg_cli.state import (
+        FORCE_VERIFIED_ENV,
+        disable_force_verified_for_tests,
+        enable_force_verified_for_tests,
+    )
+
+    disable_force_verified_for_tests()
     run = create_run(tmp_path, mode="ralph", goal="force confine")
     rid = run["run_id"]
 
     monkeypatch.delenv(FORCE_VERIFIED_ENV, raising=False)
-    with pytest.raises(PermissionError, match=FORCE_VERIFIED_ENV):
+    with pytest.raises(PermissionError, match="force"):
         set_verified(tmp_path, rid, force=True)
     assert load_run(tmp_path, rid).get("verified") is not True
 
     monkeypatch.setenv(FORCE_VERIFIED_ENV, "0")
-    with pytest.raises(PermissionError, match=FORCE_VERIFIED_ENV):
+    with pytest.raises(PermissionError, match="force"):
         set_verified(tmp_path, rid, force=True)
 
+    # Env alone still refuses; capability is required.
     monkeypatch.setenv(FORCE_VERIFIED_ENV, "1")
-    verified = set_verified(tmp_path, rid, force=True)
-    assert verified["verified"] is True
-    assert verified["status"] == "verified"
+    with pytest.raises(PermissionError, match="force"):
+        set_verified(tmp_path, rid, force=True)
+
+    try:
+        token = enable_force_verified_for_tests()
+        assert token is not None
+        verified = set_verified(tmp_path, rid, force=True)
+        assert verified["verified"] is True
+        assert verified["status"] == "verified"
+    finally:
+        disable_force_verified_for_tests()
 
 
 def test_set_verified_strict_v2_auto_acquires_lease(tmp_path):

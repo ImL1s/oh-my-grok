@@ -235,9 +235,16 @@ def test_verify_requires_cli_verified_linked_run(tmp_path: Path, monkeypatch) ->
         verify_goal(tmp_path, "g3")
 
     # Disk-only verified without acceptance.result must not promote the goal
-    monkeypatch.setenv("OMG_INTERNAL_FORCE_VERIFIED", "1")
-    set_verified(tmp_path, run["run_id"], force=True)
-    monkeypatch.delenv("OMG_INTERNAL_FORCE_VERIFIED", raising=False)
+    from omg_cli.state import (
+        disable_force_verified_for_tests,
+        enable_force_verified_for_tests,
+    )
+
+    enable_force_verified_for_tests()
+    try:
+        set_verified(tmp_path, run["run_id"], force=True)
+    finally:
+        disable_force_verified_for_tests()
     with pytest.raises(GoalError, match="CLI acceptance"):
         verify_goal(tmp_path, "g3")
 
