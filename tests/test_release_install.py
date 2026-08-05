@@ -400,16 +400,21 @@ def test_copied_bootstrap_installs_release_without_checkout_or_network(tmp_path)
     assert version_value in version.stdout
 
 
-def test_bootstrap_never_prints_success_when_strict_doctor_rolls_back(tmp_path):
+def test_bootstrap_soft_doctor_warn_does_not_block_release_install(tmp_path):
+    """Missing config.toml is a soft WARN under --strict; install gate soft-relaxes (#89).
+
+    Integrity rollback remains covered by ``test_release_install_gate_rejects_integrity_failure``.
+    """
+
     proc, home, grok_home, audit = _run_no_checkout_offline_install(
         tmp_path,
         break_strict_doctor=True,
     )
-    assert proc.returncode != 0
-    assert "installed and exactly verified" not in proc.stdout
-    assert "doctor" in (proc.stdout + proc.stderr).lower()
-    assert not (grok_home / "omg" / "current").exists()
-    assert not os.path.lexists(home / ".local" / "bin" / "omg")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "installed and exactly verified" in proc.stdout
+    receipt = read_install_receipt((grok_home / "omg" / "current-receipt").resolve(strict=True))
+    assert receipt["status"] in {"installed", "completed_with_warning"}
+    assert (home / ".local" / "bin" / "omg").is_symlink()
     assert not audit.exists(), audit.read_text(encoding="utf-8") if audit.exists() else ""
 
 

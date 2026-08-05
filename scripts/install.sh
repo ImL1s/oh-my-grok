@@ -204,7 +204,7 @@ INSTALL_ARGS=(install-release --source-root "$PACKAGE_ROOT" --asset "$ARCHIVE" -
 [[ -z "$SOURCE_TAG" ]] || INSTALL_ARGS+=(--source-tag "$SOURCE_TAG")
 INSTALL_ARGS+=(--source-uri "$SOURCE_URI")
 
-echo "==> immutable stage -> Grok plugin/CLI switch -> strict doctor -> receipt"
+echo "==> immutable stage -> Grok plugin/CLI switch -> install doctor gate -> receipt"
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PACKAGE_ROOT" \
   python3 -m omg_cli.setup_cmd "${INSTALL_ARGS[@]}"
 
