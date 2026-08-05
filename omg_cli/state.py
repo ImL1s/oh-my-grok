@@ -429,32 +429,61 @@ def read_pid_metadata(root: Path, run_id: str) -> dict[str, Any] | None:
     return None
 
 
+class PidIdentity(str, Enum):
+    """Tri-state live-PID identity vs a recorded ``ps`` starttime.
+
+    * ``MATCH`` — same process (alive + starttime equals recorded).
+    * ``DEAD`` — PID gone (ESRCH); safe to clear / reclaim.
+    * ``MISMATCH`` — PID alive (or liveness uncertain) but starttime differs
+      (PID reuse); safe to clear / reclaim.
+    * ``UNKNOWN`` — cannot decide (missing recorded starttime, invalid pid,
+      or ``process_starttime`` returned ``None`` while recorded is present).
+      Kill paths and spawn-conflict paths must fail closed: do not signal,
+      do not clear as "stale".
+    """
+
+    MATCH = "match"
+    DEAD = "dead"
+    MISMATCH = "mismatch"
+    UNKNOWN = "unknown"
+
+
+def classify_pid_identity(
+    pid: int,
+    recorded_starttime: str | None,
+) -> PidIdentity:
+    """Classify whether *pid* is the same process as *recorded_starttime*.
+
+    Distinguishes ``UNKNOWN`` (probe failed) from ``MISMATCH`` (proven reuse)
+    so spawn/clear callers do not treat a failed ``ps`` probe as stale.
+    """
+    if pid <= 0:
+        return PidIdentity.UNKNOWN
+    if not recorded_starttime:
+        return PidIdentity.UNKNOWN
+    alive = _pid_alive(pid)
+    if alive is False:
+        return PidIdentity.DEAD
+    current = process_starttime(pid)
+    if current is None:
+        # Alive (or liveness uncertain) but ps failed — not mismatch.
+        return PidIdentity.UNKNOWN
+    if current == recorded_starttime:
+        return PidIdentity.MATCH
+    return PidIdentity.MISMATCH
+
+
 def pid_matches_recorded(
     pid: int,
     recorded_starttime: str | None,
 ) -> bool:
     """True when it is safe to signal *pid* for this recorded starttime.
 
-    Fail-closed (strictest kill safety):
-    * No recorded starttime (legacy plain ``pid`` file) → **False** — never
-      auto-kill without a starttime identity check.
-    * ``ps`` fails / unavailable → **False** — do not signal on uncertainty.
-    * Process dead (ESRCH) → **False**.
-    * starttime mismatch → **False** (PID reuse).
-    * Alive + matching ``ps -o lstart=`` → **True**.
+    Fail-closed (strictest kill safety): only ``PidIdentity.MATCH`` is True.
+    ``UNKNOWN`` (ps unavailable), ``DEAD``, ``MISMATCH``, and missing
+    recorded starttime are all False — never auto-kill on uncertainty.
     """
-    if pid <= 0:
-        return False
-    if not recorded_starttime:
-        return False
-    alive = _pid_alive(pid)
-    if alive is False:
-        return False
-    current = process_starttime(pid)
-    if current is None:
-        # ps failed — fail-closed, do not kill
-        return False
-    return current == recorded_starttime
+    return classify_pid_identity(pid, recorded_starttime) is PidIdentity.MATCH
 
 
 def clear_pid_metadata(root: Path, run_id: str) -> None:
@@ -470,14 +499,17 @@ def clear_pid_metadata(root: Path, run_id: str) -> None:
 def live_leader_pid_conflict(root: Path, run_id: str) -> str | None:
     """Refuse reason when ``pid.json`` still identifies a live leader process.
 
-    Refuse when the recorded PID is alive **and**:
-    * its current ``ps`` starttime matches the recorded value, **or**
-    * recorded starttime is missing/null/empty (legacy incomplete metadata —
-      cannot prove identity; do not clear and overwrite).
+    Refuse (do not clear) when:
+    * ``MATCH`` — recorded PID alive with matching starttime, **or**
+    * ``UNKNOWN`` — alive/uncertain + recorded starttime present but
+      ``process_starttime`` returned ``None`` (probe failure ≠ reuse), **or**
+    * recorded starttime is missing/null/empty while PID is not proven dead
+      (legacy incomplete metadata — cannot prove identity).
 
-    Only treat as stale (return ``None`` so the caller may clear) when the PID
-    is dead **or** starttime mismatches (PID reuse). R14-4 requires starttime
-    on new publications; this branch covers older incomplete ``pid.json``.
+    Only treat as stale (return ``None`` so the caller may clear) on
+    ``DEAD`` or ``MISMATCH`` (proven PID reuse). R14-4 requires starttime on
+    new publications; the missing-starttime branch covers older incomplete
+    ``pid.json``.
     """
     meta = read_pid_metadata(Path(root), run_id)
     if meta is None:
@@ -500,11 +532,18 @@ def live_leader_pid_conflict(root: Path, run_id: str) -> str | None:
             f"live leader pid without recorded starttime "
             f"(pid={pid}); refusing grok spawn"
         )
-    if pid_matches_recorded(pid, recorded_s):
+    identity = classify_pid_identity(pid, recorded_s)
+    if identity is PidIdentity.MATCH:
         return (
             f"live leader pid still matches pid.json "
             f"(pid={pid}); refusing grok spawn"
         )
+    if identity is PidIdentity.UNKNOWN:
+        return (
+            f"live leader pid starttime probe unknown "
+            f"(pid={pid}); refusing grok spawn"
+        )
+    # DEAD or MISMATCH — stale; caller may clear.
     return None
 
 
@@ -821,7 +860,9 @@ def is_stale_run(root: Path, run_id: str) -> bool:
 
     No pid file, unreadable pid, or indeterminate liveness → not stale
     (mutex still applies unless force supersede). When starttime is recorded
-    and no longer matches (PID reuse), treat as stale so create can proceed.
+    and identity is ``DEAD`` or ``MISMATCH`` (PID reuse), treat as stale so
+    create can proceed. ``UNKNOWN`` (ps probe failed) is **not** stale —
+    unknown ≠ reclaimable.
     """
     meta = read_pid_metadata(Path(root), run_id)
     if meta is None:
@@ -829,9 +870,12 @@ def is_stale_run(root: Path, run_id: str) -> bool:
     pid = int(meta["pid"])
     recorded = meta.get("starttime")
     recorded_s = recorded if isinstance(recorded, str) and recorded else None
-    if recorded_s and not pid_matches_recorded(pid, recorded_s):
-        # Dead or PID reused under a recorded starttime → reclaimable
-        return True
+    if recorded_s:
+        identity = classify_pid_identity(pid, recorded_s)
+        if identity in (PidIdentity.DEAD, PidIdentity.MISMATCH):
+            return True
+        # MATCH or UNKNOWN — not reclaimable
+        return False
     return _pid_alive(pid) is False
 
 

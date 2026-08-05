@@ -512,7 +512,7 @@ def test_run_autopilot_clears_stale_mismatched_starttime_then_spawns(
 
 
 def test_live_leader_pid_conflict_helper(tmp_path: Path) -> None:
-    """R14-3: helper refuses live match or live-without-starttime; stale → None."""
+    """R14-3 / R15-1: refuse MATCH / missing-starttime / UNKNOWN; stale → None."""
     import json
     import os
 
@@ -563,6 +563,34 @@ def test_live_leader_pid_conflict_helper(tmp_path: Path) -> None:
     assert "starttime" in reason_missing.lower() or "live leader" in reason_missing.lower()
 
 
+def test_live_leader_pid_conflict_unknown_starttime_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R15-1: alive + recorded starttime + process_starttime=None → UNKNOWN refuse."""
+    import os
+
+    from omg_cli import state as state_mod
+    from omg_cli.state import live_leader_pid_conflict, write_pid_metadata
+    from omg_cli.modes import _run_dir
+
+    st = start_autopilot(tmp_path, "r15 unknown probe helper", skip_interview=True)
+    rid = st["run_id"]
+    run_dir = _run_dir(tmp_path, rid)
+    our_pid = os.getpid()
+    write_pid_metadata(
+        run_dir / "pid.json",
+        pid=our_pid,
+        pgid=our_pid,
+        starttime="Mon Jan  1 00:00:00 2000",
+    )
+    monkeypatch.setattr(state_mod, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(state_mod, "process_starttime", lambda _pid: None)
+    reason = live_leader_pid_conflict(tmp_path, rid)
+    assert reason is not None
+    assert "unknown" in reason.lower()
+    assert (run_dir / "pid.json").is_file()
+
+
 def test_run_autopilot_refuses_spawn_when_live_leader_missing_starttime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -598,6 +626,63 @@ def test_run_autopilot_refuses_spawn_when_live_leader_missing_starttime(
     assert "live leader" in err or "starttime" in err
     # Must not clear pid.json on refuse
     assert (run_dir / "pid.json").is_file()
+    assert (run_dir / "pid").is_file()
+
+
+def test_run_autopilot_refuses_spawn_when_starttime_probe_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """R15-1: alive + recorded starttime + process_starttime=None → refuse, preserve pid."""
+    import os
+
+    from omg_cli import state as state_mod
+    from omg_cli.state import write_pid_metadata
+    from omg_cli.modes import _run_dir
+
+    st = start_autopilot(
+        tmp_path, "r15 live leader unknown starttime", skip_interview=True
+    )
+    rid = st["run_id"]
+    run_dir = _run_dir(tmp_path, rid)
+    our_pid = os.getpid()
+    write_pid_metadata(
+        run_dir / "pid.json",
+        pid=our_pid,
+        pgid=our_pid,
+        starttime="Mon Jan  1 00:00:00 2000",
+    )
+    pid_before = (run_dir / "pid.json").read_text(encoding="utf-8")
+
+    real_alive = state_mod._pid_alive
+    real_start = state_mod.process_starttime
+
+    def _alive(pid: int):
+        if pid == our_pid:
+            return True
+        return real_alive(pid)
+
+    def _starttime(pid: int):
+        if pid == our_pid:
+            return None
+        return real_start(pid)
+
+    monkeypatch.setattr(state_mod, "_pid_alive", _alive)
+    monkeypatch.setattr(state_mod, "process_starttime", _starttime)
+
+    launched: list[bool] = []
+
+    def _fake_launch(argv, **kw):
+        launched.append(True)
+        return 0
+
+    _install_fake_autopilot_spawn(monkeypatch, _fake_launch)
+    rc = run_autopilot(tmp_path, "", resume_run_id=rid)
+    assert rc != 0
+    assert not launched
+    err = capsys.readouterr().err.lower()
+    assert "unknown" in err or "live leader" in err
+    assert (run_dir / "pid.json").is_file()
+    assert (run_dir / "pid.json").read_text(encoding="utf-8") == pid_before
     assert (run_dir / "pid").is_file()
 
 

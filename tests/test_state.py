@@ -12,17 +12,22 @@ from omg_cli.state import (
     FencingError,
     LifecycleLockError,
     LockUnavailableError,
+    PidIdentity,
     RunSchema,
     cancel_run,
+    classify_pid_identity,
     classify_run_schema,
     create_run,
     execution_lease,
     is_stale_run,
+    live_leader_pid_conflict,
     load_active_run,
     load_run,
+    pid_matches_recorded,
     set_verified,
     transition_guard,
     transition_guard_held,
+    write_pid_metadata,
     write_status,
 )
 
@@ -173,6 +178,51 @@ def test_create_run_allows_when_stale_pid_esrch(tmp_path, monkeypatch):
     assert second["run_id"] != first["run_id"]
     assert load_active_run(tmp_path)["run_id"] == second["run_id"]
     assert load_run(tmp_path, first["run_id"])["status"] == "cancelled"
+
+
+def test_classify_pid_identity_tri_state(monkeypatch):
+    """R15-1: MATCH / DEAD / MISMATCH / UNKNOWN are distinct."""
+    from omg_cli import state as state_mod
+
+    monkeypatch.setattr(state_mod, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(state_mod, "process_starttime", lambda _pid: "start-a")
+    assert classify_pid_identity(42, "start-a") is PidIdentity.MATCH
+    assert pid_matches_recorded(42, "start-a") is True
+
+    monkeypatch.setattr(state_mod, "process_starttime", lambda _pid: "start-b")
+    assert classify_pid_identity(42, "start-a") is PidIdentity.MISMATCH
+    assert pid_matches_recorded(42, "start-a") is False
+
+    monkeypatch.setattr(state_mod, "process_starttime", lambda _pid: None)
+    assert classify_pid_identity(42, "start-a") is PidIdentity.UNKNOWN
+    assert pid_matches_recorded(42, "start-a") is False
+
+    monkeypatch.setattr(state_mod, "_pid_alive", lambda _pid: False)
+    assert classify_pid_identity(42, "start-a") is PidIdentity.DEAD
+    assert classify_pid_identity(42, None) is PidIdentity.UNKNOWN
+
+
+def test_is_stale_run_unknown_starttime_probe_not_reclaimable(
+    tmp_path, monkeypatch
+):
+    """R15-1: UNKNOWN (alive + recorded + ps None) is not stale."""
+    from omg_cli import state as state_mod
+
+    run = create_run(tmp_path, mode="ulw", goal="unknown-stale")
+    rid = run["run_id"]
+    write_status(tmp_path, rid, "running")
+    write_pid_metadata(
+        tmp_path / ".omg" / "state" / "runs" / rid / "pid.json",
+        pid=424242,
+        pgid=424242,
+        starttime="Mon Jan  1 00:00:00 2000",
+    )
+    monkeypatch.setattr(state_mod, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(state_mod, "process_starttime", lambda _pid: None)
+    assert is_stale_run(tmp_path, rid) is False
+    reason = live_leader_pid_conflict(tmp_path, rid)
+    assert reason is not None
+    assert "unknown" in reason.lower()
 
 
 def test_create_run_mutex_blocks_verifying(tmp_path):
