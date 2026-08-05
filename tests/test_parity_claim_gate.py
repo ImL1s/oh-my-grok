@@ -1332,6 +1332,215 @@ def test_resolve_base_inventory_require_skips_head_caret(tmp_path: Path) -> None
     assert resolved.git_ref != "HEAD^"
 
 
+def test_pin_transition_catches_bump_revert_hidden_by_merge(tmp_path: Path) -> None:
+    """P1: side-branch A→B→A merged back must still require intermediate ledgers."""
+    from omg_cli.parity_claim_gate import assert_pin_transitions_reviewed
+
+    pin_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    pin_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    _bump_omc_pin(inventory, pin_a)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+    _write_inventory(tmp_path, inventory)
+    _init_git_repo(tmp_path)
+    # Default branch name varies; create an explicit main.
+    _git(tmp_path, "checkout", "-b", "main")
+    base_sha = _git_commit_all(tmp_path, "base pin A")
+
+    _git(tmp_path, "checkout", "-b", "feature")
+    bumped = copy.deepcopy(inventory)
+    _bump_omc_pin(bumped, pin_b)
+    _write_inventory(tmp_path, bumped)
+    _write_required_snapshots(tmp_path, bumped)
+    _git_commit_all(tmp_path, "feature bump A→B without review")
+
+    reverted = copy.deepcopy(inventory)
+    _bump_omc_pin(reverted, pin_a)
+    _write_inventory(tmp_path, reverted)
+    _write_required_snapshots(tmp_path, reverted)
+    _git_commit_all(tmp_path, "feature revert B→A without review")
+
+    _git(tmp_path, "checkout", "main")
+    _git(tmp_path, "merge", "--no-ff", "-m", "merge feature (final still A)", "feature")
+
+    # Path-simplified git log hides the bump/revert; DAG walk must not.
+    simplified = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "log",
+            "--reverse",
+            "--format=%H",
+            f"{base_sha}..HEAD",
+            "--",
+            "docs/parity/omg-parity.json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert simplified.stdout.strip() == ""
+
+    catalogs = {
+        source: load_json_object(
+            tmp_path / "docs" / "parity" / "upstream-snapshots" / f"{source}.json"
+        )
+        for source in REQUIRED_SNAPSHOT_SOURCES
+    }
+    candidate = load_json_object(tmp_path / "docs" / "parity" / "omg-parity.json")
+    assert candidate["upstream_pins"]["OMC"]["revision"] == pin_a
+
+    with pytest.raises(
+        ContractValidationError, match="pin transition missing committed refresh review"
+    ):
+        assert_pin_transitions_reviewed(
+            inventory=candidate,
+            base_inventory=inventory,
+            repo_root=tmp_path,
+            catalogs_by_source=catalogs,
+            base_ref=base_sha,
+        )
+
+
+def test_pin_transition_dag_walk_hard_fails_on_git_error(tmp_path: Path) -> None:
+    """P1: invalid base_ref must hard-fail (not fail-open to empty transition list)."""
+    from omg_cli.parity_claim_gate import assert_pin_transitions_reviewed
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+    _write_inventory(tmp_path, inventory)
+    _init_git_repo(tmp_path)
+    _git_commit_all(tmp_path, "C0")
+
+    catalogs = {
+        source: load_json_object(
+            tmp_path / "docs" / "parity" / "upstream-snapshots" / f"{source}.json"
+        )
+        for source in REQUIRED_SNAPSHOT_SOURCES
+    }
+    with pytest.raises(ContractValidationError, match=r"ancestor|git|base"):
+        assert_pin_transitions_reviewed(
+            inventory=inventory,
+            base_inventory=inventory,
+            repo_root=tmp_path,
+            catalogs_by_source=catalogs,
+            base_ref="definitely-not-a-real-ref",
+        )
+
+
+def test_pin_transition_rejects_symlink_review_ledger(tmp_path: Path) -> None:
+    """P2: symlink at expected ledger path must not satisfy HEAD blob verify."""
+    from omg_cli.parity_refresh import write_committed_refresh_review
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    base = copy.deepcopy(inventory)
+    new_pin = "2222222222222222222222222222222222222222"
+    _bump_omc_pin(inventory, new_pin)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+
+    catalog = load_json_object(
+        tmp_path / "docs" / "parity" / "upstream-snapshots" / "OMC.json"
+    )
+    plan = build_refresh_plan(
+        inventory=base,
+        upstream_catalog=catalog,
+        source="OMC",
+        new_pin=new_pin,
+        generated_at=FIXED_NOW,
+    )
+    path = write_committed_refresh_review(tmp_path, plan)
+    # Decoy tracked file with identical bytes (symlink target).
+    decoy = tmp_path / "docs" / "parity" / "decoy-review.json"
+    decoy.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    _init_git_repo(tmp_path)
+    _git_commit_all(tmp_path, "commit review + decoy")
+
+    path.unlink()
+    path.symlink_to(decoy)
+
+    with pytest.raises(
+        ContractValidationError,
+        match=r"symlink|regular file|type|differs|git diff",
+    ):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            base_inventory=base,
+            now=FIXED_NOW,
+        )
+
+
+def test_pin_transition_rejects_parent_directory_symlink(tmp_path: Path) -> None:
+    """P2: parent-dir symlink must not redirect ledger verification."""
+    from omg_cli.parity_refresh import (
+        COMMITTED_REVIEWS_RELATIVE,
+        write_committed_refresh_review,
+    )
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    base = copy.deepcopy(inventory)
+    new_pin = "3333333333333333333333333333333333333333"
+    _bump_omc_pin(inventory, new_pin)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+
+    catalog = load_json_object(
+        tmp_path / "docs" / "parity" / "upstream-snapshots" / "OMC.json"
+    )
+    plan = build_refresh_plan(
+        inventory=base,
+        upstream_catalog=catalog,
+        source="OMC",
+        new_pin=new_pin,
+        generated_at=FIXED_NOW,
+    )
+    path = write_committed_refresh_review(tmp_path, plan)
+    reviews_dir = tmp_path / COMMITTED_REVIEWS_RELATIVE
+    real_store = tmp_path / "docs" / "parity" / "reviews-real"
+    real_store.mkdir(parents=True, exist_ok=True)
+    # Move committed ledger into real store, then replace reviews/ with symlink.
+    moved = real_store / path.name
+    path.replace(moved)
+    reviews_dir.rmdir()
+    # Also keep a decoy copy under real_store that matches for content tricks.
+    _init_git_repo(tmp_path)
+    # Commit the real file at the expected path first.
+    reviews_dir.mkdir(parents=True, exist_ok=True)
+    committed = reviews_dir / path.name
+    committed.write_text(moved.read_text(encoding="utf-8"), encoding="utf-8")
+    _git_commit_all(tmp_path, "commit review at expected path")
+
+    # Replace reviews/ with symlink to real_store (contains matching file).
+    for child in reviews_dir.iterdir():
+        child.unlink()
+    reviews_dir.rmdir()
+    reviews_dir.symlink_to(real_store)
+    # Ensure target file exists via the symlink.
+    assert (reviews_dir / path.name).is_file()
+
+    with pytest.raises(
+        ContractValidationError,
+        match=r"symlink|regular file|type|differs|git diff",
+    ):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            base_inventory=base,
+            now=FIXED_NOW,
+        )
+
+
 def test_complete_healthy_still_rejects_live_proven_phrase(tmp_path: Path) -> None:
     """P2: complete + all-healthy must keep live-* phrase scan active."""
     inventory = _bootstrapping_inventory(tmp_path)

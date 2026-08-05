@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -398,85 +399,188 @@ def _previous_release_tag(repo_root: Path) -> str | None:
     return tag
 
 
-def _git_log_inventory_commits(repo_root: Path, base_ref: str) -> list[str]:
-    """Commits after base_ref that touch the parity inventory (oldest first)."""
+_INVENTORY_GIT_PATH = "docs/parity/omg-parity.json"
+_REGULAR_BLOB_MODES = frozenset({"100644", "100755"})
+
+
+def _run_git(
+    repo_root: Path, *args: str, label: str
+) -> subprocess.CompletedProcess[str]:
     try:
-        proc = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo_root),
-                "log",
-                "--reverse",
-                "--format=%H",
-                f"{base_ref}..HEAD",
-                "--",
-                "docs/parity/omg-parity.json",
-            ],
+        return subprocess.run(
+            ["git", "-C", str(repo_root), *args],
             check=False,
             capture_output=True,
             text=True,
         )
-    except OSError:
-        return []
-    if proc.returncode != 0 or not proc.stdout.strip():
-        return []
-    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    except OSError as exc:
+        raise ContractValidationError(f"git {label} failed: {exc}") from exc
 
 
-def _assert_review_blob_committed(repo_root: Path, path: Path) -> None:
-    """Fail closed unless review is tracked and matches HEAD blob bytes."""
-    root = Path(repo_root)
+def _assert_base_is_head_ancestor(repo_root: Path, base_ref: str) -> None:
+    """Fail closed unless base_ref is an ancestor of HEAD."""
+    proc = _run_git(
+        repo_root,
+        "merge-base",
+        "--is-ancestor",
+        base_ref,
+        "HEAD",
+        label="merge-base --is-ancestor",
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise ContractValidationError(
+            f"pin-transition base_ref must be a HEAD ancestor: {base_ref!r}"
+            + (f" ({detail})" if detail else "")
+        )
+
+
+def _git_show_text_strict(repo_root: Path, object_spec: str) -> str:
+    proc = _run_git(repo_root, "show", object_spec, label=f"show {object_spec}")
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise ContractValidationError(
+            f"git show failed for {object_spec}"
+            + (f": {detail}" if detail else "")
+        )
+    return proc.stdout
+
+
+def _git_show_inventory_strict(repo_root: Path, git_ref: str) -> dict[str, Any]:
+    text = _git_show_text_strict(repo_root, f"{git_ref}:{_INVENTORY_GIT_PATH}")
+    if not text.strip():
+        raise ContractValidationError(
+            f"empty inventory blob at {git_ref}:{_INVENTORY_GIT_PATH}"
+        )
     try:
-        relative = path.resolve().relative_to(root.resolve()).as_posix()
+        return json_loads_object(text)
+    except (ContractValidationError, ValueError) as exc:
+        raise ContractValidationError(
+            f"invalid inventory JSON at {git_ref}:{_INVENTORY_GIT_PATH}: {exc}"
+        ) from exc
+
+
+def _iter_commit_parent_child_edges(
+    repo_root: Path, base_ref: str
+) -> list[tuple[str, str]]:
+    """Enumerate every parent→child edge in the base_ref..HEAD commit DAG."""
+    proc = _run_git(
+        repo_root,
+        "rev-list",
+        "--parents",
+        f"{base_ref}..HEAD",
+        label="rev-list --parents",
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise ContractValidationError(
+            f"git rev-list failed for {base_ref}..HEAD"
+            + (f": {detail}" if detail else "")
+        )
+    edges: list[tuple[str, str]] = []
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            # Root commit with no parents inside the range is unexpected when
+            # base is a verified ancestor; still hard-fail rather than skip.
+            if len(parts) == 1:
+                raise ContractValidationError(
+                    f"commit {parts[0]} in {base_ref}..HEAD has no parents"
+                )
+            continue
+        child, *parents = parts
+        for parent in parents:
+            edges.append((parent, child))
+    return edges
+
+
+def _lexical_repo_relative(repo_root: Path, path: Path) -> str:
+    """Return path relative to repo_root without following symlinks."""
+    root = Path(repo_root)
+    root_abs = root if root.is_absolute() else root.absolute()
+    path_abs = path if path.is_absolute() else path.absolute()
+    try:
+        relative = path_abs.relative_to(root_abs)
     except ValueError as exc:
         raise ContractValidationError(
             f"committed refresh review path escapes repo root: {path}"
         ) from exc
+    if any(part == ".." for part in relative.parts):
+        raise ContractValidationError(
+            f"committed refresh review path escapes repo root: {path}"
+        )
+    return relative.as_posix()
+
+
+def _assert_no_symlink_path_components(repo_root: Path, relative: str) -> None:
+    """Reject symlinks anywhere along the lexical relative path."""
+    current = Path(repo_root)
+    for part in relative.split("/"):
+        if not part or part == ".":
+            continue
+        current = current / part
+        try:
+            st = current.lstat()
+        except OSError as exc:
+            raise ContractValidationError(
+                f"committed refresh review path missing: {relative}"
+            ) from exc
+        if stat.S_ISLNK(st.st_mode):
+            raise ContractValidationError(
+                f"committed refresh review path contains symlink: {relative}"
+            )
+
+
+def _assert_review_blob_committed(repo_root: Path, path: Path) -> None:
+    """Fail closed unless review is a regular tracked file matching HEAD bytes."""
+    root = Path(repo_root)
+    relative = _lexical_repo_relative(root, path)
+    _assert_no_symlink_path_components(root, relative)
+    target = root / relative
+    try:
+        st = target.lstat()
+    except OSError as exc:
+        raise ContractValidationError(
+            f"committed refresh review path missing: {relative}"
+        ) from exc
+    if not stat.S_ISREG(st.st_mode):
+        raise ContractValidationError(
+            f"committed refresh review must be a regular file: {relative}"
+        )
     if not (root / ".git").exists():
         raise ContractValidationError(
             f"committed refresh review requires a git repository: {relative}"
         )
-    try:
-        tracked = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", relative],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except OSError as exc:
-        raise ContractValidationError(
-            f"committed refresh review git ls-files failed: {relative}"
-        ) from exc
+    tracked = _run_git(
+        root, "ls-files", "--error-unmatch", "--", relative, label="ls-files"
+    )
     if tracked.returncode != 0:
         raise ContractValidationError(
             f"committed refresh review is not tracked by git: {relative}"
         )
-    try:
-        head_blob = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", f"HEAD:{relative}"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        work_blob = subprocess.run(
-            ["git", "-C", str(root), "hash-object", "--", relative],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except OSError as exc:
-        raise ContractValidationError(
-            f"committed refresh review blob compare failed: {relative}"
-        ) from exc
-    if head_blob.returncode != 0:
+    ls_tree = _run_git(
+        root, "ls-tree", "HEAD", "--", relative, label="ls-tree"
+    )
+    if ls_tree.returncode != 0 or not ls_tree.stdout.strip():
         raise ContractValidationError(
             f"committed refresh review missing from HEAD tree: {relative}"
         )
-    if (
-        work_blob.returncode != 0
-        or head_blob.stdout.strip() != work_blob.stdout.strip()
-    ):
+    # ls-tree lines: <mode> <type> <object>\t<file>
+    meta = ls_tree.stdout.strip().split("\t", 1)[0].split()
+    if len(meta) < 3:
+        raise ContractValidationError(
+            f"committed refresh review HEAD ls-tree unreadable: {relative}"
+        )
+    mode, obj_type, _blob = meta[0], meta[1], meta[2]
+    if obj_type != "blob" or mode not in _REGULAR_BLOB_MODES:
+        raise ContractValidationError(
+            f"committed refresh review HEAD entry must be a regular blob "
+            f"(mode={mode}, type={obj_type}): {relative}"
+        )
+    diff = _run_git(
+        root, "diff", "--quiet", "HEAD", "--", relative, label="diff --quiet"
+    )
+    if diff.returncode != 0:
         raise ContractValidationError(
             f"committed refresh review worktree differs from HEAD blob: {relative}"
         )
@@ -561,22 +665,48 @@ def _pin_revision(inventory: Mapping[str, Any], source: str) -> str:
     return revision
 
 
-def _transition_inventory_steps(
+def _iter_pin_transition_pairs(
     *,
     repo_root: Path,
     base_inventory: dict[str, Any],
     candidate_inventory: dict[str, Any],
     base_ref: str | None,
-) -> list[tuple[str | None, dict[str, Any]]]:
-    """Build base→…→candidate inventory steps (scan intermediate pin bumps)."""
-    steps: list[tuple[str | None, dict[str, Any]]] = [(base_ref, base_inventory)]
-    if base_ref:
-        for commit in _git_log_inventory_commits(repo_root, base_ref):
-            loaded = _git_show_inventory(repo_root, commit)
-            if loaded is not None:
-                steps.append((commit, loaded))
-    steps.append((None, candidate_inventory))
-    return steps
+) -> list[tuple[dict[str, Any], dict[str, Any], str | None]]:
+    """Yield (from_inventory, to_inventory, to_ref) pin-scan pairs.
+
+    When ``base_ref`` is set, enumerate every parent→child edge in the
+    ``base_ref..HEAD`` commit DAG (not path-simplified ``git log``) so a
+    side-branch bump→revert→merge cannot hide intermediate pin transitions.
+    Git / JSON / blob read errors hard-fail. Always ends with HEAD→candidate
+    so a dirty worktree pin bump is still gated.
+    """
+    if not base_ref:
+        return [(base_inventory, candidate_inventory, None)]
+
+    _assert_base_is_head_ancestor(repo_root, base_ref)
+    pairs: list[tuple[dict[str, Any], dict[str, Any], str | None]] = []
+    edges = _iter_commit_parent_child_edges(repo_root, base_ref)
+    for parent, child in edges:
+        pairs.append(
+            (
+                _git_show_inventory_strict(repo_root, parent),
+                _git_show_inventory_strict(repo_root, child),
+                child,
+            )
+        )
+    head_inventory = _git_show_inventory_strict(repo_root, "HEAD")
+    pairs.append((head_inventory, candidate_inventory, None))
+    if not edges:
+        # Empty range (base is HEAD): still compare base blob to candidate.
+        pairs.insert(
+            0,
+            (
+                _git_show_inventory_strict(repo_root, base_ref),
+                head_inventory,
+                "HEAD",
+            ),
+        )
+    return pairs
 
 
 def _catalog_for_transition(
@@ -634,10 +764,12 @@ def _require_single_pin_transition_review(
         to_revision=to_revision,
         change_digest=digest,
     )
-    if not path.is_file():
+    try:
+        path.lstat()
+    except OSError:
         try:
-            missing.append(path.resolve().relative_to(root.resolve()).as_posix())
-        except ValueError:
+            missing.append(_lexical_repo_relative(root, path))
+        except ContractValidationError:
             missing.append(str(path))
         return
     _assert_review_blob_committed(root, path)
@@ -684,21 +816,19 @@ def assert_pin_transitions_reviewed(
 ) -> None:
     """Require committed docs/parity/reviews ledger when a source pin changes.
 
-    When ``base_ref`` is a durable git ref, every intermediate inventory pin
-    transition from that ref through ``HEAD`` is enforced — not only the
-    immediate parent — so an unreviewed bump cannot be masked by a later commit.
+    When ``base_ref`` is a durable git ref, every parent→child inventory pin
+    transition in the ``base_ref..HEAD`` commit DAG is enforced — not only the
+    tip delta — so an unreviewed bump→revert on a merged side branch cannot
+    hide intermediate pin transitions.
     """
     root = Path(repo_root)
     missing: list[str] = []
-    steps = _transition_inventory_steps(
+    for from_inventory, to_inventory, to_ref in _iter_pin_transition_pairs(
         repo_root=root,
         base_inventory=base_inventory,
         candidate_inventory=inventory,
         base_ref=base_ref,
-    )
-    for index in range(len(steps) - 1):
-        _from_ref, from_inventory = steps[index]
-        to_ref, to_inventory = steps[index + 1]
+    ):
         for source in REQUIRED_UPSTREAM_SNAPSHOT_SOURCES:
             _require_single_pin_transition_review(
                 root=root,
