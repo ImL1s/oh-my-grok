@@ -314,25 +314,6 @@ def _implementation_work_evidence(
     return False, None
 
 
-def _ralplan_stamp_exists(root: Path | str, run_id: str) -> bool:
-    """True when a CLI-owned ``ralplan.json`` already exists for this run_id.
-
-    Mirrors the same ownership check ``invalidate_ralplan_consensus`` uses
-    internally (writer + run_id match) — used by ``transition()`` to gate
-    re-entry invalidation on stamp *existence* rather than on ``src``, so a
-    stale stamp cannot survive a blocked→interview→ralplan detour just
-    because the immediate hop back into ralplan happens to come from
-    ``interview`` again.
-    """
-    from omg_cli.ralplan import ralplan_state_path
-
-    root = Path(root).resolve()
-    data = _read_stage_json(ralplan_state_path(root, run_id))
-    if not data:
-        return False
-    return data.get("writer") == CLI_WRITER and data.get("run_id") == run_id
-
-
 def invalidate_quality_stages(root: Path | str, run_id: str, *, reason: str) -> None:
     """Mark review/QA stage stamps stale after rework or replan (CLI write)."""
     from omg_cli.qa import qa_state_path
@@ -440,6 +421,11 @@ def start_autopilot(
             "run_id": run_id,
             "goal": goal,
             "phase": phase,
+            # Monotonic re-entry counter for the ralplan phase: 0 means the
+            # interview→ralplan handoff hasn't happened yet (skip_interview
+            # starts already past it, at 1). Gates invalidation on
+            # transition() re-entry, not on stamp *existence*.
+            "ralplan_epoch": 1 if skip_interview else 0,
             "cycles": {"review": 0, "qa": 0, "ralplan": 0},
             "history": [{"phase": phase, "at": _utc_now(), "event": "start"}],
             "blocker": None,
@@ -581,29 +567,36 @@ def transition(
                 root, run_id, reason=f"(re)implement from {src}"
             )
             state["implement_workspace_fp"] = _implement_workspace_fingerprint(root)
-        if next_phase == "ralplan" and _ralplan_stamp_exists(root, run_id):
-            # A CLI-owned ralplan.json already on disk for this run_id is a
-            # prior consensus epoch, full stop — gate on stamp *existence*,
-            # not on ``src``. Gating on src alone (the old
-            # ``src not in {"interview", "init"}`` rule) let review→blocked→
-            # interview→ralplan bypass invalidation: the interview detour
-            # made ``src == "interview"`` again even though a stale accepted
-            # stamp from before the blocked excursion was still sitting on
-            # disk, silently unlocking implement. Only the very first
-            # interview→ralplan (or init→ralplan skip-interview) handoff,
-            # where no stamp has been written yet, remains a no-op.
-            state["cycles"]["ralplan"] = int(state["cycles"].get("ralplan") or 0) + 1
-            # Stale clean stamps must not open QA/acceptance after replan
-            invalidate_quality_stages(
-                root, run_id, reason=f"replan from {src}"
-            )
-            # A prior accepted ralplan.json stamp must not silently unlock
-            # implement again for this new replan cycle.
-            from omg_cli.ralplan import invalidate_ralplan_consensus
+        if next_phase == "ralplan":
+            # ralplan_epoch is a monotonic re-entry counter, not a stamp
+            # *existence* check — gating on stamp existence (the old
+            # ``_ralplan_stamp_exists`` rule) let a break-glass consensus
+            # path that never wrote a ralplan.json stamp skip invalidation
+            # entirely on replan. epoch==0 means the interview→ralplan
+            # handoff hasn't happened yet (skip_interview starts at 1, past
+            # it already) — that first handoff is a no-op. Every entry after
+            # that (epoch>=1), regardless of ``src`` or stamp existence,
+            # invalidates stale quality/consensus stamps before bumping.
+            epoch = int(state.get("ralplan_epoch") or 0)
+            if epoch == 0:
+                state["ralplan_epoch"] = 1
+            else:
+                state["cycles"]["ralplan"] = (
+                    int(state["cycles"].get("ralplan") or 0) + 1
+                )
+                # Stale clean stamps must not open QA/acceptance after replan
+                invalidate_quality_stages(
+                    root, run_id, reason=f"replan from {src}"
+                )
+                # A prior accepted ralplan.json stamp must not silently
+                # unlock implement again for this new replan cycle — no-op
+                # when no stamp exists yet (e.g. break-glass consensus path).
+                from omg_cli.ralplan import invalidate_ralplan_consensus
 
-            invalidate_ralplan_consensus(
-                root, run_id, reason=f"replan from {src}"
-            )
+                invalidate_ralplan_consensus(
+                    root, run_id, reason=f"replan from {src}"
+                )
+                state["ralplan_epoch"] = epoch + 1
         if next_phase == "rework":
             state["cycles"]["review"] = int(state["cycles"].get("review") or 0) + 1
             invalidate_quality_stages(

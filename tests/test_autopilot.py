@@ -503,7 +503,9 @@ def test_blocked_interview_ralplan_invalidates_accepted_ralplan_stamp(
     assert data.get("invalidated_reason")
     assert data.get("invalidated_at")
     # Exactly one bump for this single re-entry — no double-bump.
-    assert load_autopilot(tmp_path, rid)["cycles"]["ralplan"] == 1
+    reloaded = load_autopilot(tmp_path, rid)
+    assert reloaded["cycles"]["ralplan"] == 1
+    assert reloaded["ralplan_epoch"] == 2
 
     # Stale stamp must not silently unlock implement again — blocked until
     # a fresh accept.
@@ -516,21 +518,90 @@ def test_blocked_interview_ralplan_invalidates_accepted_ralplan_stamp(
     assert status_autopilot(tmp_path, rid)["phase"] == "implement"
 
 
+def test_qa_to_ralplan_invalidates_via_epoch_without_ralplan_stamp(
+    tmp_path: Path,
+) -> None:
+    """R7-2: ``ralplan_epoch`` (not stamp *existence*) gates re-entry
+    invalidation. A break-glass consensus path that never writes a
+    ralplan.json stamp must still invalidate stale clean review/QA stamps
+    when qa bumps back into ralplan — closes the gap where
+    ``_ralplan_stamp_exists`` silently skipped invalidation because no
+    stamp had ever been written for this run."""
+    from omg_cli.autopilot import (
+        load_autopilot,
+        stage_qa_is_clean,
+        stage_review_is_clean,
+    )
+    from omg_cli.ralplan import ralplan_state_path
+
+    st = start_autopilot(tmp_path, "epoch gates without stamp", skip_interview=True)
+    rid = st["run_id"]
+    assert st["phase"] == "ralplan"
+    assert load_autopilot(tmp_path, rid)["ralplan_epoch"] == 1
+
+    stamp_path = ralplan_state_path(tmp_path, rid)
+    assert not stamp_path.is_file()
+
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
+    _stamp_review_clean(tmp_path, rid)
+    assert stage_review_is_clean(tmp_path, rid) is True
+    transition(tmp_path, rid, "qa")
+    _stamp_qa_clean(tmp_path, rid, tmp_path=tmp_path)
+
+    # _stamp_qa_clean's fixture write shifts the workspace fingerprint the
+    # review stamp bound to, but that's the QA stamp's own binding, not
+    # under test here — assert QA clean now, review clean was already
+    # checked above before the fixture write.
+    assert stage_qa_is_clean(tmp_path, rid) is True
+    assert not stamp_path.is_file()
+
+    transition(tmp_path, rid, "ralplan", reason="replan from qa")
+
+    # Still no stamp on disk — invalidate_ralplan_consensus is a no-op here,
+    # but review/QA invalidation must not be skipped just because the
+    # ralplan.json stamp never existed.
+    assert not stamp_path.is_file()
+    assert stage_review_is_clean(tmp_path, rid) is False
+    assert stage_qa_is_clean(tmp_path, rid) is False
+    state = load_autopilot(tmp_path, rid)
+    assert state["ralplan_epoch"] == 2
+    assert state["cycles"]["ralplan"] == 1
+
+
 def test_first_interview_to_ralplan_with_no_stamp_is_noop(tmp_path: Path) -> None:
-    """R5-2: the very first interview→ralplan handoff (no CLI-owned
-    ralplan.json written yet) must remain a no-op — no spurious cycle bump,
-    no invalidation call against a nonexistent stamp."""
+    """R5-2/R7-2: the very first interview→ralplan handoff (no CLI-owned
+    ralplan.json written yet, ``ralplan_epoch`` starting at 0) must remain a
+    no-op — no spurious cycle bump, no invalidation call against a
+    nonexistent stamp. ``ralplan_epoch`` advances to 1, marking the handoff
+    consumed so any later re-entry does invalidate."""
     from omg_cli.autopilot import load_autopilot
 
     st = start_autopilot(tmp_path, "first interview handoff")
     rid = st["run_id"]
     assert st["phase"] == "interview"
+    assert load_autopilot(tmp_path, rid)["ralplan_epoch"] == 0
 
     transition(tmp_path, rid, "ralplan", evidence=_ev_interview_bg())
 
     state = load_autopilot(tmp_path, rid)
     assert state["phase"] == "ralplan"
     assert state["cycles"]["ralplan"] == 0
+    assert state["ralplan_epoch"] == 1
+
+
+def test_start_autopilot_skip_interview_sets_ralplan_epoch_one(
+    tmp_path: Path,
+) -> None:
+    """R7-2: skip_interview starts already past the interview→ralplan
+    handoff, so ``ralplan_epoch`` begins at 1 (not 0) — the very next
+    re-entry into ralplan must invalidate rather than no-op."""
+    from omg_cli.autopilot import load_autopilot
+
+    st = start_autopilot(tmp_path, "skip interview epoch", skip_interview=True)
+    rid = st["run_id"]
+    assert st["phase"] == "ralplan"
+    assert load_autopilot(tmp_path, rid)["ralplan_epoch"] == 1
 
 
 def test_status_legal_next_excludes_verified(tmp_path: Path) -> None:
