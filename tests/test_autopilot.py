@@ -2254,3 +2254,65 @@ def test_cli_autopilot_run_unattended_flag() -> None:
     )
     assert ns.unattended is True
     assert ns.max_stall_relaunches == 4
+
+
+def test_run_resume_preflight_advances_completed_interview_without_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R11-1: attach+close leaves phase==interview; resume must advance to
+    ralplan via preflight and must not spawn an interview Grok launch."""
+    from omg_cli.interview import (
+        close_interview,
+        pressure_pass_interview,
+        start_interview,
+    )
+
+    clear_task = (
+        "Intent: Replace fragile manual release work with a deterministic "
+        "audited workflow for maintainers.\n"
+        "Outcome: Users run one command and receive explicit verified blocked "
+        "or cancelled terminal evidence.\n"
+        "Scope: Implement only local command lifecycle state and artifacts "
+        "required for a safe handoff.\n"
+        "Constraints: Preserve backward compatibility use the standard library "
+        "and never weaken CLI authority.\n"
+        "Success: Unit integration and adversarial tests demonstrate "
+        "deterministic resume and failure closure.\n"
+        "Context: Existing repository has Python CLI state tests documentation "
+        "and atomic evidence helpers.\n"
+        "Non-goals: Do not build a chat interface remote service model router "
+        "or publishing automation.\n"
+        "Decision boundaries: The agent may choose file layout test cases and "
+        "naming without further approval.\n"
+        "Acceptance: Targeted and full tests pass while corrupt stale and "
+        "wrong-run inputs fail closed."
+    )
+    (tmp_path / ".git").mkdir()
+    st = start_autopilot(tmp_path, clear_task, skip_interview=False)
+    rid = st["run_id"]
+    assert st["phase"] == "interview"
+
+    start_interview(tmp_path, "", attach_run_id=rid)
+    pressure_pass_interview(
+        tmp_path,
+        rid,
+        "Pressure test confirms compatibility and CLI authority outweigh "
+        "automatic conversational convenience.",
+    )
+    closed = close_interview(tmp_path, rid)
+    assert closed["status"] == "complete"
+    assert status_autopilot(tmp_path, rid)["phase"] == "interview"
+
+    phases_launched: list[str] = []
+
+    def _fake_launch(argv, **kw):
+        run_id = kw["run_dir"].name
+        phases_launched.append(status_autopilot(tmp_path, run_id)["phase"])
+        return 0
+
+    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    rc = run_autopilot(tmp_path, "", resume_run_id=rid, dry_run=True)
+    assert rc == 0
+    assert "interview" not in phases_launched
+    assert phases_launched == ["ralplan"]
+    assert status_autopilot(tmp_path, rid)["phase"] == "ralplan"

@@ -1469,6 +1469,28 @@ def run_autopilot(
             )
             return 0
 
+        # Preflight: completed interview must advance before any launch so
+        # resume does not spawn an unnecessary interview Grok session.
+        if phase == "interview" and _interview_complete(root_path, run_id):
+            new_phase = _try_advance_after_launch(root_path, run_id, phase)
+            if new_phase != phase:
+                continue
+            write_resume_md(root_path, run_id)
+            print(resume_cmd, file=sys.stderr)
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "pause": "stall",
+                        "phase": phase,
+                        "run_id": run_id,
+                        "resume_command": resume_cmd,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+
         phase_cycles[phase] = int(phase_cycles.get(phase, 0)) + 1
         if phase_cycles[phase] > max(1, int(max_phase_cycles)):
             try:
