@@ -1342,6 +1342,24 @@ def _try_advance_after_launch(root: Path, run_id: str, phase: str) -> str:
     return phase
 
 
+def _launch_refused_for_cancel(root: Path | str, run_id: str) -> str | None:
+    """Return a refusal reason if the run must not spawn grok, else None.
+
+    Re-checks ``status.json`` and any pending ``cancel.request.json`` so a
+    cancel committed after loop entry (or before resume) cannot race a
+    ``_launch_grok`` / Popen.
+    """
+    from omg_cli.state import TERMINAL_STATUSES, load_cancellation_request
+
+    run = load_run(root, run_id) or {}
+    status = str(run.get("status") or "")
+    if status in TERMINAL_STATUSES:
+        return f"run is terminal (status={status!r}); refusing grok launch"
+    if load_cancellation_request(root, run_id) is not None:
+        return "pending cancellation request; refusing grok launch"
+    return None
+
+
 def run_autopilot(
     root: Path | str,
     goal: str,
@@ -1549,6 +1567,11 @@ def run_autopilot(
             return 1
 
         write_resume_md(root_path, run_id)
+
+        refuse = _launch_refused_for_cancel(root_path, run_id)
+        if refuse is not None:
+            print(f"omg autopilot run: {refuse}", file=sys.stderr)
+            return 1
 
         prompt = build_phase_prompt(phase, root=root_path, goal=goal, run_id=run_id)
         argv = build_grok_argv(

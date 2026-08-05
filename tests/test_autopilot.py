@@ -273,6 +273,52 @@ def test_run_autopilot_refuses_resume_on_terminal_status(tmp_path: Path) -> None
     assert rc == 1
 
 
+def test_run_autopilot_cancel_then_resume_does_not_launch_grok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R11-3: cancel then resume must refuse spawn — ``_launch_grok`` must
+    never be called (terminal status or pending cancel.request)."""
+    from omg_cli.state import cancel_run
+
+    st = start_autopilot(tmp_path, "cancel then resume no launch", skip_interview=True)
+    rid = st["run_id"]
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+
+    launched: list[bool] = []
+
+    def _fake_launch(argv, **kw):
+        launched.append(True)
+        return 0
+
+    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    rc = run_autopilot(tmp_path, "", resume_run_id=rid)
+    assert rc != 0
+    assert not launched
+
+
+def test_run_autopilot_pending_cancel_refuses_launch_grok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R11-3: a pending cancel.request (status not yet terminal) must still
+    refuse ``_launch_grok`` at the pre-spawn gate."""
+    st = start_autopilot(
+        tmp_path, "pending cancel refuses launch", skip_interview=True
+    )
+    rid = st["run_id"]
+    _write_pending_cancel_request(tmp_path, rid)
+
+    launched: list[bool] = []
+
+    def _fake_launch(argv, **kw):
+        launched.append(True)
+        return 0
+
+    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+    rc = run_autopilot(tmp_path, "", resume_run_id=rid)
+    assert rc != 0
+    assert not launched
+
+
 def test_interview_complete_rejects_bare_status_string(tmp_path: Path) -> None:
     """R2-4: a forged interview.json with only status="complete" (no CLI
     writer, no spec artifact) must not unlock ralplan without break_glass —
