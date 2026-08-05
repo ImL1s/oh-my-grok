@@ -176,7 +176,7 @@ as `gate_audit` (for example `break_glass:consensus`, `break_glass:no_change`).
 | Enter phase | Preferred (stamp-first) | Break-glass (audited) |
 |-------------|-------------------------|------------------------|
 | `ralplan` from `interview` | CLI interview envelope: `interview.json` with `writer=omg-cli`, `status=complete`, and a matching CLI-stamped spec artifact (`spec_path` + content hash) | `interview_complete` + `break_glass` |
-| `implement` | CLI `stages/ralplan.json` stamp with `writer=omg-cli`, `run_id` match, and `accepted=true` (not `status.ralplan_consensus` alone) | `consensus` + `break_glass` |
+| `implement` | CLI `stages/ralplan.json` stamp with `writer=omg-cli`, `run_id` match, `accepted=true`, and strict-v2 `schema_version`/`lifecycle_version` both `==2` (not `status.ralplan_consensus` alone) | `consensus` + `break_glass` |
 | `review` from `implement` **or** `blocked` | Workspace fingerprint drift (curated product surfaces) since implement entry, **or** on-disk CLI implementation receipt (`stages/implementation.json`, fingerprint-rechecked) | `no_change_reason` + `break_glass`, **or** inline `implementation_receipt` + `break_glass` |
 | `qa` | CLI `stages/structured_review.json` clean (see fingerprint recheck below) | — |
 | `acceptance` | CLI `stages/ultraqa.json` status `clean` (see fingerprint recheck below) | — |
@@ -236,16 +236,22 @@ each role's `session_id` is re-minted (not reused) on that reset.
 the run must use strict-v2 schema, the autopilot FSM must be at
 `phase==ralplan`, the CLI goal must match the frozen run goal exactly, and
 the run must be non-terminal with no pending cancellation request. Strict-v2
-embedding re-checks those gates immediately before writing `accepted=true`
-so a concurrent `omg cancel` cannot race acceptance.
+embedding re-checks those gates immediately before **every** sidecar save
+(initial/per-stage/history/accept/blocked — Round 10) so a concurrent
+`omg cancel` cannot race a mid-round write, not only the final
+`accepted=true` stamp.
 `_consensus_ready` additionally requires a non-empty stamp `goal` matching
-the frozen run goal (missing/null/empty → rejected).
+the frozen run goal (missing/null/empty → rejected) and, as of Round 10,
+`schema_version==2` plus `lifecycle_version==2` on the stamp (legacy/v1
+shapes fail closed).
 
 `omg interview start --attach-run RUN` re-verifies mode/phase/non-terminal/
 goal match **under the execution lease** after pre-lease attach checks,
-closing a TOCTOU race before writing `interview.json`. Attach start and
-`close_interview` also refuse sidecar writes when the run is terminal or has
-a pending cancellation request (same gate, immediately before each save).
+closing a TOCTOU race before writing `interview.json`. Interview writers
+(`start`, attach start, `answer`, `pressure-pass`, and `close`) refuse
+sidecar writes when the run is terminal or has a pending cancellation
+request (same gate, immediately before each save — Round 10 extended
+beyond attach/close).
 
 **Terminal/cancel gates on transition/resume (Round 9):** `transition()`
 re-checks `status.json` under the execution lease and refuses any sidecar

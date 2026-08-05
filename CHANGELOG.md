@@ -189,6 +189,20 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   ``omg autopilot run --resume <run_id>`` (single idempotent entry); re-close
   of an already-complete interview migrates stale two-step resume commands on
   disk to the current form.
+- **Consensus stamp strict-v2 schema (Round 10 / R10-1):**
+  ``_consensus_ready`` requires ``schema_version==2`` and
+  ``lifecycle_version==2`` on CLI ``ralplan.json`` (fail-closed if missing
+  or wrong) — autopilot only embeds strict-v2 RALPLAN.
+- **Interview writable assert on all sidecar saves (Round 10 / R10-2):**
+  ``answer_interview``, ``pressure_pass_interview``, and non-attach
+  ``start_interview`` reload the run under the execution lease and call
+  ``_assert_run_writable`` before ``_save`` (same cancel/terminal gate as
+  attach/close).
+- **Ralplan re-authorize before each sidecar save (Round 10 / R10-3):**
+  strict-v2 embedded ralplan calls ``_assert_autopilot_still_writable``
+  immediately before every ``save_ralplan_state`` (not only the accept
+  write) so a mid-round ``omg cancel`` cannot land a history/stage save
+  on a cancelled run.
 
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —
