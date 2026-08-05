@@ -1061,3 +1061,69 @@ def test_ralplan_v2_reauthorizes_before_accept_rejects_mid_round_cancellation(
         )
     )
     assert status.get("ralplan_status") != "accepted"
+
+
+def test_ralplan_v2_reauthorizes_before_every_sidecar_save_mid_round(
+    tmp_path, capsys
+):
+    """R10-3 (P2-R8-B): re-authorization must happen before *every*
+    ``save_ralplan_state`` under the held lease, not just the accept write.
+    Here the cancellation request lands during the ``architect`` stage
+    (round 1), well before ``critic`` ever runs. The guard immediately
+    before persisting architect's history entry must catch it: run_ralplan
+    must return non-zero, the architect entry must never be recorded, and
+    critic must never execute."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "embed me", skip_interview=True)
+    rid = st["run_id"]
+    request_path = tmp_path / ".omg" / "state" / "runs" / rid / "cancel.request.json"
+
+    def exec_with_cancel_after_architect(stage, **kwargs):
+        payload = _v2_approve_payload(
+            stage,
+            run_id=kwargs["run_id"],
+            round_n=kwargs["round_n"],
+            invocation_id=kwargs["invocation_id"],
+            session_id=kwargs["session_id"],
+            input_sha256=kwargs["input_sha256"],
+        )
+        artifact = stage_artifact_json_path(
+            Path(kwargs["root"]), kwargs["run_id"], stage, kwargs["round_n"]
+        )
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        if stage == "architect":
+            request_path.write_text(
+                json.dumps(
+                    {
+                        "writer": "omg-cli",
+                        "run_id": kwargs["run_id"],
+                        "request_id": "race-request-2",
+                        "requested_at": "2026-08-05T00:00:00+00:00",
+                        "observed_generation": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        if stage == "critic":
+            raise AssertionError("critic must never run once cancellation lands")
+        return 0
+
+    rc = run_ralplan(
+        "embed me",
+        root=tmp_path,
+        dry_run=True,
+        existing_run_id=rid,
+        stage_executor=exec_with_cancel_after_architect,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "cancellation" in err.lower()
+
+    state = load_ralplan_state(tmp_path, rid)
+    assert state is not None
+    assert state.get("accepted") is not True
+    recorded_stages = [item.get("stage") for item in state.get("history", [])]
+    assert "architect" not in recorded_stages
+    assert "critic" not in recorded_stages

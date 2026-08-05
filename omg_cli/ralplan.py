@@ -217,6 +217,26 @@ def _authorize_autopilot_embedding(
         raise ValueError(f"autopilot run not in ralplan phase: {phase!r}")
 
 
+def _assert_autopilot_still_writable(root: Path, run_id: str, goal: str) -> None:
+    """Reload the run and re-run the autopilot embedding gate.
+
+    Thin wrapper over ``_authorize_autopilot_embedding`` for callers that
+    hold the ralplan-v2 execution lease across many stages: ``omg cancel``
+    commits its cancellation request under the distinct transition lock
+    and can land at any point during that long-running window, so a single
+    authorization check at lease entry is not enough. Callers must invoke
+    this immediately before every ``save_ralplan_state`` (and before the
+    accept write) with a fresh reload — not reuse a run loaded earlier in
+    the same call. No-op for non-autopilot runs (delegated to
+    ``_authorize_autopilot_embedding``). Raises ``ValueError`` if the run
+    has disappeared or fails the gate; writes no sidecar itself.
+    """
+    run = load_run(root, run_id)
+    if run is None:
+        raise ValueError(f"run disappeared: {run_id!r}")
+    _authorize_autopilot_embedding(root, run, goal)
+
+
 def _clear_invalidation(state: dict[str, Any]) -> None:
     """Drop stale ``invalidated``/``invalidated_reason``/``invalidated_at``.
 
@@ -1026,6 +1046,21 @@ def _run_ralplan_v2(
         max(1, V2_MAX_ROUNDS if max_rounds is None else int(max_rounds)),
     )
     executor = stage_executor or _execute_stage
+
+    def _reauthorize_or_fail() -> int | None:
+        # Re-checked immediately before every save_ralplan_state below: the
+        # lease is held across many stages/rounds, and ``omg cancel``
+        # commits its request under the distinct transition lock, so it
+        # can land at any point during that window — fail closed rather
+        # than let a stale authorization from lease entry cover a write
+        # that happens much later.
+        try:
+            _assert_autopilot_still_writable(root, run_id, goal)
+        except ValueError as exc:
+            print(f"omg ralplan: {exc}", file=sys.stderr)
+            return 1
+        return None
+
     try:
         with execution_lease(
             root, run_id, intent="ralplan-v2-consensus", timeout_s=5.0
@@ -1068,6 +1103,9 @@ def _run_ralplan_v2(
                 _clear_invalidation(state)
                 _reset_for_fresh_cycle(state)
             state["max_rounds"] = ceiling
+            guard_rc = _reauthorize_or_fail()
+            if guard_rc is not None:
+                return guard_rc
             save_ralplan_state(root, run_id, state)
 
             prior_rounds = [
@@ -1095,6 +1133,9 @@ def _run_ralplan_v2(
                     invocation_id = str(uuid.uuid4())
                     input_sha256 = _v2_input_hash(state, stage, round_n)
                     state.update({"status": stage, "stage": stage, "round": round_n})
+                    guard_rc = _reauthorize_or_fail()
+                    if guard_rc is not None:
+                        return guard_rc
                     save_ralplan_state(root, run_id, state)
                     write_status(
                         root,
@@ -1161,6 +1202,9 @@ def _run_ralplan_v2(
                         "at": _utc_now(),
                     }
                     state["history"].append(entry)
+                    guard_rc = _reauthorize_or_fail()
+                    if guard_rc is not None:
+                        return guard_rc
                     save_ralplan_state(root, run_id, state)
                     if rc != 0:
                         break
@@ -1178,18 +1222,9 @@ def _run_ralplan_v2(
                             # during that (potentially long-running) window.
                             # Fail closed rather than accept a plan for a
                             # run that is now terminal/cancelled.
-                            fresh_run = load_run(root, run_id)
-                            if fresh_run is None:
-                                print(
-                                    f"omg ralplan: run disappeared before accept: {run_id!r}",
-                                    file=sys.stderr,
-                                )
-                                return 1
-                            try:
-                                _authorize_autopilot_embedding(root, fresh_run, goal)
-                            except ValueError as exc:
-                                print(f"omg ralplan: {exc}", file=sys.stderr)
-                                return 1
+                            guard_rc = _reauthorize_or_fail()
+                            if guard_rc is not None:
+                                return guard_rc
                             state.update(
                                 {"status": "accepted", "stage": "accepted", "accepted": True}
                             )
@@ -1226,6 +1261,9 @@ def _run_ralplan_v2(
                     },
                 }
             )
+            guard_rc = _reauthorize_or_fail()
+            if guard_rc is not None:
+                return guard_rc
             save_ralplan_state(root, run_id, state)
             write_status(
                 root,
