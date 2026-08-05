@@ -334,6 +334,54 @@ def invalidate_quality_stages(root: Path | str, run_id: str, *, reason: str) -> 
         _atomic_write_json(path, data)
 
 
+def _normalize_ralplan_epoch(
+    state: Mapping[str, Any], root: Path | str, run_id: str
+) -> int:
+    """Return a trustworthy ``ralplan_epoch``, migrating pre-R9 state that
+    predates the field (added in da0fc52) without blindly treating a
+    missing value as ``0``.
+
+    ``ralplan_epoch`` is the re-entry gate that decides whether the next
+    ``next_phase == "ralplan"`` transition is the harmless first
+    interview→ralplan handoff (epoch==0 → no-op) or a real replan that must
+    invalidate stale review/QA/consensus stamps (epoch>=1). A run created
+    before this field existed but that already advanced past interview —
+    e.g. it already has an accepted CLI-owned ``ralplan.json`` stamp, or
+    ``cycles.ralplan`` is already nonzero — must never be silently treated
+    as epoch==0 on load; that would resurrect the no-op path and let a
+    stale accepted stamp unlock implement again without invalidation. Only
+    a run genuinely still at ``interview``, with no CLI-owned stamp and no
+    ralplan cycles yet, may migrate to 0; every other missing-epoch run
+    migrates to at least 1 so the very next ralplan entry is treated as a
+    re-entry, not the first handoff.
+    """
+    raw = state.get("ralplan_epoch")
+    if raw is not None:
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            raise AutopilotError(
+                f"corrupt autopilot state: ralplan_epoch must be int >= 0, "
+                f"got {raw!r}"
+            )
+        return raw
+
+    from omg_cli.ralplan import ralplan_state_path
+
+    root = Path(root).resolve()
+    cycles = state.get("cycles") or {}
+    ralplan_cycles = int(cycles.get("ralplan") or 0)
+    stamp = _read_stage_json(ralplan_state_path(root, run_id))
+    has_cli_stamp = bool(
+        stamp and stamp.get("writer") == CLI_WRITER and stamp.get("run_id") == run_id
+    )
+    if (
+        str(state.get("phase") or "init") == "interview"
+        and not has_cli_stamp
+        and ralplan_cycles == 0
+    ):
+        return 0
+    return max(1, ralplan_cycles or 1)
+
+
 def autopilot_state_path(root: Path | str, run_id: str) -> Path:
     run_id = validate_identifier(run_id, label="run_id")
     return (
@@ -577,7 +625,12 @@ def transition(
             # it already) — that first handoff is a no-op. Every entry after
             # that (epoch>=1), regardless of ``src`` or stamp existence,
             # invalidates stale quality/consensus stamps before bumping.
-            epoch = int(state.get("ralplan_epoch") or 0)
+            # A missing field (pre-R9 state) is migrated conservatively by
+            # ``_normalize_ralplan_epoch`` rather than defaulting to 0 —
+            # blindly treating "missing" as "0" would let a run that
+            # already has an accepted stamp / prior replan cycle re-enter
+            # the no-op branch and skip invalidation.
+            epoch = _normalize_ralplan_epoch(state, root, run_id)
             if epoch == 0:
                 state["ralplan_epoch"] = 1
             else:

@@ -709,6 +709,82 @@ def test_start_autopilot_skip_interview_sets_ralplan_epoch_one(
     assert load_autopilot(tmp_path, rid)["ralplan_epoch"] == 1
 
 
+def test_missing_ralplan_epoch_migrates_conservatively_and_invalidates(
+    tmp_path: Path,
+) -> None:
+    """R9-1: a pre-R7 ``autopilot.json`` fixture that lacks ``ralplan_epoch``
+    entirely (the field was added in da0fc52) must not be treated as
+    epoch==0. Blindly defaulting missing→0 would resurrect the
+    first-handoff no-op branch even though this run already has an
+    accepted CLI-owned ``ralplan.json`` stamp and a clean review stamp —
+    silently skipping invalidation on the very next review→ralplan
+    replan. Migration must be conservative: missing + non-interview phase
+    (or an existing stamp/cycle) migrates to >=1 so invalidation still
+    fires."""
+    import json as _json
+
+    from omg_cli.autopilot import autopilot_state_path, stage_review_is_clean
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.ralplan import ralplan_state_path
+
+    st = start_autopilot(tmp_path, "pre-r7 epoch migration", skip_interview=True)
+    rid = st["run_id"]
+
+    stamp_path = ralplan_state_path(tmp_path, rid)
+    stamp_path.parent.mkdir(parents=True, exist_ok=True)
+    stamp_path.write_text(
+        _json.dumps(
+            {
+                "writer": CLI_WRITER,
+                "run_id": rid,
+                "goal": "pre-r7 epoch migration",
+                "accepted": True,
+                "status": "accepted",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
+    _stamp_review_clean(tmp_path, rid)
+    assert stage_review_is_clean(tmp_path, rid) is True
+
+    # Simulate the pre-R7 fixture shape: the field never existed.
+    state_path = autopilot_state_path(tmp_path, rid)
+    state = _json.loads(state_path.read_text(encoding="utf-8"))
+    assert "ralplan_epoch" in state
+    del state["ralplan_epoch"]
+    state_path.write_text(_json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    assert "ralplan_epoch" not in load_autopilot(tmp_path, rid)
+
+    transition(tmp_path, rid, "ralplan", reason="replan from review")
+
+    # Missing epoch must NOT have been treated as bare 0 — that would
+    # no-op and leave the stale accepted stamp + clean review stamp intact.
+    assert stage_review_is_clean(tmp_path, rid) is False
+    stamp = _json.loads(stamp_path.read_text(encoding="utf-8"))
+    assert stamp.get("accepted") is False
+    assert stamp.get("invalidated") is True
+
+    migrated = load_autopilot(tmp_path, rid)
+    assert migrated["ralplan_epoch"] == 2
+    assert migrated["cycles"]["ralplan"] == 1
+
+
+def test_normalize_ralplan_epoch_rejects_bool_float_negative() -> None:
+    """R9-1: a present ``ralplan_epoch`` must be a plain ``int >= 0`` —
+    ``bool`` (an ``int`` subclass), ``float``, and negative values are
+    corrupt state, not legacy shapes to coerce."""
+    from omg_cli.autopilot import _normalize_ralplan_epoch
+
+    for bad in (True, False, 1.0, -1):
+        with pytest.raises(AutopilotError, match="ralplan_epoch"):
+            _normalize_ralplan_epoch({"ralplan_epoch": bad}, Path("/tmp"), "rid")
+
+
 def test_status_legal_next_excludes_verified(tmp_path: Path) -> None:
     st = start_autopilot(tmp_path, "legal next contract", skip_interview=True)
     rid = st["run_id"]
