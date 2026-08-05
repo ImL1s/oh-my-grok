@@ -42,8 +42,30 @@ def _write_inventory(tmp_path: Path, inventory: dict) -> Path:
     return path
 
 
-def _load_catalog(path: Path | None = None) -> dict:
-    return load_json_object(path or CATALOG_V1)
+def _load_catalog(path: Path | None = None, *, pin_revision: str = NEW_PIN) -> dict:
+    catalog = load_json_object(path or CATALOG_V1)
+    catalog["pin_revision"] = pin_revision
+    return catalog
+
+
+def _set_live_verified(row: dict) -> None:
+    row["maturity"] = {"grok": "live_verified"}
+    row["evidence"]["live"] = [
+        {
+            "runtime": "grok",
+            "platform": "test",
+            "version": "1.0",
+            "observed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "marker": "TEST_OK",
+        }
+    ]
+
+
+def _assert_maturity_stub_catalogued(stubs: list[dict]) -> None:
+    for stub in stubs:
+        for level in stub.get("maturity", {}).values():
+            assert level == "catalogued"
+        assert stub.get("evidence", {}).get("live", []) == []
 
 
 def test_refresh_plan_emits_review_artifact_without_mutating_inventory(
@@ -66,6 +88,7 @@ def test_refresh_plan_emits_review_artifact_without_mutating_inventory(
     )
 
     assert artifact.is_file()
+    assert artifact.name == f"refresh-OMC-{NEW_PIN[:12]}.json"
     review = load_json_object(artifact)
     assert review["store_kind"] == "parity_refresh_review"
     assert review["schema_version"] == 1
@@ -75,7 +98,7 @@ def test_refresh_plan_emits_review_artifact_without_mutating_inventory(
         assert peak == "catalogued"
 
 
-def test_refresh_plan_classifies_upstream_added_capability(tmp_path: Path) -> None:
+def test_refresh_plan_classifies_upstream_added_capability() -> None:
     from omg_cli.parity_refresh import build_refresh_plan
 
     inventory = _minimal_inventory()
@@ -100,7 +123,7 @@ def test_refresh_plan_classifies_upstream_added_capability(tmp_path: Path) -> No
     assert any(c["capability_id"] == "omc.new.capability" for c in added)
 
 
-def test_refresh_plan_classifies_upstream_deleted_capability(tmp_path: Path) -> None:
+def test_refresh_plan_classifies_upstream_deleted_capability() -> None:
     from omg_cli.parity_refresh import build_refresh_plan
 
     inventory = _minimal_inventory()
@@ -121,7 +144,7 @@ def test_refresh_plan_classifies_upstream_deleted_capability(tmp_path: Path) -> 
     assert any(c["capability_id"] == "omc.cli.session_surfaces" for c in deleted)
 
 
-def test_refresh_plan_classifies_upstream_renamed_capability(tmp_path: Path) -> None:
+def test_refresh_plan_classifies_upstream_renamed_capability() -> None:
     from omg_cli.parity_refresh import build_refresh_plan
 
     inventory = _minimal_inventory()
@@ -147,20 +170,46 @@ def test_refresh_plan_classifies_upstream_renamed_capability(tmp_path: Path) -> 
     )
 
 
-def test_refresh_plan_never_auto_upgrades_maturity(tmp_path: Path) -> None:
+def test_refresh_plan_classifies_upstream_changed_capability() -> None:
     from omg_cli.parity_refresh import build_refresh_plan
 
     inventory = _minimal_inventory()
-    inventory["capabilities"][0]["maturity"] = {"grok": "live_verified"}
-    inventory["capabilities"][0]["evidence"]["live"] = [
-        {
-            "runtime": "grok",
-            "platform": "test",
-            "version": "1.0",
-            "observed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "marker": "TEST_OK",
-        }
-    ]
+    catalog = _load_catalog()
+    catalog = copy.deepcopy(catalog)
+    for cap in catalog["capabilities"]:
+        if cap["id"] == "team.plane_v3":
+            cap["promise"] = "Updated promise text"
+            cap["source_paths"] = ["README.md", "skills/team/SKILL.md"]
+            break
+
+    plan = build_refresh_plan(
+        inventory=inventory,
+        upstream_catalog=catalog,
+        source="OMC",
+        new_pin=NEW_PIN,
+    )
+
+    changed = [c for c in plan["changes"] if c["change_kind"] == "changed"]
+    assert len(changed) == 1
+    assert changed[0]["capability_id"] == "team.plane_v3"
+    assert set(changed[0]["detail"]["fields"]) == {"promise", "source_paths"}
+
+    stubs = plan["proposed_inventory_patch"]["capabilities"]
+    assert len(stubs) == 1
+    stub = stubs[0]
+    assert stub["id"] == "team.plane_v3"
+    assert stub["upstream"]["revision"] == NEW_PIN
+    assert stub["upstream"]["promise"] == "Updated promise text"
+    assert stub["upstream"]["source_paths"] == ["README.md", "skills/team/SKILL.md"]
+    assert stub["maturity"] == {"grok": "catalogued"}
+    assert stub["evidence"]["live"] == []
+
+
+def test_refresh_plan_never_auto_upgrades_maturity() -> None:
+    from omg_cli.parity_refresh import build_refresh_plan
+
+    inventory = _minimal_inventory()
+    _set_live_verified(inventory["capabilities"][0])
     catalog = _load_catalog()
     catalog = copy.deepcopy(catalog)
     catalog["capabilities"].append(
@@ -179,11 +228,70 @@ def test_refresh_plan_never_auto_upgrades_maturity(tmp_path: Path) -> None:
     )
 
     assert plan["guards"]["auto_maturity_upgrade"] is False
-    for stub in plan["proposed_inventory_patch"]["capabilities"]:
-        for level in stub.get("maturity", {}).values():
-            assert level == "catalogued"
-        live = stub.get("evidence", {}).get("live", [])
-        assert live == []
+    _assert_maturity_stub_catalogued(plan["proposed_inventory_patch"]["capabilities"])
+
+
+def test_refresh_plan_never_auto_upgrades_maturity_on_changed() -> None:
+    from omg_cli.parity_refresh import build_refresh_plan
+
+    inventory = _minimal_inventory()
+    _set_live_verified(inventory["capabilities"][0])
+    catalog = _load_catalog()
+    catalog = copy.deepcopy(catalog)
+    catalog["capabilities"][0]["promise"] = "Mutated promise"
+
+    plan = build_refresh_plan(
+        inventory=inventory,
+        upstream_catalog=catalog,
+        source="OMC",
+        new_pin=NEW_PIN,
+    )
+
+    changed = [c for c in plan["changes"] if c["change_kind"] == "changed"]
+    assert len(changed) == 1
+    _assert_maturity_stub_catalogued(plan["proposed_inventory_patch"]["capabilities"])
+
+
+def test_refresh_plan_never_auto_upgrades_maturity_on_renamed() -> None:
+    from omg_cli.parity_refresh import build_refresh_plan
+
+    inventory = _minimal_inventory()
+    for row in inventory["capabilities"]:
+        if row["id"] == "omc.cli.session_surfaces":
+            _set_live_verified(row)
+            break
+    catalog = _load_catalog()
+    catalog = copy.deepcopy(catalog)
+    for cap in catalog["capabilities"]:
+        if cap["id"] == "omc.cli.session_surfaces":
+            cap["id"] = "omc.cli.session_surfaces_v2"
+            break
+
+    plan = build_refresh_plan(
+        inventory=inventory,
+        upstream_catalog=catalog,
+        source="OMC",
+        new_pin=NEW_PIN,
+    )
+
+    renamed = [c for c in plan["changes"] if c["change_kind"] == "renamed"]
+    assert len(renamed) == 1
+    _assert_maturity_stub_catalogued(plan["proposed_inventory_patch"]["capabilities"])
+
+
+def test_refresh_plan_rejects_catalog_pin_revision_mismatch() -> None:
+    from omg_cli.parity_refresh import build_refresh_plan
+
+    inventory = _minimal_inventory()
+    catalog = _load_catalog(pin_revision=OMC_PIN)
+
+    with pytest.raises(ContractValidationError, match="pin_revision"):
+        build_refresh_plan(
+            inventory=inventory,
+            upstream_catalog=catalog,
+            source="OMC",
+            new_pin=NEW_PIN,
+        )
 
 
 def test_refresh_rejects_apply_without_explicit_break_glass(tmp_path: Path) -> None:

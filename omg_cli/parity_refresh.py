@@ -102,6 +102,15 @@ def build_refresh_plan(
             f"upstream catalog source {catalog_source!r} != refresh source {source!r}"
         )
 
+    catalog_pin = require_git_oid(
+        upstream_catalog.get("pin_revision"),
+        label="upstream_catalog.pin_revision",
+    )
+    if catalog_pin != new_pin:
+        raise ContractValidationError(
+            f"upstream catalog pin_revision {catalog_pin!r} != new_pin {new_pin!r}"
+        )
+
     pins = require_object(inventory.get("upstream_pins", {}), label="upstream_pins")
     if source not in pins:
         raise ContractValidationError(f"inventory missing upstream pin for {source!r}")
