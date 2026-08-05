@@ -210,5 +210,6 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PACKAGE_ROOT" \
 
 # This banner is deliberately after the hard-gated Python transaction.  With
 # set -e it is unreachable after checksum, switch, doctor or rollback failure.
-echo "==> installed and exactly verified"
-echo "    restart Grok Build, then run: omg setup && omg doctor --strict"
+echo "==> installed and integrity-verified"
+echo "    coexistence warnings may remain; run: omg doctor --strict"
+echo "    restart Grok Build, then run: omg setup"

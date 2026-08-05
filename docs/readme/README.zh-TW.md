@@ -61,6 +61,9 @@ curl -fsSL https://x.ai/cli/install.sh | bash
 # 1) 從 GitHub latest release 安裝完整產品
 # installer 只會從解析出的同一個 immutable tag 下載 archive + SHA256SUMS
 curl -fsSL https://raw.githubusercontent.com/ImL1s/oh-my-grok/main/scripts/install.sh | bash
+
+> 安裝完整性 fail-closed；多編排共存（foreign orch / Claude hooks）不會阻擋已校驗的 release 安裝（receipt 可為 `completed_with_warning`）。託管升級用 `omg update`。
+
 omg --version
 
 # 2) 專案初始化

@@ -172,15 +172,15 @@ bash install.sh --offline --archive ./oh-my-grok-0.7.5.tar.gz \
 
 The installer verifies before extraction, bounds and rejects link/path escape archive members, stages immutably, switches plugin + CLI transactionally, runs an install-time doctor gate, writes a receipt, and rolls back failed activation.
 
-Install-gate policy: **integrity stays fail-closed** (digest/pointers/owned globals/checksum/receipt). **Host coexistence** (foreign orch in `grok inspect`, Claude Code hooks / markers) is WARN during the install transaction and does not block a verified release — the receipt may be `completed_with_warning`. Interactive `omg doctor --strict` still fails on those coexistence risks. On gate failure the installer prints the doctor stdout/stderr transcript (not only receipt hashes).
+Install-gate policy: **integrity stays fail-closed** (digest/pointers/owned globals/checksum/receipt). The install probe runs `doctor --strict` then, on failure, a non-strict doctor pass — coexistence-only WARNs (foreign orch / Claude compat) yield `completed_with_warning`; integrity FAILs roll back. Interactive `omg doctor --strict` is unchanged and still exits non-zero on coexistence. On gate failure the installer prints the non-strict doctor transcript (bounded, redacted; hashes only in the receipt).
 
-Upgrade a managed install without re-pasting curl:
+Success banner says **integrity-verified** (not full strict purity). Upgrade a managed install without re-pasting curl:
 
 ```bash
 omg update
 ```
 
-`omg update` re-enters the same checksum-verified `scripts/install.sh` release transaction when the current install is managed (release or development/`completed_with_warning`). Contributor source checkouts still fast-forward + `install-plugin.sh` when a proven clean original checkout exists.
+`omg update` re-enters the same checksum-verified `scripts/install.sh` release transaction for release receipts, or when a development source cannot be proven safe (absent/drifted/dirty) — the source checkout is preserved and the managed install is promoted through the release transaction. Clean development checkouts still fast-forward + `install-plugin.sh`. Pre-fix managed CLIs without this fallback must re-run the curl installer once.
 
 ## Plugin marketplace and package registries
 

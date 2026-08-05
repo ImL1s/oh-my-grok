@@ -83,8 +83,15 @@ def _managed_install_script(home: Path, grok_home: Path) -> Path | None:
         raise RuntimeError("managed install failed confinement proof") from exc
 
 
-def _run_release_installer(runner, script: Path) -> int:
-    print("omg update: checksum-verified GitHub release transaction")
+def _run_release_installer(runner, script: Path, *, reason: str | None = None) -> int:
+    if reason:
+        print(f"omg update: development source cannot be safely refreshed: {reason}", file=sys.stderr)
+        print("omg update: source checkout preserved", file=sys.stderr)
+        print(
+            "omg update: promoting verified managed install through GitHub release transaction"
+        )
+    else:
+        print("omg update: checksum-verified GitHub release transaction")
     result = _run(runner, ["bash", str(script)])
     if result is None:
         return 1
@@ -96,7 +103,7 @@ def _run_release_installer(runner, script: Path) -> int:
             file=sys.stderr,
         )
         return rc or 1
-    print("omg update: installed receipt and strict readback passed")
+    print("omg update: installed receipt and integrity readback passed")
     return 0
 
 
@@ -179,10 +186,12 @@ def run_update(
             return _run_release_installer(runner, release_script)
         try:
             checkout = _development_source_checkout(home_path, grok_path)
-        except Exception:
-            # Development/source proof unavailable, but a managed stage may still
-            # own a working install.sh — prefer the release transaction over a
-            # silent refuse (dogfood hosts with completed_with_warning / debris).
+        except Exception as source_exc:
+            # Development/source proof unavailable before any mutation — fall
+            # back to the confinement-proven stage install.sh (#89).
+            reason = str(source_exc).strip() or type(source_exc).__name__
+            if len(reason) > 200:
+                reason = reason[:200] + "..."
             try:
                 managed_script = _managed_install_script(home_path, grok_path)
             except RuntimeError:
@@ -192,7 +201,7 @@ def run_update(
                 )
                 return 1
             if managed_script is not None:
-                return _run_release_installer(runner, managed_script)
+                return _run_release_installer(runner, managed_script, reason=reason)
             print(
                 "omg update: no proven clean original development checkout; refusing mutation",
                 file=sys.stderr,

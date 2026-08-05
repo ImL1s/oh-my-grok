@@ -154,7 +154,7 @@ def _doctor_ok(_stage: Path, _env: dict[str, str]) -> dict[str, object]:
         ("release", 1, 1, 2),
     ],
 )
-def test_default_doctor_probe_classifies_install_soft_risks_for_both_modes(
+def test_default_doctor_probe_dual_pass_same_matrix_for_both_modes(
     tmp_path,
     monkeypatch,
     mode,
@@ -176,6 +176,8 @@ def test_default_doctor_probe_classifies_install_soft_risks_for_both_modes(
         {"OMG_INSTALL_MODE": mode},
     )
 
+    assert result["strict_rc"] == 1
+    assert result["relaxed_rc"] == relaxed_rc
     assert result["rc"] == expected_rc
     assert len(calls) == expected_calls
     assert "--strict" in calls[0]

@@ -11,14 +11,21 @@ from scripts.omg_install_classifier import (
 )
 
 
-def test_doctor_result_classifier_is_exact_and_integrity_fail_closed():
-    assert classify_doctor_result(mode="release", rc=0, valid=True) == "installed"
-    assert classify_doctor_result(mode="development", rc=2, valid=True) == "completed_with_warning"
-    # Soft coexistence remaps to rc=2 for both install modes (#89).
-    assert classify_doctor_result(mode="release", rc=2, valid=True) == "completed_with_warning"
-    assert classify_doctor_result(mode="release", rc=1, valid=True) == "hard_failure"
-    assert classify_doctor_result(mode="release", rc=None, valid=False) == "hard_failure"
-    assert classify_doctor_result(mode="release", rc=True, valid=True) == "hard_failure"
+def test_doctor_result_classifier_dual_pass_and_legacy_rc0():
+    assert classify_doctor_result(mode="release", valid=True, rc=0) == "installed"
+    assert classify_doctor_result(mode="release", valid=True, strict_rc=1, relaxed_rc=0) == (
+        "completed_with_warning"
+    )
+    assert classify_doctor_result(mode="development", valid=True, strict_rc=1, relaxed_rc=0) == (
+        "completed_with_warning"
+    )
+    assert classify_doctor_result(mode="release", valid=True, strict_rc=1, relaxed_rc=1) == (
+        "hard_failure"
+    )
+    # Bare rc=2 is not dual-pass evidence — fail closed.
+    assert classify_doctor_result(mode="release", valid=True, rc=2) == "hard_failure"
+    assert classify_doctor_result(mode="release", valid=False, rc=0) == "hard_failure"
+    assert classify_doctor_result(mode="release", valid=True, rc=True) == "hard_failure"
 
 
 def test_source_absent_path_snapshot_installpath_checkout_is_same_path(tmp_path):

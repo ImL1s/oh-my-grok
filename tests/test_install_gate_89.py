@@ -1,4 +1,4 @@
-"""Hermetic locks for release install gate vs coexistence (#89)."""
+"""Hermetic locks for release install gate vs coexistence (#89 / Pro dual-pass)."""
 from __future__ import annotations
 
 import json
@@ -16,10 +16,7 @@ from omg_cli.setup_cmd import (
     read_install_receipt,
 )
 from omg_cli.update_cmd import run_update
-from scripts.omg_install_classifier import (
-    classify_doctor_result,
-    classify_doctor_stdout_buckets,
-)
+from scripts.omg_install_classifier import classify_doctor_result
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,14 +25,8 @@ VERSION = json.loads((ROOT / "plugin.json").read_text(encoding="utf-8"))["versio
 COEXISTENCE_STRICT_STDOUT = """\
 oh-my-grok doctor
 ------------------------------------------------
-[OK  ] grok on PATH: present
-------------------------------------------------
-plugin trust / inventory (best-effort)
 [FAIL] effective discovery (foreign orch): foreign orchestration in grok inspect: oh-my-claudecode
-------------------------------------------------
-compat.claude isolation
 [FAIL] compat.claude.settings.hooks: non-empty hooks (settings.json)
-[FAIL] compat.claude.md.markers: OMC/ralph markers present (CLAUDE.md)
 [FAIL] compat.claude: risks present under --strict
 ------------------------------------------------
 1 check(s) failed
@@ -44,9 +35,6 @@ compat.claude isolation
 INTEGRITY_FAIL_STDOUT = """\
 oh-my-grok doctor
 ------------------------------------------------
-[OK  ] grok on PATH: present
-------------------------------------------------
-plugin trust / inventory (best-effort)
 [FAIL] immutable install identity: pending immutable stage digest differs
 ------------------------------------------------
 1 check(s) failed
@@ -96,8 +84,6 @@ class FakeGrok:
 
 
 def _patch_release_archive(monkeypatch, tmp_path: Path) -> Path:
-    """Bypass dirty-checkout + archive verify so release install_package is hermetic."""
-
     asset = tmp_path / f"oh-my-grok-{VERSION}.tar.gz"
     asset.write_bytes(b"unused-bytes")
     monkeypatch.setattr("omg_cli.setup_cmd._source_is_dirty", lambda _p: False)
@@ -112,26 +98,65 @@ def _patch_release_archive(monkeypatch, tmp_path: Path) -> Path:
     return asset
 
 
-def test_doctor_stdout_buckets_separate_coexistence_from_integrity():
-    soft = classify_doctor_stdout_buckets(COEXISTENCE_STRICT_STDOUT)
-    assert soft["coexistence"]
-    assert not soft["integrity"]
-    assert soft["bucket"] == "coexistence_only"
+def _dual_pass_soft(*, stdout: str = COEXISTENCE_STRICT_STDOUT) -> dict[str, object]:
+    return {
+        "argv": ["omg", "doctor", "--strict"],
+        "argv_strict": ["omg", "doctor", "--strict"],
+        "argv_relaxed": ["omg", "doctor"],
+        "rc": 2,
+        "strict_rc": 1,
+        "relaxed_rc": 0,
+        "stdout": stdout,
+        "stderr": "",
+        "relaxed_stdout": "all hard checks passed (soft/compat risks WARN only)\n",
+        "relaxed_stderr": "",
+        "valid": True,
+    }
 
-    hard = classify_doctor_stdout_buckets(INTEGRITY_FAIL_STDOUT)
-    assert hard["integrity"]
-    assert hard["bucket"] == "integrity"
+
+def _dual_pass_hard(*, stdout: str = INTEGRITY_FAIL_STDOUT) -> dict[str, object]:
+    return {
+        "argv": ["omg", "doctor", "--strict"],
+        "argv_strict": ["omg", "doctor", "--strict"],
+        "argv_relaxed": ["omg", "doctor"],
+        "rc": 1,
+        "strict_rc": 1,
+        "relaxed_rc": 1,
+        "stdout": stdout,
+        "stderr": "identity readback failed\n",
+        "relaxed_stdout": stdout,
+        "relaxed_stderr": "identity readback failed\n",
+        "valid": True,
+    }
 
 
-def test_classify_doctor_result_release_allows_soft_warning():
-    assert classify_doctor_result(mode="release", rc=2, valid=True) == "completed_with_warning"
-    assert classify_doctor_result(mode="development", rc=2, valid=True) == "completed_with_warning"
-    assert classify_doctor_result(mode="release", rc=1, valid=True) == "hard_failure"
+def test_doctor_classifier_dual_pass_matrix():
+    assert (
+        classify_doctor_result(mode="release", valid=True, strict_rc=0, relaxed_rc=None)
+        == "installed"
+    )
+    assert (
+        classify_doctor_result(mode="release", valid=True, strict_rc=1, relaxed_rc=0)
+        == "completed_with_warning"
+    )
+    assert (
+        classify_doctor_result(mode="development", valid=True, strict_rc=1, relaxed_rc=0)
+        == "completed_with_warning"
+    )
+    assert (
+        classify_doctor_result(mode="release", valid=True, strict_rc=1, relaxed_rc=1)
+        == "hard_failure"
+    )
+    # Bare rc=2 without dual-pass evidence must not bypass.
+    assert classify_doctor_result(mode="release", valid=True, rc=2) == "hard_failure"
+    assert classify_doctor_result(mode="development", valid=True, rc=2) == "hard_failure"
+    assert classify_doctor_result(mode="release", valid=True, rc=0) == "installed"
+    assert classify_doctor_result(mode="release", valid=False, strict_rc=1, relaxed_rc=0) == (
+        "hard_failure"
+    )
 
 
 def test_release_install_gate_allows_coexistence_warns(tmp_path, monkeypatch):
-    """Release install must not roll back solely for foreign-orch / compat.claude."""
-
     home = tmp_path / "home"
     grok_home = tmp_path / "grok"
     monkeypatch.setenv("HOME", str(home))
@@ -142,14 +167,7 @@ def test_release_install_gate_allows_coexistence_warns(tmp_path, monkeypatch):
     def coexistence_probe(stage: Path, env: dict[str, str]) -> dict[str, object]:
         assert env.get("OMG_INSTALL_MODE") == "release"
         assert env.get("OMG_DOCTOR_INSTALL_PROBE") == "1"
-        # Soft-only coexistence: production probe remaps strict-fail+relaxed-ok → rc=2.
-        return {
-            "argv": ["omg", "doctor", "--strict"],
-            "rc": 2,
-            "stdout": COEXISTENCE_STRICT_STDOUT,
-            "stderr": "",
-            "valid": True,
-        }
+        return _dual_pass_soft()
 
     result = install_package(
         ROOT,
@@ -180,13 +198,7 @@ def test_release_install_gate_rejects_integrity_failure(tmp_path, monkeypatch):
     host = FakeGrok()
 
     def integrity_probe(_stage: Path, _env: dict[str, str]) -> dict[str, object]:
-        return {
-            "argv": ["omg", "doctor", "--strict"],
-            "rc": 1,
-            "stdout": INTEGRITY_FAIL_STDOUT,
-            "stderr": "identity readback failed\n",
-            "valid": True,
-        }
+        return _dual_pass_hard()
 
     with pytest.raises(InstallError, match="doctor gate rejected"):
         install_package(
@@ -205,85 +217,48 @@ def test_release_install_gate_rejects_integrity_failure(tmp_path, monkeypatch):
 
 
 def test_doctor_gate_failure_prints_transcript(capsys):
-    probe = {
-        "argv": ["omg", "doctor", "--strict"],
-        "rc": 1,
-        "stdout": INTEGRITY_FAIL_STDOUT,
-        "stderr": "identity readback failed\n",
-        "valid": True,
-    }
     with pytest.raises(InstallError, match="doctor gate rejected"):
-        classify_doctor_probe("release", probe)
+        classify_doctor_probe("release", _dual_pass_hard())
     err = capsys.readouterr().err
+    assert "install doctor gate failed" in err
     assert "immutable install identity" in err
     assert "identity readback failed" in err
-    assert "doctor gate transcript" in err.lower()
 
 
-def test_default_doctor_probe_soft_relaxes_release_coexistence(tmp_path, monkeypatch):
+def test_default_doctor_probe_release_soft_only_returns_dual_pass_evidence(tmp_path, monkeypatch):
     calls: list[list[str]] = []
 
     def fake_run(argv, **_kwargs):
         calls.append([str(item) for item in argv])
         if "--strict" in argv:
-            return SimpleNamespace(
-                returncode=1,
-                stdout=COEXISTENCE_STRICT_STDOUT,
-                stderr="",
-            )
+            return SimpleNamespace(returncode=1, stdout=COEXISTENCE_STRICT_STDOUT, stderr="")
         return SimpleNamespace(returncode=0, stdout="relaxed ok\n", stderr="")
 
     monkeypatch.setattr("omg_cli.setup_cmd.subprocess.run", fake_run)
-    result = _default_doctor_probe(
-        tmp_path,
-        {"OMG_INSTALL_MODE": "release"},
-    )
+    result = _default_doctor_probe(tmp_path, {"OMG_INSTALL_MODE": "release"})
+    assert result["strict_rc"] == 1
+    assert result["relaxed_rc"] == 0
     assert result["rc"] == 2
+    assert result["valid"] is True
     assert len(calls) == 2
     assert "--strict" in calls[0]
     assert "--strict" not in calls[1]
-
-
-def test_classify_doctor_probe_coexistence_only_rc1_softens_for_release():
-    """Bucket path: rc=1 with only coexistence FAIL lines → soft success."""
-
-    status = classify_doctor_probe(
-        "release",
-        {
-            "argv": ["omg", "doctor", "--strict"],
-            "rc": 1,
-            "stdout": COEXISTENCE_STRICT_STDOUT,
-            "stderr": "",
-            "valid": True,
-        },
-    )
-    assert status == "completed_with_warning"
+    assert classify_doctor_probe("release", result) == "completed_with_warning"
 
 
 def test_omg_update_uses_release_transaction_from_managed_install(tmp_path, monkeypatch):
-    """Development completed_with_warning without clean source → release install.sh."""
-
     home = tmp_path / "home"
     grok_home = tmp_path / "grok-home"
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("GROK_HOME", str(grok_home))
     host = FakeGrok()
 
-    def warn_probe(_stage: Path, _env: dict[str, str]) -> dict[str, object]:
-        return {
-            "argv": ["omg", "doctor", "--strict"],
-            "rc": 2,
-            "stdout": COEXISTENCE_STRICT_STDOUT,
-            "stderr": "",
-            "valid": True,
-        }
-
     installed = install_package(
         ROOT,
         home=home,
         grok_home=grok_home,
         runner=host,
-        doctor_probe=warn_probe,
+        doctor_probe=lambda *_a, **_k: _dual_pass_soft(),
         mode="development",
     )
     stage = Path(installed["stage_path"])
@@ -295,7 +270,7 @@ def test_omg_update_uses_release_transaction_from_managed_install(tmp_path, monk
         update_mod,
         "_development_source_checkout",
         lambda *_a, **_k: (_ for _ in ()).throw(
-            RuntimeError("no proven clean original development checkout")
+            RuntimeError("development receipt source checkout drifted from installed bytes")
         ),
     )
     calls: list[list[str]] = []

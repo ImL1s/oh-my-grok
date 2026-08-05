@@ -10,13 +10,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Fixed
-- **Release install gate / `omg update` dogfood (#89):** install-time doctor
-  probe soft-relaxes coexistence-only `--strict` FAILs (foreign orch,
-  `compat.claude`) for **both** release and development modes so a
-  checksum-verified release is not rolled back on multi-orch hosts; integrity
-  FAILs stay fail-closed. Gate failures now print doctor stdout/stderr.
-  `omg update` falls back to the stage `install.sh` release transaction when a
-  managed development install cannot prove a clean original checkout.
+- **Release install gate / `omg update` dogfood (#89):** install-time dual-pass
+  doctor probe (`--strict` then non-strict) for **both** release and
+  development — coexistence-only soft risks become `completed_with_warning`;
+  integrity FAILs stay fail-closed. Bare `rc=2` without dual-pass evidence is
+  rejected. Gate failures print a bounded non-strict doctor transcript.
+  `omg update` promotes unprovable development managed installs through the
+  stage `install.sh` release transaction (source preserved).
 
 ### Added
 - **Parity full upstream inventory (#78-B):** expand the v2 catalogue with

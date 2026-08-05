@@ -120,7 +120,7 @@ def register_install_parsers(
         p_update = sub.add_parser(
             "update",
             parents=[common],
-            help="git pull + refresh installed plugin",
+            help="upgrade a verified managed install or safely refresh its proven source checkout",
         )
         p_update.set_defaults(func=cmd_update)
 

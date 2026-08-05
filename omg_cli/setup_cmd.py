@@ -861,78 +861,68 @@ def _is_omg_cli_target(target: Path) -> bool:
         return False
 
 
-def _emit_doctor_probe_transcript(probe: Mapping[str, Any]) -> None:
-    """Print doctor stdout/stderr to stderr before a hard install-gate failure."""
+_DOCTOR_TRANSCRIPT_LIMIT = 64 * 1024
 
-    stdout = str(probe.get("stdout") or "")
-    stderr = str(probe.get("stderr") or "")
-    print("doctor gate transcript (stdout):", file=sys.stderr)
-    if stdout.strip():
-        print(stdout if stdout.endswith("\n") else stdout + "\n", end="", file=sys.stderr)
-    else:
-        print("(empty)", file=sys.stderr)
-    print("doctor gate transcript (stderr):", file=sys.stderr)
-    if stderr.strip():
-        print(stderr if stderr.endswith("\n") else stderr + "\n", end="", file=sys.stderr)
-    else:
-        print("(empty)", file=sys.stderr)
+
+def _sanitize_doctor_transcript(text: str) -> str:
+    cleaned = _redact_detail(text)
+    cleaned = cleaned.replace("\x00", "")
+    cleaned = "".join(ch if (ch == "\n" or ch == "\t" or ord(ch) >= 32) else "?" for ch in cleaned)
+    if len(cleaned) > _DOCTOR_TRANSCRIPT_LIMIT:
+        cleaned = cleaned[:_DOCTOR_TRANSCRIPT_LIMIT] + "\n...[truncated]...\n"
+    return cleaned
+
+
+def _emit_doctor_probe_transcript(probe: Mapping[str, Any]) -> None:
+    """Print bounded non-strict doctor transcript before a hard install-gate failure."""
+
+    # Prefer the relaxed (non-strict) transcript: coexistence stays WARN there,
+    # so integrity FAILs are unambiguous for operators (#89 Pro plan A3).
+    stdout = str(probe.get("relaxed_stdout") or probe.get("stdout") or "")
+    stderr = str(probe.get("relaxed_stderr") or probe.get("stderr") or "")
+    print("install doctor gate failed: integrity checks did not pass", file=sys.stderr)
+    print("--- doctor stdout (non-strict integrity gate) ---", file=sys.stderr)
+    body = _sanitize_doctor_transcript(stdout)
+    print(body if body.strip() else "(empty)", file=sys.stderr)
+    print("--- doctor stderr ---", file=sys.stderr)
+    err = _sanitize_doctor_transcript(stderr)
+    print(err if err.strip() else "(empty)", file=sys.stderr)
 
 
 def classify_doctor_probe(mode: str, probe: Mapping[str, Any]) -> str:
-    from scripts.omg_install_classifier import (
-        classify_doctor_result,
-        classify_doctor_stdout_buckets,
-    )
+    from scripts.omg_install_classifier import classify_doctor_result
 
-    rc = probe.get("rc")
     valid = probe.get("valid") is True
-    rc_int = rc if isinstance(rc, int) and not isinstance(rc, bool) else None
-
-    # Install-probe honesty: if the child returned rc=1 but stdout shows only
-    # coexistence FAILs (foreign orch / compat.claude), treat as soft warning
-    # for both release and development gates. Integrity FAILs stay hard.
-    if valid and rc_int == 1:
-        buckets = classify_doctor_stdout_buckets(str(probe.get("stdout") or ""))
-        if buckets.get("bucket") == "coexistence_only":
-            rc_int = 2
+    strict_rc = probe.get("strict_rc")
+    relaxed_rc = probe.get("relaxed_rc")
+    rc = probe.get("rc")
 
     classification = classify_doctor_result(
         mode=mode,
-        rc=rc_int,
         valid=valid,
+        strict_rc=strict_rc if isinstance(strict_rc, int) and not isinstance(strict_rc, bool) else None,
+        relaxed_rc=relaxed_rc if isinstance(relaxed_rc, int) and not isinstance(relaxed_rc, bool) else None,
+        rc=rc if isinstance(rc, int) and not isinstance(rc, bool) else None,
     )
     if classification == "hard_failure":
         _emit_doctor_probe_transcript(probe)
-        if not valid or rc_int is None:
+        shown = strict_rc if isinstance(strict_rc, int) and not isinstance(strict_rc, bool) else rc
+        if not valid or not isinstance(shown, int) or isinstance(shown, bool):
             raise InstallError("doctor output is malformed")
-        raise InstallError(f"doctor gate rejected candidate (rc={rc_int})")
+        raise InstallError(f"doctor gate rejected candidate (rc={shown})")
     return classification
 
 
 def _default_doctor_probe(stage: Path, env: dict[str, str]) -> dict[str, Any]:
+    """Install-only dual-pass doctor probe (strict then non-strict on failure)."""
+
     probe_env = dict(env)
     probe_env.setdefault("OMG_DOCTOR_INSTALL_PROBE", "1")
-    argv = [sys.executable, "-I", "-B", str(stage / "bin" / "omg"), "doctor", "--strict"]
-    result = subprocess.run(
-        argv,
-        capture_output=True,
-        text=True,
-        env=probe_env,
-        cwd=tempfile.gettempdir(),
-        timeout=60,
-        check=False,
-    )
-    rc = result.returncode
-    stdout = result.stdout or ""
-    stderr = result.stderr or ""
-    if rc != 0 and probe_env.get("OMG_INSTALL_MODE") in {"development", "release"}:
-        # Strict doctor deliberately promotes local coexistence/compatibility
-        # warnings.  Re-run without promotion to distinguish those soft risks
-        # from actual install-integrity failures.  Both release and development
-        # install gates map soft-only failures to rc=2; interactive
-        # ``omg doctor --strict`` is unchanged (this path is install-only).
-        relaxed = subprocess.run(
-            argv[:-1],
+    argv_strict = [sys.executable, "-I", "-B", str(stage / "bin" / "omg"), "doctor", "--strict"]
+    argv_relaxed = argv_strict[:-1]
+    try:
+        strict = subprocess.run(
+            argv_strict,
             capture_output=True,
             text=True,
             env=probe_env,
@@ -940,13 +930,80 @@ def _default_doctor_probe(stage: Path, env: dict[str, str]) -> dict[str, Any]:
             timeout=60,
             check=False,
         )
-        if relaxed.returncode == 0:
-            rc = 2
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "argv": argv_strict,
+            "argv_strict": argv_strict,
+            "argv_relaxed": None,
+            "rc": 1,
+            "strict_rc": None,
+            "relaxed_rc": None,
+            "stdout": "",
+            "stderr": f"doctor probe failed to start ({type(exc).__name__})",
+            "relaxed_stdout": "",
+            "relaxed_stderr": "",
+            "valid": False,
+        }
+
+    strict_rc = strict.returncode
+    strict_out = strict.stdout or ""
+    strict_err = strict.stderr or ""
+    relaxed_rc: int | None = None
+    relaxed_out = ""
+    relaxed_err = ""
+    argv_relaxed_used: list[str] | None = None
+
+    if strict_rc != 0:
+        # Re-run without --strict to separate coexistence WARN promotion from
+        # integrity failures. Same matrix for release and development.
+        try:
+            relaxed = subprocess.run(
+                argv_relaxed,
+                capture_output=True,
+                text=True,
+                env=probe_env,
+                cwd=tempfile.gettempdir(),
+                timeout=60,
+                check=False,
+            )
+            argv_relaxed_used = argv_relaxed
+            relaxed_rc = relaxed.returncode
+            relaxed_out = relaxed.stdout or ""
+            relaxed_err = relaxed.stderr or ""
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {
+                "argv": argv_strict,
+                "argv_strict": argv_strict,
+                "argv_relaxed": argv_relaxed,
+                "rc": 1,
+                "strict_rc": strict_rc if isinstance(strict_rc, int) else None,
+                "relaxed_rc": None,
+                "stdout": strict_out,
+                "stderr": strict_err,
+                "relaxed_stdout": "",
+                "relaxed_stderr": f"relaxed doctor probe failed ({type(exc).__name__})",
+                "valid": False,
+            }
+
+    # Aggregate rc for receipt hashing: 0 installed, 2 soft-only, else hard.
+    if strict_rc == 0:
+        aggregate_rc = 0
+    elif relaxed_rc == 0:
+        aggregate_rc = 2
+    else:
+        aggregate_rc = 1 if isinstance(strict_rc, int) else 1
+
     return {
-        "argv": argv,
-        "rc": rc,
-        "stdout": stdout,
-        "stderr": stderr,
+        "argv": argv_strict,
+        "argv_strict": argv_strict,
+        "argv_relaxed": argv_relaxed_used,
+        "rc": aggregate_rc,
+        "strict_rc": strict_rc,
+        "relaxed_rc": relaxed_rc,
+        "stdout": strict_out,
+        "stderr": strict_err,
+        "relaxed_stdout": relaxed_out,
+        "relaxed_stderr": relaxed_err,
         "valid": True,
     }
 
@@ -957,14 +1014,30 @@ def _probe_record(probe: Mapping[str, Any]) -> dict[str, Any]:
         argv = ["omg", "doctor", "--strict"]
     stdout = str(probe.get("stdout") or "")
     stderr = str(probe.get("stderr") or "")
+    relaxed_out = str(probe.get("relaxed_stdout") or "")
+    relaxed_err = str(probe.get("relaxed_stderr") or "")
     rc_value = probe.get("rc")
-    rc = rc_value if isinstance(rc_value, int) else 1
-    return {
+    rc = rc_value if isinstance(rc_value, int) and not isinstance(rc_value, bool) else 1
+    record: dict[str, Any] = {
         "argv": list(argv),
         "rc": rc,
         "stdout_sha256": _sha256_bytes(stdout.encode("utf-8", errors="replace")),
         "stderr_sha256": _sha256_bytes(stderr.encode("utf-8", errors="replace")),
     }
+    strict_rc = probe.get("strict_rc")
+    if isinstance(strict_rc, int) and not isinstance(strict_rc, bool):
+        record["strict_rc"] = strict_rc
+    relaxed_rc = probe.get("relaxed_rc")
+    if isinstance(relaxed_rc, int) and not isinstance(relaxed_rc, bool):
+        record["relaxed_rc"] = relaxed_rc
+    if relaxed_out or relaxed_err or relaxed_rc is not None:
+        record["relaxed_stdout_sha256"] = _sha256_bytes(
+            relaxed_out.encode("utf-8", errors="replace")
+        )
+        record["relaxed_stderr_sha256"] = _sha256_bytes(
+            relaxed_err.encode("utf-8", errors="replace")
+        )
+    return record
 
 
 def _receipt_material(
@@ -1388,6 +1461,7 @@ def install_package(
                     }
                 )
                 probe = dict(doctor(stage, env))
+                commands.append(_probe_record(probe))
                 classify_doctor_probe(mode, probe)
                 verified_existing = verified_current_install(store, cli_pointer)
                 receipt_path = verified_existing.receipt_path
@@ -1494,8 +1568,8 @@ def install_package(
                 }
             )
             probe = dict(doctor(stage, env))
-            status_value = classify_doctor_probe(mode, probe)
             commands.append(_probe_record(probe))
+            status_value = classify_doctor_probe(mode, probe)
             owned_inventory.extend(
                 [
                     {"path": str(candidate_plugin_path), "kind": "host_plugin", "identity": str(identity["digest"])},
@@ -1538,6 +1612,7 @@ def install_package(
             final_env.pop("OMG_EXPECTED_INSTALL_DIGEST", None)
             final_env.pop("OMG_EXPECTED_INSTALL_STAGE", None)
             final_probe = dict(doctor(stage, final_env))
+            commands.append(_probe_record(final_probe))
             classify_doctor_probe(mode, final_probe)
             return {
                 "ok": True,

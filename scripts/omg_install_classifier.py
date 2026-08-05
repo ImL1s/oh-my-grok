@@ -118,90 +118,55 @@ def classify_oh_my_grok_installs(
     return {"same_path": same_path, "stale": stale}
 
 
-# FAIL lines that are host coexistence / multi-orch soft risks under --strict.
-# Install gates must not treat these alone as integrity failures (#89).
-_COEXISTENCE_FAIL_MARKERS = (
-    "effective discovery (foreign orch)",
-    "compat.claude.",
-    "compat.claude:",
-)
-
-# FAIL lines that prove install integrity is broken (always hard).
-_INTEGRITY_FAIL_MARKERS = (
-    "immutable install identity",
-    "package digest",
-    "checksum",
-    "receipt",
-    "owned global",
-    "plugin inventory",
-    "stage digest",
-    "CLI pointer",
-    "current pointer",
-    "malformed",
-)
+def _is_int_rc(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
-def classify_doctor_stdout_buckets(stdout: str) -> dict[str, object]:
-    """Bucket doctor ``[FAIL]`` lines into coexistence vs integrity.
+def classify_doctor_result(
+    *,
+    mode: str,
+    valid: bool,
+    strict_rc: int | None = None,
+    relaxed_rc: int | None = None,
+    rc: int | None = None,
+) -> str:
+    """Lifecycle classifier for install doctor gates (development + release).
 
-    Used by the install probe / gate so release installs can soft-succeed on
-    host coexistence WARNs promoted by ``--strict``, while integrity FAILs
-    stay fail-closed.
-    """
+    Preferred dual-pass evidence (#89 / Pro plan):
+      strict_rc=0                         → installed
+      strict_rc=1 and relaxed_rc=0        → completed_with_warning
+      strict_rc=1 and relaxed_rc=1        → hard_failure
+      timeout/malformed/other             → hard_failure
 
-    coexistence: list[str] = []
-    integrity: list[str] = []
-    other: list[str] = []
-    for raw in (stdout or "").splitlines():
-        line = raw.strip()
-        if not line.startswith("[FAIL]"):
-            continue
-        body = line[len("[FAIL]") :].strip()
-        lower = body.lower()
-        if any(marker in body for marker in _COEXISTENCE_FAIL_MARKERS) or any(
-            marker in lower for marker in ("compat.claude", "foreign orch")
-        ):
-            coexistence.append(body)
-        elif any(marker.lower() in lower for marker in _INTEGRITY_FAIL_MARKERS):
-            integrity.append(body)
-        else:
-            # Unknown FAIL: treat as integrity (fail-closed).
-            other.append(body)
-            integrity.append(body)
-    if integrity:
-        bucket = "integrity"
-    elif coexistence:
-        bucket = "coexistence_only"
-    else:
-        bucket = "none"
-    return {
-        "coexistence": coexistence,
-        "integrity": integrity,
-        "other": other,
-        "bucket": bucket,
-    }
-
-
-def classify_doctor_result(*, mode: str, rc: int | None, valid: bool) -> str:
-    """Exact lifecycle classifier shared by source and release installation.
-
-    ``rc=0`` is verified success.  ``rc=2`` is a visible soft warning from the
-    install probe when only coexistence risks remain (foreign orch /
-    compat.claude under ``--strict``).  Both development and release install
-    gates may record ``completed_with_warning`` for that case; interactive
-    ``omg doctor --strict`` is unchanged.  Non-integer/malformed output and
-    every other code are hard failures; callers must roll back and must not
-    print a success banner.
+    Legacy single-``rc`` probes remain accepted only for ``rc=0`` (installed).
+    A bare ``rc=2`` without dual-pass evidence is hard_failure (no silent bypass).
+    Interactive ``omg doctor --strict`` is unchanged by this classifier.
     """
 
     if mode not in {"development", "release"}:
         raise ValueError("mode must be development or release")
-    if valid is not True or not isinstance(rc, int) or isinstance(rc, bool):
+    if valid is not True:
+        return "hard_failure"
+
+    has_dual = strict_rc is not None or relaxed_rc is not None
+    if has_dual:
+        if not _is_int_rc(strict_rc):
+            return "hard_failure"
+        if strict_rc == 0:
+            return "installed"
+        if strict_rc != 1:
+            return "hard_failure"
+        if not _is_int_rc(relaxed_rc):
+            return "hard_failure"
+        if relaxed_rc == 0:
+            return "completed_with_warning"
+        return "hard_failure"
+
+    # Legacy single-rc compatibility: only exact success is accepted.
+    if not _is_int_rc(rc):
         return "hard_failure"
     if rc == 0:
         return "installed"
-    if rc == 2 and mode in {"development", "release"}:
-        return "completed_with_warning"
     return "hard_failure"
 
 
