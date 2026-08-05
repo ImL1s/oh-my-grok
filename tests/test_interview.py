@@ -649,6 +649,82 @@ def test_close_interview_rejects_pending_cancellation_request_under_lease(
     assert _state(tmp_path, rid)["status"] != "complete"
 
 
+def test_answer_interview_rejects_terminal_run_under_lease(tmp_path: Path) -> None:
+    """R10-2 (P2-R8-C), TDD core case: a run cancelled between the outer
+    pre-lease snapshot and the lease-protected write must be rejected —
+    ``answer_interview`` must not mutate the sidecar for a run that is
+    terminal by the time the write would happen."""
+    from omg_cli.state import cancel_run
+
+    started = start_interview(tmp_path, "Fix the app", context_type="greenfield")
+    rid = started["run_id"]
+    question = started["pending_question"]
+    before = interview_state_path(tmp_path, rid).read_bytes()
+
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+
+    with pytest.raises(InterviewError, match="terminal under lease"):
+        answer_interview(
+            tmp_path,
+            rid,
+            "This prevents repeated loss of data in the current workflow.",
+            question_id=question["question_id"],
+        )
+
+    assert interview_state_path(tmp_path, rid).read_bytes() == before
+
+
+def test_pressure_pass_interview_rejects_terminal_run_under_lease(tmp_path: Path) -> None:
+    """R10-2 (P2-R8-C), TDD core case: same terminal-under-lease guard as
+    close/answer, applied to ``pressure_pass_interview`` — a cancellation
+    landing after the pre-lease snapshot must block the pressure-pass write
+    without mutating the sidecar."""
+    from omg_cli.state import cancel_run
+
+    (tmp_path / ".git").mkdir()
+    started = start_interview(tmp_path, _clear_task(), profile="standard")
+    rid = started["run_id"]
+    before = interview_state_path(tmp_path, rid).read_bytes()
+
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+
+    with pytest.raises(InterviewError, match="terminal under lease"):
+        pressure_pass_interview(
+            tmp_path,
+            rid,
+            "The assumption is that a deterministic CLI is sufficient; reject an automatic LLM engine to preserve auditable authority.",
+        )
+
+    assert interview_state_path(tmp_path, rid).read_bytes() == before
+
+
+def test_start_interview_rejects_terminal_run_under_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R10-2 (P2-R8-C), TDD core case: the non-attach ``start_interview``
+    path must also re-check writability under the lease — a run cancelled
+    between ``create_run`` (outside the lease) and the lease-protected
+    ``_save`` must be rejected, leaving no interview.json behind."""
+    import omg_cli.interview as interview_mod
+    from omg_cli.state import cancel_run
+
+    original_create_run = interview_mod.create_run
+    created: dict[str, str] = {}
+
+    def racy_create_run(root, **kwargs):
+        run = original_create_run(root, **kwargs)
+        created["run_id"] = run["run_id"]
+        cancel_run(root, run["run_id"], kill_grace_s=0)
+        return run
+
+    monkeypatch.setattr(interview_mod, "create_run", racy_create_run)
+
+    with pytest.raises(InterviewError, match="terminal under lease"):
+        start_interview(tmp_path, "Fix it", context_type="greenfield")
+
+    assert not interview_state_path(tmp_path, created["run_id"]).exists()
+
+
 def test_authorize_run_mode_fails_closed_on_corrupt_autopilot_state(tmp_path: Path) -> None:
     """IMPORTANT: a corrupt/unreadable autopilot state file must raise a
     clean InterviewError instead of an unhandled json.JSONDecodeError."""

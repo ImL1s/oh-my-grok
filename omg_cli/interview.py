@@ -456,6 +456,15 @@ def start_interview(root: Path | str, task: str, *, profile: str = "standard", c
             _reauthorize_attach(root, run_id, task)
             if interview_state_path(root, run_id).exists() and not force:
                 raise InterviewError(f"interview already started for run: {run_id}; pass force=True to reseed")
+        else:
+            # Re-verify the freshly created run is still writable under the
+            # lease: ``create_run`` above ran before this lock was held, so a
+            # concurrent ``omg cancel`` could in principle land on the new
+            # run_id before this write — fail closed rather than race it.
+            fresh_run = load_run(root, run_id)
+            if fresh_run is None:
+                raise InterviewError(f"no or corrupt run found: {run_id}")
+            _assert_run_writable(root, fresh_run)
         topology = build_topology(root, context_type=context_type)
         scores = {name: 0.0 for name in topology["active_dimensions"]}
         sections = {name: "" for name in REQUIRED}
@@ -506,7 +515,8 @@ def answer_interview(root: Path | str, run_id: str, text: str, *, question_id: s
     if question_id is not None and question_id != pending["question_id"]:
         raise InterviewError(f"stale question_id {question_id!r}; current is {pending['question_id']!r}")
     with execution_lease(root, run_id, intent="interview-answer") as lease:
-        _, state = _load(root, run_id)
+        fresh_run, state = _load(root, run_id)
+        _assert_run_writable(root, fresh_run)
         question = state.get("pending_question")
         if not question or (question_id is not None and question_id != question["question_id"]):
             raise InterviewError("stale pending question")
@@ -531,7 +541,8 @@ def pressure_pass_interview(root: Path | str, run_id: str, text: str) -> dict[st
     assert_safe_supervised_parent()
     _load(root, run_id)
     with execution_lease(root, run_id, intent="interview-pressure-pass") as lease:
-        _, state = _load(root, run_id)
+        fresh_run, state = _load(root, run_id)
+        _assert_run_writable(root, fresh_run)
         for key, value in _labeled(text).items():
             _apply_text(state, f"{key.replace('_', ' ')}: {value}", key)
         state["pressure_passes"].append({
