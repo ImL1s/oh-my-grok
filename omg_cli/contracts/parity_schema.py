@@ -233,14 +233,26 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "workflow_contract.py",
             ),
         )
-        + ["omg_cli/parity_check.py"]
+        + [
+            "omg_cli/parity_check.py",
+            "omg_cli/parity_refresh.py",
+            "omg_cli/parity_claim_gate.py",
+        ]
         + ["docs/parity/omg-parity.json", "docs/parity/omg-traceability.json"]
         + [
             "docs/parity/README.md",
             "docs/parity/schema-v2.md",
             "docs/parity/FEATURE-MATRIX.md",
             "docs/parity/GAPS.md",
+            "docs/parity/SUMMARY.md",
+            "docs/parity/SUMMARY.zh.md",
+            "docs/parity/SUMMARY.zh-TW.md",
+            "docs/parity/MATRIX-OMC.md",
+            "docs/parity/MATRIX-OMX.md",
+            "docs/parity/MATRIX-OmO.md",
+            "docs/parity/MATRIX-Antigravity.md",
         ]
+        + ["docs/parity/upstream-snapshots/**"]
         + _paths(
             "scripts/",
             (
@@ -265,6 +277,10 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "test_parity_inventory_v2.py",
                 "test_parity_generation.py",
                 "test_parity_check.py",
+                "test_parity_refresh.py",
+                "test_parity_claim_gate.py",
+                "test_parity_release_gate_acceptance.py",
+                "test_parity_historical_banner.py",
                 "test_traceability.py",
                 "test_path_keys.py",
                 "test_state_schemas.py",
