@@ -1,3 +1,7 @@
+> **HISTORICAL / NON-AUTHORITATIVE.** This document predates the v2 parity inventory.
+> Current claimability truth: [`docs/parity/omg-parity.json`](../../parity/omg-parity.json)
+> and generated [`docs/parity/FEATURE-MATRIX.md`](../../parity/FEATURE-MATRIX.md).
+
 # Code Review — Spawn fail-closed deny UX（RETRY IMMEDIATELY）
 
 **日期 (UTC):** 2026-07-20  

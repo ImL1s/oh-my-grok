@@ -57,6 +57,8 @@ Each row binds upstream pin + source paths, OMG implementation paths, per-runtim
 
 While the inventory header, any `category_status`, or any `source_status` is `bootstrapping`, generators must not emit parity percentages or green checkmarks (`%` / `✅` / `✓`). Open gaps are expected and listed honestly in [`GAPS.md`](GAPS.md). Do not treat historical research matrices as claimability truth — prefer this inventory.
 
+`complete` on `source_status` / `category_status` requires a **reproducible upstream completeness gate** (catalogue seed ≠ completeness). That gate is deferred to #78-C / follow-up — until then the canonical inventory stays `bootstrapping`.
+
 ## Migration
 
 Schema v1 inventories remain valid via the migration fixture at `tests/fixtures/parity/omg-parity-v1.json`. Canonical `docs/parity/omg-parity.json` is v2.

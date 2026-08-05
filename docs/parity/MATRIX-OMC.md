@@ -2,20 +2,20 @@
 
 # OMC parity matrix
 
-> Source status: **complete**.
+> Source status: **bootstrapping**.
 > Inventory still incomplete overall — parity percentages and green checkmarks are intentionally omitted.
 
-| Capability | Category | Status | Maturity | Marker | Gap |
+| Capability | Category | Classification | Maturity | Marker | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `team.plane_v3` | team | complete | grok=catalogued | catalogued | Current Team plane is production-usable but not v3; blocked on #67/#68. |
-| `parity.inventory.governance` | parity_governance | bootstrapping | grok=catalogued | catalogued | #78-B catalogue inventory landed; #78-C live-evidence freshness/refresh remains. |
-| `omc.cli.session_surfaces` | runtime_orchestration | complete | grok=catalogued | catalogued | OMG substitutes via guidance + host_session; OMC in-session MCP/tool surfaces are not 1:1. |
-| `omc.agents.catalog_routing` | agents_routing | complete | grok=catalogued | catalogued | Grok plugin agents exist; OMC-style dynamic tier routing is not fully mirrored. |
-| `omc.skills.catalog_aliases` | skills | complete | grok=catalogued | catalogued | OMG ships omg-* skills; OMC alias/pipeline breadth remains partially unclaimed. |
-| `omc.team.worktrees_mailbox` | team | complete | grok=catalogued | catalogued | Catalogue alias of team.plane_v3; Team v3 gaps remain under #69. |
-| `omc.hooks.lifecycle` | hooks | complete | grok=catalogued | catalogued | Grok hooks are fail-open / stdout-ignored for most events; not OMC-equivalent injection. |
-| `omc.tools.lsp_ast` | tools_mcp | complete | grok=catalogued | catalogued | omg lsp is a local probe; no full LSP/AST MCP bridge (host-honest substitute). |
-| `omc.session.search_replay` | state_memory_observability | complete | grok=catalogued | catalogued | Resume/recovery/workflow replay exist; OMC session-search/observatory breadth is not claimed. |
-| `omc.memory.wiki_hud_notify` | state_memory_observability | complete | grok=catalogued | catalogued | Core wiki/HUD/notify paths exist; OMC notepad/shared-memory breadth remains partial. |
-| `omc.goal.ralph_autopilot_ultra` | runtime_orchestration | complete | grok=catalogued | catalogued | OMG modes/autopilot substitute OMC goal loops; Stop stickiness remains host-capped. |
-| `omc.quality.visual_release` | quality_visual_edit_safety | complete | grok=catalogued | catalogued | Dual-review/verdict/release exist; OMC visual-verdict / project-session-manager breadth is partial. |
+| `team.plane_v3` | team | omg_native | grok=catalogued | catalogued | Current Team plane is production-usable but not v3; blocked on #67/#68. |
+| `parity.inventory.governance` | parity_governance | omg_native | grok=catalogued | catalogued | #78-B catalogue inventory landed; #78-C live-evidence freshness/refresh remains. |
+| `omc.cli.session_surfaces` | runtime_orchestration | omg_native | grok=catalogued | catalogued | OMG substitutes via guidance + host_session; OMC in-session MCP/tool surfaces are not 1:1. |
+| `omc.agents.catalog_routing` | agents_routing | omg_native | grok=catalogued | catalogued | Grok plugin agents exist; OMC-style dynamic tier routing is not fully mirrored. |
+| `omc.skills.catalog_aliases` | skills | omg_native | grok=catalogued | catalogued | OMG ships omg-* skills; OMC alias/pipeline breadth remains partially unclaimed. |
+| `omc.team.worktrees_mailbox` | team | alias | grok=catalogued | catalogued | Catalogue alias of team.plane_v3; Team v3 gaps remain under #69. |
+| `omc.hooks.lifecycle` | hooks | omg_native | grok=catalogued | catalogued | Grok hooks are fail-open / stdout-ignored for most events; not OMC-equivalent injection. |
+| `omc.tools.lsp_ast` | tools_mcp | omg_native | grok=catalogued | catalogued | omg lsp is a local probe; no full LSP/AST MCP bridge (host-honest substitute). |
+| `omc.session.search_replay` | state_memory_observability | omg_native | grok=catalogued | catalogued | Resume/recovery/workflow replay exist; OMC session-search/observatory breadth is not claimed. |
+| `omc.memory.wiki_hud_notify` | state_memory_observability | omg_native | grok=catalogued | catalogued | Core wiki/HUD/notify paths exist; OMC notepad/shared-memory breadth remains partial. |
+| `omc.goal.ralph_autopilot_ultra` | runtime_orchestration | omg_native | grok=catalogued | catalogued | OMG modes/autopilot substitute OMC goal loops; Stop stickiness remains host-capped. |
+| `omc.quality.visual_release` | quality_visual_edit_safety | omg_native | grok=catalogued | catalogued | Dual-review/verdict/release exist; OMC visual-verdict / project-session-manager breadth is partial. |

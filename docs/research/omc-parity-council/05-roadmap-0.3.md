@@ -1,3 +1,7 @@
+> **HISTORICAL / NON-AUTHORITATIVE.** This document predates the v2 parity inventory.
+> Current claimability truth: [`docs/parity/omg-parity.json`](../../parity/omg-parity.json)
+> and generated [`docs/parity/FEATURE-MATRIX.md`](../../parity/FEATURE-MATRIX.md).
+
 # 0.3.x OMC-parity Roadmap — Planner（Advisor #5）
 
 **date_utc:** 2026-07-20  

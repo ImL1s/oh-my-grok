@@ -34,25 +34,25 @@
     }
   },
   "category_status": {
-    "runtime_orchestration": "complete",
-    "skills": "complete",
-    "agents_routing": "complete",
-    "team": "complete",
-    "jobs": "complete",
-    "hooks": "complete",
-    "tools_mcp": "complete",
-    "state_memory_observability": "complete",
-    "install_update": "complete",
-    "quality_visual_edit_safety": "complete",
-    "antigravity": "complete",
+    "runtime_orchestration": "bootstrapping",
+    "skills": "bootstrapping",
+    "agents_routing": "bootstrapping",
+    "team": "bootstrapping",
+    "jobs": "bootstrapping",
+    "hooks": "bootstrapping",
+    "tools_mcp": "bootstrapping",
+    "state_memory_observability": "bootstrapping",
+    "install_update": "bootstrapping",
+    "quality_visual_edit_safety": "bootstrapping",
+    "antigravity": "bootstrapping",
     "platform_live_evidence": "bootstrapping",
     "parity_governance": "bootstrapping"
   },
   "source_status": {
-    "OMC": "complete",
-    "OMX": "complete",
-    "OmO": "complete",
-    "Antigravity": "complete"
+    "OMC": "bootstrapping",
+    "OMX": "bootstrapping",
+    "OmO": "bootstrapping",
+    "Antigravity": "bootstrapping"
   },
   "live_evidence_max_age_days": 30,
   "capabilities": [

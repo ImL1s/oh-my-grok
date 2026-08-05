@@ -1,3 +1,7 @@
+> **HISTORICAL / NON-AUTHORITATIVE.** This document predates the v2 parity inventory.
+> Current claimability truth: [`docs/parity/omg-parity.json`](../../parity/omg-parity.json)
+> and generated [`docs/parity/FEATURE-MATRIX.md`](../../parity/FEATURE-MATRIX.md).
+
 # Discussion delivery STATUS — 2026-07-20
 
 **Question answered:**「剛剛討論的都做完了嗎？Claude Code 和 Codex 的？」

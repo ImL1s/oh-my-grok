@@ -106,6 +106,37 @@ def test_generated_per_source_matrices_are_current() -> None:
             assert row["gap"] in text
 
 
+def test_source_matrix_uses_classification_not_category_status_column() -> None:
+    """P2-1: Status must not mislabel category_status; Classification is the honesty field."""
+    result = _run_generate_check()
+    assert result.returncode == 0, result.stderr
+    inventory = validate_parity_inventory(load_json_object(INVENTORY), repo_root=ROOT)
+    header = "| Capability | Category | Classification | Maturity | Marker | Gap |"
+    old_status_header = "| Capability | Category | Status | Maturity | Marker | Gap |"
+    for source, path in SOURCE_MATRIX_PATHS.items():
+        text = path.read_text(encoding="utf-8")
+        assert header in text, f"{path.name} missing Classification header"
+        assert old_status_header not in text
+        rows = [
+            row
+            for row in inventory["capabilities"]
+            if row["upstream"]["source"] == source
+        ]
+        for row in rows:
+            # Classification column is 3rd data cell — must be row classification,
+            # never category_status values like complete/bootstrapping.
+            expected = (
+                f"| `{row['id']}` | {row['category']} | {row['classification']} |"
+            )
+            assert expected in text, (
+                f"{path.name}: missing classification cell for {row['id']}"
+            )
+            bad_cat_status = f"| `{row['id']}` | {row['category']} | complete |"
+            assert bad_cat_status not in text
+            if row["classification"] in {"optional_unclaimed", "host_impossible"}:
+                assert row["classification"] in text
+
+
 def test_generated_summary_omits_percent_while_bootstrapping() -> None:
     result = _run_generate_check()
     assert result.returncode == 0, result.stderr

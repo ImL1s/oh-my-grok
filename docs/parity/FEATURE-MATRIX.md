@@ -49,23 +49,23 @@
 
 ## Category status
 
-- `agents_routing`: **complete**
-- `antigravity`: **complete**
-- `hooks`: **complete**
-- `install_update`: **complete**
-- `jobs`: **complete**
+- `agents_routing`: **bootstrapping**
+- `antigravity`: **bootstrapping**
+- `hooks`: **bootstrapping**
+- `install_update`: **bootstrapping**
+- `jobs`: **bootstrapping**
 - `parity_governance`: **bootstrapping**
 - `platform_live_evidence`: **bootstrapping**
-- `quality_visual_edit_safety`: **complete**
-- `runtime_orchestration`: **complete**
-- `skills`: **complete**
-- `state_memory_observability`: **complete**
-- `team`: **complete**
-- `tools_mcp`: **complete**
+- `quality_visual_edit_safety`: **bootstrapping**
+- `runtime_orchestration`: **bootstrapping**
+- `skills`: **bootstrapping**
+- `state_memory_observability`: **bootstrapping**
+- `team`: **bootstrapping**
+- `tools_mcp`: **bootstrapping**
 
 ## Source status
 
-- `OMC`: **complete**
-- `OMX`: **complete**
-- `OmO`: **complete**
-- `Antigravity`: **complete**
+- `OMC`: **bootstrapping**
+- `OMX`: **bootstrapping**
+- `OmO`: **bootstrapping**
+- `Antigravity`: **bootstrapping**

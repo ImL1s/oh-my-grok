@@ -10,26 +10,26 @@
 
 ## 依類別
 
-- `agents_routing`: **complete** (4 項能力)
-- `antigravity`: **complete** (3 項能力)
-- `hooks`: **complete** (2 項能力)
-- `install_update`: **complete** (1 項能力)
-- `jobs`: **complete** (3 項能力)
+- `agents_routing`: **bootstrapping** (4 項能力)
+- `antigravity`: **bootstrapping** (3 項能力)
+- `hooks`: **bootstrapping** (2 項能力)
+- `install_update`: **bootstrapping** (1 項能力)
+- `jobs`: **bootstrapping** (3 項能力)
 - `parity_governance`: **bootstrapping** (1 項能力)
 - `platform_live_evidence`: **bootstrapping** (1 項能力)
-- `quality_visual_edit_safety`: **complete** (4 項能力)
-- `runtime_orchestration`: **complete** (7 項能力)
-- `skills`: **complete** (2 項能力)
-- `state_memory_observability`: **complete** (4 項能力)
-- `team`: **complete** (5 項能力)
-- `tools_mcp`: **complete** (2 項能力)
+- `quality_visual_edit_safety`: **bootstrapping** (4 項能力)
+- `runtime_orchestration`: **bootstrapping** (7 項能力)
+- `skills`: **bootstrapping** (2 項能力)
+- `state_memory_observability`: **bootstrapping** (4 項能力)
+- `team`: **bootstrapping** (5 項能力)
+- `tools_mcp`: **bootstrapping** (2 項能力)
 
 ## 依來源
 
-- `OMC`: **complete** (12 項能力)
-- `OMX`: **complete** (9 項能力)
-- `OmO`: **complete** (10 項能力)
-- `Antigravity`: **complete** (8 項能力)
+- `OMC`: **bootstrapping** (12 項能力)
+- `OMX`: **bootstrapping** (9 項能力)
+- `OmO`: **bootstrapping** (10 項能力)
+- `Antigravity`: **bootstrapping** (8 項能力)
 
 ## 依最高成熟度
 

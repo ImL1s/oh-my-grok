@@ -21,6 +21,8 @@ Authoritative validator: `omg_cli.contracts.parity_schema.validate_parity_invent
 
 `inventory_is_complete` / `inventory_completion_claims_allowed` require `inventory_status == complete` **and** every `category_status` **and** every `source_status` value == `complete`. Percent / green-check claims stay forbidden while any source or category is still bootstrapping.
 
+`complete` is not a catalogue-seed claim: it requires a reproducible upstream completeness gate (deferred to #78-C / follow-up). Until that gate exists, keep sources and categories `bootstrapping`.
+
 ## Validation entry points
 
 ```python

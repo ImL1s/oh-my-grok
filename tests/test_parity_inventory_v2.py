@@ -782,3 +782,20 @@ def test_no_capability_row_is_fake_live_verified() -> None:
     for row in inv["capabilities"]:
         for level in row["maturity"].values():
             assert level != "live_verified"
+
+
+def test_canonical_inventory_stays_bootstrapping_without_completeness_gate() -> None:
+    """P1-2: catalogue seed ≠ complete; no source/category complete without #78-C gate."""
+    inv = load_json_object(ROOT / "docs/parity/omg-parity.json")
+    assert inv["inventory_status"] == "bootstrapping"
+    assert set(inv["source_status"]) == set(SOURCE_STATUS_IDS)
+    for source, status in inv["source_status"].items():
+        assert status == "bootstrapping", f"{source} must not claim complete yet"
+    for cat, status in inv["category_status"].items():
+        assert status == "bootstrapping", f"{cat} must not claim complete yet"
+    # Minimum-ID coverage must remain without requiring source_status complete.
+    ids = {row["id"] for row in inv["capabilities"]}
+    assert ISSUE_78_OMC_MINIMUM_IDS <= ids
+    assert ISSUE_78_OMX_MINIMUM_IDS <= ids
+    assert ISSUE_78_OMO_MINIMUM_IDS <= ids
+    assert ISSUE_78_ANTIGRAVITY_MINIMUM_IDS <= ids

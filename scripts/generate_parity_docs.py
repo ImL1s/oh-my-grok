@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections import Counter
 from pathlib import Path
@@ -48,11 +49,34 @@ _GENERATED_BANNER = (
 
 HISTORICAL_BANNER_MARKER = "HISTORICAL / NON-AUTHORITATIVE"
 
-# (path, relative prefix from that file to docs/parity/)
-HISTORICAL_BANNER_TARGETS: list[tuple[Path, str]] = [
-    (ROOT / "docs/research/core-parity-matrix-2026-07-20.md", "../parity"),
-    (ROOT / "docs/research/omc-parity-council/README.md", "../../parity"),
-]
+_PARITY_DOCS = ROOT / "docs/parity"
+_RESEARCH_DIR = ROOT / "docs/research"
+_COUNCIL_DIR = _RESEARCH_DIR / "omc-parity-council"
+
+
+def _parity_rel_from(path: Path) -> str:
+    """Relative path from ``path``'s directory to ``docs/parity/`` (posix)."""
+    return Path(os.path.relpath(str(_PARITY_DOCS), str(path.parent))).as_posix()
+
+
+def historical_banner_targets() -> list[tuple[Path, str]]:
+    """Historical research docs that must carry the NON-AUTHORITATIVE banner.
+
+    Covers core parity matrix, research README, and every ``*.md`` under
+    ``docs/research/omc-parity-council/`` (recursive).
+    """
+    targets: list[tuple[Path, str]] = [
+        (_RESEARCH_DIR / "core-parity-matrix-2026-07-20.md", "../parity"),
+        (_RESEARCH_DIR / "README.md", "../parity"),
+    ]
+    if _COUNCIL_DIR.is_dir():
+        for path in sorted(_COUNCIL_DIR.rglob("*.md")):
+            targets.append((path, _parity_rel_from(path)))
+    return targets
+
+
+# Back-compat alias for tests / importers that expect a module-level list.
+HISTORICAL_BANNER_TARGETS = historical_banner_targets()
 
 # Fixed gloss strings for SUMMARY translations (do not hand-maintain tables).
 _SUMMARY_GLOSS = {
@@ -225,7 +249,7 @@ def render_source_matrix(inventory: dict, source: str) -> str:
 
     lines.extend(
         [
-            "| Capability | Category | Status | Maturity | Marker | Gap |",
+            "| Capability | Category | Classification | Maturity | Marker | Gap |",
             "| --- | --- | --- | --- | --- | --- |",
         ]
     )
@@ -239,12 +263,12 @@ def render_source_matrix(inventory: dict, source: str) -> str:
     else:
         for row in rows:
             category = row["category"]
-            cat_status = inventory["category_status"].get(category, "bootstrapping")
+            classification = row.get("classification") or "—"
             marker = _marker_cell(row, inventory, complete=complete)
             gap = row.get("gap") or "—"
             gap_cell = gap.replace("|", "\\|")
             lines.append(
-                f"| `{row['id']}` | {category} | {cat_status} "
+                f"| `{row['id']}` | {category} | {classification} "
                 f"| {_maturity_cell(row)} | {marker} | {gap_cell} |"
             )
     lines.append("")
@@ -400,7 +424,7 @@ def apply_historical_banner(path: Path, *, parity_rel: str) -> bool:
 def check_historical_banners() -> list[str]:
     """Return relative paths missing the NON-AUTHORITATIVE banner."""
     missing: list[str] = []
-    for path, parity_rel in HISTORICAL_BANNER_TARGETS:
+    for path, parity_rel in historical_banner_targets():
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
         if HISTORICAL_BANNER_MARKER not in text:
             missing.append(path.relative_to(ROOT).as_posix())
@@ -477,7 +501,7 @@ def main(argv: list[str] | None = None) -> int:
     for path in GENERATED_PATHS:
         path.write_text(rendered[path], encoding="utf-8")
         print(f"wrote {path.relative_to(ROOT)}")
-    for path, parity_rel in HISTORICAL_BANNER_TARGETS:
+    for path, parity_rel in historical_banner_targets():
         if apply_historical_banner(path, parity_rel=parity_rel):
             print(f"bannered {path.relative_to(ROOT)}")
         else:
