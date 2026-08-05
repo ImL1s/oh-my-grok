@@ -189,7 +189,26 @@ def _spawn_worker_process(
             pgid = os.getpgid(proc.pid)
         except (ProcessLookupError, PermissionError, OSError):
             pgid = proc.pid
-    write_pid_metadata(pid_path, pid=proc.pid, pgid=pgid)
+    try:
+        write_pid_metadata(pid_path, pid=proc.pid, pgid=pgid)
+    except Exception:
+        # Mirror modes._spawn_grok_process: never leave a live worker without
+        # cancel-visible pid metadata (e.g. starttime lookup failure).
+        try:
+            if os.name == "posix":
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    proc.kill()
+            else:
+                proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+        try:
+            proc.wait(timeout=5)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        raise
     # Note: timeout is applied at wait time by caller
     return proc, None
 
