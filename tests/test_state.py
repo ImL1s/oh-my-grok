@@ -1047,3 +1047,141 @@ def test_legacy_cancel_idempotent_already_cancelled(tmp_path):
     assert first["status"] == "cancelled"
     assert second["status"] == "cancelled"
     assert second.get("cancel_outcome") == "already cancelled"
+
+
+def test_legacy_set_verified_refuses_cancelled(tmp_path):
+    """R18-2: legacy set_verified must not overwrite cancelled → verified."""
+    from omg_cli.acceptance import freeze_and_run
+
+    run = create_run(tmp_path, mode="ulw", goal="r18 set_verified cancelled")
+    rid = run["run_id"]
+    assert classify_run_schema(run) is RunSchema.LEGACY_V1
+
+    prd = {
+        "version": 1,
+        "goal": "r18",
+        "stories": [
+            {"id": "s1", "title": "ok", "commands": [["true"]]}
+        ],
+        "global_commands": [],
+    }
+    assert freeze_and_run(tmp_path, rid, prd) is True
+
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+    assert load_run(tmp_path, rid)["status"] == "cancelled"
+
+    with pytest.raises(PermissionError, match="cancelled"):
+        set_verified(tmp_path, rid)
+    assert load_run(tmp_path, rid)["status"] == "cancelled"
+    assert load_run(tmp_path, rid).get("verified") is not True
+
+
+def test_legacy_set_verified_idempotent_when_already_verified(tmp_path):
+    """R18-2: set_verified on already-verified legacy run is idempotent."""
+    from omg_cli.acceptance import freeze_and_run
+
+    run = create_run(tmp_path, mode="ulw", goal="r18 set_verified idempotent")
+    rid = run["run_id"]
+    prd = {
+        "version": 1,
+        "goal": "r18",
+        "stories": [
+            {"id": "s1", "title": "ok", "commands": [["true"]]}
+        ],
+        "global_commands": [],
+    }
+    assert freeze_and_run(tmp_path, rid, prd) is True
+    first = set_verified(tmp_path, rid)
+    assert first["status"] == "verified"
+    second = set_verified(tmp_path, rid)
+    assert second["status"] == "verified"
+    assert second.get("verified_at") == first.get("verified_at")
+
+
+def test_legacy_set_verified_force_capability_may_override_cancelled(tmp_path):
+    """R18-2: force=True + in-process capability is the cancelled→verified break-glass."""
+    from omg_cli.state import (
+        disable_force_verified_for_tests,
+        enable_force_verified_for_tests,
+    )
+
+    disable_force_verified_for_tests()
+    run = create_run(tmp_path, mode="ulw", goal="r18 force override cancelled")
+    rid = run["run_id"]
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+    assert load_run(tmp_path, rid)["status"] == "cancelled"
+
+    with pytest.raises(PermissionError, match="force"):
+        set_verified(tmp_path, rid, force=True)
+
+    try:
+        enable_force_verified_for_tests()
+        verified = set_verified(tmp_path, rid, force=True)
+        assert verified["status"] == "verified"
+        assert verified["verified"] is True
+    finally:
+        disable_force_verified_for_tests()
+
+
+def test_clear_active_cannot_unlink_newer_run_active(tmp_path, monkeypatch):
+    """R18-3: clear_active(A) must not delete active.json after create_run(B).
+
+    Interleaving without create.lock: clear reads A, create publishes B, clear
+    unlinks (deletes B). With shared create.lock around read/compare/unlink,
+    create blocks until clear finishes (or clear re-checks under lock) so B
+    remains active.
+    """
+    import omg_cli.state as state_mod
+    from omg_cli.state import clear_active
+
+    first = create_run(tmp_path, mode="ulw", goal="r18 clear race A")
+    rid_a = first["run_id"]
+    write_status(tmp_path, rid_a, "cancelled")
+    state_mod._atomic_write_json(
+        state_mod._active_path(tmp_path),
+        {"run_id": rid_a, "updated_at": "2026-08-05T00:00:00+00:00"},
+    )
+    assert load_active_run(tmp_path)["run_id"] == rid_a
+
+    barrier = threading.Barrier(2)
+    events: list[str] = []
+    original_read = state_mod._read_json
+
+    def paused_read(path):
+        data = original_read(path)
+        if path.name == "active.json" and data and data.get("run_id") == rid_a:
+            events.append("clear_saw_a")
+            barrier.wait(timeout=5)
+            events.append("clear_resume")
+        return data
+
+    monkeypatch.setattr(state_mod, "_read_json", paused_read)
+
+    create_result: dict = {}
+    create_err: list[BaseException] = []
+
+    def create_worker() -> None:
+        try:
+            barrier.wait(timeout=5)
+            create_result.update(
+                create_run(tmp_path, mode="ralph", goal="r18 clear race B")
+            )
+            events.append("created_b")
+        except BaseException as exc:  # noqa: BLE001
+            create_err.append(exc)
+
+    t = threading.Thread(target=create_worker)
+    t.start()
+    clear_active(tmp_path, rid_a)
+    events.append("clear_done")
+    t.join(timeout=10)
+    assert not t.is_alive()
+    assert not create_err, create_err
+
+    rid_b = create_result["run_id"]
+    assert rid_b != rid_a
+    active = load_active_run(tmp_path)
+    assert active is not None, events
+    assert active["run_id"] == rid_b, events
+    assert "clear_saw_a" in events
+    assert "created_b" in events

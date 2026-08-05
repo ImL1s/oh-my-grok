@@ -253,6 +253,11 @@ def _push_lock(kind: str) -> None:
             "lock-order violation: execution.lock cannot be acquired while "
             "transition.lock is held"
         )
+    if kind == "create" and "transition" in stack:
+        raise LifecycleLockError(
+            "lock-order violation: create.lock cannot be acquired while "
+            "transition.lock is held"
+        )
     stack.append(kind)
 
 
@@ -266,6 +271,11 @@ def _pop_lock(kind: str) -> None:
 def transition_guard_held() -> bool:
     """Diagnostic/test hook: true only inside the current thread's short guard."""
     return "transition" in _held_lock_kinds()
+
+
+def create_lock_held() -> bool:
+    """True while this thread holds ``.omg/state/create.lock``."""
+    return "create" in _held_lock_kinds()
 
 
 def classify_run_schema(run: dict[str, Any]) -> RunSchema:
@@ -996,6 +1006,9 @@ def create_run(
       dead run is cancelled and create proceeds without force.
 
     Terminal statuses (cancelled/completed/failed/verified) do not block.
+
+    ``clear_active`` shares this same ``create.lock`` so cancel cannot unlink a
+    newer run's ``active.json`` (R18-3).
     """
     root = Path(root)
     ensure_omg_dirs(root)
@@ -1015,6 +1028,7 @@ def create_run(
 
     with lock_path.open("a+", encoding="utf-8") as lockf:
         fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
+        _push_lock("create")
         try:
             return _create_run_unlocked(
                 root,
@@ -1025,6 +1039,7 @@ def create_run(
                 kill_grace_s=kill_grace_s,
             )
         finally:
+            _pop_lock("create")
             fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
 
 
@@ -1359,8 +1374,33 @@ def load_cancellation_request(root: Path, run_id: str) -> dict[str, Any] | None:
 
 
 def clear_active(root: Path, run_id: str | None = None) -> None:
-    """Clear active pointer if it matches run_id (or always if run_id is None)."""
+    """Clear active pointer if it matches run_id (or always if run_id is None).
+
+    R18-3: serialized with ``create_run`` via ``.omg/state/create.lock`` so a
+    cancel clearing run A cannot unlink a newer run B's ``active.json``.
+    Must not be called while ``transition.lock`` is held unless ``create.lock``
+    is already held (force-create: create → cancel → transition). Prefer
+    releasing transition first, then clearing under create lock.
+    """
     root = Path(root)
+    if fcntl is None or create_lock_held():
+        _clear_active_unlocked(root, run_id)
+        return
+
+    lock_path = _create_lock_path(root)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lockf:
+        fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
+        _push_lock("create")
+        try:
+            _clear_active_unlocked(root, run_id)
+        finally:
+            _pop_lock("create")
+            fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
+
+
+def _clear_active_unlocked(root: Path, run_id: str | None = None) -> None:
+    """Read/compare/unlink ``active.json`` (caller holds create.lock when available)."""
     path = _active_path(root)
     if not path.exists():
         return
@@ -1521,6 +1561,10 @@ def _cancel_run_legacy(
     Same ordering as strict cancel: commit terminal + snapshot PIDs under the
     guard, release, then signal outside so cancel cannot miss a newly spawned
     Grok and launch cannot Popen after ``cancelled`` is committed.
+
+    R18-3: ``clear_active`` runs **after** releasing transition (under
+    ``create.lock``) so force-create's create→transition lock order is never
+    reversed.
     """
     with transition_guard(root, run_id):
         current = load_run(root, run_id)
@@ -1543,8 +1587,10 @@ def _cancel_run_legacy(
         updated["cancelled_at"] = updated["updated_at"]
         updated["cancel_outcome"] = "cancelled"
         _atomic_write_json(_status_path(root, run_id), updated)
-        clear_active(root, run_id)
         cancelled = updated
+
+    # Outside transition.lock: clear active under create.lock, then signal.
+    clear_active(root, run_id)
 
     # Intentionally outside transition.lock (never signal while guard held).
     kill_actions = _signal_cancel_targets(targets, kill_grace_s=kill_grace_s)
@@ -1792,12 +1838,32 @@ def set_verified(
         with execution_lease(root, run_id, intent="accept") as owned_lease:
             return _commit_verified(owned_lease)
 
-    current["verified"] = True
-    current["status"] = "verified"
-    current["updated_at"] = _utc_now()
-    current["verified_at"] = current["updated_at"]
-    _atomic_write_json(_status_path(root, run_id), current)
-    return current
+    # Legacy-v1 (R18-2): re-read under transition_guard. cancelled is absorbing
+    # unless force=True with in-process force capability; verified is idempotent.
+    from contextlib import nullcontext
+
+    guard_cm = (
+        nullcontext() if transition_guard_held() else transition_guard(root, run_id)
+    )
+    with guard_cm:
+        current = load_run(root, run_id)
+        if current is None:
+            raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
+        status_now = str(current.get("status") or "")
+        if status_now == "verified" or current.get("verified") is True:
+            return current
+        if status_now == "cancelled" and not force:
+            raise PermissionError(
+                "cancelled is absorbing; refusing set_verified without force "
+                f"capability for run_id={run_id!r}"
+            )
+        current = dict(current)
+        current["verified"] = True
+        current["status"] = "verified"
+        current["updated_at"] = _utc_now()
+        current["verified_at"] = current["updated_at"]
+        _atomic_write_json(_status_path(root, run_id), current)
+        return current
 
 
 def _projector_view_path(root: Path | str, run_id: str) -> Path:
