@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -14,7 +15,11 @@ from omg_cli.parity_check import check_parity_inventory
 from tests.test_parity_claim_gate import (
     OVERCLAIM_README,
     _bootstrapping_inventory,
+    _bump_omc_pin,
+    _git,
+    _git_commit_all,
     _honest_docs,
+    _init_git_repo,
     _live_verified_row,
     _load_catalog,
     _minimal_inventory,
@@ -24,6 +29,13 @@ from tests.test_parity_claim_gate import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _git_base_for_release(tmp_path: Path) -> str:
+    """Commit the current tree and return a durable base_ref for --release."""
+    _init_git_repo(tmp_path)
+    _git(tmp_path, "checkout", "-b", "main")
+    return _git_commit_all(tmp_path, "release base")
 
 
 def _assert_release_gate_fails(
@@ -47,6 +59,8 @@ def _assert_release_gate_fails(
             inventory_path=inv_path,
             repo_root=tmp_path,
             release=True,
+            # Drift/overclaim fail before base resolution; pin-transition cases
+            # must not rely on file-only base under --release.
             base_inventory=base_inventory if base_inventory is not None else inventory,
         )
 
@@ -144,12 +158,13 @@ def test_release_check_passes_honest_bootstrapping_inventory(tmp_path: Path) -> 
     _scaffold_inventory_paths(tmp_path, inventory)
     _honest_docs(tmp_path)
     _write_required_snapshots(tmp_path, inventory)
+    base_sha = _git_base_for_release(tmp_path)
 
     payload = check_parity_inventory(
         inventory_path=inv_path,
         repo_root=tmp_path,
         release=True,
-        base_inventory=inventory,
+        base_ref=base_sha,
     )
 
     assert payload["ok"] is True
@@ -173,8 +188,41 @@ def test_script_check_parity_inventory_release_flag(tmp_path: Path) -> None:
     (tmp_path / "docs" / "parity" / "SUMMARY.md").write_text(
         "Bootstrapping inventory — **parity 95%** complete.\n", encoding="utf-8"
     )
+    base_sha = _git_base_for_release(tmp_path)
+
+    script = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "check_parity_inventory.py"),
+            "--release",
+            "--inventory",
+            str(inv_path),
+            "--base-ref",
+            base_sha,
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **dict(__import__("os").environ),
+            "PYTHONPATH": str(ROOT),
+        },
+    )
+    assert script.returncode != 0
+    assert "overclaim" in script.stderr.lower() or "overclaim" in script.stdout.lower()
+
+
+def test_script_release_rejects_file_only_base_inventory(tmp_path: Path) -> None:
+    """P2: script --release --base-inventory without --base-ref must hard-fail."""
+    inventory = _bootstrapping_inventory(tmp_path)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+    _git_base_for_release(tmp_path)
     base_path = tmp_path / "base-parity.json"
-    base_path.write_text(__import__("json").dumps(inventory), encoding="utf-8")
+    base_path.write_text(json.dumps(inventory, indent=2), encoding="utf-8")
 
     script = subprocess.run(
         [
@@ -196,27 +244,35 @@ def test_script_check_parity_inventory_release_flag(tmp_path: Path) -> None:
         },
     )
     assert script.returncode != 0
-    assert "overclaim" in script.stderr.lower() or "overclaim" in script.stdout.lower()
+    combined = (script.stderr + script.stdout).lower()
+    assert "provenance" in combined or "base-ref" in combined or "insufficient" in combined
 
 
 def test_synced_pin_bump_without_committed_review_fails(tmp_path: Path) -> None:
     """P1: syncing inventory+snapshot pins without docs/parity/reviews must fail."""
-    import copy
-
     inventory = _bootstrapping_inventory(tmp_path)
-    base = copy.deepcopy(inventory)
-    new_pin = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    inventory["upstream_pins"]["OMC"]["revision"] = new_pin
-    for row in inventory["capabilities"]:
-        if row.get("upstream", {}).get("source") == "OMC":
-            row["upstream"]["revision"] = new_pin
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+    _write_inventory(tmp_path, inventory)
+    base_sha = _git_base_for_release(tmp_path)
 
-    _assert_release_gate_fails(
-        tmp_path=tmp_path,
-        inventory=inventory,
-        base_inventory=base,
-        error_pattern="pin transition missing committed refresh review",
-    )
+    new_pin = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    bumped = copy.deepcopy(inventory)
+    _bump_omc_pin(bumped, new_pin)
+    inv_path = _write_inventory(tmp_path, bumped)
+    _write_required_snapshots(tmp_path, bumped)
+
+    with pytest.raises(
+        ContractValidationError,
+        match="pin transition missing committed refresh review",
+    ):
+        check_parity_inventory(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            release=True,
+            base_ref=base_sha,
+        )
 
 
 def test_release_yml_invokes_parity_release_gate() -> None:

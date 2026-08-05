@@ -37,6 +37,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   review ledgers; own `docs/parity/reviews/**` under OMG-W0; keep live-* phrase
   scan active unless every capability is `live_verified`; expose
   `--base-inventory` / `--base-ref` on `omg parity check`.
+- **Parity release claim gate (PR #91 Pro re-audit round 4):** `--release` rejects
+  file-only `--base-inventory` (no git provenance → endpoint-only A→A miss on
+  A→B→A mid pins). Pair `--base-inventory` with `--base-ref` whose inventory
+  blob matches the file; never silently prefer the file over `--base-ref`.
 - **Parity release claim gate (PR #91 Pro re-audit round 2):** require committed
   pin-transition reviews under `docs/parity/reviews/`; bind deleted-change
   fingerprints; validate upstream snapshot capability schema (no duplicate /

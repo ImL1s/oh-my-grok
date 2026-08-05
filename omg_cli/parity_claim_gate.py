@@ -618,16 +618,53 @@ def resolve_base_inventory(
     explicit ``base_ref`` / ``OMG_PARITY_BASE_REF``, then previous ``v*`` release
     tag, then ``origin/main`` / ``main``. ``HEAD^`` is intentionally omitted so
     an unreviewed pin bump cannot be masked by a later unrelated commit.
+
+    File-backed ``base_inventory`` / ``--base-inventory`` never silently overrides
+    an explicit ``base_ref``. In release mode (``require=True``), file-only base
+    is refused: without git provenance the pin scanner cannot walk
+    ``base_ref..HEAD`` and an A→B→A history would false-pass as A→A.
+    Pair ``--base-inventory`` with ``--base-ref`` whose inventory blob matches
+    the file to keep the DAG walk.
     """
-    if base_inventory is not None:
-        return BaseInventoryResolution(inventory=base_inventory, git_ref=None)
-    if base_inventory_path is not None:
-        return BaseInventoryResolution(
-            inventory=load_json_object(Path(base_inventory_path)),
-            git_ref=None,
+    if base_inventory is not None and base_inventory_path is not None:
+        raise ContractValidationError(
+            "conflicting base inventory authorities: pass only one of "
+            "base_inventory or --base-inventory / base_inventory_path"
         )
-    refs: list[str] = []
+
+    file_inventory: dict[str, Any] | None = None
+    if base_inventory is not None:
+        file_inventory = base_inventory
+    elif base_inventory_path is not None:
+        file_inventory = load_json_object(Path(base_inventory_path))
+
     explicit = (base_ref or os.environ.get("OMG_PARITY_BASE_REF") or "").strip()
+
+    if file_inventory is not None:
+        if explicit:
+            # Bind file to git provenance — never drop base_ref for endpoint-only.
+            loaded = _git_show_inventory_if_present(repo_root, explicit)
+            if loaded is None:
+                raise ContractValidationError(
+                    f"base inventory missing at explicit base_ref {explicit!r} "
+                    f"({explicit}:{_INVENTORY_GIT_PATH})"
+                )
+            if loaded != file_inventory:
+                raise ContractValidationError(
+                    "base-inventory does not match git blob at "
+                    f"base_ref {explicit!r} ({explicit}:{_INVENTORY_GIT_PATH})"
+                )
+            return BaseInventoryResolution(inventory=loaded, git_ref=explicit)
+        if require:
+            raise ContractValidationError(
+                "release pin-transition gate requires git base provenance: "
+                "pass --base-ref / OMG_PARITY_BASE_REF (optionally with "
+                "--base-inventory bound to that ref's inventory blob); "
+                "--base-inventory alone is insufficient for --release"
+            )
+        return BaseInventoryResolution(inventory=file_inventory, git_ref=None)
+
+    refs: list[str] = []
     if explicit:
         refs.append(explicit)
     elif require:
@@ -651,9 +688,10 @@ def resolve_base_inventory(
     if require:
         raise ContractValidationError(
             "pin-transition gate requires base inventory "
-            "(pass base_inventory / --base-inventory / --base-ref / "
-            "OMG_PARITY_BASE_REF, previous v* release tag, or "
-            "origin/main|main:docs/parity/omg-parity.json)"
+            "(pass --base-ref / OMG_PARITY_BASE_REF, previous v* release tag, "
+            "or origin/main|main:docs/parity/omg-parity.json; "
+            "--base-inventory alone is insufficient for --release — pair it "
+            "with --base-ref whose inventory blob matches the file)"
         )
     return None
 

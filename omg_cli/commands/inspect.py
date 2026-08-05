@@ -645,8 +645,9 @@ def register_inspect_parsers(
             "--base-inventory",
             default=None,
             help=(
-                "previous parity inventory JSON for pin-transition reviews "
-                "(release mode)"
+                "previous parity inventory JSON; for --release must be paired with "
+                "--base-ref whose inventory blob matches the file "
+                "(file-only base is insufficient)"
             ),
         )
         p_parity_check.add_argument(
@@ -654,6 +655,7 @@ def register_inspect_parsers(
             default=None,
             help=(
                 "durable git ref for base inventory (or set OMG_PARITY_BASE_REF); "
+                "required for --release pin-transition DAG walk; "
                 "release mode prefers previous v* tag over HEAD^"
             ),
         )

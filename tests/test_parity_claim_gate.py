@@ -1750,3 +1750,189 @@ def test_upstream_drift_rejects_stale_delete_ack_after_fingerprint_mutates(
             review_artifact_path=review_path,
             now=FIXED_NOW,
         )
+
+
+def _aba_pin_history(tmp_path: Path) -> tuple[dict, str, Path]:
+    """Build A→B→A merge history; return (base_inventory_A, base_sha, inv_path)."""
+    pin_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    pin_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    _bump_omc_pin(inventory, pin_a)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _init_git_repo(tmp_path)
+    _git(tmp_path, "checkout", "-b", "main")
+    base_sha = _git_commit_all(tmp_path, "base pin A")
+
+    _git(tmp_path, "checkout", "-b", "feature")
+    bumped = copy.deepcopy(inventory)
+    _bump_omc_pin(bumped, pin_b)
+    _write_inventory(tmp_path, bumped)
+    _write_required_snapshots(tmp_path, bumped)
+    _git_commit_all(tmp_path, "feature bump A→B without review")
+
+    reverted = copy.deepcopy(inventory)
+    _bump_omc_pin(reverted, pin_a)
+    _write_inventory(tmp_path, reverted)
+    _write_required_snapshots(tmp_path, reverted)
+    _git_commit_all(tmp_path, "feature revert B→A without review")
+
+    _git(tmp_path, "checkout", "main")
+    _git(tmp_path, "merge", "--no-ff", "-m", "merge feature (final still A)", "feature")
+    return inventory, base_sha, inv_path
+
+
+def test_release_file_only_base_inventory_rejects_aba_mask(tmp_path: Path) -> None:
+    """P2: --release + file-only --base-inventory must not false-pass A→B→A.
+
+    Endpoint-only compare sees A→A and would skip the unreviewed B ledger;
+    release mode must refuse file-only base (no git provenance / DAG walk).
+    """
+    from omg_cli.parity_check import check_parity_inventory
+
+    inventory, _base_sha, inv_path = _aba_pin_history(tmp_path)
+    base_file = tmp_path / "base-A.json"
+    base_file.write_text(json.dumps(inventory, indent=2), encoding="utf-8")
+
+    with pytest.raises(
+        ContractValidationError,
+        match=r"git base provenance|base-ref|--base-ref|insufficient for --release",
+    ):
+        check_parity_inventory(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            release=True,
+            base_inventory_path=base_file,
+        )
+
+
+def test_release_base_inventory_bound_to_base_ref_still_walks_aba(
+    tmp_path: Path,
+) -> None:
+    """P2: --base-inventory + matching --base-ref retains DAG walk (catches mid B)."""
+    from omg_cli.parity_check import check_parity_inventory
+
+    inventory, base_sha, inv_path = _aba_pin_history(tmp_path)
+    del inventory  # base content comes from the git blob at base_ref
+    base_file = tmp_path / "base-A.json"
+    # File must match the git blob at base_ref (canonical inventory at that commit).
+    blob = subprocess.run(
+        ["git", "-C", str(tmp_path), "show", f"{base_sha}:docs/parity/omg-parity.json"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    base_file.write_text(blob.stdout, encoding="utf-8")
+
+    with pytest.raises(
+        ContractValidationError,
+        match="pin transition missing committed refresh review",
+    ):
+        check_parity_inventory(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            release=True,
+            base_inventory_path=base_file,
+            base_ref=base_sha,
+        )
+
+
+def test_resolve_base_inventory_require_rejects_file_only(tmp_path: Path) -> None:
+    """P2: require=True + file/dict base without git_ref must hard-fail."""
+    from omg_cli.parity_claim_gate import resolve_base_inventory
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _init_git_repo(tmp_path)
+    _git_commit_all(tmp_path, "C0")
+
+    with pytest.raises(
+        ContractValidationError,
+        match=r"git base provenance|base-ref|insufficient for --release",
+    ):
+        resolve_base_inventory(
+            tmp_path, base_inventory_path=inv_path, require=True
+        )
+    with pytest.raises(
+        ContractValidationError,
+        match=r"git base provenance|base-ref|insufficient for --release",
+    ):
+        resolve_base_inventory(tmp_path, base_inventory=inventory, require=True)
+
+
+def test_resolve_base_inventory_binds_file_to_matching_base_ref(
+    tmp_path: Path,
+) -> None:
+    """File + matching --base-ref keeps git_ref for DAG walk."""
+    from omg_cli.parity_claim_gate import resolve_base_inventory
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    _write_inventory(tmp_path, inventory)
+    _init_git_repo(tmp_path)
+    base_sha = _git_commit_all(tmp_path, "C0")
+    blob = subprocess.run(
+        ["git", "-C", str(tmp_path), "show", f"{base_sha}:docs/parity/omg-parity.json"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    base_file = tmp_path / "export.json"
+    base_file.write_text(blob.stdout, encoding="utf-8")
+
+    resolved = resolve_base_inventory(
+        tmp_path,
+        base_inventory_path=base_file,
+        base_ref=base_sha,
+        require=True,
+    )
+    assert resolved is not None
+    assert resolved.git_ref == base_sha
+    assert resolved.inventory == inventory
+
+
+def test_resolve_base_inventory_rejects_mismatched_file_and_base_ref(
+    tmp_path: Path,
+) -> None:
+    """Never silently prefer a divergent --base-inventory over --base-ref."""
+    from omg_cli.parity_claim_gate import resolve_base_inventory
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    _write_inventory(tmp_path, inventory)
+    _init_git_repo(tmp_path)
+    base_sha = _git_commit_all(tmp_path, "C0")
+
+    divergent = copy.deepcopy(inventory)
+    _bump_omc_pin(divergent, "ffffffffffffffffffffffffffffffffffffffff")
+    bad_file = tmp_path / "divergent.json"
+    bad_file.write_text(json.dumps(divergent, indent=2), encoding="utf-8")
+
+    with pytest.raises(
+        ContractValidationError,
+        match=r"does not match git blob|base-inventory.*base_ref|mismatch",
+    ):
+        resolve_base_inventory(
+            tmp_path,
+            base_inventory_path=bad_file,
+            base_ref=base_sha,
+            require=True,
+        )
+
+
+def test_resolve_base_inventory_rejects_conflicting_file_authorities(
+    tmp_path: Path,
+) -> None:
+    """Dict + path base authorities must not silently override each other."""
+    from omg_cli.parity_claim_gate import resolve_base_inventory
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    path = _write_inventory(tmp_path, inventory)
+    with pytest.raises(ContractValidationError, match=r"conflicting base inventory"):
+        resolve_base_inventory(
+            tmp_path,
+            base_inventory=inventory,
+            base_inventory_path=path,
+            require=False,
+        )

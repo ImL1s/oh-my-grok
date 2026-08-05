@@ -53,8 +53,9 @@ def main(argv: list[str] | None = None) -> int:
         "--base-inventory",
         default=None,
         help=(
-            "previous parity inventory for pin-transition reviews "
-            "(default: git show $OMG_PARITY_BASE_REF|previous-v-tag|origin/main)"
+            "previous parity inventory JSON; for --release must be paired with "
+            "--base-ref whose inventory blob matches the file "
+            "(file-only base is insufficient — drops DAG pin walk)"
         ),
     )
     parser.add_argument(
@@ -62,7 +63,8 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "durable git ref for base inventory "
-            "(overrides default resolution; same as OMG_PARITY_BASE_REF)"
+            "(required for --release pin-transition DAG walk; "
+            "overrides default resolution; same as OMG_PARITY_BASE_REF)"
         ),
     )
     parser.add_argument(

@@ -194,7 +194,11 @@ def test_parity_check_release_invokes_shared_gate(
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
-    """CLI --release must call shared check_parity_inventory(release=True)."""
+    """CLI --release must call shared check_parity_inventory(release=True).
+
+    File-only --base-inventory is insufficient for --release (needs --base-ref);
+    assert the CLI still forwards the path and surfaces the provenance hard-fail.
+    """
     calls: list[dict[str, object]] = []
     import omg_cli.parity_check as parity_check
 
@@ -245,10 +249,13 @@ def test_parity_check_release_invokes_shared_gate(
             str(base_copy),
         ]
     )
-    assert code == 0
+    assert code == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["data"]["release"] is True
     assert payload["data"]["strict"] is True
+    assert payload["data"]["ok"] is False
+    err = str(payload["data"].get("error", "")).lower()
+    assert "provenance" in err or "base-ref" in err or "insufficient" in err
     assert len(calls) == 1
     assert calls[0]["strict"] is False
     assert calls[0]["release"] is True
