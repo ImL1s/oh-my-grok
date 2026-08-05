@@ -163,9 +163,12 @@ Also: `blocked`, `cancelled` (see `omg_cli/autopilot.py` `LEGAL_TRANSITIONS`).
 | **`terminal_action`** | Human hint when `commit_only_next` is non-empty (today: `omg autopilot complete`). |
 
 Do **not** call `transition --phase verified` — it is illegal. At `acceptance`, run
-`omg autopilot complete`. Bare `omg accept` is **refused** for autopilot-mode
-runs (Round 12); use complete so freeze/run + `set_verified` stay on the FSM
-path (`set_verified` also requires sidecar `phase==acceptance`).
+`omg autopilot complete`. Bare `omg accept` is **refused** whenever the autopilot
+sidecar exists (Round 12 + Round 14 — not only when `status.mode` still says
+autopilot); use complete so freeze/run + `set_verified` stay on the FSM path.
+`set_verified` / complete also require matching `authority_nonce` and
+`authority_phase==acceptance` on both `status.json` and `autopilot.json`
+(hand-editing display `phase` alone is refused).
 
 ### Stamp-first gates and `break_glass` audit
 
@@ -182,7 +185,7 @@ as `gate_audit` (for example `break_glass:consensus`, `break_glass:no_change`).
 | `review` from `implement` **or** `blocked` | Workspace fingerprint drift (curated product surfaces) since implement entry, **or** on-disk CLI implementation receipt (`stages/implementation.json`, fingerprint-rechecked) | `no_change_reason` + `break_glass`, **or** inline `implementation_receipt` + `break_glass` |
 | `qa` | CLI `stages/structured_review.json` clean (see fingerprint recheck below) | — |
 | `acceptance` | CLI `stages/ultraqa.json` status `clean` (see fingerprint recheck below) | — |
-| `verified` | **Only** `omg autopilot complete` (same-process freeze/run + `set_verified`; bare `omg accept` refused) | — |
+| `verified` | **Only** `omg autopilot complete` (same-process freeze/run + `set_verified`; bare `omg accept` refused if sidecar exists; `authority_nonce` / `authority_phase` must match) | — |
 
 Break-glass is an operator-intent escape hatch, not a silent trust path. See
 [`security-model.md`](./security-model.md#autopilot-break_glass-vs-cli-stamps).
@@ -270,6 +273,10 @@ a stale non-terminal sidecar phase. Immediately before each `_launch_grok`
 As of Round 13, cancel check + `Popen` + pid publish are linearized under a
 short `transition_guard` so a concurrent cancel cannot miss a newly spawned
 Grok; if pid publish fails after `Popen`, the child is killed.
+Round 14 also refuses resume/spawn when `pid.json` still identifies a **live**
+leader (PID alive + matching starttime), and refuses a live PID without
+starttime (stale/dead metadata is cleared; live conflict is not). Pid
+publication itself requires a non-empty process starttime.
 `omg autopilot status` returns empty `legal_next` for terminal runs.
 
 **Resume interview preflight (Round 11):** when `--resume` finds
@@ -307,22 +314,26 @@ work happened (or an explicit audited no-op):
    excluded, so merely running tests/importing a module during `implement`
    never counts as product work on its own.
 2. **On-disk CLI stamp** — `omg_cli.implementation.stamp_implementation_receipt`
-   writes a real, CLI-owned `stages/implementation.json`
-   (`writer=omg-cli`, `content_sha256`, `stamped_at`, and lease
-   `invocation_id` — Round 12) under
-   `.omg/state/runs/<run_id>/stages/`. `read_implementation_receipt` verifies
-   `writer`/`run_id` and a non-empty `invocation_id` before trusting it
-   (hand-written receipts without a lease id read as absent), and the gate
-   additionally rechecks `content_sha256` against a fresh
-   `_implement_workspace_fingerprint(root)` recompute — a stale/tampered
-   receipt does not satisfy the gate. Accepted **without** `break_glass`
+   requires a live `ExecutionLease` (`lease.assert_current()`), writes a
+   CLI-owned `stages/implementation.json`
+   (`writer=omg-cli`, `content_sha256`, `stamped_at`, lease `invocation_id`
+   + `lease_generation` — Round 12 + Round 14) under
+   `.omg/state/runs/<run_id>/stages/`, and rebinds autopilot
+   `implement_receipt_binder` under the same lease. `read_implementation_receipt`
+   verifies `writer`/`run_id`, a non-empty `invocation_id`, and a valid
+   `lease_generation` before trusting it (hand-written receipts without lease
+   fields read as absent). The gate additionally rechecks `content_sha256`
+   against a fresh `_implement_workspace_fingerprint(root)` recompute and
+   requires the binder to match — a stale/tampered receipt does not satisfy
+   the gate. Accepted **without** `break_glass`
    (audited as `cli_receipt:implementation.json`). No CLI subcommand calls
    the stamper yet; it exists for direct/test use until a phase writer wires
    it in. The receipt is bound to its implement cycle:
    `implementation.invalidate_implementation_receipt` marks any leftover
-   receipt `invalidated=true` on every (re)entry into `implement`, so a
-   receipt from a prior cycle can never satisfy the gate for a later cycle
-   even if the fingerprint still happens to match (e.g.
+   receipt `invalidated=true` on every (re)entry into `implement`, and
+   implement entry **clears** `implement_receipt_binder` to null, so a
+   receipt (or binder copy) from a prior cycle can never satisfy the gate for
+   a later cycle even if the fingerprint still happens to match (e.g.
    `review → ralplan → implement` with no new work).
 3. **Break-glass no-change** — `evidence.no_change_reason` + `break_glass=true`
    (audited as `break_glass:no_change`).
@@ -398,17 +409,23 @@ omg qa run --run "$RUN"
 
 After clean UltraQA, **`prd.json` is optional** — accept/complete materialize from scenarios (do not overwrite an existing operator PRD).
 
-### Complete / short-circuit (v0.3.2+; Round 12 accept gate)
+### Complete / short-circuit (v0.3.2+; Round 12 + Round 14 accept gate)
 
 ```bash
 # Only terminal step for autopilot (same-process freeze_and_run + set_verified).
-# Bare `omg accept` is refused for mode=autopilot — use complete.
+# Bare `omg accept` is refused whenever autopilot.json exists — use complete.
+# complete/set_verified also bind authority_nonce + authority_phase==acceptance.
 omg autopilot complete --run "$RUN"
 
 omg autopilot status --run "$RUN"
 # expect: phase=verified, run_status=verified, autopilot_phase=verified
 ```
 
+**Authority binding (Round 14):** CLI transitions rotate `authority_nonce` and
+set `authority_phase` on both the sidecar and `status.json`. Complete is the
+path that reaches `authority_phase=acceptance` then `verified`. Dual-edit of
+both files under a writable `.omg/state` remains an honesty residual (see
+[`security-model.md`](./security-model.md)).
 ---
 
 ## Repository workflows are a separate layer

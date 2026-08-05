@@ -66,8 +66,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `legal_next`, `provenance`) — wiki/memory/compaction deferred.
 - **Tracker process identity:** lease PID match fails closed when
   `process_starttime` is unavailable (unknown ≠ same process).
-- **`set_verified` force hatch:** `force=True` requires in-process
-  `OMG_INTERNAL_FORCE_VERIFIED=1`; not exposed on any CLI argparse path.
+- **`set_verified` force hatch (Round 14):** `force=True` requires an
+  in-process capability from `enable_force_verified_for_tests()` (tests
+  only); env `OMG_INTERNAL_FORCE_VERIFIED` alone is insufficient (deprecated
+  no-op). Not exposed on any CLI argparse path.
 - **Review gate workspace binding (Round 2 / R2-2):** `omg review`
   records `workspace_fp` (`_implement_workspace_fingerprint`) on every
   structured review stamp; `stage_review_is_clean` requires it to match the
@@ -233,6 +235,26 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   cancel check + ``Popen`` + pid publish run under a short
   ``transition_guard`` so cancel cannot miss a newly spawned Grok;
   kill the child if pid publish fails.
+- **Force verified process-private only (Round 14 / R14-1):**
+  ``set_verified(force=True)`` requires ``enable_force_verified_for_tests()``;
+  env alone does not unlock force.
+- **Implementation receipts + live lease binder (Round 14 / R14-2):**
+  ``stamp_implementation_receipt`` requires a live ``ExecutionLease`` and
+  rebinds ``implement_receipt_binder``; implement entry clears the binder
+  so a hand-copied receipt cannot unlock the next cycle.
+- **Refuse spawn on live leader pid (Round 14 / R14-3):**
+  resume/spawn refuses when ``pid.json`` still matches a live leader
+  (PID + starttime); also refuses a live PID without starttime (do not
+  clear/spawn).
+- **Require starttime for pid publication (Round 14 / R14-4):**
+  ``write_pid_metadata`` fails closed without starttime; fanout kills the
+  worker if publish fails after spawn.
+- **Authority nonce + phase bind accept/verified (Round 14 / R14-5):**
+  ``authority_nonce`` / ``authority_phase`` bind ``status.json`` ↔
+  ``autopilot.json``; bare ``omg accept`` refused whenever the autopilot
+  sidecar exists; ``set_verified`` requires matching nonce and
+  ``authority_phase==acceptance``. Residual: dual-edit of both files under
+  a writable ``.omg/state`` / OS write-deny still out of scope.
 
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —

@@ -4,7 +4,7 @@ English | [简体中文](./security-model.zh.md) | [繁體中文](./security-mod
 
 **Canonical truth table** for isolation claims. README, skills, and doctor footers should link here rather than invent stronger wording.
 
-Last updated: 2026-08-01 · Plugin version: **0.7.4**
+Last updated: 2026-08-05 · Plugin version: **0.7.4**
 
 ## Layer table (strongest → weakest)
 
@@ -152,10 +152,14 @@ markexpr for UX; coalescing is not a policy bypass.
 materialized from **CLI-stamped clean** UltraQA only (never overwrites an
 existing operator PRD). `omg autopilot complete` may short-circuit when the
 run is already disk-`verified` (phase sync only) — it does **not** create
-`verified` without a prior CLI accept path. For **autopilot** runs (Round 12),
-bare `omg accept` is refused; terminal verify goes through
-`omg autopilot complete`, and `set_verified` requires sidecar
-`phase==acceptance` (fail-closed).
+`verified` without a prior CLI accept path. For **autopilot** runs (Round 12 +
+Round 14), bare `omg accept` is refused whenever the autopilot sidecar exists
+(not only when `status.mode` still says autopilot); terminal verify goes
+through `omg autopilot complete`. `set_verified` requires sidecar
+`phase==acceptance` **and** matching `authority_nonce` /
+`authority_phase==acceptance` between `status.json` and `autopilot.json`
+(fail-closed; hand-editing `phase` alone leaves `authority_phase` at the prior
+CLI value and is refused).
 
 **Goal verify multi-process residual:** `omg goal verify` may accept a disk
 CLI acceptance stamp (`require_token=False`) when the linked run is already
@@ -163,7 +167,23 @@ disk-`verified`. That is weaker than same-process `set_verified` tokens —
 treat goal promotion as multi-process disk-trust, not process-token grade.
 See `omg_cli/goals.py` verify path.
 
+**Autopilot authority residual (Round 14):** nonce/`authority_phase` binding
+stops single-file hand-edits and mode flips. Dual-edit of both
+`status.json` and `autopilot.json` under a writable `.omg/state`, or host OS
+write-deny sandboxes that keep agents out of that tree, remain **out of
+scope** — not claimed closed.
+
 See `omg_cli/command_policy.py` (`POLICY_VERSION`).
+
+### Force-verified hatch (tests only)
+
+`set_verified(..., force=True)` is **not** on any CLI argparse path. Unlocking
+it requires an in-process capability issued only by
+`enable_force_verified_for_tests()` (unit tests). The legacy env
+`OMG_INTERNAL_FORCE_VERIFIED` is a **deprecated no-op** — setting it alone does
+**not** unlock force (Round 14). Production / operator workflows must use
+same-process acceptance (`omg autopilot complete` or bare `omg accept` for
+non-autopilot runs).
 
 ### Autopilot `break_glass` vs CLI stamps
 
@@ -180,9 +200,11 @@ The autopilot FSM records `gate_audit` on history (for example
 from audited overrides. Break-glass does **not** weaken acceptance: `verified`
 still requires same-process `omg autopilot complete` (autopilot) or `omg accept`
 (non-autopilot) with command-policy checks — it only documents operator intent
-at earlier gates. Autopilot implementation receipts additionally require a
-lease `invocation_id` on the CLI stamp (Round 12) so a hand-written
-`writer=omg-cli` file cannot forge the implement→review gate.
+at earlier gates. Autopilot implementation receipts require a live
+`ExecutionLease` at stamp time plus matching `invocation_id` /
+`lease_generation` and an `implement_receipt_binder` rebound under that lease
+(Round 12 + Round 14). Implement entry clears the binder so a hand-copied
+`writer=omg-cli` receipt cannot unlock the next implement→review cycle.
 
 Review/QA **fingerprint rechecks** (Round 1) re-validate hash fields on existing
 CLI stamps against the current workspace; they do not grant trust to un-stamped
@@ -192,7 +214,10 @@ cross-file WAL or cryptographic writer identity (planned hardening). Concurrent
 `autopilot.driver.lock` flock (Round 12) — integration isolation only, not an
 execution sandbox. Grok spawn linearization (Round 13) holds cancel-check +
 `Popen` + pid publish under a short `transition_guard` and kills the child if
-pid publish fails, so cancel cannot race past an unpublished leader pid.
+pid publish fails. Round 14 additionally refuses spawn when `pid.json` still
+identifies a live leader (PID + matching starttime), refuses a live PID without
+starttime, and requires non-empty starttime before publishing pid metadata
+(fanout kills the worker on publish fail).
 
 | Family | Allowed | Denied |
 |--------|---------|--------|
@@ -369,6 +394,8 @@ Do **not** claim uniform sandboxing across providers, OMC multi-CLI team parity,
 - “A `.mcp.json` / `.lsp.json` file proves the host enabled or verified it.”
 - “A local `.rhai` file or `/create-workflow` help text proves native workflow parity.”
 - “Notifications or a native dashboard are authoritative for run/release state.”
+- “`OMG_INTERNAL_FORCE_VERIFIED=1` unlocks `set_verified(force=True)`.” (Env alone is a no-op; tests use `enable_force_verified_for_tests()`.)
+- “Authority nonce closes dual-edit of `.omg/state` / OS write-deny.” (Single-file / mode-flip binding only; dual-edit residual remains.)
 
 ## Related
 
