@@ -258,7 +258,7 @@ sidecar writes when the run is terminal or has a pending cancellation
 request (same gate, immediately before each save — Round 10 extended
 beyond attach/close).
 
-**Terminal/cancel gates on transition/resume (Round 9 + Round 11):**
+**Terminal/cancel gates on transition/resume (Round 9 + Round 11 + Round 13):**
 `transition()` re-checks `status.json` under the execution lease and
 refuses any sidecar write when the run is terminal (`cancelled` /
 `completed` / `failed` / `verified`) or has a pending cancellation
@@ -267,6 +267,9 @@ cancel. `omg autopilot run --resume` prefers terminal `status.json` over
 a stale non-terminal sidecar phase. Immediately before each `_launch_grok`
 / Popen (Round 11), the driver re-checks status and any pending
 `cancel.request.json` and refuses spawn when cancelled or cancel-pending.
+As of Round 13, cancel check + `Popen` + pid publish are linearized under a
+short `transition_guard` so a concurrent cancel cannot miss a newly spawned
+Grok; if pid publish fails after `Popen`, the child is killed.
 `omg autopilot status` returns empty `legal_next` for terminal runs.
 
 **Resume interview preflight (Round 11):** when `--resume` finds

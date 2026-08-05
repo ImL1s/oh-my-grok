@@ -190,7 +190,9 @@ inline JSON. Residual: single-file atomic writes and hash rechecks are not a ful
 cross-file WAL or cryptographic writer identity (planned hardening). Concurrent
 `run_autopilot` invocations are serialized by an exclusive
 `autopilot.driver.lock` flock (Round 12) — integration isolation only, not an
-execution sandbox.
+execution sandbox. Grok spawn linearization (Round 13) holds cancel-check +
+`Popen` + pid publish under a short `transition_guard` and kills the child if
+pid publish fails, so cancel cannot race past an unpublished leader pid.
 
 | Family | Allowed | Denied |
 |--------|---------|--------|

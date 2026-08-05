@@ -229,6 +229,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   ``run_autopilot`` holds a non-blocking exclusive flock on
   ``autopilot.driver.lock`` for the whole invocation so concurrent
   ``--resume`` cannot double-launch Grok.
+- **Linearize grok spawn under transition_guard (Round 13):**
+  cancel check + ``Popen`` + pid publish run under a short
+  ``transition_guard`` so cancel cannot miss a newly spawned Grok;
+  kill the child if pid publish fails.
 
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —
