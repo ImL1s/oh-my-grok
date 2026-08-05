@@ -26,10 +26,11 @@ from omg_cli.state import (
     write_status,
 )
 
-# Authority nonce binds status.json ↔ autopilot.json for accept/verified.
-# OS-level deny of `.omg/state/**` writes is still out of scope; the nonce makes
-# casual dual-edit harder and blocks mode-flip + bare accept and phase-flip
-# without a matching status nonce. Dual-edit of both files remains residual.
+# Authority nonce + authority_phase bind status.json ↔ autopilot.json for
+# accept/verified. OS-level deny of `.omg/state/**` writes is still out of
+# scope; together they make casual dual-edit harder and block mode-flip + bare
+# accept and phase-flip without matching CLI transition markers (nonce +
+# authority_phase). Dual-edit of both files' authority fields remains residual.
 
 
 # Edges ``transition()`` may take (machine-callable). ``verified`` is NOT here —
@@ -502,9 +503,11 @@ def assert_autopilot_accept_authority(
     """Fail closed when autopilot accept/verified authority does not bind.
 
     Triggered when the autopilot sidecar exists, ``status.mode==autopilot``, or
-    ``autopilot_authority_nonce`` is present on status. Requires a CLI-written
-    sidecar with matching ``run_id``, matching authority nonce vs status, and
-    (unless skipped) ``phase==acceptance``.
+    authority markers are present on status. Requires a CLI-written sidecar with
+    matching ``run_id``, matching authority nonce vs status, and (unless skipped)
+    ``phase`` / ``authority_phase`` / ``autopilot_authority_phase`` all
+    ``acceptance``. Hand-editing ``phase`` alone leaves ``authority_phase`` at
+    the prior CLI value and is refused.
     """
     root = Path(root).resolve()
     run_id = validate_identifier(run_id, label="run_id")
@@ -514,6 +517,7 @@ def assert_autopilot_accept_authority(
         sidecar_path.is_file()
         or run.get("mode") == "autopilot"
         or bool(run.get("autopilot_authority_nonce"))
+        or bool(run.get("autopilot_authority_phase"))
     )
     if not needs_check:
         return {}
@@ -530,13 +534,25 @@ def assert_autopilot_accept_authority(
             "autopilot sidecar run_id mismatch for "
             f"run_id={run_id!r} (got {ap.get('run_id')!r})"
         )
-    if require_acceptance_phase and str(ap.get("phase") or "") != "acceptance":
+    if require_acceptance_phase:
         phase = str(ap.get("phase") or "")
-        raise PermissionError(
-            "refusing set_verified for autopilot run unless "
-            f"autopilot phase is 'acceptance' (got {phase!r}); "
-            f"use omg autopilot complete for run_id={run_id!r}"
-        )
+        side_auth_phase = str(ap.get("authority_phase") or "")
+        status_auth_phase = str(run.get("autopilot_authority_phase") or "")
+        if phase != "acceptance":
+            raise PermissionError(
+                "refusing set_verified for autopilot run unless "
+                f"autopilot phase is 'acceptance' (got {phase!r}); "
+                f"use omg autopilot complete for run_id={run_id!r}"
+            )
+        if side_auth_phase != "acceptance" or status_auth_phase != "acceptance":
+            raise PermissionError(
+                "refusing set_verified for autopilot run unless CLI "
+                f"authority_phase is 'acceptance' "
+                f"(sidecar={side_auth_phase!r}, "
+                f"status.autopilot_authority_phase={status_auth_phase!r}); "
+                f"hand-edited phase without CLI transition is refused "
+                f"for run_id={run_id!r}"
+            )
     side_nonce = ap.get("authority_nonce")
     status_nonce = run.get("autopilot_authority_nonce")
     if (
@@ -617,6 +633,9 @@ def start_autopilot(
             "blocker": None,
             "verified": False,
             "authority_nonce": authority_nonce,
+            # CLI transition marker (rotated with nonce). Hand-editing ``phase``
+            # alone does not update this — accept/verified require it.
+            "authority_phase": phase,
             "created_at": _utc_now(),
         }
         _save(root, run_id, state, lease)
@@ -628,6 +647,7 @@ def start_autopilot(
                 "stage": "autopilot",
                 "autopilot_phase": phase,
                 "autopilot_authority_nonce": authority_nonce,
+                "autopilot_authority_phase": phase,
             },
             lease=lease,
         )
@@ -859,6 +879,7 @@ def transition(
             status = "running"
         authority_nonce = _new_authority_nonce()
         state["authority_nonce"] = authority_nonce
+        state["authority_phase"] = next_phase
         _save(root, run_id, state, lease)
         write_status(
             root,
@@ -869,6 +890,7 @@ def transition(
                 "autopilot_phase": next_phase,
                 "blocker": state.get("blocker"),
                 "autopilot_authority_nonce": authority_nonce,
+                "autopilot_authority_phase": next_phase,
             },
             lease=lease,
         )
@@ -885,7 +907,8 @@ def _sync_autopilot_verified(
     """Mark autopilot phase verified + align status.autopilot_phase (lease held).
 
     Does not re-commit verified status (use set_verified first when needed).
-    Rotates authority_nonce on both sidecar and status under the lease.
+    Rotates authority_nonce + authority_phase on both sidecar and status under
+    the lease.
     """
     from omg_cli.state import merge_status_fields
 
@@ -894,6 +917,7 @@ def _sync_autopilot_verified(
     state["phase"] = "verified"
     state["verified"] = True
     state["authority_nonce"] = authority_nonce
+    state["authority_phase"] = "verified"
     state["history"] = list(state.get("history") or []) + [
         {
             "phase": "verified",
@@ -910,6 +934,7 @@ def _sync_autopilot_verified(
             "autopilot_phase": "verified",
             "blocker": None,
             "autopilot_authority_nonce": authority_nonce,
+            "autopilot_authority_phase": "verified",
         },
         lease=lease,
     )

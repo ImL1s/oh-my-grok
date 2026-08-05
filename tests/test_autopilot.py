@@ -1804,6 +1804,8 @@ def test_authority_nonce_present_and_matching_after_start(tmp_path: Path) -> Non
     nonce = ap.get("authority_nonce")
     assert isinstance(nonce, str) and nonce
     assert run.get("autopilot_authority_nonce") == nonce
+    assert ap.get("authority_phase") == "ralplan"
+    assert run.get("autopilot_authority_phase") == "ralplan"
 
 
 def test_authority_nonce_rotates_on_transition(tmp_path: Path) -> None:
@@ -1824,6 +1826,8 @@ def test_authority_nonce_rotates_on_transition(tmp_path: Path) -> None:
     assert isinstance(new, str) and new
     assert new != old
     assert after_run.get("autopilot_authority_nonce") == new
+    assert after_ap.get("authority_phase") == "implement"
+    assert after_run.get("autopilot_authority_phase") == "implement"
 
 
 def test_cmd_accept_refuses_when_mode_flipped_but_sidecar_exists(
@@ -1873,15 +1877,17 @@ def test_set_verified_refuses_phase_flip_with_nonce_mismatch(tmp_path: Path) -> 
     transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
     assert load_autopilot(tmp_path, rid)["phase"] == "implement"
 
-    # Casual dual-edit residual still exists; this blocks phase-flip without a
-    # matching status nonce (OS deny of .omg/state/** writes remains out of scope).
+    # Forge phase + authority_phase so the check reaches the nonce mismatch
+    # (authority_phase alone would refuse first). Dual-edit residual remains.
     ap_path = autopilot_state_path(tmp_path, rid)
     ap = json.loads(ap_path.read_text(encoding="utf-8"))
     ap["phase"] = "acceptance"
+    ap["authority_phase"] = "acceptance"
     ap_path.write_text(json.dumps(ap, indent=2) + "\n", encoding="utf-8")
     status_path = tmp_path / ".omg" / "state" / "runs" / rid / "status.json"
     status = json.loads(status_path.read_text(encoding="utf-8"))
     status["autopilot_phase"] = "acceptance"
+    status["autopilot_authority_phase"] = "acceptance"
     status["autopilot_authority_nonce"] = "forged-mismatch-nonce"
     status_path.write_text(json.dumps(status, indent=2) + "\n", encoding="utf-8")
 
@@ -1891,6 +1897,61 @@ def test_set_verified_refuses_phase_flip_with_nonce_mismatch(tmp_path: Path) -> 
     with pytest.raises(PermissionError, match="authority_nonce|nonce"):
         set_verified(tmp_path, rid, force=False)
     with pytest.raises(AutopilotError, match="authority_nonce|nonce"):
+        complete_with_acceptance(tmp_path, rid, prd=prd)
+    run = load_run(tmp_path, rid)
+    assert run is not None
+    assert run.get("verified") is not True
+    assert run.get("status") != "verified"
+
+
+def test_set_verified_refuses_phase_only_flip_leaving_authority_phase(
+    tmp_path: Path,
+) -> None:
+    """R14-5: hand-edit only phase→acceptance; authority_phase stays prior → refuse."""
+    import json
+
+    from omg_cli.acceptance import freeze_and_run
+    from omg_cli.autopilot import autopilot_state_path
+    from omg_cli.state import set_verified
+
+    clear_cli_acceptance_tokens()
+    st = start_autopilot(tmp_path, "phase only flip", skip_interview=True)
+    rid = st["run_id"]
+    transition(tmp_path, rid, "implement", evidence=_ev_consensus_bg())
+    transition(tmp_path, rid, "review", evidence=_ev_no_change_bg())
+    _stamp_review_clean(tmp_path, rid)
+    transition(tmp_path, rid, "qa")
+    ap_before = load_autopilot(tmp_path, rid)
+    run_before = load_run(tmp_path, rid)
+    assert run_before is not None
+    assert ap_before["phase"] == "qa"
+    assert ap_before.get("authority_phase") == "qa"
+    assert run_before.get("autopilot_authority_phase") == "qa"
+    nonce = ap_before["authority_nonce"]
+    assert run_before.get("autopilot_authority_nonce") == nonce
+
+    # Hand-edit ONLY display/phase fields; leave authority_phase + nonce intact.
+    # Nonce sync alone is not a CLI transition marker.
+    ap_path = autopilot_state_path(tmp_path, rid)
+    ap = json.loads(ap_path.read_text(encoding="utf-8"))
+    ap["phase"] = "acceptance"
+    ap_path.write_text(json.dumps(ap, indent=2) + "\n", encoding="utf-8")
+    status_path = tmp_path / ".omg" / "state" / "runs" / rid / "status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    status["autopilot_phase"] = "acceptance"
+    status_path.write_text(json.dumps(status, indent=2) + "\n", encoding="utf-8")
+
+    ap_after = load_autopilot(tmp_path, rid)
+    assert ap_after["phase"] == "acceptance"
+    assert ap_after.get("authority_phase") == "qa"
+    assert ap_after.get("authority_nonce") == nonce
+
+    prd = _goal_bound_prd(tmp_path, "phase only flip")
+    assert freeze_and_run(tmp_path, rid, prd) is True
+
+    with pytest.raises(PermissionError, match="authority_phase"):
+        set_verified(tmp_path, rid, force=False)
+    with pytest.raises(AutopilotError, match="authority_phase"):
         complete_with_acceptance(tmp_path, rid, prd=prd)
     run = load_run(tmp_path, rid)
     assert run is not None
@@ -1910,6 +1971,8 @@ def test_complete_with_acceptance_happy_path_preserves_authority(
     run = load_run(tmp_path, rid)
     assert run is not None
     assert ap["phase"] == "acceptance"
+    assert ap.get("authority_phase") == "acceptance"
+    assert run.get("autopilot_authority_phase") == "acceptance"
     assert ap.get("authority_nonce") == run.get("autopilot_authority_nonce")
 
     prd = _goal_bound_prd(tmp_path, "nonce happy path")
@@ -1924,6 +1987,8 @@ def test_complete_with_acceptance_happy_path_preserves_authority(
     # complete rotates nonce under lease; both sides stay in sync
     assert ap2.get("authority_nonce") == run2.get("autopilot_authority_nonce")
     assert ap2.get("authority_nonce") != ap.get("authority_nonce")
+    assert ap2.get("authority_phase") == "verified"
+    assert run2.get("autopilot_authority_phase") == "verified"
 
 
 def test_set_verified_refuses_autopilot_before_acceptance_phase(
