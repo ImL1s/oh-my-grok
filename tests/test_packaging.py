@@ -43,7 +43,7 @@ def test_product_subpackages_importable() -> None:
 
 def test_import_safe_version_matches_plugin_manifest() -> None:
     plugin = json.loads((ROOT / "plugin.json").read_text(encoding="utf-8"))
-    assert omg_cli.__version__ == plugin["version"] == "0.7.4"
+    assert omg_cli.__version__ == plugin["version"] == "0.7.5"
 
 
 def test_readme_display_versions_match_plugin_manifest() -> None:

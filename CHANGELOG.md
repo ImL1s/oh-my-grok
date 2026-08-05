@@ -9,6 +9,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-08-05
+
 ### Added
 - **Parity inventory v2 (#78-A):** claimability-safe schema with ordered maturity,
   expanded classifications, bootstrapping canonical inventory for open P0 gaps

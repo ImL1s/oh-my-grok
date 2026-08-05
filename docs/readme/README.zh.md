@@ -42,7 +42,7 @@ Workers 只经 Grok **`spawn_subagent`**（depth 1）。
 **tmux team：** `omg team` **默认开启**（关闭：`OMG_DISABLE_TMUX_TEAM=1`；旧 `OMG_EXPERIMENTAL_TMUX_TEAM=0` 也会关）。零设定 = grok panes；`--routing` 可开 multi-CLI。只提供 worktree／seal／integrate 的**整合隔离**，不是执行 sandbox。
 **范围诚实：** core purpose 编排对等子集 — 仍不是完整 OMC skill zoo，也不宣称各 provider 有一致的执行 sandbox；详见 [`docs/security-model.md`](../security-model.md)。
 
-版本：**0.7.4** · License: MIT
+版本：**0.7.5** · License: MIT
 
 ---
 
@@ -72,12 +72,12 @@ omg doctor --strict
 ### 手动 pin GitHub 版本
 
 ```bash
-TAG=v0.7.4
-curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.7.4.tar.gz"
+TAG=v0.7.5
+curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.7.5.tar.gz"
 curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/SHA256SUMS"
 shasum -a 256 -c SHA256SUMS
 curl -fsSLo install.sh "https://raw.githubusercontent.com/ImL1s/oh-my-grok/${TAG}/scripts/install.sh"
-bash install.sh --offline --archive ./oh-my-grok-0.7.4.tar.gz \
+bash install.sh --offline --archive ./oh-my-grok-0.7.5.tar.gz \
   --checksums ./SHA256SUMS --source-tag "${TAG}"
 omg doctor --strict
 ```
@@ -87,7 +87,7 @@ omg doctor --strict
 ### 只装 plugin（半套）
 
 ```bash
-grok plugin install ImL1s/oh-my-grok@v0.7.4 --trust
+grok plugin install ImL1s/oh-my-grok@v0.7.5 --trust
 ```
 
 不会自动把 `omg` 放上 PATH，也不保证 global PreToolUse soft-gate。日常请用完整安装。
