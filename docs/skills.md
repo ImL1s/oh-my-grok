@@ -502,7 +502,7 @@ them from a skill, but authority and evidence remain in the CLI artifacts.
 | `omg compact create\|show\|render` | Lossless guidance checkpoint and restore. |
 | `omg notify status\|send\|process` | Outbound-only, non-authoritative delivery queue. |
 | `omg workflow install\|list\|show\|plan\|run` | Immutable workflow registry, deterministic waves, receipt-bound ship gate. |
-| `omg parity run\|release-readback` | Frozen W0 manifest delegation and exact bundle verification. |
+| `omg parity run\|release-readback\|check\|gaps` | Frozen W0 manifest delegation, bundle verification, inventory check, and gap listing. |
 | `omg capabilities` / `omg native-status` | Independent capability tiers; no private-sidecar probing. |
 
 Workflow planning never launches a foreign CLI. The leader executes plan tasks

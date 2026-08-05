@@ -100,3 +100,30 @@ def test_hud_json_via_main(
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     assert isinstance(payload, dict)
+
+
+def test_parity_check_uses_global_json_envelope(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code = main(["parity", "check", "--strict", "--json"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["schema_version"] == 1
+    assert payload["command"] == "parity.check"
+    assert payload["data"]["ok"] is True
+    assert payload["data"]["schema_version"] == 2
+    assert payload["data"]["strict"] is True
+    assert payload["data"]["completion_claims_allowed"] is False
+
+    code = main(["parity", "gaps", "--priority", "P0", "--json"])
+    assert code == 0
+    gaps_payload = json.loads(capsys.readouterr().out)
+    assert gaps_payload["ok"] is True
+    assert gaps_payload["command"] == "parity.gaps"
+    issues = {
+        issue
+        for gap in gaps_payload["data"]["gaps"]
+        for issue in gap["issues"]
+    }
+    assert {"#67", "#68", "#69", "#78"} <= issues
