@@ -9,9 +9,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, MutableMapping
+from typing import Any, Iterator, Mapping, MutableMapping
 
 from omg_cli.evidence import CLI_WRITER, assert_safe_supervised_parent, validate_identifier
 from omg_cli.state import (
@@ -1360,6 +1361,35 @@ def _launch_refused_for_cancel(root: Path | str, run_id: str) -> str | None:
     return None
 
 
+
+@contextmanager
+def _autopilot_driver_lock(run_dir: Path) -> Iterator[Path]:
+    """Exclusive non-blocking flock on ``autopilot.driver.lock`` for one driver.
+
+    Separate from ``execution_lease`` — serializes whole ``run_autopilot``
+    invocations so dual resume cannot double-launch. Raises ``BlockingIOError``
+    when another process already holds the lock.
+    """
+    import fcntl
+
+    lock_path = Path(run_dir) / "autopilot.driver.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lockf = lock_path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(lockf.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lockf.close()
+        raise
+    try:
+        yield lock_path
+    finally:
+        try:
+            fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        lockf.close()
+
+
 def run_autopilot(
     root: Path | str,
     goal: str,
@@ -1463,200 +1493,209 @@ def run_autopilot(
 
     launch_timeout = resolve_launch_timeout(timeout, dry_run=dry_run)
     run_dir = _run_dir(root_path, run_id)
-    phase_cycles: dict[str, int] = {}
-    stall_relaunches = 0
-    max_stall = max(1, int(max_stall_relaunches))
-    resume_cmd = (
-        f"omg autopilot run --resume {run_id}"
-        + (" --unattended" if unattended else "")
-    )
-
-    while True:
-        st = status_autopilot(root_path, run_id)
-        phase = str(st.get("phase") or "")
-        run_row = load_run(root_path, run_id) or {}
-        if run_row.get("autopilot_awaiting"):
-            write_resume_md(root_path, run_id)
-            clear_cmd = f"omg autopilot await --clear --run {run_id}"
-            reason = run_row.get("autopilot_awaiting_reason")
-            if isinstance(reason, str) and reason.strip():
-                print(f"{clear_cmd}  # reason: {reason.strip()}", file=sys.stderr)
-            else:
-                print(clear_cmd, file=sys.stderr)
-            print(resume_cmd, file=sys.stderr)
-            print(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "pause": "awaiting",
-                        "run_id": run_id,
-                        "resume_command": resume_cmd,
-                    },
-                    ensure_ascii=False,
-                )
+    try:
+        with _autopilot_driver_lock(run_dir):
+            phase_cycles: dict[str, int] = {}
+            stall_relaunches = 0
+            max_stall = max(1, int(max_stall_relaunches))
+            resume_cmd = (
+                f"omg autopilot run --resume {run_id}"
+                + (" --unattended" if unattended else "")
             )
-            return 0
-        if phase == "verified":
-            write_resume_md(root_path, run_id)
-            print(
-                json.dumps(
-                    {"ok": True, "phase": "verified", "run_id": run_id},
-                    ensure_ascii=False,
-                )
-            )
-            return 0
-        if phase in ("blocked", "cancelled"):
-            write_resume_md(root_path, run_id)
-            print(
-                json.dumps(
-                    {"ok": False, "phase": phase, "run_id": run_id},
-                    ensure_ascii=False,
-                )
-            )
-            return 1
-        if phase == "interview" and not _interview_complete(root_path, run_id):
-            write_resume_md(root_path, run_id)
-            print(resume_cmd, file=sys.stderr)
-            print(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "pause": "interview",
-                        "run_id": run_id,
-                        "resume_command": resume_cmd,
-                    },
-                    ensure_ascii=False,
-                )
-            )
-            return 0
 
-        # Preflight: completed interview must advance before any launch so
-        # resume does not spawn an unnecessary interview Grok session.
-        if phase == "interview" and _interview_complete(root_path, run_id):
-            new_phase = _try_advance_after_launch(root_path, run_id, phase)
-            if new_phase != phase:
-                continue
-            write_resume_md(root_path, run_id)
-            print(resume_cmd, file=sys.stderr)
-            print(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "pause": "stall",
-                        "phase": phase,
-                        "run_id": run_id,
-                        "resume_command": resume_cmd,
-                    },
-                    ensure_ascii=False,
-                )
-            )
-            return 0
+            while True:
+                st = status_autopilot(root_path, run_id)
+                phase = str(st.get("phase") or "")
+                run_row = load_run(root_path, run_id) or {}
+                if run_row.get("autopilot_awaiting"):
+                    write_resume_md(root_path, run_id)
+                    clear_cmd = f"omg autopilot await --clear --run {run_id}"
+                    reason = run_row.get("autopilot_awaiting_reason")
+                    if isinstance(reason, str) and reason.strip():
+                        print(f"{clear_cmd}  # reason: {reason.strip()}", file=sys.stderr)
+                    else:
+                        print(clear_cmd, file=sys.stderr)
+                    print(resume_cmd, file=sys.stderr)
+                    print(
+                        json.dumps(
+                            {
+                                "ok": True,
+                                "pause": "awaiting",
+                                "run_id": run_id,
+                                "resume_command": resume_cmd,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 0
+                if phase == "verified":
+                    write_resume_md(root_path, run_id)
+                    print(
+                        json.dumps(
+                            {"ok": True, "phase": "verified", "run_id": run_id},
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 0
+                if phase in ("blocked", "cancelled"):
+                    write_resume_md(root_path, run_id)
+                    print(
+                        json.dumps(
+                            {"ok": False, "phase": phase, "run_id": run_id},
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 1
+                if phase == "interview" and not _interview_complete(root_path, run_id):
+                    write_resume_md(root_path, run_id)
+                    print(resume_cmd, file=sys.stderr)
+                    print(
+                        json.dumps(
+                            {
+                                "ok": True,
+                                "pause": "interview",
+                                "run_id": run_id,
+                                "resume_command": resume_cmd,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 0
 
-        phase_cycles[phase] = int(phase_cycles.get(phase, 0)) + 1
-        if phase_cycles[phase] > max(1, int(max_phase_cycles)):
-            try:
-                transition(
-                    root_path,
-                    run_id,
-                    "blocked",
-                    reason=f"max_phase_cycles={max_phase_cycles}",
-                )
-            except AutopilotError:
-                pass
-            write_resume_md(root_path, run_id)
-            return 1
+                # Preflight: completed interview must advance before any launch so
+                # resume does not spawn an unnecessary interview Grok session.
+                if phase == "interview" and _interview_complete(root_path, run_id):
+                    new_phase = _try_advance_after_launch(root_path, run_id, phase)
+                    if new_phase != phase:
+                        continue
+                    write_resume_md(root_path, run_id)
+                    print(resume_cmd, file=sys.stderr)
+                    print(
+                        json.dumps(
+                            {
+                                "ok": True,
+                                "pause": "stall",
+                                "phase": phase,
+                                "run_id": run_id,
+                                "resume_command": resume_cmd,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 0
 
-        write_resume_md(root_path, run_id)
-
-        refuse = _launch_refused_for_cancel(root_path, run_id)
-        if refuse is not None:
-            print(f"omg autopilot run: {refuse}", file=sys.stderr)
-            return 1
-
-        prompt = build_phase_prompt(phase, root=root_path, goal=goal, run_id=run_id)
-        argv = build_grok_argv(
-            "ralplan",
-            goal,
-            yolo=yolo,
-            safe=safe,
-            cwd=root_path,
-            project_root=root_path,
-            run_id=run_id,
-            prompt=prompt,
-            skill_root=_plugin_root(),
-            **{
-                k: v
-                for k, v in launch_kw.items()
-                if k
-                in (
-                    "extra",
-                    "output_format",
-                    "disallow_shell",
-                    "new_session_id",
-                    "resume_session_id",
-                )
-            },
-        )
-        rc = _launch_grok(
-            argv,
-            cwd=root_path,
-            run_dir=run_dir,
-            timeout=launch_timeout,
-            dry_run=dry_run,
-        )
-        if rc != 0:
-            write_resume_md(root_path, run_id)
-            return int(rc)
-
-        new_phase = _try_advance_after_launch(root_path, run_id, phase)
-        if dry_run:
-            return 0
-        if new_phase == phase:
-            # No gate progress this launch — host turn likely ended (Stop cap)
-            # or a destination gate failed (see gate_failure on status).
-            run_now = load_run(root_path, run_id) or {}
-            gate = run_now.get("autopilot_gate_failure")
-            gate_payload = gate if isinstance(gate, dict) and gate else None
-            if unattended:
-                stall_relaunches += 1
-                if stall_relaunches > max_stall:
+                phase_cycles[phase] = int(phase_cycles.get(phase, 0)) + 1
+                if phase_cycles[phase] > max(1, int(max_phase_cycles)):
                     try:
                         transition(
                             root_path,
                             run_id,
                             "blocked",
-                            reason=f"max_stall_relaunches={max_stall}",
+                            reason=f"max_phase_cycles={max_phase_cycles}",
                         )
                     except AutopilotError:
                         pass
                     write_resume_md(root_path, run_id)
-                    stall_body: dict[str, Any] = {
-                        "ok": False,
+                    return 1
+
+                write_resume_md(root_path, run_id)
+
+                refuse = _launch_refused_for_cancel(root_path, run_id)
+                if refuse is not None:
+                    print(f"omg autopilot run: {refuse}", file=sys.stderr)
+                    return 1
+
+                prompt = build_phase_prompt(phase, root=root_path, goal=goal, run_id=run_id)
+                argv = build_grok_argv(
+                    "ralplan",
+                    goal,
+                    yolo=yolo,
+                    safe=safe,
+                    cwd=root_path,
+                    project_root=root_path,
+                    run_id=run_id,
+                    prompt=prompt,
+                    skill_root=_plugin_root(),
+                    **{
+                        k: v
+                        for k, v in launch_kw.items()
+                        if k
+                        in (
+                            "extra",
+                            "output_format",
+                            "disallow_shell",
+                            "new_session_id",
+                            "resume_session_id",
+                        )
+                    },
+                )
+                rc = _launch_grok(
+                    argv,
+                    cwd=root_path,
+                    run_dir=run_dir,
+                    timeout=launch_timeout,
+                    dry_run=dry_run,
+                )
+                if rc != 0:
+                    write_resume_md(root_path, run_id)
+                    return int(rc)
+
+                new_phase = _try_advance_after_launch(root_path, run_id, phase)
+                if dry_run:
+                    return 0
+                if new_phase == phase:
+                    # No gate progress this launch — host turn likely ended (Stop cap)
+                    # or a destination gate failed (see gate_failure on status).
+                    run_now = load_run(root_path, run_id) or {}
+                    gate = run_now.get("autopilot_gate_failure")
+                    gate_payload = gate if isinstance(gate, dict) and gate else None
+                    if unattended:
+                        stall_relaunches += 1
+                        if stall_relaunches > max_stall:
+                            try:
+                                transition(
+                                    root_path,
+                                    run_id,
+                                    "blocked",
+                                    reason=f"max_stall_relaunches={max_stall}",
+                                )
+                            except AutopilotError:
+                                pass
+                            write_resume_md(root_path, run_id)
+                            stall_body: dict[str, Any] = {
+                                "ok": False,
+                                "phase": phase,
+                                "run_id": run_id,
+                                "error": "max_stall_relaunches",
+                                "resume_command": resume_cmd,
+                            }
+                            if gate_payload:
+                                stall_body["gate_failure"] = gate_payload
+                            print(json.dumps(stall_body, ensure_ascii=False))
+                            return 1
+                        # Re-launch same phase without requiring human "go" (#40).
+                        continue
+                    write_resume_md(root_path, run_id)
+                    print(resume_cmd, file=sys.stderr)
+                    stall_ok: dict[str, Any] = {
+                        "ok": True,
+                        "pause": "stall",
                         "phase": phase,
                         "run_id": run_id,
-                        "error": "max_stall_relaunches",
                         "resume_command": resume_cmd,
                     }
                     if gate_payload:
-                        stall_body["gate_failure"] = gate_payload
-                    print(json.dumps(stall_body, ensure_ascii=False))
-                    return 1
-                # Re-launch same phase without requiring human "go" (#40).
-                continue
-            write_resume_md(root_path, run_id)
-            print(resume_cmd, file=sys.stderr)
-            stall_ok: dict[str, Any] = {
-                "ok": True,
-                "pause": "stall",
-                "phase": phase,
-                "run_id": run_id,
-                "resume_command": resume_cmd,
-            }
-            if gate_payload:
-                stall_ok["gate_failure"] = gate_payload
-            print(json.dumps(stall_ok, ensure_ascii=False))
-            return 0
-        stall_relaunches = 0
+                        stall_ok["gate_failure"] = gate_payload
+                    print(json.dumps(stall_ok, ensure_ascii=False))
+                    return 0
+                stall_relaunches = 0
+    except BlockingIOError:
+        print(
+            f"omg autopilot run: already running for {run_id}",
+            file=sys.stderr,
+        )
+        return 1
+
 
 
 __all__ = [

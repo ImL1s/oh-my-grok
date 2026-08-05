@@ -319,6 +319,40 @@ def test_run_autopilot_pending_cancel_refuses_launch_grok(
     assert not launched
 
 
+@pytest.mark.skipif(
+    __import__("os").name != "posix", reason="requires POSIX fcntl.flock"
+)
+def test_run_autopilot_driver_flock_blocks_second_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """R12-3: exclusive ``autopilot.driver.lock`` — second concurrent resume
+    returns non-zero without launching grok."""
+    import fcntl
+
+    from omg_cli.modes import _run_dir
+
+    st = start_autopilot(tmp_path, "driver flock exclusive", skip_interview=True)
+    rid = st["run_id"]
+    lock_path = _run_dir(tmp_path, rid) / "autopilot.driver.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    launched: list[bool] = []
+
+    def _fake_launch(argv, **kw):
+        launched.append(True)
+        return 0
+
+    monkeypatch.setattr("omg_cli.modes._launch_grok", _fake_launch)
+
+    with lock_path.open("a+", encoding="utf-8") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        rc = run_autopilot(tmp_path, "", resume_run_id=rid)
+        assert rc != 0
+        assert not launched
+        err = capsys.readouterr().err
+        assert "already running" in err.lower()
+
+
 def test_interview_complete_rejects_bare_status_string(tmp_path: Path) -> None:
     """R2-4: a forged interview.json with only status="complete" (no CLI
     writer, no spec artifact) must not unlock ralplan without break_glass —
