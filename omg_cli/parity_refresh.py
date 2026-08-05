@@ -2,19 +2,34 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-from omg_cli.contracts.parity_schema import UPSTREAM_PIN_IDS
+from omg_cli.contracts.parity_schema import SOURCE_STATUS_IDS, UPSTREAM_PIN_IDS
 from omg_cli.contracts.state_schemas import (
     ContractValidationError,
+    require_exact_keys,
     require_git_oid,
     require_iso8601,
     require_nonempty_string,
     require_object,
+    require_string_list,
 )
+
+COMMITTED_REVIEWS_RELATIVE = "docs/parity/reviews"
+_UPSTREAM_CATALOG_KEYS = frozenset({"source", "pin_revision", "capabilities"})
+_UPSTREAM_CAPABILITY_KEYS = frozenset({"id", "source_paths", "promise"})
+
+
+def _require_relative_posix(path_text: str, *, label: str) -> str:
+    text = require_nonempty_string(path_text, label=label)
+    pure = PurePosixPath(text)
+    if pure.is_absolute() or ".." in pure.parts or pure.parts[0] == "~":
+        raise ContractValidationError(f"{label} must be a relative POSIX path")
+    return text
 
 
 def _capability_fingerprint(cap: dict[str, Any]) -> tuple[frozenset[str], str]:
@@ -53,15 +68,171 @@ def _inventory_rows_for_source(inventory: dict[str, Any], source: str) -> dict[s
     return rows
 
 
-def _catalog_rows(upstream_catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def validate_upstream_catalog(upstream_catalog: dict[str, Any]) -> dict[str, Any]:
+    """Fail closed on malformed / duplicate upstream snapshot capability rows."""
+    catalog = require_object(upstream_catalog, label="upstream_catalog")
+    require_exact_keys(
+        catalog,
+        required=_UPSTREAM_CATALOG_KEYS,
+        label="upstream_catalog",
+    )
+    source = require_nonempty_string(catalog["source"], label="upstream_catalog.source")
+    if source not in SOURCE_STATUS_IDS:
+        raise ContractValidationError(
+            f"upstream_catalog.source {source!r} not in allowed snapshot sources"
+        )
+    require_git_oid(catalog["pin_revision"], label="upstream_catalog.pin_revision")
+    caps = catalog["capabilities"]
+    if not isinstance(caps, list):
+        raise ContractValidationError("upstream_catalog.capabilities must be an array")
     rows: dict[str, dict[str, Any]] = {}
-    for cap in upstream_catalog.get("capabilities", []):
-        if not isinstance(cap, dict):
-            continue
-        cap_id = cap.get("id")
-        if isinstance(cap_id, str) and cap_id:
-            rows[cap_id] = cap
+    for index, raw in enumerate(caps):
+        cap = require_object(raw, label=f"upstream_catalog.capabilities[{index}]")
+        require_exact_keys(
+            cap,
+            required=_UPSTREAM_CAPABILITY_KEYS,
+            label=f"upstream_catalog.capabilities[{index}]",
+        )
+        cap_id = require_nonempty_string(
+            cap["id"], label=f"upstream_catalog.capabilities[{index}].id"
+        )
+        if cap_id in rows:
+            raise ContractValidationError(
+                f"duplicate upstream capability id {cap_id!r}"
+            )
+        paths = require_string_list(
+            cap["source_paths"],
+            label=f"upstream_catalog.capabilities[{index}].source_paths",
+            unique=True,
+        )
+        if not paths:
+            raise ContractValidationError(
+                f"upstream_catalog.capabilities[{index}].source_paths must be non-empty"
+            )
+        for relative in paths:
+            _require_relative_posix(
+                relative,
+                label=f"upstream_catalog.capabilities[{index}].source_paths[]",
+            )
+        require_nonempty_string(
+            cap["promise"],
+            label=f"upstream_catalog.capabilities[{index}].promise",
+        )
+        rows[cap_id] = cap
+    return catalog
+
+
+def _catalog_rows(upstream_catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    catalog = validate_upstream_catalog(upstream_catalog)
+    rows: dict[str, dict[str, Any]] = {}
+    for cap in catalog["capabilities"]:
+        rows[str(cap["id"])] = cap
     return rows
+
+
+def canonical_changes_digest(changes: list[dict[str, Any]]) -> str:
+    """Stable SHA-256 digest over change identity + detail (no dispositions)."""
+    normalized: list[dict[str, Any]] = []
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+        kind = change.get("change_kind")
+        entry: dict[str, Any] = {
+            "change_kind": kind,
+            "detail": change.get("detail"),
+        }
+        if kind == "renamed":
+            entry["from_id"] = change.get("from_id")
+            entry["to_id"] = change.get("to_id")
+        else:
+            entry["capability_id"] = change.get("capability_id")
+        normalized.append(entry)
+
+    def _sort_key(entry: dict[str, Any]) -> tuple[str, str, str, str]:
+        return (
+            str(entry.get("change_kind") or ""),
+            str(entry.get("capability_id") or ""),
+            str(entry.get("from_id") or ""),
+            str(entry.get("to_id") or ""),
+        )
+
+    normalized.sort(key=_sort_key)
+    payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def committed_review_filename(
+    *,
+    source: str,
+    from_revision: str,
+    to_revision: str,
+    change_digest: str,
+) -> str:
+    return f"{source}-{from_revision}-{to_revision}-{change_digest}.json"
+
+
+def committed_review_path(
+    repo_root: Path | str,
+    *,
+    source: str,
+    from_revision: str,
+    to_revision: str,
+    change_digest: str,
+) -> Path:
+    root = Path(repo_root)
+    name = committed_review_filename(
+        source=source,
+        from_revision=from_revision,
+        to_revision=to_revision,
+        change_digest=change_digest,
+    )
+    return root / COMMITTED_REVIEWS_RELATIVE / name
+
+
+def write_committed_refresh_review(
+    repo_root: Path | str,
+    plan: dict[str, Any],
+    *,
+    acknowledgments: list[dict[str, Any]] | None = None,
+) -> Path:
+    """Write immutable transition ledger under docs/parity/reviews/."""
+    root = Path(repo_root)
+    source = require_nonempty_string(plan.get("source"), label="plan.source")
+    from_revision = require_git_oid(plan.get("from_revision"), label="plan.from_revision")
+    to_revision = require_git_oid(plan.get("to_revision"), label="plan.to_revision")
+    changes = plan.get("changes")
+    if not isinstance(changes, list):
+        raise ContractValidationError("plan.changes must be an array")
+    digest = canonical_changes_digest([c for c in changes if isinstance(c, dict)])
+    entries = acknowledgments
+    if entries is None:
+        entries = []
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            entries.append({**change, "disposition": "acknowledged"})
+    payload = {
+        "store_kind": "parity_refresh_review",
+        "schema_version": 1,
+        "source": source,
+        "from_revision": from_revision,
+        "to_revision": to_revision,
+        "generated_at": plan.get("generated_at"),
+        "change_digest": digest,
+        "changes": entries,
+        "proposed_inventory_patch": plan.get("proposed_inventory_patch"),
+        "guards": plan.get("guards"),
+    }
+    path = committed_review_path(
+        root,
+        source=source,
+        from_revision=from_revision,
+        to_revision=to_revision,
+        change_digest=digest,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def _default_maturity_stub(existing_row: dict[str, Any] | None) -> dict[str, str]:
@@ -216,11 +387,15 @@ def build_refresh_plan(
         )
 
     for cap_id in sorted(remaining_inv - used_inv):
+        inv_fp = _capability_fingerprint(inv_rows[cap_id])
         changes.append(
             {
                 "change_kind": "deleted",
                 "capability_id": cap_id,
-                "detail": {},
+                "detail": {
+                    "before": _fingerprint_payload(inv_fp),
+                    "after": None,
+                },
             }
         )
 

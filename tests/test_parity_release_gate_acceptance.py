@@ -32,6 +32,7 @@ def _assert_release_gate_fails(
     inventory: dict,
     error_pattern: str,
     catalog: dict | None = None,
+    base_inventory: dict | None = None,
 ) -> None:
     inv_path = _write_inventory(tmp_path, inventory)
     _scaffold_inventory_paths(tmp_path, inventory)
@@ -46,6 +47,7 @@ def _assert_release_gate_fails(
             inventory_path=inv_path,
             repo_root=tmp_path,
             release=True,
+            base_inventory=base_inventory if base_inventory is not None else inventory,
         )
 
 
@@ -111,6 +113,7 @@ def test_simulate_expired_live_evidence_makes_release_gate_nonzero(tmp_path: Pat
             inventory_path=inv_path,
             repo_root=tmp_path,
             release=True,
+            base_inventory=inventory,
         )
 
 
@@ -131,6 +134,7 @@ def test_simulate_release_overclaim_makes_release_gate_nonzero(tmp_path: Path) -
             inventory_path=inv_path,
             repo_root=tmp_path,
             release=True,
+            base_inventory=inventory,
         )
 
 
@@ -145,6 +149,7 @@ def test_release_check_passes_honest_bootstrapping_inventory(tmp_path: Path) -> 
         inventory_path=inv_path,
         repo_root=tmp_path,
         release=True,
+        base_inventory=inventory,
     )
 
     assert payload["ok"] is True
@@ -154,6 +159,7 @@ def test_release_check_passes_honest_bootstrapping_inventory(tmp_path: Path) -> 
     assert payload["overclaims"] == 0
     assert payload["upstream_drift_checked"] is True
     assert payload["upstream_drift_resolved"] is True
+    assert payload["pin_transitions_reviewed"] is True
 
 
 def test_script_check_parity_inventory_release_flag(tmp_path: Path) -> None:
@@ -167,6 +173,8 @@ def test_script_check_parity_inventory_release_flag(tmp_path: Path) -> None:
     (tmp_path / "docs" / "parity" / "SUMMARY.md").write_text(
         "Bootstrapping inventory — **parity 95%** complete.\n", encoding="utf-8"
     )
+    base_path = tmp_path / "base-parity.json"
+    base_path.write_text(__import__("json").dumps(inventory), encoding="utf-8")
 
     script = subprocess.run(
         [
@@ -175,6 +183,8 @@ def test_script_check_parity_inventory_release_flag(tmp_path: Path) -> None:
             "--release",
             "--inventory",
             str(inv_path),
+            "--base-inventory",
+            str(base_path),
         ],
         cwd=ROOT,
         capture_output=True,
@@ -187,6 +197,26 @@ def test_script_check_parity_inventory_release_flag(tmp_path: Path) -> None:
     )
     assert script.returncode != 0
     assert "overclaim" in script.stderr.lower() or "overclaim" in script.stdout.lower()
+
+
+def test_synced_pin_bump_without_committed_review_fails(tmp_path: Path) -> None:
+    """P1: syncing inventory+snapshot pins without docs/parity/reviews must fail."""
+    import copy
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    base = copy.deepcopy(inventory)
+    new_pin = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    inventory["upstream_pins"]["OMC"]["revision"] = new_pin
+    for row in inventory["capabilities"]:
+        if row.get("upstream", {}).get("source") == "OMC":
+            row["upstream"]["revision"] = new_pin
+
+    _assert_release_gate_fails(
+        tmp_path=tmp_path,
+        inventory=inventory,
+        base_inventory=base,
+        error_pattern="pin transition missing committed refresh review",
+    )
 
 
 def test_release_yml_invokes_parity_release_gate() -> None:

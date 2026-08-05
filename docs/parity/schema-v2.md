@@ -81,5 +81,6 @@ python3 scripts/check_parity_inventory.py --strict --release
 - doc overclaim scan (forbidden phrases / per-capability maturity overclaim while bootstrapping)
 - live-evidence freshness for `live_verified` rows
 - upstream drift vs `docs/parity/upstream-snapshots/*.json` (each unresolved add/delete/rename/change fails closed unless acknowledged in a refresh review artifact)
+- **pin-transition ledger:** when any source pin changes vs the base inventory (`--base-inventory`, `OMG_PARITY_BASE_REF`, or `git show HEAD^|origin/main:docs/parity/omg-parity.json`), a committed review must exist at `docs/parity/reviews/<source>-<from>-<to>-<change-digest>.json` with matching canonical change digest and dispositions. Optional local `.omg/artifacts/` paths alone are not sufficient.
 
 PR CI uses `--strict` only; `release.yml` uses `--strict --release`.

@@ -31,6 +31,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   bind required snapshot filename → `source`; bind refresh ack `detail` to
   promise/source_paths before→after values so same-revision stale acks cannot
   replay.
+- **Parity release claim gate (PR #91 Pro re-audit round 2):** require committed
+  pin-transition reviews under `docs/parity/reviews/`; bind deleted-change
+  fingerprints; validate upstream snapshot capability schema (no duplicate /
+  malformed silent skip); forbid `live-proven` / `live-tested` doc phrases and
+  scrub historical CHANGELOG wording.
 
 ## [0.7.5] - 2026-08-05
 
@@ -725,8 +730,8 @@ full-branch GO). 468 → 528 unit tests; exercised against a real Grok host.
   operating contract (tuned to Grok 4.5) via a non-destructive marker reconcile
   (`OMG:START/END`), preserving any `USER:OMG:POLICY` block, with a source-hash
   handshake and rolling backup (`omg_cli/guidance.py`, `templates/omg-rules.md`).
-  `omg setup --no-global-rules` opts out. Live-proven: `grok inspect` loads it and
-  a fresh `grok -p` quotes the contract.
+  `omg setup --no-global-rules` opts out. Observed in a one-time Grok host smoke
+  on 2026-07-21: `grok inspect` loads it and a fresh `grok -p` quotes the contract.
 - **`omg update`:** git pull + `grok plugin update` (force-refresh the frozen
   snapshot) + doctor.
 - **`omg uninstall`:** `--yes`-gated removal of plugin, global hook, OMG rules

@@ -464,3 +464,62 @@ def test_parity_refresh_uses_global_json_envelope(
     assert payload["data"]["source"] == "OMC"
     assert payload["data"]["to_revision"] == NEW_PIN
     assert "artifact_path" in payload["data"]
+
+
+def test_refresh_plan_deleted_detail_binds_before_fingerprint() -> None:
+    """P2: deleted changes must bind before fingerprint (not empty detail)."""
+    from omg_cli.parity_refresh import build_refresh_plan
+
+    inventory = _minimal_inventory()
+    target = next(
+        row for row in inventory["capabilities"] if row["id"] == "omc.cli.session_surfaces"
+    )
+    old_promise = target["promise"]
+    old_paths = list(target["upstream"]["source_paths"])
+    catalog = _load_catalog()
+    catalog = copy.deepcopy(catalog)
+    catalog["capabilities"] = [
+        c for c in catalog["capabilities"] if c["id"] != "omc.cli.session_surfaces"
+    ]
+
+    plan = build_refresh_plan(
+        inventory=inventory,
+        upstream_catalog=catalog,
+        source="OMC",
+        new_pin=NEW_PIN,
+    )
+
+    deleted = [c for c in plan["changes"] if c["change_kind"] == "deleted"]
+    assert len(deleted) == 1
+    detail = deleted[0]["detail"]
+    assert detail["after"] is None
+    assert detail["before"]["promise"] == old_promise
+    assert detail["before"]["source_paths"] == sorted(old_paths)
+
+
+def test_validate_upstream_catalog_rejects_duplicate_ids() -> None:
+    from omg_cli.parity_refresh import validate_upstream_catalog
+
+    catalog = _load_catalog()
+    catalog = copy.deepcopy(catalog)
+    catalog["capabilities"].append(copy.deepcopy(catalog["capabilities"][0]))
+    with pytest.raises(ContractValidationError, match="duplicate"):
+        validate_upstream_catalog(catalog)
+
+
+def test_canonical_changes_digest_stable_for_empty_and_deleted() -> None:
+    from omg_cli.parity_refresh import canonical_changes_digest
+
+    empty = canonical_changes_digest([])
+    assert len(empty) == 64
+    assert empty == canonical_changes_digest([])
+    one = canonical_changes_digest(
+        [
+            {
+                "change_kind": "deleted",
+                "capability_id": "x",
+                "detail": {"before": {"source_paths": ["a"], "promise": "p"}, "after": None},
+            }
+        ]
+    )
+    assert one != empty

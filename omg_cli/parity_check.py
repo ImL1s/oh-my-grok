@@ -79,6 +79,9 @@ def check_parity_inventory(
     repo_root: Path | str,
     strict: bool = False,
     release: bool = False,
+    base_inventory: dict[str, Any] | None = None,
+    base_inventory_path: Path | str | None = None,
+    base_ref: str | None = None,
 ) -> dict[str, Any]:
     """Validate the canonical (or given) parity inventory.
 
@@ -87,7 +90,8 @@ def check_parity_inventory(
     ``scripts/check_parity_inventory.py --strict``).
 
     When ``release`` is true, strict path checks are implied and the release
-    claim gate runs (upstream drift, stale live evidence, docs overclaim).
+    claim gate runs (upstream drift, stale live evidence, docs overclaim,
+    committed pin-transition reviews).
 
     Raises ``ContractValidationError`` on failure. Returns a success payload
     suitable for CLI/script JSON output.
@@ -138,6 +142,10 @@ def check_parity_inventory(
         release_payload = check_parity_release_claims(
             inventory_path=path,
             repo_root=root,
+            base_inventory=base_inventory,
+            base_inventory_path=base_inventory_path,
+            base_ref=base_ref,
+            require_base_inventory=True,
         )
         payload.update(
             {
@@ -147,6 +155,9 @@ def check_parity_inventory(
                 ),
                 "upstream_drift_resolved": release_payload.get(
                     "upstream_drift_resolved", False
+                ),
+                "pin_transitions_reviewed": release_payload.get(
+                    "pin_transitions_reviewed", False
                 ),
             }
         )

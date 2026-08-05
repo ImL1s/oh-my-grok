@@ -994,3 +994,190 @@ def test_readme_documents_catalog_update_before_refresh_plan() -> None:
     first = readme.index("update the snapshot catalogue **first**")
     plan = readme.index("omg parity refresh")
     assert first < plan
+
+
+def test_release_gate_rejects_live_proven_phrase(tmp_path: Path) -> None:
+    """P2: live-proven is a forbidden maturity synonym while bootstrapping."""
+    inventory = _bootstrapping_inventory(tmp_path)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    (tmp_path / "docs" / "parity").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "README.md").write_text(
+        "Honest bootstrapping inventory.\n", encoding="utf-8"
+    )
+    (tmp_path / "CHANGELOG.md").write_text(
+        "Live-proven: grok inspect loads the contract.\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ContractValidationError, match=r"overclaim|live.?proven"):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            now=FIXED_NOW,
+        )
+
+
+def test_release_gate_rejects_duplicate_upstream_capability_ids(tmp_path: Path) -> None:
+    """P2: duplicate capability ids in a snapshot must fail closed (no LWW)."""
+    inventory = _bootstrapping_inventory(tmp_path)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    pins = inventory["upstream_pins"]
+    dup = {
+        "source": "OMC",
+        "pin_revision": pins["OMC"]["revision"],
+        "capabilities": [
+            {
+                "id": "team.plane_v3",
+                "source_paths": ["README.md"],
+                "promise": "new promise",
+            },
+            {
+                "id": "team.plane_v3",
+                "source_paths": ["README.md"],
+                "promise": "Team plane v3",
+            },
+        ],
+    }
+    _write_required_snapshots(tmp_path, inventory, override={"OMC": dup})
+
+    with pytest.raises(ContractValidationError, match="duplicate upstream capability"):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            now=FIXED_NOW,
+        )
+
+
+def test_release_gate_rejects_malformed_upstream_capability_row(tmp_path: Path) -> None:
+    """P2: missing promise / non-object rows must fail closed."""
+    inventory = _bootstrapping_inventory(tmp_path)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    pins = inventory["upstream_pins"]
+    bad = {
+        "source": "OMC",
+        "pin_revision": pins["OMC"]["revision"],
+        "capabilities": [
+            {"id": "team.plane_v3", "source_paths": ["README.md"]},
+        ],
+    }
+    _write_required_snapshots(tmp_path, inventory, override={"OMC": bad})
+
+    with pytest.raises(ContractValidationError, match=r"key mismatch|promise"):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            now=FIXED_NOW,
+        )
+
+
+def test_pin_transition_requires_committed_review_even_when_zero_drift(
+    tmp_path: Path,
+) -> None:
+    """P1: synced pin bump (inventory==snapshot) still needs docs/parity/reviews."""
+    inventory = _bootstrapping_inventory(tmp_path)
+    base = copy.deepcopy(inventory)
+    new_pin = "cccccccccccccccccccccccccccccccccccccccc"
+    inventory["upstream_pins"]["OMC"]["revision"] = new_pin
+    for row in inventory["capabilities"]:
+        if row.get("upstream", {}).get("source") == "OMC":
+            row["upstream"]["revision"] = new_pin
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+
+    with pytest.raises(
+        ContractValidationError, match="pin transition missing committed refresh review"
+    ):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            base_inventory=base,
+            now=FIXED_NOW,
+        )
+
+
+def test_pin_transition_passes_with_committed_review(tmp_path: Path) -> None:
+    """P1: matching docs/parity/reviews ledger clears pin-transition gate."""
+    from omg_cli.parity_refresh import write_committed_refresh_review
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    base = copy.deepcopy(inventory)
+    new_pin = "dddddddddddddddddddddddddddddddddddddddd"
+    inventory["upstream_pins"]["OMC"]["revision"] = new_pin
+    for row in inventory["capabilities"]:
+        if row.get("upstream", {}).get("source") == "OMC":
+            row["upstream"]["revision"] = new_pin
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+
+    # Build catalog from candidate snapshots for OMC.
+    catalog = load_json_object(
+        tmp_path / "docs" / "parity" / "upstream-snapshots" / "OMC.json"
+    )
+    plan = build_refresh_plan(
+        inventory=base,
+        upstream_catalog=catalog,
+        source="OMC",
+        new_pin=new_pin,
+        generated_at=FIXED_NOW,
+    )
+    write_committed_refresh_review(tmp_path, plan)
+
+    payload = check_parity_release_claims(
+        inventory_path=inv_path,
+        repo_root=tmp_path,
+        base_inventory=base,
+        now=FIXED_NOW,
+    )
+    assert payload["ok"] is True
+    assert payload["pin_transitions_reviewed"] is True
+
+
+def test_upstream_drift_rejects_stale_delete_ack_after_fingerprint_mutates(
+    tmp_path: Path,
+) -> None:
+    """P2: delete ack bound to fingerprint A must not clear delete of fingerprint B."""
+    inventory = _minimal_inventory()
+    target = next(
+        row for row in inventory["capabilities"] if row["id"] == "omc.cli.session_surfaces"
+    )
+    # Ack deletion of original fingerprint.
+    catalog_missing = _load_catalog(pin_revision=OMC_PIN)
+    catalog_missing = copy.deepcopy(catalog_missing)
+    catalog_missing["capabilities"] = [
+        c for c in catalog_missing["capabilities"] if c["id"] != "omc.cli.session_surfaces"
+    ]
+    plan = build_refresh_plan(
+        inventory=inventory,
+        upstream_catalog=catalog_missing,
+        source="OMC",
+        new_pin=OMC_PIN,
+        generated_at=FIXED_NOW,
+    )
+    stale_ack = _ack_review(plan)
+
+    # Mutate inventory row fingerprint, then delete again — stale ack must fail.
+    target["promise"] = "Mutated promise after prior delete ack"
+    target["upstream"]["source_paths"] = ["README.md", "skills/mutated/SKILL.md"]
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    cat_path = _write_catalog(tmp_path, catalog_missing)
+    review_path = tmp_path / "review.json"
+    review_path.write_text(json.dumps(stale_ack, indent=2), encoding="utf-8")
+
+    with pytest.raises(ContractValidationError, match="upstream drift"):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            upstream_catalog_path=cat_path,
+            review_artifact_path=review_path,
+            now=FIXED_NOW,
+        )

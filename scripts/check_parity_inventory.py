@@ -44,7 +44,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--release",
         action="store_true",
-        help="fail closed on upstream drift, stale live evidence, and docs overclaim",
+        help=(
+            "fail closed on upstream drift, stale live evidence, docs overclaim, "
+            "and committed pin-transition reviews"
+        ),
+    )
+    parser.add_argument(
+        "--base-inventory",
+        default=None,
+        help=(
+            "previous parity inventory for pin-transition reviews "
+            "(default: git show $OMG_PARITY_BASE_REF|HEAD^|origin/main)"
+        ),
     )
     parser.add_argument(
         "--inventory",
@@ -62,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
             repo_root=repo_root,
             strict=bool(args.strict),
             release=bool(args.release),
+            base_inventory_path=Path(args.base_inventory) if args.base_inventory else None,
         )
     except ContractValidationError as exc:
         print(
