@@ -547,6 +547,23 @@ def live_leader_pid_conflict(root: Path, run_id: str) -> str | None:
     return None
 
 
+def launch_refused_for_cancel(root: Path | str, run_id: str) -> str | None:
+    """Return a refusal reason if the run must not spawn grok, else None.
+
+    Re-checks ``status.json`` and any pending ``cancel.request.json`` so a
+    cancel committed after loop entry (or before resume) cannot race a
+    ``_launch_grok`` / Popen. Call under ``transition_guard`` (or already-held
+    guard) immediately before ``prepare_leader_spawn``.
+    """
+    run = load_run(Path(root), run_id) or {}
+    status = str(run.get("status") or "")
+    if status in TERMINAL_STATUSES:
+        return f"run is terminal (status={status!r}); refusing grok launch"
+    if load_cancellation_request(root, run_id) is not None:
+        return "pending cancellation request; refusing grok launch"
+    return None
+
+
 def prepare_leader_spawn(root: Path, run_id: str) -> str | None:
     """Pre-spawn gate: refuse live leader, else clear stale ``pid.json``.
 

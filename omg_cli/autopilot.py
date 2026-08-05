@@ -22,6 +22,7 @@ from omg_cli.state import (
     classify_run_schema,
     create_run,
     execution_lease,
+    launch_refused_for_cancel as _launch_refused_for_cancel,
     load_run,
     write_status,
 )
@@ -1512,25 +1513,6 @@ def _try_advance_after_launch(root: Path, run_id: str, phase: str) -> str:
         _record_gate_failure(root, run_id, phase, str(exc))
         return phase
     return phase
-
-
-def _launch_refused_for_cancel(root: Path | str, run_id: str) -> str | None:
-    """Return a refusal reason if the run must not spawn grok, else None.
-
-    Re-checks ``status.json`` and any pending ``cancel.request.json`` so a
-    cancel committed after loop entry (or before resume) cannot race a
-    ``_launch_grok`` / Popen.
-    """
-    from omg_cli.state import TERMINAL_STATUSES, load_cancellation_request
-
-    run = load_run(root, run_id) or {}
-    status = str(run.get("status") or "")
-    if status in TERMINAL_STATUSES:
-        return f"run is terminal (status={status!r}); refusing grok launch"
-    if load_cancellation_request(root, run_id) is not None:
-        return "pending cancellation request; refusing grok launch"
-    return None
-
 
 
 @contextmanager

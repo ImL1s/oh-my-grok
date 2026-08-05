@@ -720,6 +720,82 @@ def test_launch_grok_dry_run_under_held_transition_guard(tmp_path):
     assert (run_dir / "dry_run").is_file()
 
 
+def test_launch_grok_refuses_cancelled_status(monkeypatch, tmp_path, capsys):
+    """R16-1: terminal cancelled status must refuse `_launch_grok` (no Popen)."""
+    from omg_cli.modes import _launch_grok, _run_dir
+    from omg_cli.state import cancel_run, create_run
+
+    run = create_run(tmp_path, mode="ralph", goal="r16 cancelled refuse")
+    rid = run["run_id"]
+    run_dir = _run_dir(tmp_path, rid)
+    cancel_run(tmp_path, rid, kill_grace_s=0)
+
+    launched: list[bool] = []
+
+    def fake_popen(*_a, **_k):
+        launched.append(True)
+        raise AssertionError("must not spawn when cancelled")
+
+    real = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", _selective_popen(real, fake_popen))
+
+    rc = _launch_grok(
+        ["grok", "-p", "hello"],
+        cwd=tmp_path,
+        run_dir=run_dir,
+        timeout=None,
+        dry_run=False,
+    )
+    assert rc != 0
+    assert not launched
+    err = capsys.readouterr().err
+    assert "terminal" in err.lower() or "cancelled" in err.lower()
+
+
+def test_launch_grok_refuses_pending_cancel_request(monkeypatch, tmp_path, capsys):
+    """R16-1: pending cancel.request.json must refuse `_launch_grok` (no Popen)."""
+    from omg_cli.modes import _launch_grok, _run_dir
+    from omg_cli.state import create_run
+
+    run = create_run(tmp_path, mode="ralph", goal="r16 pending cancel refuse")
+    rid = run["run_id"]
+    run_dir = _run_dir(tmp_path, rid)
+    (run_dir / "cancel.request.json").write_text(
+        json.dumps(
+            {
+                "writer": "omg-cli",
+                "run_id": rid,
+                "request_id": "pending-request",
+                "requested_at": "2026-08-05T00:00:00+00:00",
+                "observed_generation": 0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    launched: list[bool] = []
+
+    def fake_popen(*_a, **_k):
+        launched.append(True)
+        raise AssertionError("must not spawn when cancel pending")
+
+    real = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", _selective_popen(real, fake_popen))
+
+    rc = _launch_grok(
+        ["grok", "-p", "hello"],
+        cwd=tmp_path,
+        run_dir=run_dir,
+        timeout=None,
+        dry_run=False,
+    )
+    assert rc != 0
+    assert not launched
+    err = capsys.readouterr().err
+    assert "cancel" in err.lower()
+
+
 def test_launch_grok_refuses_live_leader_pid_match(
     monkeypatch, tmp_path, capsys
 ):

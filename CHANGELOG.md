@@ -10,6 +10,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Fixed
+- **Cancel-aware `_launch_grok` gate (Round 16 / R16-1):**
+  ``modes._launch_grok`` re-checks terminal status /
+  pending ``cancel.request.json`` under the same ``transition_guard`` as
+  ``prepare_leader_spawn`` (shared ``launch_refused_for_cancel`` with
+  autopilot) so ralph/ralplan cannot Popen after cancel.
 - **Autopilot FSM public contract:** split `MANUAL_TRANSITIONS` vs
   `COMMIT_ONLY_TRANSITIONS`; `omg autopilot status` `legal_next` no longer
   advertises `verified` as a `transition()` edge (use `commit_only_next` +

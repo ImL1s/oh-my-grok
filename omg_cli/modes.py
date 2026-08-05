@@ -703,6 +703,9 @@ def _launch_grok(
     R15-3: when ``run_dir`` is a standard run path, refuse spawn on a live
     leader ``pid.json`` (MATCH / UNKNOWN / missing-starttime) under a short
     ``transition_guard``; clear only when stale (DEAD / MISMATCH).
+
+    R16-1: under the same guard, refuse when status is terminal or a pending
+    ``cancel.request.json`` exists (shared ``launch_refused_for_cancel``).
     """
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -712,6 +715,7 @@ def _launch_grok(
         from contextlib import nullcontext
 
         from omg_cli.state import (
+            launch_refused_for_cancel,
             prepare_leader_spawn,
             transition_guard,
             transition_guard_held,
@@ -726,6 +730,10 @@ def _launch_grok(
             else transition_guard(root_for_gate, run_id_for_gate)
         )
         with guard_cm:
+            refuse = launch_refused_for_cancel(root_for_gate, run_id_for_gate)
+            if refuse is not None:
+                print(f"omg launch: {refuse}", file=sys.stderr)
+                return 1
             refuse = prepare_leader_spawn(root_for_gate, run_id_for_gate)
             if refuse is not None:
                 print(f"omg launch: {refuse}", file=sys.stderr)
