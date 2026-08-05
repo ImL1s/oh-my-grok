@@ -2,7 +2,7 @@
 
 # Feature matrix
 
-> **Inventory status: bootstrapping.** Categories are incomplete.
+> **Inventory status: bootstrapping.** Categories or sources are incomplete.
 > Parity percentages and green checkmarks are intentionally omitted.
 
 | Capability | Category | Classification | Maturity | Marker | Issues |
@@ -18,3 +18,10 @@
 - `jobs`: **bootstrapping**
 - `parity_governance`: **bootstrapping**
 - `team`: **bootstrapping**
+
+## Source status
+
+- `OMC`: **bootstrapping**
+- `OMX`: **bootstrapping**
+- `OmO`: **bootstrapping**
+- `Antigravity`: **bootstrapping**
