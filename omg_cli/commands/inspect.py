@@ -364,11 +364,13 @@ def cmd_parity(args: argparse.Namespace) -> int:
         root = plugin_root()
         inventory_path = root / "docs" / "parity" / "omg-parity.json"
         strict = bool(getattr(args, "strict", False))
+        release = bool(getattr(args, "release", False))
         try:
             result = check_parity_inventory(
                 inventory_path=inventory_path,
                 repo_root=root,
                 strict=strict,
+                release=release,
             )
         except ContractValidationError as exc:
             emit_data(
@@ -377,7 +379,8 @@ def cmd_parity(args: argparse.Namespace) -> int:
                 {
                     "ok": False,
                     "error": str(exc),
-                    "strict": strict,
+                    "strict": strict or release,
+                    "release": release,
                 },
             )
             return 1
@@ -628,6 +631,11 @@ def register_inspect_parsers(
             "--strict",
             action="store_true",
             help="fail closed on schema/path/overclaim drift",
+        )
+        p_parity_check.add_argument(
+            "--release",
+            action="store_true",
+            help="fail closed on upstream drift, stale live evidence, and docs overclaim",
         )
         p_parity_check.set_defaults(func=cmd_parity, parity_action="check")
         p_parity_gaps = parity_sub.add_parser(

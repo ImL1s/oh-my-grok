@@ -78,6 +78,7 @@ def check_parity_inventory(
     inventory_path: Path | str,
     repo_root: Path | str,
     strict: bool = False,
+    release: bool = False,
 ) -> dict[str, Any]:
     """Validate the canonical (or given) parity inventory.
 
@@ -85,12 +86,17 @@ def check_parity_inventory(
     ``repo_root`` and v2 overclaim gates run (same as
     ``scripts/check_parity_inventory.py --strict``).
 
+    When ``release`` is true, strict path checks are implied and the release
+    claim gate runs (upstream drift, stale live evidence, docs overclaim).
+
     Raises ``ContractValidationError`` on failure. Returns a success payload
     suitable for CLI/script JSON output.
     """
     root = Path(repo_root)
     path = Path(inventory_path)
     raw = load_json_object(path)
+    if release:
+        strict = True
     if strict:
         inventory = validate_parity_inventory(raw, repo_root=root)
         apply_strict_parity_gates(inventory)
@@ -124,9 +130,26 @@ def check_parity_inventory(
             else False
         ),
         "strict": bool(strict),
+        "release": bool(release),
         "normative_artifacts_verified": artifacts_checked,
         "inventory_path": relative,
     }
+    if release:
+        release_payload = check_parity_release_claims(
+            inventory_path=path,
+            repo_root=root,
+        )
+        payload.update(
+            {
+                "overclaims": release_payload.get("overclaims", 0),
+                "upstream_drift_checked": release_payload.get(
+                    "upstream_drift_checked", False
+                ),
+                "upstream_drift_resolved": release_payload.get(
+                    "upstream_drift_resolved", False
+                ),
+            }
+        )
     if inventory.get("schema_version") == 1:
         payload["requirements"] = len(inventory["requirement_ids"])
         payload["mcp_operations"] = len(inventory["mcp_operations"])
