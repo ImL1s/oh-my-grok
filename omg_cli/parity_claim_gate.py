@@ -10,6 +10,7 @@ from typing import Any
 
 from omg_cli.contracts.parity_schema import (
     SOURCE_STATUS_IDS,
+    inventory_completion_claims_allowed,
     load_json_object,
     maturity_rank,
     max_runtime_maturity,
@@ -23,6 +24,8 @@ REQUIRED_UPSTREAM_SNAPSHOT_SOURCES = tuple(SOURCE_STATUS_IDS)
 
 _DOC_SCAN_RELATIVE = (
     "README.md",
+    "CHANGELOG.md",
+    "docs/skills.md",
     "docs/parity/README.md",
     "docs/parity/schema-v2.md",
     "docs/parity/SUMMARY.md",
@@ -64,7 +67,10 @@ def _strip_markdown_code(text: str) -> str:
 
 
 def _doc_restrictions_active(inventory: dict[str, Any]) -> bool:
-    if inventory.get("inventory_status") != "complete":
+    # Same completeness bar as inventory_is_complete / inventory_completion_claims_allowed:
+    # inventory_status alone is not enough — category_status and source_status must
+    # also be complete before global forbidden-phrase scanning may turn off.
+    if not inventory_completion_claims_allowed(inventory):
         return True
     for row in inventory.get("capabilities", []):
         if not isinstance(row, dict):
@@ -290,29 +296,49 @@ def _load_optional_json(path: Path | None) -> dict[str, Any] | None:
 
 def _iter_upstream_catalog_paths(
     repo_root: Path, upstream_catalog_path: Path | None
-) -> list[Path]:
+) -> list[tuple[str | None, Path]]:
+    """Return (expected_source, path) pairs.
+
+    When scanning the default snapshot directory, expected_source is bound to the
+    filename (OMC.json → OMC). An explicit --catalog path has no filename bind
+    (expected_source is None).
+    """
     if upstream_catalog_path is not None:
-        return [Path(upstream_catalog_path)]
+        return [(None, Path(upstream_catalog_path))]
     snapshots = repo_root / "docs" / "parity" / "upstream-snapshots"
     if not snapshots.is_dir():
         raise ContractValidationError(
             "missing docs/parity/upstream-snapshots directory required for --release"
         )
     missing: list[str] = []
-    paths: list[Path] = []
+    entries: list[tuple[str | None, Path]] = []
     for source in REQUIRED_UPSTREAM_SNAPSHOT_SOURCES:
         path = snapshots / f"{source}.json"
         if not path.is_file():
             missing.append(source)
         else:
-            paths.append(path)
+            entries.append((source, path))
     if missing:
         raise ContractValidationError(
             "missing required upstream snapshot(s): "
             + ", ".join(missing)
             + " (expected docs/parity/upstream-snapshots/{OMC,OMX,OmO,Antigravity}.json)"
         )
-    return paths
+    return entries
+
+
+def _assert_snapshot_source_matches_filename(
+    *,
+    expected_source: str,
+    upstream_catalog: dict[str, Any],
+    catalog_path: Path,
+) -> None:
+    actual = upstream_catalog.get("source")
+    if actual != expected_source:
+        raise ContractValidationError(
+            f"upstream snapshot {catalog_path.name} source {actual!r} "
+            f"!= expected {expected_source!r}"
+        )
 
 
 def _assert_snapshot_pin_matches_inventory(
@@ -361,9 +387,19 @@ def check_parity_release_claims(
     review_artifact = _load_optional_json(
         Path(review_artifact_path) if review_artifact_path is not None else None
     )
-    catalog_paths = _iter_upstream_catalog_paths(root, upstream_catalog_path)
-    for catalog_path in catalog_paths:
+    catalog_entries = _iter_upstream_catalog_paths(root, upstream_catalog_path)
+    observed_sources: list[str] = []
+    for expected_source, catalog_path in catalog_entries:
         catalog = load_json_object(catalog_path)
+        if expected_source is not None:
+            _assert_snapshot_source_matches_filename(
+                expected_source=expected_source,
+                upstream_catalog=catalog,
+                catalog_path=catalog_path,
+            )
+            actual_source = catalog.get("source")
+            if isinstance(actual_source, str):
+                observed_sources.append(actual_source)
         _assert_snapshot_pin_matches_inventory(
             inventory=inventory,
             upstream_catalog=catalog,
@@ -373,6 +409,27 @@ def check_parity_release_claims(
             upstream_catalog=catalog,
             review_artifact=review_artifact,
         )
+
+    if upstream_catalog_path is None:
+        observed_set = set(observed_sources)
+        required_set = set(REQUIRED_UPSTREAM_SNAPSHOT_SOURCES)
+        if len(observed_sources) != len(observed_set):
+            raise ContractValidationError(
+                "duplicate upstream snapshot source(s) among required snapshots: "
+                + ", ".join(
+                    sorted(
+                        s
+                        for s in observed_set
+                        if observed_sources.count(s) > 1
+                    )
+                )
+            )
+        if observed_set != required_set:
+            raise ContractValidationError(
+                "required upstream snapshot sources mismatch: "
+                f"observed={sorted(observed_set)} "
+                f"expected={sorted(required_set)}"
+            )
 
     try:
         relative = path.resolve().relative_to(root.resolve()).as_posix()

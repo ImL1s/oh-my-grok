@@ -24,6 +24,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   and live-evidence freshness enforcement. Completeness promotion and issue #78
   remain open — no fake `live_verified` product claims.
 
+### Fixed
+- **Parity release claim gate (PR #91 Pro re-audit):** expand overclaim scan to
+  `CHANGELOG.md` / `docs/skills.md`; keep forbidden-phrase restrictions active
+  until `inventory_completion_claims_allowed` (category + source complete);
+  bind required snapshot filename → `source`; bind refresh ack `detail` to
+  promise/source_paths before→after values so same-revision stale acks cannot
+  replay.
+
 ## [0.7.5] - 2026-08-05
 
 ### Added
@@ -40,8 +48,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   candidate package; alias maturity cannot outrank its canonical target (and
   cannot positive-claim when the target is host_impossible/excluded/
   optional_unclaimed); `--strict` requires non-empty `omg_paths` for claimable
-  classifications and repo-verifiable `healthy_evidence` for healthy/
-  live_verified.
+  classifications and repo-verifiable `healthy_evidence` for `healthy` /
+  `live_verified`.
 - **Process-fanout cancel linearization (Round 18 / R18-1):** each
   ``run_process_fanout`` worker's cancel recheck → ``Popen`` → PID publish
   runs under the same per-run ``transition_guard`` as ``_launch_grok``
@@ -606,7 +614,7 @@ panes sealed). All three found by real `grok`/`codex` in real tmux, fixed, and r
   Agent-role parity + machine-readable role taxonomy (F).
 - **In-session MCP server (`omg mcp-server`, `grok mcp add`)** — 14 read + non-authoritative-proposal
   tools for Grok-native in-session parity. `verified` stays CLI-only via three fail-closed mechanisms
-  (curated allowlist, structural refusal under `OMG_MCP_SERVER=1`, path-confinement). Live-verified.
+  (curated allowlist, structural refusal under `OMG_MCP_SERVER=1`, path-confinement). Exercised on a real Grok host.
 - **`omg lsp symbols`/`diagnostics` (E):** stdlib-`ast` local probe. **`pyproject.toml` (C):**
   editable-pipx packaging.
 
@@ -709,7 +717,7 @@ full-branch GO). Merged via PR #2. 528 → 547 unit tests.
 OMC/OMX parity upgrade — global guidance injection, install lifecycle, and a
 verdict-gate hardening pass. All work was executor-written under orchestrator
 briefs and gated by an independent model-diverse standing reviewer (Fable 5,
-full-branch GO). 468 → 528 unit tests; live-verified on the real Grok host.
+full-branch GO). 468 → 528 unit tests; exercised against a real Grok host.
 
 ### Added
 - **Global guidance injection (`~/.grok/rules/omg.md`):** the Grok-native OMC

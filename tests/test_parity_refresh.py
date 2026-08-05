@@ -194,6 +194,11 @@ def test_refresh_plan_classifies_upstream_changed_capability() -> None:
     assert len(changed) == 1
     assert changed[0]["capability_id"] == "team.plane_v3"
     assert set(changed[0]["detail"]["fields"]) == {"promise", "source_paths"}
+    detail = changed[0]["detail"]
+    assert detail["before"]["promise"] != detail["after"]["promise"]
+    assert detail["after"]["promise"] == "Updated promise text"
+    assert detail["after"]["source_paths"] == ["README.md", "skills/team/SKILL.md"]
+    assert "README.md" in detail["before"]["source_paths"]
 
     stubs = plan["proposed_inventory_patch"]["capabilities"]
     assert len(stubs) == 1
@@ -204,6 +209,53 @@ def test_refresh_plan_classifies_upstream_changed_capability() -> None:
     assert stub["upstream"]["source_paths"] == ["README.md", "skills/team/SKILL.md"]
     assert stub["maturity"] == {"grok": "catalogued"}
     assert stub["evidence"]["live"] == []
+
+
+def test_refresh_plan_changed_detail_binds_promise_old_to_new() -> None:
+    """P2-2: changed detail must embed actual before/after promise values."""
+    from omg_cli.parity_refresh import build_refresh_plan
+
+    inventory = _minimal_inventory()
+    old_promise = next(
+        row.get("promise") or row.get("upstream", {}).get("promise", "")
+        for row in inventory["capabilities"]
+        if row["id"] == "team.plane_v3"
+    )
+    catalog = _load_catalog()
+    catalog = copy.deepcopy(catalog)
+    for cap in catalog["capabilities"]:
+        if cap["id"] == "team.plane_v3":
+            cap["promise"] = "Promise revision B"
+            break
+
+    plan = build_refresh_plan(
+        inventory=inventory,
+        upstream_catalog=catalog,
+        source="OMC",
+        new_pin=NEW_PIN,
+    )
+    changed = [c for c in plan["changes"] if c["change_kind"] == "changed"]
+    assert len(changed) == 1
+    detail = changed[0]["detail"]
+    assert detail["before"]["promise"] == old_promise
+    assert detail["after"]["promise"] == "Promise revision B"
+
+    catalog["capabilities"] = copy.deepcopy(catalog["capabilities"])
+    for cap in catalog["capabilities"]:
+        if cap["id"] == "team.plane_v3":
+            cap["promise"] = "Promise revision C"
+            break
+    plan_c = build_refresh_plan(
+        inventory=inventory,
+        upstream_catalog=catalog,
+        source="OMC",
+        new_pin=NEW_PIN,
+    )
+    detail_c = next(
+        c["detail"] for c in plan_c["changes"] if c["change_kind"] == "changed"
+    )
+    assert detail != detail_c
+    assert detail_c["after"]["promise"] == "Promise revision C"
 
 
 def test_refresh_plan_never_auto_upgrades_maturity() -> None:

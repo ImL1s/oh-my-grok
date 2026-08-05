@@ -800,6 +800,8 @@ def test_doc_scan_covers_authoritative_parity_paths() -> None:
 
     required = {
         "README.md",
+        "CHANGELOG.md",
+        "docs/skills.md",
         "docs/parity/README.md",
         "docs/parity/schema-v2.md",
         "docs/parity/FEATURE-MATRIX.md",
@@ -813,6 +815,152 @@ def test_doc_scan_covers_authoritative_parity_paths() -> None:
         "docs/parity/SUMMARY.zh-TW.md",
     }
     assert required.issubset(set(_DOC_SCAN_RELATIVE))
+
+
+def test_release_gate_rejects_changelog_overclaim(tmp_path: Path) -> None:
+    inventory = _bootstrapping_inventory(tmp_path)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+    (tmp_path / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## Unreleased\n\n- Achieved **complete parity** with upstream.\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ContractValidationError, match="overclaim"):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            now=FIXED_NOW,
+        )
+
+
+def test_release_gate_rejects_skills_md_overclaim(tmp_path: Path) -> None:
+    inventory = _bootstrapping_inventory(tmp_path)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+    docs = tmp_path / "docs"
+    docs.mkdir(parents=True, exist_ok=True)
+    (docs / "skills.md").write_text(
+        "# Skills\n\nOMG now offers **full 1:1** parity skill coverage.\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ContractValidationError, match="overclaim"):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            now=FIXED_NOW,
+        )
+
+
+def _mark_healthy(row: dict) -> None:
+    row["maturity"] = {"grok": "healthy"}
+    row["evidence"] = {
+        "tests": ["tests/test_parity_claim_gate.py"],
+        "docs": ["docs/parity/README.md"],
+        "configured_paths": ["omg_cli/parity_check.py"],
+        "install_evidence": ["plugin.json"],
+        "enabled_evidence": ["hooks/hooks.json"],
+        "loadable_evidence": ["omg_cli/__init__.py"],
+        "observed_evidence": ["docs/parity/omg-parity.json"],
+        "healthy_evidence": ["tests/test_parity_claim_gate.py"],
+        "live": [],
+    }
+
+
+def test_release_gate_keeps_forbidden_scan_when_category_or_source_bootstrapping(
+    tmp_path: Path,
+) -> None:
+    """P1-2: inventory_status=complete + healthy caps must not disable global scan
+    while category_status / source_status remain bootstrapping."""
+    inventory = _bootstrapping_inventory(tmp_path)
+    inventory["inventory_status"] = "complete"
+    for row in inventory["capabilities"]:
+        _mark_healthy(row)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+    (tmp_path / "README.md").write_text(
+        "# oh-my-grok\n\nWe claim **complete parity** already.\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ContractValidationError, match="overclaim"):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            now=FIXED_NOW,
+        )
+
+
+def test_release_gate_rejects_mislabeled_upstream_snapshot_source(tmp_path: Path) -> None:
+    """P2-1: OMC.json must declare source==OMC; mislabeling must fail closed."""
+    inventory = _bootstrapping_inventory(tmp_path)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    pins = inventory["upstream_pins"]
+    # Valid OMX catalogue written into OMC.json — would skip OMC coverage if
+    # the gate only checked filename presence.
+    mislabeled = {
+        "source": "OMX",
+        "pin_revision": pins["OMX"]["revision"],
+        "capabilities": [],
+    }
+    _write_required_snapshots(tmp_path, inventory, override={"OMC": mislabeled})
+
+    with pytest.raises(ContractValidationError, match=r"source.*OMC|expected.*OMC"):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            now=FIXED_NOW,
+        )
+
+
+def test_upstream_drift_rejects_stale_ack_after_promise_mutates(tmp_path: Path) -> None:
+    """P2-2: ack for promise A→B must not clear drift when promise becomes C."""
+    inventory = _minimal_inventory()
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+
+    catalog_b = _load_catalog(pin_revision=OMC_PIN)
+    catalog_b = copy.deepcopy(catalog_b)
+    for cap in catalog_b["capabilities"]:
+        if cap["id"] == "team.plane_v3":
+            cap["promise"] = "Promise revision B"
+            break
+    plan_b = build_refresh_plan(
+        inventory=inventory,
+        upstream_catalog=catalog_b,
+        source="OMC",
+        new_pin=OMC_PIN,
+        generated_at=FIXED_NOW,
+    )
+    stale_ack = _ack_review(plan_b)
+
+    catalog_c = copy.deepcopy(catalog_b)
+    for cap in catalog_c["capabilities"]:
+        if cap["id"] == "team.plane_v3":
+            cap["promise"] = "Promise revision C"
+            break
+    cat_path = _write_catalog(tmp_path, catalog_c)
+    review_path = tmp_path / "review.json"
+    review_path.write_text(json.dumps(stale_ack, indent=2), encoding="utf-8")
+
+    with pytest.raises(ContractValidationError, match="upstream drift"):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            upstream_catalog_path=cat_path,
+            review_artifact_path=review_path,
+            now=FIXED_NOW,
+        )
 
 
 def test_upstream_snapshots_match_inventory_pins() -> None:

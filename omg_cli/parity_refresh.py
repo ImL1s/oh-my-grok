@@ -22,9 +22,19 @@ def _capability_fingerprint(cap: dict[str, Any]) -> tuple[frozenset[str], str]:
     if paths is None and "upstream" in cap:
         paths = cap["upstream"].get("source_paths", [])
     promise = cap.get("promise", "")
+    if promise == "" and "upstream" in cap and isinstance(cap["upstream"], dict):
+        promise = cap["upstream"].get("promise", "")
     if not isinstance(paths, list):
         paths = []
     return frozenset(str(p) for p in paths), str(promise)
+
+
+def _sorted_paths(paths: frozenset[str]) -> list[str]:
+    return sorted(paths)
+
+
+def _fingerprint_payload(fp: tuple[frozenset[str], str]) -> dict[str, Any]:
+    return {"source_paths": _sorted_paths(fp[0]), "promise": fp[1]}
 
 
 def _inventory_rows_for_source(inventory: dict[str, Any], source: str) -> dict[str, dict[str, Any]]:
@@ -143,7 +153,11 @@ def build_refresh_plan(
                 {
                     "change_kind": "changed",
                     "capability_id": cap_id,
-                    "detail": {"fields": fields},
+                    "detail": {
+                        "fields": fields,
+                        "before": _fingerprint_payload(inv_fp),
+                        "after": _fingerprint_payload(cat_fp),
+                    },
                 }
             )
             patch_capabilities.append(
@@ -178,12 +192,16 @@ def build_refresh_plan(
     for from_id, to_id in rename_pairs:
         inv_row = inv_rows[from_id]
         cat_row = cat_rows[to_id]
+        cat_fp = _capability_fingerprint(cat_row)
         changes.append(
             {
                 "change_kind": "renamed",
                 "from_id": from_id,
                 "to_id": to_id,
-                "detail": {"source_paths": list(cat_row.get("source_paths", []))},
+                "detail": {
+                    "source_paths": list(cat_row.get("source_paths", [])),
+                    "promise": cat_fp[1],
+                },
             }
         )
         patch_capabilities.append(
@@ -208,11 +226,15 @@ def build_refresh_plan(
 
     for cap_id in sorted(remaining_cat - used_cat):
         cat_row = cat_rows[cap_id]
+        cat_fp = _capability_fingerprint(cat_row)
         changes.append(
             {
                 "change_kind": "added",
                 "capability_id": cap_id,
-                "detail": {"source_paths": list(cat_row.get("source_paths", []))},
+                "detail": {
+                    "source_paths": list(cat_row.get("source_paths", [])),
+                    "promise": cat_fp[1],
+                },
             }
         )
         patch_capabilities.append(
