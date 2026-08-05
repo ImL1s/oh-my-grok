@@ -219,17 +219,23 @@ at epoch 1 so the next ralplan entry always invalidates. A fresh accept write cl
 `invalidated` on the stamp; a new strict-v2 consensus attempt also clears
 stale invalidation at cycle start. A fresh strict-v2 attempt also resets
 `history`, per-session `attempts`, and `round` so prior rounds past the
-configured ceiling do not pin every future replan into an immediate block.
+configured ceiling do not pin every future replan into an immediate block;
+each role's `session_id` is re-minted (not reused) on that reset.
 
 `omg ralplan * --run RUN` embedded in an autopilot run is fail-closed:
 the run must use strict-v2 schema, the autopilot FSM must be at
-`phase==ralplan`, and the CLI goal must match the frozen run goal exactly.
+`phase==ralplan`, the CLI goal must match the frozen run goal exactly, and
+the run must be non-terminal with no pending cancellation request. Strict-v2
+embedding re-checks those gates immediately before writing `accepted=true`
+so a concurrent `omg cancel` cannot race acceptance.
 `_consensus_ready` additionally requires a non-empty stamp `goal` matching
 the frozen run goal (missing/null/empty → rejected).
 
 `omg interview start --attach-run RUN` re-verifies mode/phase/non-terminal/
 goal match **under the execution lease** after pre-lease attach checks,
-closing a TOCTOU race before writing `interview.json`.
+closing a TOCTOU race before writing `interview.json`. Attach start and
+`close_interview` also refuse sidecar writes when the run is terminal or has
+a pending cancellation request (same gate, immediately before each save).
 
 ### Implement → review work gate
 

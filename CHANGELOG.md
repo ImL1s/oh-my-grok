@@ -158,6 +158,19 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **Reject legacy schema for autopilot ralplan embedding (Round 7 / R7-4):**
   `omg ralplan * --run RUN` against `mode=autopilot` rejects non-strict-v2
   run schemas — autopilot embedding no longer enters the legacy-v1 FSM path.
+- **Fresh replan session reset (Round 8 / R8-1):** `_reset_for_fresh_cycle`
+  now mints new `session_id` UUIDs for planner/architect/critic (not reused
+  with `attempts` zeroed) so a fresh strict-v2 replan cycle does not inherit
+  stale session identity from the prior round.
+- **Ralplan embedding cancel race (Round 8 / R8-2):** `_authorize_autopilot_embedding`
+  rejects terminal autopilot statuses and pending cancellation requests;
+  strict-v2 embedding re-authorizes immediately before writing
+  `accepted=true` so a concurrent `omg cancel` cannot lose the race to
+  acceptance.
+- **Interview sidecar cancel race (Round 8 / R8-3):** interview attach/close
+  paths call `_assert_run_writable` under the execution lease immediately
+  before every sidecar write — terminal runs and pending cancellation
+  requests fail closed without writing `interview.json` or spec artifacts.
 
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —
