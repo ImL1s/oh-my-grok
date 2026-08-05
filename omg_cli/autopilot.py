@@ -11,7 +11,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, MutableMapping
 
 from omg_cli.evidence import CLI_WRITER, assert_safe_supervised_parent, validate_identifier
 from omg_cli.state import (
@@ -334,8 +334,33 @@ def invalidate_quality_stages(root: Path | str, run_id: str, *, reason: str) -> 
         _atomic_write_json(path, data)
 
 
+# Phases that prove a run has left the genuine first-interview handoff.
+# Presence anywhere in history (or on-disk quality/impl receipts) means a
+# missing ``ralplan_epoch`` must migrate to >=1, never 0.
+_POST_INTERVIEW_PHASES: frozenset[str] = frozenset(
+    {"ralplan", "implement", "review", "rework", "qa", "acceptance"}
+)
+
+
+def _history_has_post_interview_phases(history: Any) -> bool | None:
+    """Return whether history lists a post-interview phase.
+
+    ``None`` means history is missing/unreadable — callers must fail closed
+    (migrate to >=1). ``False`` means a readable list with no such phases.
+    """
+    if not isinstance(history, list):
+        return None
+    for entry in history:
+        if not isinstance(entry, dict):
+            return None
+        phase = entry.get("phase")
+        if isinstance(phase, str) and phase in _POST_INTERVIEW_PHASES:
+            return True
+    return False
+
+
 def _normalize_ralplan_epoch(
-    state: Mapping[str, Any], root: Path | str, run_id: str
+    state: MutableMapping[str, Any], root: Path | str, run_id: str
 ) -> int:
     """Return a trustworthy ``ralplan_epoch``, migrating pre-R9 state that
     predates the field (added in da0fc52) without blindly treating a
@@ -349,11 +374,18 @@ def _normalize_ralplan_epoch(
     e.g. it already has an accepted CLI-owned ``ralplan.json`` stamp, or
     ``cycles.ralplan`` is already nonzero — must never be silently treated
     as epoch==0 on load; that would resurrect the no-op path and let a
-    stale accepted stamp unlock implement again without invalidation. Only
-    a run genuinely still at ``interview``, with no CLI-owned stamp and no
-    ralplan cycles yet, may migrate to 0; every other missing-epoch run
-    migrates to at least 1 so the very next ralplan entry is treated as a
-    re-entry, not the first handoff.
+    stale accepted stamp unlock implement again without invalidation.
+
+    Missing-epoch migration to ``0`` requires ALL of:
+    - ``phase == interview``
+    - no CLI-owned ``ralplan.json`` stamp
+    - ``cycles.ralplan == 0``
+    - readable history with no post-interview phases (missing/corrupt
+      history fails closed to >=1)
+    - no on-disk clean review/QA stamp and no CLI implementation receipt
+
+    Sets ``ralplan_epoch_source`` on ``state`` to ``"native"`` (field was
+    present) or ``"migrated"`` (value inferred) for the caller to persist.
     """
     raw = state.get("ralplan_epoch")
     if raw is not None:
@@ -362,8 +394,10 @@ def _normalize_ralplan_epoch(
                 f"corrupt autopilot state: ralplan_epoch must be int >= 0, "
                 f"got {raw!r}"
             )
+        state["ralplan_epoch_source"] = "native"
         return raw
 
+    from omg_cli.implementation import read_implementation_receipt
     from omg_cli.ralplan import ralplan_state_path
 
     root = Path(root).resolve()
@@ -373,10 +407,19 @@ def _normalize_ralplan_epoch(
     has_cli_stamp = bool(
         stamp and stamp.get("writer") == CLI_WRITER and stamp.get("run_id") == run_id
     )
+    history_post = _history_has_post_interview_phases(state.get("history"))
+    has_quality_or_impl_receipt = (
+        stage_review_is_clean(root, run_id)
+        or stage_qa_is_clean(root, run_id)
+        or read_implementation_receipt(root, run_id) is not None
+    )
+    state["ralplan_epoch_source"] = "migrated"
     if (
         str(state.get("phase") or "init") == "interview"
         and not has_cli_stamp
         and ralplan_cycles == 0
+        and history_post is False
+        and not has_quality_or_impl_receipt
     ):
         return 0
     return max(1, ralplan_cycles or 1)

@@ -1045,6 +1045,159 @@ def test_normalize_ralplan_epoch_rejects_bool_float_negative() -> None:
             _normalize_ralplan_epoch({"ralplan_epoch": bad}, Path("/tmp"), "rid")
 
 
+def test_missing_epoch_interview_with_review_history_migrates_ge1_and_invalidates(
+    tmp_path: Path,
+) -> None:
+    """R11-2: missing ``ralplan_epoch`` + phase==interview + cycles 0 is NOT
+    enough to migrate to 0 when history already shows a post-interview phase
+    (e.g. review). That shape is a corrupt/reset sidecar — migrating to 0
+    would make interview→ralplan a no-op and leave a clean review stamp
+    authoritative. Must migrate to >=1 so the handoff invalidates."""
+    import json as _json
+
+    from omg_cli.autopilot import (
+        _normalize_ralplan_epoch,
+        autopilot_state_path,
+        load_autopilot,
+        stage_review_is_clean,
+    )
+
+    st = start_autopilot(tmp_path, "r11-2 history review gate")
+    rid = st["run_id"]
+    assert st["phase"] == "interview"
+
+    # Plant a clean review stamp while still "in interview" (corrupt shape).
+    _stamp_review_clean(tmp_path, rid)
+    assert stage_review_is_clean(tmp_path, rid) is True
+
+    state_path = autopilot_state_path(tmp_path, rid)
+    state = _json.loads(state_path.read_text(encoding="utf-8"))
+    del state["ralplan_epoch"]
+    # History claims we already visited review even though phase is interview.
+    state["history"] = list(state.get("history") or []) + [
+        {
+            "from": "implement",
+            "phase": "review",
+            "reason": "simulated pre-R7 reset",
+            "at": "2026-01-01T00:00:00+00:00",
+        }
+    ]
+    state_path.write_text(_json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+    loaded = load_autopilot(tmp_path, rid)
+    assert "ralplan_epoch" not in loaded
+    migrated = _normalize_ralplan_epoch(loaded, tmp_path, rid)
+    assert migrated >= 1
+    assert loaded.get("ralplan_epoch_source") == "migrated"
+
+    transition(tmp_path, rid, "ralplan", evidence=_ev_interview_bg())
+    assert stage_review_is_clean(tmp_path, rid) is False
+    after = load_autopilot(tmp_path, rid)
+    assert after["ralplan_epoch"] >= 2
+    assert after.get("ralplan_epoch_source") == "migrated"
+
+
+def test_missing_epoch_interview_with_clean_review_stamp_only_migrates_ge1(
+    tmp_path: Path,
+) -> None:
+    """R11-2: even without post-interview history, an on-disk clean review
+    stamp blocks migration to 0."""
+    import json as _json
+
+    from omg_cli.autopilot import (
+        _normalize_ralplan_epoch,
+        autopilot_state_path,
+        load_autopilot,
+        stage_review_is_clean,
+    )
+
+    st = start_autopilot(tmp_path, "r11-2 clean review stamp gate")
+    rid = st["run_id"]
+    _stamp_review_clean(tmp_path, rid)
+    assert stage_review_is_clean(tmp_path, rid) is True
+
+    state_path = autopilot_state_path(tmp_path, rid)
+    state = _json.loads(state_path.read_text(encoding="utf-8"))
+    del state["ralplan_epoch"]
+    # History stays interview-only; stamp alone must still force >=1.
+    assert all(
+        (e.get("phase") if isinstance(e, dict) else None) in {None, "interview"}
+        for e in (state.get("history") or [])
+    )
+    state_path.write_text(_json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+    loaded = load_autopilot(tmp_path, rid)
+    assert _normalize_ralplan_epoch(loaded, tmp_path, rid) >= 1
+    assert loaded.get("ralplan_epoch_source") == "migrated"
+
+
+def test_missing_epoch_missing_or_corrupt_history_migrates_ge1(
+    tmp_path: Path,
+) -> None:
+    """R11-2: history missing or unreadable → fail closed to >=1."""
+    import json as _json
+
+    from omg_cli.autopilot import (
+        _normalize_ralplan_epoch,
+        autopilot_state_path,
+        load_autopilot,
+    )
+
+    st = start_autopilot(tmp_path, "r11-2 history missing")
+    rid = st["run_id"]
+    state_path = autopilot_state_path(tmp_path, rid)
+
+    for bad_history in (None, "not-a-list", {"phase": "interview"}):
+        state = _json.loads(state_path.read_text(encoding="utf-8"))
+        state.pop("ralplan_epoch", None)
+        if bad_history is None:
+            state.pop("history", None)
+        else:
+            state["history"] = bad_history
+        state_path.write_text(_json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        loaded = load_autopilot(tmp_path, rid)
+        assert _normalize_ralplan_epoch(loaded, tmp_path, rid) >= 1, (
+            f"bad_history={bad_history!r}"
+        )
+
+
+def test_normalize_ralplan_epoch_source_native_when_present(tmp_path: Path) -> None:
+    """R11-2: present ``ralplan_epoch`` stamps source as native."""
+    from omg_cli.autopilot import _normalize_ralplan_epoch, load_autopilot
+
+    st = start_autopilot(tmp_path, "r11-2 native source")
+    rid = st["run_id"]
+    state = load_autopilot(tmp_path, rid)
+    assert state["ralplan_epoch"] == 0
+    assert _normalize_ralplan_epoch(state, tmp_path, rid) == 0
+    assert state.get("ralplan_epoch_source") == "native"
+
+
+def test_missing_epoch_genuine_interview_still_migrates_to_zero(
+    tmp_path: Path,
+) -> None:
+    """R11-2: a real pre-R7 interview-only run (no post-interview history,
+    no quality/impl receipts) may still migrate missing→0."""
+    import json as _json
+
+    from omg_cli.autopilot import (
+        _normalize_ralplan_epoch,
+        autopilot_state_path,
+        load_autopilot,
+    )
+
+    st = start_autopilot(tmp_path, "r11-2 genuine interview migrate 0")
+    rid = st["run_id"]
+    state_path = autopilot_state_path(tmp_path, rid)
+    state = _json.loads(state_path.read_text(encoding="utf-8"))
+    del state["ralplan_epoch"]
+    state_path.write_text(_json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+    loaded = load_autopilot(tmp_path, rid)
+    assert _normalize_ralplan_epoch(loaded, tmp_path, rid) == 0
+    assert loaded.get("ralplan_epoch_source") == "migrated"
+
+
 def test_status_legal_next_excludes_verified(tmp_path: Path) -> None:
     st = start_autopilot(tmp_path, "legal next contract", skip_interview=True)
     rid = st["run_id"]
