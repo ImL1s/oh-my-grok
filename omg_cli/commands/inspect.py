@@ -365,12 +365,16 @@ def cmd_parity(args: argparse.Namespace) -> int:
         inventory_path = root / "docs" / "parity" / "omg-parity.json"
         strict = bool(getattr(args, "strict", False))
         release = bool(getattr(args, "release", False))
+        base_inventory = getattr(args, "base_inventory", None)
+        base_ref = getattr(args, "base_ref", None)
         try:
             result = check_parity_inventory(
                 inventory_path=inventory_path,
                 repo_root=root,
                 strict=strict,
                 release=release,
+                base_inventory_path=Path(base_inventory) if base_inventory else None,
+                base_ref=base_ref,
             )
         except ContractValidationError as exc:
             emit_data(
@@ -636,6 +640,22 @@ def register_inspect_parsers(
             "--release",
             action="store_true",
             help="fail closed on upstream drift, stale live evidence, and docs overclaim",
+        )
+        p_parity_check.add_argument(
+            "--base-inventory",
+            default=None,
+            help=(
+                "previous parity inventory JSON for pin-transition reviews "
+                "(release mode)"
+            ),
+        )
+        p_parity_check.add_argument(
+            "--base-ref",
+            default=None,
+            help=(
+                "durable git ref for base inventory (or set OMG_PARITY_BASE_REF); "
+                "release mode prefers previous v* tag over HEAD^"
+            ),
         )
         p_parity_check.set_defaults(func=cmd_parity, parity_action="check")
         p_parity_gaps = parity_sub.add_parser(

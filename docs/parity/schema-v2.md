@@ -72,8 +72,9 @@ Under `--strict` (validator `repo_root` set):
 ## Release check
 
 ```bash
-python3 scripts/check_parity_inventory.py --strict --release
-./bin/omg parity check --strict --release --json
+python3 scripts/check_parity_inventory.py --strict --release --base-ref <previous-v-tag>
+./bin/omg parity check --strict --release --base-ref <previous-v-tag> --json
+# or: --base-inventory /path/to/base-omg-parity.json  /  OMG_PARITY_BASE_REF=<ref>
 ```
 
 `--release` implies `--strict` and additionally runs the release claim gate (`omg_cli.parity_claim_gate`):
@@ -81,6 +82,6 @@ python3 scripts/check_parity_inventory.py --strict --release
 - doc overclaim scan (forbidden phrases / per-capability maturity overclaim while bootstrapping)
 - live-evidence freshness for `live_verified` rows
 - upstream drift vs `docs/parity/upstream-snapshots/*.json` (each unresolved add/delete/rename/change fails closed unless acknowledged in a refresh review artifact)
-- **pin-transition ledger:** when any source pin changes vs the base inventory (`--base-inventory`, `OMG_PARITY_BASE_REF`, or `git show HEAD^|origin/main:docs/parity/omg-parity.json`), a committed review must exist at `docs/parity/reviews/<source>-<from>-<to>-<change-digest>.json` with matching canonical change digest and dispositions. Optional local `.omg/artifacts/` paths alone are not sufficient.
+- **pin-transition ledger:** when any source pin changes vs the durable base inventory (`--base-inventory`, `--base-ref` / `OMG_PARITY_BASE_REF`, previous `v*` release tag, or `origin/main|main` — not `HEAD^` in release mode), a **git-tracked** review must exist at `docs/parity/reviews/<source>-<from>-<to>-<change-digest>.json` with matching HEAD blob bytes, canonical change digest, and dispositions. Intermediate inventory pin bumps between the trusted base and the candidate are scanned (so an unreviewed bump cannot be masked by a later commit). Optional local `.omg/artifacts/` paths alone are not sufficient.
 
 PR CI uses `--strict` only; `release.yml` uses `--strict --release`.

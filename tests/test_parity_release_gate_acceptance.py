@@ -224,3 +224,5 @@ def test_release_yml_invokes_parity_release_gate() -> None:
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     assert "check_parity_inventory.py" in workflow
     assert "--release" in workflow
+    assert "--base-ref" in workflow
+    assert "OMG_PARITY_BASE_REF" in workflow

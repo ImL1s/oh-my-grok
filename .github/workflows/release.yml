@@ -118,7 +118,16 @@ jobs:
           PY
       - name: Frozen parity and generated checks
         run: |
-          python scripts/check_parity_inventory.py --strict --release
+          BASE_REF="${OMG_PARITY_BASE_REF:-}"
+          if [ -z "$BASE_REF" ]; then
+            BASE_REF=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)
+          fi
+          if [ -z "$BASE_REF" ]; then
+            BASE_REF=$(git rev-parse --verify origin/main 2>/dev/null || git rev-parse --verify main)
+          fi
+          export OMG_PARITY_BASE_REF="$BASE_REF"
+          echo "OMG_PARITY_BASE_REF=$OMG_PARITY_BASE_REF"
+          python scripts/check_parity_inventory.py --strict --release --base-ref "$OMG_PARITY_BASE_REF"
           python scripts/generate_parity_docs.py --check
           python scripts/check_traceability.py
           python scripts/check_writer_ownership.py

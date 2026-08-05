@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -227,11 +228,51 @@ def _live_verified_row(row: dict, *, days_ago: float = 1.0) -> None:
 def _honest_docs(tmp_path: Path) -> None:
     (tmp_path / "docs" / "parity").mkdir(parents=True, exist_ok=True)
     (tmp_path / "README.md").write_text(HONEST_README.read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "CHANGELOG.md").write_text(
+        "# Changelog\n\nHonest release notes without live overclaims.\n",
+        encoding="utf-8",
+    )
     (tmp_path / "docs" / "parity" / "SUMMARY.md").write_text(
         "# Parity summary\n\nInventory status: **bootstrapping**.\n\n"
         "Capabilities catalogued only; no percentage claimed.\n",
         encoding="utf-8",
     )
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _init_git_repo(root: Path) -> None:
+    _git(root, "init")
+    _git(root, "config", "user.email", "parity@example.invalid")
+    _git(root, "config", "user.name", "Parity Fixture")
+    _git(root, "config", "commit.gpgsign", "false")
+
+
+def _git_commit_all(root: Path, message: str) -> str:
+    _git(root, "add", "-A")
+    _git(root, "commit", "-m", message)
+    proc = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return proc.stdout.strip()
+
+
+def _bump_omc_pin(inventory: dict, new_pin: str) -> None:
+    inventory["upstream_pins"]["OMC"]["revision"] = new_pin
+    for row in inventory["capabilities"]:
+        if row.get("upstream", {}).get("source") == "OMC":
+            row["upstream"]["revision"] = new_pin
 
 
 REQUIRED_SNAPSHOT_SOURCES = ("OMC", "OMX", "OmO", "Antigravity")
@@ -1108,16 +1149,51 @@ def test_pin_transition_passes_with_committed_review(tmp_path: Path) -> None:
     inventory = _bootstrapping_inventory(tmp_path)
     base = copy.deepcopy(inventory)
     new_pin = "dddddddddddddddddddddddddddddddddddddddd"
-    inventory["upstream_pins"]["OMC"]["revision"] = new_pin
-    for row in inventory["capabilities"]:
-        if row.get("upstream", {}).get("source") == "OMC":
-            row["upstream"]["revision"] = new_pin
+    _bump_omc_pin(inventory, new_pin)
     inv_path = _write_inventory(tmp_path, inventory)
     _scaffold_inventory_paths(tmp_path, inventory)
     _honest_docs(tmp_path)
     _write_required_snapshots(tmp_path, inventory)
 
-    # Build catalog from candidate snapshots for OMC.
+    catalog = load_json_object(
+        tmp_path / "docs" / "parity" / "upstream-snapshots" / "OMC.json"
+    )
+    plan = build_refresh_plan(
+        inventory=base,
+        upstream_catalog=catalog,
+        source="OMC",
+        new_pin=new_pin,
+        generated_at=FIXED_NOW,
+    )
+    write_committed_refresh_review(tmp_path, plan)
+    _init_git_repo(tmp_path)
+    _git_commit_all(tmp_path, "commit review ledger")
+
+    payload = check_parity_release_claims(
+        inventory_path=inv_path,
+        repo_root=tmp_path,
+        base_inventory=base,
+        now=FIXED_NOW,
+    )
+    assert payload["ok"] is True
+    assert payload["pin_transitions_reviewed"] is True
+
+
+def test_pin_transition_rejects_untracked_review_ledger(tmp_path: Path) -> None:
+    """P2: worktree-only review file is not 'committed'."""
+    from omg_cli.parity_refresh import write_committed_refresh_review
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    base = copy.deepcopy(inventory)
+    new_pin = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    _bump_omc_pin(inventory, new_pin)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+    _init_git_repo(tmp_path)
+    _git_commit_all(tmp_path, "base without review")
+
     catalog = load_json_object(
         tmp_path / "docs" / "parity" / "upstream-snapshots" / "OMC.json"
     )
@@ -1130,14 +1206,165 @@ def test_pin_transition_passes_with_committed_review(tmp_path: Path) -> None:
     )
     write_committed_refresh_review(tmp_path, plan)
 
-    payload = check_parity_release_claims(
-        inventory_path=inv_path,
-        repo_root=tmp_path,
-        base_inventory=base,
-        now=FIXED_NOW,
+    with pytest.raises(ContractValidationError, match=r"not tracked by git"):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            base_inventory=base,
+            now=FIXED_NOW,
+        )
+
+
+def test_pin_transition_rejects_tampered_review_worktree(tmp_path: Path) -> None:
+    """P2: HEAD blob must match worktree bytes for the review ledger."""
+    from omg_cli.parity_refresh import write_committed_refresh_review
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    base = copy.deepcopy(inventory)
+    new_pin = "ffffffffffffffffffffffffffffffffffffffff"
+    _bump_omc_pin(inventory, new_pin)
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+
+    catalog = load_json_object(
+        tmp_path / "docs" / "parity" / "upstream-snapshots" / "OMC.json"
     )
-    assert payload["ok"] is True
-    assert payload["pin_transitions_reviewed"] is True
+    plan = build_refresh_plan(
+        inventory=base,
+        upstream_catalog=catalog,
+        source="OMC",
+        new_pin=new_pin,
+        generated_at=FIXED_NOW,
+    )
+    path = write_committed_refresh_review(tmp_path, plan)
+    _init_git_repo(tmp_path)
+    _git_commit_all(tmp_path, "commit review")
+    path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+    with pytest.raises(ContractValidationError, match=r"differs from HEAD blob"):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            base_inventory=base,
+            now=FIXED_NOW,
+        )
+
+
+def test_durable_base_catches_pin_transition_masked_by_head_caret(
+    tmp_path: Path,
+) -> None:
+    """P1: C0 pin→C1 bump (no ledger)→C2 noise; HEAD^ masks, previous tag catches."""
+    from omg_cli.parity_claim_gate import (
+        assert_pin_transitions_reviewed,
+        resolve_base_inventory,
+    )
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+    _write_inventory(tmp_path, inventory)
+    _init_git_repo(tmp_path)
+    _git_commit_all(tmp_path, "C0 old pin")
+    _git(tmp_path, "tag", "v0.0.1")
+
+    bumped = copy.deepcopy(inventory)
+    new_pin = "1111111111111111111111111111111111111111"
+    _bump_omc_pin(bumped, new_pin)
+    _write_inventory(tmp_path, bumped)
+    _write_required_snapshots(tmp_path, bumped)
+    _git_commit_all(tmp_path, "C1 pin bump without review")
+
+    (tmp_path / "README.md").write_text(
+        (tmp_path / "README.md").read_text(encoding="utf-8") + "\nnoise\n",
+        encoding="utf-8",
+    )
+    _git_commit_all(tmp_path, "C2 unrelated")
+
+    catalogs = {
+        source: load_json_object(
+            tmp_path / "docs" / "parity" / "upstream-snapshots" / f"{source}.json"
+        )
+        for source in REQUIRED_SNAPSHOT_SOURCES
+    }
+    candidate = load_json_object(tmp_path / "docs" / "parity" / "omg-parity.json")
+
+    head_parent = resolve_base_inventory(tmp_path, base_ref="HEAD^", require=False)
+    assert head_parent is not None
+    assert (
+        head_parent.inventory["upstream_pins"]["OMC"]["revision"]
+        == candidate["upstream_pins"]["OMC"]["revision"]
+    )
+
+    durable = resolve_base_inventory(tmp_path, require=True)
+    assert durable is not None
+    assert durable.git_ref == "v0.0.1"
+
+    with pytest.raises(
+        ContractValidationError, match="pin transition missing committed refresh review"
+    ):
+        assert_pin_transitions_reviewed(
+            inventory=candidate,
+            base_inventory=durable.inventory,
+            repo_root=tmp_path,
+            catalogs_by_source=catalogs,
+            base_ref=durable.git_ref,
+        )
+
+
+def test_resolve_base_inventory_require_skips_head_caret(tmp_path: Path) -> None:
+    """Release require=True must not prefer HEAD^ over durable tags/main."""
+    from omg_cli.parity_claim_gate import resolve_base_inventory
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    _write_inventory(tmp_path, inventory)
+    _init_git_repo(tmp_path)
+    _git_commit_all(tmp_path, "C0")
+    _git(tmp_path, "tag", "v9.9.9")
+    (tmp_path / "README.md").write_text("second\n", encoding="utf-8")
+    _git_commit_all(tmp_path, "C1")
+
+    resolved = resolve_base_inventory(tmp_path, require=True)
+    assert resolved is not None
+    assert resolved.git_ref == "v9.9.9"
+    assert resolved.git_ref != "HEAD^"
+
+
+def test_complete_healthy_still_rejects_live_proven_phrase(tmp_path: Path) -> None:
+    """P2: complete + all-healthy must keep live-* phrase scan active."""
+    inventory = _bootstrapping_inventory(tmp_path)
+    inventory["inventory_status"] = "complete"
+    inventory["category_status"] = {
+        cat: "complete" for cat in sorted(PARITY_CATEGORY_TAXONOMY)
+    }
+    inventory["source_status"] = {
+        "OMC": "complete",
+        "OMX": "complete",
+        "OmO": "complete",
+        "Antigravity": "complete",
+    }
+    for row in inventory["capabilities"]:
+        _mark_healthy(row)
+    for gap in inventory.get("gaps", []):
+        if isinstance(gap, dict):
+            gap["status"] = "closed"
+    inv_path = _write_inventory(tmp_path, inventory)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+    (tmp_path / "CHANGELOG.md").write_text(
+        "All runtime paths are live-proven.\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ContractValidationError, match=r"overclaim|live.?proven"):
+        check_parity_release_claims(
+            inventory_path=inv_path,
+            repo_root=tmp_path,
+            now=FIXED_NOW,
+        )
 
 
 def test_upstream_drift_rejects_stale_delete_ack_after_fingerprint_mutates(

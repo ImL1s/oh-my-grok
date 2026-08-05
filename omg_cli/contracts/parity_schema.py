@@ -252,7 +252,7 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             "docs/parity/MATRIX-OmO.md",
             "docs/parity/MATRIX-Antigravity.md",
         ]
-        + ["docs/parity/upstream-snapshots/**"]
+        + ["docs/parity/upstream-snapshots/**", "docs/parity/reviews/**"]
         + _paths(
             "scripts/",
             (

@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -45,14 +46,22 @@ _DOC_SCAN_RELATIVE = (
     "docs/parity/SUMMARY.zh.md",
     "docs/parity/SUMMARY.zh-TW.md",
 )
-_FORBIDDEN_PHRASE_PATTERNS = (
-    re.compile(r"(?i)live[ _-]?verified"),
-    re.compile(r"(?i)live[ _-]?proven"),
-    re.compile(r"(?i)live[ _-]?tested"),
+# Completeness-gated phrases: may turn off once inventory is complete + healthy.
+_COMPLETENESS_FORBIDDEN_PHRASE_PATTERNS = (
     re.compile(r"(?i)full 1:1"),
     re.compile(r"(?i)complete parity"),
     re.compile(r"✅"),
     re.compile(r"(?i)parity \d+%"),
+)
+# Live-evidence phrases: stay on unless every capability is actually live_verified.
+_LIVE_FORBIDDEN_PHRASE_PATTERNS = (
+    re.compile(r"(?i)live[ _-]?verified"),
+    re.compile(r"(?i)live[ _-]?proven"),
+    re.compile(r"(?i)live[ _-]?tested"),
+)
+# Back-compat alias for tests / callers that still import the combined set.
+_FORBIDDEN_PHRASE_PATTERNS = (
+    _LIVE_FORBIDDEN_PHRASE_PATTERNS + _COMPLETENESS_FORBIDDEN_PHRASE_PATTERNS
 )
 _CAPABILITY_CLAIM_RE = re.compile(
     r"(?i)\b(healthy|live[-_ ]?(?:verified|proven|tested)|implemented)\b"
@@ -76,9 +85,9 @@ def _strip_markdown_code(text: str) -> str:
 
 
 def _doc_restrictions_active(inventory: dict[str, Any]) -> bool:
-    # Same completeness bar as inventory_is_complete / inventory_completion_claims_allowed:
+    # Completeness-gated phrases (full 1:1 / complete parity / ✅ / parity N%):
     # inventory_status alone is not enough — category_status and source_status must
-    # also be complete before global forbidden-phrase scanning may turn off.
+    # also be complete, and every capability must reach at least healthy.
     if not inventory_completion_claims_allowed(inventory):
         return True
     for row in inventory.get("capabilities", []):
@@ -89,6 +98,25 @@ def _doc_restrictions_active(inventory: dict[str, Any]) -> bool:
         except ContractValidationError:
             return True
         if maturity_rank(peak) < maturity_rank("healthy"):
+            return True
+    return False
+
+
+def _live_claim_restrictions_active(inventory: dict[str, Any]) -> bool:
+    """Keep live-* phrase scan on unless every capability is live_verified."""
+    rows = [
+        row
+        for row in inventory.get("capabilities", [])
+        if isinstance(row, dict)
+    ]
+    if not rows:
+        return True
+    for row in rows:
+        try:
+            peak = max_runtime_maturity(row)
+        except ContractValidationError:
+            return True
+        if maturity_rank(peak) < maturity_rank("live_verified"):
             return True
     return False
 
@@ -118,16 +146,21 @@ def _scan_doc_text(
     relative: str,
     text: str,
     restrictions_active: bool,
+    live_restrictions_active: bool,
     capability_rows: dict[str, dict[str, Any]],
 ) -> list[str]:
     violations: list[str] = []
+    prose = _strip_markdown_code(text)
+    patterns: list[re.Pattern[str]] = []
+    if live_restrictions_active:
+        patterns.extend(_LIVE_FORBIDDEN_PHRASE_PATTERNS)
     if restrictions_active:
-        prose = _strip_markdown_code(text)
-        for pattern in _FORBIDDEN_PHRASE_PATTERNS:
-            if pattern.search(prose):
-                violations.append(
-                    f"forbidden phrase {pattern.pattern!r} in {relative}"
-                )
+        patterns.extend(_COMPLETENESS_FORBIDDEN_PHRASE_PATTERNS)
+    for pattern in patterns:
+        if pattern.search(prose):
+            violations.append(
+                f"forbidden phrase {pattern.pattern!r} in {relative}"
+            )
     for cap_id, row in capability_rows.items():
         if cap_id not in text:
             continue
@@ -155,6 +188,7 @@ def scan_docs_for_overclaims(*, repo_root: Path, inventory: dict) -> list[str]:
     """Return human-readable overclaim violations (empty when docs are honest)."""
     root = Path(repo_root)
     restrictions_active = _doc_restrictions_active(inventory)
+    live_restrictions_active = _live_claim_restrictions_active(inventory)
     capability_rows = _capability_index(inventory)
     violations: list[str] = []
     for relative in _DOC_SCAN_RELATIVE:
@@ -167,6 +201,7 @@ def scan_docs_for_overclaims(*, repo_root: Path, inventory: dict) -> list[str]:
                 relative=relative,
                 text=text,
                 restrictions_active=restrictions_active,
+                live_restrictions_active=live_restrictions_active,
                 capability_rows=capability_rows,
             )
         )
@@ -297,23 +332,154 @@ def assert_upstream_drift_resolved(
         )
 
 
-def _git_show_inventory(repo_root: Path, git_ref: str) -> dict[str, Any] | None:
+def _git_show_text(repo_root: Path, object_spec: str) -> str | None:
     try:
         proc = subprocess.run(
-            ["git", "-C", str(repo_root), "show", f"{git_ref}:docs/parity/omg-parity.json"],
+            ["git", "-C", str(repo_root), "show", object_spec],
             check=False,
             capture_output=True,
             text=True,
         )
     except OSError:
         return None
-    if proc.returncode != 0 or not proc.stdout.strip():
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def _git_show_inventory(repo_root: Path, git_ref: str) -> dict[str, Any] | None:
+    text = _git_show_text(repo_root, f"{git_ref}:docs/parity/omg-parity.json")
+    if text is None or not text.strip():
         return None
     try:
-        payload = json_loads_object(proc.stdout)
+        return json_loads_object(text)
     except (ContractValidationError, ValueError):
         return None
-    return payload
+
+
+def _git_show_catalog(
+    repo_root: Path, git_ref: str, source: str
+) -> dict[str, Any] | None:
+    text = _git_show_text(
+        repo_root, f"{git_ref}:docs/parity/upstream-snapshots/{source}.json"
+    )
+    if text is None or not text.strip():
+        return None
+    try:
+        return validate_upstream_catalog(json_loads_object(text))
+    except (ContractValidationError, ValueError):
+        return None
+
+
+def _previous_release_tag(repo_root: Path) -> str | None:
+    """Return the newest v* tag reachable from HEAD^ (durable release base)."""
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "describe",
+                "--tags",
+                "--abbrev=0",
+                "--match",
+                "v*",
+                "HEAD^",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    tag = proc.stdout.strip()
+    if proc.returncode != 0 or not tag:
+        return None
+    return tag
+
+
+def _git_log_inventory_commits(repo_root: Path, base_ref: str) -> list[str]:
+    """Commits after base_ref that touch the parity inventory (oldest first)."""
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "log",
+                "--reverse",
+                "--format=%H",
+                f"{base_ref}..HEAD",
+                "--",
+                "docs/parity/omg-parity.json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return []
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return []
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
+def _assert_review_blob_committed(repo_root: Path, path: Path) -> None:
+    """Fail closed unless review is tracked and matches HEAD blob bytes."""
+    root = Path(repo_root)
+    try:
+        relative = path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError as exc:
+        raise ContractValidationError(
+            f"committed refresh review path escapes repo root: {path}"
+        ) from exc
+    if not (root / ".git").exists():
+        raise ContractValidationError(
+            f"committed refresh review requires a git repository: {relative}"
+        )
+    try:
+        tracked = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", relative],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise ContractValidationError(
+            f"committed refresh review git ls-files failed: {relative}"
+        ) from exc
+    if tracked.returncode != 0:
+        raise ContractValidationError(
+            f"committed refresh review is not tracked by git: {relative}"
+        )
+    try:
+        head_blob = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", f"HEAD:{relative}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        work_blob = subprocess.run(
+            ["git", "-C", str(root), "hash-object", "--", relative],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise ContractValidationError(
+            f"committed refresh review blob compare failed: {relative}"
+        ) from exc
+    if head_blob.returncode != 0:
+        raise ContractValidationError(
+            f"committed refresh review missing from HEAD tree: {relative}"
+        )
+    if (
+        work_blob.returncode != 0
+        or head_blob.stdout.strip() != work_blob.stdout.strip()
+    ):
+        raise ContractValidationError(
+            f"committed refresh review worktree differs from HEAD blob: {relative}"
+        )
 
 
 def json_loads_object(text: str) -> dict[str, Any]:
@@ -325,6 +491,12 @@ def json_loads_object(text: str) -> dict[str, Any]:
     return raw
 
 
+@dataclass(frozen=True)
+class BaseInventoryResolution:
+    inventory: dict[str, Any]
+    git_ref: str | None = None
+
+
 def resolve_base_inventory(
     repo_root: Path,
     *,
@@ -332,27 +504,42 @@ def resolve_base_inventory(
     base_inventory_path: Path | str | None = None,
     base_ref: str | None = None,
     require: bool = False,
-) -> dict[str, Any] | None:
-    """Resolve previous inventory for pin-transition review enforcement."""
+) -> BaseInventoryResolution | None:
+    """Resolve previous inventory for pin-transition review enforcement.
+
+    When ``require`` is true (release mode), prefer a durable base:
+    explicit ``base_ref`` / ``OMG_PARITY_BASE_REF``, then previous ``v*`` release
+    tag, then ``origin/main`` / ``main``. ``HEAD^`` is intentionally omitted so
+    an unreviewed pin bump cannot be masked by a later unrelated commit.
+    """
     if base_inventory is not None:
-        return base_inventory
+        return BaseInventoryResolution(inventory=base_inventory, git_ref=None)
     if base_inventory_path is not None:
-        return load_json_object(Path(base_inventory_path))
+        return BaseInventoryResolution(
+            inventory=load_json_object(Path(base_inventory_path)),
+            git_ref=None,
+        )
     refs: list[str] = []
     explicit = (base_ref or os.environ.get("OMG_PARITY_BASE_REF") or "").strip()
     if explicit:
         refs.append(explicit)
+    elif require:
+        previous = _previous_release_tag(repo_root)
+        if previous:
+            refs.append(previous)
+        refs.extend(["origin/main", "main"])
     else:
         refs.extend(["HEAD^", "origin/main", "main"])
     for ref in refs:
         loaded = _git_show_inventory(repo_root, ref)
         if loaded is not None:
-            return loaded
+            return BaseInventoryResolution(inventory=loaded, git_ref=ref)
     if require:
         raise ContractValidationError(
             "pin-transition gate requires base inventory "
-            "(pass base_inventory / --base-inventory / OMG_PARITY_BASE_REF, "
-            "or ensure git can show HEAD^|origin/main:docs/parity/omg-parity.json)"
+            "(pass base_inventory / --base-inventory / --base-ref / "
+            "OMG_PARITY_BASE_REF, previous v* release tag, or "
+            "origin/main|main:docs/parity/omg-parity.json)"
         )
     return None
 
@@ -374,79 +561,154 @@ def _pin_revision(inventory: Mapping[str, Any], source: str) -> str:
     return revision
 
 
-def assert_pin_transitions_reviewed(
+def _transition_inventory_steps(
     *,
-    inventory: dict[str, Any],
-    base_inventory: dict[str, Any],
     repo_root: Path,
+    base_inventory: dict[str, Any],
+    candidate_inventory: dict[str, Any],
+    base_ref: str | None,
+) -> list[tuple[str | None, dict[str, Any]]]:
+    """Build base→…→candidate inventory steps (scan intermediate pin bumps)."""
+    steps: list[tuple[str | None, dict[str, Any]]] = [(base_ref, base_inventory)]
+    if base_ref:
+        for commit in _git_log_inventory_commits(repo_root, base_ref):
+            loaded = _git_show_inventory(repo_root, commit)
+            if loaded is not None:
+                steps.append((commit, loaded))
+    steps.append((None, candidate_inventory))
+    return steps
+
+
+def _catalog_for_transition(
+    *,
+    repo_root: Path,
+    source: str,
+    at_ref: str | None,
+    fallback: Mapping[str, dict[str, Any]],
+) -> dict[str, Any]:
+    if at_ref:
+        loaded = _git_show_catalog(repo_root, at_ref, source)
+        if loaded is not None:
+            return loaded
+    catalog = fallback.get(source)
+    if catalog is None:
+        raise ContractValidationError(
+            f"missing upstream catalog for pin transition source {source!r}"
+        )
+    return catalog
+
+
+def _require_single_pin_transition_review(
+    *,
+    root: Path,
+    from_inventory: dict[str, Any],
+    to_inventory: dict[str, Any],
+    to_ref: str | None,
+    source: str,
     catalogs_by_source: Mapping[str, dict[str, Any]],
+    missing: list[str],
 ) -> None:
-    """Require committed docs/parity/reviews ledger when a source pin changes."""
-    root = Path(repo_root)
-    missing: list[str] = []
-    for source in REQUIRED_UPSTREAM_SNAPSHOT_SOURCES:
-        from_revision = _pin_revision(base_inventory, source)
-        to_revision = _pin_revision(inventory, source)
-        if from_revision == to_revision:
+    from_revision = _pin_revision(from_inventory, source)
+    to_revision = _pin_revision(to_inventory, source)
+    if from_revision == to_revision:
+        return
+    catalog = _catalog_for_transition(
+        repo_root=root,
+        source=source,
+        at_ref=to_ref,
+        fallback=catalogs_by_source,
+    )
+    plan = build_refresh_plan(
+        inventory=from_inventory,
+        upstream_catalog=catalog,
+        source=source,
+        new_pin=to_revision,
+    )
+    digest = canonical_changes_digest(
+        [c for c in plan.get("changes", []) if isinstance(c, dict)]
+    )
+    path = committed_review_path(
+        root,
+        source=source,
+        from_revision=from_revision,
+        to_revision=to_revision,
+        change_digest=digest,
+    )
+    if not path.is_file():
+        try:
+            missing.append(path.resolve().relative_to(root.resolve()).as_posix())
+        except ValueError:
+            missing.append(str(path))
+        return
+    _assert_review_blob_committed(root, path)
+    review = load_json_object(path)
+    if not _review_binds_drift_context(
+        review,
+        source=source,
+        from_revision=from_revision,
+        to_revision=to_revision,
+    ):
+        raise ContractValidationError(
+            f"committed refresh review context mismatch: {path.name}"
+        )
+    review_digest = review.get("change_digest")
+    if review_digest != digest:
+        raise ContractValidationError(
+            f"committed refresh review change_digest mismatch for {source}: "
+            f"expected {digest}, got {review_digest!r}"
+        )
+    for change in plan.get("changes", []):
+        if not isinstance(change, dict):
             continue
-        catalog = catalogs_by_source.get(source)
-        if catalog is None:
-            raise ContractValidationError(
-                f"missing upstream catalog for pin transition source {source!r}"
-            )
-        plan = build_refresh_plan(
-            inventory=base_inventory,
-            upstream_catalog=catalog,
-            source=source,
-            new_pin=to_revision,
-        )
-        digest = canonical_changes_digest(
-            [c for c in plan.get("changes", []) if isinstance(c, dict)]
-        )
-        path = committed_review_path(
-            root,
-            source=source,
-            from_revision=from_revision,
-            to_revision=to_revision,
-            change_digest=digest,
-        )
-        if not path.is_file():
-            try:
-                missing.append(path.resolve().relative_to(root.resolve()).as_posix())
-            except ValueError:
-                missing.append(str(path))
+        if change.get("change_kind") not in _DRIFT_CHANGE_KINDS:
             continue
-        review = load_json_object(path)
-        if not _review_binds_drift_context(
+        if not _is_change_acknowledged(
+            change,
             review,
             source=source,
             from_revision=from_revision,
             to_revision=to_revision,
         ):
             raise ContractValidationError(
-                f"committed refresh review context mismatch: {path.name}"
+                f"committed refresh review missing acknowledgment for {change}"
             )
-        review_digest = review.get("change_digest")
-        if review_digest != digest:
-            raise ContractValidationError(
-                f"committed refresh review change_digest mismatch for {source}: "
-                f"expected {digest}, got {review_digest!r}"
-            )
-        for change in plan.get("changes", []):
-            if not isinstance(change, dict):
-                continue
-            if change.get("change_kind") not in _DRIFT_CHANGE_KINDS:
-                continue
-            if not _is_change_acknowledged(
-                change,
-                review,
+
+
+def assert_pin_transitions_reviewed(
+    *,
+    inventory: dict[str, Any],
+    base_inventory: dict[str, Any],
+    repo_root: Path,
+    catalogs_by_source: Mapping[str, dict[str, Any]],
+    base_ref: str | None = None,
+) -> None:
+    """Require committed docs/parity/reviews ledger when a source pin changes.
+
+    When ``base_ref`` is a durable git ref, every intermediate inventory pin
+    transition from that ref through ``HEAD`` is enforced — not only the
+    immediate parent — so an unreviewed bump cannot be masked by a later commit.
+    """
+    root = Path(repo_root)
+    missing: list[str] = []
+    steps = _transition_inventory_steps(
+        repo_root=root,
+        base_inventory=base_inventory,
+        candidate_inventory=inventory,
+        base_ref=base_ref,
+    )
+    for index in range(len(steps) - 1):
+        _from_ref, from_inventory = steps[index]
+        to_ref, to_inventory = steps[index + 1]
+        for source in REQUIRED_UPSTREAM_SNAPSHOT_SOURCES:
+            _require_single_pin_transition_review(
+                root=root,
+                from_inventory=from_inventory,
+                to_inventory=to_inventory,
+                to_ref=to_ref,
                 source=source,
-                from_revision=from_revision,
-                to_revision=to_revision,
-            ):
-                raise ContractValidationError(
-                    f"committed refresh review missing acknowledgment for {change}"
-                )
+                catalogs_by_source=catalogs_by_source,
+                missing=missing,
+            )
     if missing:
         raise ContractValidationError(
             "pin transition missing committed refresh review(s): " + ", ".join(missing)
@@ -614,12 +876,17 @@ def check_parity_release_claims(
         require=require_base_inventory,
     )
     if resolved_base is None:
-        resolved_base = inventory
+        base_payload = inventory
+        resolved_ref = None
+    else:
+        base_payload = resolved_base.inventory
+        resolved_ref = resolved_base.git_ref
     assert_pin_transitions_reviewed(
         inventory=inventory,
-        base_inventory=resolved_base,
+        base_inventory=base_payload,
         repo_root=root,
         catalogs_by_source=catalogs_by_source,
+        base_ref=resolved_ref,
     )
 
     try:

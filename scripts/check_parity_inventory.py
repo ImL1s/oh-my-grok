@@ -54,7 +54,15 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "previous parity inventory for pin-transition reviews "
-            "(default: git show $OMG_PARITY_BASE_REF|HEAD^|origin/main)"
+            "(default: git show $OMG_PARITY_BASE_REF|previous-v-tag|origin/main)"
+        ),
+    )
+    parser.add_argument(
+        "--base-ref",
+        default=None,
+        help=(
+            "durable git ref for base inventory "
+            "(overrides default resolution; same as OMG_PARITY_BASE_REF)"
         ),
     )
     parser.add_argument(
@@ -74,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
             strict=bool(args.strict),
             release=bool(args.release),
             base_inventory_path=Path(args.base_inventory) if args.base_inventory else None,
+            base_ref=args.base_ref,
         )
     except ContractValidationError as exc:
         print(

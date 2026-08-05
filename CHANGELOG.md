@@ -31,6 +31,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   bind required snapshot filename → `source`; bind refresh ack `detail` to
   promise/source_paths before→after values so same-revision stale acks cannot
   replay.
+- **Parity release claim gate (PR #91 Pro re-audit round 3):** durable release
+  base (previous `v*` tag / `--base-ref` / `OMG_PARITY_BASE_REF`, not `HEAD^`);
+  scan intermediate pin transitions; require git-tracked HEAD-blob-matching
+  review ledgers; own `docs/parity/reviews/**` under OMG-W0; keep live-* phrase
+  scan active unless every capability is `live_verified`; expose
+  `--base-inventory` / `--base-ref` on `omg parity check`.
 - **Parity release claim gate (PR #91 Pro re-audit round 2):** require committed
   pin-transition reviews under `docs/parity/reviews/`; bind deleted-change
   fingerprints; validate upstream snapshot capability schema (no duplicate /
