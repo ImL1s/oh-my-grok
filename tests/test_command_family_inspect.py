@@ -100,3 +100,82 @@ def test_hud_json_via_main(
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     assert isinstance(payload, dict)
+
+
+def test_parity_check_uses_global_json_envelope(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code = main(["parity", "check", "--strict", "--json"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["schema_version"] == 1
+    assert payload["command"] == "parity.check"
+    assert payload["data"]["ok"] is True
+    assert payload["data"]["schema_version"] == 2
+    assert payload["data"]["strict"] is True
+    assert payload["data"]["completion_claims_allowed"] is False
+
+    code = main(["parity", "gaps", "--priority", "P0", "--json"])
+    assert code == 0
+    gaps_payload = json.loads(capsys.readouterr().out)
+    assert gaps_payload["ok"] is True
+    assert gaps_payload["command"] == "parity.gaps"
+    assert gaps_payload["data"]["open_only"] is True
+    assert gaps_payload["data"]["include_all"] is False
+    assert all(gap["status"] == "open" for gap in gaps_payload["data"]["gaps"])
+    issues = {
+        issue
+        for gap in gaps_payload["data"]["gaps"]
+        for issue in gap["issues"]
+    }
+    assert {"#67", "#68", "#69", "#78"} <= issues
+
+
+def test_parity_check_strict_invokes_shared_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """CLI --strict must call shared check_parity_inventory(strict=True)."""
+    calls: list[bool] = []
+    import omg_cli.parity_check as parity_check
+
+    real = parity_check.check_parity_inventory
+
+    def wrapped(*, inventory_path, repo_root, strict=False):
+        calls.append(bool(strict))
+        return real(
+            inventory_path=inventory_path,
+            repo_root=repo_root,
+            strict=strict,
+        )
+
+    monkeypatch.setattr(parity_check, "check_parity_inventory", wrapped)
+
+    code = main(["parity", "check", "--strict", "--json"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["strict"] is True
+    assert calls == [True]
+
+    calls.clear()
+    code = main(["parity", "check", "--json"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["strict"] is False
+    assert calls == [False]
+
+
+def test_parity_gaps_defaults_open_only(capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(["parity", "gaps", "--json"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["open_only"] is True
+    assert payload["data"]["include_all"] is False
+    assert all(gap["status"] == "open" for gap in payload["data"]["gaps"])
+
+    code = main(["parity", "gaps", "--all", "--json"])
+    assert code == 0
+    all_payload = json.loads(capsys.readouterr().out)
+    assert all_payload["data"]["include_all"] is True
+    assert all_payload["data"]["open_only"] is False

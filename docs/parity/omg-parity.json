@@ -1,425 +1,203 @@
 {
-  "capability_tiers": [
+  "store_kind": "parity_inventory",
+  "schema_version": 2,
+  "repository_id": "OMG",
+  "ownership_manifest_id": "dual-parity-writers-v1",
+  "inventory_status": "bootstrapping",
+  "maturity_levels": [
+    "catalogued",
     "configured",
     "installed",
     "enabled",
     "loadable",
     "observed",
     "healthy",
-    "verified"
+    "live_verified"
   ],
   "classifications": [
     "faithful",
-    "native_substitute",
+    "antigravity_native",
+    "omg_native",
+    "alias",
     "host_owned",
     "host_impossible",
-    "optional_unclaimed"
+    "optional_unclaimed",
+    "excluded"
   ],
-  "frozen_pins": {
-    "GROK_BUILD": "7cfcb20d2b50b0d18801a6c0af2e401c0e060894",
-    "OMA": "f8eeaae6f42ebbfc1c22be504277377332c0d8fe",
-    "OMC": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
-    "OMG": "25a80b7f5e95dcf4a9e53dd71e71295a21030dd3",
-    "OMX": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca"
+  "upstream_pins": {
+    "OMC": {
+      "repository": "https://github.com/Yeachan-Heo/oh-my-claudecode",
+      "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+      "kind": "commit"
+    },
+    "OMX": {
+      "repository": "https://github.com/code-yeongyu/oh-my-codex",
+      "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
+      "kind": "commit"
+    },
+    "OmO": {
+      "repository": "https://github.com/code-yeongyu/oh-my-openagent",
+      "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
+      "kind": "commit"
+    },
+    "Antigravity": {
+      "repository": "https://github.com/google-antigravity/antigravity-cli",
+      "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+      "kind": "commit"
+    },
+    "GROK_BUILD": {
+      "repository": "https://github.com/xai-org/grok-build",
+      "revision": "7cfcb20d2b50b0d18801a6c0af2e401c0e060894",
+      "kind": "commit"
+    }
   },
-  "mcp_operations": [
-    "run_status.read",
-    "trace.timeline",
-    "trace.summary",
-    "resume_metadata.read",
-    "project_memory.search",
-    "wiki.read",
-    "team_status.read",
-    "mailbox.list",
-    "proposal.create"
-  ],
-  "normative_artifact_hashes": {
-    "plan": "29852abd254d1aa5c51b3a5a98739f0763a195f9c9b9b77ccea69e8ba3a770f5",
-    "prd": "0a9c2c644188bd461ffd96e0fc89f6ca017f2c5e6b15bbd28683b3d978c17952",
-    "requirements": "f9ff4cdad865330b2ea6db3443f19ce2ed48567ba3cc5164459822226e11805f",
-    "test_spec": "4cc4337225a3dcdb722351aedf573368ea23657e2d9ef9be1aca60f7927566d2"
+  "category_status": {
+    "antigravity": "bootstrapping",
+    "jobs": "bootstrapping",
+    "team": "bootstrapping",
+    "parity_governance": "bootstrapping"
   },
-  "ownership_manifest_id": "dual-parity-writers-v1",
-  "repository_id": "OMG",
-  "requirement_ids": [
-    "DUAL-001",
-    "DUAL-002",
-    "DUAL-003",
-    "LAUNCH-001",
-    "LSP-001",
-    "MCP-001",
-    "OMA-AUTH-001",
-    "OMA-G007-001",
-    "OMA-HOOK-001",
-    "OMA-IDENTITY-001",
-    "OMA-INSTALL-001",
-    "OMA-LSP-001",
-    "OMA-MCP-001",
-    "OMA-MEM-001",
-    "OMA-NOTIFY-001",
-    "OMA-SESSION-001",
-    "OMA-TEAM-001",
-    "OMG-EXT-001",
-    "OMG-HOOK-001",
-    "OMG-HOOK-002",
-    "OMG-INSTALL-001",
-    "OMG-LSP-001",
-    "OMG-MCP-001",
-    "OMG-MEM-001",
-    "OMG-NOTIFY-001",
-    "OMG-SESSION-001",
-    "OMG-SPAWN-001",
-    "OMG-TEAM-001",
-    "OWN-001",
-    "OWN-002",
-    "OWN-003",
-    "RELEASE-001",
-    "RELEASE-002",
-    "RESUME-001",
-    "RESUME-002",
-    "RESUME-003",
-    "REVIEW-001",
-    "TRACK-001",
-    "TRUTH-001",
-    "TRUTH-002",
-    "WORKFLOW-001"
-  ],
-  "rows": [
+  "live_evidence_max_age_days": 30,
+  "capabilities": [
     {
-      "claim_state": "contract_only",
-      "classification": "faithful",
-      "operation_tests": [
-        "tests/test_state_schemas.py"
+      "id": "antigravity.provider.adapter",
+      "category": "antigravity",
+      "promise": "First-class Antigravity provider adapter with typed capabilities and fail-closed ask/Team integration",
+      "classification": "antigravity_native",
+      "upstream": {
+        "source": "Antigravity",
+        "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [
+        "omg_cli/ask/providers.py",
+        "omg_cli/team/providers.py"
       ],
-      "requirement_id": "DUAL-001"
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued",
+        "antigravity": "catalogued"
+      },
+      "evidence": {
+        "tests": [],
+        "docs": ["docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#67"],
+      "gap": "Legacy Team argv builder and ask deny-list only; no typed adapter yet (#67-A..D)."
     },
     {
-      "claim_state": "contract_only",
-      "classification": "faithful",
-      "operation_tests": [
-        "tests/test_parity_inventory.py"
-      ],
-      "requirement_id": "DUAL-002"
+      "id": "jobs.durable_background",
+      "category": "jobs",
+      "promise": "Durable background job plane with start/list/status/wait/collect and fail-closed reconcile",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMX",
+        "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/team/plane.py"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": [],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#68"],
+      "gap": "Team-specific durability only; no general job registry (#68-A..D)."
     },
     {
-      "claim_state": "contract_only",
-      "classification": "faithful",
-      "operation_tests": [
-        "tests/test_path_keys.py"
+      "id": "team.plane_v3",
+      "category": "team",
+      "promise": "Team plane v3 with job-backed panes and Antigravity adapter integration",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [
+        "omg_cli/team/plane.py",
+        "omg_cli/team/cli.py"
       ],
-      "requirement_id": "DUAL-003"
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_team_plane.py"],
+        "docs": ["docs/skills.md", "docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#69"],
+      "gap": "Current Team plane is production-usable but not v3; blocked on #67/#68."
     },
     {
-      "claim_state": "contract_only",
-      "classification": "faithful",
-      "operation_tests": [
-        "tests/test_carrier_contract.py"
+      "id": "parity.inventory.governance",
+      "category": "parity_governance",
+      "promise": "Canonical parity inventory with claimability gates and strict local drift check",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [
+        "omg_cli/contracts/parity_schema.py",
+        "docs/parity/omg-parity.json",
+        "scripts/check_parity_inventory.py"
       ],
-      "requirement_id": "LAUNCH-001"
-    },
-    {
-      "claim_state": "host_owned",
-      "classification": "host_owned",
-      "operation_tests": [
-        "tests/test_parity_inventory.py"
-      ],
-      "requirement_id": "LSP-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "native_substitute",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "MCP-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "optional_unclaimed",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMA-AUTH-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "optional_unclaimed",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMA-G007-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "optional_unclaimed",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMA-HOOK-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "optional_unclaimed",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMA-IDENTITY-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "optional_unclaimed",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMA-INSTALL-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "optional_unclaimed",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMA-LSP-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "optional_unclaimed",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMA-MCP-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "optional_unclaimed",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMA-MEM-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "optional_unclaimed",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMA-NOTIFY-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "optional_unclaimed",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMA-SESSION-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "optional_unclaimed",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMA-TEAM-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "native_substitute",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMG-EXT-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "native_substitute",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMG-HOOK-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "native_substitute",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMG-HOOK-002"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "native_substitute",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMG-INSTALL-001"
-    },
-    {
-      "claim_state": "host_owned",
-      "classification": "host_owned",
-      "operation_tests": [
-        "tests/test_parity_inventory.py"
-      ],
-      "requirement_id": "OMG-LSP-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "native_substitute",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMG-MCP-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "native_substitute",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMG-MEM-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "native_substitute",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMG-NOTIFY-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "native_substitute",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMG-SESSION-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "native_substitute",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMG-SPAWN-001"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "native_substitute",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "OMG-TEAM-001"
-    },
-    {
-      "claim_state": "contract_only",
-      "classification": "faithful",
-      "operation_tests": [
-        "tests/test_writer_ownership.py"
-      ],
-      "requirement_id": "OWN-001"
-    },
-    {
-      "claim_state": "contract_only",
-      "classification": "faithful",
-      "operation_tests": [
-        "tests/test_writer_chain.py"
-      ],
-      "requirement_id": "OWN-002"
-    },
-    {
-      "claim_state": "contract_only",
-      "classification": "faithful",
-      "operation_tests": [
-        "tests/test_writer_chain.py"
-      ],
-      "requirement_id": "OWN-003"
-    },
-    {
-      "claim_state": "contract_only",
-      "classification": "faithful",
-      "operation_tests": [
-        "tests/test_release_transaction.py"
-      ],
-      "requirement_id": "RELEASE-001"
-    },
-    {
-      "claim_state": "contract_only",
-      "classification": "faithful",
-      "operation_tests": [
-        "tests/test_release_transaction.py"
-      ],
-      "requirement_id": "RELEASE-002"
-    },
-    {
-      "claim_state": "contract_only",
-      "classification": "faithful",
-      "operation_tests": [
-        "tests/test_state_schemas.py"
-      ],
-      "requirement_id": "RESUME-001"
-    },
-    {
-      "claim_state": "contract_only",
-      "classification": "faithful",
-      "operation_tests": [
-        "tests/test_state_schemas.py"
-      ],
-      "requirement_id": "RESUME-002"
-    },
-    {
-      "claim_state": "contract_only",
-      "classification": "faithful",
-      "operation_tests": [
-        "tests/test_state_schemas.py"
-      ],
-      "requirement_id": "RESUME-003"
-    },
-    {
-      "claim_state": "planned",
-      "classification": "native_substitute",
-      "operation_tests": [
-        "tests/test_traceability.py"
-      ],
-      "requirement_id": "REVIEW-001"
-    },
-    {
-      "claim_state": "contract_only",
-      "classification": "faithful",
-      "operation_tests": [
-        "tests/test_state_schemas.py"
-      ],
-      "requirement_id": "TRACK-001"
-    },
-    {
-      "claim_state": "contract_only",
-      "classification": "faithful",
-      "operation_tests": [
-        "tests/test_state_schemas.py"
-      ],
-      "requirement_id": "TRUTH-001"
-    },
-    {
-      "claim_state": "contract_only",
-      "classification": "faithful",
-      "operation_tests": [
-        "tests/test_parity_inventory.py"
-      ],
-      "requirement_id": "TRUTH-002"
-    },
-    {
-      "claim_state": "contract_only",
-      "classification": "native_substitute",
-      "operation_tests": [
-        "tests/test_workflow_contract.py"
-      ],
-      "requirement_id": "WORKFLOW-001"
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": [
+          "tests/test_parity_inventory.py",
+          "tests/test_parity_inventory_v2.py"
+        ],
+        "docs": ["docs/parity/README.md", "docs/parity/schema-v2.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "#78-A substrate only; #78-B full upstream inventory and #78-C freshness/refresh remain open."
     }
   ],
-  "schema_version": 1,
-  "semantic_lsp_proxy_count": 0,
-  "store_kind": "parity_inventory",
-  "workflow": {
-    "contract": "repository-workflow/v1",
-    "grok_native_projection": "optional_unclaimed",
-    "portable_classification": "native_substitute"
-  }
+  "gaps": [
+    {
+      "id": "gap.antigravity.provider",
+      "priority": "P0",
+      "status": "open",
+      "issues": ["#67"],
+      "capability_ids": ["antigravity.provider.adapter"],
+      "summary": "Antigravity first-class provider adapter not implemented"
+    },
+    {
+      "id": "gap.jobs.durable",
+      "priority": "P0",
+      "status": "open",
+      "issues": ["#68"],
+      "capability_ids": ["jobs.durable_background"],
+      "summary": "Durable background jobs plane not implemented"
+    },
+    {
+      "id": "gap.team.v3",
+      "priority": "P0",
+      "status": "open",
+      "issues": ["#69"],
+      "capability_ids": ["team.plane_v3"],
+      "summary": "Team plane v3 not implemented; depends on #67/#68"
+    },
+    {
+      "id": "gap.parity.governance.remaining",
+      "priority": "P0",
+      "status": "open",
+      "issues": ["#78"],
+      "capability_ids": ["parity.inventory.governance"],
+      "summary": "#78-B full inventory and #78-C live-evidence freshness remain after #78-A"
+    }
+  ]
 }

@@ -702,3 +702,69 @@ def test_post_receipt_doctor_failure_restores_all_pointers_and_audits_rollback(
     assert not os.path.lexists(home / ".local" / "bin" / "omg")
     receipts = [read_install_receipt(path) for path in (grok_home / "omg" / "receipts").glob("*.json")]
     assert sorted(row["status"] for row in receipts) == ["installed", "rolled_back"]
+
+
+def test_upgrade_from_legacy_package_missing_docs_parity_succeeds(
+    tmp_path,
+    monkeypatch,
+):
+    """Old managed installs lack docs/parity; upgrade must still resolve prior identity."""
+    from omg_cli.setup_cmd import (
+        LEGACY_TOLERATED_MISSING_SHIPPING_ROOTS,
+        SHIPPING_ROOTS,
+    )
+
+    assert "docs/parity" in SHIPPING_ROOTS
+    assert "docs/parity" in LEGACY_TOLERATED_MISSING_SHIPPING_ROOTS
+
+    home = tmp_path / "home"
+    grok_home = tmp_path / "grok"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    host = CopyingFakeGrok(grok_home)
+
+    legacy = tmp_path / "legacy-without-parity"
+    shutil.copytree(
+        ROOT,
+        legacy,
+        ignore=shutil.ignore_patterns(
+            ".git", ".omg", ".omx", ".pytest_cache", "__pycache__", "*.pyc"
+        ),
+    )
+    parity = legacy / "docs" / "parity"
+    assert parity.is_dir()
+    shutil.rmtree(parity)
+
+    with pytest.raises(InstallError, match="required shipping path missing"):
+        compute_package_identity(legacy)
+
+    legacy_identity = compute_package_identity(
+        legacy,
+        tolerate_missing_roots=LEGACY_TOLERATED_MISSING_SHIPPING_ROOTS,
+    )
+    assert not any(
+        str(row["path"]).startswith("docs/parity/")
+        for row in legacy_identity["inventory"]
+    )
+
+    installed = host(["grok", "plugin", "install", str(legacy), "--trust"])
+    assert installed.returncode == 0
+    host(["grok", "plugin", "enable", "oh-my-grok"])
+
+    result = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=_doctor_ok,
+        mode="development",
+    )
+
+    assert result["ok"] is True
+    assert result["package_digest"] == compute_package_identity(ROOT)["digest"]
+    assert host.installed is not None and host.enabled
+    assert compute_package_identity(host.installed)["digest"] == result["package_digest"]
+    assert any(
+        str(row["path"]).startswith("docs/parity/")
+        for row in compute_package_identity(host.installed)["inventory"]
+    )

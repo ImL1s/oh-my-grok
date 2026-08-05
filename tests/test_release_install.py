@@ -27,28 +27,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _archive(tmp_path: Path) -> tuple[Path, Path]:
+    from omg_cli.setup_cmd import SHIPPING_ROOTS
+
     version = json.loads((ROOT / "plugin.json").read_text())["version"]
     asset = tmp_path / f"oh-my-grok-{version}.tar.gz"
     with tarfile.open(asset, "w:gz") as tf:
-        for rel in (
-            "plugin.json",
-            ".mcp.json",
-            ".lsp.json",
-            "pyproject.toml",
-            "omg_capabilities.lock.json",
-            "README.md",
-            "docs/readme/README.zh-TW.md",
-            "docs/readme/README.zh.md",
-            "LICENSE",
-            "bin",
-            "omg_cli",
-            "hooks",
-            "agents",
-            "skills",
-            "templates",
-            "scripts",
-        ):
-            tf.add(ROOT / rel, arcname=f"oh-my-grok-{version}/{rel}", recursive=True)
+        for rel in SHIPPING_ROOTS:
+            path = ROOT / rel
+            if not path.exists():
+                continue
+            tf.add(path, arcname=f"oh-my-grok-{version}/{rel}", recursive=True)
     digest = hashlib.sha256(asset.read_bytes()).hexdigest()
     sums = tmp_path / "SHA256SUMS"
     sums.write_text(f"{digest}  {asset.name}\n", encoding="utf-8")

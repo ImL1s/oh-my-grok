@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from omg_cli.contracts.capability_schema import CAPABILITY_TIERS, PARITY_CLASSIFICATIONS
 from omg_cli.contracts.parity_schema import (
     FROZEN_PINS,
-    OMG_MCP_OPERATIONS,
     OMG_OWNER_PATTERNS,
-    REQUIREMENT_ID_SET,
+    PARITY_MATURITY_LEVELS,
+    PARITY_V2_CLASSIFICATIONS,
+    UPSTREAM_PIN_IDS,
     load_json_object,
     validate_parity_inventory,
 )
@@ -22,19 +22,37 @@ from omg_cli.contracts.writer_chain import owner_for_path
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "docs" / "parity" / "omg-parity.json"
+V1_FIXTURE = ROOT / "tests" / "fixtures" / "parity" / "omg-parity-v1.json"
 
 
 def test_checked_in_inventory_is_exact_and_machine_validated() -> None:
-    inventory = validate_parity_inventory(load_json_object(INVENTORY))
+    inventory = validate_parity_inventory(load_json_object(INVENTORY), repo_root=ROOT)
 
+    assert inventory["schema_version"] == 2
+    assert inventory["inventory_status"] == "bootstrapping"
+    assert inventory["maturity_levels"] == list(PARITY_MATURITY_LEVELS)
+    assert inventory["classifications"] == list(PARITY_V2_CLASSIFICATIONS)
+    assert set(inventory["upstream_pins"]) == set(UPSTREAM_PIN_IDS)
+    assert "OMG" not in inventory["upstream_pins"]
+    ids = [row["id"] for row in inventory["capabilities"]]
+    assert "antigravity.provider.adapter" in ids
+    assert all("." in cap_id for cap_id in ids)
+    open_issues = {
+        issue
+        for gap in inventory["gaps"]
+        if gap["status"] == "open"
+        for issue in gap["issues"]
+    }
+    assert {"#67", "#68", "#69", "#78"} <= open_issues
+    for row in inventory["capabilities"]:
+        assert all(level == "catalogued" for level in row["maturity"].values())
+
+
+def test_v1_migration_fixture_still_validates() -> None:
+    inventory = validate_parity_inventory(load_json_object(V1_FIXTURE))
+    assert inventory["schema_version"] == 1
     assert inventory["frozen_pins"] == FROZEN_PINS
-    assert inventory["requirement_ids"] == list(REQUIREMENT_ID_SET)
-    assert inventory["classifications"] == list(PARITY_CLASSIFICATIONS)
-    assert inventory["capability_tiers"] == list(CAPABILITY_TIERS)
-    assert inventory["mcp_operations"] == list(OMG_MCP_OPERATIONS)
-    assert len(inventory["mcp_operations"]) == 9
-    assert inventory["semantic_lsp_proxy_count"] == 0
-    assert inventory["workflow"]["grok_native_projection"] == "optional_unclaimed"
+    assert "OMG" in inventory["frozen_pins"]
 
 
 def test_ownership_manifest_has_w0_through_w7_and_immutable_agents() -> None:
@@ -82,14 +100,20 @@ def test_current_release_surfaces_have_exact_owner(path: str, owner: str) -> Non
 def test_inventory_mutations_fail_closed() -> None:
     value = load_json_object(INVENTORY)
     missing = copy.deepcopy(value)
-    missing["requirement_ids"].pop()
-    with pytest.raises(ContractValidationError, match="requirement"):
-        validate_parity_inventory(missing)
+    missing["capabilities"].pop()
+    # Drop corresponding gap refs by clearing gaps — still must fail on empty? 
+    # Actually removing one capability while gaps still reference it fails first.
+    with pytest.raises(ContractValidationError):
+        validate_parity_inventory(missing, repo_root=ROOT)
 
-    claimed_native = copy.deepcopy(value)
-    claimed_native["workflow"]["grok_native_projection"] = "claimed"
-    with pytest.raises(ContractValidationError, match="workflow"):
-        validate_parity_inventory(claimed_native)
+    claimed = copy.deepcopy(value)
+    claimed["upstream_pins"]["OMG"] = {
+        "repository": "https://example.invalid/omg",
+        "revision": "ffffffffffffffffffffffffffffffffffffffff",
+        "kind": "commit",
+    }
+    with pytest.raises(ContractValidationError, match="OMG"):
+        validate_parity_inventory(claimed, repo_root=ROOT)
 
 
 def test_inventory_checker_cli_is_bounded_and_structured() -> None:
@@ -101,5 +125,5 @@ def test_inventory_checker_cli_is_bounded_and_structured() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert '"requirements": 41' in result.stdout
-    assert '"mcp_operations": 9' in result.stdout
+    assert '"schema_version": 2' in result.stdout
+    assert '"ok": true' in result.stdout

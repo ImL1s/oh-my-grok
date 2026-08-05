@@ -3,16 +3,108 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .capability_schema import CAPABILITY_TIERS, PARITY_CLASSIFICATIONS
 from .state_schemas import (
     ContractValidationError,
     require_exact_keys,
+    require_git_oid,
+    require_integer,
+    require_iso8601,
+    require_nonempty_string,
     require_object,
+    require_string_list,
 )
+
+# Parity inventory v2: single ordered maturity enum (not independent booleans).
+PARITY_MATURITY_LEVELS = (
+    "catalogued",
+    "configured",
+    "installed",
+    "enabled",
+    "loadable",
+    "observed",
+    "healthy",
+    "live_verified",
+)
+PARITY_V2_CLASSIFICATIONS = (
+    "faithful",
+    "antigravity_native",
+    "omg_native",
+    "alias",
+    "host_owned",
+    "host_impossible",
+    "optional_unclaimed",
+    "excluded",
+)
+# Upstream pins only — OMG candidate commit is bound at check/release time.
+UPSTREAM_PIN_IDS = (
+    "OMC",
+    "OMX",
+    "OmO",
+    "Antigravity",
+    "GROK_BUILD",
+)
+INVENTORY_STATUS_VALUES = ("bootstrapping", "complete")
+CATEGORY_STATUS_VALUES = ("bootstrapping", "complete")
+NON_POSITIVE_CLASSIFICATIONS = frozenset(
+    {"host_impossible", "excluded", "optional_unclaimed"}
+)
+# Classifications that may emit positive claim markers and must point at OMG
+# implementation paths under strict (repo_root) validation. Alias / host_owned /
+# optional_unclaimed / non-positive classes are excluded.
+CLAIMABLE_IMPLEMENTATION_CLASSIFICATIONS = frozenset(
+    {"faithful", "antigravity_native", "omg_native"}
+)
+# Canonical targets that forbid any positive maturity on an alias row.
+ALIAS_NON_POSITIVE_TARGETS = frozenset(
+    {"host_impossible", "excluded", "optional_unclaimed"}
+)
+POSITIVE_CLAIM_MIN_MATURITY = "healthy"
+DEFAULT_LIVE_EVIDENCE_MAX_AGE_DAYS = 30
+# User-observable capability IDs: dotted lowercase segments (not DUAL-001).
+USER_OBSERVABLE_CAPABILITY_ID_RE = re.compile(
+    r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$"
+)
+_MATURITY_EVIDENCE_FIELDS: dict[str, tuple[str, ...]] = {
+    "configured": ("configured_paths",),
+    "installed": ("configured_paths", "install_evidence"),
+    "enabled": ("configured_paths", "install_evidence", "enabled_evidence"),
+    "loadable": (
+        "configured_paths",
+        "install_evidence",
+        "enabled_evidence",
+        "loadable_evidence",
+    ),
+    "observed": (
+        "configured_paths",
+        "install_evidence",
+        "enabled_evidence",
+        "loadable_evidence",
+        "observed_evidence",
+    ),
+    "healthy": (
+        "configured_paths",
+        "install_evidence",
+        "enabled_evidence",
+        "loadable_evidence",
+        "observed_evidence",
+        "healthy_evidence",
+    ),
+    "live_verified": (
+        "configured_paths",
+        "install_evidence",
+        "enabled_evidence",
+        "loadable_evidence",
+        "observed_evidence",
+        "healthy_evidence",
+    ),
+}
 
 
 FROZEN_PINS = {
@@ -116,15 +208,28 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "workflow_contract.py",
             ),
         )
+        + ["omg_cli/parity_check.py"]
         + ["docs/parity/omg-parity.json", "docs/parity/omg-traceability.json"]
+        + [
+            "docs/parity/README.md",
+            "docs/parity/schema-v2.md",
+            "docs/parity/FEATURE-MATRIX.md",
+            "docs/parity/GAPS.md",
+        ]
         + _paths(
             "scripts/",
-            ("check_parity_inventory.py", "check_traceability.py", "check_writer_ownership.py"),
+            (
+                "check_parity_inventory.py",
+                "check_traceability.py",
+                "check_writer_ownership.py",
+                "generate_parity_docs.py",
+            ),
         )
         + [
             "tests/fixtures/carrier/**",
             "tests/fixtures/recovery/**",
             "tests/fixtures/capabilities/**",
+            "tests/fixtures/parity/**",
             "tests/fixtures/release/**",
             "tests/fixtures/workflow/**",
         ]
@@ -132,6 +237,9 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             "tests/",
             (
                 "test_parity_inventory.py",
+                "test_parity_inventory_v2.py",
+                "test_parity_generation.py",
+                "test_parity_check.py",
                 "test_traceability.py",
                 "test_path_keys.py",
                 "test_state_schemas.py",
@@ -499,8 +607,113 @@ def load_json_object(path: Path | str) -> dict[str, Any]:
     return require_object(value, label=str(path))
 
 
-def validate_parity_inventory(value: Mapping[str, Any]) -> dict[str, Any]:
+def maturity_rank(level: str) -> int:
+    require_nonempty_string(level, label="maturity")
+    if level not in PARITY_MATURITY_LEVELS:
+        raise ContractValidationError(f"unknown maturity level: {level!r}")
+    return PARITY_MATURITY_LEVELS.index(level)
+
+
+def inventory_is_complete(inventory: Mapping[str, Any]) -> bool:
+    if inventory.get("inventory_status") != "complete":
+        return False
+    categories = inventory.get("category_status")
+    if not isinstance(categories, Mapping) or not categories:
+        return False
+    return all(status == "complete" for status in categories.values())
+
+
+def inventory_completion_claims_allowed(inventory: Mapping[str, Any]) -> bool:
+    """Percentages / green checkmarks only when every category is complete."""
+    return inventory_is_complete(inventory)
+
+
+def max_runtime_maturity(row: Mapping[str, Any]) -> str:
+    maturity = row.get("maturity")
+    if not isinstance(maturity, Mapping) or not maturity:
+        raise ContractValidationError("capability maturity map is required")
+    return max(
+        (require_nonempty_string(level, label="maturity[]") for level in maturity.values()),
+        key=maturity_rank,
+    )
+
+
+def claim_marker_for_capability(
+    row: Mapping[str, Any],
+    *,
+    inventory: Mapping[str, Any],
+) -> str | None:
+    """Derived claimability marker for docs/CLI. Never overclaims."""
+    classification = row.get("classification")
+    if classification == "alias":
+        target_id = row.get("alias_of")
+        capabilities = inventory.get("capabilities")
+        if isinstance(capabilities, list) and isinstance(target_id, str):
+            for candidate in capabilities:
+                if isinstance(candidate, Mapping) and candidate.get("id") == target_id:
+                    return claim_marker_for_capability(
+                        candidate, inventory=inventory
+                    )
+        return "catalogued"
+    if classification in NON_POSITIVE_CLASSIFICATIONS:
+        return str(classification)
+    if not inventory_completion_claims_allowed(inventory):
+        # Bootstrapping: maturity label only — no percentage or green check.
+        try:
+            return max_runtime_maturity(row)
+        except ContractValidationError:
+            return "catalogued"
+    level = max_runtime_maturity(row)
+    if maturity_rank(level) < maturity_rank(POSITIVE_CLAIM_MIN_MATURITY):
+        return level
+    # Complete inventory may show a positive marker only for claimable rows.
+    return "healthy" if level == "healthy" else "live_verified"
+
+
+def _parse_iso8601(value: str) -> datetime:
+    text = require_iso8601(value, label="observed_at")
+    candidate = text[:-1] + "+00:00" if text.endswith("Z") else text
+    return datetime.fromisoformat(candidate)
+
+
+def _require_relative_posix(path_text: str, *, label: str) -> str:
+    text = require_nonempty_string(path_text, label=label)
+    pure = PurePosixPath(text)
+    if pure.is_absolute() or ".." in pure.parts or pure.parts[0] == "~":
+        raise ContractValidationError(f"{label} must be a relative POSIX path")
+    return text
+
+
+def _path_exists(root: Path, relative: str) -> bool:
+    return (root / relative).is_file() or (root / relative).is_dir()
+
+
+def validate_parity_inventory(
+    value: Mapping[str, Any],
+    *,
+    repo_root: Path | str | None = None,
+    upstream_roots: Mapping[str, Path | str] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     inventory = require_object(value, label="parity inventory")
+    version = inventory.get("schema_version")
+    if version == 1:
+        return _validate_parity_inventory_v1(inventory)
+    if version == 2:
+        return _validate_parity_inventory_v2(
+            inventory,
+            repo_root=Path(repo_root) if repo_root is not None else None,
+            upstream_roots={
+                str(key): Path(path) for key, path in (upstream_roots or {}).items()
+            },
+            now=now or datetime.now(timezone.utc),
+        )
+    raise ContractValidationError(
+        f"unsupported parity inventory schema_version={version!r}"
+    )
+
+
+def _validate_parity_inventory_v1(inventory: dict[str, Any]) -> dict[str, Any]:
     require_exact_keys(
         inventory,
         required={
@@ -572,6 +785,431 @@ def validate_parity_inventory(value: Mapping[str, Any]) -> dict[str, Any]:
         if not all(isinstance(item, str) and item for item in row["operation_tests"]):
             raise ContractValidationError("parity row operation_tests must contain test IDs")
     return inventory
+
+
+def _validate_parity_inventory_v2(
+    inventory: dict[str, Any],
+    *,
+    repo_root: Path | None,
+    upstream_roots: dict[str, Path],
+    now: datetime,
+) -> dict[str, Any]:
+    require_exact_keys(
+        inventory,
+        required={
+            "store_kind",
+            "schema_version",
+            "repository_id",
+            "ownership_manifest_id",
+            "inventory_status",
+            "maturity_levels",
+            "classifications",
+            "upstream_pins",
+            "category_status",
+            "live_evidence_max_age_days",
+            "capabilities",
+            "gaps",
+        },
+        label="parity inventory v2",
+    )
+    if inventory["store_kind"] != "parity_inventory" or inventory["schema_version"] != 2:
+        raise ContractValidationError("parity inventory header mismatch")
+    if inventory["repository_id"] != "OMG":
+        raise ContractValidationError("parity inventory repository must be OMG")
+    if inventory["ownership_manifest_id"] != "dual-parity-writers-v1":
+        raise ContractValidationError("ownership manifest ID mismatch")
+    if inventory["inventory_status"] not in INVENTORY_STATUS_VALUES:
+        raise ContractValidationError("inventory_status invalid")
+    if inventory["maturity_levels"] != list(PARITY_MATURITY_LEVELS):
+        raise ContractValidationError("maturity level set/order drift")
+    if inventory["classifications"] != list(PARITY_V2_CLASSIFICATIONS):
+        raise ContractValidationError("parity v2 classification set/order drift")
+    max_age = require_integer(
+        inventory["live_evidence_max_age_days"],
+        label="live_evidence_max_age_days",
+        minimum=1,
+    )
+
+    pins = require_object(inventory["upstream_pins"], label="upstream_pins")
+    if "OMG" in pins:
+        raise ContractValidationError(
+            "upstream_pins must not hardcode OMG candidate commit"
+        )
+    if set(pins) != set(UPSTREAM_PIN_IDS):
+        raise ContractValidationError(
+            "upstream_pins must be exactly "
+            + ",".join(UPSTREAM_PIN_IDS)
+        )
+    for pin_id in UPSTREAM_PIN_IDS:
+        pin = require_object(pins[pin_id], label=f"upstream_pins.{pin_id}")
+        require_exact_keys(
+            pin,
+            required={"repository", "revision", "kind"},
+            label=f"upstream_pins.{pin_id}",
+        )
+        require_nonempty_string(pin["repository"], label=f"{pin_id}.repository")
+        if pin["kind"] != "commit":
+            raise ContractValidationError(f"{pin_id}.kind must be commit")
+        try:
+            require_git_oid(pin["revision"], label=f"{pin_id}.revision")
+        except ContractValidationError as exc:
+            raise ContractValidationError(
+                f"{pin_id} exact revision required (full git object id), got {pin['revision']!r}"
+            ) from exc
+
+    categories = require_object(inventory["category_status"], label="category_status")
+    if not categories:
+        raise ContractValidationError("category_status must be non-empty")
+    for name, status in categories.items():
+        require_nonempty_string(name, label="category_status key")
+        if status not in CATEGORY_STATUS_VALUES:
+            raise ContractValidationError(f"category_status[{name!r}] invalid")
+
+    capabilities = inventory["capabilities"]
+    if not isinstance(capabilities, list) or not capabilities:
+        raise ContractValidationError("capabilities must be a non-empty array")
+
+    seen_ids: set[str] = set()
+    id_to_row: dict[str, dict[str, Any]] = {}
+    for row in capabilities:
+        validated_row = _validate_capability_row_v2(
+            row,
+            pins=pins,
+            categories=categories,
+            repo_root=repo_root,
+            upstream_roots=upstream_roots,
+            max_age_days=max_age,
+            now=now,
+        )
+        cap_id = validated_row["id"]
+        if cap_id in seen_ids:
+            raise ContractValidationError(f"duplicate capability id: {cap_id}")
+        seen_ids.add(cap_id)
+        id_to_row[cap_id] = validated_row
+
+    for row in id_to_row.values():
+        if row["classification"] == "alias":
+            target = row.get("alias_of")
+            if not isinstance(target, str) or target not in id_to_row:
+                raise ContractValidationError(
+                    f"alias {row['id']!r} requires existing canonical target"
+                )
+            canonical = id_to_row[target]
+            if canonical["classification"] == "alias":
+                raise ContractValidationError(
+                    f"alias {row['id']!r} cannot target another alias"
+                )
+            _assert_alias_maturity_bounded(row, canonical)
+
+    gaps = inventory["gaps"]
+    if not isinstance(gaps, list):
+        raise ContractValidationError("gaps must be an array")
+    gap_ids: set[str] = set()
+    for gap in gaps:
+        g = require_object(gap, label="gap")
+        require_exact_keys(
+            g,
+            required={
+                "id",
+                "priority",
+                "status",
+                "issues",
+                "capability_ids",
+                "summary",
+            },
+            label="gap",
+        )
+        gid = require_nonempty_string(g["id"], label="gap.id")
+        if gid in gap_ids:
+            raise ContractValidationError(f"duplicate gap id: {gid}")
+        gap_ids.add(gid)
+        require_nonempty_string(g["priority"], label="gap.priority")
+        if g["status"] not in {"open", "closed", "deferred"}:
+            raise ContractValidationError("gap.status invalid")
+        issues = require_string_list(g["issues"], label="gap.issues", unique=True)
+        if not issues or not all(item.startswith("#") for item in issues):
+            raise ContractValidationError("gap.issues must be #N references")
+        caps = require_string_list(g["capability_ids"], label="gap.capability_ids", unique=True)
+        for cap_id in caps:
+            if cap_id not in id_to_row:
+                raise ContractValidationError(
+                    f"gap {gid!r} references unknown capability {cap_id!r}"
+                )
+        require_nonempty_string(g["summary"], label="gap.summary")
+
+    return inventory
+
+
+def _validate_capability_row_v2(
+    value: Any,
+    *,
+    pins: Mapping[str, Any],
+    categories: Mapping[str, Any],
+    repo_root: Path | None,
+    upstream_roots: Mapping[str, Path],
+    max_age_days: int,
+    now: datetime,
+) -> dict[str, Any]:
+    row = require_object(value, label="capability")
+    optional = {"alias_of", "last_verified_at", "notes"}
+    require_exact_keys(
+        row,
+        required={
+            "id",
+            "category",
+            "promise",
+            "classification",
+            "upstream",
+            "omg_paths",
+            "runtime_owner",
+            "maturity",
+            "evidence",
+            "issues",
+            "gap",
+        },
+        optional=optional,
+        label="capability",
+    )
+    cap_id = require_nonempty_string(row["id"], label="capability.id")
+    if not USER_OBSERVABLE_CAPABILITY_ID_RE.fullmatch(cap_id):
+        raise ContractValidationError(
+            f"capability id {cap_id!r} must be a user-observable dotted id"
+        )
+    category = require_nonempty_string(row["category"], label="capability.category")
+    if category not in categories:
+        raise ContractValidationError(f"capability category {category!r} not in category_status")
+    require_nonempty_string(row["promise"], label="capability.promise")
+    classification = require_nonempty_string(row["classification"], label="classification")
+    if classification not in PARITY_V2_CLASSIFICATIONS:
+        raise ContractValidationError(f"invalid classification: {classification!r}")
+    if classification == "alias":
+        require_nonempty_string(row.get("alias_of"), label="alias_of")
+    elif "alias_of" in row and row["alias_of"] not in (None, ""):
+        raise ContractValidationError("alias_of only allowed for alias classification")
+
+    upstream = require_object(row["upstream"], label="upstream")
+    require_exact_keys(
+        upstream,
+        required={"source", "revision", "source_paths"},
+        label="upstream",
+    )
+    source = require_nonempty_string(upstream["source"], label="upstream.source")
+    if source not in pins:
+        raise ContractValidationError(f"upstream.source {source!r} not in upstream_pins")
+    try:
+        require_git_oid(upstream["revision"], label="upstream.revision")
+    except ContractValidationError as exc:
+        raise ContractValidationError(
+            f"upstream exact revision required, got {upstream['revision']!r}"
+        ) from exc
+    if upstream["revision"] != pins[source]["revision"]:
+        raise ContractValidationError(
+            f"upstream.revision for {cap_id} must match pin {source}"
+        )
+    source_paths = require_string_list(
+        upstream["source_paths"], label="upstream.source_paths", unique=True
+    )
+    if not source_paths:
+        raise ContractValidationError("upstream.source_paths must be non-empty")
+    for relative in source_paths:
+        _require_relative_posix(relative, label="upstream.source_path")
+    if source in upstream_roots:
+        root = upstream_roots[source]
+        for relative in source_paths:
+            if not _path_exists(root, relative):
+                raise ContractValidationError(
+                    f"upstream source path missing under {source}: {relative}"
+                )
+
+    omg_paths = require_string_list(row["omg_paths"], label="omg_paths", unique=True)
+    for relative in omg_paths:
+        _require_relative_posix(relative, label="omg_path")
+        if repo_root is not None and not _path_exists(repo_root, relative):
+            raise ContractValidationError(f"omg implementation path missing: {relative}")
+    if (
+        repo_root is not None
+        and classification in CLAIMABLE_IMPLEMENTATION_CLASSIFICATIONS
+        and not omg_paths
+    ):
+        raise ContractValidationError(
+            f"strict mode requires non-empty omg_paths for {classification} "
+            f"capability {cap_id!r}"
+        )
+
+    require_nonempty_string(row["runtime_owner"], label="runtime_owner")
+    maturity = require_object(row["maturity"], label="maturity")
+    if not maturity:
+        raise ContractValidationError("maturity map must be non-empty")
+    for runtime, level in maturity.items():
+        require_nonempty_string(runtime, label="maturity runtime")
+        require_nonempty_string(level, label="maturity level")
+        if level not in PARITY_MATURITY_LEVELS:
+            raise ContractValidationError(f"unknown maturity {level!r}")
+
+    evidence = require_object(row["evidence"], label="evidence")
+    require_exact_keys(
+        evidence,
+        required={"tests", "docs", "live"},
+        optional={
+            "configured_paths",
+            "install_evidence",
+            "enabled_evidence",
+            "loadable_evidence",
+            "observed_evidence",
+            "healthy_evidence",
+        },
+        label="evidence",
+    )
+    for field in ("tests", "docs"):
+        require_string_list(evidence[field], label=f"evidence.{field}", unique=True)
+    live = evidence["live"]
+    if not isinstance(live, list):
+        raise ContractValidationError("evidence.live must be an array")
+
+    peak = max_runtime_maturity(row)
+    _assert_maturity_prerequisites(row, peak=peak, repo_root=repo_root)
+
+    if classification in NON_POSITIVE_CLASSIFICATIONS:
+        if maturity_rank(peak) >= maturity_rank(POSITIVE_CLAIM_MIN_MATURITY):
+            raise ContractValidationError(
+                f"{classification} cannot generate positive claim "
+                f"(maturity {peak!r} >= {POSITIVE_CLAIM_MIN_MATURITY})"
+            )
+
+    if peak == "live_verified":
+        _assert_fresh_live_evidence(
+            live,
+            maturity=maturity,
+            max_age_days=max_age_days,
+            now=now,
+        )
+
+    issues = require_string_list(row["issues"], label="issues", unique=True)
+    if not all(item.startswith("#") for item in issues):
+        raise ContractValidationError("issues must be #N references")
+    if not isinstance(row["gap"], str):
+        raise ContractValidationError("gap must be a string")
+    return row
+
+
+def _assert_alias_maturity_bounded(
+    alias_row: Mapping[str, Any],
+    canonical: Mapping[str, Any],
+) -> None:
+    """Alias maturity/claimability must not exceed the canonical target."""
+    alias_id = alias_row["id"]
+    target_id = canonical["id"]
+    target_class = canonical["classification"]
+    alias_maturity = require_object(alias_row["maturity"], label="alias.maturity")
+    target_maturity = require_object(canonical["maturity"], label="canonical.maturity")
+    for runtime, level in alias_maturity.items():
+        require_nonempty_string(runtime, label="alias maturity runtime")
+        require_nonempty_string(level, label="alias maturity level")
+        target_level = target_maturity.get(runtime)
+        if not isinstance(target_level, str) or not target_level:
+            raise ContractValidationError(
+                f"alias {alias_id!r} runtime {runtime!r} missing on canonical "
+                f"{target_id!r}"
+            )
+        if maturity_rank(level) > maturity_rank(target_level):
+            raise ContractValidationError(
+                f"alias {alias_id!r} maturity {level!r} exceeds canonical "
+                f"{target_id!r} maturity {target_level!r} for runtime {runtime!r}"
+            )
+    if target_class in ALIAS_NON_POSITIVE_TARGETS:
+        peak = max_runtime_maturity(alias_row)
+        if maturity_rank(peak) >= maturity_rank(POSITIVE_CLAIM_MIN_MATURITY):
+            raise ContractValidationError(
+                f"alias {alias_id!r} cannot claim positive maturity when "
+                f"canonical {target_id!r} is {target_class}"
+            )
+
+
+def _assert_maturity_prerequisites(
+    row: Mapping[str, Any],
+    *,
+    peak: str,
+    repo_root: Path | None = None,
+) -> None:
+    if peak == "catalogued":
+        return
+    required_fields = _MATURITY_EVIDENCE_FIELDS.get(peak)
+    if not required_fields:
+        raise ContractValidationError(f"no maturity prerequisites for {peak!r}")
+    evidence = require_object(row["evidence"], label="evidence")
+    for field in required_fields:
+        values = evidence.get(field)
+        if not isinstance(values, list) or not values:
+            raise ContractValidationError(
+                f"maturity prerequisite missing: {field} required for {peak}"
+            )
+        require_string_list(values, label=f"evidence.{field}", unique=True)
+    if peak == "live_verified":
+        live = evidence.get("live")
+        if not isinstance(live, list) or not live:
+            raise ContractValidationError(
+                "maturity prerequisite missing: live evidence required for live_verified"
+            )
+    if (
+        repo_root is not None
+        and maturity_rank(peak) >= maturity_rank(POSITIVE_CLAIM_MIN_MATURITY)
+    ):
+        healthy = evidence.get("healthy_evidence")
+        if not isinstance(healthy, list) or not healthy:
+            raise ContractValidationError(
+                "strict mode requires verifiable healthy_evidence for "
+                f"{peak} capability {row.get('id')!r}"
+            )
+        paths = require_string_list(
+            healthy, label="evidence.healthy_evidence", unique=True
+        )
+        for relative in paths:
+            _require_relative_posix(relative, label="evidence.healthy_evidence")
+            if not _path_exists(repo_root, relative):
+                raise ContractValidationError(
+                    f"healthy_evidence path missing under repo: {relative}"
+                )
+
+
+def _assert_fresh_live_evidence(
+    live: list[Any],
+    *,
+    maturity: Mapping[str, Any],
+    max_age_days: int,
+    now: datetime,
+) -> None:
+    if not live:
+        raise ContractValidationError("live_verified requires fresh live evidence")
+    runtimes_needed = {
+        runtime
+        for runtime, level in maturity.items()
+        if level == "live_verified"
+    }
+    covered: set[str] = set()
+    for item in live:
+        entry = require_object(item, label="live evidence")
+        require_exact_keys(
+            entry,
+            required={"runtime", "platform", "version", "observed_at", "marker"},
+            label="live evidence",
+        )
+        runtime = require_nonempty_string(entry["runtime"], label="live.runtime")
+        require_nonempty_string(entry["platform"], label="live.platform")
+        require_nonempty_string(entry["version"], label="live.version")
+        require_nonempty_string(entry["marker"], label="live.marker")
+        observed = _parse_iso8601(entry["observed_at"])
+        age = now - observed
+        if age > timedelta(days=max_age_days) or age < timedelta(0):
+            raise ContractValidationError(
+                f"live evidence for {runtime} is not fresh "
+                f"(age={age.days}d, max={max_age_days}d)"
+            )
+        covered.add(runtime)
+    missing = runtimes_needed - covered
+    if missing:
+        raise ContractValidationError(
+            f"live_verified missing fresh runtime/platform evidence for {sorted(missing)}"
+        )
 
 
 def validate_traceability(value: Mapping[str, Any]) -> dict[str, Any]:

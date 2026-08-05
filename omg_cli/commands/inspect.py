@@ -344,17 +344,82 @@ def cmd_capabilities(args: argparse.Namespace) -> int:
 
 
 def cmd_parity(args: argparse.Namespace) -> int:
-    """Delegate run-manifest operations and release-bundle readback."""
+    """Run-manifest, release-readback, inventory check, and gap listing."""
+    from omg_cli.contracts.parity_schema import (
+        load_json_object,
+        validate_parity_inventory,
+    )
     from omg_cli.contracts.release_transaction import verify_release_bundle_files
     from omg_cli.contracts.run_manifest import main as run_manifest_main
     from omg_cli.contracts.state_schemas import ContractValidationError
     from omg_cli.contracts.writer_chain import sha256_hex
+    from omg_cli.parity_check import check_parity_inventory, filter_parity_gaps
+    from omg_cli.setup_cmd import plugin_root
 
     action = getattr(args, "parity_action", None)
     if action == "run":
         return int(run_manifest_main(list(getattr(args, "manifest_args", None) or [])))
+
+    if action == "check":
+        root = plugin_root()
+        inventory_path = root / "docs" / "parity" / "omg-parity.json"
+        strict = bool(getattr(args, "strict", False))
+        try:
+            result = check_parity_inventory(
+                inventory_path=inventory_path,
+                repo_root=root,
+                strict=strict,
+            )
+        except ContractValidationError as exc:
+            emit_data(
+                args,
+                "parity.check",
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "strict": strict,
+                },
+            )
+            return 1
+        emit_data(args, "parity.check", result)
+        return 0
+
+    if action == "gaps":
+        root = plugin_root()
+        inventory_path = root / "docs" / "parity" / "omg-parity.json"
+        try:
+            inventory = validate_parity_inventory(
+                load_json_object(inventory_path),
+                repo_root=root,
+            )
+        except ContractValidationError as exc:
+            emit_data(
+                args,
+                "parity.gaps",
+                {"ok": False, "error": str(exc)},
+            )
+            return 1
+        priority = getattr(args, "priority", None)
+        include_all = bool(getattr(args, "all_gaps", False))
+        gaps = filter_parity_gaps(
+            inventory,
+            priority=priority,
+            include_all=include_all,
+        )
+        result = {
+            "ok": True,
+            "priority": priority,
+            "include_all": include_all,
+            "open_only": not include_all,
+            "count": len(gaps),
+            "gaps": gaps,
+            "inventory_status": inventory.get("inventory_status"),
+        }
+        emit_data(args, "parity.gaps", result)
+        return 0
+
     if action != "release-readback":
-        print("omg parity: action required", file=sys.stderr)
+        print("omg parity: action required (run|release-readback|check|gaps)", file=sys.stderr)
         return 2
     root = project_root()
     try:
@@ -473,7 +538,7 @@ def register_inspect_parsers(
         p_parity = sub.add_parser(
             "parity",
             parents=[common],
-            help="frozen run-manifest and release-bundle verification",
+            help="parity inventory check/gaps plus frozen run-manifest verification",
         )
         parity_sub = p_parity.add_subparsers(dest="parity_action")
         p_parity_run = parity_sub.add_parser(
@@ -495,6 +560,34 @@ def register_inspect_parsers(
         p_parity_readback.add_argument("--manifest", required=True)
         p_parity_readback.add_argument("--claimed-registries", default=None)
         p_parity_readback.set_defaults(func=cmd_parity, parity_action="release-readback")
+        p_parity_check = parity_sub.add_parser(
+            "check",
+            parents=[common],
+            help="validate canonical parity inventory (schema + optional --strict paths)",
+        )
+        p_parity_check.add_argument(
+            "--strict",
+            action="store_true",
+            help="fail closed on schema/path/overclaim drift",
+        )
+        p_parity_check.set_defaults(func=cmd_parity, parity_action="check")
+        p_parity_gaps = parity_sub.add_parser(
+            "gaps",
+            parents=[common],
+            help="list open parity gaps from the canonical inventory",
+        )
+        p_parity_gaps.add_argument(
+            "--priority",
+            default=None,
+            help="filter by priority (e.g. P0); still open-only unless --all",
+        )
+        p_parity_gaps.add_argument(
+            "--all",
+            dest="all_gaps",
+            action="store_true",
+            help="include non-open gaps (closed/deferred)",
+        )
+        p_parity_gaps.set_defaults(func=cmd_parity, parity_action="gaps")
         p_parity.set_defaults(func=cmd_parity)
 
         p_wiki = sub.add_parser(
