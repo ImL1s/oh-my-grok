@@ -506,8 +506,9 @@ Do not claim production isolation from unit green alone. See [`docs/research/tes
 |------|----------|
 | [`docs/security-model.md`](docs/security-model.md) | Isolation layers |
 | [`docs/workflows.md`](docs/workflows.md) | Repository workflow contract, receipts, permissions, ship gates |
-| [`docs/research/core-parity-matrix-2026-07-20.md`](docs/research/core-parity-matrix-2026-07-20.md) | HAVE / NEVER scope |
-| [`docs/research/omc-parity-council/`](docs/research/omc-parity-council/) | Parity council + STATUS |
+| [`docs/parity/`](docs/parity/) | Canonical claimability inventory (v2) + generated matrices / gaps — bootstrapping; no parity % |
+| [`docs/research/core-parity-matrix-2026-07-20.md`](docs/research/core-parity-matrix-2026-07-20.md) | Historical / NON-AUTHORITATIVE (see banner) → prefer [`docs/parity/`](docs/parity/) |
+| [`docs/research/omc-parity-council/`](docs/research/omc-parity-council/) | Historical council notes (NON-AUTHORITATIVE banner) + STATUS |
 | [`docs/research/live/`](docs/research/live/) | How to regenerate live suite evidence (logs gitignored) |
 | [`docs/superpowers/plans/`](docs/superpowers/plans/) | Implementation plans |
 

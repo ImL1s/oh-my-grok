@@ -143,6 +143,18 @@ def test_parity_summary_translations_are_current() -> None:
             assert "對等摘要" in text or "能力清單" in text or "清單摘要" in text
 
 
+def test_parity_readme_links_generated_artifacts() -> None:
+    text = (ROOT / "docs/parity/README.md").read_text(encoding="utf-8")
+    for needle in (
+        "FEATURE-MATRIX.md",
+        "GAPS.md",
+        "SUMMARY.md",
+        "MATRIX-OMC.md",
+        "omg-parity.json",
+    ):
+        assert needle in text
+
+
 def test_generate_check_covers_all_parity_artifacts() -> None:
     gen = _load_generator()
     expected = {

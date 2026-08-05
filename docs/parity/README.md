@@ -2,7 +2,23 @@
 
 Machine-readable claimability contract for oh-my-grok cross-runtime parity.
 
-Canonical inventory: [`omg-parity.json`](omg-parity.json). Generated index: [`SUMMARY.md`](SUMMARY.md) (plus `SUMMARY.zh.md` / `SUMMARY.zh-TW.md`), [`FEATURE-MATRIX.md`](FEATURE-MATRIX.md), per-source `MATRIX-*.md`, and [`GAPS.md`](GAPS.md).
+## Index
+
+| Artifact | Role |
+| --- | --- |
+| [`omg-parity.json`](omg-parity.json) | Canonical inventory (authoritative) |
+| [`schema-v2.md`](schema-v2.md) | Schema v2 field / validator reference |
+| [`SUMMARY.md`](SUMMARY.md) | Generated summary (EN) |
+| [`SUMMARY.zh.md`](SUMMARY.zh.md) | Generated summary (zh) |
+| [`SUMMARY.zh-TW.md`](SUMMARY.zh-TW.md) | Generated summary (zh-TW) |
+| [`FEATURE-MATRIX.md`](FEATURE-MATRIX.md) | Generated full capability matrix |
+| [`MATRIX-OMC.md`](MATRIX-OMC.md) | Generated `OMC` matrix |
+| [`MATRIX-OMX.md`](MATRIX-OMX.md) | Generated `OMX` matrix |
+| [`MATRIX-OmO.md`](MATRIX-OmO.md) | Generated `OmO` matrix |
+| [`MATRIX-Antigravity.md`](MATRIX-Antigravity.md) | Generated `Antigravity` matrix |
+| [`GAPS.md`](GAPS.md) | Generated open / tracked gaps |
+
+Regenerate with `python3 scripts/generate_parity_docs.py` (drift-gated via `--check`).
 
 ## Header
 
@@ -39,7 +55,7 @@ Each row binds upstream pin + source paths, OMG implementation paths, per-runtim
 
 ## Completeness honesty
 
-While any category (or the inventory header) is `bootstrapping`, generators must not emit parity percentages or green checkmarks. Open gaps are expected and listed honestly.
+While the inventory header, any `category_status`, or any `source_status` is `bootstrapping`, generators must not emit parity percentages or green checkmarks (`%` / `✅` / `✓`). Open gaps are expected and listed honestly in [`GAPS.md`](GAPS.md). Do not treat historical research matrices as claimability truth — prefer this inventory.
 
 ## Migration
 
