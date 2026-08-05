@@ -39,26 +39,33 @@
 | `omo.quality.comment_hygiene` | quality_visual_edit_safety | optional_unclaimed | grok=catalogued | optional_unclaimed | #78 |
 | `omo.ulw.ultrawork_loop` | runtime_orchestration | omg_native | grok=catalogued | catalogued | #78 |
 | `omo.compat.tmux_plugin` | team | omg_native | grok=catalogued | catalogued | #69, #78 |
+| `antigravity.headless.structured_execution` | antigravity | optional_unclaimed | antigravity=catalogued, grok=catalogued | optional_unclaimed | #67, #78 |
+| `antigravity.agents.markdown_custom` | agents_routing | omg_native | antigravity=catalogued, grok=catalogued | catalogued | #67, #78 |
+| `antigravity.skills.hooks_subagents_plugins_mcp` | skills | omg_native | antigravity=catalogued, grok=catalogued | catalogued | #67, #78 |
+| `antigravity.jobs.background_tasks` | jobs | optional_unclaimed | antigravity=catalogued, grok=catalogued | optional_unclaimed | #68, #78 |
+| `antigravity.runtime.model_effort_mode_perms` | antigravity | host_owned | antigravity=catalogued, grok=catalogued | catalogued | #67, #78 |
+| `antigravity.session.history_resume` | state_memory_observability | omg_native | antigravity=catalogued, grok=catalogued | catalogued | #67, #78 |
+| `antigravity.platform.version_matrix` | platform_live_evidence | omg_native | antigravity=catalogued, grok=catalogued | catalogued | #78 |
 
 ## Category status
 
-- `agents_routing`: **bootstrapping**
-- `antigravity`: **bootstrapping**
-- `hooks`: **bootstrapping**
-- `install_update`: **bootstrapping**
-- `jobs`: **bootstrapping**
+- `agents_routing`: **complete**
+- `antigravity`: **complete**
+- `hooks`: **complete**
+- `install_update`: **complete**
+- `jobs`: **complete**
 - `parity_governance`: **bootstrapping**
 - `platform_live_evidence`: **bootstrapping**
-- `quality_visual_edit_safety`: **bootstrapping**
-- `runtime_orchestration`: **bootstrapping**
-- `skills`: **bootstrapping**
-- `state_memory_observability`: **bootstrapping**
-- `team`: **bootstrapping**
-- `tools_mcp`: **bootstrapping**
+- `quality_visual_edit_safety`: **complete**
+- `runtime_orchestration`: **complete**
+- `skills`: **complete**
+- `state_memory_observability`: **complete**
+- `team`: **complete**
+- `tools_mcp`: **complete**
 
 ## Source status
 
-- `OMC`: **bootstrapping**
-- `OMX`: **bootstrapping**
-- `OmO`: **bootstrapping**
-- `Antigravity`: **bootstrapping**
+- `OMC`: **complete**
+- `OMX`: **complete**
+- `OmO`: **complete**
+- `Antigravity`: **complete**

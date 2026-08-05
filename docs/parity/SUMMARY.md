@@ -6,34 +6,34 @@ Inventory status: **bootstrapping**.
 
 > **Bootstrapping.** Counts below are coverage tallies only — no parity percentage is claimed.
 
-Capabilities catalogued: **32**.
+Capabilities catalogued: **39**.
 
 ## By category
 
-- `agents_routing`: **bootstrapping** (3 capabilities)
-- `antigravity`: **bootstrapping** (1 capabilities)
-- `hooks`: **bootstrapping** (2 capabilities)
-- `install_update`: **bootstrapping** (1 capabilities)
-- `jobs`: **bootstrapping** (2 capabilities)
+- `agents_routing`: **complete** (4 capabilities)
+- `antigravity`: **complete** (3 capabilities)
+- `hooks`: **complete** (2 capabilities)
+- `install_update`: **complete** (1 capabilities)
+- `jobs`: **complete** (3 capabilities)
 - `parity_governance`: **bootstrapping** (1 capabilities)
-- `platform_live_evidence`: **bootstrapping** (0 capabilities)
-- `quality_visual_edit_safety`: **bootstrapping** (4 capabilities)
-- `runtime_orchestration`: **bootstrapping** (7 capabilities)
-- `skills`: **bootstrapping** (1 capabilities)
-- `state_memory_observability`: **bootstrapping** (3 capabilities)
-- `team`: **bootstrapping** (5 capabilities)
-- `tools_mcp`: **bootstrapping** (2 capabilities)
+- `platform_live_evidence`: **bootstrapping** (1 capabilities)
+- `quality_visual_edit_safety`: **complete** (4 capabilities)
+- `runtime_orchestration`: **complete** (7 capabilities)
+- `skills`: **complete** (2 capabilities)
+- `state_memory_observability`: **complete** (4 capabilities)
+- `team`: **complete** (5 capabilities)
+- `tools_mcp`: **complete** (2 capabilities)
 
 ## By source
 
-- `OMC`: **bootstrapping** (12 capabilities)
-- `OMX`: **bootstrapping** (9 capabilities)
-- `OmO`: **bootstrapping** (10 capabilities)
-- `Antigravity`: **bootstrapping** (1 capabilities)
+- `OMC`: **complete** (12 capabilities)
+- `OMX`: **complete** (9 capabilities)
+- `OmO`: **complete** (10 capabilities)
+- `Antigravity`: **complete** (8 capabilities)
 
 ## By peak maturity
 
-- `catalogued`: 32
+- `catalogued`: 39
 
 ## Generated matrices
 

@@ -2,9 +2,16 @@
 
 # Antigravity parity matrix
 
-> Source status: **bootstrapping**.
+> Source status: **complete**.
 > Inventory still incomplete overall — parity percentages and green checkmarks are intentionally omitted.
 
 | Capability | Category | Status | Maturity | Marker | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `antigravity.provider.adapter` | antigravity | bootstrapping | antigravity=catalogued, grok=catalogued | catalogued | Legacy Team argv builder and ask deny-list only; no typed adapter yet (#67-A..D). |
+| `antigravity.provider.adapter` | antigravity | complete | antigravity=catalogued, grok=catalogued | catalogued | Legacy Team argv builder and ask deny-list only; no typed adapter yet (#67-A..D). |
+| `antigravity.headless.structured_execution` | antigravity | complete | antigravity=catalogued, grok=catalogued | optional_unclaimed | No Antigravity headless structured-execution adapter; Team/ask use argv builders only (#67/#78). |
+| `antigravity.agents.markdown_custom` | agents_routing | complete | antigravity=catalogued, grok=catalogued | catalogued | Grok plugin markdown agents exist; Antigravity-native agent catalog wiring remains under #67/#78. |
+| `antigravity.skills.hooks_subagents_plugins_mcp` | skills | complete | antigravity=catalogued, grok=catalogued | catalogued | OMG skills/hooks/agents/MCP exist on Grok; Antigravity host plugin/MCP parity is not claimed (#67/#78). |
+| `antigravity.jobs.background_tasks` | jobs | complete | antigravity=catalogued, grok=catalogued | optional_unclaimed | No Antigravity background-task plane; durable jobs tracked under #68 (jobs.durable_background). |
+| `antigravity.runtime.model_effort_mode_perms` | antigravity | complete | antigravity=catalogued, grok=catalogued | catalogued | Model/effort/mode/perms are host-owned (Grok/Antigravity CLI); OMG does not claim a typed AG runtime control plane (#67/#78). |
+| `antigravity.session.history_resume` | state_memory_observability | complete | antigravity=catalogued, grok=catalogued | catalogued | OMG resume/recovery substitutes exist for Grok; Antigravity-native history APIs are not wired (#67/#78). |
+| `antigravity.platform.version_matrix` | platform_live_evidence | bootstrapping | antigravity=catalogued, grok=catalogued | catalogued | Doctor/version/pin catalogue exists; #78-C live-evidence freshness and refresh gate remain open. |

@@ -2,17 +2,17 @@
 
 # OMX parity matrix
 
-> Source status: **bootstrapping**.
+> Source status: **complete**.
 > Inventory still incomplete overall — parity percentages and green checkmarks are intentionally omitted.
 
 | Capability | Category | Status | Maturity | Marker | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `jobs.durable_background` | jobs | bootstrapping | grok=catalogued | catalogued | Team-specific durability only; no general job registry (#68-A..D). |
-| `omx.launch.worktree_tmux_hud` | state_memory_observability | bootstrapping | grok=catalogued | catalogued | HUD/worktree/tmux substitutes exist; OMX launch UX polish and Team v3 remain under #69/#78. |
-| `omx.workflow.deep_interview_ralplan` | runtime_orchestration | bootstrapping | grok=catalogued | catalogued | Interview + ralplan CLI/skills exist; OMX prometheus-strict / ultragoal canonical chain breadth is partial. |
-| `omx.research.modes` | runtime_orchestration | bootstrapping | grok=catalogued | optional_unclaimed | No first-class OMX-style research/autoresearch mode in OMG; ulw/ralph/ralplan/autopilot only (#78). |
-| `omx.team.worker_mailbox_question` | team | bootstrapping | grok=catalogued | catalogued | Worker/mailbox/ask substitutes exist; Team v3 job-backed panes remain under #69. |
-| `omx.agents.reviewer_product_catalog` | agents_routing | bootstrapping | grok=catalogued | catalogued | Plugin reviewer agents exist; OMX product-catalog breadth and dynamic routing remain partial (#78). |
-| `omx.goal.stop_lock_recovery` | runtime_orchestration | bootstrapping | grok=catalogued | catalogued | Stop gate + recovery exist; Grok Stop pin is capped/fail-open (not OMX infinite stickiness) (#78). |
-| `omx.plugin.setup_update_migrate` | install_update | bootstrapping | grok=catalogued | catalogued | omg setup/install + guidance rules exist; OMX migrate breadth is not 1:1 (#78). |
-| `omx.quality.visual_modes` | quality_visual_edit_safety | bootstrapping | grok=catalogued | catalogued | Dual-review/verdict/UltraQA exist; OMX visual-mode catalog breadth remains partial (#78). |
+| `jobs.durable_background` | jobs | complete | grok=catalogued | catalogued | Team-specific durability only; no general job registry (#68-A..D). |
+| `omx.launch.worktree_tmux_hud` | state_memory_observability | complete | grok=catalogued | catalogued | HUD/worktree/tmux substitutes exist; OMX launch UX polish and Team v3 remain under #69/#78. |
+| `omx.workflow.deep_interview_ralplan` | runtime_orchestration | complete | grok=catalogued | catalogued | Interview + ralplan CLI/skills exist; OMX prometheus-strict / ultragoal canonical chain breadth is partial. |
+| `omx.research.modes` | runtime_orchestration | complete | grok=catalogued | optional_unclaimed | No first-class OMX-style research/autoresearch mode in OMG; ulw/ralph/ralplan/autopilot only (#78). |
+| `omx.team.worker_mailbox_question` | team | complete | grok=catalogued | catalogued | Worker/mailbox/ask substitutes exist; Team v3 job-backed panes remain under #69. |
+| `omx.agents.reviewer_product_catalog` | agents_routing | complete | grok=catalogued | catalogued | Plugin reviewer agents exist; OMX product-catalog breadth and dynamic routing remain partial (#78). |
+| `omx.goal.stop_lock_recovery` | runtime_orchestration | complete | grok=catalogued | catalogued | Stop gate + recovery exist; Grok Stop pin is capped/fail-open (not OMX infinite stickiness) (#78). |
+| `omx.plugin.setup_update_migrate` | install_update | complete | grok=catalogued | catalogued | omg setup/install + guidance rules exist; OMX migrate breadth is not 1:1 (#78). |
+| `omx.quality.visual_modes` | quality_visual_edit_safety | complete | grok=catalogued | catalogued | Dual-review/verdict/UltraQA exist; OMX visual-mode catalog breadth remains partial (#78). |

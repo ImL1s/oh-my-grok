@@ -679,6 +679,20 @@ ISSUE_78_OMO_MINIMUM_IDS = frozenset(
     }
 )
 
+# Issue #78-B Antigravity minimum capability IDs (keep adapter; catalogue seed).
+ISSUE_78_ANTIGRAVITY_MINIMUM_IDS = frozenset(
+    {
+        "antigravity.provider.adapter",
+        "antigravity.headless.structured_execution",
+        "antigravity.agents.markdown_custom",
+        "antigravity.skills.hooks_subagents_plugins_mcp",
+        "antigravity.jobs.background_tasks",
+        "antigravity.runtime.model_effort_mode_perms",
+        "antigravity.session.history_resume",
+        "antigravity.platform.version_matrix",
+    }
+)
+
 
 def test_required_category_taxonomy_constant_matches_issue_78b() -> None:
     expected = frozenset(
@@ -743,3 +757,28 @@ def test_omo_inventory_rows_cover_issue_78_minimum_ids() -> None:
             continue
         assert row["upstream"]["source"] == "OmO"
         assert row["upstream"]["revision"] == inv["upstream_pins"]["OmO"]["revision"]
+
+
+def test_antigravity_inventory_rows_cover_issue_78_minimum_ids() -> None:
+    inv = load_json_object(ROOT / "docs/parity/omg-parity.json")
+    ids = {row["id"] for row in inv["capabilities"]}
+    missing = ISSUE_78_ANTIGRAVITY_MINIMUM_IDS - ids
+    assert not missing, f"missing Antigravity minimum capability ids: {sorted(missing)}"
+    for row in inv["capabilities"]:
+        if row["id"] not in ISSUE_78_ANTIGRAVITY_MINIMUM_IDS:
+            continue
+        assert row["upstream"]["source"] == "Antigravity"
+        assert (
+            row["upstream"]["revision"]
+            == inv["upstream_pins"]["Antigravity"]["revision"]
+        )
+
+
+def test_no_capability_row_is_fake_live_verified() -> None:
+    inv = validate_parity_inventory(
+        load_json_object(ROOT / "docs/parity/omg-parity.json"),
+        repo_root=ROOT,
+    )
+    for row in inv["capabilities"]:
+        for level in row["maturity"].values():
+            assert level != "live_verified"

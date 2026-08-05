@@ -4,26 +4,8 @@
   "repository_id": "OMG",
   "ownership_manifest_id": "dual-parity-writers-v1",
   "inventory_status": "bootstrapping",
-  "maturity_levels": [
-    "catalogued",
-    "configured",
-    "installed",
-    "enabled",
-    "loadable",
-    "observed",
-    "healthy",
-    "live_verified"
-  ],
-  "classifications": [
-    "faithful",
-    "antigravity_native",
-    "omg_native",
-    "alias",
-    "host_owned",
-    "host_impossible",
-    "optional_unclaimed",
-    "excluded"
-  ],
+  "maturity_levels": ["catalogued", "configured", "installed", "enabled", "loadable", "observed", "healthy", "live_verified"],
+  "classifications": ["faithful", "antigravity_native", "omg_native", "alias", "host_owned", "host_impossible", "optional_unclaimed", "excluded"],
   "upstream_pins": {
     "OMC": {
       "repository": "https://github.com/Yeachan-Heo/oh-my-claudecode",
@@ -52,25 +34,25 @@
     }
   },
   "category_status": {
-    "runtime_orchestration": "bootstrapping",
-    "skills": "bootstrapping",
-    "agents_routing": "bootstrapping",
-    "team": "bootstrapping",
-    "jobs": "bootstrapping",
-    "hooks": "bootstrapping",
-    "tools_mcp": "bootstrapping",
-    "state_memory_observability": "bootstrapping",
-    "install_update": "bootstrapping",
-    "quality_visual_edit_safety": "bootstrapping",
-    "antigravity": "bootstrapping",
+    "runtime_orchestration": "complete",
+    "skills": "complete",
+    "agents_routing": "complete",
+    "team": "complete",
+    "jobs": "complete",
+    "hooks": "complete",
+    "tools_mcp": "complete",
+    "state_memory_observability": "complete",
+    "install_update": "complete",
+    "quality_visual_edit_safety": "complete",
+    "antigravity": "complete",
     "platform_live_evidence": "bootstrapping",
     "parity_governance": "bootstrapping"
   },
   "source_status": {
-    "OMC": "bootstrapping",
-    "OMX": "bootstrapping",
-    "OmO": "bootstrapping",
-    "Antigravity": "bootstrapping"
+    "OMC": "complete",
+    "OMX": "complete",
+    "OmO": "complete",
+    "Antigravity": "complete"
   },
   "live_evidence_max_age_days": 30,
   "capabilities": [
@@ -84,10 +66,7 @@
         "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/ask/providers.py",
-        "omg_cli/team/providers.py"
-      ],
+      "omg_paths": ["omg_cli/ask/providers.py", "omg_cli/team/providers.py"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued",
@@ -134,10 +113,7 @@
         "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/team/plane.py",
-        "omg_cli/team/cli.py"
-      ],
+      "omg_paths": ["omg_cli/team/plane.py", "omg_cli/team/cli.py"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -160,25 +136,18 @@
         "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/contracts/parity_schema.py",
-        "docs/parity/omg-parity.json",
-        "scripts/check_parity_inventory.py"
-      ],
+      "omg_paths": ["omg_cli/contracts/parity_schema.py", "docs/parity/omg-parity.json", "scripts/check_parity_inventory.py"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
       },
       "evidence": {
-        "tests": [
-          "tests/test_parity_inventory.py",
-          "tests/test_parity_inventory_v2.py"
-        ],
+        "tests": ["tests/test_parity_inventory.py", "tests/test_parity_inventory_v2.py"],
         "docs": ["docs/parity/README.md", "docs/parity/schema-v2.md"],
         "live": []
       },
       "issues": ["#78"],
-      "gap": "#78-A substrate only; #78-B full upstream inventory and #78-C freshness/refresh remain open."
+      "gap": "#78-B catalogue inventory landed; #78-C live-evidence freshness/refresh remains."
     },
     {
       "id": "omc.cli.session_surfaces",
@@ -190,11 +159,7 @@
         "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/guidance.py",
-        "omg_cli/commands/install.py",
-        "omg_cli/host_session.py"
-      ],
+      "omg_paths": ["omg_cli/guidance.py", "omg_cli/commands/install.py", "omg_cli/host_session.py"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -264,11 +229,7 @@
         "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/team/",
-        "omg_cli/workers.py",
-        "omg_cli/integrate.py"
-      ],
+      "omg_paths": ["omg_cli/team/", "omg_cli/workers.py", "omg_cli/integrate.py"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -291,10 +252,7 @@
         "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "hooks/hooks.json",
-        "hooks/bin/"
-      ],
+      "omg_paths": ["hooks/hooks.json", "hooks/bin/"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -317,10 +275,7 @@
         "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/lsp_tools.py",
-        "omg_cli/mcp/"
-      ],
+      "omg_paths": ["omg_cli/lsp_tools.py", "omg_cli/mcp/"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -343,12 +298,7 @@
         "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/host_session.py",
-        "omg_cli/resume.py",
-        "omg_cli/session_recovery.py",
-        "omg_cli/workflows/replay.py"
-      ],
+      "omg_paths": ["omg_cli/host_session.py", "omg_cli/resume.py", "omg_cli/session_recovery.py", "omg_cli/workflows/replay.py"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -371,14 +321,7 @@
         "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/wiki.py",
-        "omg_cli/project_memory.py",
-        "omg_cli/hud.py",
-        "omg_cli/notify/",
-        "skills/omg-wiki/",
-        "skills/omg-hud/"
-      ],
+      "omg_paths": ["omg_cli/wiki.py", "omg_cli/project_memory.py", "omg_cli/hud.py", "omg_cli/notify/", "skills/omg-wiki/", "skills/omg-hud/"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -401,24 +344,13 @@
         "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/autopilot.py",
-        "omg_cli/modes.py",
-        "omg_cli/pipeline.py",
-        "skills/omg-ralph/",
-        "skills/omg-ultraqa/",
-        "skills/omg-ultragoal/"
-      ],
+      "omg_paths": ["omg_cli/autopilot.py", "omg_cli/modes.py", "omg_cli/pipeline.py", "skills/omg-ralph/", "skills/omg-ultraqa/", "skills/omg-ultragoal/"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
       },
       "evidence": {
-        "tests": [
-          "tests/test_autopilot.py",
-          "tests/test_modes.py",
-          "tests/test_pipeline.py"
-        ],
+        "tests": ["tests/test_autopilot.py", "tests/test_modes.py", "tests/test_pipeline.py"],
         "docs": ["docs/autopilot.md", "docs/skills.md"],
         "live": []
       },
@@ -435,14 +367,7 @@
         "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/dual_review.py",
-        "omg_cli/verdict.py",
-        "omg_cli/review.py",
-        "omg_cli/package_release.py",
-        "skills/omg-dual-review/",
-        "skills/omg-ultraqa/"
-      ],
+      "omg_paths": ["omg_cli/dual_review.py", "omg_cli/verdict.py", "omg_cli/review.py", "omg_cli/package_release.py", "skills/omg-dual-review/", "skills/omg-ultraqa/"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -465,13 +390,7 @@
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/hud.py",
-        "omg_cli/workers.py",
-        "omg_cli/team/tmux.py",
-        "omg_cli/team/worktree.py",
-        "skills/omg-hud/"
-      ],
+      "omg_paths": ["omg_cli/hud.py", "omg_cli/workers.py", "omg_cli/team/tmux.py", "omg_cli/team/worktree.py", "skills/omg-hud/"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -494,12 +413,7 @@
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/interview.py",
-        "omg_cli/ralplan.py",
-        "skills/omg-deep-interview/",
-        "skills/omg-ralplan/"
-      ],
+      "omg_paths": ["omg_cli/interview.py", "omg_cli/ralplan.py", "skills/omg-deep-interview/", "skills/omg-ralplan/"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -545,12 +459,7 @@
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/workers.py",
-        "omg_cli/team/mailbox.py",
-        "omg_cli/team/",
-        "omg_cli/ask/"
-      ],
+      "omg_paths": ["omg_cli/workers.py", "omg_cli/team/mailbox.py", "omg_cli/team/", "omg_cli/ask/"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -573,12 +482,7 @@
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "agents/",
-        "agents/omg-code-reviewer.md",
-        "agents/omg-security-reviewer.md",
-        "agents/omg-critic.md"
-      ],
+      "omg_paths": ["agents/", "agents/omg-code-reviewer.md", "agents/omg-security-reviewer.md", "agents/omg-critic.md"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -601,12 +505,7 @@
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/stop_gate.py",
-        "omg_cli/session_recovery.py",
-        "hooks/",
-        "omg_cli/autopilot.py"
-      ],
+      "omg_paths": ["omg_cli/stop_gate.py", "omg_cli/session_recovery.py", "hooks/", "omg_cli/autopilot.py"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -629,12 +528,7 @@
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/commands/install.py",
-        "omg_cli/guidance.py",
-        "plugin.json",
-        "scripts/install-plugin.sh"
-      ],
+      "omg_paths": ["omg_cli/commands/install.py", "omg_cli/guidance.py", "plugin.json", "scripts/install-plugin.sh"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -657,12 +551,7 @@
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/dual_review.py",
-        "omg_cli/verdict.py",
-        "skills/omg-dual-review/",
-        "skills/omg-ultraqa/"
-      ],
+      "omg_paths": ["omg_cli/dual_review.py", "omg_cli/verdict.py", "skills/omg-dual-review/", "skills/omg-ultraqa/"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -708,12 +597,7 @@
         "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/guidance.py",
-        "templates/omg-rules.md",
-        "hooks/bin/pre_tool_use_deny.py",
-        "omg_cli/deny.py"
-      ],
+      "omg_paths": ["omg_cli/guidance.py", "templates/omg-rules.md", "hooks/bin/pre_tool_use_deny.py", "omg_cli/deny.py"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -759,12 +643,7 @@
         "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/team/",
-        "omg_cli/ralplan.py",
-        "agents/omg-security-reviewer.md",
-        "skills/omg-team/"
-      ],
+      "omg_paths": ["omg_cli/team/", "omg_cli/ralplan.py", "agents/omg-security-reviewer.md", "skills/omg-team/"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -833,11 +712,7 @@
         "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/lsp_tools.py",
-        "omg_cli/mcp/",
-        "skills/omg-lsp/"
-      ],
+      "omg_paths": ["omg_cli/lsp_tools.py", "omg_cli/mcp/", "skills/omg-lsp/"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -883,13 +758,7 @@
         "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/fanout.py",
-        "omg_cli/workers.py",
-        "omg_cli/integrate.py",
-        "omg_cli/modes.py",
-        "skills/omg-ultrawork/"
-      ],
+      "omg_paths": ["omg_cli/fanout.py", "omg_cli/workers.py", "omg_cli/integrate.py", "omg_cli/modes.py", "skills/omg-ultrawork/"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -912,12 +781,7 @@
         "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [
-        "omg_cli/team/tmux.py",
-        "omg_cli/team/tmux_adapter.py",
-        "plugin.json",
-        "hooks/hooks.json"
-      ],
+      "omg_paths": ["omg_cli/team/tmux.py", "omg_cli/team/tmux_adapter.py", "plugin.json", "hooks/hooks.json"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
@@ -929,6 +793,174 @@
       },
       "issues": ["#69", "#78"],
       "gap": "Default-on tmux team plane + plugin hooks exist; OmO host-plugin compat matrix is partial (#69/#78)."
+    },
+    {
+      "id": "antigravity.headless.structured_execution",
+      "category": "antigravity",
+      "promise": "Headless Antigravity structured execution with typed outputs and fail-closed exit codes",
+      "classification": "optional_unclaimed",
+      "upstream": {
+        "source": "Antigravity",
+        "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued",
+        "antigravity": "catalogued"
+      },
+      "evidence": {
+        "tests": [],
+        "docs": ["docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#67", "#78"],
+      "gap": "No Antigravity headless structured-execution adapter; Team/ask use argv builders only (#67/#78)."
+    },
+    {
+      "id": "antigravity.agents.markdown_custom",
+      "category": "agents_routing",
+      "promise": "Markdown-defined custom agents for Antigravity-style agent catalogs",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "Antigravity",
+        "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["agents/", "plugin.json"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued",
+        "antigravity": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_skill_inventory.py"],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#67", "#78"],
+      "gap": "Grok plugin markdown agents exist; Antigravity-native agent catalog wiring remains under #67/#78."
+    },
+    {
+      "id": "antigravity.skills.hooks_subagents_plugins_mcp",
+      "category": "skills",
+      "promise": "Skills, hooks, subagents, plugins, and MCP surfaces for Antigravity-shaped extension",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "Antigravity",
+        "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["skills/", "hooks/", "agents/", "plugin.json", "omg_cli/mcp/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued",
+        "antigravity": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_skill_inventory.py", "tests/test_mcp_server.py"],
+        "docs": ["docs/skills.md", "docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#67", "#78"],
+      "gap": "OMG skills/hooks/agents/MCP exist on Grok; Antigravity host plugin/MCP parity is not claimed (#67/#78)."
+    },
+    {
+      "id": "antigravity.jobs.background_tasks",
+      "category": "jobs",
+      "promise": "Antigravity background tasks / durable job execution",
+      "classification": "optional_unclaimed",
+      "upstream": {
+        "source": "Antigravity",
+        "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued",
+        "antigravity": "catalogued"
+      },
+      "evidence": {
+        "tests": [],
+        "docs": ["docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#68", "#78"],
+      "gap": "No Antigravity background-task plane; durable jobs tracked under #68 (jobs.durable_background)."
+    },
+    {
+      "id": "antigravity.runtime.model_effort_mode_perms",
+      "category": "antigravity",
+      "promise": "Model, effort, mode, and permission controls for Antigravity runtime",
+      "classification": "host_owned",
+      "upstream": {
+        "source": "Antigravity",
+        "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [],
+      "runtime_owner": "host",
+      "maturity": {
+        "grok": "catalogued",
+        "antigravity": "catalogued"
+      },
+      "evidence": {
+        "tests": [],
+        "docs": ["docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#67", "#78"],
+      "gap": "Model/effort/mode/perms are host-owned (Grok/Antigravity CLI); OMG does not claim a typed AG runtime control plane (#67/#78)."
+    },
+    {
+      "id": "antigravity.session.history_resume",
+      "category": "state_memory_observability",
+      "promise": "Session history and resume continuity for Antigravity-shaped workflows",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "Antigravity",
+        "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/resume.py", "omg_cli/session_recovery.py", "omg_cli/host_session.py"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued",
+        "antigravity": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_resume.py", "tests/test_session_recovery.py"],
+        "docs": ["docs/cli-commands.md"],
+        "live": []
+      },
+      "issues": ["#67", "#78"],
+      "gap": "OMG resume/recovery substitutes exist for Grok; Antigravity-native history APIs are not wired (#67/#78)."
+    },
+    {
+      "id": "antigravity.platform.version_matrix",
+      "category": "platform_live_evidence",
+      "promise": "Platform/runtime version matrix with live-evidence freshness policy",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "Antigravity",
+        "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["omg_cli/doctor.py", "scripts/check_version_consistency.py", "docs/parity/omg-parity.json"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued",
+        "antigravity": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_parity_inventory_v2.py"],
+        "docs": ["docs/parity/schema-v2.md", "docs/parity/README.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Doctor/version/pin catalogue exists; #78-C live-evidence freshness and refresh gate remain open."
     }
   ],
   "gaps": [
@@ -962,7 +994,47 @@
       "status": "open",
       "issues": ["#78"],
       "capability_ids": ["parity.inventory.governance"],
-      "summary": "#78-B full inventory and #78-C live-evidence freshness remain after #78-A"
+      "summary": "#78-B inventory landed; #78-C freshness/refresh remains"
+    },
+    {
+      "id": "gap.parity.platform_live_evidence",
+      "priority": "P1",
+      "status": "open",
+      "issues": ["#78"],
+      "capability_ids": ["antigravity.platform.version_matrix"],
+      "summary": "Platform/runtime live-evidence freshness and refresh gate not shipped (#78-C)"
+    },
+    {
+      "id": "gap.omo.todo_continuation",
+      "priority": "P1",
+      "status": "open",
+      "issues": ["#78"],
+      "capability_ids": ["omo.goal.todo_continuation"],
+      "summary": "OmO todo-continuation inject is host_impossible on Grok (no session.prompt API)"
+    },
+    {
+      "id": "gap.antigravity.headless_execution",
+      "priority": "P2",
+      "status": "open",
+      "issues": ["#67", "#78"],
+      "capability_ids": ["antigravity.headless.structured_execution", "antigravity.runtime.model_effort_mode_perms"],
+      "summary": "Antigravity headless structured execution and typed runtime controls unclaimed"
+    },
+    {
+      "id": "gap.omx.research.modes",
+      "priority": "P2",
+      "status": "open",
+      "issues": ["#78"],
+      "capability_ids": ["omx.research.modes"],
+      "summary": "OMX-style dedicated research/autoresearch mode surface unclaimed"
+    },
+    {
+      "id": "gap.omo.edit_and_hygiene",
+      "priority": "P2",
+      "status": "open",
+      "issues": ["#78"],
+      "capability_ids": ["omo.edit.hash_anchored", "omo.quality.comment_hygiene"],
+      "summary": "OmO hash-anchored edit and comment-hygiene quality surfaces unclaimed"
     }
   ]
 }

@@ -6,34 +6,34 @@
 
 > **引導中。** 下列計數僅為覆蓋統計 — 不聲稱對等百分比。
 
-已編目能力數: **32**.
+已編目能力數: **39**.
 
 ## 依類別
 
-- `agents_routing`: **bootstrapping** (3 項能力)
-- `antigravity`: **bootstrapping** (1 項能力)
-- `hooks`: **bootstrapping** (2 項能力)
-- `install_update`: **bootstrapping** (1 項能力)
-- `jobs`: **bootstrapping** (2 項能力)
+- `agents_routing`: **complete** (4 項能力)
+- `antigravity`: **complete** (3 項能力)
+- `hooks`: **complete** (2 項能力)
+- `install_update`: **complete** (1 項能力)
+- `jobs`: **complete** (3 項能力)
 - `parity_governance`: **bootstrapping** (1 項能力)
-- `platform_live_evidence`: **bootstrapping** (0 項能力)
-- `quality_visual_edit_safety`: **bootstrapping** (4 項能力)
-- `runtime_orchestration`: **bootstrapping** (7 項能力)
-- `skills`: **bootstrapping** (1 項能力)
-- `state_memory_observability`: **bootstrapping** (3 項能力)
-- `team`: **bootstrapping** (5 項能力)
-- `tools_mcp`: **bootstrapping** (2 項能力)
+- `platform_live_evidence`: **bootstrapping** (1 項能力)
+- `quality_visual_edit_safety`: **complete** (4 項能力)
+- `runtime_orchestration`: **complete** (7 項能力)
+- `skills`: **complete** (2 項能力)
+- `state_memory_observability`: **complete** (4 項能力)
+- `team`: **complete** (5 項能力)
+- `tools_mcp`: **complete** (2 項能力)
 
 ## 依來源
 
-- `OMC`: **bootstrapping** (12 項能力)
-- `OMX`: **bootstrapping** (9 項能力)
-- `OmO`: **bootstrapping** (10 項能力)
-- `Antigravity`: **bootstrapping** (1 項能力)
+- `OMC`: **complete** (12 項能力)
+- `OMX`: **complete** (9 項能力)
+- `OmO`: **complete** (10 項能力)
+- `Antigravity`: **complete** (8 項能力)
 
 ## 依最高成熟度
 
-- `catalogued`: 32
+- `catalogued`: 39
 
 ## 產生的矩陣
 
