@@ -217,7 +217,12 @@ execution sandbox. Grok spawn linearization (Round 13) holds cancel-check +
 pid publish fails. Round 14 additionally refuses spawn when `pid.json` still
 identifies a live leader (PID + matching starttime), refuses a live PID without
 starttime, and requires non-empty starttime before publishing pid metadata
-(fanout kills the worker on publish fail).
+(fanout kills the worker on publish fail). Round 15: tri-state PID identity
+treats starttime-probe `UNKNOWN` as refuse-do-not-clear (not reclaimable);
+implementation receipt stamps require a lease bound to the *target* root/run
+(`_require_current_lease`); ralph/`run_mode` resume shares the same
+live-leader gate as autopilot; process fanout rolls back by killing all
+already-started workers if a later worker's pid publish fails.
 
 | Family | Allowed | Denied |
 |--------|---------|--------|

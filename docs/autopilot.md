@@ -277,6 +277,11 @@ Round 14 also refuses resume/spawn when `pid.json` still identifies a **live**
 leader (PID alive + matching starttime), and refuses a live PID without
 starttime (stale/dead metadata is cleared; live conflict is not). Pid
 publication itself requires a non-empty process starttime.
+Round 15 extends identity to tri-state `MATCH` / `MISMATCH` / `UNKNOWN`: a
+failed starttime probe while the PID is still live refuses spawn and does
+**not** clear `pid.json`. The same `prepare_leader_spawn` gate applies to
+ralph / `run_mode` resume (not only autopilot). Implementation receipts must
+be stamped under a lease bound to the target run (foreign-run lease refused).
 `omg autopilot status` returns empty `legal_next` for terminal runs.
 
 **Resume interview preflight (Round 11):** when `--resume` finds
@@ -314,7 +319,9 @@ work happened (or an explicit audited no-op):
    excluded, so merely running tests/importing a module during `implement`
    never counts as product work on its own.
 2. **On-disk CLI stamp** — `omg_cli.implementation.stamp_implementation_receipt`
-   requires a live `ExecutionLease` (`lease.assert_current()`), writes a
+   requires a live `ExecutionLease` bound to the *target* root/run via
+   `_require_current_lease` (not merely `assert_current` on another run —
+   Round 15), writes a
    CLI-owned `stages/implementation.json`
    (`writer=omg-cli`, `content_sha256`, `stamped_at`, lease `invocation_id`
    + `lease_generation` — Round 12 + Round 14) under

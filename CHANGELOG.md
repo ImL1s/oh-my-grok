@@ -255,6 +255,24 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   sidecar exists; ``set_verified`` requires matching nonce and
   ``authority_phase==acceptance``. Residual: dual-edit of both files under
   a writable ``.omg/state`` / OS write-deny still out of scope.
+- **Tri-state PID identity UNKNOWN refuse (Round 15 / R15-1):**
+  live-leader spawn classifies ``MATCH`` / ``MISMATCH`` / ``UNKNOWN``;
+  ``UNKNOWN`` (alive + recorded starttime + ``process_starttime`` probe
+  ``None``) refuses spawn and does not clear ``pid.json`` (unknown ≠
+  reclaimable).
+- **Stamp requires target-run lease (Round 15 / R15-2):**
+  ``stamp_implementation_receipt`` binds via ``_require_current_lease``
+  (lease root/run must match the stamp target), refuses terminal /
+  cancel-pending, and requires autopilot ``phase==implement`` when the
+  sidecar exists — a foreign run's live lease cannot stamp this run.
+- **Ralph resume live-leader gate (Round 15 / R15-3):**
+  ``modes._launch_grok`` / ralph ``run_mode`` resume share
+  ``prepare_leader_spawn`` with autopilot — refuse MATCH / UNKNOWN /
+  missing-starttime; clear only DEAD / MISMATCH stale leaders.
+- **Fanout kill prior workers on publish fail (Round 15 / R15-4):**
+  when a later worker's ``pid.json`` publish fails after ``Popen``, kill
+  and reap all earlier workers in the batch, persist failure evidence,
+  and mark the run failed (no orphan batch).
 
 ### Planned
 - Optional residual team API ops (broadcast / await-event / preflight pack) —
