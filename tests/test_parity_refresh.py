@@ -1,4 +1,4 @@
-"""Plan-only upstream parity refresh review engine (#78-C Task 1)."""
+"""Plan-only upstream parity refresh review engine (#78-C Task 1–2)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import pytest
 
 from omg_cli.contracts.parity_schema import load_json_object
 from omg_cli.contracts.state_schemas import ContractValidationError
+from omg_cli.main import main
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "docs" / "parity" / "omg-parity.json"
@@ -312,3 +313,102 @@ def test_refresh_rejects_apply_without_explicit_break_glass(tmp_path: Path) -> N
 
     with pytest.raises(NotImplementedError):
         apply_refresh_plan({}, inventory_path=tmp_path / "omg-parity.json")
+
+
+def _write_catalog(tmp_path: Path, *, pin_revision: str = NEW_PIN) -> Path:
+    catalog = _load_catalog(pin_revision=pin_revision)
+    path = tmp_path / "upstream_catalog.json"
+    path.write_text(json.dumps(catalog, indent=2), encoding="utf-8")
+    return path
+
+
+def test_parity_refresh_plan_cli_writes_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    catalog_path = _write_catalog(tmp_path)
+    before = INVENTORY.read_bytes()
+
+    code = main(
+        [
+            "parity",
+            "refresh",
+            "--source",
+            "OMC",
+            "--pin",
+            NEW_PIN,
+            "--catalog",
+            str(catalog_path),
+            "--plan",
+        ]
+    )
+
+    assert code == 0
+    artifact = (
+        tmp_path / ".omg" / "artifacts" / "parity" / f"refresh-OMC-{NEW_PIN[:12]}.json"
+    )
+    assert artifact.is_file()
+    review = load_json_object(artifact)
+    assert review["store_kind"] == "parity_refresh_review"
+    assert INVENTORY.read_bytes() == before
+
+
+def test_parity_refresh_without_plan_flag_exits_nonzero(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    catalog_path = _write_catalog(tmp_path)
+    before = INVENTORY.read_bytes()
+
+    code = main(
+        [
+            "parity",
+            "refresh",
+            "--source",
+            "OMC",
+            "--pin",
+            NEW_PIN,
+            "--catalog",
+            str(catalog_path),
+        ]
+    )
+
+    assert code != 0
+    assert INVENTORY.read_bytes() == before
+    assert not (tmp_path / ".omg" / "artifacts" / "parity").exists()
+
+
+def test_parity_refresh_uses_global_json_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    catalog_path = _write_catalog(tmp_path)
+
+    code = main(
+        [
+            "parity",
+            "refresh",
+            "--source",
+            "OMC",
+            "--pin",
+            NEW_PIN,
+            "--catalog",
+            str(catalog_path),
+            "--plan",
+            "--json",
+        ]
+    )
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["schema_version"] == 1
+    assert payload["command"] == "parity.refresh"
+    assert payload["data"]["ok"] is True
+    assert payload["data"]["source"] == "OMC"
+    assert payload["data"]["to_revision"] == NEW_PIN
+    assert "artifact_path" in payload["data"]

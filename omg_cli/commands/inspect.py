@@ -418,8 +418,62 @@ def cmd_parity(args: argparse.Namespace) -> int:
         emit_data(args, "parity.gaps", result)
         return 0
 
+    if action == "refresh":
+        from omg_cli.parity_refresh import build_refresh_plan, write_refresh_review_artifact
+
+        if not getattr(args, "plan", False):
+            print(
+                "omg parity refresh: --plan is required (plan-only; no inventory mutation)",
+                file=sys.stderr,
+            )
+            return 1
+        catalog_arg = getattr(args, "catalog", None)
+        if not catalog_arg:
+            print("omg parity refresh: --catalog is required", file=sys.stderr)
+            return 1
+        root = plugin_root()
+        proj = project_root()
+        inventory_path = root / "docs" / "parity" / "omg-parity.json"
+        try:
+            inventory = validate_parity_inventory(
+                load_json_object(inventory_path),
+                repo_root=root,
+            )
+            upstream_catalog = load_json_object(Path(catalog_arg))
+            plan = build_refresh_plan(
+                inventory=inventory,
+                upstream_catalog=upstream_catalog,
+                source=str(args.source),
+                new_pin=str(args.pin),
+            )
+            artifact = write_refresh_review_artifact(proj, plan)
+            result = {
+                "ok": True,
+                "artifact_path": artifact.relative_to(proj).as_posix(),
+                "source": plan["source"],
+                "from_revision": plan["from_revision"],
+                "to_revision": plan["to_revision"],
+                "change_count": len(plan["changes"]),
+                "guards": plan["guards"],
+            }
+        except ContractValidationError as exc:
+            emit_data(
+                args,
+                "parity.refresh",
+                {"ok": False, "error": str(exc)},
+            )
+            return 1
+        except (OSError, ValueError) as exc:
+            print(f"omg parity: {exc}", file=sys.stderr)
+            return 1
+        emit_data(args, "parity.refresh", result)
+        return 0
+
     if action != "release-readback":
-        print("omg parity: action required (run|release-readback|check|gaps)", file=sys.stderr)
+        print(
+            "omg parity: action required (run|release-readback|check|gaps|refresh)",
+            file=sys.stderr,
+        )
         return 2
     root = project_root()
     try:
@@ -588,6 +642,30 @@ def register_inspect_parsers(
             help="include non-open gaps (closed/deferred)",
         )
         p_parity_gaps.set_defaults(func=cmd_parity, parity_action="gaps")
+        from omg_cli.contracts.parity_schema import SOURCE_STATUS_IDS
+
+        p_parity_refresh = parity_sub.add_parser(
+            "refresh",
+            parents=[common],
+            help="plan-only upstream pin refresh (writes review artifact; never upgrades maturity)",
+        )
+        p_parity_refresh.add_argument(
+            "--source",
+            required=True,
+            choices=list(SOURCE_STATUS_IDS),
+        )
+        p_parity_refresh.add_argument("--pin", required=True, help="full git commit oid")
+        p_parity_refresh.add_argument(
+            "--plan",
+            action="store_true",
+            help="required: emit review artifact only (no inventory mutation)",
+        )
+        p_parity_refresh.add_argument(
+            "--catalog",
+            default=None,
+            help="path to upstream catalog fixture JSON",
+        )
+        p_parity_refresh.set_defaults(func=cmd_parity, parity_action="refresh")
         p_parity.set_defaults(func=cmd_parity)
 
         p_wiki = sub.add_parser(
