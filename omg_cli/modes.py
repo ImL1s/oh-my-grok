@@ -709,10 +709,23 @@ def _launch_grok(
 
     identity = _resolve_run_identity(run_dir)
     if identity is not None:
-        from omg_cli.state import prepare_leader_spawn, transition_guard
+        from contextlib import nullcontext
+
+        from omg_cli.state import (
+            prepare_leader_spawn,
+            transition_guard,
+            transition_guard_held,
+        )
 
         root_for_gate, run_id_for_gate = identity
-        with transition_guard(root_for_gate, run_id_for_gate):
+        # Autopilot dry-run already holds transition_guard around this call —
+        # never nest (would time out acquiring the same flock).
+        guard_cm = (
+            nullcontext()
+            if transition_guard_held()
+            else transition_guard(root_for_gate, run_id_for_gate)
+        )
+        with guard_cm:
             refuse = prepare_leader_spawn(root_for_gate, run_id_for_gate)
             if refuse is not None:
                 print(f"omg launch: {refuse}", file=sys.stderr)

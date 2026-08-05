@@ -700,6 +700,26 @@ def test_run_mode_mutex_blocks_second_active(monkeypatch, tmp_path):
     assert still["run_id"] == active["run_id"]
 
 
+def test_launch_grok_dry_run_under_held_transition_guard(tmp_path):
+    """R15 hotfix: nested transition_guard must not deadlock (autopilot dry-run)."""
+    from omg_cli.modes import _launch_grok, _run_dir
+    from omg_cli.state import create_run, transition_guard
+
+    run = create_run(tmp_path, mode="autopilot", goal="nested dry-run")
+    rid = run["run_id"]
+    run_dir = _run_dir(tmp_path, rid)
+    with transition_guard(tmp_path, rid):
+        rc = _launch_grok(
+            ["grok", "-p", "hello"],
+            cwd=tmp_path,
+            run_dir=run_dir,
+            timeout=None,
+            dry_run=True,
+        )
+    assert rc == 0
+    assert (run_dir / "dry_run").is_file()
+
+
 def test_launch_grok_refuses_live_leader_pid_match(
     monkeypatch, tmp_path, capsys
 ):
