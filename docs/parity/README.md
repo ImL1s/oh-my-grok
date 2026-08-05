@@ -2,6 +2,8 @@
 
 Machine-readable claimability contract for oh-my-grok cross-runtime parity.
 
+Canonical inventory: [`omg-parity.json`](omg-parity.json). Generated index: [`SUMMARY.md`](SUMMARY.md) (plus `SUMMARY.zh.md` / `SUMMARY.zh-TW.md`), [`FEATURE-MATRIX.md`](FEATURE-MATRIX.md), per-source `MATRIX-*.md`, and [`GAPS.md`](GAPS.md).
+
 ## Header
 
 | Field | Meaning |
@@ -10,7 +12,8 @@ Machine-readable claimability contract for oh-my-grok cross-runtime parity.
 | `schema_version` | `2` |
 | `inventory_status` | `bootstrapping` \| `complete` |
 | `upstream_pins` | Exact upstream revisions only — **never** an OMG candidate commit |
-| `category_status` | Per-category `bootstrapping` \| `complete` |
+| `category_status` | Per-category `bootstrapping` \| `complete` (#78-B taxonomy: runtime_orchestration, skills, agents_routing, team, jobs, hooks, tools_mcp, state_memory_observability, install_update, quality_visual_edit_safety, antigravity, platform_live_evidence, parity_governance) |
+| `source_status` | Per-source `bootstrapping` \| `complete` (`OMC`, `OMX`, `OmO`, `Antigravity`) |
 | `live_evidence_max_age_days` | Freshness window for `live_verified` |
 
 ## Maturity (ordered enum)

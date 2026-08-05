@@ -52,9 +52,18 @@
     }
   },
   "category_status": {
-    "antigravity": "bootstrapping",
-    "jobs": "bootstrapping",
+    "runtime_orchestration": "bootstrapping",
+    "skills": "bootstrapping",
+    "agents_routing": "bootstrapping",
     "team": "bootstrapping",
+    "jobs": "bootstrapping",
+    "hooks": "bootstrapping",
+    "tools_mcp": "bootstrapping",
+    "state_memory_observability": "bootstrapping",
+    "install_update": "bootstrapping",
+    "quality_visual_edit_safety": "bootstrapping",
+    "antigravity": "bootstrapping",
+    "platform_live_evidence": "bootstrapping",
     "parity_governance": "bootstrapping"
   },
   "source_status": {
@@ -170,6 +179,281 @@
       },
       "issues": ["#78"],
       "gap": "#78-A substrate only; #78-B full upstream inventory and #78-C freshness/refresh remain open."
+    },
+    {
+      "id": "omc.cli.session_surfaces",
+      "category": "runtime_orchestration",
+      "promise": "CLI and in-session launch surfaces with shared rules/guidance contract",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [
+        "omg_cli/guidance.py",
+        "omg_cli/commands/install.py",
+        "omg_cli/host_session.py"
+      ],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_guidance.py"],
+        "docs": ["docs/cli-commands.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "OMG substitutes via guidance + host_session; OMC in-session MCP/tool surfaces are not 1:1."
+    },
+    {
+      "id": "omc.agents.catalog_routing",
+      "category": "agents_routing",
+      "promise": "Agent catalog with tier/discipline routing for multi-agent work",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["agents/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_skill_inventory.py"],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Grok plugin agents exist; OMC-style dynamic tier routing is not fully mirrored."
+    },
+    {
+      "id": "omc.skills.catalog_aliases",
+      "category": "skills",
+      "promise": "Skill catalog with aliases, pipelines, and resource loading",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": ["skills/"],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_skill_inventory.py"],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "OMG ships omg-* skills; OMC alias/pipeline breadth remains partially unclaimed."
+    },
+    {
+      "id": "omc.team.worktrees_mailbox",
+      "category": "team",
+      "promise": "Team worktrees, mailbox, and worker isolation plane",
+      "classification": "alias",
+      "alias_of": "team.plane_v3",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [
+        "omg_cli/team/",
+        "omg_cli/workers.py",
+        "omg_cli/integrate.py"
+      ],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_team_plane.py", "tests/test_workers.py"],
+        "docs": ["docs/skills.md", "docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#69", "#78"],
+      "gap": "Catalogue alias of team.plane_v3; Team v3 gaps remain under #69."
+    },
+    {
+      "id": "omc.hooks.lifecycle",
+      "category": "hooks",
+      "promise": "Lifecycle hooks with Stop soft-pin honesty under Grok host constraints",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [
+        "hooks/hooks.json",
+        "hooks/bin/"
+      ],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_lifecycle_hooks.py", "tests/test_stop_gate.py"],
+        "docs": ["docs/security-model.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Grok hooks are fail-open / stdout-ignored for most events; not OMC-equivalent injection."
+    },
+    {
+      "id": "omc.tools.lsp_ast",
+      "category": "tools_mcp",
+      "promise": "LSP/AST tooling and MCP tool surfaces for code intelligence",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [
+        "omg_cli/lsp_tools.py",
+        "omg_cli/mcp/"
+      ],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_lsp_symbols.py", "tests/test_mcp_server.py"],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "omg lsp is a local probe; no full LSP/AST MCP bridge (host-honest substitute)."
+    },
+    {
+      "id": "omc.session.search_replay",
+      "category": "state_memory_observability",
+      "promise": "Session search, friction, replay, and observatory surfaces",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [
+        "omg_cli/host_session.py",
+        "omg_cli/resume.py",
+        "omg_cli/session_recovery.py",
+        "omg_cli/workflows/replay.py"
+      ],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_resume.py", "tests/test_session_recovery.py"],
+        "docs": ["docs/cli-commands.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Resume/recovery/workflow replay exist; OMC session-search/observatory breadth is not claimed."
+    },
+    {
+      "id": "omc.memory.wiki_hud_notify",
+      "category": "state_memory_observability",
+      "promise": "Project memory, wiki, HUD, and notification surfaces",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [
+        "omg_cli/wiki.py",
+        "omg_cli/project_memory.py",
+        "omg_cli/hud.py",
+        "omg_cli/notify/",
+        "skills/omg-wiki/",
+        "skills/omg-hud/"
+      ],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_wiki_hud_lsp.py", "tests/test_project_memory.py"],
+        "docs": ["docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Core wiki/HUD/notify paths exist; OMC notepad/shared-memory breadth remains partial."
+    },
+    {
+      "id": "omc.goal.ralph_autopilot_ultra",
+      "category": "runtime_orchestration",
+      "promise": "Goal persistence via Ralph, autopilot FSM, UltraQA, and Ultragoal loops",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [
+        "omg_cli/autopilot.py",
+        "omg_cli/modes.py",
+        "omg_cli/pipeline.py",
+        "skills/omg-ralph/",
+        "skills/omg-ultraqa/",
+        "skills/omg-ultragoal/"
+      ],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": [
+          "tests/test_autopilot.py",
+          "tests/test_modes.py",
+          "tests/test_pipeline.py"
+        ],
+        "docs": ["docs/autopilot.md", "docs/skills.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "OMG modes/autopilot substitute OMC goal loops; Stop stickiness remains host-capped."
+    },
+    {
+      "id": "omc.quality.visual_release",
+      "category": "quality_visual_edit_safety",
+      "promise": "Visual verdict, dual-review, release packaging, and self-improve quality gates",
+      "classification": "omg_native",
+      "upstream": {
+        "source": "OMC",
+        "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+        "source_paths": ["README.md"]
+      },
+      "omg_paths": [
+        "omg_cli/dual_review.py",
+        "omg_cli/verdict.py",
+        "omg_cli/review.py",
+        "omg_cli/package_release.py",
+        "skills/omg-dual-review/",
+        "skills/omg-ultraqa/"
+      ],
+      "runtime_owner": "omg",
+      "maturity": {
+        "grok": "catalogued"
+      },
+      "evidence": {
+        "tests": ["tests/test_review.py", "tests/test_package_release.py"],
+        "docs": ["docs/skills.md", "docs/RELEASE.md"],
+        "live": []
+      },
+      "issues": ["#78"],
+      "gap": "Dual-review/verdict/release exist; OMC visual-verdict / project-session-manager breadth is partial."
     }
   ],
   "gaps": [

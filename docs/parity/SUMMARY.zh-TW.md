@@ -6,25 +6,34 @@
 
 > **引導中。** 下列計數僅為覆蓋統計 — 不聲稱對等百分比。
 
-已編目能力數: **4**.
+已編目能力數: **14**.
 
 ## 依類別
 
+- `agents_routing`: **bootstrapping** (1 項能力)
 - `antigravity`: **bootstrapping** (1 項能力)
+- `hooks`: **bootstrapping** (1 項能力)
+- `install_update`: **bootstrapping** (0 項能力)
 - `jobs`: **bootstrapping** (1 項能力)
 - `parity_governance`: **bootstrapping** (1 項能力)
-- `team`: **bootstrapping** (1 項能力)
+- `platform_live_evidence`: **bootstrapping** (0 項能力)
+- `quality_visual_edit_safety`: **bootstrapping** (1 項能力)
+- `runtime_orchestration`: **bootstrapping** (2 項能力)
+- `skills`: **bootstrapping** (1 項能力)
+- `state_memory_observability`: **bootstrapping** (2 項能力)
+- `team`: **bootstrapping** (2 項能力)
+- `tools_mcp`: **bootstrapping** (1 項能力)
 
 ## 依來源
 
-- `OMC`: **bootstrapping** (2 項能力)
+- `OMC`: **bootstrapping** (12 項能力)
 - `OMX`: **bootstrapping** (1 項能力)
 - `OmO`: **bootstrapping** (0 項能力)
 - `Antigravity`: **bootstrapping** (1 項能力)
 
 ## 依最高成熟度
 
-- `catalogued`: 4
+- `catalogued`: 14
 
 ## 產生的矩陣
 

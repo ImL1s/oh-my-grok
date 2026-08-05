@@ -6,25 +6,34 @@ Inventory status: **bootstrapping**.
 
 > **Bootstrapping.** Counts below are coverage tallies only — no parity percentage is claimed.
 
-Capabilities catalogued: **4**.
+Capabilities catalogued: **14**.
 
 ## By category
 
+- `agents_routing`: **bootstrapping** (1 capabilities)
 - `antigravity`: **bootstrapping** (1 capabilities)
+- `hooks`: **bootstrapping** (1 capabilities)
+- `install_update`: **bootstrapping** (0 capabilities)
 - `jobs`: **bootstrapping** (1 capabilities)
 - `parity_governance`: **bootstrapping** (1 capabilities)
-- `team`: **bootstrapping** (1 capabilities)
+- `platform_live_evidence`: **bootstrapping** (0 capabilities)
+- `quality_visual_edit_safety`: **bootstrapping** (1 capabilities)
+- `runtime_orchestration`: **bootstrapping** (2 capabilities)
+- `skills`: **bootstrapping** (1 capabilities)
+- `state_memory_observability`: **bootstrapping** (2 capabilities)
+- `team`: **bootstrapping** (2 capabilities)
+- `tools_mcp`: **bootstrapping** (1 capabilities)
 
 ## By source
 
-- `OMC`: **bootstrapping** (2 capabilities)
+- `OMC`: **bootstrapping** (12 capabilities)
 - `OMX`: **bootstrapping** (1 capabilities)
 - `OmO`: **bootstrapping** (0 capabilities)
 - `Antigravity`: **bootstrapping** (1 capabilities)
 
 ## By peak maturity
 
-- `catalogued`: 4
+- `catalogued`: 14
 
 ## Generated matrices
 

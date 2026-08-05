@@ -633,6 +633,23 @@ def test_claims_forbidden_when_any_category_bootstrapping(tmp_path: Path) -> Non
         assert marker not in {"✅", "✓"}
 
 
+# Issue #78-B OMC minimum capability IDs (catalogue seed; not claim completeness).
+ISSUE_78_OMC_MINIMUM_IDS = frozenset(
+    {
+        "omc.cli.session_surfaces",
+        "omc.agents.catalog_routing",
+        "omc.skills.catalog_aliases",
+        "omc.team.worktrees_mailbox",
+        "omc.hooks.lifecycle",
+        "omc.tools.lsp_ast",
+        "omc.session.search_replay",
+        "omc.memory.wiki_hud_notify",
+        "omc.goal.ralph_autopilot_ultra",
+        "omc.quality.visual_release",
+    }
+)
+
+
 def test_required_category_taxonomy_constant_matches_issue_78b() -> None:
     expected = frozenset(
         {
@@ -655,3 +672,20 @@ def test_required_category_taxonomy_constant_matches_issue_78b() -> None:
     assert "OMG" not in SOURCE_STATUS_IDS
     assert "GROK_BUILD" not in SOURCE_STATUS_IDS
     assert tuple(SOURCE_STATUS_IDS) == ("OMC", "OMX", "OmO", "Antigravity")
+
+
+def test_required_category_taxonomy_present_in_canonical_inventory() -> None:
+    inv = load_json_object(ROOT / "docs/parity/omg-parity.json")
+    assert set(inv["category_status"]) >= set(PARITY_CATEGORY_TAXONOMY)
+
+
+def test_omc_inventory_rows_cover_issue_78_minimum_ids() -> None:
+    inv = load_json_object(ROOT / "docs/parity/omg-parity.json")
+    ids = {row["id"] for row in inv["capabilities"]}
+    missing = ISSUE_78_OMC_MINIMUM_IDS - ids
+    assert not missing, f"missing OMC minimum capability ids: {sorted(missing)}"
+    for row in inv["capabilities"]:
+        if row["id"] not in ISSUE_78_OMC_MINIMUM_IDS:
+            continue
+        assert row["upstream"]["source"] == "OMC"
+        assert row["upstream"]["revision"] == inv["upstream_pins"]["OMC"]["revision"]
