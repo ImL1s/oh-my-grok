@@ -16,7 +16,7 @@ Authoritative validator: `omg_cli.contracts.parity_schema.validate_parity_invent
 | Field | Notes |
 | --- | --- |
 | `inventory_status` | `bootstrapping` \| `complete` |
-| `category_status` | map of category → status; non-empty; values ∈ `CATEGORY_STATUS_VALUES` |
+| `category_status` | map of category → status; keys must cover every entry in `PARITY_CATEGORY_TAXONOMY` (extra keys allowed); values ∈ `CATEGORY_STATUS_VALUES` |
 | `source_status` | exact keys = `SOURCE_STATUS_IDS`; values ∈ `CATEGORY_STATUS_VALUES` |
 
 `inventory_is_complete` / `inventory_completion_claims_allowed` require `inventory_status == complete` **and** every `category_status` **and** every `source_status` value == `complete`. Percent / green-check claims stay forbidden while any source or category is still bootstrapping.

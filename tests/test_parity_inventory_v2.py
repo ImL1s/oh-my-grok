@@ -100,10 +100,7 @@ def _base_v2_inventory(tmp_path: Path) -> dict:
             },
         },
         "category_status": {
-            "antigravity": "bootstrapping",
-            "jobs": "bootstrapping",
-            "team": "bootstrapping",
-            "parity_governance": "bootstrapping",
+            cat: "bootstrapping" for cat in sorted(PARITY_CATEGORY_TAXONOMY)
         },
         "source_status": {
             "OMC": "bootstrapping",
@@ -716,6 +713,20 @@ def test_required_category_taxonomy_constant_matches_issue_78b() -> None:
     assert "OMG" not in SOURCE_STATUS_IDS
     assert "GROK_BUILD" not in SOURCE_STATUS_IDS
     assert tuple(SOURCE_STATUS_IDS) == ("OMC", "OMX", "OmO", "Antigravity")
+
+
+
+def test_validator_rejects_inventory_missing_required_category_taxonomy(tmp_path: Path) -> None:
+    """Authoritative validator must enforce PARITY_CATEGORY_TAXONOMY coverage."""
+    inventory = _base_v2_inventory(tmp_path)
+    assert set(inventory["category_status"]) >= set(PARITY_CATEGORY_TAXONOMY)
+    victim = sorted(PARITY_CATEGORY_TAXONOMY)[0]
+    del inventory["category_status"][victim]
+    inventory["capabilities"] = [
+        row for row in inventory["capabilities"] if row.get("category") != victim
+    ]
+    with pytest.raises(ContractValidationError, match="category_status"):
+        _validate(inventory, tmp_path)
 
 
 def test_required_category_taxonomy_present_in_canonical_inventory() -> None:

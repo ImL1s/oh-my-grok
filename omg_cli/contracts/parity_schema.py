@@ -648,10 +648,14 @@ def inventory_is_complete(inventory: Mapping[str, Any]) -> bool:
     categories = inventory.get("category_status")
     if not isinstance(categories, Mapping) or not categories:
         return False
+    if PARITY_CATEGORY_TAXONOMY - set(categories):
+        return False
     if not all(status == "complete" for status in categories.values()):
         return False
     sources = inventory.get("source_status")
     if not isinstance(sources, Mapping) or not sources:
+        return False
+    if set(sources) != set(SOURCE_STATUS_IDS):
         return False
     return all(status == "complete" for status in sources.values())
 
@@ -894,6 +898,12 @@ def _validate_parity_inventory_v2(
     categories = require_object(inventory["category_status"], label="category_status")
     if not categories:
         raise ContractValidationError("category_status must be non-empty")
+    missing = PARITY_CATEGORY_TAXONOMY - set(categories)
+    if missing:
+        raise ContractValidationError(
+            "category_status missing required taxonomy categories: "
+            + ", ".join(sorted(missing))
+        )
     for name, status in categories.items():
         require_nonempty_string(name, label="category_status key")
         if status not in CATEGORY_STATUS_VALUES:
