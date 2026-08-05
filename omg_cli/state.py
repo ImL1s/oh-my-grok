@@ -449,6 +449,43 @@ def pid_matches_recorded(
     return current == recorded_starttime
 
 
+def clear_pid_metadata(root: Path, run_id: str) -> None:
+    """Remove ``pid.json`` and legacy plain ``pid`` sibling for *run_id*."""
+    root = Path(root)
+    for path in (_run_pid_json_path(root, run_id), _run_pid_path(root, run_id)):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def live_leader_pid_conflict(root: Path, run_id: str) -> str | None:
+    """Refuse reason when ``pid.json`` still identifies a live leader process.
+
+    Returns a human-readable refuse string when the recorded PID is alive **and**
+    its current ``ps`` starttime matches the recorded value. Dead PIDs and
+    starttime mismatches (PID reuse) are treated as stale — return ``None`` so
+    the caller may clear metadata and spawn.
+    """
+    meta = read_pid_metadata(Path(root), run_id)
+    if meta is None:
+        return None
+    try:
+        pid = int(meta["pid"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
+    recorded = meta.get("starttime")
+    recorded_s = recorded if isinstance(recorded, str) and recorded else None
+    if not pid_matches_recorded(pid, recorded_s):
+        return None
+    return (
+        f"live leader pid still matches pid.json "
+        f"(pid={pid}); refusing grok spawn"
+    )
+
+
 def _require_posix_flock() -> None:
     if os.name != "posix" or fcntl is None:
         raise LockUnavailableError(

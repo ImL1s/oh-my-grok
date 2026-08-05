@@ -1460,7 +1460,12 @@ def run_autopilot(
         resolve_launch_timeout,
     )
     from omg_cli.resume import write_resume_md
-    from omg_cli.state import load_active_run, transition_guard
+    from omg_cli.state import (
+        clear_pid_metadata,
+        live_leader_pid_conflict,
+        load_active_run,
+        transition_guard,
+    )
 
     root_path = Path(root).resolve()
     assert_safe_supervised_parent()
@@ -1673,6 +1678,14 @@ def run_autopilot(
                     if refuse is not None:
                         print(f"omg autopilot run: {refuse}", file=sys.stderr)
                         return 1
+                    # R14-3: refuse spawn when pid.json still identifies a live
+                    # leader (PID alive + matching starttime). Stale/dead meta
+                    # is cleared so a fresh spawn can publish new pid.json.
+                    conflict = live_leader_pid_conflict(root_path, run_id)
+                    if conflict is not None:
+                        print(f"omg autopilot run: {conflict}", file=sys.stderr)
+                        return 1
+                    clear_pid_metadata(root_path, run_id)
                     if dry_run:
                         rc = _launch_grok(
                             argv,

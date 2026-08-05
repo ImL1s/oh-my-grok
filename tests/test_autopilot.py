@@ -414,6 +414,145 @@ def test_run_autopilot_spawn_under_guard_wait_outside(
     assert ("wait", False) in events
 
 
+def test_run_autopilot_refuses_spawn_when_live_leader_pid_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """R14-3: live pid.json (PID alive + matching starttime) must refuse spawn."""
+    import os
+
+    from omg_cli.state import process_starttime, write_pid_metadata
+    from omg_cli.modes import _run_dir
+
+    st = start_autopilot(tmp_path, "r14 live leader refuse", skip_interview=True)
+    rid = st["run_id"]
+    run_dir = _run_dir(tmp_path, rid)
+    our_pid = os.getpid()
+    start = process_starttime(our_pid)
+    assert start is not None and start.strip()
+    write_pid_metadata(run_dir / "pid.json", pid=our_pid, pgid=our_pid, starttime=start)
+
+    launched: list[bool] = []
+
+    def _fake_launch(argv, **kw):
+        launched.append(True)
+        return 0
+
+    _install_fake_autopilot_spawn(monkeypatch, _fake_launch)
+    rc = run_autopilot(tmp_path, "", resume_run_id=rid)
+    assert rc != 0
+    assert not launched
+    err = capsys.readouterr().err
+    assert "live leader" in err.lower() or "pid" in err.lower()
+    # Must not overwrite pid.json on refuse
+    assert (run_dir / "pid.json").is_file()
+    assert (run_dir / "pid").is_file()
+
+
+def test_run_autopilot_clears_stale_dead_leader_pid_then_spawns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R14-3: dead PID in pid.json is stale — clear then allow spawn."""
+    from omg_cli.state import write_pid_metadata
+    from omg_cli.modes import _run_dir
+
+    st = start_autopilot(tmp_path, "r14 stale dead pid", skip_interview=True)
+    rid = st["run_id"]
+    run_dir = _run_dir(tmp_path, rid)
+    dead_pid = 2_000_000_001
+    write_pid_metadata(
+        run_dir / "pid.json",
+        pid=dead_pid,
+        pgid=dead_pid,
+        starttime="Mon Jan  1 00:00:00 1970",
+    )
+    assert (run_dir / "pid.json").is_file()
+
+    cleared_before_spawn: list[bool] = []
+
+    def _fake_launch(argv, **kw):
+        cleared_before_spawn.append(not (run_dir / "pid.json").exists())
+        return 0
+
+    _install_fake_autopilot_spawn(monkeypatch, _fake_launch)
+    rc = run_autopilot(tmp_path, "", resume_run_id=rid)
+    assert rc == 0
+    assert cleared_before_spawn == [True]
+    assert not (run_dir / "pid").exists()
+
+
+def test_run_autopilot_clears_stale_mismatched_starttime_then_spawns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R14-3: reused PID (alive but wrong starttime) is stale — clear then spawn."""
+    import os
+
+    from omg_cli.state import write_pid_metadata
+    from omg_cli.modes import _run_dir
+
+    st = start_autopilot(tmp_path, "r14 stale pid reuse", skip_interview=True)
+    rid = st["run_id"]
+    run_dir = _run_dir(tmp_path, rid)
+    write_pid_metadata(
+        run_dir / "pid.json",
+        pid=os.getpid(),
+        pgid=os.getpid(),
+        starttime="Mon Jan  1 00:00:00 1970",
+    )
+
+    cleared_before_spawn: list[bool] = []
+
+    def _fake_launch(argv, **kw):
+        cleared_before_spawn.append(not (run_dir / "pid.json").exists())
+        return 0
+
+    _install_fake_autopilot_spawn(monkeypatch, _fake_launch)
+    rc = run_autopilot(tmp_path, "", resume_run_id=rid)
+    assert rc == 0
+    assert cleared_before_spawn == [True]
+
+
+def test_live_leader_pid_conflict_helper(tmp_path: Path) -> None:
+    """R14-3: helper returns refuse reason only for live matching starttime."""
+    import os
+
+    from omg_cli.state import (
+        live_leader_pid_conflict,
+        process_starttime,
+        write_pid_metadata,
+    )
+    from omg_cli.modes import _run_dir
+
+    st = start_autopilot(tmp_path, "r14 helper", skip_interview=True)
+    rid = st["run_id"]
+    run_dir = _run_dir(tmp_path, rid)
+
+    assert live_leader_pid_conflict(tmp_path, rid) is None
+
+    our_pid = os.getpid()
+    start = process_starttime(our_pid)
+    assert start is not None
+    write_pid_metadata(run_dir / "pid.json", pid=our_pid, pgid=our_pid, starttime=start)
+    reason = live_leader_pid_conflict(tmp_path, rid)
+    assert reason is not None
+    assert "live leader" in reason.lower() or str(our_pid) in reason
+
+    write_pid_metadata(
+        run_dir / "pid.json",
+        pid=our_pid,
+        pgid=our_pid,
+        starttime="Mon Jan  1 00:00:00 1970",
+    )
+    assert live_leader_pid_conflict(tmp_path, rid) is None
+
+    write_pid_metadata(
+        run_dir / "pid.json",
+        pid=2_000_000_001,
+        pgid=2_000_000_001,
+        starttime="Mon Jan  1 00:00:00 1970",
+    )
+    assert live_leader_pid_conflict(tmp_path, rid) is None
+
+
 @pytest.mark.skipif(
     __import__("os").name != "posix", reason="requires POSIX fcntl.flock"
 )
