@@ -18,6 +18,13 @@ from omg_cli.modes import (
 from omg_cli.state import load_active_run, load_run
 
 
+def _stub_process_starttime(monkeypatch, starttime: str = "fake-start") -> None:
+    """Hermetic pid.json publish for tests that use non-live mock PIDs."""
+    monkeypatch.setattr(
+        "omg_cli.state.process_starttime", lambda _pid: starttime
+    )
+
+
 def test_build_launch_argv_no_yolo_by_default():
     argv = build_grok_argv(mode="ulw", goal="fix tests", yolo=False, cwd="/tmp/proj")
     assert argv[0] == "grok"
@@ -295,6 +302,7 @@ def test_ralph_doesnt_set_verified_without_acceptance(monkeypatch, tmp_path):
     mock_proc.pid = 4242
     mock_proc.wait.return_value = 0
 
+    _stub_process_starttime(monkeypatch)
     monkeypatch.setattr(subprocess, "Popen", MagicMock(return_value=mock_proc))
 
     rc = run_mode("ralph", "no accept yet", root=tmp_path, max_iter=2, dry_run=False)
@@ -362,6 +370,7 @@ def test_forged_acceptance_does_not_set_verified(monkeypatch, tmp_path):
             return mock_proc
         return real_popen(argv, **kwargs)
 
+    _stub_process_starttime(monkeypatch)
     monkeypatch.setattr(subprocess, "Popen", selective_popen)
 
     from omg_cli import modes as modes_mod
@@ -410,6 +419,7 @@ def test_set_verified_when_cli_acceptance_present(monkeypatch, tmp_path):
             return mock_proc
         return real_popen(argv, **kwargs)
 
+    _stub_process_starttime(monkeypatch)
     monkeypatch.setattr(subprocess, "Popen", selective_popen)
 
     from omg_cli import modes as modes_mod
@@ -460,6 +470,7 @@ def test_failed_subprocess_marks_failed(monkeypatch, tmp_path):
     mock_proc.pid = 9
     mock_proc.wait.return_value = 1
     real = subprocess.Popen
+    _stub_process_starttime(monkeypatch)
     monkeypatch.setattr(
         subprocess,
         "Popen",
@@ -480,6 +491,7 @@ def test_ulw_auto_integrate_missing_ok(monkeypatch, tmp_path):
     mock_proc.pid = 11
     mock_proc.wait.return_value = 0
     real = subprocess.Popen
+    _stub_process_starttime(monkeypatch)
     monkeypatch.setattr(
         subprocess,
         "Popen",
@@ -560,6 +572,7 @@ def test_launch_grok_uses_start_new_session_on_posix(monkeypatch, tmp_path):
         return mock_proc
 
     real = subprocess.Popen
+    _stub_process_starttime(monkeypatch)
     monkeypatch.setattr(subprocess, "Popen", _selective_popen(real, fake_grok))
 
     rc = run_mode("ulw", "session leader", root=tmp_path, dry_run=False)
@@ -603,6 +616,37 @@ def test_spawn_grok_process_kills_child_when_pid_metadata_fails(
     assert not (run_dir / "pid.json").is_file()
 
 
+def test_spawn_grok_process_kills_child_when_starttime_unavailable(
+    monkeypatch, tmp_path
+):
+    """R14-4: missing process starttime aborts pid publish and kills the child."""
+    from omg_cli.modes import _spawn_grok_process
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    mock_proc = MagicMock()
+    mock_proc.pid = 7788
+    killed: list[int] = []
+
+    def fake_popen(argv, **kwargs):
+        return mock_proc
+
+    def fake_killpg(pid, _sig):
+        killed.append(pid)
+
+    real = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", _selective_popen(real, fake_popen))
+    monkeypatch.setattr("omg_cli.state.process_starttime", lambda _pid: None)
+    monkeypatch.setattr("os.killpg", fake_killpg)
+
+    with pytest.raises(RuntimeError, match="starttime"):
+        _spawn_grok_process(["grok", "-p", "hi"], cwd=tmp_path, run_dir=run_dir)
+
+    assert killed == [7788] or mock_proc.kill.called
+    assert not (run_dir / "pid.json").is_file()
+    assert not (run_dir / "pid").is_file()
+
+
 def test_launch_grok_still_spawn_then_wait(monkeypatch, tmp_path):
     """R13-1: ``_launch_grok`` remains spawn+wait for ralplan/dual_review callers."""
     from omg_cli.modes import _launch_grok
@@ -613,6 +657,7 @@ def test_launch_grok_still_spawn_then_wait(monkeypatch, tmp_path):
     mock_proc.pid = 8888
     mock_proc.wait.return_value = 0
     real = subprocess.Popen
+    _stub_process_starttime(monkeypatch)
     monkeypatch.setattr(
         subprocess, "Popen", _selective_popen(real, lambda *_a, **_k: mock_proc)
     )

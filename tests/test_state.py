@@ -493,6 +493,48 @@ def test_write_pid_metadata_shape(tmp_path, monkeypatch):
     assert (tmp_path / "pid").read_text(encoding="utf-8").strip() == "12345"
 
 
+def test_write_pid_metadata_requires_starttime(tmp_path, monkeypatch):
+    """R14-4: refuse pid.json when process_starttime is unavailable."""
+    from omg_cli.state import write_pid_metadata
+
+    monkeypatch.setattr("omg_cli.state.process_starttime", lambda pid: None)
+    path = tmp_path / "pid.json"
+    with pytest.raises(RuntimeError, match="starttime"):
+        write_pid_metadata(path, pid=12345, pgid=12345)
+    assert not path.exists()
+    assert not (tmp_path / "pid").exists()
+
+
+def test_write_pid_metadata_explicit_starttime_skips_lookup(tmp_path, monkeypatch):
+    """R14-4: explicit non-empty starttime still publishes without ps lookup."""
+    from omg_cli.state import write_pid_metadata
+
+    def boom(_pid: int) -> None:
+        raise AssertionError("process_starttime must not be called")
+
+    monkeypatch.setattr("omg_cli.state.process_starttime", boom)
+    path = tmp_path / "pid.json"
+    meta = write_pid_metadata(
+        path, pid=999, pgid=999, starttime="Mon Jan  1 00:00:00 1970"
+    )
+    assert meta["starttime"] == "Mon Jan  1 00:00:00 1970"
+    assert path.is_file()
+
+
+def test_write_pid_metadata_rejects_empty_explicit_starttime(tmp_path, monkeypatch):
+    """R14-4: empty explicit starttime must not publish pid.json."""
+    from omg_cli.state import write_pid_metadata
+
+    monkeypatch.setattr(
+        "omg_cli.state.process_starttime",
+        lambda pid: "should-not-matter",
+    )
+    path = tmp_path / "pid.json"
+    with pytest.raises(RuntimeError, match="starttime"):
+        write_pid_metadata(path, pid=1, pgid=1, starttime="")
+    assert not path.exists()
+
+
 def test_write_status(tmp_path):
     """write_status: reserved keys protected; verified only via set_verified + acceptance."""
     run = create_run(tmp_path, mode="ralph", goal="v")

@@ -369,10 +369,18 @@ def write_pid_metadata(
     """Write ``pid.json`` (and legacy plain ``pid`` file when path is run-dir pid.json).
 
     Shape: ``{pid, starttime, pgid}``. Used by leader launch and workers/*.pid.json.
+
+    Requires a non-empty ``starttime`` (explicit or from ``process_starttime``).
+    Refuses to publish when starttime cannot be established — callers such as
+    ``_spawn_grok_process`` kill the child on this failure.
     """
     path = Path(path)
     if starttime is None:
         starttime = process_starttime(pid)
+    if not starttime:
+        raise RuntimeError(
+            f"cannot publish pid metadata for pid={pid}: process starttime unavailable"
+        )
     if pgid is None and os.name == "posix":
         try:
             pgid = os.getpgid(pid)
