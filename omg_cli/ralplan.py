@@ -160,16 +160,44 @@ def _authorize_autopilot_embedding(
 
     No-op unless ``run['mode'] == 'autopilot'``. When it is:
 
+    - the run must not be terminal (``status`` in
+      ``omg_cli.state.TERMINAL_STATUSES`` — cancelled/completed/failed/
+      verified) — a dead run's plan is never a valid embedding target;
+    - there must be no pending cancellation request committed for the run
+      (``load_cancellation_request``) — ``omg cancel`` commits its request
+      under the distinct transition lock, so it can land even while a
+      ralplan embedding holds the execution lease across a long-running
+      stage; fail closed rather than race it to ``accepted``;
     - the CLI-supplied ``goal`` must equal the frozen run goal exactly —
       a mismatched goal is rejected rather than silently re-targeting a
       running autopilot's plan;
     - the autopilot FSM must currently be parked at ``phase == 'ralplan'``
       (mirrors ``interview._authorize_run_mode``'s embedding gate).
 
+    Callers that hold the execution lease across multiple stages/rounds
+    must re-invoke this (with a freshly reloaded ``run``) immediately
+    before any accept/terminal write — not just once at entry — since a
+    concurrent cancellation can commit at any point during that window.
+
     Raises ``ValueError`` with a clear message on any violation.
     """
     if run.get("mode") != "autopilot":
         return
+
+    from omg_cli.state import TERMINAL_STATUSES, load_cancellation_request
+
+    run_id = str(run.get("run_id"))
+    status = str(run.get("status") or "")
+    if status in TERMINAL_STATUSES:
+        raise ValueError(
+            f"autopilot run is terminal; refusing ralplan embedding: status={status!r}"
+        )
+    if load_cancellation_request(root, run_id) is not None:
+        raise ValueError(
+            "autopilot run has a pending cancellation request; "
+            "refusing ralplan embedding"
+        )
+
     frozen_goal = str(run.get("goal") or "").strip()
     requested_goal = (goal or "").strip()
     if requested_goal != frozen_goal:
@@ -180,7 +208,6 @@ def _authorize_autopilot_embedding(
 
     from omg_cli.autopilot import AutopilotError, load_autopilot
 
-    run_id = str(run.get("run_id"))
     try:
         autopilot_state = load_autopilot(root, run_id)
     except (AutopilotError, json.JSONDecodeError, OSError) as exc:
@@ -1143,6 +1170,26 @@ def _run_ralplan_v2(
                         break
                     if stage == "critic":
                         if entry["valid"] and entry["verdict"] == "APPROVE":
+                            # Re-authorize once more, immediately before the
+                            # accept write: the lease has been held across
+                            # every stage this round, but ``omg cancel``
+                            # commits its request under the distinct
+                            # transition lock and can land at any point
+                            # during that (potentially long-running) window.
+                            # Fail closed rather than accept a plan for a
+                            # run that is now terminal/cancelled.
+                            fresh_run = load_run(root, run_id)
+                            if fresh_run is None:
+                                print(
+                                    f"omg ralplan: run disappeared before accept: {run_id!r}",
+                                    file=sys.stderr,
+                                )
+                                return 1
+                            try:
+                                _authorize_autopilot_embedding(root, fresh_run, goal)
+                            except ValueError as exc:
+                                print(f"omg ralplan: {exc}", file=sys.stderr)
+                                return 1
                             state.update(
                                 {"status": "accepted", "stage": "accepted", "accepted": True}
                             )

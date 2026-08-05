@@ -926,3 +926,138 @@ def test_ralplan_run_rejects_legacy_schema_for_autopilot(tmp_path, capsys):
     assert "autopilot" in err.lower()
     assert "strict-v2" in err.lower()
     assert not (tmp_path / ".omg" / "state" / "runs" / rid / "ralplan.json").is_file()
+
+
+def test_ralplan_run_rejects_terminal_autopilot_run(tmp_path, capsys):
+    """R8-2 (P2-3): an autopilot run that has already reached a terminal
+    status (cancelled/completed/failed/verified) must never accept a new
+    ralplan embedding — a dead run's plan is not a valid target."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "embed me", skip_interview=True)
+    rid = st["run_id"]
+
+    status_path = tmp_path / ".omg" / "state" / "runs" / rid / "status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    status["status"] = "cancelled"
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+
+    rc = run_ralplan(
+        "embed me",
+        root=tmp_path,
+        dry_run=True,
+        max_rounds=1,
+        existing_run_id=rid,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "terminal" in err.lower()
+    assert not (tmp_path / ".omg" / "state" / "runs" / rid / "ralplan.json").is_file()
+
+
+def test_ralplan_run_rejects_pending_cancellation_request(tmp_path, capsys):
+    """R8-2 (P2-3): a committed-but-not-yet-finalized cancellation request
+    must also block embedding. ``omg cancel`` commits its request under
+    the distinct transition lock; there is a real window where the request
+    exists but ``status`` has not flipped to ``cancelled`` yet — the CLI
+    must fail closed in that window too, not just once status is terminal."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "embed me", skip_interview=True)
+    rid = st["run_id"]
+
+    request_path = tmp_path / ".omg" / "state" / "runs" / rid / "cancel.request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "writer": "omg-cli",
+                "run_id": rid,
+                "request_id": "pending-request",
+                "requested_at": "2026-08-05T00:00:00+00:00",
+                "observed_generation": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = run_ralplan(
+        "embed me",
+        root=tmp_path,
+        dry_run=True,
+        max_rounds=1,
+        existing_run_id=rid,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "cancellation" in err.lower()
+    assert not (tmp_path / ".omg" / "state" / "runs" / rid / "ralplan.json").is_file()
+
+
+def test_ralplan_v2_reauthorizes_before_accept_rejects_mid_round_cancellation(
+    tmp_path, capsys
+):
+    """R8-2 (P2-3), TDD core case: a strict-v2 ralplan embedding holds the
+    execution lease across the planner/architect/critic stages of a round.
+    A concurrent ``omg cancel`` commits its request under the distinct
+    transition lock mid-round (simulated here by the critic-stage
+    executor), landing *after* the lease-scoped authorization at loop entry
+    but *before* the accepted=True write. The re-authorization immediately
+    before that write must catch it: run_ralplan must return non-zero and
+    must not stamp accepted=True even though critic itself returned
+    APPROVE."""
+    from omg_cli.autopilot import start_autopilot
+
+    st = start_autopilot(tmp_path, "embed me", skip_interview=True)
+    rid = st["run_id"]
+    request_path = tmp_path / ".omg" / "state" / "runs" / rid / "cancel.request.json"
+
+    def exec_with_cancel_race(stage, **kwargs):
+        payload = _v2_approve_payload(
+            stage,
+            run_id=kwargs["run_id"],
+            round_n=kwargs["round_n"],
+            invocation_id=kwargs["invocation_id"],
+            session_id=kwargs["session_id"],
+            input_sha256=kwargs["input_sha256"],
+        )
+        artifact = stage_artifact_json_path(
+            Path(kwargs["root"]), kwargs["run_id"], stage, kwargs["round_n"]
+        )
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        if stage == "critic":
+            request_path.write_text(
+                json.dumps(
+                    {
+                        "writer": "omg-cli",
+                        "run_id": kwargs["run_id"],
+                        "request_id": "race-request",
+                        "requested_at": "2026-08-05T00:00:00+00:00",
+                        "observed_generation": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return 0
+
+    rc = run_ralplan(
+        "embed me",
+        root=tmp_path,
+        dry_run=True,
+        existing_run_id=rid,
+        stage_executor=exec_with_cancel_race,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "cancellation" in err.lower()
+
+    state = load_ralplan_state(tmp_path, rid)
+    assert state is not None
+    assert state.get("accepted") is not True
+
+    status = json.loads(
+        (tmp_path / ".omg" / "state" / "runs" / rid / "status.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert status.get("ralplan_status") != "accepted"
