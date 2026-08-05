@@ -364,11 +364,17 @@ def cmd_parity(args: argparse.Namespace) -> int:
         root = plugin_root()
         inventory_path = root / "docs" / "parity" / "omg-parity.json"
         strict = bool(getattr(args, "strict", False))
+        release = bool(getattr(args, "release", False))
+        base_inventory = getattr(args, "base_inventory", None)
+        base_ref = getattr(args, "base_ref", None)
         try:
             result = check_parity_inventory(
                 inventory_path=inventory_path,
                 repo_root=root,
                 strict=strict,
+                release=release,
+                base_inventory_path=Path(base_inventory) if base_inventory else None,
+                base_ref=base_ref,
             )
         except ContractValidationError as exc:
             emit_data(
@@ -377,7 +383,8 @@ def cmd_parity(args: argparse.Namespace) -> int:
                 {
                     "ok": False,
                     "error": str(exc),
-                    "strict": strict,
+                    "strict": strict or release,
+                    "release": release,
                 },
             )
             return 1
@@ -418,8 +425,67 @@ def cmd_parity(args: argparse.Namespace) -> int:
         emit_data(args, "parity.gaps", result)
         return 0
 
+    if action == "refresh":
+        from omg_cli.parity_refresh import build_refresh_plan, write_refresh_review_artifact
+
+        if not getattr(args, "plan", False):
+            emit_data(
+                args,
+                "parity.refresh",
+                {
+                    "ok": False,
+                    "error": "--plan is required (plan-only; no inventory mutation)",
+                },
+            )
+            return 1
+        catalog_arg = getattr(args, "catalog", None)
+        if not catalog_arg:
+            emit_data(
+                args,
+                "parity.refresh",
+                {"ok": False, "error": "--catalog is required"},
+            )
+            return 1
+        root = plugin_root()
+        proj = project_root()
+        inventory_path = root / "docs" / "parity" / "omg-parity.json"
+        try:
+            inventory = validate_parity_inventory(
+                load_json_object(inventory_path),
+                repo_root=root,
+            )
+            upstream_catalog = load_json_object(Path(catalog_arg))
+            plan = build_refresh_plan(
+                inventory=inventory,
+                upstream_catalog=upstream_catalog,
+                source=str(args.source),
+                new_pin=str(args.pin),
+            )
+            artifact = write_refresh_review_artifact(proj, plan)
+            result = {
+                "ok": True,
+                "artifact_path": artifact.relative_to(proj).as_posix(),
+                "source": plan["source"],
+                "from_revision": plan["from_revision"],
+                "to_revision": plan["to_revision"],
+                "change_count": len(plan["changes"]),
+                "guards": plan["guards"],
+            }
+        except (OSError, ValueError, ContractValidationError) as exc:
+            emit_data(
+                args,
+                "parity.refresh",
+                {"ok": False, "error": str(exc)},
+            )
+            return 1
+        emit_data(args, "parity.refresh", result)
+        return 0
+
     if action != "release-readback":
-        print("omg parity: action required (run|release-readback|check|gaps)", file=sys.stderr)
+        print(
+            "omg parity: action required (run|release-readback|check|gaps|refresh)",
+            file=sys.stderr,
+        )
         return 2
     root = project_root()
     try:
@@ -570,6 +636,29 @@ def register_inspect_parsers(
             action="store_true",
             help="fail closed on schema/path/overclaim drift",
         )
+        p_parity_check.add_argument(
+            "--release",
+            action="store_true",
+            help="fail closed on upstream drift, stale live evidence, and docs overclaim",
+        )
+        p_parity_check.add_argument(
+            "--base-inventory",
+            default=None,
+            help=(
+                "previous parity inventory JSON; for --release must be paired with "
+                "--base-ref whose inventory blob matches the file "
+                "(file-only base is insufficient)"
+            ),
+        )
+        p_parity_check.add_argument(
+            "--base-ref",
+            default=None,
+            help=(
+                "durable git ref for base inventory (or set OMG_PARITY_BASE_REF); "
+                "required for --release pin-transition DAG walk; "
+                "release mode prefers previous v* tag over HEAD^"
+            ),
+        )
         p_parity_check.set_defaults(func=cmd_parity, parity_action="check")
         p_parity_gaps = parity_sub.add_parser(
             "gaps",
@@ -588,6 +677,30 @@ def register_inspect_parsers(
             help="include non-open gaps (closed/deferred)",
         )
         p_parity_gaps.set_defaults(func=cmd_parity, parity_action="gaps")
+        from omg_cli.contracts.parity_schema import SOURCE_STATUS_IDS
+
+        p_parity_refresh = parity_sub.add_parser(
+            "refresh",
+            parents=[common],
+            help="plan-only upstream pin refresh (writes review artifact; never upgrades maturity)",
+        )
+        p_parity_refresh.add_argument(
+            "--source",
+            required=True,
+            choices=list(SOURCE_STATUS_IDS),
+        )
+        p_parity_refresh.add_argument("--pin", required=True, help="full git commit oid")
+        p_parity_refresh.add_argument(
+            "--plan",
+            action="store_true",
+            help="required: emit review artifact only (no inventory mutation)",
+        )
+        p_parity_refresh.add_argument(
+            "--catalog",
+            default=None,
+            help="path to upstream catalog fixture JSON",
+        )
+        p_parity_refresh.set_defaults(func=cmd_parity, parity_action="refresh")
         p_parity.set_defaults(func=cmd_parity)
 
         p_wiki = sub.add_parser(

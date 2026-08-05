@@ -13,6 +13,15 @@ from omg_cli.contracts.parity_schema import (
     validate_parity_inventory,
 )
 from omg_cli.contracts.state_schemas import ContractValidationError
+from omg_cli.parity_claim_gate import check_parity_release_claims
+
+__all__ = [
+    "ARTIFACT_PATHS_RELATIVE",
+    "apply_strict_parity_gates",
+    "check_parity_inventory",
+    "check_parity_release_claims",
+    "filter_parity_gaps",
+]
 
 ARTIFACT_PATHS_RELATIVE = {
     "requirements": ".omx/plans/omg-oma-full-parity-requirements.md",
@@ -69,6 +78,10 @@ def check_parity_inventory(
     inventory_path: Path | str,
     repo_root: Path | str,
     strict: bool = False,
+    release: bool = False,
+    base_inventory: dict[str, Any] | None = None,
+    base_inventory_path: Path | str | None = None,
+    base_ref: str | None = None,
 ) -> dict[str, Any]:
     """Validate the canonical (or given) parity inventory.
 
@@ -76,12 +89,18 @@ def check_parity_inventory(
     ``repo_root`` and v2 overclaim gates run (same as
     ``scripts/check_parity_inventory.py --strict``).
 
+    When ``release`` is true, strict path checks are implied and the release
+    claim gate runs (upstream drift, stale live evidence, docs overclaim,
+    committed pin-transition reviews).
+
     Raises ``ContractValidationError`` on failure. Returns a success payload
     suitable for CLI/script JSON output.
     """
     root = Path(repo_root)
     path = Path(inventory_path)
     raw = load_json_object(path)
+    if release:
+        strict = True
     if strict:
         inventory = validate_parity_inventory(raw, repo_root=root)
         apply_strict_parity_gates(inventory)
@@ -115,9 +134,33 @@ def check_parity_inventory(
             else False
         ),
         "strict": bool(strict),
+        "release": bool(release),
         "normative_artifacts_verified": artifacts_checked,
         "inventory_path": relative,
     }
+    if release:
+        release_payload = check_parity_release_claims(
+            inventory_path=path,
+            repo_root=root,
+            base_inventory=base_inventory,
+            base_inventory_path=base_inventory_path,
+            base_ref=base_ref,
+            require_base_inventory=True,
+        )
+        payload.update(
+            {
+                "overclaims": release_payload.get("overclaims", 0),
+                "upstream_drift_checked": release_payload.get(
+                    "upstream_drift_checked", False
+                ),
+                "upstream_drift_resolved": release_payload.get(
+                    "upstream_drift_resolved", False
+                ),
+                "pin_transitions_reviewed": release_payload.get(
+                    "pin_transitions_reviewed", False
+                ),
+            }
+        )
     if inventory.get("schema_version") == 1:
         payload["requirements"] = len(inventory["requirement_ids"])
         payload["mcp_operations"] = len(inventory["mcp_operations"])

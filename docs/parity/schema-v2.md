@@ -21,7 +21,19 @@ Authoritative validator: `omg_cli.contracts.parity_schema.validate_parity_invent
 
 `inventory_is_complete` / `inventory_completion_claims_allowed` require `inventory_status == complete` **and** every `category_status` **and** every `source_status` value == `complete`. Percent / green-check claims stay forbidden while any source or category is still bootstrapping.
 
-`complete` is not a catalogue-seed claim: it requires a reproducible upstream completeness gate (deferred to #78-C / follow-up). Until that gate exists, keep sources and categories `bootstrapping`.
+`complete` is not a catalogue-seed claim: it requires a reproducible upstream completeness gate plus manual completeness promotion. The #78-C refresh + release claim gate is landed; **completeness promotion remains manual** — keep sources and categories `bootstrapping` until explicitly promoted.
+
+## Upstream snapshots
+
+Pinned catalogues live under `docs/parity/upstream-snapshots/{OMC,OMX,OmO,Antigravity}.json`:
+
+| Field | Notes |
+| --- | --- |
+| `source` | One of `SOURCE_STATUS_IDS` |
+| `pin_revision` | 40-hex commit; must match `upstream_pins[source].revision` |
+| `capabilities[]` | `{ id, source_paths, promise }` extracted from inventory rows at that pin |
+
+Refresh workflow: `omg parity refresh --source … --pin … --plan --catalog …` emits a review plan; unresolved drift blocks `--release`.
 
 ## Validation entry points
 
@@ -40,7 +52,7 @@ validate_parity_inventory(
 ## Claim helpers
 
 - `inventory_completion_claims_allowed(inventory)` — false while inventory/category/source status is bootstrapping
-- `claim_marker_for_capability(row, inventory=...)` — never emits `%` / ✅ while incomplete; never positive-claims `host_impossible` / `excluded`
+- `claim_marker_for_capability(row, inventory=...)` — never emits `%` / green-checkmark glyphs while incomplete; never positive-claims `host_impossible` / `excluded`
 
 ## Strict check
 
@@ -56,3 +68,21 @@ Under `--strict` (validator `repo_root` set):
 - Claimable classifications (`faithful` / `omg_native` / `antigravity_native`) require non-empty `omg_paths` that exist under the repo.
 - `healthy` / `live_verified` require `healthy_evidence` entries that are existing repo-relative paths (opaque strings like `"x"` fail closed).
 - Alias rows may not exceed canonical maturity per runtime; aliases of `host_impossible` / `excluded` / `optional_unclaimed` cannot claim positive maturity. Claim markers for aliases derive from the canonical target.
+
+## Release check
+
+```bash
+python3 scripts/check_parity_inventory.py --strict --release --base-ref <previous-v-tag>
+./bin/omg parity check --strict --release --base-ref <previous-v-tag> --json
+# optional: --base-inventory /path/to/base-omg-parity.json MUST be paired with
+# --base-ref / OMG_PARITY_BASE_REF whose inventory blob matches the file
+```
+
+`--release` implies `--strict` and additionally runs the release claim gate (`omg_cli.parity_claim_gate`):
+
+- doc overclaim scan (forbidden phrases / per-capability maturity overclaim while bootstrapping)
+- live-evidence freshness for `live_verified` rows
+- upstream drift vs `docs/parity/upstream-snapshots/*.json` (each unresolved add/delete/rename/change fails closed unless acknowledged in a refresh review artifact)
+- **pin-transition ledger:** when any source pin changes vs the durable base inventory (`--base-ref` / `OMG_PARITY_BASE_REF`, previous `v*` release tag, or `origin/main|main` — not `HEAD^` in release mode; optional `--base-inventory` only when bound to a matching `--base-ref` blob), a **git-tracked** review must exist at `docs/parity/reviews/<source>-<from>-<to>-<change-digest>.json` with matching HEAD blob bytes, canonical change digest, and dispositions. Intermediate inventory pin bumps between the trusted base and the candidate are scanned via the `base_ref..HEAD` commit DAG (so an unreviewed bump cannot be masked by a later revert). `--base-inventory` alone is insufficient for `--release` (endpoint-only compare would miss mid-DAG transitions). Optional local `.omg/artifacts/` paths alone are not sufficient.
+
+PR CI uses `--strict` only; `release.yml` uses `--strict --release`.

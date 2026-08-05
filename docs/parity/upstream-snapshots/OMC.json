@@ -1,0 +1,90 @@
+{
+  "source": "OMC",
+  "pin_revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+  "capabilities": [
+    {
+      "id": "omc.agents.catalog_routing",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Agent catalog with tier/discipline routing for multi-agent work"
+    },
+    {
+      "id": "omc.cli.session_surfaces",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "CLI and in-session launch surfaces with shared rules/guidance contract"
+    },
+    {
+      "id": "omc.goal.ralph_autopilot_ultra",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Goal persistence via Ralph, autopilot FSM, UltraQA, and Ultragoal loops"
+    },
+    {
+      "id": "omc.hooks.lifecycle",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Lifecycle hooks with Stop soft-pin honesty under Grok host constraints"
+    },
+    {
+      "id": "omc.memory.wiki_hud_notify",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Project memory, wiki, HUD, and notification surfaces"
+    },
+    {
+      "id": "omc.quality.visual_release",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Visual verdict, dual-review, release packaging, and self-improve quality gates"
+    },
+    {
+      "id": "omc.session.search_replay",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Session search, friction, replay, and observatory surfaces"
+    },
+    {
+      "id": "omc.skills.catalog_aliases",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Skill catalog with aliases, pipelines, and resource loading"
+    },
+    {
+      "id": "omc.team.worktrees_mailbox",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Team worktrees, mailbox, and worker isolation plane"
+    },
+    {
+      "id": "omc.tools.lsp_ast",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "LSP/AST tooling and MCP tool surfaces for code intelligence"
+    },
+    {
+      "id": "parity.inventory.governance",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Canonical parity inventory with claimability gates and strict local drift check"
+    },
+    {
+      "id": "team.plane_v3",
+      "source_paths": [
+        "README.md"
+      ],
+      "promise": "Team plane v3 with job-backed panes and Antigravity adapter integration"
+    }
+  ]
+}

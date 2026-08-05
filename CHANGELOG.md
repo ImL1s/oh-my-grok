@@ -41,6 +41,34 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   completeness ≠ product parity — `inventory_status` stays `bootstrapping` while
   `parity_governance` / `platform_live_evidence` remain open. Issue #78 stays
   open for #78-C (pin refresh / live-evidence freshness / release claim gate).
+- **Partial work for issue 78 (slice C / #78-C):** seed pinned upstream snapshot
+  catalogues (`docs/parity/upstream-snapshots/`), `omg parity refresh --plan`
+  review workflow, release claim gate (`--strict --release` in `release.yml`),
+  and live-evidence freshness enforcement. Completeness promotion and issue #78
+  remain open — no fake `live_verified` product claims.
+
+### Fixed
+- **Parity release claim gate (PR #91 Pro re-audit):** expand overclaim scan to
+  `CHANGELOG.md` / `docs/skills.md`; keep forbidden-phrase restrictions active
+  until `inventory_completion_claims_allowed` (category + source complete);
+  bind required snapshot filename → `source`; bind refresh ack `detail` to
+  promise/source_paths before→after values so same-revision stale acks cannot
+  replay.
+- **Parity release claim gate (PR #91 Pro re-audit round 3):** durable release
+  base (previous `v*` tag / `--base-ref` / `OMG_PARITY_BASE_REF`, not `HEAD^`);
+  scan intermediate pin transitions; require git-tracked HEAD-blob-matching
+  review ledgers; own `docs/parity/reviews/**` under OMG-W0; keep live-* phrase
+  scan active unless every capability is `live_verified`; expose
+  `--base-inventory` / `--base-ref` on `omg parity check`.
+- **Parity release claim gate (PR #91 Pro re-audit round 4):** `--release` rejects
+  file-only `--base-inventory` (no git provenance → endpoint-only A→A miss on
+  A→B→A mid pins). Pair `--base-inventory` with `--base-ref` whose inventory
+  blob matches the file; never silently prefer the file over `--base-ref`.
+- **Parity release claim gate (PR #91 Pro re-audit round 2):** require committed
+  pin-transition reviews under `docs/parity/reviews/`; bind deleted-change
+  fingerprints; validate upstream snapshot capability schema (no duplicate /
+  malformed silent skip); forbid `live-proven` / `live-tested` doc phrases and
+  scrub historical CHANGELOG wording.
 
 ## [0.7.5] - 2026-08-05
 
@@ -58,8 +86,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   candidate package; alias maturity cannot outrank its canonical target (and
   cannot positive-claim when the target is host_impossible/excluded/
   optional_unclaimed); `--strict` requires non-empty `omg_paths` for claimable
-  classifications and repo-verifiable `healthy_evidence` for healthy/
-  live_verified.
+  classifications and repo-verifiable `healthy_evidence` for `healthy` /
+  `live_verified`.
 - **Process-fanout cancel linearization (Round 18 / R18-1):** each
   ``run_process_fanout`` worker's cancel recheck → ``Popen`` → PID publish
   runs under the same per-run ``transition_guard`` as ``_launch_grok``
@@ -624,7 +652,7 @@ panes sealed). All three found by real `grok`/`codex` in real tmux, fixed, and r
   Agent-role parity + machine-readable role taxonomy (F).
 - **In-session MCP server (`omg mcp-server`, `grok mcp add`)** — 14 read + non-authoritative-proposal
   tools for Grok-native in-session parity. `verified` stays CLI-only via three fail-closed mechanisms
-  (curated allowlist, structural refusal under `OMG_MCP_SERVER=1`, path-confinement). Live-verified.
+  (curated allowlist, structural refusal under `OMG_MCP_SERVER=1`, path-confinement). Exercised on a real Grok host.
 - **`omg lsp symbols`/`diagnostics` (E):** stdlib-`ast` local probe. **`pyproject.toml` (C):**
   editable-pipx packaging.
 
@@ -727,7 +755,7 @@ full-branch GO). Merged via PR #2. 528 → 547 unit tests.
 OMC/OMX parity upgrade — global guidance injection, install lifecycle, and a
 verdict-gate hardening pass. All work was executor-written under orchestrator
 briefs and gated by an independent model-diverse standing reviewer (Fable 5,
-full-branch GO). 468 → 528 unit tests; live-verified on the real Grok host.
+full-branch GO). 468 → 528 unit tests; exercised against a real Grok host.
 
 ### Added
 - **Global guidance injection (`~/.grok/rules/omg.md`):** the Grok-native OMC
@@ -735,8 +763,8 @@ full-branch GO). 468 → 528 unit tests; live-verified on the real Grok host.
   operating contract (tuned to Grok 4.5) via a non-destructive marker reconcile
   (`OMG:START/END`), preserving any `USER:OMG:POLICY` block, with a source-hash
   handshake and rolling backup (`omg_cli/guidance.py`, `templates/omg-rules.md`).
-  `omg setup --no-global-rules` opts out. Live-proven: `grok inspect` loads it and
-  a fresh `grok -p` quotes the contract.
+  `omg setup --no-global-rules` opts out. Observed in a one-time Grok host smoke
+  on 2026-07-21: `grok inspect` loads it and a fresh `grok -p` quotes the contract.
 - **`omg update`:** git pull + `grok plugin update` (force-refresh the frozen
   snapshot) + doctor.
 - **`omg uninstall`:** `--yes`-gated removal of plugin, global hook, OMG rules

@@ -8,10 +8,10 @@ Inventory status: **bootstrapping**.
 | --- | --- | --- | --- | --- | --- |
 | `gap.antigravity.provider` | P0 | open | #67 | `antigravity.provider.adapter` | Antigravity first-class provider adapter not implemented |
 | `gap.jobs.durable` | P0 | open | #68 | `jobs.durable_background` | Durable background jobs plane not implemented |
-| `gap.parity.governance.remaining` | P0 | open | #78 | `parity.inventory.governance` | #78-B inventory landed; #78-C freshness/refresh remains |
+| `gap.parity.governance.remaining` | P0 | open | #78 | `parity.inventory.governance` | #78-B inventory landed; #78-C refresh+claim gate landed; completeness promotion still manual |
 | `gap.team.v3` | P0 | open | #69 | `team.plane_v3` | Team plane v3 not implemented; depends on #67/#68 |
 | `gap.omo.todo_continuation` | P1 | open | #78 | `omo.goal.todo_continuation` | OmO todo-continuation inject is host_impossible on Grok (no session.prompt API) |
-| `gap.parity.platform_live_evidence` | P1 | open | #78 | `antigravity.platform.version_matrix` | Platform/runtime live-evidence freshness and refresh gate not shipped (#78-C) |
+| `gap.parity.platform_live_evidence` | P1 | open | #78 | `antigravity.platform.version_matrix` | Platform/runtime live-evidence gate shipped (#78-C); completeness promotion still manual |
 | `gap.antigravity.headless_execution` | P2 | open | #67, #78 | `antigravity.headless.structured_execution`, `antigravity.runtime.model_effort_mode_perms` | Antigravity headless structured execution and typed runtime controls unclaimed |
 | `gap.omo.edit_and_hygiene` | P2 | open | #78 | `omo.edit.hash_anchored`, `omo.quality.comment_hygiene` | OmO hash-anchored edit and comment-hygiene quality surfaces unclaimed |
 | `gap.omx.research.modes` | P2 | open | #78 | `omx.research.modes` | OMX-style dedicated research/autoresearch mode surface unclaimed |
@@ -20,5 +20,5 @@ Inventory status: **bootstrapping**.
 
 - `gap.antigravity.provider` (#67): Antigravity first-class provider adapter not implemented
 - `gap.jobs.durable` (#68): Durable background jobs plane not implemented
-- `gap.parity.governance.remaining` (#78): #78-B inventory landed; #78-C freshness/refresh remains
+- `gap.parity.governance.remaining` (#78): #78-B inventory landed; #78-C refresh+claim gate landed; completeness promotion still manual
 - `gap.team.v3` (#69): Team plane v3 not implemented; depends on #67/#68

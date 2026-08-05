@@ -43,6 +43,19 @@ def test_main_reexports_inspect_handlers() -> None:
     assert inspect_cmds.register_inspect_parsers is not None
 
 
+def _subparser_choices(parser, dest_cmd: str) -> set[str]:
+    import argparse
+
+    for act in parser._actions:
+        if isinstance(act, argparse._SubParsersAction):
+            top = act.choices
+            if dest_cmd in top:
+                for a2 in top[dest_cmd]._actions:
+                    if isinstance(a2, argparse._SubParsersAction):
+                        return set(a2.choices.keys())
+    return set()
+
+
 def test_parser_wires_inspect_handlers() -> None:
     parser = build_parser()
     samples = {
@@ -59,6 +72,12 @@ def test_parser_wires_inspect_handlers() -> None:
         assert callable(getattr(ns, "func", None))
         # Must be the inspect-module implementation
         assert ns.func.__module__ == "omg_cli.commands.inspect", name
+    assert "refresh" in _subparser_choices(parser, "parity")
+    ns = parser.parse_args(
+        ["parity", "refresh", "--source", "OMC", "--pin", "a" * 40]
+    )
+    assert ns.func is inspect_cmds.cmd_parity
+    assert ns.parity_action == "refresh"
 
 
 def test_inspect_help_lists_primary_commands() -> None:
@@ -137,17 +156,19 @@ def test_parity_check_strict_invokes_shared_gate(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """CLI --strict must call shared check_parity_inventory(strict=True)."""
-    calls: list[bool] = []
+    calls: list[dict[str, bool]] = []
     import omg_cli.parity_check as parity_check
 
     real = parity_check.check_parity_inventory
 
-    def wrapped(*, inventory_path, repo_root, strict=False):
-        calls.append(bool(strict))
+    def wrapped(*, inventory_path, repo_root, strict=False, release=False, **kwargs):
+        calls.append({"strict": bool(strict), "release": bool(release)})
         return real(
             inventory_path=inventory_path,
             repo_root=repo_root,
             strict=strict,
+            release=release,
+            **kwargs,
         )
 
     monkeypatch.setattr(parity_check, "check_parity_inventory", wrapped)
@@ -156,14 +177,131 @@ def test_parity_check_strict_invokes_shared_gate(
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["data"]["strict"] is True
-    assert calls == [True]
+    assert payload["data"]["release"] is False
+    assert calls == [{"strict": True, "release": False}]
 
     calls.clear()
     code = main(["parity", "check", "--json"])
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["data"]["strict"] is False
-    assert calls == [False]
+    assert payload["data"]["release"] is False
+    assert calls == [{"strict": False, "release": False}]
+
+
+def test_parity_check_release_invokes_shared_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """CLI --release must call shared check_parity_inventory(release=True).
+
+    File-only --base-inventory is insufficient for --release (needs --base-ref);
+    assert the CLI still forwards the path and surfaces the provenance hard-fail.
+    """
+    calls: list[dict[str, object]] = []
+    import omg_cli.parity_check as parity_check
+
+    real = parity_check.check_parity_inventory
+    inventory = Path(__file__).resolve().parents[1] / "docs" / "parity" / "omg-parity.json"
+    base_copy = tmp_path / "base-omg-parity.json"
+    base_copy.write_bytes(inventory.read_bytes())
+
+    def wrapped(
+        *,
+        inventory_path,
+        repo_root,
+        strict=False,
+        release=False,
+        base_inventory=None,
+        base_inventory_path=None,
+        base_ref=None,
+    ):
+        calls.append(
+            {
+                "strict": bool(strict),
+                "release": bool(release),
+                "base_inventory_path": (
+                    str(base_inventory_path) if base_inventory_path else None
+                ),
+                "base_ref": base_ref,
+            }
+        )
+        return real(
+            inventory_path=inventory_path,
+            repo_root=repo_root,
+            strict=strict,
+            release=release,
+            base_inventory=base_inventory,
+            base_inventory_path=base_inventory_path,
+            base_ref=base_ref,
+        )
+
+    monkeypatch.setattr(parity_check, "check_parity_inventory", wrapped)
+
+    code = main(
+        [
+            "parity",
+            "check",
+            "--release",
+            "--json",
+            "--base-inventory",
+            str(base_copy),
+        ]
+    )
+    assert code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["release"] is True
+    assert payload["data"]["strict"] is True
+    assert payload["data"]["ok"] is False
+    err = str(payload["data"].get("error", "")).lower()
+    assert "provenance" in err or "base-ref" in err or "insufficient" in err
+    assert len(calls) == 1
+    assert calls[0]["strict"] is False
+    assert calls[0]["release"] is True
+    assert calls[0]["base_inventory_path"] == str(base_copy)
+    assert calls[0]["base_ref"] is None
+
+
+def test_parity_check_release_passes_base_ref(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """CLI --base-ref must reach check_parity_inventory."""
+    calls: list[dict[str, object]] = []
+    import omg_cli.parity_check as parity_check
+
+    def wrapped(**kwargs):
+        calls.append(
+            {
+                "release": bool(kwargs.get("release")),
+                "base_ref": kwargs.get("base_ref"),
+            }
+        )
+        return {
+            "ok": True,
+            "release": True,
+            "strict": True,
+            "schema_version": 2,
+            "repository_id": "OMG",
+            "inventory_status": "bootstrapping",
+            "capabilities": 0,
+            "open_gaps": 0,
+            "completion_claims_allowed": False,
+            "normative_artifacts_verified": False,
+            "inventory_path": "docs/parity/omg-parity.json",
+            "overclaims": 0,
+            "upstream_drift_checked": True,
+            "upstream_drift_resolved": True,
+            "pin_transitions_reviewed": True,
+        }
+
+    monkeypatch.setattr(parity_check, "check_parity_inventory", wrapped)
+    code = main(
+        ["parity", "check", "--release", "--json", "--base-ref", "v0.7.5"]
+    )
+    assert code == 0
+    assert calls == [{"release": True, "base_ref": "v0.7.5"}]
 
 
 def test_parity_gaps_defaults_open_only(capsys: pytest.CaptureFixture[str]) -> None:

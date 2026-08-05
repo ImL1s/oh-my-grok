@@ -91,6 +91,12 @@ def test_ownership_manifest_has_w0_through_w7_and_immutable_agents() -> None:
         ("tests/test_team_lifecycle.py", "OMG-W3"),
         ("tests/test_team_runtime.py", "OMG-W3"),
         ("tests/test_team_tmux_transport.py", "OMG-W3"),
+        ("docs/parity/reviews/README.md", "OMG-W0"),
+        (
+            "docs/parity/reviews/OMC-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-"
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-deadbeef.json",
+            "OMG-W0",
+        ),
     ],
 )
 def test_current_release_surfaces_have_exact_owner(path: str, owner: str) -> None:
