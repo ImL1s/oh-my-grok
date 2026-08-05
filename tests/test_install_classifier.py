@@ -26,6 +26,29 @@ def test_doctor_result_classifier_dual_pass_and_legacy_rc0():
     assert classify_doctor_result(mode="release", valid=True, rc=2) == "hard_failure"
     assert classify_doctor_result(mode="release", valid=False, rc=0) == "hard_failure"
     assert classify_doctor_result(mode="release", valid=True, rc=True) == "hard_failure"
+    # Dual-pass keys present (even with malformed values) must not fall through to legacy rc=0.
+    assert (
+        classify_doctor_result(
+            mode="release",
+            valid=True,
+            strict_rc="1",
+            relaxed_rc="0",
+            rc=0,
+            dual_pass_keys_present=True,
+        )
+        == "hard_failure"
+    )
+    assert (
+        classify_doctor_result(
+            mode="release",
+            valid=True,
+            strict_rc=None,
+            relaxed_rc=None,
+            rc=0,
+            dual_pass_keys_present=True,
+        )
+        == "hard_failure"
+    )
 
 
 def test_source_absent_path_snapshot_installpath_checkout_is_same_path(tmp_path):

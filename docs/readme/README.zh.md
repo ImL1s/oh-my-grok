@@ -54,6 +54,8 @@ OMG 有 **两个表面**：Grok **plugin**（skills/agents/hooks）+ **`omg` CLI
 
 ### 方便的完整安装（推荐）
 
+安装完整性 fail-closed。多编排共存（foreign orch / Claude hooks）不会阻止已校验的 release 安装（receipt 可为 `completed_with_warning`）。安装成功后，交互式 `omg doctor --strict` 仍可能因共存风险 exit 1（语义未改）。托管升级用 `omg update`：release receipt → stage `install.sh`；干净 development → `git pull --ff-only` + `install-plugin.sh`；dirty / 无法证明的 development → 保留 source，改走 stage `install.sh`。
+
 ```bash
 # 0) 安裝 Grok CLI
 curl -fsSL https://x.ai/cli/install.sh | bash
@@ -61,9 +63,6 @@ curl -fsSL https://x.ai/cli/install.sh | bash
 # 1) 從 GitHub latest release 安裝完整產品
 # installer 只會從解析出的同一個 immutable tag 下載 archive + SHA256SUMS
 curl -fsSL https://raw.githubusercontent.com/ImL1s/oh-my-grok/main/scripts/install.sh | bash
-
-> 安装完整性 fail-closed；多编排共存（foreign orch / Claude hooks）不会阻止已校验的 release 安装（receipt 可为 `completed_with_warning`）。托管升级用 `omg update`。
-
 omg --version
 
 # 2) 專案初始化
@@ -85,7 +84,7 @@ bash install.sh --offline --archive ./oh-my-grok-0.7.5.tar.gz \
 omg doctor --strict
 ```
 
-方便路径会先解析一次 GitHub `latest`，验证 semantic tag，再从该 tag 下载两个资产；切换 plugin / CLI、strict doctor、receipt、失败 rollback 都在同一 transaction。Contributor 仍可 clone 固定 tag 后执行 `./scripts/install-plugin.sh`。
+方便路径会先解析一次 GitHub `latest`，验证 semantic tag，再从该 tag 下载两个资产；切换 plugin / CLI、install doctor gate（dual-pass：strict 后非 strict）、receipt、失败 rollback 都在同一 transaction。Contributor 仍可 clone 固定 tag 后执行 `./scripts/install-plugin.sh`。
 
 ### 只装 plugin（半套）
 

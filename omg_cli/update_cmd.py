@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 
 def _emit_result(result) -> None:
@@ -29,58 +30,17 @@ def _run(runner, argv: list[str], *, cwd: Path | None = None):
         return None
 
 
-def _release_install_script(home: Path, grok_home: Path) -> Path | None:
-    """Return stage ``install.sh`` for a verified *release*-mode install."""
+def _stage_install_script(verified: Any) -> Path | None:
+    """Return stage ``install.sh`` when the verified install may run the release transaction."""
 
-    store = grok_home / "omg"
-    pointer = store / "current-receipt"
-    current = store / "current"
-    if not os.path.lexists(pointer) and not os.path.lexists(current):
+    receipt = verified.receipt
+    mode = receipt.get("mode")
+    if mode not in {"release", "development"}:
         return None
-    try:
-        from omg_cli.setup_cmd import verified_current_install
-
-        verified = verified_current_install(
-            store, home / ".local" / "bin" / "omg"
-        )
-        receipt = verified.receipt
-        if receipt["mode"] != "release" or receipt["status"] not in {
-            "installed",
-            "completed_with_warning",
-        }:
-            return None
-        script = verified.stage / "scripts" / "install.sh"
-        return script if script.is_file() and not script.is_symlink() else None
-    except Exception as exc:
-        raise RuntimeError("managed release install failed confinement proof") from exc
-
-
-def _managed_install_script(home: Path, grok_home: Path) -> Path | None:
-    """Return stage ``install.sh`` for any verified managed install (dev or release).
-
-    Used when a development install cannot prove a clean original checkout so
-    ``omg update`` can still refresh via the checksum-verified GitHub release
-    transaction instead of silently refusing (#89).
-    """
-
-    store = grok_home / "omg"
-    pointer = store / "current-receipt"
-    current = store / "current"
-    if not os.path.lexists(pointer) and not os.path.lexists(current):
+    if receipt.get("status") not in {"installed", "completed_with_warning"}:
         return None
-    try:
-        from omg_cli.setup_cmd import verified_current_install
-
-        verified = verified_current_install(
-            store, home / ".local" / "bin" / "omg"
-        )
-        receipt = verified.receipt
-        if receipt["status"] not in {"installed", "completed_with_warning"}:
-            return None
-        script = verified.stage / "scripts" / "install.sh"
-        return script if script.is_file() and not script.is_symlink() else None
-    except Exception as exc:
-        raise RuntimeError("managed install failed confinement proof") from exc
+    script = verified.stage / "scripts" / "install.sh"
+    return script if script.is_file() and not script.is_symlink() else None
 
 
 def _run_release_installer(runner, script: Path, *, reason: str | None = None) -> int:
@@ -107,13 +67,38 @@ def _run_release_installer(runner, script: Path, *, reason: str | None = None) -
     return 0
 
 
-def _development_source_checkout(home: Path, grok_home: Path) -> Path:
+def _fallback_stage_install(runner, verified: Any, *, reason: str) -> int:
+    trimmed = reason.strip() or "unprovable development source"
+    if len(trimmed) > 200:
+        trimmed = trimmed[:200] + "..."
+    script = _stage_install_script(verified)
+    if script is None:
+        print(
+            "omg update: no proven clean original development checkout; refusing mutation",
+            file=sys.stderr,
+        )
+        print(
+            "omg update: remediation: "
+            "curl -fsSL https://raw.githubusercontent.com/ImL1s/oh-my-grok/main/scripts/install.sh | bash",
+            file=sys.stderr,
+        )
+        return 1
+    return _run_release_installer(runner, script, reason=trimmed)
+
+
+def _development_source_checkout(
+    home: Path,
+    grok_home: Path,
+    *,
+    verified: Any | None = None,
+) -> Path:
     """Return the exact original source recorded by a verified development install."""
 
     from omg_cli.setup_cmd import compute_package_identity, verified_current_install
 
-    store = grok_home / "omg"
-    verified = verified_current_install(store, home / ".local" / "bin" / "omg")
+    if verified is None:
+        store = grok_home / "omg"
+        verified = verified_current_install(store, home / ".local" / "bin" / "omg")
     receipt = verified.receipt
     if receipt.get("mode") != "development" or receipt.get("status") not in {
         "installed",
@@ -152,6 +137,19 @@ def _development_source_checkout(home: Path, grok_home: Path) -> Path:
     return checkout
 
 
+def _confirm_same_current(verified: Any, home: Path, grok_home: Path) -> bool:
+    """True when current-receipt still names the same authoritative install."""
+
+    from omg_cli.setup_cmd import verified_current_install
+
+    again = verified_current_install(grok_home / "omg", home / ".local" / "bin" / "omg")
+    return (
+        again.receipt_path == verified.receipt_path
+        and again.receipt.get("receipt_hash") == verified.receipt.get("receipt_hash")
+        and again.stage == verified.stage
+    )
+
+
 def run_update(
     *,
     root: Path | None = None,
@@ -163,7 +161,10 @@ def run_update(
 
     A receipt-backed release install re-enters the no-checkout GitHub installer.
     A source checkout is updated only when Git reports it clean and fast-forward
-    succeeds.  Dirty/diverged/unknown sources are preserved without mutation.
+    succeeds.  Dirty/diverged/unknown managed development sources are preserved
+    and promoted through the verified stage ``install.sh`` release transaction.
+    Explicit contributor ``root=`` checkouts still refuse dirty trees without
+    mutation.
     """
 
     home_path = Path(home or os.environ.get("HOME") or Path.home()).resolve()
@@ -173,35 +174,26 @@ def run_update(
     else:
         grok_path = Path(grok_home).resolve()
 
+    verified = None
     if root is None:
         try:
-            release_script = _release_install_script(home_path, grok_path)
-        except RuntimeError:
-            print(
-                "omg update: managed install identity is corrupt; refusing mutation",
-                file=sys.stderr,
+            from omg_cli.setup_cmd import verified_current_install
+
+            verified = verified_current_install(
+                grok_path / "omg", home_path / ".local" / "bin" / "omg"
             )
-            return 1
-        if release_script is not None:
-            return _run_release_installer(runner, release_script)
-        try:
-            checkout = _development_source_checkout(home_path, grok_path)
-        except Exception as source_exc:
-            # Development/source proof unavailable before any mutation — fall
-            # back to the confinement-proven stage install.sh (#89).
-            reason = str(source_exc).strip() or type(source_exc).__name__
-            if len(reason) > 200:
-                reason = reason[:200] + "..."
-            try:
-                managed_script = _managed_install_script(home_path, grok_path)
-            except RuntimeError:
+        except Exception:
+            # No managed pointers at all → fall through to explicit-root refusal
+            # only when neither release nor development authority exists.
+            store = grok_path / "omg"
+            pointer = store / "current-receipt"
+            current = store / "current"
+            if os.path.lexists(pointer) or os.path.lexists(current):
                 print(
                     "omg update: managed install identity is corrupt; refusing mutation",
                     file=sys.stderr,
                 )
                 return 1
-            if managed_script is not None:
-                return _run_release_installer(runner, managed_script, reason=reason)
             print(
                 "omg update: no proven clean original development checkout; refusing mutation",
                 file=sys.stderr,
@@ -212,14 +204,51 @@ def run_update(
                 file=sys.stderr,
             )
             return 1
+
+        mode = verified.receipt.get("mode")
+        status = verified.receipt.get("status")
+        if mode not in {"release", "development"}:
+            print(
+                "omg update: unsupported install mode; refusing mutation",
+                file=sys.stderr,
+            )
+            return 1
+        if status not in {"installed", "completed_with_warning"}:
+            print(
+                "omg update: current receipt is not an active install; refusing mutation",
+                file=sys.stderr,
+            )
+            return 1
+
+        if mode == "release":
+            script = _stage_install_script(verified)
+            if script is None:
+                print(
+                    "omg update: release installer missing from verified stage; refusing mutation",
+                    file=sys.stderr,
+                )
+                return 1
+            return _run_release_installer(runner, script)
+
+        # development — prove clean exact source, else stage fallback before any mutation
+        try:
+            checkout = _development_source_checkout(
+                home_path, grok_path, verified=verified
+            )
+        except Exception as source_exc:
+            reason = str(source_exc).strip() or type(source_exc).__name__
+            return _fallback_stage_install(runner, verified, reason=reason)
     else:
         checkout = Path(root).resolve()
+
     if not checkout.is_dir():
         print("omg update: source root missing", file=sys.stderr)
         return 1
     print(f"omg update: source checkout {checkout}")
 
-    if root is None:
+    managed_dev = root is None and verified is not None
+
+    if managed_dev:
         worktree = _run(
             runner,
             ["git", "-C", str(checkout), "rev-parse", "--show-toplevel"],
@@ -230,22 +259,52 @@ def run_update(
             or Path(str(getattr(worktree, "stdout", "") or "").strip()).resolve()
             != checkout
         ):
-            print(
-                "omg update: receipt source is not the proven Git worktree root; preserved",
-                file=sys.stderr,
+            return _fallback_stage_install(
+                runner,
+                verified,
+                reason="receipt source is not the proven Git worktree root",
             )
-            return 1
 
     status = _run(
         runner,
         ["git", "-C", str(checkout), "status", "--porcelain=v1", "--untracked-files=all"],
     )
     if status is None or int(getattr(status, "returncode", 1)) != 0:
+        if managed_dev:
+            return _fallback_stage_install(
+                runner,
+                verified,
+                reason="cannot prove source checkout clean",
+            )
         print("omg update: cannot prove source checkout clean; preserved", file=sys.stderr)
         return 1
     if str(getattr(status, "stdout", "") or "").strip():
-        print("omg update: dirty source checkout preserved; commit/stash or use release installer", file=sys.stderr)
+        if managed_dev:
+            return _fallback_stage_install(
+                runner,
+                verified,
+                reason="dirty source checkout",
+            )
+        print(
+            "omg update: dirty source checkout preserved; commit/stash or use release installer",
+            file=sys.stderr,
+        )
         return 2
+
+    if managed_dev:
+        try:
+            if not _confirm_same_current(verified, home_path, grok_path):
+                print(
+                    "omg update: current install changed concurrently; refusing mutation",
+                    file=sys.stderr,
+                )
+                return 1
+        except Exception:
+            print(
+                "omg update: managed install identity is corrupt; refusing mutation",
+                file=sys.stderr,
+            )
+            return 1
 
     for argv in (
         ["git", "-C", str(checkout), "fetch", "--tags", "--quiet"],

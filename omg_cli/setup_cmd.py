@@ -605,11 +605,19 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _redact_detail(value: object) -> str:
+def _redact_secrets(value: object) -> str:
+    """Redact secrets/tokens from text without truncating (for long transcripts)."""
+
     text = str(value)
     text = re.sub(r"(?i)(authorization|cookie|token|secret|password)=?[^\s,;]*", r"\1=<redacted>", text)
     text = re.sub(r"https?://[^\s?]+\?[^\s]+", "<redacted-url>", text)
-    return text[:1000]
+    return text
+
+
+def _redact_detail(value: object) -> str:
+    """Short redacted detail for errors / receipt error fields (bounded)."""
+
+    return _redact_secrets(value)[:1000]
 
 
 @contextmanager
@@ -865,7 +873,9 @@ _DOCTOR_TRANSCRIPT_LIMIT = 64 * 1024
 
 
 def _sanitize_doctor_transcript(text: str) -> str:
-    cleaned = _redact_detail(text)
+    # Secret redaction must not apply the short-error 1000-char truncate; the
+    # real bound is _DOCTOR_TRANSCRIPT_LIMIT so late integrity FAILs stay visible.
+    cleaned = _redact_secrets(text)
     cleaned = cleaned.replace("\x00", "")
     cleaned = "".join(ch if (ch == "\n" or ch == "\t" or ord(ch) >= 32) else "?" for ch in cleaned)
     if len(cleaned) > _DOCTOR_TRANSCRIPT_LIMIT:
@@ -889,23 +899,53 @@ def _emit_doctor_probe_transcript(probe: Mapping[str, Any]) -> None:
     print(err if err.strip() else "(empty)", file=sys.stderr)
 
 
+_INSTALL_STATUS_RANK = {
+    "installed": 0,
+    "completed_with_warning": 1,
+}
+
+
+def _stricter_install_status(left: str, right: str) -> str:
+    """Prefer the more severe successful install status (warning > clean)."""
+
+    if _INSTALL_STATUS_RANK.get(left, -1) >= _INSTALL_STATUS_RANK.get(right, -1):
+        return left
+    return right
+
+
 def classify_doctor_probe(mode: str, probe: Mapping[str, Any]) -> str:
     from scripts.omg_install_classifier import classify_doctor_result
 
     valid = probe.get("valid") is True
+    dual_pass_keys_present = "strict_rc" in probe or "relaxed_rc" in probe
     strict_rc = probe.get("strict_rc")
     relaxed_rc = probe.get("relaxed_rc")
     rc = probe.get("rc")
 
+    # Preserve key presence: malformed dual-pass values must hard-fail rather
+    # than being coerced to None (which would unlock legacy rc=0 success).
     classification = classify_doctor_result(
         mode=mode,
         valid=valid,
-        strict_rc=strict_rc if isinstance(strict_rc, int) and not isinstance(strict_rc, bool) else None,
-        relaxed_rc=relaxed_rc if isinstance(relaxed_rc, int) and not isinstance(relaxed_rc, bool) else None,
-        rc=rc if isinstance(rc, int) and not isinstance(rc, bool) else None,
+        strict_rc=strict_rc,
+        relaxed_rc=relaxed_rc,
+        rc=rc,
+        dual_pass_keys_present=dual_pass_keys_present,
     )
     if classification == "hard_failure":
         _emit_doctor_probe_transcript(probe)
+        if dual_pass_keys_present and not (
+            isinstance(strict_rc, int)
+            and not isinstance(strict_rc, bool)
+            and (
+                strict_rc == 0
+                or (
+                    isinstance(relaxed_rc, int)
+                    and not isinstance(relaxed_rc, bool)
+                )
+            )
+        ):
+            raise InstallError("doctor output is malformed")
         shown = strict_rc if isinstance(strict_rc, int) and not isinstance(strict_rc, bool) else rc
         if not valid or not isinstance(shown, int) or isinstance(shown, bool):
             raise InstallError("doctor output is malformed")
@@ -1569,7 +1609,7 @@ def install_package(
             )
             probe = dict(doctor(stage, env))
             commands.append(_probe_record(probe))
-            status_value = classify_doctor_probe(mode, probe)
+            pending_status = classify_doctor_probe(mode, probe)
             owned_inventory.extend(
                 [
                     {"path": str(candidate_plugin_path), "kind": "host_plugin", "identity": str(identity["digest"])},
@@ -1586,8 +1626,44 @@ def install_package(
                     },
                 ]
             )
-            material = _receipt_material(
+            # Provisional receipt proves the env-free final probe's receipt/readback
+            # path.  It is immutable audit evidence; the authoritative receipt below
+            # carries both probe hashes and the stricter active status.
+            provisional_material = _receipt_material(
                 transaction_id=transaction_id,
+                status=pending_status,
+                mode=mode,
+                source=identity,
+                stage=stage,
+                plugin_path=candidate_plugin_path,
+                asset=asset_evidence,
+                source_uri=source_uri,
+                source_tag=source_tag,
+                commands=list(commands),
+                owned_inventory=owned_inventory,
+            )
+            provisional_path, _provisional = _write_install_receipt(
+                receipts, provisional_material
+            )
+            installed_receipt_path = provisional_path
+            _publish_symlink_no_clobber(str(provisional_path), receipt_pointer)
+
+            # The first strict probe validates the candidate while the transaction
+            # is explicitly marked pending via OMG_EXPECTED_INSTALL_*.  Repeat it
+            # after publishing the provisional receipt pointer so success also proves
+            # the normal, environment-free receipt/readback path.  A failure here
+            # still enters the same all-or-prior rollback below.
+            final_env = dict(env)
+            final_env.pop("OMG_EXPECTED_INSTALL_DIGEST", None)
+            final_env.pop("OMG_EXPECTED_INSTALL_STAGE", None)
+            final_probe = dict(doctor(stage, final_env))
+            commands.append(_probe_record(final_probe))
+            final_status = classify_doctor_probe(mode, final_probe)
+            status_value = _stricter_install_status(pending_status, final_status)
+
+            authoritative_tid = uuid.uuid4().hex
+            authoritative_material = _receipt_material(
+                transaction_id=authoritative_tid,
                 status=status_value,
                 mode=mode,
                 source=identity,
@@ -1599,21 +1675,11 @@ def install_package(
                 commands=commands,
                 owned_inventory=owned_inventory,
             )
-            receipt_path, receipt = _write_install_receipt(receipts, material)
+            receipt_path, receipt = _write_install_receipt(
+                receipts, authoritative_material
+            )
+            _atomic_symlink(str(receipt_path), receipt_pointer)
             installed_receipt_path = receipt_path
-            _publish_symlink_no_clobber(str(receipt_path), receipt_pointer)
-
-            # The first strict probe validates the candidate while the transaction
-            # is explicitly marked pending via OMG_EXPECTED_INSTALL_*.  Repeat it
-            # after publishing the immutable receipt pointer so success also proves
-            # the normal, environment-free receipt/readback path.  A failure here
-            # still enters the same all-or-prior rollback below.
-            final_env = dict(env)
-            final_env.pop("OMG_EXPECTED_INSTALL_DIGEST", None)
-            final_env.pop("OMG_EXPECTED_INSTALL_STAGE", None)
-            final_probe = dict(doctor(stage, final_env))
-            commands.append(_probe_record(final_probe))
-            classify_doctor_probe(mode, final_probe)
             return {
                 "ok": True,
                 "status": status_value,

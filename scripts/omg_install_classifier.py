@@ -126,9 +126,10 @@ def classify_doctor_result(
     *,
     mode: str,
     valid: bool,
-    strict_rc: int | None = None,
-    relaxed_rc: int | None = None,
-    rc: int | None = None,
+    strict_rc: object = None,
+    relaxed_rc: object = None,
+    rc: object = None,
+    dual_pass_keys_present: bool = False,
 ) -> str:
     """Lifecycle classifier for install doctor gates (development + release).
 
@@ -138,8 +139,11 @@ def classify_doctor_result(
       strict_rc=1 and relaxed_rc=1        → hard_failure
       timeout/malformed/other             → hard_failure
 
-    Legacy single-``rc`` probes remain accepted only for ``rc=0`` (installed).
-    A bare ``rc=2`` without dual-pass evidence is hard_failure (no silent bypass).
+    Legacy single-``rc`` probes remain accepted only when dual-pass keys are
+    *absent* and ``rc=0`` (installed).  A bare ``rc=2`` without dual-pass
+    evidence is hard_failure (no silent bypass).  When dual-pass keys are
+    present but malformed/non-int, classification is hard_failure — never
+    coerced into the legacy ``rc=0`` success path.
     Interactive ``omg doctor --strict`` is unchanged by this classifier.
     """
 
@@ -148,7 +152,7 @@ def classify_doctor_result(
     if valid is not True:
         return "hard_failure"
 
-    has_dual = strict_rc is not None or relaxed_rc is not None
+    has_dual = dual_pass_keys_present or strict_rc is not None or relaxed_rc is not None
     if has_dual:
         if not _is_int_rc(strict_rc):
             return "hard_failure"

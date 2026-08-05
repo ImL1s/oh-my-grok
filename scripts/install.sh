@@ -31,8 +31,11 @@ Usage:
 Without --archive, the installer resolves the latest GitHub release to one
 exact tag, then downloads SHA256SUMS and its archive only from that tag.
 Manual/offline mode performs the same verify -> immutable stage -> plugin/CLI
-switch -> strict doctor -> receipt transaction; it is not a shortcut around
-verification or rollback.
+switch -> dual-pass install doctor gate (strict, then non-strict on failure) ->
+receipt transaction; coexistence-only soft risks may yield
+completed_with_warning while integrity failures roll back. Interactive
+`omg doctor --strict` is unchanged and may still exit 1 on coexistence.
+It is not a shortcut around verification or rollback.
 EOF
 }
 

@@ -180,7 +180,7 @@ Success banner says **integrity-verified** (not full strict purity). Upgrade a m
 omg update
 ```
 
-`omg update` re-enters the same checksum-verified `scripts/install.sh` release transaction for release receipts, or when a development source cannot be proven safe (absent/drifted/dirty) — the source checkout is preserved and the managed install is promoted through the release transaction. Clean development checkouts still fast-forward + `install-plugin.sh`. Pre-fix managed CLIs without this fallback must re-run the curl installer once.
+`omg update` has three managed paths: (1) **release receipt** → checksum-verified stage `scripts/install.sh`; (2) **clean development** checkout matching the receipt → `git pull --ff-only` + `install-plugin.sh`; (3) **dirty / absent / drifted / unprovable** development → preserve the source checkout and fall back to the verified stage `install.sh` release transaction. Explicit contributor `root=` checkouts still refuse dirty trees without mutation. Pre-fix managed CLIs without this fallback must re-run the curl installer once.
 
 ## Plugin marketplace and package registries
 

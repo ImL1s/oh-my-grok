@@ -14,9 +14,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   doctor probe (`--strict` then non-strict) for **both** release and
   development — coexistence-only soft risks become `completed_with_warning`;
   integrity FAILs stay fail-closed. Bare `rc=2` without dual-pass evidence is
-  rejected. Gate failures print a bounded non-strict doctor transcript.
-  `omg update` promotes unprovable development managed installs through the
-  stage `install.sh` release transaction (source preserved).
+  rejected; malformed dual-pass fields never coerce into legacy `rc=0`. Gate
+  failures print a bounded (64 KiB) non-strict doctor transcript. Authoritative
+  receipts record pending + post-publication probe hashes and the stricter
+  status. `omg update` uses one `VerifiedCurrentInstall` authority; release
+  receipts and unprovable/dirty development installs promote through stage
+  `install.sh` (source preserved); clean development still fast-forwards +
+  `install-plugin.sh`. Interactive `omg doctor --strict` coexistence semantics
+  are unchanged.
 
 ### Added
 - **Parity full upstream inventory (#78-B):** expand the v2 catalogue with

@@ -82,6 +82,8 @@ omg setup
 omg doctor --strict
 ```
 
+Install success means integrity passed (receipt may be `installed` or `completed_with_warning`). Interactive `omg doctor --strict` can still exit 1 on coexistence WARNs — that is expected and unchanged.
+
 The transaction installs to a stable, immutable stage and writes an install receipt. The underlying plugin switch installs the global
 PreToolUse soft-gate under `$GROK_HOME/hooks/` — a **self-contained** standalone
 (`omg_pretool_deny_standalone.py`, launched `python3 -I -S … || true`), **not** a
@@ -120,12 +122,12 @@ This installs skills/agents from GitHub. It does **not** put `omg` on PATH and d
 
 | Action | Commands |
 |--------|----------|
-| Upgrade | `omg update` (managed install → checksum-verified GitHub release transaction; contributor checkout → `git pull --ff-only` + `install-plugin.sh`), or re-run the convenient `install.sh` curl |
+| Upgrade | `omg update` — **three paths:** release receipt → stage `install.sh`; clean development checkout → `git pull --ff-only` + `install-plugin.sh`; dirty/absent/drifted/unprovable development → preserve source, stage `install.sh` fallback. Or re-run the convenient `install.sh` curl |
 | Relocate clone | Re-run `./scripts/install-plugin.sh` (it warns on stale duplicate entries) + refresh `ln -sf …/bin/omg ~/.local/bin/omg` |
 | Uninstall | `omg uninstall --yes` (plugin + global hook + OMG rules block + CLI link; **never** touches project `.omg/`) |
 | Uninstall (manual) | `grok plugin uninstall oh-my-grok` · `omg install-hook --remove` (removes json then standalone under `$GROK_HOME/hooks/`) · `rm -f ~/.local/bin/omg` |
 
-> **Why `omg update`, not `git pull` alone:** `grok plugin install` copies a **frozen snapshot** into `~/.grok/installed-plugins/`; a bare `git pull` leaves the loaded plugin stale, and for a local-path install both `grok plugin install` (re-run) and `grok plugin update` are no-ops. Managed installs refresh via the same `scripts/install.sh` release transaction. Contributor checkouts use `install-plugin.sh` (uninstall + reinstall same-path). `omg doctor` flags version/enabled/installed-content drift so you can't silently run an old copy.
+> **Why `omg update`, not `git pull` alone:** `grok plugin install` copies a **frozen snapshot** into `~/.grok/installed-plugins/`; a bare `git pull` leaves the loaded plugin stale, and for a local-path install both `grok plugin install` (re-run) and `grok plugin update` are no-ops. Release receipts and unprovable development installs refresh via the verified stage `scripts/install.sh` release transaction. Clean development checkouts still fast-forward + `install-plugin.sh`. Contributor `root=` checkouts use `install-plugin.sh` (uninstall + reinstall same-path). `omg doctor` flags version/enabled/installed-content drift so you can't silently run an old copy.
 
 `omg setup` scaffolds **project** files (`.omg/`, AGENTS fragment) **and** installs the global guidance contract `$GROK_HOME/rules/omg.md` (skip with `--no-global-rules`) **and** the global PreToolUse soft-gate `$GROK_HOME/hooks/` (skip with `--no-global-hook`; repair anytime with `omg install-hook`). It does **not** install the plugin itself.
 

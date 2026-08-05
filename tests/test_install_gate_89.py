@@ -225,6 +225,87 @@ def test_doctor_gate_failure_prints_transcript(capsys):
     assert "identity readback failed" in err
 
 
+def test_malformed_dual_pass_fields_do_not_legacy_succeed():
+    """Keys present but non-int must hard-fail — never coerce into legacy rc=0 (#89 Pro)."""
+
+    with pytest.raises(InstallError, match="malformed|rejected"):
+        classify_doctor_probe(
+            "release",
+            {
+                "valid": True,
+                "strict_rc": "1",
+                "relaxed_rc": "0",
+                "rc": 0,
+                "stdout": "",
+                "stderr": "",
+            },
+        )
+
+
+def test_doctor_transcript_keeps_failure_past_1k_chars(capsys):
+    """Transcript redaction must not truncate to 1000 before the 64 KiB limit (#89 Pro)."""
+
+    prefix = "x" * 1500
+    probe = _dual_pass_hard(stdout=prefix + INTEGRITY_FAIL_STDOUT)
+    with pytest.raises(InstallError, match="doctor gate rejected"):
+        classify_doctor_probe("release", probe)
+    err = capsys.readouterr().err
+    assert "immutable install identity" in err
+    assert len(err) > 1000
+
+
+def test_success_receipt_records_final_probe_and_stricter_status(tmp_path, monkeypatch):
+    """Authoritative receipt must include post-publication probe + stricter status (#89 Pro)."""
+
+    home = tmp_path / "home"
+    grok_home = tmp_path / "grok"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    asset = _patch_release_archive(monkeypatch, tmp_path)
+    host = FakeGrok()
+    calls = {"n": 0}
+
+    def split_probe(_stage: Path, env: dict[str, str]) -> dict[str, object]:
+        calls["n"] += 1
+        if env.get("OMG_EXPECTED_INSTALL_DIGEST"):
+            # Pending pass: clean strict success.
+            return {
+                "argv": ["omg", "doctor", "--strict"],
+                "argv_strict": ["omg", "doctor", "--strict"],
+                "argv_relaxed": None,
+                "rc": 0,
+                "strict_rc": 0,
+                "relaxed_rc": None,
+                "stdout": "pending ok\n",
+                "stderr": "",
+                "relaxed_stdout": "",
+                "relaxed_stderr": "",
+                "valid": True,
+            }
+        # Final env-free pass: coexistence soft only.
+        return _dual_pass_soft()
+
+    result = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=split_probe,
+        mode="release",
+        asset=asset,
+        source_uri=f"https://github.com/ImL1s/oh-my-grok/releases/download/v{VERSION}/x.tar.gz",
+        source_tag=f"v{VERSION}",
+    )
+    assert calls["n"] == 2
+    assert result["status"] == "completed_with_warning"
+    receipt = read_install_receipt(Path(result["receipt_path"]))
+    assert receipt["status"] == "completed_with_warning"
+    doctor_cmds = [c for c in receipt["commands"] if "doctor" in " ".join(c.get("argv") or [])]
+    assert len(doctor_cmds) >= 2
+    assert any(c.get("strict_rc") == 0 for c in doctor_cmds)
+    assert any(c.get("strict_rc") == 1 and c.get("relaxed_rc") == 0 for c in doctor_cmds)
+
+
 def test_default_doctor_probe_release_soft_only_returns_dual_pass_evidence(tmp_path, monkeypatch):
     calls: list[list[str]] = []
 
@@ -282,3 +363,89 @@ def test_omg_update_uses_release_transaction_from_managed_install(tmp_path, monk
 
     assert run_update(runner=runner, home=home, grok_home=grok_home) == 0
     assert calls == [["bash", str(stage / "scripts" / "install.sh")]]
+
+
+def _install_dev_managed(tmp_path, monkeypatch, host):
+    home = tmp_path / "home"
+    grok_home = tmp_path / "grok-home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    installed = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=lambda *_a, **_k: _dual_pass_soft(),
+        mode="development",
+    )
+    return home, grok_home, Path(installed["stage_path"])
+
+
+def test_managed_development_dirty_falls_back_to_stage_installer(tmp_path, monkeypatch, capsys):
+    """Exact identity but dirty worktree must stage-fallback, not refuse (#89 Pro P1)."""
+
+    host = FakeGrok()
+    home, grok_home, stage = _install_dev_managed(tmp_path, monkeypatch, host)
+    calls: list[list[str]] = []
+
+    def runner(argv, *args, **kwargs):
+        command = [str(item) for item in argv]
+        calls.append(command)
+        if command[:2] == ["git", "-C"] and "rev-parse" in command:
+            return SimpleNamespace(returncode=0, stdout=f"{ROOT}\n", stderr="")
+        if command[:2] == ["git", "-C"] and "status" in command:
+            return SimpleNamespace(returncode=0, stdout=" M local.txt\n", stderr="")
+        if command[:1] == ["bash"]:
+            return SimpleNamespace(returncode=0, stdout="release ok\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    assert run_update(runner=runner, home=home, grok_home=grok_home) == 0
+    assert ["bash", str(stage / "scripts" / "install.sh")] in calls
+    assert not any("fetch" in c or "pull" in c for c in calls)
+    err = capsys.readouterr().err
+    assert "source checkout preserved" in err
+    assert "cannot be safely refreshed" in err
+
+
+def test_managed_development_non_git_falls_back_to_stage_installer(tmp_path, monkeypatch):
+    """Exact identity but not a proven Git worktree root → stage fallback (#89 Pro P1)."""
+
+    host = FakeGrok()
+    home, grok_home, stage = _install_dev_managed(tmp_path, monkeypatch, host)
+    calls: list[list[str]] = []
+
+    def runner(argv, *args, **kwargs):
+        command = [str(item) for item in argv]
+        calls.append(command)
+        if command[:2] == ["git", "-C"] and "rev-parse" in command:
+            return SimpleNamespace(returncode=128, stdout="", stderr="not a git repository")
+        if command[:1] == ["bash"]:
+            return SimpleNamespace(returncode=0, stdout="release ok\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    assert run_update(runner=runner, home=home, grok_home=grok_home) == 0
+    assert calls[-1] == ["bash", str(stage / "scripts" / "install.sh")]
+    assert not any("fetch" in c or "pull" in c for c in calls)
+
+
+def test_managed_development_status_failure_falls_back_to_stage_installer(tmp_path, monkeypatch):
+    """Exact identity but git status unprovable → stage fallback (#89 Pro P1)."""
+
+    host = FakeGrok()
+    home, grok_home, stage = _install_dev_managed(tmp_path, monkeypatch, host)
+    calls: list[list[str]] = []
+
+    def runner(argv, *args, **kwargs):
+        command = [str(item) for item in argv]
+        calls.append(command)
+        if command[:2] == ["git", "-C"] and "rev-parse" in command:
+            return SimpleNamespace(returncode=0, stdout=f"{ROOT}\n", stderr="")
+        if command[:2] == ["git", "-C"] and "status" in command:
+            return SimpleNamespace(returncode=1, stdout="", stderr="status failed")
+        if command[:1] == ["bash"]:
+            return SimpleNamespace(returncode=0, stdout="release ok\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    assert run_update(runner=runner, home=home, grok_home=grok_home) == 0
+    assert ["bash", str(stage / "scripts" / "install.sh")] in calls
+    assert not any("fetch" in c or "pull" in c for c in calls)
