@@ -9,6 +9,29 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Fixed
+- **Release install gate / `omg update` dogfood (#89):** install-time dual-pass
+  doctor probe (`--strict` then non-strict) for **both** release and
+  development — coexistence-only soft risks become `completed_with_warning`;
+  integrity FAILs stay fail-closed. Bare `rc=2` without dual-pass evidence is
+  rejected; malformed dual-pass fields never coerce into legacy `rc=0`. Dual-pass
+  success also requires a consistent aggregate matrix (`strict=0` ⇒
+  `relaxed=None` + `rc=0`; soft ⇒ `rc=2`) so contradictory evidence cannot
+  classify as installed. Exact same-digest installs reuse a receipt only when
+  mode, release asset/checksum evidence, status authority, and live Grok host
+  plugin path/enabled authority match; otherwise they re-attest
+  (development→release promotion writes a release receipt without host churn,
+  and warning status is never downgraded) or fall through to a full
+  uninstall/install/enable transaction when the host path has drifted or the
+  plugin is disabled. Gate failures print a
+  bounded (64 KiB) non-strict doctor transcript. Authoritative receipts record
+  pending + post-publication probe hashes and the stricter status. `omg update`
+  uses one `VerifiedCurrentInstall` authority; release receipts and
+  unprovable/dirty development installs promote through stage `install.sh`
+  (source preserved); clean development still fast-forwards +
+  `install-plugin.sh`. Interactive `omg doctor --strict` coexistence semantics
+  are unchanged.
+
 ### Added
 - **Parity full upstream inventory (#78-B):** expand the v2 catalogue with
   `source_status` (OMC/OMX/OmO/Antigravity), the #78-B category taxonomy,

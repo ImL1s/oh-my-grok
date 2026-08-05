@@ -118,23 +118,66 @@ def classify_oh_my_grok_installs(
     return {"same_path": same_path, "stale": stale}
 
 
-def classify_doctor_result(*, mode: str, rc: int | None, valid: bool) -> str:
-    """Exact lifecycle classifier shared by source and release installation.
+def _is_int_rc(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
-    ``rc=0`` is verified success.  ``rc=2`` is a visible development-only
-    warning (never release success).  Non-integer/malformed output and every
-    other code are hard failures; callers must roll back and must not print a
-    success banner.
+
+def classify_doctor_result(
+    *,
+    mode: str,
+    valid: bool,
+    strict_rc: object = None,
+    relaxed_rc: object = None,
+    rc: object = None,
+    dual_pass_keys_present: bool = False,
+) -> str:
+    """Lifecycle classifier for install doctor gates (development + release).
+
+    Preferred dual-pass evidence (#89 / Pro plan) — full matrix, fail-closed:
+      strict_rc=0, relaxed_rc=None, rc=0           → installed
+      strict_rc=1, relaxed_rc=0, rc=2              → completed_with_warning
+      strict_rc=1, relaxed_rc!=0                   → hard_failure
+      any malformed / contradictory dual-pass shape → hard_failure
+
+    Legacy single-``rc`` probes remain accepted only when dual-pass keys are
+    *absent* and ``rc=0`` (installed).  A bare ``rc=2`` without dual-pass
+    evidence is hard_failure (no silent bypass).  When dual-pass keys are
+    present, the entire schema (strict/relaxed/aggregate) is validated before
+    any success classification — never coerced into the legacy ``rc=0`` path.
+    Interactive ``omg doctor --strict`` is unchanged by this classifier.
     """
 
     if mode not in {"development", "release"}:
         raise ValueError("mode must be development or release")
-    if valid is not True or not isinstance(rc, int) or isinstance(rc, bool):
+    if valid is not True:
+        return "hard_failure"
+
+    has_dual = dual_pass_keys_present or strict_rc is not None or relaxed_rc is not None
+    if has_dual:
+        # Validate the full dual-pass schema up front.  A success branch must
+        # never accept string/bool RCs, a non-None relaxed result after strict
+        # success, or an aggregate ``rc`` that contradicts the matrix.
+        if not _is_int_rc(strict_rc) or not _is_int_rc(rc):
+            return "hard_failure"
+        if strict_rc == 0:
+            if relaxed_rc is not None or rc != 0:
+                return "hard_failure"
+            return "installed"
+        if strict_rc != 1:
+            return "hard_failure"
+        if not _is_int_rc(relaxed_rc):
+            return "hard_failure"
+        if relaxed_rc == 0:
+            if rc != 2:
+                return "hard_failure"
+            return "completed_with_warning"
+        return "hard_failure"
+
+    # Legacy single-rc compatibility: only exact success is accepted.
+    if not _is_int_rc(rc):
         return "hard_failure"
     if rc == 0:
         return "installed"
-    if rc == 2 and mode == "development":
-        return "completed_with_warning"
     return "hard_failure"
 
 

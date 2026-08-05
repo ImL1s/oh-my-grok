@@ -54,6 +54,8 @@ OMG 有 **兩個表面**：Grok **plugin**（skills/agents/hooks）+ **`omg` CLI
 
 ### 方便的完整安裝（推薦）
 
+安裝完整性 fail-closed。多編排共存（foreign orch / Claude hooks）不會阻擋已校驗的 release 安裝（receipt 可為 `completed_with_warning`）。安裝成功後，互動式 `omg doctor --strict` 仍可能因共存風險 exit 1（語意未改）。託管升級用 `omg update`：release receipt → stage `install.sh`；乾淨 development → `git pull --ff-only` + `install-plugin.sh`；dirty / 無法證明的 development → 保留 source，改走 stage `install.sh`。
+
 ```bash
 # 0) 安裝 Grok CLI
 curl -fsSL https://x.ai/cli/install.sh | bash
@@ -82,7 +84,7 @@ bash install.sh --offline --archive ./oh-my-grok-0.7.5.tar.gz \
 omg doctor --strict
 ```
 
-方便路徑會先解析一次 GitHub `latest`，驗證 semantic tag，再從該 tag 下載兩個資產；切換 plugin / CLI、strict doctor、receipt、失敗 rollback 都在同一 transaction。Contributor 仍可 clone 固定 tag 後執行 `./scripts/install-plugin.sh`。
+方便路徑會先解析一次 GitHub `latest`，驗證 semantic tag，再從該 tag 下載兩個資產；切換 plugin / CLI、install doctor gate（dual-pass：strict 後非 strict）、receipt、失敗 rollback 都在同一 transaction。Contributor 仍可 clone 固定 tag 後執行 `./scripts/install-plugin.sh`。
 
 ### 只裝 plugin（半套）
 

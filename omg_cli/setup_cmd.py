@@ -605,11 +605,19 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _redact_detail(value: object) -> str:
+def _redact_secrets(value: object) -> str:
+    """Redact secrets/tokens from text without truncating (for long transcripts)."""
+
     text = str(value)
     text = re.sub(r"(?i)(authorization|cookie|token|secret|password)=?[^\s,;]*", r"\1=<redacted>", text)
     text = re.sub(r"https?://[^\s?]+\?[^\s]+", "<redacted-url>", text)
-    return text[:1000]
+    return text
+
+
+def _redact_detail(value: object) -> str:
+    """Short redacted detail for errors / receipt error fields (bounded)."""
+
+    return _redact_secrets(value)[:1000]
 
 
 @contextmanager
@@ -861,56 +869,297 @@ def _is_omg_cli_target(target: Path) -> bool:
         return False
 
 
+_DOCTOR_TRANSCRIPT_LIMIT = 64 * 1024
+
+
+def _sanitize_doctor_transcript(text: str) -> str:
+    # Secret redaction must not apply the short-error 1000-char truncate; the
+    # real bound is _DOCTOR_TRANSCRIPT_LIMIT so late integrity FAILs stay visible.
+    cleaned = _redact_secrets(text)
+    cleaned = cleaned.replace("\x00", "")
+    cleaned = "".join(ch if (ch == "\n" or ch == "\t" or ord(ch) >= 32) else "?" for ch in cleaned)
+    if len(cleaned) > _DOCTOR_TRANSCRIPT_LIMIT:
+        cleaned = cleaned[:_DOCTOR_TRANSCRIPT_LIMIT] + "\n...[truncated]...\n"
+    return cleaned
+
+
+def _emit_doctor_probe_transcript(probe: Mapping[str, Any]) -> None:
+    """Print bounded non-strict doctor transcript before a hard install-gate failure."""
+
+    # Prefer the relaxed (non-strict) transcript: coexistence stays WARN there,
+    # so integrity FAILs are unambiguous for operators (#89 Pro plan A3).
+    stdout = str(probe.get("relaxed_stdout") or probe.get("stdout") or "")
+    stderr = str(probe.get("relaxed_stderr") or probe.get("stderr") or "")
+    print("install doctor gate failed: integrity checks did not pass", file=sys.stderr)
+    print("--- doctor stdout (non-strict integrity gate) ---", file=sys.stderr)
+    body = _sanitize_doctor_transcript(stdout)
+    print(body if body.strip() else "(empty)", file=sys.stderr)
+    print("--- doctor stderr ---", file=sys.stderr)
+    err = _sanitize_doctor_transcript(stderr)
+    print(err if err.strip() else "(empty)", file=sys.stderr)
+
+
+_INSTALL_STATUS_RANK = {
+    "installed": 0,
+    "completed_with_warning": 1,
+}
+
+
+def _stricter_install_status(left: str, right: str) -> str:
+    """Prefer the more severe successful install status (warning > clean)."""
+
+    if _INSTALL_STATUS_RANK.get(left, -1) >= _INSTALL_STATUS_RANK.get(right, -1):
+        return left
+    return right
+
+
+def _bind_exact_digest_host_authority(
+    *,
+    prior_plugin_path: Path | None,
+    prior_entry: Mapping[str, Any] | None,
+    receipt: Mapping[str, Any],
+    stage: Path,
+    grok_home: Path,
+) -> Path:
+    """Bind live Grok plugin authority before exact-digest reuse / re-attest.
+
+    Digest equality alone is insufficient: the host inventory path must match
+    the receipt's ``plugin_realpath``, stay confined to the immutable stage or
+    ``$GROK_HOME/installed-plugins``, and report enabled.  Callers that cannot
+    attest this must fall through to a full uninstall/install/enable transaction
+    instead of minting a receipt that lies about runtime location.
+    """
+
+    if prior_plugin_path is None or prior_entry is None:
+        raise InstallError("exact-digest install missing host plugin authority")
+    _verify_host_plugin_path(
+        prior_plugin_path,
+        stage=stage,
+        grok_home=grok_home,
+    )
+    installed = receipt.get("installed")
+    if not isinstance(installed, dict):
+        raise InstallError("current receipt installed record is malformed")
+    plugin_raw = installed.get("plugin_realpath")
+    if not isinstance(plugin_raw, str) or not plugin_raw:
+        raise InstallError("current receipt host plugin path is malformed")
+    receipt_plugin = Path(plugin_raw)
+    if not receipt_plugin.is_absolute():
+        raise InstallError("current receipt host plugin path must be absolute")
+    if prior_plugin_path.resolve() != receipt_plugin.resolve():
+        raise InstallError("host plugin path differs from current receipt")
+    if not _plugin_entry_is_enabled(prior_entry, grok_home=grok_home):
+        raise InstallError("host plugin is disabled")
+    return prior_plugin_path.resolve()
+
+
+def _exact_idempotent_receipt_reusable(
+    receipt: Mapping[str, Any],
+    *,
+    mode: str,
+    probe_status: str,
+    asset_evidence: Mapping[str, str] | None,
+) -> bool:
+    """True only when bytes *and* authority semantics already match this install.
+
+    Same package digest alone is not enough: a development receipt must not be
+    reused for a release promotion, release asset/checksum evidence must already
+    be complete and compatible, and an existing status must not be looser than
+    this probe's classification (so ``installed`` cannot mask a fresh warning).
+    """
+
+    if receipt.get("mode") != mode:
+        return False
+    existing_status = receipt.get("status")
+    if (
+        not isinstance(existing_status, str)
+        or existing_status not in _INSTALL_STATUS_RANK
+        or probe_status not in _INSTALL_STATUS_RANK
+    ):
+        return False
+    # Looser = lower rank (clean ``installed`` is looser than warning).
+    if _INSTALL_STATUS_RANK[existing_status] < _INSTALL_STATUS_RANK[probe_status]:
+        return False
+    if mode == "release":
+        if asset_evidence is None:
+            return False
+        source = receipt.get("source")
+        if not isinstance(source, dict):
+            return False
+        for key in ("asset_name", "asset_sha256"):
+            value = source.get(key)
+            expected = asset_evidence.get(key)
+            if (
+                not isinstance(value, str)
+                or not value
+                or not isinstance(expected, str)
+                or not expected
+                or value != expected
+            ):
+                return False
+        if not _SHA256_RE.fullmatch(str(source.get("asset_sha256") or "")):
+            return False
+        # Empty checksums_sha256 is a valid manual --asset-sha256 trust root
+        # (same policy as doctor release completeness); both sides must agree.
+        existing_sums = source.get("checksums_sha256")
+        expected_sums = asset_evidence.get("checksums_sha256")
+        if not isinstance(existing_sums, str) or not isinstance(expected_sums, str):
+            return False
+        if existing_sums != expected_sums:
+            return False
+        if existing_sums and not _SHA256_RE.fullmatch(existing_sums):
+            return False
+    return True
+
+
+def _dual_pass_probe_malformed(
+    *,
+    strict_rc: object,
+    relaxed_rc: object,
+    rc: object,
+) -> bool:
+    """True when dual-pass keys are present but the matrix is not a legal shape."""
+
+    if not (isinstance(strict_rc, int) and not isinstance(strict_rc, bool)):
+        return True
+    if not (isinstance(rc, int) and not isinstance(rc, bool)):
+        return True
+    if strict_rc == 0:
+        return relaxed_rc is not None or rc != 0
+    if strict_rc != 1:
+        return True
+    if not (isinstance(relaxed_rc, int) and not isinstance(relaxed_rc, bool)):
+        return True
+    if relaxed_rc == 0:
+        return rc != 2
+    return False
+
+
 def classify_doctor_probe(mode: str, probe: Mapping[str, Any]) -> str:
     from scripts.omg_install_classifier import classify_doctor_result
 
+    valid = probe.get("valid") is True
+    dual_pass_keys_present = "strict_rc" in probe or "relaxed_rc" in probe
+    strict_rc = probe.get("strict_rc")
+    relaxed_rc = probe.get("relaxed_rc")
     rc = probe.get("rc")
+
+    # Preserve key presence: malformed dual-pass values must hard-fail rather
+    # than being coerced to None (which would unlock legacy rc=0 success).
     classification = classify_doctor_result(
         mode=mode,
-        rc=rc if isinstance(rc, int) and not isinstance(rc, bool) else None,
-        valid=probe.get("valid") is True,
+        valid=valid,
+        strict_rc=strict_rc,
+        relaxed_rc=relaxed_rc,
+        rc=rc,
+        dual_pass_keys_present=dual_pass_keys_present,
     )
     if classification == "hard_failure":
-        if probe.get("valid") is not True or not isinstance(rc, int) or isinstance(rc, bool):
+        _emit_doctor_probe_transcript(probe)
+        if dual_pass_keys_present and _dual_pass_probe_malformed(
+            strict_rc=strict_rc,
+            relaxed_rc=relaxed_rc,
+            rc=rc,
+        ):
             raise InstallError("doctor output is malformed")
-        raise InstallError(f"doctor gate rejected candidate (rc={rc})")
+        shown = strict_rc if isinstance(strict_rc, int) and not isinstance(strict_rc, bool) else rc
+        if not valid or not isinstance(shown, int) or isinstance(shown, bool):
+            raise InstallError("doctor output is malformed")
+        raise InstallError(f"doctor gate rejected candidate (rc={shown})")
     return classification
 
 
 def _default_doctor_probe(stage: Path, env: dict[str, str]) -> dict[str, Any]:
-    argv = [sys.executable, "-I", "-B", str(stage / "bin" / "omg"), "doctor", "--strict"]
-    result = subprocess.run(
-        argv,
-        capture_output=True,
-        text=True,
-        env=env,
-        cwd=tempfile.gettempdir(),
-        timeout=60,
-        check=False,
-    )
-    rc = result.returncode
-    if rc != 0 and env.get("OMG_INSTALL_MODE") == "development":
-        # Strict doctor deliberately promotes local coexistence/compatibility
-        # warnings.  Re-run without promotion to distinguish those soft risks
-        # from actual install-integrity failures.  The lifecycle classifier
-        # maps this exact soft-only case to development-only rc=2; release never
-        # receives this relaxation.
-        relaxed = subprocess.run(
-            argv[:-1],
+    """Install-only dual-pass doctor probe (strict then non-strict on failure)."""
+
+    probe_env = dict(env)
+    probe_env.setdefault("OMG_DOCTOR_INSTALL_PROBE", "1")
+    argv_strict = [sys.executable, "-I", "-B", str(stage / "bin" / "omg"), "doctor", "--strict"]
+    argv_relaxed = argv_strict[:-1]
+    try:
+        strict = subprocess.run(
+            argv_strict,
             capture_output=True,
             text=True,
-            env=env,
+            env=probe_env,
             cwd=tempfile.gettempdir(),
             timeout=60,
             check=False,
         )
-        if relaxed.returncode == 0:
-            rc = 2
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "argv": argv_strict,
+            "argv_strict": argv_strict,
+            "argv_relaxed": None,
+            "rc": 1,
+            "strict_rc": None,
+            "relaxed_rc": None,
+            "stdout": "",
+            "stderr": f"doctor probe failed to start ({type(exc).__name__})",
+            "relaxed_stdout": "",
+            "relaxed_stderr": "",
+            "valid": False,
+        }
+
+    strict_rc = strict.returncode
+    strict_out = strict.stdout or ""
+    strict_err = strict.stderr or ""
+    relaxed_rc: int | None = None
+    relaxed_out = ""
+    relaxed_err = ""
+    argv_relaxed_used: list[str] | None = None
+
+    if strict_rc != 0:
+        # Re-run without --strict to separate coexistence WARN promotion from
+        # integrity failures. Same matrix for release and development.
+        try:
+            relaxed = subprocess.run(
+                argv_relaxed,
+                capture_output=True,
+                text=True,
+                env=probe_env,
+                cwd=tempfile.gettempdir(),
+                timeout=60,
+                check=False,
+            )
+            argv_relaxed_used = argv_relaxed
+            relaxed_rc = relaxed.returncode
+            relaxed_out = relaxed.stdout or ""
+            relaxed_err = relaxed.stderr or ""
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {
+                "argv": argv_strict,
+                "argv_strict": argv_strict,
+                "argv_relaxed": argv_relaxed,
+                "rc": 1,
+                "strict_rc": strict_rc if isinstance(strict_rc, int) else None,
+                "relaxed_rc": None,
+                "stdout": strict_out,
+                "stderr": strict_err,
+                "relaxed_stdout": "",
+                "relaxed_stderr": f"relaxed doctor probe failed ({type(exc).__name__})",
+                "valid": False,
+            }
+
+    # Aggregate rc for receipt hashing: 0 installed, 2 soft-only, else hard.
+    if strict_rc == 0:
+        aggregate_rc = 0
+    elif relaxed_rc == 0:
+        aggregate_rc = 2
+    else:
+        aggregate_rc = 1 if isinstance(strict_rc, int) else 1
+
     return {
-        "argv": argv,
-        "rc": rc,
-        "stdout": result.stdout or "",
-        "stderr": result.stderr or "",
+        "argv": argv_strict,
+        "argv_strict": argv_strict,
+        "argv_relaxed": argv_relaxed_used,
+        "rc": aggregate_rc,
+        "strict_rc": strict_rc,
+        "relaxed_rc": relaxed_rc,
+        "stdout": strict_out,
+        "stderr": strict_err,
+        "relaxed_stdout": relaxed_out,
+        "relaxed_stderr": relaxed_err,
         "valid": True,
     }
 
@@ -921,14 +1170,30 @@ def _probe_record(probe: Mapping[str, Any]) -> dict[str, Any]:
         argv = ["omg", "doctor", "--strict"]
     stdout = str(probe.get("stdout") or "")
     stderr = str(probe.get("stderr") or "")
+    relaxed_out = str(probe.get("relaxed_stdout") or "")
+    relaxed_err = str(probe.get("relaxed_stderr") or "")
     rc_value = probe.get("rc")
-    rc = rc_value if isinstance(rc_value, int) else 1
-    return {
+    rc = rc_value if isinstance(rc_value, int) and not isinstance(rc_value, bool) else 1
+    record: dict[str, Any] = {
         "argv": list(argv),
         "rc": rc,
         "stdout_sha256": _sha256_bytes(stdout.encode("utf-8", errors="replace")),
         "stderr_sha256": _sha256_bytes(stderr.encode("utf-8", errors="replace")),
     }
+    strict_rc = probe.get("strict_rc")
+    if isinstance(strict_rc, int) and not isinstance(strict_rc, bool):
+        record["strict_rc"] = strict_rc
+    relaxed_rc = probe.get("relaxed_rc")
+    if isinstance(relaxed_rc, int) and not isinstance(relaxed_rc, bool):
+        record["relaxed_rc"] = relaxed_rc
+    if relaxed_out or relaxed_err or relaxed_rc is not None:
+        record["relaxed_stdout_sha256"] = _sha256_bytes(
+            relaxed_out.encode("utf-8", errors="replace")
+        )
+        record["relaxed_stderr_sha256"] = _sha256_bytes(
+            relaxed_err.encode("utf-8", errors="replace")
+        )
+    return record
 
 
 def _receipt_material(
@@ -1324,7 +1589,12 @@ def install_package(
         current_target = str(stage)
         cli_target = str(current / "bin" / "omg")
 
-        # Exact idempotent readback: no host uninstall/install and no receipt churn.
+        # Exact byte match: skip host uninstall/install.  Reuse the receipt only
+        # when mode, release evidence, status authority, *and* live Grok plugin
+        # path/enabled authority also match; otherwise write a fresh receipt
+        # (e.g. development→release promote) or fall through to a full
+        # uninstall/install/enable transaction when host authority cannot be
+        # attested.
         if (
             current_snapshot["kind"] == "symlink"
             and Path(str(current_snapshot["target"])).resolve() == stage
@@ -1348,23 +1618,98 @@ def install_package(
                         "GROK_HOME": str(grok_path),
                         "PYTHONDONTWRITEBYTECODE": "1",
                         "OMG_INSTALL_MODE": mode,
+                        "OMG_DOCTOR_INSTALL_PROBE": "1",
                     }
                 )
                 probe = dict(doctor(stage, env))
-                classify_doctor_probe(mode, probe)
+                commands.append(_probe_record(probe))
+                probe_status = classify_doctor_probe(mode, probe)
                 verified_existing = verified_current_install(store, cli_pointer)
                 receipt_path = verified_existing.receipt_path
                 receipt = verified_existing.receipt
                 if receipt["installed"]["package_digest"] != identity["digest"]:
                     raise InstallError("current receipt identity differs from exact install")
-                return {
-                    "ok": True,
-                    "status": "already_installed",
-                    "stage_path": str(stage),
-                    "receipt_path": str(receipt_path),
-                    "receipt_hash": receipt["receipt_hash"],
-                    "package_digest": identity["digest"],
-                }
+                try:
+                    bound_plugin_path = _bind_exact_digest_host_authority(
+                        prior_plugin_path=prior_plugin_path,
+                        prior_entry=prior_rows[0] if prior_rows else None,
+                        receipt=receipt,
+                        stage=stage,
+                        grok_home=grok_path,
+                    )
+                except InstallError:
+                    # Host path/enabled authority cannot be attested — do not
+                    # reuse or re-attest a receipt that would misstate runtime.
+                    bound_plugin_path = None
+                if bound_plugin_path is not None:
+                    if _exact_idempotent_receipt_reusable(
+                        receipt,
+                        mode=mode,
+                        probe_status=probe_status,
+                        asset_evidence=asset_evidence,
+                    ):
+                        return {
+                            "ok": True,
+                            "status": "already_installed",
+                            "stage_path": str(stage),
+                            "receipt_path": str(receipt_path),
+                            "receipt_hash": receipt["receipt_hash"],
+                            "package_digest": identity["digest"],
+                        }
+
+                    # Bytes + host path match but authority differs (mode
+                    # promotion, missing release evidence, or a stricter probe
+                    # status).  Re-attest without host uninstall/install and
+                    # publish a new receipt bound to the live host path.
+                    prior_status = receipt.get("status")
+                    if isinstance(prior_status, str) and prior_status in _INSTALL_STATUS_RANK:
+                        status_value = _stricter_install_status(prior_status, probe_status)
+                    else:
+                        status_value = probe_status
+                    existing_owned = receipt.get("owned_inventory")
+                    if isinstance(existing_owned, list) and all(
+                        isinstance(row, dict) for row in existing_owned
+                    ):
+                        reattest_owned = [dict(row) for row in existing_owned]
+                        for row in reattest_owned:
+                            if row.get("kind") == "host_plugin":
+                                row["path"] = str(bound_plugin_path)
+                                row["identity"] = str(identity["digest"])
+                    else:
+                        reattest_owned = list(owned_inventory)
+                        reattest_owned.append(
+                            {
+                                "path": str(bound_plugin_path),
+                                "kind": "host_plugin",
+                                "identity": str(identity["digest"]),
+                            }
+                        )
+                    reattest_tid = uuid.uuid4().hex
+                    reattest_material = _receipt_material(
+                        transaction_id=reattest_tid,
+                        status=status_value,
+                        mode=mode,
+                        source=identity,
+                        stage=stage,
+                        plugin_path=bound_plugin_path,
+                        asset=asset_evidence,
+                        source_uri=source_uri,
+                        source_tag=source_tag,
+                        commands=list(commands),
+                        owned_inventory=reattest_owned,
+                    )
+                    new_receipt_path, new_receipt = _write_install_receipt(
+                        receipts, reattest_material
+                    )
+                    _atomic_symlink(str(new_receipt_path), receipt_pointer)
+                    return {
+                        "ok": True,
+                        "status": status_value,
+                        "stage_path": str(stage),
+                        "receipt_path": str(new_receipt_path),
+                        "receipt_hash": new_receipt["receipt_hash"],
+                        "package_digest": identity["digest"],
+                    }
             except Exception:
                 for snapshot in reversed(global_snapshots):
                     _restore_file(snapshot)
@@ -1451,13 +1796,14 @@ def install_package(
                     "GROK_HOME": str(grok_path),
                     "PYTHONDONTWRITEBYTECODE": "1",
                     "OMG_INSTALL_MODE": mode,
+                    "OMG_DOCTOR_INSTALL_PROBE": "1",
                     "OMG_EXPECTED_INSTALL_DIGEST": str(identity["digest"]),
                     "OMG_EXPECTED_INSTALL_STAGE": str(stage),
                 }
             )
             probe = dict(doctor(stage, env))
-            status_value = classify_doctor_probe(mode, probe)
             commands.append(_probe_record(probe))
+            pending_status = classify_doctor_probe(mode, probe)
             owned_inventory.extend(
                 [
                     {"path": str(candidate_plugin_path), "kind": "host_plugin", "identity": str(identity["digest"])},
@@ -1474,8 +1820,44 @@ def install_package(
                     },
                 ]
             )
-            material = _receipt_material(
+            # Provisional receipt proves the env-free final probe's receipt/readback
+            # path.  It is immutable audit evidence; the authoritative receipt below
+            # carries both probe hashes and the stricter active status.
+            provisional_material = _receipt_material(
                 transaction_id=transaction_id,
+                status=pending_status,
+                mode=mode,
+                source=identity,
+                stage=stage,
+                plugin_path=candidate_plugin_path,
+                asset=asset_evidence,
+                source_uri=source_uri,
+                source_tag=source_tag,
+                commands=list(commands),
+                owned_inventory=owned_inventory,
+            )
+            provisional_path, _provisional = _write_install_receipt(
+                receipts, provisional_material
+            )
+            installed_receipt_path = provisional_path
+            _publish_symlink_no_clobber(str(provisional_path), receipt_pointer)
+
+            # The first strict probe validates the candidate while the transaction
+            # is explicitly marked pending via OMG_EXPECTED_INSTALL_*.  Repeat it
+            # after publishing the provisional receipt pointer so success also proves
+            # the normal, environment-free receipt/readback path.  A failure here
+            # still enters the same all-or-prior rollback below.
+            final_env = dict(env)
+            final_env.pop("OMG_EXPECTED_INSTALL_DIGEST", None)
+            final_env.pop("OMG_EXPECTED_INSTALL_STAGE", None)
+            final_probe = dict(doctor(stage, final_env))
+            commands.append(_probe_record(final_probe))
+            final_status = classify_doctor_probe(mode, final_probe)
+            status_value = _stricter_install_status(pending_status, final_status)
+
+            authoritative_tid = uuid.uuid4().hex
+            authoritative_material = _receipt_material(
+                transaction_id=authoritative_tid,
                 status=status_value,
                 mode=mode,
                 source=identity,
@@ -1487,20 +1869,11 @@ def install_package(
                 commands=commands,
                 owned_inventory=owned_inventory,
             )
-            receipt_path, receipt = _write_install_receipt(receipts, material)
+            receipt_path, receipt = _write_install_receipt(
+                receipts, authoritative_material
+            )
+            _atomic_symlink(str(receipt_path), receipt_pointer)
             installed_receipt_path = receipt_path
-            _publish_symlink_no_clobber(str(receipt_path), receipt_pointer)
-
-            # The first strict probe validates the candidate while the transaction
-            # is explicitly marked pending via OMG_EXPECTED_INSTALL_*.  Repeat it
-            # after publishing the immutable receipt pointer so success also proves
-            # the normal, environment-free receipt/readback path.  A failure here
-            # still enters the same all-or-prior rollback below.
-            final_env = dict(env)
-            final_env.pop("OMG_EXPECTED_INSTALL_DIGEST", None)
-            final_env.pop("OMG_EXPECTED_INSTALL_STAGE", None)
-            final_probe = dict(doctor(stage, final_env))
-            classify_doctor_probe(mode, final_probe)
             return {
                 "ok": True,
                 "status": status_value,

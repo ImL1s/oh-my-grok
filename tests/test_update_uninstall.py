@@ -309,10 +309,12 @@ def test_development_update_uses_receipt_original_source_not_immutable_stage(
     assert [str(ROOT / "scripts" / "install-plugin.sh")] in calls
 
 
-def test_development_update_refuses_drifted_receipt_source_before_git(
+def test_development_update_falls_back_to_release_when_source_drifted(
     tmp_path,
     monkeypatch,
 ):
+    """Drifted original checkout must not block managed refresh via install.sh (#89)."""
+
     source = tmp_path / "source"
     shutil.copytree(
         ROOT,
@@ -322,7 +324,7 @@ def test_development_update_refuses_drifted_receipt_source_before_git(
     home = tmp_path / "home"
     grok_home = tmp_path / "grok-home"
     host = _InstalledHost()
-    install_package(
+    installed = install_package(
         source,
         home=home,
         grok_home=grok_home,
@@ -330,6 +332,7 @@ def test_development_update_refuses_drifted_receipt_source_before_git(
         doctor_probe=_doctor_ok,
         mode="development",
     )
+    stage = Path(installed["stage_path"])
     (source / "plugin.json").write_text(
         (source / "plugin.json").read_text(encoding="utf-8") + "\n",
         encoding="utf-8",
@@ -340,8 +343,9 @@ def test_development_update_refuses_drifted_receipt_source_before_git(
         calls.append([str(item) for item in argv])
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    assert run_update(runner=runner, home=home, grok_home=grok_home) == 1
-    assert calls == []
+    assert run_update(runner=runner, home=home, grok_home=grok_home) == 0
+    assert calls == [["bash", str(stage / "scripts" / "install.sh")]]
+    assert not any(call[:2] == ["git", "-C"] for call in calls)
 
 
 def test_installed_cli_update_runs_from_proven_source_checkout(tmp_path, monkeypatch):

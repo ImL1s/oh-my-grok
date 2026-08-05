@@ -104,7 +104,7 @@ def test_install_script_exposes_online_and_manual_same_engine_paths():
     assert "--archive" in script and "--checksums" in script and "--offline" in script
     assert "omg_cli.setup_cmd" in script and "install-release" in script
     assert 'SOURCE_TAG="v${BASH_REMATCH[1]}"' in script
-    assert "installed and exactly verified" in script
+    assert "installed and integrity-verified" in script
     assert "set -euo pipefail" in script
 
 
@@ -364,7 +364,7 @@ def _run_no_checkout_online_install(
 def test_copied_bootstrap_installs_release_without_checkout_or_network(tmp_path):
     proc, home, grok_home, audit = _run_no_checkout_offline_install(tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "installed and exactly verified" in proc.stdout
+    assert "installed and integrity-verified" in proc.stdout
     assert not audit.exists(), audit.read_text(encoding="utf-8") if audit.exists() else ""
 
     current = grok_home / "omg" / "current"
@@ -400,16 +400,21 @@ def test_copied_bootstrap_installs_release_without_checkout_or_network(tmp_path)
     assert version_value in version.stdout
 
 
-def test_bootstrap_never_prints_success_when_strict_doctor_rolls_back(tmp_path):
+def test_bootstrap_soft_doctor_warn_does_not_block_release_install(tmp_path):
+    """Missing config.toml is a soft WARN under --strict; install gate soft-relaxes (#89).
+
+    Integrity rollback remains covered by ``test_release_install_gate_rejects_integrity_failure``.
+    """
+
     proc, home, grok_home, audit = _run_no_checkout_offline_install(
         tmp_path,
         break_strict_doctor=True,
     )
-    assert proc.returncode != 0
-    assert "installed and exactly verified" not in proc.stdout
-    assert "doctor" in (proc.stdout + proc.stderr).lower()
-    assert not (grok_home / "omg" / "current").exists()
-    assert not os.path.lexists(home / ".local" / "bin" / "omg")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "installed and integrity-verified" in proc.stdout
+    receipt = read_install_receipt((grok_home / "omg" / "current-receipt").resolve(strict=True))
+    assert receipt["status"] in {"installed", "completed_with_warning"}
+    assert (home / ".local" / "bin" / "omg").is_symlink()
     assert not audit.exists(), audit.read_text(encoding="utf-8") if audit.exists() else ""
 
 
@@ -421,7 +426,7 @@ def test_online_bootstrap_resolves_once_and_downloads_both_files_from_exact_tag(
         release_tag=tag,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "installed and exactly verified" in proc.stdout
+    assert "installed and integrity-verified" in proc.stdout
     assert urls == [
         "https://api.test/repos/ImL1s/oh-my-grok/releases/latest",
         f"https://download.test/ImL1s/oh-my-grok/releases/download/{tag}/SHA256SUMS",
@@ -442,7 +447,7 @@ def test_online_bootstrap_rejects_tag_archive_mismatch_without_success_or_asset_
     )
     assert proc.returncode != 0
     assert "differs from checksum archive" in (proc.stdout + proc.stderr)
-    assert "installed and exactly verified" not in proc.stdout
+    assert "installed and integrity-verified" not in proc.stdout
     assert urls == [
         "https://api.test/repos/ImL1s/oh-my-grok/releases/latest",
         "https://download.test/ImL1s/oh-my-grok/releases/download/v9.9.9/SHA256SUMS",
@@ -459,7 +464,7 @@ def test_online_bootstrap_rejects_archive_plugin_version_mismatch_before_mutatio
     )
     assert proc.returncode != 0
     assert "archive filename version differs from package identity" in (proc.stdout + proc.stderr)
-    assert "installed and exactly verified" not in proc.stdout
+    assert "installed and integrity-verified" not in proc.stdout
     assert urls[-2:] == [
         "https://download.test/ImL1s/oh-my-grok/releases/download/v9.9.9/SHA256SUMS",
         f"https://download.test/ImL1s/oh-my-grok/releases/download/v9.9.9/{asset.name}",

@@ -31,8 +31,11 @@ Usage:
 Without --archive, the installer resolves the latest GitHub release to one
 exact tag, then downloads SHA256SUMS and its archive only from that tag.
 Manual/offline mode performs the same verify -> immutable stage -> plugin/CLI
-switch -> strict doctor -> receipt transaction; it is not a shortcut around
-verification or rollback.
+switch -> dual-pass install doctor gate (strict, then non-strict on failure) ->
+receipt transaction; coexistence-only soft risks may yield
+completed_with_warning while integrity failures roll back. Interactive
+`omg doctor --strict` is unchanged and may still exit 1 on coexistence.
+It is not a shortcut around verification or rollback.
 EOF
 }
 
@@ -204,11 +207,12 @@ INSTALL_ARGS=(install-release --source-root "$PACKAGE_ROOT" --asset "$ARCHIVE" -
 [[ -z "$SOURCE_TAG" ]] || INSTALL_ARGS+=(--source-tag "$SOURCE_TAG")
 INSTALL_ARGS+=(--source-uri "$SOURCE_URI")
 
-echo "==> immutable stage -> Grok plugin/CLI switch -> strict doctor -> receipt"
+echo "==> immutable stage -> Grok plugin/CLI switch -> install doctor gate -> receipt"
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PACKAGE_ROOT" \
   python3 -m omg_cli.setup_cmd "${INSTALL_ARGS[@]}"
 
 # This banner is deliberately after the hard-gated Python transaction.  With
 # set -e it is unreachable after checksum, switch, doctor or rollback failure.
-echo "==> installed and exactly verified"
-echo "    restart Grok Build, then run: omg setup && omg doctor --strict"
+echo "==> installed and integrity-verified"
+echo "    coexistence warnings may remain; run: omg doctor --strict"
+echo "    restart Grok Build, then run: omg setup"

@@ -170,7 +170,17 @@ bash install.sh --offline --archive ./oh-my-grok-0.7.5.tar.gz \
   --checksums ./SHA256SUMS --source-tag "${TAG}"
 ```
 
-The installer verifies before extraction, bounds and rejects link/path escape archive members, stages immutably, switches plugin + CLI transactionally, runs strict doctor, writes a receipt, and rolls back failed activation.
+The installer verifies before extraction, bounds and rejects link/path escape archive members, stages immutably, switches plugin + CLI transactionally, runs an install-time doctor gate, writes a receipt, and rolls back failed activation.
+
+Install-gate policy: **integrity stays fail-closed** (digest/pointers/owned globals/checksum/receipt). The install probe runs `doctor --strict` then, on failure, a non-strict doctor pass — coexistence-only WARNs (foreign orch / Claude compat) yield `completed_with_warning`; integrity FAILs roll back. Interactive `omg doctor --strict` is unchanged and still exits non-zero on coexistence. On gate failure the installer prints the non-strict doctor transcript (bounded, redacted; hashes only in the receipt).
+
+Success banner says **integrity-verified** (not full strict purity). Upgrade a managed install without re-pasting curl:
+
+```bash
+omg update
+```
+
+`omg update` has three managed paths: (1) **release receipt** → checksum-verified stage `scripts/install.sh`; (2) **clean development** checkout matching the receipt → `git pull --ff-only` + `install-plugin.sh`; (3) **dirty / absent / drifted / unprovable** development → preserve the source checkout and fall back to the verified stage `install.sh` release transaction. Explicit contributor `root=` checkouts still refuse dirty trees without mutation. Pre-fix managed CLIs without this fallback must re-run the curl installer once.
 
 ## Plugin marketplace and package registries
 
