@@ -34,7 +34,15 @@ from omg_cli.modes import (
     plugin_root,
     resolve_launch_timeout,
 )
-from omg_cli.state import create_run, load_run, write_pid_metadata, write_status
+from omg_cli.state import (
+    create_run,
+    launch_refused_for_cancel,
+    load_run,
+    transition_guard,
+    transition_guard_held,
+    write_pid_metadata,
+    write_status,
+)
 
 DEFAULT_WORKERS = 2
 DEFAULT_MAX_WORKERS = 4
@@ -152,6 +160,14 @@ def _kill_spawned_worker(proc: subprocess.Popen[Any]) -> None:
         pass
 
 
+class FanoutSpawnRefused(RuntimeError):
+    """Raised when cancel/terminal status refuses a fanout worker spawn."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 def _spawn_worker_process(
     argv: list[str],
     *,
@@ -159,64 +175,90 @@ def _spawn_worker_process(
     pid_path: Path,
     timeout: float | None,
     dry_run: bool,
+    root: Path | None = None,
+    run_id: str | None = None,
 ) -> tuple[subprocess.Popen[Any] | None, int | None]:
     """Launch one worker. Returns (proc, exit_code).
 
     dry_run: write argv only; no process; exit_code 0.
     Non-dry: Popen with start_new_session; write pid.json; return (proc, None)
     until waited.
+
+    R18-1: when ``root``/``run_id`` are set, cancel recheck → Popen → PID
+    publish run under the same per-run ``transition_guard`` as ``_launch_grok``
+    so legacy cancel cannot miss a newly spawned worker (wait stays outside).
+    Raises ``FanoutSpawnRefused`` when launch is refused (no Popen).
     """
+    from contextlib import nullcontext
+
     pid_path.parent.mkdir(parents=True, exist_ok=True)
-    if dry_run:
-        # Skeleton only — never invent a live pid that cancel could signal.
-        meta = {
-            "pid": None,
-            "starttime": None,
-            "pgid": None,
-            "dry_run": True,
-            "status": "dry_run",
+
+    def _do_spawn() -> tuple[subprocess.Popen[Any] | None, int | None]:
+        if root is not None and run_id is not None:
+            refuse = launch_refused_for_cancel(root, run_id)
+            if refuse is not None:
+                raise FanoutSpawnRefused(refuse)
+
+        if dry_run:
+            # Skeleton only — never invent a live pid that cancel could signal.
+            meta = {
+                "pid": None,
+                "starttime": None,
+                "pgid": None,
+                "dry_run": True,
+                "status": "dry_run",
+            }
+            pid_path.write_text(
+                json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            return None, 0
+
+        popen_kwargs: dict[str, Any] = {
+            "cwd": str(cwd),
+            "env": safe_supervised_child_env(os.environ),
         }
-        pid_path.write_text(
-            json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        return None, 0
+        if os.name == "posix":
+            popen_kwargs["start_new_session"] = True
 
-    popen_kwargs: dict[str, Any] = {
-        "cwd": str(cwd),
-        "env": safe_supervised_child_env(os.environ),
-    }
-    if os.name == "posix":
-        popen_kwargs["start_new_session"] = True
-
-    try:
-        proc = subprocess.Popen(argv, **popen_kwargs)
-    except OSError as exc:
-        err = {
-            "pid": None,
-            "error": str(exc),
-            "status": "launch_error",
-        }
-        pid_path.write_text(
-            json.dumps(err, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        return None, 127
-
-    pgid: int | None = proc.pid
-    if os.name == "posix":
         try:
-            pgid = os.getpgid(proc.pid)
-        except (ProcessLookupError, PermissionError, OSError):
-            pgid = proc.pid
-    try:
-        write_pid_metadata(pid_path, pid=proc.pid, pgid=pgid)
-    except Exception:
-        # Mirror modes._spawn_grok_process: never leave a live worker without
-        # cancel-visible pid metadata (e.g. starttime lookup failure).
-        # Caller must also kill any earlier workers in this launch batch.
-        _kill_spawned_worker(proc)
-        raise
-    # Note: timeout is applied at wait time by caller
-    return proc, None
+            proc = subprocess.Popen(argv, **popen_kwargs)
+        except OSError as exc:
+            err = {
+                "pid": None,
+                "error": str(exc),
+                "status": "launch_error",
+            }
+            pid_path.write_text(
+                json.dumps(err, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            return None, 127
+
+        pgid: int | None = proc.pid
+        if os.name == "posix":
+            try:
+                pgid = os.getpgid(proc.pid)
+            except (ProcessLookupError, PermissionError, OSError):
+                pgid = proc.pid
+        try:
+            write_pid_metadata(pid_path, pid=proc.pid, pgid=pgid)
+        except Exception:
+            # Mirror modes._spawn_grok_process: never leave a live worker without
+            # cancel-visible pid metadata (e.g. starttime lookup failure).
+            # Caller must also kill any earlier workers in this launch batch.
+            _kill_spawned_worker(proc)
+            raise
+        # Note: timeout is applied at wait time by caller
+        return proc, None
+
+    if root is not None and run_id is not None:
+        guard_cm = (
+            nullcontext()
+            if transition_guard_held()
+            else transition_guard(root, run_id)
+        )
+        with guard_cm:
+            return _do_spawn()
+    return _do_spawn()
 
 
 def _wait_proc(
@@ -441,7 +483,53 @@ def run_process_fanout(
                 pid_path=pid_path,
                 timeout=launch_timeout,
                 dry_run=dry_run,
+                root=root_path,
+                run_id=run_id,
             )
+        except FanoutSpawnRefused as exc:
+            # R18-1: cancel/terminal refused this worker — do not Popen; reap
+            # any earlier workers already published in this batch.
+            worker_records.append(
+                {
+                    **rec,
+                    "status": "spawn_refused",
+                    "exit_code": 1,
+                    "error": exc.reason,
+                }
+            )
+            print(
+                f"omg ulw fanout: {exc.reason}",
+                file=sys.stderr,
+            )
+            if procs:
+                return _rollback_fanout_workers(
+                    procs,
+                    root_path=root_path,
+                    run_id=run_id,
+                    n=n,
+                    worker_records=worker_records,
+                    failed_wid=wid,
+                    exc=exc,
+                )
+            # No workers started yet — leave status as-is (often already
+            # cancelled); write a small fanout meta note and exit non-zero.
+            meta = {
+                "version": 1,
+                "run_id": run_id,
+                "fanout": FANOUT_PROCESS,
+                "workers": n,
+                "dry_run": bool(dry_run),
+                "records": worker_records,
+                "exit_codes": {wid: 1},
+                "spawn_refused": True,
+                "failed_worker": wid,
+                "error": exc.reason,
+            }
+            fanout_meta_path(root_path, run_id).write_text(
+                json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            return 1
         except Exception as exc:
             # R15-4: later worker pid publish failed after Popen — current
             # worker already killed inside _spawn_worker_process; also kill
