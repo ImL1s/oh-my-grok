@@ -118,13 +118,80 @@ def classify_oh_my_grok_installs(
     return {"same_path": same_path, "stale": stale}
 
 
+# FAIL lines that are host coexistence / multi-orch soft risks under --strict.
+# Install gates must not treat these alone as integrity failures (#89).
+_COEXISTENCE_FAIL_MARKERS = (
+    "effective discovery (foreign orch)",
+    "compat.claude.",
+    "compat.claude:",
+)
+
+# FAIL lines that prove install integrity is broken (always hard).
+_INTEGRITY_FAIL_MARKERS = (
+    "immutable install identity",
+    "package digest",
+    "checksum",
+    "receipt",
+    "owned global",
+    "plugin inventory",
+    "stage digest",
+    "CLI pointer",
+    "current pointer",
+    "malformed",
+)
+
+
+def classify_doctor_stdout_buckets(stdout: str) -> dict[str, object]:
+    """Bucket doctor ``[FAIL]`` lines into coexistence vs integrity.
+
+    Used by the install probe / gate so release installs can soft-succeed on
+    host coexistence WARNs promoted by ``--strict``, while integrity FAILs
+    stay fail-closed.
+    """
+
+    coexistence: list[str] = []
+    integrity: list[str] = []
+    other: list[str] = []
+    for raw in (stdout or "").splitlines():
+        line = raw.strip()
+        if not line.startswith("[FAIL]"):
+            continue
+        body = line[len("[FAIL]") :].strip()
+        lower = body.lower()
+        if any(marker in body for marker in _COEXISTENCE_FAIL_MARKERS) or any(
+            marker in lower for marker in ("compat.claude", "foreign orch")
+        ):
+            coexistence.append(body)
+        elif any(marker.lower() in lower for marker in _INTEGRITY_FAIL_MARKERS):
+            integrity.append(body)
+        else:
+            # Unknown FAIL: treat as integrity (fail-closed).
+            other.append(body)
+            integrity.append(body)
+    if integrity:
+        bucket = "integrity"
+    elif coexistence:
+        bucket = "coexistence_only"
+    else:
+        bucket = "none"
+    return {
+        "coexistence": coexistence,
+        "integrity": integrity,
+        "other": other,
+        "bucket": bucket,
+    }
+
+
 def classify_doctor_result(*, mode: str, rc: int | None, valid: bool) -> str:
     """Exact lifecycle classifier shared by source and release installation.
 
-    ``rc=0`` is verified success.  ``rc=2`` is a visible development-only
-    warning (never release success).  Non-integer/malformed output and every
-    other code are hard failures; callers must roll back and must not print a
-    success banner.
+    ``rc=0`` is verified success.  ``rc=2`` is a visible soft warning from the
+    install probe when only coexistence risks remain (foreign orch /
+    compat.claude under ``--strict``).  Both development and release install
+    gates may record ``completed_with_warning`` for that case; interactive
+    ``omg doctor --strict`` is unchanged.  Non-integer/malformed output and
+    every other code are hard failures; callers must roll back and must not
+    print a success banner.
     """
 
     if mode not in {"development", "release"}:
@@ -133,7 +200,7 @@ def classify_doctor_result(*, mode: str, rc: int | None, valid: bool) -> str:
         return "hard_failure"
     if rc == 0:
         return "installed"
-    if rc == 2 and mode == "development":
+    if rc == 2 and mode in {"development", "release"}:
         return "completed_with_warning"
     return "hard_failure"
 

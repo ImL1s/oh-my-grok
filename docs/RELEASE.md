@@ -170,7 +170,17 @@ bash install.sh --offline --archive ./oh-my-grok-0.7.5.tar.gz \
   --checksums ./SHA256SUMS --source-tag "${TAG}"
 ```
 
-The installer verifies before extraction, bounds and rejects link/path escape archive members, stages immutably, switches plugin + CLI transactionally, runs strict doctor, writes a receipt, and rolls back failed activation.
+The installer verifies before extraction, bounds and rejects link/path escape archive members, stages immutably, switches plugin + CLI transactionally, runs an install-time doctor gate, writes a receipt, and rolls back failed activation.
+
+Install-gate policy: **integrity stays fail-closed** (digest/pointers/owned globals/checksum/receipt). **Host coexistence** (foreign orch in `grok inspect`, Claude Code hooks / markers) is WARN during the install transaction and does not block a verified release — the receipt may be `completed_with_warning`. Interactive `omg doctor --strict` still fails on those coexistence risks. On gate failure the installer prints the doctor stdout/stderr transcript (not only receipt hashes).
+
+Upgrade a managed install without re-pasting curl:
+
+```bash
+omg update
+```
+
+`omg update` re-enters the same checksum-verified `scripts/install.sh` release transaction when the current install is managed (release or development/`completed_with_warning`). Contributor source checkouts still fast-forward + `install-plugin.sh` when a proven clean original checkout exists.
 
 ## Plugin marketplace and package registries
 

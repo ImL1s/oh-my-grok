@@ -30,6 +30,8 @@ def _run(runner, argv: list[str], *, cwd: Path | None = None):
 
 
 def _release_install_script(home: Path, grok_home: Path) -> Path | None:
+    """Return stage ``install.sh`` for a verified *release*-mode install."""
+
     store = grok_home / "omg"
     pointer = store / "current-receipt"
     current = store / "current"
@@ -51,6 +53,51 @@ def _release_install_script(home: Path, grok_home: Path) -> Path | None:
         return script if script.is_file() and not script.is_symlink() else None
     except Exception as exc:
         raise RuntimeError("managed release install failed confinement proof") from exc
+
+
+def _managed_install_script(home: Path, grok_home: Path) -> Path | None:
+    """Return stage ``install.sh`` for any verified managed install (dev or release).
+
+    Used when a development install cannot prove a clean original checkout so
+    ``omg update`` can still refresh via the checksum-verified GitHub release
+    transaction instead of silently refusing (#89).
+    """
+
+    store = grok_home / "omg"
+    pointer = store / "current-receipt"
+    current = store / "current"
+    if not os.path.lexists(pointer) and not os.path.lexists(current):
+        return None
+    try:
+        from omg_cli.setup_cmd import verified_current_install
+
+        verified = verified_current_install(
+            store, home / ".local" / "bin" / "omg"
+        )
+        receipt = verified.receipt
+        if receipt["status"] not in {"installed", "completed_with_warning"}:
+            return None
+        script = verified.stage / "scripts" / "install.sh"
+        return script if script.is_file() and not script.is_symlink() else None
+    except Exception as exc:
+        raise RuntimeError("managed install failed confinement proof") from exc
+
+
+def _run_release_installer(runner, script: Path) -> int:
+    print("omg update: checksum-verified GitHub release transaction")
+    result = _run(runner, ["bash", str(script)])
+    if result is None:
+        return 1
+    _emit_result(result)
+    rc = int(getattr(result, "returncode", 1))
+    if rc != 0:
+        print(
+            f"omg update: release installer failed rc={rc}; prior install preserved",
+            file=sys.stderr,
+        )
+        return rc or 1
+    print("omg update: installed receipt and strict readback passed")
+    return 0
 
 
 def _development_source_checkout(home: Path, grok_home: Path) -> Path:
@@ -129,22 +176,30 @@ def run_update(
             )
             return 1
         if release_script is not None:
-            print("omg update: checksum-verified GitHub release transaction")
-            result = _run(runner, ["bash", str(release_script)])
-            if result is None:
-                return 1
-            _emit_result(result)
-            rc = int(getattr(result, "returncode", 1))
-            if rc != 0:
-                print(f"omg update: release installer failed rc={rc}; prior install preserved", file=sys.stderr)
-                return rc or 1
-            print("omg update: installed receipt and strict readback passed")
-            return 0
+            return _run_release_installer(runner, release_script)
         try:
             checkout = _development_source_checkout(home_path, grok_path)
         except Exception:
+            # Development/source proof unavailable, but a managed stage may still
+            # own a working install.sh — prefer the release transaction over a
+            # silent refuse (dogfood hosts with completed_with_warning / debris).
+            try:
+                managed_script = _managed_install_script(home_path, grok_path)
+            except RuntimeError:
+                print(
+                    "omg update: managed install identity is corrupt; refusing mutation",
+                    file=sys.stderr,
+                )
+                return 1
+            if managed_script is not None:
+                return _run_release_installer(runner, managed_script)
             print(
                 "omg update: no proven clean original development checkout; refusing mutation",
+                file=sys.stderr,
+            )
+            print(
+                "omg update: remediation: "
+                "curl -fsSL https://raw.githubusercontent.com/ImL1s/oh-my-grok/main/scripts/install.sh | bash",
                 file=sys.stderr,
             )
             return 1

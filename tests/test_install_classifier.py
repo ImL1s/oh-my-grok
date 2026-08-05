@@ -11,10 +11,11 @@ from scripts.omg_install_classifier import (
 )
 
 
-def test_doctor_result_classifier_is_exact_and_release_fail_closed():
+def test_doctor_result_classifier_is_exact_and_integrity_fail_closed():
     assert classify_doctor_result(mode="release", rc=0, valid=True) == "installed"
     assert classify_doctor_result(mode="development", rc=2, valid=True) == "completed_with_warning"
-    assert classify_doctor_result(mode="release", rc=2, valid=True) == "hard_failure"
+    # Soft coexistence remaps to rc=2 for both install modes (#89).
+    assert classify_doctor_result(mode="release", rc=2, valid=True) == "completed_with_warning"
     assert classify_doctor_result(mode="release", rc=1, valid=True) == "hard_failure"
     assert classify_doctor_result(mode="release", rc=None, valid=False) == "hard_failure"
     assert classify_doctor_result(mode="release", rc=True, valid=True) == "hard_failure"

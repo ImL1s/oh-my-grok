@@ -9,6 +9,15 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Fixed
+- **Release install gate / `omg update` dogfood (#89):** install-time doctor
+  probe soft-relaxes coexistence-only `--strict` FAILs (foreign orch,
+  `compat.claude`) for **both** release and development modes so a
+  checksum-verified release is not rolled back on multi-orch hosts; integrity
+  FAILs stay fail-closed. Gate failures now print doctor stdout/stderr.
+  `omg update` falls back to the stage `install.sh` release transaction when a
+  managed development install cannot prove a clean original checkout.
+
 ### Added
 - **Parity full upstream inventory (#78-B):** expand the v2 catalogue with
   `source_status` (OMC/OMX/OmO/Antigravity), the #78-B category taxonomy,

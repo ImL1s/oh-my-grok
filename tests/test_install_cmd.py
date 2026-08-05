@@ -150,10 +150,11 @@ def _doctor_ok(_stage: Path, _env: dict[str, str]) -> dict[str, object]:
     [
         ("development", 0, 2, 2),
         ("development", 1, 1, 2),
-        ("release", 0, 1, 1),
+        ("release", 0, 2, 2),
+        ("release", 1, 1, 2),
     ],
 )
-def test_default_doctor_probe_classifies_development_soft_risks_only(
+def test_default_doctor_probe_classifies_install_soft_risks_for_both_modes(
     tmp_path,
     monkeypatch,
     mode,

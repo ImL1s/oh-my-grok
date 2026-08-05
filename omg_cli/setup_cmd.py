@@ -861,45 +861,81 @@ def _is_omg_cli_target(target: Path) -> bool:
         return False
 
 
+def _emit_doctor_probe_transcript(probe: Mapping[str, Any]) -> None:
+    """Print doctor stdout/stderr to stderr before a hard install-gate failure."""
+
+    stdout = str(probe.get("stdout") or "")
+    stderr = str(probe.get("stderr") or "")
+    print("doctor gate transcript (stdout):", file=sys.stderr)
+    if stdout.strip():
+        print(stdout if stdout.endswith("\n") else stdout + "\n", end="", file=sys.stderr)
+    else:
+        print("(empty)", file=sys.stderr)
+    print("doctor gate transcript (stderr):", file=sys.stderr)
+    if stderr.strip():
+        print(stderr if stderr.endswith("\n") else stderr + "\n", end="", file=sys.stderr)
+    else:
+        print("(empty)", file=sys.stderr)
+
+
 def classify_doctor_probe(mode: str, probe: Mapping[str, Any]) -> str:
-    from scripts.omg_install_classifier import classify_doctor_result
+    from scripts.omg_install_classifier import (
+        classify_doctor_result,
+        classify_doctor_stdout_buckets,
+    )
 
     rc = probe.get("rc")
+    valid = probe.get("valid") is True
+    rc_int = rc if isinstance(rc, int) and not isinstance(rc, bool) else None
+
+    # Install-probe honesty: if the child returned rc=1 but stdout shows only
+    # coexistence FAILs (foreign orch / compat.claude), treat as soft warning
+    # for both release and development gates. Integrity FAILs stay hard.
+    if valid and rc_int == 1:
+        buckets = classify_doctor_stdout_buckets(str(probe.get("stdout") or ""))
+        if buckets.get("bucket") == "coexistence_only":
+            rc_int = 2
+
     classification = classify_doctor_result(
         mode=mode,
-        rc=rc if isinstance(rc, int) and not isinstance(rc, bool) else None,
-        valid=probe.get("valid") is True,
+        rc=rc_int,
+        valid=valid,
     )
     if classification == "hard_failure":
-        if probe.get("valid") is not True or not isinstance(rc, int) or isinstance(rc, bool):
+        _emit_doctor_probe_transcript(probe)
+        if not valid or rc_int is None:
             raise InstallError("doctor output is malformed")
-        raise InstallError(f"doctor gate rejected candidate (rc={rc})")
+        raise InstallError(f"doctor gate rejected candidate (rc={rc_int})")
     return classification
 
 
 def _default_doctor_probe(stage: Path, env: dict[str, str]) -> dict[str, Any]:
+    probe_env = dict(env)
+    probe_env.setdefault("OMG_DOCTOR_INSTALL_PROBE", "1")
     argv = [sys.executable, "-I", "-B", str(stage / "bin" / "omg"), "doctor", "--strict"]
     result = subprocess.run(
         argv,
         capture_output=True,
         text=True,
-        env=env,
+        env=probe_env,
         cwd=tempfile.gettempdir(),
         timeout=60,
         check=False,
     )
     rc = result.returncode
-    if rc != 0 and env.get("OMG_INSTALL_MODE") == "development":
+    stdout = result.stdout or ""
+    stderr = result.stderr or ""
+    if rc != 0 and probe_env.get("OMG_INSTALL_MODE") in {"development", "release"}:
         # Strict doctor deliberately promotes local coexistence/compatibility
         # warnings.  Re-run without promotion to distinguish those soft risks
-        # from actual install-integrity failures.  The lifecycle classifier
-        # maps this exact soft-only case to development-only rc=2; release never
-        # receives this relaxation.
+        # from actual install-integrity failures.  Both release and development
+        # install gates map soft-only failures to rc=2; interactive
+        # ``omg doctor --strict`` is unchanged (this path is install-only).
         relaxed = subprocess.run(
             argv[:-1],
             capture_output=True,
             text=True,
-            env=env,
+            env=probe_env,
             cwd=tempfile.gettempdir(),
             timeout=60,
             check=False,
@@ -909,8 +945,8 @@ def _default_doctor_probe(stage: Path, env: dict[str, str]) -> dict[str, Any]:
     return {
         "argv": argv,
         "rc": rc,
-        "stdout": result.stdout or "",
-        "stderr": result.stderr or "",
+        "stdout": stdout,
+        "stderr": stderr,
         "valid": True,
     }
 
@@ -1348,6 +1384,7 @@ def install_package(
                         "GROK_HOME": str(grok_path),
                         "PYTHONDONTWRITEBYTECODE": "1",
                         "OMG_INSTALL_MODE": mode,
+                        "OMG_DOCTOR_INSTALL_PROBE": "1",
                     }
                 )
                 probe = dict(doctor(stage, env))
@@ -1451,6 +1488,7 @@ def install_package(
                     "GROK_HOME": str(grok_path),
                     "PYTHONDONTWRITEBYTECODE": "1",
                     "OMG_INSTALL_MODE": mode,
+                    "OMG_DOCTOR_INSTALL_PROBE": "1",
                     "OMG_EXPECTED_INSTALL_DIGEST": str(identity["digest"]),
                     "OMG_EXPECTED_INSTALL_STAGE": str(stage),
                 }
