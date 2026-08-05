@@ -1605,22 +1605,26 @@ def set_verified(
     current = load_run(root, run_id)
     if current is None:
         raise FileNotFoundError(f"no status.json for run_id={run_id!r}")
-    if not force and current.get("mode") == "autopilot":
+    if not force:
         # Autopilot verified only via complete_with_acceptance after phase
-        # reaches acceptance (FSM). Bare set_verified before that is refused.
-        phase = ""
-        try:
-            from omg_cli.autopilot import AutopilotError, load_autopilot
+        # reaches acceptance (FSM), with matching authority_nonce between
+        # status.json and the autopilot sidecar. Sidecar presence / mode /
+        # nonce field all trigger the check (mode-flip alone must not bypass).
+        from omg_cli.autopilot import (
+            assert_autopilot_accept_authority,
+            autopilot_state_path,
+        )
 
-            ap = load_autopilot(root, run_id)
-            phase = str(ap.get("phase") or "")
-        except AutopilotError:
-            phase = str(current.get("autopilot_phase") or "")
-        if phase != "acceptance":
-            raise PermissionError(
-                "refusing set_verified for autopilot run unless "
-                f"autopilot phase is 'acceptance' (got {phase!r}); "
-                f"use omg autopilot complete for run_id={run_id!r}"
+        if (
+            autopilot_state_path(root, run_id).is_file()
+            or current.get("mode") == "autopilot"
+            or current.get("autopilot_authority_nonce")
+        ):
+            assert_autopilot_accept_authority(
+                root,
+                run_id,
+                status=current,
+                require_acceptance_phase=True,
             )
     if not force and not _has_acceptance_artifact(root, run_id):
         raise PermissionError(

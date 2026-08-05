@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,11 @@ from omg_cli.state import (
     load_run,
     write_status,
 )
+
+# Authority nonce binds status.json ↔ autopilot.json for accept/verified.
+# OS-level deny of `.omg/state/**` writes is still out of scope; the nonce makes
+# casual dual-edit harder and blocks mode-flip + bare accept and phase-flip
+# without a matching status nonce. Dual-edit of both files remains residual.
 
 
 # Edges ``transition()`` may take (machine-callable). ``verified`` is NOT here —
@@ -461,6 +467,10 @@ def autopilot_state_path(root: Path | str, run_id: str) -> Path:
     )
 
 
+def _new_authority_nonce() -> str:
+    return str(uuid.uuid4())
+
+
 def _save(root: Path, run_id: str, state: dict[str, Any], lease: Any) -> None:
     lease.assert_current()
     path = autopilot_state_path(root, run_id)
@@ -480,6 +490,67 @@ def load_autopilot(root: Path | str, run_id: str) -> dict[str, Any]:
     if data.get("writer") != CLI_WRITER:
         raise AutopilotError("autopilot state lacks CLI writer")
     return data
+
+
+def assert_autopilot_accept_authority(
+    root: Path | str,
+    run_id: str,
+    *,
+    status: Mapping[str, Any] | None = None,
+    require_acceptance_phase: bool = True,
+) -> dict[str, Any]:
+    """Fail closed when autopilot accept/verified authority does not bind.
+
+    Triggered when the autopilot sidecar exists, ``status.mode==autopilot``, or
+    ``autopilot_authority_nonce`` is present on status. Requires a CLI-written
+    sidecar with matching ``run_id``, matching authority nonce vs status, and
+    (unless skipped) ``phase==acceptance``.
+    """
+    root = Path(root).resolve()
+    run_id = validate_identifier(run_id, label="run_id")
+    run = dict(status) if status is not None else (load_run(root, run_id) or {})
+    sidecar_path = autopilot_state_path(root, run_id)
+    needs_check = (
+        sidecar_path.is_file()
+        or run.get("mode") == "autopilot"
+        or bool(run.get("autopilot_authority_nonce"))
+    )
+    if not needs_check:
+        return {}
+
+    try:
+        ap = load_autopilot(root, run_id)
+    except AutopilotError as exc:
+        raise PermissionError(
+            f"autopilot accept/verified authority check failed for "
+            f"run_id={run_id!r}: {exc}"
+        ) from exc
+    if str(ap.get("run_id") or "") != run_id:
+        raise PermissionError(
+            "autopilot sidecar run_id mismatch for "
+            f"run_id={run_id!r} (got {ap.get('run_id')!r})"
+        )
+    if require_acceptance_phase and str(ap.get("phase") or "") != "acceptance":
+        phase = str(ap.get("phase") or "")
+        raise PermissionError(
+            "refusing set_verified for autopilot run unless "
+            f"autopilot phase is 'acceptance' (got {phase!r}); "
+            f"use omg autopilot complete for run_id={run_id!r}"
+        )
+    side_nonce = ap.get("authority_nonce")
+    status_nonce = run.get("autopilot_authority_nonce")
+    if (
+        not isinstance(side_nonce, str)
+        or not side_nonce
+        or not isinstance(status_nonce, str)
+        or not status_nonce
+        or side_nonce != status_nonce
+    ):
+        raise PermissionError(
+            "autopilot authority_nonce mismatch between sidecar and "
+            f"status.autopilot_authority_nonce for run_id={run_id!r}"
+        )
+    return ap
 
 
 def assert_legal_transition(src: str, dst: str) -> None:
@@ -528,6 +599,7 @@ def start_autopilot(
     run_id = run["run_id"]
     phase = "ralplan" if skip_interview else "interview"
     with execution_lease(root, run_id, intent="autopilot-start") as lease:
+        authority_nonce = _new_authority_nonce()
         state = {
             "writer": CLI_WRITER,
             "schema_version": 2,
@@ -544,6 +616,7 @@ def start_autopilot(
             "history": [{"phase": phase, "at": _utc_now(), "event": "start"}],
             "blocker": None,
             "verified": False,
+            "authority_nonce": authority_nonce,
             "created_at": _utc_now(),
         }
         _save(root, run_id, state, lease)
@@ -554,6 +627,7 @@ def start_autopilot(
             extra={
                 "stage": "autopilot",
                 "autopilot_phase": phase,
+                "autopilot_authority_nonce": authority_nonce,
             },
             lease=lease,
         )
@@ -783,6 +857,8 @@ def transition(
         else:
             state["blocker"] = None
             status = "running"
+        authority_nonce = _new_authority_nonce()
+        state["authority_nonce"] = authority_nonce
         _save(root, run_id, state, lease)
         write_status(
             root,
@@ -792,6 +868,7 @@ def transition(
                 "stage": "autopilot",
                 "autopilot_phase": next_phase,
                 "blocker": state.get("blocker"),
+                "autopilot_authority_nonce": authority_nonce,
             },
             lease=lease,
         )
@@ -808,12 +885,15 @@ def _sync_autopilot_verified(
     """Mark autopilot phase verified + align status.autopilot_phase (lease held).
 
     Does not re-commit verified status (use set_verified first when needed).
+    Rotates authority_nonce on both sidecar and status under the lease.
     """
     from omg_cli.state import merge_status_fields
 
     state = load_autopilot(root, run_id)
+    authority_nonce = _new_authority_nonce()
     state["phase"] = "verified"
     state["verified"] = True
+    state["authority_nonce"] = authority_nonce
     state["history"] = list(state.get("history") or []) + [
         {
             "phase": "verified",
@@ -829,6 +909,7 @@ def _sync_autopilot_verified(
             "stage": "autopilot",
             "autopilot_phase": "verified",
             "blocker": None,
+            "autopilot_authority_nonce": authority_nonce,
         },
         lease=lease,
     )
@@ -876,6 +957,20 @@ def complete_with_acceptance(
             f"acceptance only from acceptance phase (got {phase!r})"
         )
 
+    # Bind accept/verified to CLI transition markers (authority nonce).
+    # Phase==verified short-circuit above already returned; for acceptance
+    # (and verified-but-not-yet-synced) require matching nonce.
+    if phase == "acceptance":
+        try:
+            assert_autopilot_accept_authority(
+                root,
+                run_id,
+                status=run_pre,
+                require_acceptance_phase=True,
+            )
+        except PermissionError as exc:
+            raise AutopilotError(str(exc)) from exc
+
     with execution_lease(root, run_id, intent="autopilot-accept") as lease:
         state = load_autopilot(root, run_id)
         phase2 = str(state.get("phase") or "")
@@ -887,6 +982,16 @@ def complete_with_acceptance(
 
         if already and phase2 in ("acceptance", "verified"):
             # omg accept already verified; do not re-run freeze_and_run.
+            if phase2 == "acceptance":
+                try:
+                    assert_autopilot_accept_authority(
+                        root,
+                        run_id,
+                        status=run_now,
+                        require_acceptance_phase=True,
+                    )
+                except PermissionError as exc:
+                    raise AutopilotError(str(exc)) from exc
             return _sync_autopilot_verified(
                 root,
                 run_id,
@@ -898,6 +1003,16 @@ def complete_with_acceptance(
             raise AutopilotError(
                 f"acceptance only from acceptance phase (got {phase2!r})"
             )
+
+        try:
+            assert_autopilot_accept_authority(
+                root,
+                run_id,
+                status=run_now,
+                require_acceptance_phase=True,
+            )
+        except PermissionError as exc:
+            raise AutopilotError(str(exc)) from exc
 
         prd_obj: dict[str, Any] | None = dict(prd) if prd is not None else None
         if prd_obj is None:

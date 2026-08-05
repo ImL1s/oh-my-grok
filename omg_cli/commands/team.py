@@ -49,6 +49,19 @@ def cmd_accept(args: argparse.Namespace) -> int:
         print(f"accept failed: no run found: {run_id}", file=sys.stderr)
         return 1
 
+    # Autopilot sidecar present → always refuse bare accept (even if status.mode
+    # was hand-edited away from autopilot). Defense in depth: also refuse when
+    # mode still says autopilot.
+    from omg_cli.autopilot import autopilot_state_path
+
+    if autopilot_state_path(root, run_id).is_file():
+        print(
+            "accept failed: autopilot runs must use "
+            "`omg autopilot complete` (not bare `omg accept`)",
+            file=sys.stderr,
+        )
+        return 1
+
     if run.get("mode") == "autopilot":
         print(
             "accept failed: autopilot runs must use "
