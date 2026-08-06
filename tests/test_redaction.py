@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from omg_cli.redaction import REDACTED, redact_text, redact_value
 
@@ -275,4 +276,39 @@ def test_redact_text_closes_pr94o_residual_p2_classes() -> None:
 
     # Non-sensitive URL schemes must remain intact.
     assert "https://example.test/x" in redact_text("url=https://example.test/x")
+
+
+def test_redact_text_closes_pr94p_residual_p2_classes() -> None:
+    """Close Pro reaudit P2s: overlong key, quote/& tails, delimiter split, flood."""
+    # Former 4096-cap fail-open: full key must still reach is_sensitive_key.
+    overlong = "token" + ("a" * 4092) + "=super-secret"
+    out = redact_text(overlong)
+    assert "super-secret" not in out
+    assert out.endswith(f"={REDACTED}")
+
+    for source, leaked in (
+        ('token="Bearer" super-secret', "super-secret"),
+        ('command="rm" -rf /', "-rf /"),
+        ('prompt="""hello super-secret"""', "super-secret"),
+        ("command=echo safe & curl super-secret", "super-secret"),
+        ("token=Bearer first&second-secret", "second-secret"),
+    ):
+        out = redact_text(source)
+        assert leaked not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    for source, leaked in (
+        ("to;ken://super-secret", "super-secret"),
+        ("api;key=super-secret", "super-secret"),
+        ('headers["api;key"]=super-secret', "super-secret"),
+    ):
+        out = redact_text(source)
+        assert leaked not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    # Separator flood must stay O(n) (no per-separator 4096 backscan).
+    flood = ":" * 12_000
+    started = time.perf_counter()
+    assert redact_text(flood) == flood
+    assert time.perf_counter() - started < 1.0
 

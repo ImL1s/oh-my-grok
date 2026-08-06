@@ -16,9 +16,6 @@ from urllib.parse import unquote_plus
 
 REDACTED = "[REDACTED]"
 _MAX_KEY_LEN = 256
-# Absolute scan cap: oversize keys still reach ``is_sensitive_key`` (fail-closed)
-# instead of silently dropping the assignment.
-_MAX_KEY_SCAN = 4096
 
 _SENSITIVE_KEY_PARTS = (
     "authorization",
@@ -70,16 +67,15 @@ def _line_end(text: str, start: int) -> int:
 def _consume_value(text: str, start: int, *, query: bool, key: str) -> int | None:
     """Return end index of a value starting at ``start``, or None if empty.
 
-    Quoted values consume through a matching closer only (commas/semicolons
-    inside quotes are content). Unclosed quotes eat to EOL/EOF (query also
-    stops at ``&``/``#``). Authorization/cookie keys use an EOL consumer so
-    multi-token schemes cannot leak. Delimiter-leading unquoted values still
-    redact through the following token rather than fail-open.
+    Plain (non-query) sensitive assignments always eat through EOL so matching
+    quotes, ampersands, and multi-token tails cannot leak. Query values still
+    stop at ``&``/``#``; unclosed quotes eat to that boundary or EOL/EOF.
+    Authorization/cookie keys use an EOL consumer in both modes.
     """
 
     if start >= len(text):
         return None
-    if _is_authorization_key(key) or _is_cookie_key(key):
+    if not query or _is_authorization_key(key) or _is_cookie_key(key):
         return _line_end(text, start)
 
     quote = text[start]
@@ -94,48 +90,15 @@ def _consume_value(text: str, start: int, *, query: bool, key: str) -> int | Non
                 return i + 1
             if ch in "\r\n":
                 return i
-            if query and ch in "&#":
+            if ch in "&#":
                 return i
             i += 1
         return len(text)
 
-    # Delimiter-leading: password=;hunter2 / command=;rm -rf / — fail-closed
-    # through EOL so a parser delimiter cannot hide the remainder.
-    if not query and text[start] in ",;":
-        return _line_end(text, start)
-
-    if query:
-        match = re.match(r"[^&#\s]+", text[start:])
-    else:
-        # Sensitive plain assignments: eat through EOL (spaces allowed) so
-        # multi-token secrets cannot leak a trailing plaintext segment.
-        match = re.match(r"[^&\r\n]+", text[start:])
+    match = re.match(r"[^&#\s]+", text[start:])
     if match is None:
-        # Sensitive key with no parseable value: still redact through EOL.
         return _line_end(text, start)
     return start + match.end()
-
-
-def _key_start_before(text: str, key_end: int, floor: int) -> int:
-    """Walk backward from ``key_end`` to the start of a key candidate."""
-
-    start = key_end
-    limit = max(floor, key_end - _MAX_KEY_SCAN)
-    while start > limit:
-        ch = text[start - 1]
-        if ch in "\r\n&?;,=":
-            break
-        if ch in " \t":
-            # Allow interior spaces ("api key") but not whitespace before the key.
-            if start - 1 <= limit:
-                break
-            prev = text[start - 2]
-            if prev in "\r\n&?;,=":
-                break
-            start -= 1
-            continue
-        start -= 1
-    return start
 
 
 def _redact_query_assignments(text: str) -> str:
@@ -149,7 +112,7 @@ def _redact_query_assignments(text: str) -> str:
         prefix = text[i]
         key_start = i + 1
         eq = text.find("=", key_start)
-        if eq < 0 or eq - key_start > _MAX_KEY_SCAN:
+        if eq < 0:
             i = key_start
             continue
         # Query keys stop at structural chars; take literal slice to ``=``.
@@ -158,7 +121,7 @@ def _redact_query_assignments(text: str) -> str:
             i = key_start
             continue
         # Overlong non-sensitive keys are skipped; overlong sensitive keys
-        # still redact (fail-closed).
+        # still redact (fail-closed — never drop a sensitive assignment).
         if len(key) > _MAX_KEY_LEN and not is_sensitive_key(key):
             i = eq + 1
             continue
@@ -178,39 +141,58 @@ def _redact_query_assignments(text: str) -> str:
 
 
 def _redact_plain_assignments(text: str) -> str:
-    """Scan ``key[:=]value`` with keys validated only by ``is_sensitive_key``.
+    """Scan ``key[:=]value`` in a single O(n) forward pass.
 
-    Avoids a narrower key regex that can diverge from normalization (e.g.
-    ``api/key``, spaced brackets). Non-sensitive keys are not consumed, so
-    ``detail=token=secret`` still exposes the inner sensitive assignment.
+    Tracks the most recent structural boundary instead of walking backward from
+    each separator (avoids O(n·cap) separator-flood cost). Keys may include
+    characters stripped by ``_normalized_key`` (``;``, ``/``, brackets, …) so
+    the free-text scanner and ``is_sensitive_key`` stay aligned.
     """
 
     parts: list[str] = []
     pos = 0
+    boundary = -1
     i = 0
     length = len(text)
     while i < length:
-        if text[i] not in ":=":
+        ch = text[i]
+        if ch in "\r\n&?":
+            boundary = i
             i += 1
             continue
+        if ch not in ":=":
+            i += 1
+            continue
+
         sep_idx = i
+        region_start = boundary + 1
+        if region_start < pos:
+            region_start = pos
         key_end = sep_idx
-        while key_end > pos and text[key_end - 1] in " \t":
+        while key_end > region_start and text[key_end - 1] in " \t":
             key_end -= 1
-        key_start = _key_start_before(text, key_end, pos)
+        key_start = region_start
+        while key_start < key_end and text[key_start] in " \t":
+            key_start += 1
         key = text[key_start:key_end]
+
         # Skip non-sensitive ``scheme://`` URL forms only after the key check.
         if (
-            text[i] == ":"
+            ch == ":"
             and i + 2 < length
             and text[i + 1 : i + 3] == "//"
             and (not key or not is_sensitive_key(key))
         ):
+            boundary = sep_idx
             i += 1
             continue
         if not key or not is_sensitive_key(key):
+            # Non-matching separators become boundaries so the next key cannot
+            # glue across them (``detail=token=secret`` → inner ``token``).
+            boundary = sep_idx
             i = sep_idx + 1
             continue
+
         # Separator may include surrounding whitespace: ``key = value``.
         # Also accept ``key://value`` for sensitive keys.
         sep_end = sep_idx + 1
@@ -223,20 +205,19 @@ def _redact_plain_assignments(text: str) -> str:
         while sep_end < length and text[sep_end] in " \t":
             sep_end += 1
         sep = text[key_end:sep_end]
-        end = _consume_value(text, sep_end, query=False, key=key)
+        # Assignments that sit in a query string (after ``?``/``&``) must stop
+        # at the next ``&`` so ``?prompt=…&ok=1`` keeps the safe tail. Plain
+        # shell-style ``command=… & curl secret`` still eats through EOL.
+        in_query = boundary >= 0 and text[boundary] in "?&"
+        end = _consume_value(text, sep_end, query=in_query, key=key)
         if end is None:
+            boundary = sep_idx
             i = sep_idx + 1
             continue
-        # Prefer a word-ish boundary before the key when present.
-        prefix = ""
-        emit_from = key_start
-        if key_start > pos and text[key_start - 1].isalnum():
-            # Mid-token match (e.g. glued text); still redact — confidentiality
-            # wins — but keep the glued prefix outside the replacement.
-            pass
-        parts.append(text[pos:emit_from])
-        parts.append(f"{prefix}{key}{sep}{REDACTED}")
+        parts.append(text[pos:key_start])
+        parts.append(f"{key}{sep}{REDACTED}")
         pos = end
+        boundary = end - 1 if end > 0 else -1
         i = end
     parts.append(text[pos:])
     return "".join(parts)
