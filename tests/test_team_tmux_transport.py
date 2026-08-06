@@ -24,6 +24,37 @@ pytestmark = pytest.mark.tmux
 
 TEAM_ID = "team"
 
+# Stable server identity for hermetic WAL writes / sweep (no live tmux required).
+FAKE_TMUX_SERVER = {
+    "tmux_socket_path": "/tmp/omg-test-tmux.sock",
+    "tmux_server_pid": 424242,
+    "tmux_server_pid_start": "ps:omg-test-server",
+}
+
+
+@pytest.fixture(autouse=True)
+def _fake_tmux_server_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin probe to FAKE_TMUX_SERVER so WAL stamp/sweep stay hermetic."""
+    from omg_cli.team import tmux as tmux_mod
+
+    def _probe(*, socket_path: str | None = None):
+        if socket_path is not None and socket_path != FAKE_TMUX_SERVER["tmux_socket_path"]:
+            return {
+                "tmux_socket_path": socket_path,
+                "tmux_server_pid": 999999,
+                "tmux_server_pid_start": "ps:foreign-server",
+            }
+        return dict(FAKE_TMUX_SERVER)
+
+    monkeypatch.setattr(tmux_mod, "_probe_tmux_server_identity", _probe)
+
+
+def _write_launch_intent(root: Path, **kwargs):
+    from omg_cli.team.tmux import write_team_launch_intent
+
+    kwargs.setdefault("tmux_server", FAKE_TMUX_SERVER)
+    return write_team_launch_intent(root, **kwargs)
+
 
 def _tmux(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -280,7 +311,7 @@ def test_inside_tmux_splits_current_window(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("TMUX_PANE", "%9")
     calls: list[list[str]] = []
 
-    def fake_tmux(args: list[str]) -> SimpleNamespace:
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         calls.append(list(args))
         cmd = args[0]
         joined = " ".join(args)
@@ -370,7 +401,7 @@ def test_inside_commit_refuses_when_worker_pane_leaves_session(
     killed: list[str] = []
     window_alive = True
 
-    def fake_tmux(args: list[str]) -> SimpleNamespace:
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         nonlocal window_alive
         cmd = args[0]
         joined = " ".join(args)
@@ -381,6 +412,12 @@ def test_inside_commit_refuses_when_worker_pane_leaves_session(
                     returncode=0, stdout="leader\t$42\t@3\t%9\t4242\n", stderr=""
                 )
             if target == "@7":
+                if "#{socket_path}" in joined:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout="$42\t@7\t/tmp/omg-test-tmux.sock\t424242\n",
+                        stderr="",
+                    )
                 return SimpleNamespace(returncode=0, stdout="$42\t@7\n", stderr="")
             if target == "%10" and "#{session_id}" in joined:
                 return SimpleNamespace(
@@ -461,7 +498,7 @@ def test_inside_launch_refuses_identity_drift(
         ]
     )
 
-    def fake_tmux(args: list[str]) -> SimpleNamespace:
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         calls.append(list(args))
         if args[0] == "display-message" and "#{pane_pid}" in " ".join(args):
             return SimpleNamespace(returncode=0, stdout=next(snaps), stderr="")
@@ -502,7 +539,7 @@ def test_inside_new_window_malformed_stdout_kills_orphan(
     listed_windows = 0
     residual = {"@77"}
 
-    def fake_tmux(args: list[str]) -> SimpleNamespace:
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         nonlocal listed_windows
         cmd = args[0]
         joined = " ".join(args)
@@ -590,7 +627,7 @@ def test_inside_new_window_readback_failure_modes_kill_by_name(
             return "@77\tomg-team-cafebabe\t$42\n"
         return ""
 
-    def fake_tmux(args: list[str]) -> SimpleNamespace:
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         cmd = args[0]
         joined = " ".join(args)
         if cmd == "display-message" and "-t" in args:
@@ -676,7 +713,7 @@ def test_kill_inside_windows_absence_proof_rejects_still_present(
 
     from omg_cli.team import tmux as tmux_mod
 
-    def fake_tmux(args: list[str]) -> SimpleNamespace:
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         cmd = args[0]
         if cmd == "list-windows":
             if "-a" in args:
@@ -710,7 +747,7 @@ def test_kill_inside_windows_absence_proof_ok_when_gone(
 
     residual = {"@77"}
 
-    def fake_tmux(args: list[str]) -> SimpleNamespace:
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         cmd = args[0]
         if cmd == "list-windows":
             if residual:
@@ -754,7 +791,7 @@ def test_inside_launch_writes_and_clears_intent_on_successful_cleanup(
     residual = {"@77"}
     intent_seen: list[Path] = []
 
-    def fake_tmux(args: list[str]) -> SimpleNamespace:
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         cmd = args[0]
         joined = " ".join(args)
         if cmd == "display-message" and "-t" in args:
@@ -823,7 +860,7 @@ def test_require_clean_launch_intents_refuses_when_sweep_unproven(
         write_team_launch_intent,
     )
 
-    intent = write_team_launch_intent(
+    intent = _write_launch_intent(
         tmp_path,
         run_id="20260806T120000Z-oldrun",
         session_id="$99",
@@ -951,7 +988,7 @@ def test_sweep_refuses_adopt_when_identity_generation_skips_chain(
     rid = "20260806T120000Z-gen-skip"
     nonce = "cafebabecafebabecafebabecafebabe"
     window_name = "omg-team-worker"
-    intent = write_team_launch_intent(
+    intent = _write_launch_intent(
         tmp_path,
         run_id=rid,
         session_id="$42",
@@ -1008,7 +1045,7 @@ def test_sweep_refuses_adopt_on_malformed_identity_generation(
     rid = "20260806T120000Z-malgen" + str(abs(hash(repr(bad_generation))))[:8]
     nonce = "dddddddddddddddddddddddddddddddd"
     window_name = "omg-team-worker"
-    intent = write_team_launch_intent(
+    intent = _write_launch_intent(
         tmp_path,
         run_id=rid,
         session_id="$42",
@@ -1052,7 +1089,7 @@ def test_kill_window_requires_global_absence_proof(
 
     still_present = True
 
-    def fake_tmux(args: list[str]) -> SimpleNamespace:
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         cmd = args[0]
         if cmd == "kill-window":
             return SimpleNamespace(returncode=1, stdout="", stderr="can't find")
@@ -1082,7 +1119,7 @@ def test_kill_inside_name_absence_does_not_override_unproven_window_id(
     # After kill attempts, the launch name disappears (rename) but @77 remains.
     name_visible = True
 
-    def fake_tmux(args: list[str]) -> SimpleNamespace:
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         nonlocal name_visible
         cmd = args[0]
         if cmd == "list-windows":
@@ -1126,7 +1163,7 @@ def test_create_inside_retains_wal_when_window_id_kill_unproven(
     rid = "20260806T120000Z-idkill"
     cleared: list[object] = []
 
-    def fake_tmux(args: list[str]) -> SimpleNamespace:
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         cmd = args[0]
         joined = " ".join(args)
         if cmd == "display-message" and "-t" in args:
@@ -1151,7 +1188,7 @@ def test_create_inside_retains_wal_when_window_id_kill_unproven(
     monkeypatch.setattr(
         tmux_mod,
         "_kill_window",
-        lambda wid: f"kill-window {wid}: still present after kill",
+        lambda wid, **_kw: f"kill-window {wid}: still present after kill",
     )
     monkeypatch.setattr(
         tmux_mod,
@@ -1198,7 +1235,7 @@ def test_bind_team_launch_intent_window_id_stamps_and_is_idempotent(
         write_team_launch_intent,
     )
 
-    intent = write_team_launch_intent(
+    intent = _write_launch_intent(
         tmp_path,
         run_id="20260806T120000Z-bind",
         session_id="$7",
@@ -1232,7 +1269,7 @@ def test_inside_new_window_stamps_window_id_on_launch_wal(
     rid = "20260806T120000Z-stamp"
     stamped: list[dict] = []
 
-    def fake_tmux(args: list[str]) -> SimpleNamespace:
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         cmd = args[0]
         joined = " ".join(args)
         if cmd == "display-message" and "-t" in args:
@@ -1294,7 +1331,7 @@ def test_kill_inside_known_window_id_survives_rename_before_discovery(
 
     residual = {"@77"}
 
-    def fake_tmux(args: list[str]) -> SimpleNamespace:
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         cmd = args[0]
         if cmd == "list-windows":
             if "-a" in args:
@@ -1332,7 +1369,7 @@ def test_kill_inside_known_window_id_refuses_when_renamed_still_present(
 
     from omg_cli.team import tmux as tmux_mod
 
-    def fake_tmux(args: list[str]) -> SimpleNamespace:
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         cmd = args[0]
         if cmd == "list-windows":
             if "-a" in args:
@@ -1364,7 +1401,7 @@ def test_sweep_retains_wal_when_bound_window_renamed_before_discovery(
     )
 
     rid = "20260806T120000Z-renamed-wal"
-    intent = write_team_launch_intent(
+    intent = _write_launch_intent(
         tmp_path,
         run_id=rid,
         session_id="$42",
@@ -1403,7 +1440,7 @@ def test_sweep_clears_wal_when_bound_window_id_proven_absent(
     )
 
     rid = "20260806T120000Z-bound-gone"
-    intent = write_team_launch_intent(
+    intent = _write_launch_intent(
         tmp_path,
         run_id=rid,
         session_id="$42",
@@ -1430,13 +1467,281 @@ def test_sweep_clears_wal_when_bound_window_id_proven_absent(
     assert not intent.is_file()
 
 
+def test_sweep_refuses_foreign_server_same_numbered_window_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """P1: WAL @N must not kill a same-numbered window on another tmux server."""
+    from omg_cli.team.tmux import (
+        bind_team_launch_intent_window_id,
+        sweep_stale_team_launch_intents,
+    )
+
+    rid = "20260806T120000Z-server-scope"
+    intent = _write_launch_intent(
+        tmp_path,
+        run_id=rid,
+        session_id="$0",
+        window_name="omg-team-server-a",
+        nonce="serverscope0000000000000000000001",
+    )
+    bind_team_launch_intent_window_id(intent, "@1")
+    raw = json.loads(intent.read_text(encoding="utf-8"))
+    raw["owner_pid"] = 999999999
+    raw["owner_pid_start"] = "stale-owner"
+    intent.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+    killed: list[str] = []
+
+    def boom_kill(**kwargs):
+        killed.append("called")
+        raise AssertionError("must not kill when server identity mismatches")
+
+    from omg_cli.team import tmux as tmux_mod
+
+    monkeypatch.setattr(
+        tmux_mod,
+        "_probe_tmux_server_identity",
+        lambda *, socket_path=None: {
+            "tmux_socket_path": FAKE_TMUX_SERVER["tmux_socket_path"],
+            "tmux_server_pid": 111111,
+            "tmux_server_pid_start": "ps:restarted-foreign",
+        },
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.tmux._kill_inside_windows_by_name", boom_kill
+    )
+    results = sweep_stale_team_launch_intents(tmp_path)
+    assert results and results[0].get("ok") is False
+    assert "server identity mismatch" in str(results[0].get("error") or "")
+    assert killed == []
+    assert intent.is_file()
+
+
+def test_kill_window_refuses_foreign_session_same_window_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1: @N present in a different session must not be torn down."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "display-message" and "-t" in args and "#{session_id}" in joined:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="$9\t@1\t/tmp/omg-test-tmux.sock\t424242\n",
+                stderr="",
+            )
+        if cmd == "kill-window":
+            raise AssertionError("must not kill foreign-session @N")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    err = tmux_mod._kill_window(
+        "@1",
+        socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
+        expected_session_id="$0",
+        expected_server=FAKE_TMUX_SERVER,
+    )
+    assert err is not None
+    assert "belongs to session" in err
+    assert "$9" in err
+
+
+def test_sweep_refuses_name_only_clear_after_side_effect_unbound(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """P2: post-new-window/pre-bind crash — name absence must not clear WAL."""
+    from omg_cli.team.tmux import (
+        mark_team_launch_intent_side_effect,
+        sweep_stale_team_launch_intents,
+    )
+
+    rid = "20260806T120000Z-unbound-se"
+    intent = _write_launch_intent(
+        tmp_path,
+        run_id=rid,
+        session_id="$42",
+        window_name="omg-team-renamed-away",
+        nonce="sideeffect00000000000000000000001",
+    )
+    mark_team_launch_intent_side_effect(intent)
+    raw = json.loads(intent.read_text(encoding="utf-8"))
+    assert raw.get("side_effect_started") is True
+    assert "window_id" not in raw
+    raw["owner_pid"] = 999999999
+    raw["owner_pid_start"] = "stale-owner"
+    intent.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+    def fake_kill(**kwargs):
+        assert kwargs.get("require_durable_window_id") is True
+        assert list(kwargs.get("known_window_ids") or []) == []
+        return (
+            "window 'omg-team-renamed-away' name absent but durable window_id "
+            "required (side effect started / unbound) — refuse WAL clear"
+        )
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux._kill_inside_windows_by_name", fake_kill
+    )
+    results = sweep_stale_team_launch_intents(tmp_path)
+    assert results and results[0].get("ok") is False
+    assert "durable window_id" in str(results[0].get("error") or "")
+    assert intent.is_file()
+
+
+def test_kill_inside_unbound_side_effect_refuses_name_only_absence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2: require_durable_window_id + empty targets → refuse name-only success."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
+        cmd = args[0]
+        if cmd == "list-windows":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "kill-window":
+            return SimpleNamespace(returncode=1, stdout="", stderr="can't find")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    err = tmux_mod._kill_inside_windows_by_name(
+        session_id="$42",
+        window_name="omg-team-renamed-before-bind",
+        known_window_ids=[],
+        require_durable_window_id=True,
+    )
+    assert err is not None
+    assert "durable window_id" in err
+
+
+def test_pre_side_effect_wal_may_clear_on_name_absence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Crash before new-window (side_effect_started=false) may clear on name gone."""
+    from omg_cli.team.tmux import sweep_stale_team_launch_intents
+
+    rid = "20260806T120000Z-pre-se"
+    intent = _write_launch_intent(
+        tmp_path,
+        run_id=rid,
+        session_id="$42",
+        window_name="omg-team-never-created",
+        nonce="presideeffect0000000000000000001",
+    )
+    raw = json.loads(intent.read_text(encoding="utf-8"))
+    assert raw.get("side_effect_started") is False
+    raw["owner_pid"] = 999999999
+    raw["owner_pid_start"] = "stale-owner"
+    intent.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+    def fake_kill(**kwargs):
+        assert kwargs.get("require_durable_window_id") is False
+        return None
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux._kill_inside_windows_by_name", fake_kill
+    )
+    results = sweep_stale_team_launch_intents(tmp_path)
+    assert results and results[0].get("ok") is True
+    assert not intent.is_file()
+
+
+def test_bind_failure_still_publishes_window_id_for_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """P2: synchronous bind failure must not lose the exact @N for cleanup."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+    from omg_cli.team.tmux import TmuxTeamError
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    monkeypatch.setenv("TMUX_PANE", "%9")
+    monkeypatch.setattr(tmux_mod.secrets, "token_hex", lambda _n: "bindfail0")
+    rid = "20260806T120000Z-bindfail"
+    killed_ids: list[str] = []
+
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "display-message" and "-t" in args:
+            target = args[args.index("-t") + 1]
+            if target == "%9" and "#{pane_pid}" in joined:
+                return SimpleNamespace(
+                    returncode=0, stdout="leader\t$42\t@3\t%9\t4242\n", stderr=""
+                )
+            if target == "@88" and "#{socket_path}" in joined:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="$42\t@88\t/tmp/omg-test-tmux.sock\t424242\n",
+                    stderr="",
+                )
+            if target == "@88":
+                return SimpleNamespace(returncode=0, stdout="$42\t@88\n", stderr="")
+        if cmd == "new-window":
+            return SimpleNamespace(returncode=0, stdout="@88\t%10\n", stderr="")
+        if cmd == "list-windows":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "kill-window":
+            killed_ids.append(args[args.index("-t") + 1])
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
+
+    def boom_bind(path, window_id):
+        raise TmuxTeamError(f"launch intent window_id bind refused: boom {window_id}")
+
+    monkeypatch.setattr(tmux_mod, "bind_team_launch_intent_window_id", boom_bind)
+
+    with pytest.raises(TmuxTeamError, match="bind refused"):
+        tmux_mod.create_split_team_session(
+            session="planned-name",
+            tasks=[
+                {
+                    "task_id": "w1",
+                    "worktree": "/tmp/w1",
+                    "pane_command": "true",
+                    "_env_pairs": [],
+                }
+            ],
+            env_pairs=[],
+            attach_mode="inside",
+            root=tmp_path,
+            run_id=rid,
+        )
+    assert "@88" in killed_ids
+
+
+def test_launch_intent_stamps_tmux_server_identity(tmp_path: Path) -> None:
+    """WAL write must carry socket + server pid start-id before new-window."""
+    intent = _write_launch_intent(
+        tmp_path,
+        run_id="20260806T120000Z-srvstamp",
+        session_id="$3",
+        window_name="omg-team-srv",
+        nonce="srvstamp000000000000000000000001",
+    )
+    raw = json.loads(intent.read_text(encoding="utf-8"))
+    assert raw["tmux_socket_path"] == FAKE_TMUX_SERVER["tmux_socket_path"]
+    assert raw["tmux_server_pid"] == FAKE_TMUX_SERVER["tmux_server_pid"]
+    assert raw["tmux_server_pid_start"] == FAKE_TMUX_SERVER["tmux_server_pid_start"]
+    assert raw["side_effect_started"] is False
+
+
 def test_clear_intent_fsync_failure_after_unlink_is_nonfatal(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Parent fsync failure after unlink must not raise (WAL already gone)."""
     from omg_cli.team.tmux import clear_team_launch_intent, write_team_launch_intent
 
-    intent = write_team_launch_intent(
+    intent = _write_launch_intent(
         tmp_path,
         run_id="20260806T120000Z-fsync",
         session_id="$7",
@@ -1465,7 +1770,7 @@ def test_sweep_adopts_receipt_bound_intent_without_kill(
     rid = "20260806T120000Z-adopt"
     nonce = "cafebabecafebabecafebabecafebabe"
     window_name = "omg-team-worker"
-    intent = write_team_launch_intent(
+    intent = _write_launch_intent(
         tmp_path,
         run_id=rid,
         session_id="$42",
@@ -1513,7 +1818,7 @@ def test_sweep_refuses_receipt_only_without_team_json(
     rid = "20260806T120000Z-receiptonly"
     nonce = "cafebabecafebabecafebabecafebabe"
     window_name = "omg-team-worker"
-    intent = write_team_launch_intent(
+    intent = _write_launch_intent(
         tmp_path,
         run_id=rid,
         session_id="$42",
@@ -1582,7 +1887,7 @@ def test_sweep_refuses_forged_minimal_matching_receipt(
     rid = "20260806T120000Z-forged"
     nonce = "fefefefefefefefefefefefefefefefe"
     window_name = "omg-team-worker"
-    intent = write_team_launch_intent(
+    intent = _write_launch_intent(
         tmp_path,
         run_id=rid,
         session_id="$42",
@@ -1636,7 +1941,7 @@ def test_sweep_refuses_unbound_receipt_for_new_intent(
     )
 
     rid = "20260806T120000Z-orphan"
-    intent = write_team_launch_intent(
+    intent = _write_launch_intent(
         tmp_path,
         run_id=rid,
         session_id="$42",
@@ -1685,7 +1990,7 @@ def test_sweep_refuses_schema_v1_receipt_for_intent_adoption(
     rid = "20260806T120000Z-v1legacy"
     nonce = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     window_name = "omg-team-worker"
-    intent = write_team_launch_intent(
+    intent = _write_launch_intent(
         tmp_path,
         run_id=rid,
         session_id="$42",
@@ -1739,7 +2044,7 @@ def test_sweep_refuses_kill_when_intent_owner_alive(
         write_team_launch_intent,
     )
 
-    intent = write_team_launch_intent(
+    intent = _write_launch_intent(
         tmp_path,
         run_id="20260806T120000Z-live",
         session_id="$7",
@@ -1783,7 +2088,7 @@ def test_start_team_sweeps_all_run_ids_before_create(
         capture_output=True,
     )
 
-    old = write_team_launch_intent(
+    old = _write_launch_intent(
         tmp_path,
         run_id="20260806T110000Z-prior",
         session_id="$1",

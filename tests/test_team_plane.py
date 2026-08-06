@@ -66,6 +66,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BIN_OMG = REPO_ROOT / "bin" / "omg"
 PYTHON = sys.executable
 
+FAKE_TMUX_SERVER = {
+    "tmux_socket_path": "/tmp/omg-test-tmux.sock",
+    "tmux_server_pid": 424242,
+    "tmux_server_pid_start": "ps:omg-test-server",
+}
+
 TASKS_TWO = [
     {"task_id": "t-a", "owned_files": ["a.py"]},
     {"task_id": "t-b", "owned_files": ["b.py"]},
@@ -358,7 +364,10 @@ def test_live_start_persists_nonce_bound_immutable_launch_receipt(
         if command[0] == "set-option" and command[-2] == plane.LAUNCH_NONCE_OPTION:
             nonce_seen.append(command[-1])
         elif command[0] == "display-message":
-            result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+            if "-t" in command:
+                result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+            else:
+                result.stdout = "/tmp/omg-test-tmux.sock\t424242\n"
         elif command[0] == "list-panes":
             result.stdout = "0\t%7\t424242\n1\t%8\t424243\n"
         return result
@@ -418,7 +427,10 @@ def test_live_split_start_uses_atomic_pane_snapshot_before_receipt(
         if command[0] == "set-option" and command[-2] == plane.LAUNCH_NONCE_OPTION:
             nonce_holder["nonce"] = command[-1]
         elif command[0] == "display-message":
-            result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+            if "-t" in command:
+                result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+            else:
+                result.stdout = "/tmp/omg-test-tmux.sock\t424242\n"
         elif command[0] == "list-panes":
             list_panes_calls.append(command)
             # Prefer window-scoped list when window_id known.
@@ -479,6 +491,7 @@ def test_live_split_start_clears_intent_only_after_verified_team_meta(
             session_id="$3",
             window_name="omg-team-abad1dea",
             nonce="abad1deaabad1deaabad1deaabad1dea",
+            tmux_server=FAKE_TMUX_SERVER,
         )
         intent_path["path"] = intent
         intent_path["run_id"] = rid
@@ -500,7 +513,10 @@ def test_live_split_start_clears_intent_only_after_verified_team_meta(
         if command[0] == "set-option" and command[-2] == plane.LAUNCH_NONCE_OPTION:
             nonce_holder["nonce"] = command[-1]
         elif command[0] == "display-message":
-            result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+            if "-t" in command:
+                result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+            else:
+                result.stdout = "/tmp/omg-test-tmux.sock\t424242\n"
         elif command[0] == "list-panes":
             nonce = nonce_holder["nonce"]
             result.stdout = (
@@ -568,6 +584,7 @@ def test_live_split_start_writes_status_before_intent_clear(
             session_id="$3",
             window_name="omg-team-abad1dea",
             nonce="abad1deaabad1deaabad1deaabad1dea",
+            tmux_server=FAKE_TMUX_SERVER,
         )
         intent_path["path"] = intent
         intent_path["run_id"] = rid
@@ -589,7 +606,10 @@ def test_live_split_start_writes_status_before_intent_clear(
         if command[0] == "set-option" and command[-2] == plane.LAUNCH_NONCE_OPTION:
             nonce_holder["nonce"] = command[-1]
         elif command[0] == "display-message":
-            result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+            if "-t" in command:
+                result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+            else:
+                result.stdout = "/tmp/omg-test-tmux.sock\t424242\n"
         elif command[0] == "list-panes":
             nonce = nonce_holder["nonce"]
             result.stdout = (
@@ -656,6 +676,7 @@ def test_live_start_status_failure_keeps_intent_and_rolls_back_authority(
             session_id="$3",
             window_name="omg-team-abad1dea",
             nonce="abad1deaabad1deaabad1deaabad1dea",
+            tmux_server=FAKE_TMUX_SERVER,
         )
         intent_path["path"] = intent
         intent_path["run_id"] = rid
@@ -679,7 +700,10 @@ def test_live_start_status_failure_keeps_intent_and_rolls_back_authority(
         if command[0] == "set-option" and command[-2] == plane.LAUNCH_NONCE_OPTION:
             nonce_holder["nonce"] = command[-1]
         elif command[0] == "display-message":
-            result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+            if "-t" in command:
+                result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+            else:
+                result.stdout = "/tmp/omg-test-tmux.sock\t424242\n"
         elif command[0] == "list-panes":
             nonce = nonce_holder["nonce"]
             result.stdout = (
@@ -741,6 +765,7 @@ def test_live_start_keeps_authority_when_cleanup_unproven_after_meta(
             session_id="$3",
             window_name="omg-team-abad1dea",
             nonce="abad1deaabad1deaabad1deaabad1dea",
+            tmux_server=FAKE_TMUX_SERVER,
         )
         intent_path["path"] = intent
         intent_path["run_id"] = rid
@@ -762,7 +787,10 @@ def test_live_start_keeps_authority_when_cleanup_unproven_after_meta(
         if command[0] == "set-option" and command[-2] == plane.LAUNCH_NONCE_OPTION:
             nonce_holder["nonce"] = command[-1]
         elif command[0] == "display-message":
-            result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+            if "-t" in command:
+                result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+            else:
+                result.stdout = "/tmp/omg-test-tmux.sock\t424242\n"
         elif command[0] == "list-panes":
             nonce = nonce_holder["nonce"]
             result.stdout = (
@@ -825,6 +853,7 @@ def test_live_start_retains_authority_after_wal_cleared_postcommit_failure(
             session_id="$3",
             window_name="omg-team-abad1dea",
             nonce="abad1deaabad1deaabad1deaabad1dea",
+            tmux_server=FAKE_TMUX_SERVER,
         )
         intent_path["path"] = intent
         intent_path["run_id"] = rid
@@ -848,7 +877,10 @@ def test_live_start_retains_authority_after_wal_cleared_postcommit_failure(
         if command[0] == "set-option" and command[-2] == plane.LAUNCH_NONCE_OPTION:
             nonce_holder["nonce"] = command[-1]
         elif command[0] == "display-message":
-            result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+            if "-t" in command:
+                result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+            else:
+                result.stdout = "/tmp/omg-test-tmux.sock\t424242\n"
         elif command[0] == "list-panes":
             nonce = nonce_holder["nonce"]
             result.stdout = (
