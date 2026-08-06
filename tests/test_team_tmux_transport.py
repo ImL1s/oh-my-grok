@@ -1071,6 +1071,123 @@ def test_kill_window_requires_global_absence_proof(
     assert tmux_mod._kill_window("@12") is None
 
 
+def test_kill_inside_name_absence_does_not_override_unproven_window_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Renamed window: name gone must not clear when discovered @N still lives."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    # After kill attempts, the launch name disappears (rename) but @77 remains.
+    name_visible = True
+
+    def fake_tmux(args: list[str]) -> SimpleNamespace:
+        nonlocal name_visible
+        cmd = args[0]
+        if cmd == "list-windows":
+            if "-a" in args:
+                # Immutable id still globally present throughout.
+                return SimpleNamespace(returncode=0, stdout="@77\n", stderr="")
+            if name_visible:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="@77\tomg-team-renamed-away\t$42\n",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "kill-window":
+            # Simulate rename: original name no longer addressable, id lives.
+            name_visible = False
+            return SimpleNamespace(returncode=1, stdout="", stderr="can't find window")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    err = tmux_mod._kill_inside_windows_by_name(
+        session_id="$42", window_name="omg-team-renamed-away"
+    )
+    assert err is not None
+    assert "unproven absent" in err or "still present" in err
+    assert "@77" in err
+
+
+def test_create_inside_retains_wal_when_window_id_kill_unproven(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Exact-ID kill unproven + name absent must not clear launch-intent WAL."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+    from omg_cli.team.tmux import TmuxTeamError, team_launch_intents_dir
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    monkeypatch.setenv("TMUX_PANE", "%9")
+    monkeypatch.setattr(tmux_mod.secrets, "token_hex", lambda _n: "c0ffee00")
+    rid = "20260806T120000Z-idkill"
+    cleared: list[object] = []
+
+    def fake_tmux(args: list[str]) -> SimpleNamespace:
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "display-message" and "-t" in args:
+            target = args[args.index("-t") + 1]
+            if target == "%9" and "#{pane_pid}" in joined:
+                return SimpleNamespace(
+                    returncode=0, stdout="leader\t$42\t@3\t%9\t4242\n", stderr=""
+                )
+            if target == "@77":
+                return SimpleNamespace(returncode=0, stdout="$42\t@77\n", stderr="")
+            if target == "%10" and "#{session_id}" in joined:
+                # Force exception path after window_id is known.
+                return SimpleNamespace(
+                    returncode=0, stdout="%10\t$99\t@77\n", stderr=""
+                )
+        if cmd == "new-window":
+            return SimpleNamespace(returncode=0, stdout="@77\t%10\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
+    monkeypatch.setattr(
+        tmux_mod,
+        "_kill_window",
+        lambda wid: f"kill-window {wid}: still present after kill",
+    )
+    monkeypatch.setattr(
+        tmux_mod,
+        "_kill_inside_windows_by_name",
+        lambda **_kw: None,  # name-only absence (rename) — must NOT authorize WAL clear
+    )
+    real_clear = tmux_mod.clear_team_launch_intent
+
+    def track_clear(path):
+        cleared.append(path)
+        return real_clear(path)
+
+    monkeypatch.setattr(tmux_mod, "clear_team_launch_intent", track_clear)
+
+    with pytest.raises(TmuxTeamError, match="still present"):
+        tmux_mod.create_split_team_session(
+            session="planned-name",
+            tasks=[
+                {
+                    "task_id": "w1",
+                    "worktree": "/tmp/w1",
+                    "pane_command": "true",
+                    "_env_pairs": [],
+                }
+            ],
+            env_pairs=[],
+            attach_mode="inside",
+            root=tmp_path,
+            run_id=rid,
+        )
+    assert cleared == []  # must not clear on unproven ID kill
+    intents = list(team_launch_intents_dir(tmp_path).glob(f"{rid}-*.json"))
+    assert len(intents) == 1
+    assert intents[0].is_file()  # WAL retained — launch authority recoverable
+
+
 def test_clear_intent_fsync_failure_after_unlink_is_nonfatal(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

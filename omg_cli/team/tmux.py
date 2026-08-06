@@ -1029,7 +1029,9 @@ def _kill_inside_windows_by_name(
     """Kill windows matching *window_name* in *session_id*; require absence proof.
 
     After kill attempts, re-runs a successful ``list-windows`` and requires the
-    transaction name to be **absent**. Bare ``kill-window`` rc 0/1 is never
+    transaction name to be **absent**. When discovery previously returned exact
+    window IDs, each ID must also be globally absent — a rename can hide the
+    launch name while ``@N`` still lives. Bare ``kill-window`` rc 0/1 is never
     treated as success by itself. Returns ``None`` only when absence is proven;
     otherwise returns an error detail (unknown list / still present / OSError).
     """
@@ -1071,6 +1073,16 @@ def _kill_inside_windows_by_name(
         session_id=session_id, window_name=window_name
     )
     if proof_status == "absent":
+        # Name gone is not enough when we knew immutable IDs — re-prove each
+        # discovered @N is globally absent (rename / probe races).
+        for wid in matches:
+            id_err = _kill_window(wid)
+            if id_err:
+                return (
+                    f"window id {wid} unproven absent after name "
+                    f"{window_name!r} gone; {id_err}"
+                    + (("; " + "; ".join(errors)) if errors else "")
+                )
         return None
     if proof_status in ("found", "ambiguous"):
         return (
@@ -1473,16 +1485,19 @@ def _create_inside(
         cleanup_bits: list[str] = []
         cleanup_ok = False
         if window_id:
-            err = _kill_window(window_id)
-            if err:
-                cleanup_bits.append(err)
+            id_err = _kill_window(window_id)
+            if id_err:
+                cleanup_bits.append(id_err)
             # Also require name-level absence proof when we have session+name.
             name_err = _kill_inside_windows_by_name(
                 session_id=live_id, window_name=window_name
             )
             if name_err:
                 cleanup_bits.append(name_err)
-            else:
+            # Name absence must not override an unproven exact window-ID kill —
+            # a rename can hide the launch name while @N still lives; clearing
+            # the WAL then drops recoverable launch authority.
+            if id_err is None and name_err is None:
                 cleanup_ok = True
         else:
             err = _kill_inside_windows_by_name(
