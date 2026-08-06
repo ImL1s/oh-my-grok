@@ -52,6 +52,7 @@ from omg_cli.team.plane import (
     _read_tmux_launch_nonce_for_pane,
     _read_tmux_session_identity,
     _session_alive,
+    _status_worker_alive,
     _tmux_launch_authority_matches,
     _task_role,
     _tmux_run,
@@ -64,6 +65,7 @@ from omg_cli.team.plane import (
     load_team_meta,
     mutate_team_meta,
     team_dir,
+    team_launch_receipt_path,
     team_meta_path,
     plugin_root,
     wrap_pane_with_worker_ready,
@@ -4000,14 +4002,26 @@ def _reconcile_resume_tasks(
     meta: Mapping[str, Any],
     *,
     probe_tmux: bool,
+    expected_session_id: str | None = None,
+    launch_nonce: str | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], int]:
-    """Probe liveness for *meta* tasks; return (status_by_tid, reconciliations, changed)."""
+    """Probe liveness for *meta* tasks; return (status_by_tid, reconciliations, changed).
+
+    Pane-id tasks use the same fail-closed identity chain as ``team_status``
+    (session_id + pane nonce + pid/pid_start). Bare ``pane_alive`` is never
+    enough to write ``STATUS_RUNNING`` — a respawned pane keeps ``%id`` while
+    replacing the worker process.
+    """
 
     session = str(meta.get("session") or "")
     dry = bool(meta.get("dry_run"))
     changed = 0
     tasks_out: list[dict[str, Any]] = []
     reconciliations: list[dict[str, Any]] = []
+    nonce = launch_nonce if isinstance(launch_nonce, str) else None
+    if nonce is None:
+        raw_nonce = meta.get("launch_nonce")
+        nonce = raw_nonce if isinstance(raw_nonce, str) else None
 
     for raw in meta.get("tasks") or []:
         if not isinstance(raw, Mapping):
@@ -4031,10 +4045,25 @@ def _reconcile_resume_tasks(
 
         pane_id = rec.get("pane_id")
         if isinstance(pane_id, str) and pane_id:
-            from omg_cli.team.tmux import pane_alive
-
-            win = pane_alive(pane_id)
+            expected_pid = rec.get("pid")
+            expected_pid_i = (
+                expected_pid if isinstance(expected_pid, int) and not isinstance(expected_pid, bool) else None
+            )
+            expected_start = rec.get("pid_start")
+            expected_start_s = (
+                expected_start if isinstance(expected_start, str) else None
+            )
+            exact = _status_worker_alive(
+                pane_id=pane_id,
+                session=session,
+                expected_session_id=expected_session_id,
+                launch_nonce=nonce,
+                expected_pid_start=expected_start_s,
+                expected_pid=expected_pid_i,
+            )
+            win = True if exact else False
         else:
+            # Legacy windows topology / hermetic mocks without pane_id.
             win = _window_alive(session, widx)
         if win is True:
             new_st = STATUS_RUNNING
@@ -4139,8 +4168,24 @@ def _resume_team_locked_impl(
         )
         session = str(meta.get("session") or "")
         dry = bool(meta.get("dry_run"))
+        expected_session_id: str | None = None
+        launch_nonce = meta.get("launch_nonce")
+        receipt_path = team_launch_receipt_path(root_path, rid)
+        if receipt_path.is_file():
+            try:
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                receipt = None
+            if isinstance(receipt, dict):
+                if isinstance(receipt.get("session_id"), str):
+                    expected_session_id = str(receipt["session_id"])
+                if isinstance(receipt.get("launch_nonce"), str):
+                    launch_nonce = receipt.get("launch_nonce") or launch_nonce
         status_by_tid, reconciliations, changed = _reconcile_resume_tasks(
-            meta, probe_tmux=probe_tmux
+            meta,
+            probe_tmux=probe_tmux,
+            expected_session_id=expected_session_id,
+            launch_nonce=launch_nonce if isinstance(launch_nonce, str) else None,
         )
         resumed_at = _utc_now()
         resume_changes = changed
@@ -4988,7 +5033,7 @@ def _relaunch_dead_incomplete_workers_locked(
 ) -> dict[str, Any]:
     """Body of relaunch; caller must hold :func:`acquire_scale_lock`."""
     from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
-    from omg_cli.team.tmux import TmuxTeamError, pane_alive, respawn_worker_pane
+    from omg_cli.team.tmux import TmuxTeamError, respawn_worker_pane
 
     meta = _require_team_run(root_path, rid)
     pending_operation = pending_identity_wal_operation(root_path, rid, meta)
@@ -5054,6 +5099,23 @@ def _relaunch_dead_incomplete_workers_locked(
             pending_task_ids.append(task_id)
 
     candidates: list[dict[str, Any]] = []
+    relaunch_expected_session_id: str | None = None
+    relaunch_launch_nonce: str | None = None
+    receipt_path = team_launch_receipt_path(root_path, rid)
+    if receipt_path.is_file():
+        try:
+            launch_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            launch_receipt = None
+        if isinstance(launch_receipt, dict):
+            if isinstance(launch_receipt.get("session_id"), str):
+                relaunch_expected_session_id = str(launch_receipt["session_id"])
+            if isinstance(launch_receipt.get("launch_nonce"), str):
+                relaunch_launch_nonce = str(launch_receipt["launch_nonce"])
+    if relaunch_launch_nonce is None:
+        raw_nonce = meta.get("launch_nonce")
+        relaunch_launch_nonce = raw_nonce if isinstance(raw_nonce, str) else None
+
     for rec in tasks_all:
         tid = str(rec.get("task_id") or "")
         if pending_task_ids is not None:
@@ -5070,14 +5132,30 @@ def _relaunch_dead_incomplete_workers_locked(
         if not isinstance(pane_id, str) or not pane_id:
             skipped.append({"task_id": tid, "reason": "no_pane_id"})
             continue
-        alive = pane_alive(pane_id)
-        if alive is True:
-            skipped.append({"task_id": tid, "reason": "alive"})
-            continue
-        if alive is None:
+        if not tmux_available():
             skipped.append({"task_id": tid, "reason": "tmux_unavailable"})
             continue
-        # Dead pane.
+        expected_pid = rec.get("pid")
+        expected_pid_i = (
+            expected_pid
+            if isinstance(expected_pid, int) and not isinstance(expected_pid, bool)
+            else None
+        )
+        expected_start = rec.get("pid_start")
+        expected_start_s = expected_start if isinstance(expected_start, str) else None
+        # Exact identity only — bare pane_alive would skip relaunch for a
+        # respawned %id hosting a foreign process.
+        if _status_worker_alive(
+            pane_id=pane_id,
+            session=session,
+            expected_session_id=relaunch_expected_session_id,
+            launch_nonce=relaunch_launch_nonce,
+            expected_pid_start=expected_start_s,
+            expected_pid=expected_pid_i,
+        ):
+            skipped.append({"task_id": tid, "reason": "alive"})
+            continue
+        # Dead pane or identity drift (respawn / reuse).
         terminal = _worker_api_tasks_terminal(
             root_path,
             run_id=rid,

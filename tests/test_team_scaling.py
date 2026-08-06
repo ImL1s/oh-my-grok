@@ -1555,10 +1555,16 @@ def _prepare_live_relaunch_team(
         lambda *_args, **_kwargs: False,
     )
     monkeypatch.setattr(scaling, "_worktree_dirty", lambda _path: False)
-    monkeypatch.setattr(
-        "omg_cli.team.tmux.pane_alive",
-        lambda pane: pane_to_task.get(pane) not in dead_ids,
-    )
+    monkeypatch.setattr(scaling, "tmux_available", lambda: True)
+
+    def fake_status_alive(
+        *,
+        pane_id: str,
+        **_kwargs: Any,
+    ) -> bool:
+        return pane_to_task.get(pane_id) not in dead_ids
+
+    monkeypatch.setattr(scaling, "_status_worker_alive", fake_status_alive)
     monkeypatch.setattr(scaling, "_resync_window_indices", lambda *_args: None)
     launched: dict[str, str] = {}
     respawns: list[str] = []
@@ -3719,6 +3725,89 @@ def test_resume_does_not_trust_stale_running_without_live_window(
     resume_team(tmp_path, rid)
     disk = load_team_meta(tmp_path, rid)
     assert disk["tasks"][0]["status"] == STATUS_NEEDS_COLLECT
+
+
+def test_resume_refuses_respawned_pane_same_id_new_pid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Same %pane with a new PID must not be written STATUS_RUNNING on resume."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    meta = start_team("respawn resume", TASKS_TWO, root=tmp_path, dry_run=True)
+    rid = meta["run_id"]
+    live = dict(load_team_meta(tmp_path, rid))
+    live["dry_run"] = False
+    live["session"] = "omg-resume-respawn"
+    live["topology"] = "split"
+    live["launch_nonce"] = "a" * 32
+    live["tasks"] = [
+        {
+            **live["tasks"][0],
+            "status": STATUS_RUNNING,
+            "window_index": 0,
+            "pane_id": "%81",
+            "pid": 1111,
+            "pgid": 2111,
+            "pid_start": "start-1111",
+        },
+        {
+            **live["tasks"][1],
+            "status": STATUS_RUNNING,
+            "window_index": 1,
+            "pane_id": "%82",
+            "pid": 2222,
+            "pgid": 3222,
+            "pid_start": "start-2222",
+        },
+    ]
+    _receipt, receipt_hash = plane._persist_team_launch_receipt(
+        tmp_path,
+        rid,
+        session=live["session"],
+        session_id="$7",
+        launch_nonce="a" * 32,
+        tasks=live["tasks"],
+    )
+    live["launch_receipt_sha256"] = receipt_hash
+    live["identity_receipt_sha256"] = receipt_hash
+    _write_team_meta(tmp_path, rid, live)
+
+    def fake_probe(pane_id: str):
+        # Pane object still exists (respawn kept %id) but hosts a new PID.
+        if pane_id == "%81":
+            return {
+                "pane_id": "%81",
+                "dead": False,
+                "session_id": "$7",
+                "pane_pid": 9999,
+            }
+        if pane_id == "%82":
+            return {
+                "pane_id": "%82",
+                "dead": False,
+                "session_id": "$7",
+                "pane_pid": 2222,
+            }
+        return None
+
+    monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
+    monkeypatch.setattr(
+        plane,
+        "_read_tmux_launch_nonce_for_pane",
+        lambda pane_id, _session, **_kw: "a" * 32,
+    )
+    monkeypatch.setattr(plane, "_pid_start_identity", lambda pid: f"start-{pid}")
+    # Bare pane_alive would claim both alive — must not drive resume FSM.
+    monkeypatch.setattr("omg_cli.team.tmux.pane_alive", lambda _pane: True)
+
+    out = resume_team(tmp_path, rid)
+    disk = load_team_meta(tmp_path, rid)
+    by_id = {t["task_id"]: t for t in disk["tasks"]}
+    assert by_id["t-a"]["status"] == STATUS_NEEDS_COLLECT
+    assert by_id["t-b"]["status"] == STATUS_RUNNING
+    assert out["changes"] == 1
+    assert out["verified"] is False
 
 
 # ---------------------------------------------------------------------------

@@ -468,6 +468,68 @@ def test_inside_launch_refuses_identity_drift(
     assert not any(c[0] == "new-window" for c in calls)
 
 
+def test_inside_new_window_malformed_stdout_kills_orphan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rc=0 + empty/malformed stdout must discover-by-name and kill-window."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+    from omg_cli.team.tmux import TmuxTeamError
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    monkeypatch.setenv("TMUX_PANE", "%9")
+    monkeypatch.setattr(tmux_mod.secrets, "token_hex", lambda _n: "deadbeef")
+    killed: list[str] = []
+    listed_windows = 0
+
+    def fake_tmux(args: list[str]) -> SimpleNamespace:
+        nonlocal listed_windows
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "display-message" and "-t" in args:
+            target = args[args.index("-t") + 1]
+            if target == "%9" and "#{pane_pid}" in joined:
+                return SimpleNamespace(
+                    returncode=0, stdout="leader\t$42\t@3\t%9\t4242\n", stderr=""
+                )
+        if cmd == "new-window":
+            # Side effect succeeded; result publication failed.
+            return SimpleNamespace(returncode=0, stdout="\n", stderr="")
+        if cmd == "list-windows":
+            listed_windows += 1
+            assert args[args.index("-t") + 1] == "$42"
+            return SimpleNamespace(
+                returncode=0,
+                stdout="@77\tomg-team-deadbeef\t$42\n",
+                stderr="",
+            )
+        if cmd == "kill-window":
+            killed.append(args[-1])
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
+
+    with pytest.raises(TmuxTeamError, match="did not return window/pane ids"):
+        tmux_mod.create_split_team_session(
+            session="planned-name",
+            tasks=[
+                {
+                    "task_id": "w1",
+                    "worktree": "/tmp/w1",
+                    "pane_command": "true",
+                    "_env_pairs": [],
+                }
+            ],
+            env_pairs=[],
+            attach_mode="inside",
+        )
+    assert listed_windows >= 1
+    assert killed == ["@77"]
+
+
 def test_team_status_prefers_exact_pane_alive(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

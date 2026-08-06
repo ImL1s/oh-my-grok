@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
 import subprocess
 import sys
 from typing import Any, Callable, Mapping, Sequence
@@ -390,21 +391,77 @@ def _launch_first_detached(
     return (parts[0], parts[1]), parts[2]
 
 
+def _discover_inside_window_by_name(
+    *,
+    session_id: str,
+    window_name: str,
+) -> str | None:
+    """Find a unique window in *session_id* by exact name (orphan recovery).
+
+    Returns the window id, ``None`` if absent, or raises on ambiguity.
+    """
+    if _TMUX_SESSION_ID.fullmatch(session_id) is None:
+        raise TmuxTeamError(
+            f"inside window discovery requires session id, got {session_id!r}"
+        )
+    if not window_name or not isinstance(window_name, str):
+        raise TmuxTeamError("inside window discovery requires a unique window name")
+    listed = _tmux_run(
+        [
+            "list-windows",
+            "-t",
+            session_id,
+            "-F",
+            "#{window_id}\t#{window_name}\t#{session_id}",
+        ]
+    )
+    if listed.returncode != 0:
+        return None
+    matches: list[str] = []
+    for line in (listed.stdout or "").splitlines():
+        parts = line.strip().split("\t")
+        if len(parts) != 3:
+            continue
+        wid, name, sid = parts
+        if (
+            name == window_name
+            and sid == session_id
+            and _TMUX_WINDOW_ID.fullmatch(wid) is not None
+        ):
+            matches.append(wid)
+    if len(matches) > 1:
+        raise TmuxTeamError(
+            f"ambiguous team window name {window_name!r} in session {session_id}"
+        )
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def _launch_first_inside(
     *,
     task: dict[str, Any],
     env_pairs: list[tuple[str, str]],
     window_name: str,
     target_window: str,
+    expected_session_id: str,
 ) -> tuple[str, str]:
     """Create a new window beside *target_window* (``@N``); return (window_id, pane_id).
 
     Uses ``-d`` so the client stays on the invoking leader pane. Target must be
     a window id — tmux rejects ``new-window -a -t %pane`` (CMD_FIND_WINDOW).
+
+    When ``new-window`` returns rc=0 but stdout is empty/malformed, discover the
+    unique window by *window_name* + *expected_session_id* and kill it before
+    raising so the caller never leaves an unrecepted orphan.
     """
     if _TMUX_WINDOW_ID.fullmatch(target_window) is None:
         raise TmuxTeamError(
             f"new-window target must be a window id (@N), got {target_window!r}"
+        )
+    if _TMUX_SESSION_ID.fullmatch(expected_session_id) is None:
+        raise TmuxTeamError(
+            f"new-window requires expected session id, got {expected_session_id!r}"
         )
     first_env = tmux_env_args(list(task.get("_env_pairs") or env_pairs))
     create = _tmux_run(
@@ -432,12 +489,26 @@ def _launch_first_inside(
         )
     parts = (create.stdout or "").strip().split("\t")
     if (
-        len(parts) != 2
-        or _TMUX_WINDOW_ID.fullmatch(parts[0]) is None
-        or _TMUX_PANE_ID.fullmatch(parts[1]) is None
+        len(parts) == 2
+        and _TMUX_WINDOW_ID.fullmatch(parts[0]) is not None
+        and _TMUX_PANE_ID.fullmatch(parts[1]) is not None
     ):
-        raise TmuxTeamError("tmux new-window did not return window/pane ids")
-    return parts[0], parts[1]
+        return parts[0], parts[1]
+
+    # Side effect succeeded; result publication failed — recover or kill.
+    discovered = _discover_inside_window_by_name(
+        session_id=expected_session_id,
+        window_name=window_name,
+    )
+    message = "tmux new-window did not return window/pane ids"
+    if discovered is None:
+        raise TmuxTeamError(message)
+    cleanup = _kill_window(discovered)
+    if cleanup:
+        message = f"{message}; orphan window {discovered} cleanup failed: {cleanup}"
+    else:
+        message = f"{message}; killed orphan window {discovered}"
+    raise TmuxTeamError(message)
 
 
 def _split_remaining(
@@ -602,7 +673,7 @@ def _create_inside(
     if session and live_name != session:
         # Join the leader's real session regardless of planned name.
         pass
-    window_name = "omg-team"
+    window_name = f"omg-team-{secrets.token_hex(8)}"
     window_id: str | None = None
     created_panes: list[str] = []
     try:
@@ -615,6 +686,7 @@ def _create_inside(
             env_pairs=env_pairs,
             window_name=window_name,
             target_window=leader_window,
+            expected_session_id=live_id,
         )
         # Prove the new window belongs to the snapshotted session.
         win_probe = _tmux_run(

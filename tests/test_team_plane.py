@@ -390,6 +390,98 @@ def test_live_start_persists_nonce_bound_immutable_launch_receipt(
     assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o600
 
 
+def test_live_split_start_uses_atomic_pane_snapshot_before_receipt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Split launch must not commit from PID-only probes after nonce bind."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    nonce_holder: dict[str, str] = {}
+    list_panes_calls: list[list[str]] = []
+
+    def fake_create(**kwargs: Any) -> tuple[str, str]:
+        tasks = kwargs["tasks"]
+        tasks[0]["pane_id"] = "%10"
+        tasks[1]["pane_id"] = "%11"
+        tasks[0]["_tmux_launch"] = {
+            "attach_mode": "detached",
+            "session_owned": True,
+            "leader_pane_id": None,
+            "window_id": "@7",
+            "attach_hint": "tmux attach -t sess",
+        }
+        return (str(kwargs["session"]), "$3")
+
+    def fake_tmux_run(args: Any, **_kw: Any) -> MagicMock:
+        command = list(args)
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        if command[0] == "set-option" and command[-2] == plane.LAUNCH_NONCE_OPTION:
+            nonce_holder["nonce"] = command[-1]
+        elif command[0] == "display-message":
+            result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+        elif command[0] == "list-panes":
+            list_panes_calls.append(command)
+            # Prefer window-scoped list when window_id known.
+            assert "-t" in command and command[command.index("-t") + 1] == "@7"
+            assert "-s" not in command
+            nonce = nonce_holder["nonce"]
+            result.stdout = (
+                f"%10\t424242\t$3\t@7\t{nonce}\n"
+                f"%11\t424243\t$3\t@7\t{nonce}\n"
+            )
+        return result
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux.create_split_team_session", fake_create
+    )
+    monkeypatch.setattr(plane, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(plane.os, "getpgid", lambda pid: pid + 1000)
+    monkeypatch.setattr(plane, "_pid_start_identity", lambda pid: f"start-{pid}")
+
+    meta = start_team(
+        "live split receipt",
+        TASKS_TWO,
+        root=tmp_path,
+        topology="split",
+    )
+    assert list_panes_calls, "expected atomic list-panes snapshot before receipt"
+    receipt = json.loads(
+        plane.team_launch_receipt_path(tmp_path, meta["run_id"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert receipt["session_id"] == "$3"
+    assert receipt["tasks"][0]["pane_id"] == "%10"
+    assert receipt["tasks"][0]["pid"] == 424242
+    assert receipt["tasks"][1]["pid"] == 424243
+
+
+def test_snapshot_launch_pane_identities_refuses_session_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    def fake_tmux(args: Any, **_kw: Any) -> SimpleNamespace:
+        command = list(args)
+        if command[0] == "list-panes":
+            # Pane still addressable but now in a foreign session.
+            return SimpleNamespace(
+                returncode=0,
+                stdout="%10\t424242\t$99\t@7\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+                stderr="",
+            )
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(plane, "_tmux_run", fake_tmux)
+    with pytest.raises(TeamError, match="missing worker pane"):
+        plane._snapshot_launch_pane_identities(
+            expected_session_id="$3",
+            expected_pane_ids=["%10"],
+            expected_window_id="@7",
+            expected_launch_nonce="a" * 32,
+        )
+
+
 @pytest.mark.parametrize(
     "failure_point",
     ["mouse", "nonce", "identity", "receipt", "meta", "status"],

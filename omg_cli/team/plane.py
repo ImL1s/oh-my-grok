@@ -1020,6 +1020,115 @@ def _cleanup_created_tmux_session(handle: tuple[str, str]) -> str | None:
     return None
 
 
+_LAUNCH_PANE_SNAPSHOT_FMT = (
+    "#{pane_id}\t#{pane_pid}\t#{session_id}\t#{window_id}\t"
+    "#{@omg_launch_nonce}"
+)
+
+
+def _snapshot_launch_pane_identities(
+    *,
+    expected_session_id: str,
+    expected_pane_ids: Sequence[str],
+    expected_window_id: str | None = None,
+    expected_launch_nonce: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """One ``list-panes`` snapshot for receipt commit (anti split-brain).
+
+    Prefer ``list-panes -t <window_id>`` when the Team window is known (inside
+    mode). Refuse commit when any expected pane left ``session_id`` /
+    ``window_id``, or when a bound launch nonce is present but mismatched.
+    """
+    if (
+        not isinstance(expected_session_id, str)
+        or _TMUX_SESSION_ID.fullmatch(expected_session_id) is None
+    ):
+        raise TeamError("tmux launch identity snapshot requires session id")
+    expected = [
+        pane_id
+        for pane_id in expected_pane_ids
+        if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id) is not None
+    ]
+    if not expected or len(expected) != len(list(expected_pane_ids)):
+        raise TeamError("tmux launch identity snapshot requires exact pane ids")
+    target: str
+    argv: list[str]
+    if (
+        isinstance(expected_window_id, str)
+        and _TMUX_WINDOW_ID.fullmatch(expected_window_id) is not None
+    ):
+        target = expected_window_id
+        argv = [
+            "list-panes",
+            "-t",
+            target,
+            "-F",
+            _LAUNCH_PANE_SNAPSHOT_FMT,
+        ]
+    else:
+        target = expected_session_id
+        argv = [
+            "list-panes",
+            "-s",
+            "-t",
+            target,
+            "-F",
+            _LAUNCH_PANE_SNAPSHOT_FMT,
+        ]
+    try:
+        listed = _tmux_run(argv)
+    except OSError as exc:
+        raise TeamError(f"tmux launch identity snapshot failed: {exc}") from exc
+    if listed.returncode != 0:
+        raise TeamError("tmux launch identity snapshot failed")
+    by_pane: dict[str, dict[str, Any]] = {}
+    for line in (listed.stdout or "").splitlines():
+        parts = line.strip().split("\t")
+        if len(parts) != 5:
+            continue
+        pane_id, pid_s, session_id, window_id, nonce_s = parts
+        if _TMUX_PANE_ID.fullmatch(pane_id) is None:
+            continue
+        if session_id != expected_session_id:
+            continue
+        if (
+            isinstance(expected_window_id, str)
+            and _TMUX_WINDOW_ID.fullmatch(expected_window_id) is not None
+            and window_id != expected_window_id
+        ):
+            continue
+        try:
+            pane_pid = int(pid_s)
+        except ValueError:
+            continue
+        if pane_pid <= 0:
+            continue
+        if _TMUX_WINDOW_ID.fullmatch(window_id) is None:
+            continue
+        live_nonce = _parse_tmux_launch_nonce(nonce_s)
+        by_pane[pane_id] = {
+            "pane_id": pane_id,
+            "pane_pid": pane_pid,
+            "session_id": session_id,
+            "window_id": window_id,
+            "launch_nonce": live_nonce,
+        }
+    for pane_id in expected:
+        row = by_pane.get(pane_id)
+        if row is None:
+            raise TeamError(
+                "tmux launch identity snapshot missing worker pane "
+                f"{pane_id} in expected session/window"
+            )
+        if expected_launch_nonce is not None:
+            live_nonce = row.get("launch_nonce")
+            if live_nonce != expected_launch_nonce:
+                raise TeamError(
+                    f"tmux launch nonce mismatch on pane {pane_id} before receipt"
+                )
+    return {pane_id: by_pane[pane_id] for pane_id in expected}
+
+
 def _list_pane_identities(session: str) -> dict[int, tuple[str, int]]:
     """Map slot index to exact tmux pane identity and pane PID.
 
@@ -2375,21 +2484,26 @@ def start_team(
                 and _TMUX_PANE_ID.fullmatch(str(rec.get("pane_id"))) is not None
                 for rec in task_records
             ):
-                # Prefer exact pane ids from new-session/split-window -P (required
-                # for inside-tmux where the session already has extra panes).
+                # Final linearization before immutable receipt: one list-panes
+                # snapshot of pane_id+pid+session_id+window_id (+nonce when set).
+                # Never commit from separate PID-only probes after revalidation.
+                snap_window = tmux_launch.get("window_id")
+                snap_window_id = (
+                    str(snap_window)
+                    if isinstance(snap_window, str)
+                    and _TMUX_WINDOW_ID.fullmatch(str(snap_window)) is not None
+                    else None
+                )
+                pane_snapshot = _snapshot_launch_pane_identities(
+                    expected_session_id=created_handle[1],
+                    expected_pane_ids=[str(rec["pane_id"]) for rec in task_records],
+                    expected_window_id=snap_window_id,
+                    expected_launch_nonce=launch_nonce,
+                )
                 for rec in task_records:
                     pane_id = str(rec["pane_id"])
-                    pid_probe = _tmux_run(
-                        ["display-message", "-p", "-t", pane_id, "#{pane_pid}"]
-                    )
-                    if pid_probe.returncode != 0:
-                        raise TeamError(f"tmux pane pid readback failed for {pane_id}")
-                    try:
-                        pid = int((pid_probe.stdout or "").strip())
-                    except ValueError as exc:
-                        raise TeamError(f"tmux pane pid invalid for {pane_id}") from exc
-                    if pid <= 0:
-                        raise TeamError(f"tmux pane pid non-positive for {pane_id}")
+                    snap = pane_snapshot[pane_id]
+                    pid = int(snap["pane_pid"])
                     rec["pid"] = pid
                     rec["pgid"] = _pgid_for_pid(pid)
                     rec["pid_start"] = _pid_start_identity(pid)
@@ -3473,12 +3587,8 @@ def _stop_team_locked(
                 )
                 escalation_authorized = bool(
                     session_exact
-                    and (
-                        resolved_kill is not None
-                        and leader_pgid in (None, pgid)
-                        or resolved_kill is None
-                        and leader_pgid is None
-                    )
+                    and resolved_kill is not None
+                    and leader_pgid in (None, pgid)
                 )
                 if not escalation_authorized:
                     identity_verified = False
@@ -3487,6 +3597,11 @@ def _stop_team_locked(
                         f"SIGKILL group authority drift refused signalling task={tid}"
                     )
                     continue
+                # Never SIGKILL a stale numeric PGID after the pane identity is
+                # gone — the kernel may have reused that PGID for another group.
+                target = int(resolved_kill["pgid"])
+                pgid = target
+                pid = int(resolved_kill["pid"])
                 try:
                     os.killpg(target, signal.SIGKILL)
                     actions.append(f"killpg:SIGKILL pgid={target} task={tid}")
