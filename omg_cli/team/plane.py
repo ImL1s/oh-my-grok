@@ -2677,11 +2677,6 @@ def start_team(
                     intent_nonce=intent_nonce,
                     window_name=intent_window_name,
                 )
-                # Receipt published — clear durable new-window intent WAL.
-                if launch_intent_path:
-                    from omg_cli.team.tmux import clear_team_launch_intent
-
-                    clear_team_launch_intent(launch_intent_path)
 
                 meta = {
                     "writer": CLI_WRITER,
@@ -2723,7 +2718,28 @@ def start_team(
                         )
                     ),
                 }
+                # Commit point = durable receipt AND hash-bound team.json.
+                # Clear launch-intent WAL only after that pair is verified on disk;
+                # clearing earlier leaves receipt-only orphans sweep/stop cannot manage.
                 _atomic_write_json(team_meta_path(root_path, rid), meta)
+                if launch_intent_path:
+                    from omg_cli.team.tmux import clear_team_launch_intent
+
+                    committed = load_team_meta(root_path, rid)
+                    verified = _load_team_launch_receipt(root_path, rid, committed)
+                    if (
+                        committed.get("launch_receipt_sha256") != launch_receipt_sha256
+                        or committed.get("session") != session
+                        or committed.get("launch_nonce") != launch_nonce
+                        or verified.get("session_id") != created_handle[1]
+                        or verified.get("launch_nonce") != launch_nonce
+                        or verified.get("session_name") != session
+                    ):
+                        raise TeamError(
+                            "team.json launch binding verification failed "
+                            "before intent clear"
+                        )
+                    clear_team_launch_intent(launch_intent_path)
                 write_status(
                     root_path,
                     rid,

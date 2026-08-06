@@ -217,8 +217,10 @@ def write_team_launch_intent(
 
 
 def clear_team_launch_intent(path: Path | str | None) -> None:
-    """Durably remove a launch intent after receipt publish or proven cleanup.
+    """Durably remove a launch intent after commit or proven cleanup.
 
+    Callers must clear only after the durable commit point (immutable launch
+    receipt **and** hash-bound ``team.json``) or after absence-proven kill.
     Unlink is fail-closed: OSError (other than already-absent) propagates so
     callers cannot leave a stale WAL that later sweeps a receipt-bound worker.
     Parent directory is fsync'd after unlink when the file existed.
@@ -289,14 +291,16 @@ def _intent_owner_blocks_sweep(raw: Mapping[str, Any]) -> str | None:
 
 
 def _intent_receipt_matches(root: Path, intent: Mapping[str, Any]) -> bool:
-    """True only when durable receipt binds the *exact* intent identity.
+    """True only when durable receipt **and** hash-bound team.json bind intent.
 
-    Schema-v1 (#106) launch receipts omit ``intent_nonce`` / ``window_name`` and
-    must never be adopted for a new launch intent — they cannot prove intent
-    identity. Only schema-v2 receipts that pass the same authority checks as
-    :func:`omg_cli.team.plane._load_team_launch_receipt` (exact key set,
-    generation, tasks continuity, canonical body hash / meta
-    ``launch_receipt_sha256``) with matching binding fields qualify.
+    Receipt-only states (immutable receipt on disk, no ``team.json``) must not
+    adopt or clear the WAL — stop cannot load meta, and silent clear would hide
+    an unrecovered live worker. Schema-v1 (#106) launch receipts omit
+    ``intent_nonce`` / ``window_name`` and must never be adopted. Only schema-v2
+    receipts that pass :func:`omg_cli.team.plane._load_team_launch_receipt`
+    against loaded team meta (exact key set, generation, tasks continuity,
+    canonical body hash / ``launch_receipt_sha256``, session / launch_nonce)
+    with matching intent binding fields qualify.
     """
     from omg_cli.team.plane import (
         LAUNCH_RECEIPT_SCHEMA_VERSION,
@@ -348,8 +352,9 @@ def sweep_stale_team_launch_intents(
 
     Called at ``start_team`` entry so a prior crash after ``new-window`` cannot
     leave an unrecepted worker across CLI restarts. Clears intent only when
-    absence is proven, or when a durable launch receipt already binds the
-    *exact* intent identity (adopt — never kill a receipt-bound worker).
+    absence is proven, or when a durable launch receipt **and** hash-bound
+    ``team.json`` already bind the *exact* intent identity (adopt — never kill
+    a receipt-bound worker; never clear for receipt-only orphans).
 
     Each result has ``ok: bool``. Callers must treat any ``ok=False`` (or an
     OSError from this function) as a **launch gate** — refuse ``new-window``.
@@ -1419,7 +1424,7 @@ def _create_inside(
             window_id=window_id,
             attach_hint=f"tmux select-pane -t {leader_pane}",
         )
-        # Stash intent path for plane to clear after launch receipt publish.
+        # Stash intent path for plane to clear after receipt + team.json commit.
         if intent_path is not None:
             tasks[0]["_tmux_launch_intent"] = str(intent_path)
     except (TmuxTeamError, OSError) as exc:

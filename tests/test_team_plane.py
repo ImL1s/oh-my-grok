@@ -456,6 +456,95 @@ def test_live_split_start_uses_atomic_pane_snapshot_before_receipt(
     assert receipt["tasks"][1]["pid"] == 424243
 
 
+def test_live_split_start_clears_intent_only_after_verified_team_meta(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Commit point is receipt + team.json; WAL clear must not precede meta."""
+    import omg_cli.team.tmux as tmux_mod
+    from omg_cli.team.tmux import write_team_launch_intent
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    nonce_holder: dict[str, str] = {}
+    order: list[str] = []
+    intent_path: dict[str, Any] = {}
+
+    def fake_create(**kwargs: Any) -> tuple[str, str]:
+        tasks = kwargs["tasks"]
+        root = Path(kwargs["root"])
+        rid = str(kwargs["run_id"])
+        intent = write_team_launch_intent(
+            root,
+            run_id=rid,
+            session_id="$3",
+            window_name="omg-team-abad1dea",
+            nonce="abad1deaabad1deaabad1deaabad1dea",
+        )
+        intent_path["path"] = intent
+        intent_path["run_id"] = rid
+        tasks[0]["pane_id"] = "%10"
+        tasks[1]["pane_id"] = "%11"
+        tasks[0]["_tmux_launch"] = {
+            "attach_mode": "detached",
+            "session_owned": True,
+            "leader_pane_id": None,
+            "window_id": "@7",
+            "attach_hint": "tmux attach -t sess",
+        }
+        tasks[0]["_tmux_launch_intent"] = str(intent)
+        return (str(kwargs["session"]), "$3")
+
+    def fake_tmux_run(args: Any, **_kw: Any) -> MagicMock:
+        command = list(args)
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        if command[0] == "set-option" and command[-2] == plane.LAUNCH_NONCE_OPTION:
+            nonce_holder["nonce"] = command[-1]
+        elif command[0] == "display-message":
+            result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+        elif command[0] == "list-panes":
+            nonce = nonce_holder["nonce"]
+            result.stdout = (
+                f"%10\t424242\t$3\t@7\t{nonce}\n"
+                f"%11\t424243\t$3\t@7\t{nonce}\n"
+            )
+        return result
+
+    real_atomic = plane._atomic_write_json
+    real_clear = tmux_mod.clear_team_launch_intent
+
+    def track_atomic(path: Path, data: Any) -> None:
+        if Path(path).name == "team.json":
+            order.append("meta")
+            assert intent_path["path"].is_file()
+        real_atomic(path, data)
+
+    def track_clear(path: Path | str | None) -> None:
+        order.append("clear")
+        assert "meta" in order, "WAL clear must follow durable team.json"
+        assert team_meta_path(tmp_path, str(intent_path["run_id"])).is_file()
+        real_clear(path)
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux.create_split_team_session", fake_create
+    )
+    monkeypatch.setattr(plane, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(plane.os, "getpgid", lambda pid: pid + 1000)
+    monkeypatch.setattr(plane, "_pid_start_identity", lambda pid: f"start-{pid}")
+    monkeypatch.setattr(plane, "_atomic_write_json", track_atomic)
+    monkeypatch.setattr(tmux_mod, "clear_team_launch_intent", track_clear)
+
+    meta = start_team(
+        "intent after meta",
+        TASKS_TWO,
+        root=tmp_path,
+        topology="split",
+    )
+    assert order == ["meta", "clear"]
+    assert not intent_path["path"].is_file()
+    loaded = load_team_meta(tmp_path, meta["run_id"])
+    assert loaded["launch_receipt_sha256"] == meta["launch_receipt_sha256"]
+
+
 def test_snapshot_launch_pane_identities_refuses_session_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

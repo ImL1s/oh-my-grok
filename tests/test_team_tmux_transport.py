@@ -956,6 +956,74 @@ def test_sweep_adopts_receipt_bound_intent_without_kill(
     assert not intent.is_file()
 
 
+def test_sweep_refuses_receipt_only_without_team_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Receipt without team.json must not adopt/clear intent (crash window)."""
+    from omg_cli.team import plane
+    from omg_cli.team.tmux import (
+        _intent_receipt_matches,
+        sweep_stale_team_launch_intents,
+        write_team_launch_intent,
+    )
+
+    rid = "20260806T120000Z-receiptonly"
+    nonce = "cafebabecafebabecafebabecafebabe"
+    window_name = "omg-team-worker"
+    intent = write_team_launch_intent(
+        tmp_path,
+        run_id=rid,
+        session_id="$42",
+        window_name=window_name,
+        nonce=nonce,
+    )
+    tasks = [
+        {
+            "task_id": "t1",
+            "window_index": 0,
+            "pane_id": "%10",
+            "pid": 10001,
+            "pgid": 20001,
+            "pid_start": "start-10001",
+            "status": "running",
+        }
+    ]
+    plane._persist_team_launch_receipt(
+        tmp_path,
+        rid,
+        session="omg-workers",
+        session_id="$42",
+        launch_nonce="a" * 32,
+        tasks=tasks,
+        intent_nonce=nonce,
+        window_name=window_name,
+    )
+    assert plane.team_launch_receipt_path(tmp_path, rid).is_file()
+    assert not plane.team_meta_path(tmp_path, rid).exists()
+
+    raw = json.loads(intent.read_text(encoding="utf-8"))
+    raw["owner_pid"] = 999999999
+    raw["owner_pid_start"] = "stale-owner"
+    intent.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+    assert _intent_receipt_matches(tmp_path, raw) is False
+
+    kills: list[dict[str, str]] = []
+
+    def boom_kill(**kwargs):
+        kills.append(dict(kwargs))
+        return "should not kill"
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux._kill_inside_windows_by_name", boom_kill
+    )
+    results = sweep_stale_team_launch_intents(tmp_path)
+    assert results and results[0].get("ok") is False
+    assert "unbound" in str(results[0].get("error"))
+    assert kills == []
+    assert intent.is_file()
+
+
 def test_sweep_refuses_forged_minimal_matching_receipt(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
