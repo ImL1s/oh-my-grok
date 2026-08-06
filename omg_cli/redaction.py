@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import unquote_plus
 
@@ -103,6 +104,13 @@ class _UrlQueryTracker:
         self.token_has_slash = False
         self.seen_scheme = False
 
+    def copy(self) -> _UrlQueryTracker:
+        other = _UrlQueryTracker()
+        other.line_has_content = self.line_has_content
+        other.token_has_slash = self.token_has_slash
+        other.seen_scheme = self.seen_scheme
+        return other
+
 
 def _consume_value(text: str, start: int, *, query: bool, key: str) -> int | None:
     """Return end index of a value starting at ``start``, or None if empty.
@@ -129,8 +137,15 @@ def _consume_value(text: str, start: int, *, query: bool, key: str) -> int | Non
 _KB_NOT_KEY = -1  # matched ``]`` but not an assignment key-bracket
 _KB_EXHAUSTED = -2  # hit EOL/newline while unclosed
 
-# Lexical ends for URL/query tokens (closing quotes, JSON, shell, groups).
-_QUERY_TOKEN_END = frozenset("\"',)]}`")
+# Lexical ends for URL/query tokens (closing quotes, JSON, shell, groups,
+# redirection). Shared by query + plain scanners so ``>`` / ``<`` cannot leave
+# query mode into a later ``&token=`` tail.
+_QUERY_TOKEN_END = frozenset("\"',)]}`<>")
+
+
+def _clears_query_token(ch: str) -> bool:
+    """True when ``ch`` ends a URL/query token (must clear ``in_query``)."""
+    return ch in " \t;|," or ch in _QUERY_TOKEN_END
 
 
 def _compute_key_brackets(text: str) -> list[int]:
@@ -210,35 +225,52 @@ def _compute_key_brackets(text: str) -> list[int]:
     return table
 
 
-def _quoted_key_close(text: str, open_idx: int) -> int:
-    """Return closing quote index when ``text[open_idx]`` opens a quoted object key.
+def _compute_quoted_keys(text: str) -> list[int]:
+    """O(n) table: quoted object-key open → close index; else ``-1``.
 
-    A quoted key is ``"…"`` / ``'…'`` (backslash escapes OK) followed by
-    optional whitespace then ``:`` / ``=``. Returns -1 otherwise. Stops at
-    newline so free-text quotes do not span lines.
+    Single forward pass — unclosed quotes jump to EOL so escaped-quote floods
+    (``\\"`` * n) stay linear instead of re-scanning the suffix per quote.
     """
 
-    if open_idx >= len(text) or text[open_idx] not in "'\"":
-        return -1
-    quote = text[open_idx]
     length = len(text)
-    i = open_idx + 1
+    table = [-1] * length
+    i = 0
     while i < length:
         ch = text[i]
         if ch in "\r\n":
-            return -1
+            i += 1
+            continue
         if ch == "\\" and i + 1 < length:
             i += 2
             continue
-        if ch == quote:
-            j = i + 1
-            while j < length and text[j] in " \t":
-                j += 1
-            if j < length and text[j] in ":=":
-                return i
-            return -1
-        i += 1
-    return -1
+        if ch not in "'\"":
+            i += 1
+            continue
+        quote = ch
+        open_idx = i
+        j = i + 1
+        closed = False
+        while j < length:
+            c = text[j]
+            if c in "\r\n":
+                break
+            if c == "\\" and j + 1 < length:
+                j += 2
+                continue
+            if c == quote:
+                k = j + 1
+                while k < length and text[k] in " \t":
+                    k += 1
+                if k < length and text[k] in ":=":
+                    table[open_idx] = j
+                i = j + 1
+                closed = True
+                break
+            j += 1
+        if not closed:
+            # Unclosed through EOL: no further quoted keys on this line.
+            i = j if j < length and text[j] in "\r\n" else length
+    return table
 
 
 def _redact_query_assignments(text: str) -> str:
@@ -248,11 +280,11 @@ def _redact_query_assignments(text: str) -> str:
     it. Bare shell ``&`` / prose ``?`` outside that context are ignored here
     (plain assignment redaction owns those). Query mode is confined to a single
     continuous URL/query token — whitespace / ``;`` / ``|`` / closing quotes /
-    JSON ``,`` / grouping closers / shell ``&&`` clear ``in_query`` so a later
-    assignment cannot inherit query continuation. Whitespace between a marker
-    and the key rejects the param (``? token=`` is not a query assignment).
-    Each character is visited a constant number of times — no per-marker
-    suffix ``find("=")``.
+    JSON ``,`` / grouping closers / shell redirection (``<`` ``>``) / shell
+    ``&&`` clear ``in_query`` so a later assignment cannot inherit query
+    continuation. Whitespace between a marker and the key rejects the param
+    (``? token=`` is not a query assignment). Each character is visited a
+    constant number of times — no per-marker suffix ``find("=")``.
     """
 
     parts: list[str] = []
@@ -287,7 +319,7 @@ def _redact_query_assignments(text: str) -> str:
                 # Token boundary: query state must not survive into later shell.
                 in_query = False
                 url.on_whitespace()
-            elif ch in ";|" or ch in _QUERY_TOKEN_END or ch == ",":
+            elif _clears_query_token(ch) and ch not in " \t":
                 in_query = False
                 url.on_other(text, i, ch)
             elif ch != "?":
@@ -333,6 +365,37 @@ def _redact_query_assignments(text: str) -> str:
     return "".join(parts)
 
 
+@dataclass
+class _BracketFrame:
+    """Saved outer scanner state while iteratively scanning a key-bracket interior."""
+
+    open_idx: int
+    close_idx: int
+    token_start: int
+    parts: list[str]
+    pos: int
+    boundary: int
+    query_active: bool
+    url: _UrlQueryTracker
+    pending_key: str | None
+    pending_key_start: int
+    pending_key_end: int
+    had_nested_key_bracket: bool = False
+
+
+def _redact_quote_interior(text: str) -> str:
+    """Redact assignments inside a quoted object-key interior (non-opaque).
+
+    Runs the plain scanner on the interior slice. Key-brackets inside are
+    handled by the iterative stack in that call; this is not the nested
+    key-bracket hot path (``[`` * n), so a slice here is acceptable.
+    """
+
+    if not text:
+        return text
+    return _redact_plain_assignments(text)
+
+
 def _redact_plain_assignments(text: str) -> str:
     """Scan ``key[:=]value`` in a single O(n) forward pass.
 
@@ -340,13 +403,15 @@ def _redact_plain_assignments(text: str) -> str:
     each separator (avoids O(n·cap) separator-flood cost). Quote awareness
     applies for real bracket-**key** segments (``headers["api&key"]=``) via an
     O(n) bracket table, and for quoted object keys (``"api?key":``) so
-    ``?``/``&``/``://`` inside the quotes stay key material. Bracket interiors
-    are still scanned for nested assignments (not opaque). Array values /
-    malformed bracket quotes fall back to ordinary scanning. Non-sensitive
-    ``:``/``=`` inside a contiguous (no-whitespace) token do **not** advance
-    the boundary. ``?`` opens query context only for URL/query shapes;
-    whitespace / ``;`` / ``|`` / closing quotes / JSON ``,`` / grouping /
-    shell ``&&`` clear it so later assignments cannot inherit query mode.
+    ``?``/``&``/``://`` inside the quotes stay key material while interiors are
+    still scanned for nested assignments. Nested key-brackets use an explicit
+    stack over original index ranges (no recursive sliced re-entry). Array
+    values / malformed bracket quotes fall back to ordinary scanning.
+    Non-sensitive ``:``/``=`` inside a contiguous (no-whitespace) token do
+    **not** advance the boundary. ``?`` opens query context only for URL/query
+    shapes; whitespace / ``;`` / ``|`` / ``<`` / ``>`` / closing quotes /
+    JSON ``,`` / grouping / shell ``&&`` clear it so later assignments cannot
+    inherit query mode.
     """
 
     parts: list[str] = []
@@ -355,11 +420,11 @@ def _redact_plain_assignments(text: str) -> str:
     query_active = False
     url = _UrlQueryTracker()
     brackets = _compute_key_brackets(text)
-    # When a key-bracket interior was rewritten, outer ``headers[…]=`` must still
-    # see one coherent (redacted) key span at the following separator.
+    quoted_keys = _compute_quoted_keys(text)
     pending_key: str | None = None
     pending_key_start = -1
     pending_key_end = -1
+    bracket_stack: list[_BracketFrame] = []
     i = 0
     length = len(text)
 
@@ -369,30 +434,112 @@ def _redact_plain_assignments(text: str) -> str:
         pending_key_start = -1
         pending_key_end = -1
 
+    def _finish_bracket_frame() -> bool:
+        """If ``i`` is the close of the active key-bracket frame, pop it.
+
+        Returns True when a frame was closed (caller should ``continue``).
+        """
+        nonlocal parts, pos, boundary, query_active, url
+        nonlocal pending_key, pending_key_start, pending_key_end, i
+        if not bracket_stack:
+            return False
+        frame = bracket_stack[-1]
+        if i != frame.close_idx:
+            return False
+        bracket_stack.pop()
+        # Interior unchanged iff no assignment redaction advanced ``pos``.
+        if not parts and pos == frame.open_idx + 1:
+            red_changed = False
+            red_int = ""
+        else:
+            red_int = "".join(parts) + text[pos:i]
+            interior = text[frame.open_idx + 1 : frame.close_idx]
+            red_changed = red_int != interior
+        # Restore outer scanner state.
+        parts = frame.parts
+        pos = frame.pos
+        boundary = frame.boundary
+        query_active = frame.query_active
+        url = frame.url
+        pending_key = frame.pending_key
+        pending_key_start = frame.pending_key_start
+        pending_key_end = frame.pending_key_end
+        # Sensitivity of this ``prefix[interior]`` as an outer assignment key.
+        # Avoid re-normalizing O(depth)-sized nested ``]=x`` aggregates (O(n²)):
+        # when nested key-brackets were scanned and left the interior unchanged,
+        # no sensitive nested assignment remains.
+        if red_changed:
+            key_sensitive = True
+        elif frame.had_nested_key_bracket:
+            # Nested ``]=x`` aggregates are non-sensitive when unchanged, but a
+            # sensitive prefix (``token[[safe]=x]=…``) must still win.
+            key_sensitive = (
+                frame.token_start < frame.open_idx
+                and is_sensitive_key(text[frame.token_start : frame.open_idx])
+            )
+        else:
+            key_sensitive = is_sensitive_key(
+                text[frame.token_start : frame.close_idx + 1]
+            )
+        if key_sensitive:
+            if red_changed:
+                pending_key = (
+                    text[frame.token_start : frame.open_idx + 1] + red_int + "]"
+                )
+            else:
+                pending_key = text[frame.token_start : frame.close_idx + 1]
+            pending_key_start = frame.token_start
+            pending_key_end = frame.close_idx + 1
+        else:
+            _clear_pending()
+            # Do not let nested ``]=x`` layers re-accumulate into one key span.
+            boundary = frame.close_idx
+        url.line_has_content = True
+        query_active = False
+        i = frame.close_idx + 1
+        return True
+
     while i < length:
+        # Close innermost key-bracket when its ``]`` is reached.
+        if _finish_bracket_frame():
+            continue
+
         ch = text[i]
         if ch == "[":
             close = brackets[i]
             if close >= 0:
-                # Key-bracket: redact interior, keep outer ``[…]=`` as one key.
-                interior = text[i + 1 : close]
-                red_int = (
-                    _redact_plain_assignments(interior) if interior else interior
-                )
+                # Enter interior iteratively — push outer state, scan in place.
                 token_start = boundary + 1
                 if token_start < pos:
                     token_start = pos
                 while token_start < i and text[token_start] in " \t":
                     token_start += 1
-                if red_int != interior:
-                    pending_key = text[token_start : i + 1] + red_int + "]"
-                    pending_key_start = token_start
-                    pending_key_end = close + 1
-                else:
-                    _clear_pending()
-                url.line_has_content = True
+                if bracket_stack:
+                    bracket_stack[-1].had_nested_key_bracket = True
+                bracket_stack.append(
+                    _BracketFrame(
+                        open_idx=i,
+                        close_idx=close,
+                        token_start=token_start,
+                        parts=parts,
+                        pos=pos,
+                        boundary=boundary,
+                        query_active=query_active,
+                        url=url.copy(),
+                        pending_key=pending_key,
+                        pending_key_start=pending_key_start,
+                        pending_key_end=pending_key_end,
+                    )
+                )
+                # Fresh interior scan state over original indices (open+1 .. close).
+                parts = []
+                pos = i + 1
+                boundary = i
                 query_active = False
-                i = close + 1
+                url = _UrlQueryTracker()
+                url.line_has_content = True
+                _clear_pending()
+                i = i + 1
                 continue
             # Array / non-key / unclosed: ordinary character (table is O(1)).
             _clear_pending()
@@ -408,9 +555,24 @@ def _redact_plain_assignments(text: str) -> str:
             i += 1
             continue
         if ch in "'\"":
-            qclose = _quoted_key_close(text, i)
+            qclose = quoted_keys[i]
             if qclose >= 0:
-                # Quoted object key: skip to closer; ?/&/:// inside are literal.
+                # Quoted object key: scan interior (non-opaque), keep ?/&/://.
+                interior = text[i + 1 : qclose]
+                red_int = _redact_quote_interior(interior)
+                token_start = boundary + 1
+                if token_start < pos:
+                    token_start = pos
+                while token_start < i and text[token_start] in " \t":
+                    token_start += 1
+                if red_int != interior:
+                    pending_key = (
+                        text[token_start:i] + ch + red_int + text[qclose]
+                    )
+                    pending_key_start = token_start
+                    pending_key_end = qclose + 1
+                else:
+                    _clear_pending()
                 url.line_has_content = True
                 i = qclose + 1
                 continue
@@ -440,7 +602,7 @@ def _redact_plain_assignments(text: str) -> str:
             continue
         if ch in " \t":
             # Token boundary ends URL-query inheritance into later shell tokens.
-            # Keep pending bracket-key across ``headers[…] = value`` whitespace.
+            # Keep pending bracket/quoted-key across ``… = value`` whitespace.
             if pending_key is None:
                 query_active = False
                 url.on_whitespace()
@@ -456,6 +618,14 @@ def _redact_plain_assignments(text: str) -> str:
             url.on_other(text, i, ch)
             i += 1
             continue
+        if ch in "<>":
+            # Shell redirection ends URL/query inheritance (no surrounding ws).
+            _clear_pending()
+            boundary = i
+            query_active = False
+            url.on_other(text, i, ch)
+            i += 1
+            continue
         if ch in ",{}":
             # JSON structural punctuation: end query + hard-bound keys.
             _clear_pending()
@@ -467,13 +637,14 @@ def _redact_plain_assignments(text: str) -> str:
         if ch in ")]}`":
             # Grouping closers end query inheritance but must NOT hard-bound keys
             # (malformed ``headers["api_key]=secret`` still redacts).
+            # Note: key-bracket ``]`` is handled via ``_finish_bracket_frame``.
             query_active = False
             url.on_other(text, i, ch)
             i += 1
             continue
         if ch not in ":=":
             if pending_key is not None and i >= pending_key_end:
-                # Non-assignment after a rewritten bracket-key: flush span.
+                # Non-assignment after a rewritten key: flush span.
                 _clear_pending()
             url.on_other(text, i, ch)
             i += 1
@@ -532,6 +703,11 @@ def _redact_plain_assignments(text: str) -> str:
             # Keep boundary so contiguous fragments (``api:key``, ``api=key``)
             # accumulate into one candidate for the next separator. Whitespace
             # already ends the token via the space handler above.
+            # Exception: a completed key-bracket span (ends with ``]``) must not
+            # re-accumulate across nested ``]=x`` layers — that is O(n²) on
+            # ``"["*n + "safe" + "]=x"*n``.
+            if key.endswith("]"):
+                boundary = sep_idx
             url.on_other(text, i, ch)
             i = sep_idx + 1
             continue
@@ -557,6 +733,10 @@ def _redact_plain_assignments(text: str) -> str:
             url.on_other(text, i, ch)
             i = sep_idx + 1
             continue
+        # Clamp to active key-bracket close so in-place interiors match sliced
+        # EOL semantics (never consume past the closing ``]``).
+        if bracket_stack:
+            end = min(end, bracket_stack[-1].close_idx)
         parts.append(text[pos:key_start])
         parts.append(f"{key}{sep}{REDACTED}")
         pos = end

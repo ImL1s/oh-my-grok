@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 
 from omg_cli.redaction import REDACTED, is_sensitive_key, redact_text, redact_value
@@ -562,4 +563,94 @@ def test_redact_text_closes_pr94t_residual_p2_classes() -> None:
     t0 = time.perf_counter()
     redact_text("[" * n + "]" * n)
     assert time.perf_counter() - t0 < 1.0
+
+
+def test_redact_text_closes_pr94u_residual_p2_classes() -> None:
+    """Close Pro reaudit P2s: redirect query-end, quoted-key interior, floods."""
+    # P2-1: query state must not survive shell redirection into a later ``&``.
+    for source in (
+        "curl https://x.test/?ok=1>out&token=Bearer first&second-secret",
+        "curl https://x.test/?ok=1<in&token=Bearer first&second-secret",
+        "curl https://x.test/?ok=1>>out&token=Bearer first&second-secret",
+        "curl https://x.test/?ok=1<<in&token=Bearer first&second-secret",
+        "curl https://x.test/?ok=12>out&token=Bearer first&second-secret",
+    ):
+        out = redact_text(source)
+        assert "second-secret" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    # Prior query closers remain FIXED.
+    for source, leaked in (
+        (
+            'curl "https://x.test/?ok=1"&&token=Bearer first&second-secret',
+            "second-secret",
+        ),
+        (
+            "https://x.test/?ok=1 safe & token=Bearer first&second-secret",
+            "second-secret",
+        ),
+    ):
+        out = redact_text(source)
+        assert leaked not in out, (source, out)
+
+    # P2-2: quoted object-key interiors are not opaque — assignments still redact.
+    for source in (
+        '{"token=super-secret":"safe"}',
+        '{"api_key=super-secret":"safe"}',
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    mapped = redact_value({'"token=super-secret"': "safe"})
+    body = json.dumps(mapped)
+    assert "super-secret" not in body
+    assert REDACTED in body
+
+    # Quoted JSON keys still keep ?/&/:// as key material (pr94t FIXED).
+    for source in (
+        '{"api?key":"super-secret"}',
+        '{"api&key":"super-secret"}',
+        '{"api://key":"super-secret"}',
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    # Bracket interiors remain FIXED.
+    for source in (
+        'headers["token=super-secret"]=safe',
+        '["token=super-secret"]=safe',
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+
+    # P2-3: escaped-quote flood must stay O(n), not O(n²) via _quoted_key_close.
+    timings: list[float] = []
+    for n in (1_600, 3_200, 6_400):
+        source = '\\"' * n
+        t0 = time.perf_counter()
+        redact_text(source)
+        timings.append(time.perf_counter() - t0)
+    assert timings[2] < max(0.05, timings[0] * 10.0), timings
+    assert timings[2] < 1.0
+
+    # P2-4: nested key-brackets must stay O(n) and must not RecursionError.
+    old_limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(1000)
+    try:
+        nest_timings: list[float] = []
+        for n in (200, 400, 800):
+            source = "[" * n + "safe" + "]=x" * n
+            t0 = time.perf_counter()
+            redact_text(source)
+            nest_timings.append(time.perf_counter() - t0)
+        assert nest_timings[2] < max(0.05, nest_timings[0] * 10.0), nest_timings
+        # Depth past the recursion ceiling of the prior sliced implementation.
+        source = "[" * 975 + "safe" + "]=x" * 975
+        t0 = time.perf_counter()
+        redact_text(source)
+        assert time.perf_counter() - t0 < 1.0
+    finally:
+        sys.setrecursionlimit(old_limit)
 
