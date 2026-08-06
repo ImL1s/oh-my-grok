@@ -29,18 +29,27 @@ _SENSITIVE_KEY_PARTS = (
     "prompt",
     "command",
 )
+
+# Free-text assign/query patterns must share the same sensitive-name set as
+# ``is_sensitive_key`` so integers under account/model/quota/… cannot leak via
+# ``key=0`` / ``key: -7`` strings (or mapping keys that embed those forms).
+_SENSITIVE_NAME_ALT = (
+    r"authorization|proxy-authorization|cookie|set-cookie|"
+    r"access[_-]?token|refresh[_-]?token|token|password|passwd|"
+    r"secret|client[_-]?secret|api[_-]?key|apikey|"
+    r"account(?:[_-]?id)?|model(?:[_-]?id)?|quota(?:[_-]?id)?|"
+    r"prompt(?:[_-]?id)?|command(?:[_-]?id)?"
+)
 _HEADER_RE = re.compile(
     r"(?i)\b(authorization|proxy-authorization)\s*[:=]\s*"
     r"(?:bearer|basic)?\s*([^\s,;]+)"
 )
 _COOKIE_RE = re.compile(r"(?i)\b(cookie|set-cookie)\s*[:=]\s*([^\r\n]+)")
 _QUERY_RE = re.compile(
-    r"(?i)([?&](?:access[_-]?token|refresh[_-]?token|token|password|passwd|"
-    r"secret|client[_-]?secret|api[_-]?key)=)([^&#\s]+)"
+    rf"(?i)([?&](?:{_SENSITIVE_NAME_ALT})=)([^&#\s]+)"
 )
 _ASSIGN_RE = re.compile(
-    r"(?i)\b((?:access[_-]?token|refresh[_-]?token|token|password|passwd|"
-    r"secret|client[_-]?secret|api[_-]?key)\s*[:=]\s*)([^\s,;&]+)"
+    rf"(?i)\b((?:{_SENSITIVE_NAME_ALT})\s*[:=]\s*)([^\s,;&]+)"
 )
 
 
@@ -65,6 +74,15 @@ def redact_text(value: str) -> str:
     return result
 
 
+def _redact_mapping_key(key: object) -> str:
+    """Apply free-text redaction to mapping keys (keeps plain sensitive names).
+
+    Keys like ``token`` stay addressable so boolean ``supports.models`` survives;
+    keys that embed ``account_id=0`` style leaks are scrubbed in place.
+    """
+    return redact_text(str(key))
+
+
 def redact_value(value: Any, *, _key: object | None = None) -> Any:
     """Return a JSON-compatible recursively redacted value.
 
@@ -87,7 +105,7 @@ def redact_value(value: Any, *, _key: object | None = None) -> Any:
         return REDACTED
     if isinstance(value, Mapping):
         return {
-            str(key): redact_value(item, _key=key)
+            _redact_mapping_key(key): redact_value(item, _key=key)
             for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
         }
     if isinstance(value, (list, tuple)):

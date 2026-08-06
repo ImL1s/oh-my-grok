@@ -38,13 +38,41 @@ def _post_popen_begin() -> None:
     return None
 
 
+def _after_popen_before_box() -> None:
+    """Test hook between successful Popen and ``proc_box`` publication."""
+    return None
+
+
 def _popen_bound(
     proc_box: list[subprocess.Popen[bytes] | None], popen_kwargs: dict
 ) -> subprocess.Popen[bytes]:
-    """Spawn and retain the child handle before returning to the caller."""
-    proc = subprocess.Popen(**popen_kwargs)
-    proc_box[0] = proc
-    return proc
+    """Spawn and retain the child handle before returning to the caller.
+
+    Any ``BaseException`` after a successful ``Popen`` (including between spawn
+    and ``proc_box`` publication) must reap the child here — the caller may
+    never receive the handle.
+    """
+    proc: subprocess.Popen[bytes] | None = None
+    try:
+        proc = subprocess.Popen(**popen_kwargs)
+        _after_popen_before_box()
+        proc_box[0] = proc
+        return proc
+    except BaseException:
+        if proc is not None:
+            try:
+                _kill_tree(proc)
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=2.0)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+            try:
+                _close_pipes(proc)
+            except Exception:
+                pass
+        raise
 
 
 DEFAULT_PROBE_TIMEOUT_S: Final[float] = 8.0

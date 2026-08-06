@@ -81,3 +81,34 @@ def test_redact_value_redacts_sensitive_integer_values_but_keeps_booleans() -> N
     assert redacted["account_id"] == REDACTED
     assert redacted["quota"] == REDACTED
     assert redacted["models"] is True
+
+
+def test_redact_text_covers_account_model_quota_zero_and_negative() -> None:
+    source = "initialization failed account_id=0 quota=-7 model_id:123 command_id=9"
+    out = redact_text(source)
+    assert "account_id=0" not in out
+    assert "quota=-7" not in out
+    assert "model_id:123" not in out
+    assert "command_id=9" not in out
+    assert out.count(REDACTED) >= 4
+    assert "initialization failed" in out
+
+
+def test_redact_value_redacts_free_text_and_mapping_keys_with_sensitive_ints() -> None:
+    redacted = redact_value(
+        {
+            "detail": "account_id=0 quota=-7 model_id:123 command_id=9",
+            "account_id=0": "value",
+            "nested": ["quota: -3", {"safe": "ok", "token": 1}],
+        }
+    )
+    body = json.dumps(redacted, sort_keys=True)
+    assert "account_id=0" not in body
+    assert "quota=-7" not in body
+    assert "model_id:123" not in body
+    assert "command_id=9" not in body
+    assert "quota: -3" not in body
+    assert redacted["nested"][1]["safe"] == "ok"
+    assert "account_id=[REDACTED]" in redacted
+    assert redacted["account_id=[REDACTED]"] == REDACTED
+

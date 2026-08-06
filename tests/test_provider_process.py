@@ -393,6 +393,57 @@ def test_popen_wrapper_shares_kill_on_baseexception_try_with_post_spawn() -> Non
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process-group killpg is POSIX-only")
+def test_popen_bound_kills_tree_if_exception_before_box_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exception between Popen return and proc_box write must still reap."""
+    from omg_cli.providers import process as process_mod
+
+    marker = tmp_path / "grandchild.alive"
+    script = tmp_path / "hang_tree.py"
+    script.write_text(
+        f"""\
+import subprocess, sys, time
+from pathlib import Path
+subprocess.Popen(
+    [sys.executable, "-c",
+     "import time; from pathlib import Path; m=Path({str(marker)!r});\\n"
+     "while True:\\n"
+     " m.write_text(str(time.time()), encoding='utf-8'); time.sleep(0.05)\\n"],
+)
+while True:
+    time.sleep(0.05)
+""",
+        encoding="utf-8",
+    )
+
+    def raise_before_box() -> None:
+        raise KeyboardInterrupt("between Popen and proc_box")
+
+    monkeypatch.setattr(process_mod, "_after_popen_before_box", raise_before_box)
+    try:
+        with pytest.raises(KeyboardInterrupt, match="between Popen and proc_box"):
+            run_probe_process(
+                [sys.executable, str(script)],
+                env={"PATH": os.environ.get("PATH", "")},
+                timeout_s=5.0,
+            )
+
+        deadline = time.monotonic() + 2.0
+        last = marker.read_text(encoding="utf-8") if marker.exists() else ""
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            now = marker.read_text(encoding="utf-8") if marker.exists() else ""
+            if now == last:
+                break
+            last = now
+        else:
+            pytest.fail("grandchild still alive after pre-box Popen exception")
+    finally:
+        pass
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group killpg is POSIX-only")
 def test_popen_post_spawn_exception_kills_process_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
