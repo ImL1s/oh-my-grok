@@ -6,6 +6,7 @@ Requires real ``tmux`` on PATH. Skips cleanly when absent.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -388,6 +389,11 @@ def test_inside_commit_refuses_when_worker_pane_leaves_session(
         if cmd == "new-window":
             return SimpleNamespace(returncode=0, stdout="@7\t%10\n", stderr="")
         if cmd == "list-windows":
+            if "-a" in args:
+                # Global id probe used by _kill_window absence proof.
+                if window_alive:
+                    return SimpleNamespace(returncode=0, stdout="@7\n", stderr="")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
             if window_alive:
                 return SimpleNamespace(
                     returncode=0,
@@ -511,6 +517,10 @@ def test_inside_new_window_malformed_stdout_kills_orphan(
             return SimpleNamespace(returncode=0, stdout="\n", stderr="")
         if cmd == "list-windows":
             listed_windows += 1
+            if "-a" in args:
+                # Global window-id absence proof from _kill_window.
+                ids = "".join(f"{wid}\n" for wid in sorted(residual))
+                return SimpleNamespace(returncode=0, stdout=ids, stderr="")
             assert args[args.index("-t") + 1] == "$42"
             if residual:
                 return SimpleNamespace(
@@ -593,6 +603,9 @@ def test_inside_new_window_readback_failure_modes_kill_by_name(
             return SimpleNamespace(returncode=0, stdout="garbage", stderr="")
         if cmd == "list-windows":
             list_phase["n"] += 1
+            if "-a" in args:
+                ids = "".join(f"{wid}\n" for wid in sorted(residual_windows))
+                return SimpleNamespace(returncode=0, stdout=ids, stderr="")
             # First discovery may be unknown; after kill, absence proof for
             # unknown modes stays unknown (fail closed). Ambiguous/found can
             # prove absence once residuals are cleared.
@@ -666,6 +679,8 @@ def test_kill_inside_windows_absence_proof_rejects_still_present(
     def fake_tmux(args: list[str]) -> SimpleNamespace:
         cmd = args[0]
         if cmd == "list-windows":
+            if "-a" in args:
+                return SimpleNamespace(returncode=0, stdout="@77\n", stderr="")
             return SimpleNamespace(
                 returncode=0,
                 stdout="@77\tomg-team-stillhere\t$42\n",
@@ -699,6 +714,12 @@ def test_kill_inside_windows_absence_proof_ok_when_gone(
         cmd = args[0]
         if cmd == "list-windows":
             if residual:
+                if "-a" in args:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout="".join(f"{wid}\n" for wid in sorted(residual)),
+                        stderr="",
+                    )
                 return SimpleNamespace(
                     returncode=0,
                     stdout="@77\tomg-team-gone\t$42\n",
@@ -750,6 +771,12 @@ def test_inside_launch_writes_and_clears_intent_on_successful_cleanup(
             return SimpleNamespace(returncode=0, stdout="\n", stderr="")
         if cmd == "list-windows":
             if residual:
+                if "-a" in args:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout="".join(f"{wid}\n" for wid in sorted(residual)),
+                        stderr="",
+                    )
                 return SimpleNamespace(
                     returncode=0,
                     stdout="@77\tomg-team-abad1dea\t$42\n",
@@ -908,6 +935,163 @@ def _authoritative_v2_launch_receipt_fixture(
     }
     plane._atomic_write_json(plane.team_meta_path(root, run_id), meta)
     return meta
+
+
+def test_sweep_refuses_adopt_when_identity_generation_skips_chain(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Non-zero/malformed identity_generation without chain must not clear WAL."""
+    from omg_cli.team import plane
+    from omg_cli.team.tmux import (
+        _intent_receipt_matches,
+        sweep_stale_team_launch_intents,
+        write_team_launch_intent,
+    )
+
+    rid = "20260806T120000Z-gen-skip"
+    nonce = "cafebabecafebabecafebabecafebabe"
+    window_name = "omg-team-worker"
+    intent = write_team_launch_intent(
+        tmp_path,
+        run_id=rid,
+        session_id="$42",
+        window_name=window_name,
+        nonce=nonce,
+    )
+    meta = _authoritative_v2_launch_receipt_fixture(
+        tmp_path,
+        run_id=rid,
+        session_id="$42",
+        intent_nonce=nonce,
+        window_name=window_name,
+    )
+    # Attack shape: gen=1 + empty tasks, no generation-1 identity receipt.
+    poisoned = dict(meta)
+    poisoned["identity_generation"] = 1
+    poisoned["tasks"] = []
+    plane._atomic_write_json(plane.team_meta_path(tmp_path, rid), poisoned)
+
+    raw = json.loads(intent.read_text(encoding="utf-8"))
+    raw["owner_pid"] = 999999999
+    raw["owner_pid_start"] = "stale-owner"
+    intent.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+    assert _intent_receipt_matches(tmp_path, raw) is False
+
+    kills: list[dict[str, str]] = []
+
+    def boom_kill(**kwargs):
+        kills.append(dict(kwargs))
+        return "should not kill"
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux._kill_inside_windows_by_name", boom_kill
+    )
+    results = sweep_stale_team_launch_intents(tmp_path)
+    assert results and results[0].get("ok") is False
+    assert kills == []
+    assert intent.is_file()
+
+
+@pytest.mark.parametrize("bad_generation", [True, "1", -1, 1.5])
+def test_sweep_refuses_adopt_on_malformed_identity_generation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bad_generation: object
+) -> None:
+    """Bool/str/negative identity_generation must not skip continuity / adopt."""
+    from omg_cli.team import plane
+    from omg_cli.team.tmux import (
+        _intent_receipt_matches,
+        sweep_stale_team_launch_intents,
+        write_team_launch_intent,
+    )
+
+    rid = "20260806T120000Z-malgen" + str(abs(hash(repr(bad_generation))))[:8]
+    nonce = "dddddddddddddddddddddddddddddddd"
+    window_name = "omg-team-worker"
+    intent = write_team_launch_intent(
+        tmp_path,
+        run_id=rid,
+        session_id="$42",
+        window_name=window_name,
+        nonce=nonce,
+    )
+    meta = _authoritative_v2_launch_receipt_fixture(
+        tmp_path,
+        run_id=rid,
+        session_id="$42",
+        intent_nonce=nonce,
+        window_name=window_name,
+    )
+    poisoned = dict(meta)
+    poisoned["identity_generation"] = bad_generation
+    poisoned["tasks"] = []
+    plane._atomic_write_json(plane.team_meta_path(tmp_path, rid), poisoned)
+
+    raw = json.loads(intent.read_text(encoding="utf-8"))
+    raw["owner_pid"] = 999999999
+    raw["owner_pid_start"] = "stale-owner"
+    intent.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+    assert _intent_receipt_matches(tmp_path, raw) is False
+    monkeypatch.setattr(
+        "omg_cli.team.tmux._kill_inside_windows_by_name",
+        lambda **_k: "should not kill",
+    )
+    results = sweep_stale_team_launch_intents(tmp_path)
+    assert results and results[0].get("ok") is False
+    assert intent.is_file()
+
+
+def test_kill_window_requires_global_absence_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """kill-window rc 0/1 alone is not success — list-windows -a must omit id."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    still_present = True
+
+    def fake_tmux(args: list[str]) -> SimpleNamespace:
+        cmd = args[0]
+        if cmd == "kill-window":
+            return SimpleNamespace(returncode=1, stdout="", stderr="can't find")
+        if cmd == "list-windows" and "-a" in args:
+            if still_present:
+                return SimpleNamespace(returncode=0, stdout="@9\n@12\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="@9\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    err = tmux_mod._kill_window("@12")
+    assert err is not None
+    assert "still present" in err
+
+    still_present = False
+    assert tmux_mod._kill_window("@12") is None
+
+
+def test_clear_intent_fsync_failure_after_unlink_is_nonfatal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Parent fsync failure after unlink must not raise (WAL already gone)."""
+    from omg_cli.team.tmux import clear_team_launch_intent, write_team_launch_intent
+
+    intent = write_team_launch_intent(
+        tmp_path,
+        run_id="20260806T120000Z-fsync",
+        session_id="$7",
+        window_name="omg-team-fsync",
+        nonce="ffffffffffffffffffffffffffffffff",
+    )
+    assert intent.is_file()
+
+    def boom_fsync(_fd: int) -> None:
+        raise OSError("injected parent fsync failure")
+
+    monkeypatch.setattr(os, "fsync", boom_fsync)
+    clear_team_launch_intent(intent)  # must not raise
+    assert not intent.is_file()
 
 
 def test_sweep_adopts_receipt_bound_intent_without_kill(

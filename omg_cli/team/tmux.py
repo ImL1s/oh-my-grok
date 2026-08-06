@@ -223,7 +223,9 @@ def clear_team_launch_intent(path: Path | str | None) -> None:
     receipt **and** hash-bound ``team.json``) or after absence-proven kill.
     Unlink is fail-closed: OSError (other than already-absent) propagates so
     callers cannot leave a stale WAL that later sweeps a receipt-bound worker.
-    Parent directory is fsync'd after unlink when the file existed.
+    Parent-directory fsync after a successful unlink is best-effort: raising
+    there would force start_team rollback to delete receipt/team.json after the
+    WAL is already gone, hiding a live worker. Already-absent is success.
     """
     if path is None:
         return
@@ -251,12 +253,11 @@ def clear_team_launch_intent(path: Path | str | None) -> None:
             raise TmuxTeamError(
                 f"launch intent clear failed: {intent}: {exc}"
             ) from exc
+        # Best-effort directory durability only — WAL is already gone.
         try:
             os.fsync(parent_fd)
-        except OSError as exc:
-            raise TmuxTeamError(
-                f"launch intent clear fsync failed: {intent.parent}: {exc}"
-            ) from exc
+        except OSError:
+            pass
     finally:
         os.close(parent_fd)
 
@@ -291,21 +292,23 @@ def _intent_owner_blocks_sweep(raw: Mapping[str, Any]) -> str | None:
 
 
 def _intent_receipt_matches(root: Path, intent: Mapping[str, Any]) -> bool:
-    """True only when durable receipt **and** hash-bound team.json bind intent.
+    """True only when durable receipt **and** full identity-chain bind intent.
 
     Receipt-only states (immutable receipt on disk, no ``team.json``) must not
     adopt or clear the WAL — stop cannot load meta, and silent clear would hide
     an unrecovered live worker. Schema-v1 (#106) launch receipts omit
     ``intent_nonce`` / ``window_name`` and must never be adopted. Only schema-v2
-    receipts that pass :func:`omg_cli.team.plane._load_team_launch_receipt`
-    against loaded team meta (exact key set, generation, tasks continuity,
-    canonical body hash / ``launch_receipt_sha256``, session / launch_nonce)
-    with matching intent binding fields qualify.
+    receipts that pass :func:`omg_cli.team.plane._load_team_identity_chain`
+    against loaded team meta (exact key set, valid ``identity_generation``,
+    complete generation receipts, tasks continuity, canonical body hash /
+    ``launch_receipt_sha256``, session / launch_nonce) with matching intent
+    binding fields qualify. Non-zero / malformed generation without a complete
+    chain must refuse adopt — never clear the WAL.
     """
     from omg_cli.team.plane import (
         LAUNCH_RECEIPT_SCHEMA_VERSION,
         TeamError,
-        _load_team_launch_receipt,
+        _load_team_identity_chain,
         load_team_meta,
     )
 
@@ -321,9 +324,14 @@ def _intent_receipt_matches(root: Path, intent: Mapping[str, Any]) -> bool:
         return False
     try:
         meta = load_team_meta(root, intent_run)
-        receipt = _load_team_launch_receipt(root, intent_run, meta)
+        # Full chain (gen-0 launch + every scaled identity receipt) — refuse
+        # adopt when identity_generation is non-zero/malformed without receipts.
+        chain = _load_team_identity_chain(root, intent_run, meta)
     except TeamError:
         return False
+    if not chain:
+        return False
+    receipt = chain[0]
     # Fail-closed: legacy v1 (and any non-v2) cannot prove intent identity.
     if receipt.get("schema_version") != LAUNCH_RECEIPT_SCHEMA_VERSION:
         return False
@@ -657,12 +665,43 @@ def respawn_worker_pane(
 
 
 def _kill_window(window_id: str) -> str | None:
+    """Kill *window_id* and require global absence proof.
+
+    Bare ``kill-window`` rc 0/1 is never success by itself — list-windows -a
+    must complete with well-formed ids and omit the target. Unknown / malformed
+    probes return an error so callers do not treat cleanup as proven.
+    """
     if _TMUX_WINDOW_ID.fullmatch(window_id) is None:
         return f"refused kill-window for non-window id {window_id!r}"
-    killed = _tmux_run(["kill-window", "-t", window_id])
+    try:
+        killed = _tmux_run(["kill-window", "-t", window_id])
+    except OSError as exc:
+        return f"kill-window {window_id}: OSError {exc}"
     if killed.returncode not in (0, 1):
         err = (killed.stderr or killed.stdout or "").strip()
         return f"kill-window {window_id}: exit {killed.returncode} {err}"
+    try:
+        listed = _tmux_run(["list-windows", "-a", "-F", "#{window_id}"])
+    except OSError as exc:
+        return f"kill-window {window_id}: absence probe OSError {exc}"
+    if listed.returncode != 0:
+        err = (listed.stderr or listed.stdout or "").strip()
+        return (
+            f"kill-window {window_id}: absence probe exit {listed.returncode}"
+            + (f" {err}" if err else "")
+        )
+    present: list[str] = []
+    for line in (listed.stdout or "").splitlines():
+        token = line.strip()
+        if not token:
+            continue
+        if _TMUX_WINDOW_ID.fullmatch(token) is None:
+            return (
+                f"kill-window {window_id}: absence probe malformed row {token!r}"
+            )
+        present.append(token)
+    if window_id in present:
+        return f"kill-window {window_id}: still present after kill"
     return None
 
 

@@ -1473,13 +1473,24 @@ def _snapshot_live_start_files(
 
 def _restore_live_start_files(
     snapshots: Mapping[Path, tuple[bytes | None, int | None]],
+    *,
+    unlink_new: bool = True,
 ) -> list[str]:
+    """Restore snapshotted live-start files.
+
+    When ``unlink_new`` is False, paths that did not exist at snapshot time are
+    left in place (keep newly published receipt / team.json). Use that when
+    tmux cleanup is unproven or the launch-intent WAL was already cleared —
+    deleting authority would hide a live worker.
+    """
     from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes
 
     errors: list[str] = []
     for path, (body, mode) in snapshots.items():
         try:
             if body is None:
+                if not unlink_new:
+                    continue
                 if path.is_dir() and not path.is_symlink():
                     raise OSError(
                         f"partial transaction path became a directory: {path}"
@@ -1702,11 +1713,17 @@ def _load_team_launch_receipt(
         raise TeamError("team launch receipt hash mismatch")
     expected_tasks = meta.get("tasks")
     generation = meta.get("identity_generation", 0)
+    # Fail-closed: bool / str / negative must not skip gen-0 continuity.
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 0
+    ):
+        raise TeamError("team identity generation is invalid")
     if not isinstance(expected_tasks, list):
         raise TeamError("team launch receipt task count mismatch")
-    if generation == 0 and len(expected_tasks) != len(parsed["tasks"]):
-        raise TeamError("team launch receipt task count mismatch")
-    for expected, actual in zip(expected_tasks, parsed["tasks"]):
+    # Always validate receipt task row shape (independent of meta.tasks length).
+    for actual in parsed["tasks"]:
         if not isinstance(actual, Mapping):
             raise TeamError("team launch receipt task row mismatch")
         if set(actual) != {
@@ -1718,11 +1735,14 @@ def _load_team_launch_receipt(
             "pid_start",
         }:
             raise TeamError("team launch receipt task keys mismatch")
-        if generation == 0 and (
-            not isinstance(expected, Mapping)
-            or any(expected.get(field) != actual.get(field) for field in actual)
-        ):
-            raise TeamError("team.json differs from immutable launch receipt")
+    if generation == 0:
+        if len(expected_tasks) != len(parsed["tasks"]):
+            raise TeamError("team launch receipt task count mismatch")
+        for expected, actual in zip(expected_tasks, parsed["tasks"]):
+            if not isinstance(expected, Mapping) or any(
+                expected.get(field) != actual.get(field) for field in actual
+            ):
+                raise TeamError("team.json differs from immutable launch receipt")
     return parsed
 
 
@@ -2533,6 +2553,7 @@ def start_team(
                 "attach_hint": None,
             }
             launch_intent_path: str | None = None
+            intent_wal_cleared = False
             try:
                 if topology == "split":
                     from omg_cli.team.tmux import TmuxTeamError, create_split_team_session
@@ -2719,12 +2740,11 @@ def start_team(
                     ),
                 }
                 # Commit point = durable receipt AND hash-bound team.json.
-                # Clear launch-intent WAL only after that pair is verified on disk;
-                # clearing earlier leaves receipt-only orphans sweep/stop cannot manage.
+                # write_status before WAL clear so a status failure still leaves
+                # the intent WAL as a sweep gate. Clear is terminal for the
+                # intent — after it succeeds, do not roll back authority files.
                 _atomic_write_json(team_meta_path(root_path, rid), meta)
                 if launch_intent_path:
-                    from omg_cli.team.tmux import clear_team_launch_intent
-
                     committed = load_team_meta(root_path, rid)
                     verified = _load_team_launch_receipt(root_path, rid, committed)
                     if (
@@ -2739,7 +2759,6 @@ def start_team(
                             "team.json launch binding verification failed "
                             "before intent clear"
                         )
-                    clear_team_launch_intent(launch_intent_path)
                 write_status(
                     root_path,
                     rid,
@@ -2752,9 +2771,32 @@ def start_team(
                         "multi_cli": multi_cli,
                     },
                 )
+                if launch_intent_path:
+                    from omg_cli.team.tmux import clear_team_launch_intent
+
+                    try:
+                        clear_team_launch_intent(launch_intent_path)
+                    except BaseException:
+                        # Unlink is the commit point — if the WAL is already gone,
+                        # retain authority even when clear raises afterward.
+                        try:
+                            if not Path(launch_intent_path).is_file():
+                                intent_wal_cleared = True
+                        except OSError:
+                            intent_wal_cleared = True
+                        raise
+                    intent_wal_cleared = True
                 return meta
             except Exception as exc:
                 cleanup_error = None
+                if intent_wal_cleared:
+                    # Durable authority + cleared WAL: keep receipt/team.json and
+                    # the live session — rolling back would hide a running team.
+                    # Prefix matches outer handler so _fail_start does not rmtree.
+                    raise TeamError(
+                        f"{_tx_failed_prefix} (durable authority retained; "
+                        f"launch-intent WAL cleared): {exc}"
+                    ) from exc
                 if created_handle is not None:
                     if topology == "split" and not bool(
                         tmux_launch.get("session_owned", True)
@@ -2773,13 +2815,19 @@ def start_team(
                             cleanup_error = _kill_panes(pane_ids)
                     else:
                         cleanup_error = _cleanup_created_tmux_session(created_handle)
-                restore_errors = _restore_live_start_files(snapshots)
+                if cleanup_error is not None:
+                    # Unproven cleanup → keep receipt/team.json/WAL/team dir so
+                    # stop/sweep retain identity authority. Do not rmtree.
+                    raise TeamError(
+                        f"{_tx_failed_prefix} (tmux cleanup unproven; "
+                        f"authority retained): {exc}; {cleanup_error}"
+                    ) from exc
+                restore_errors = _restore_live_start_files(
+                    snapshots, unlink_new=True
+                )
                 # #17: also undo run/active/worktrees/team-dir created before the
                 # narrow file snapshot so a failed launch does not block retries.
-                extra = []
-                if cleanup_error:
-                    extra.append(cleanup_error)
-                extra.extend(restore_errors)
+                extra = list(restore_errors)
                 raise _fail_start(exc, extra=extra) from exc
         except TeamError as exc:
             if str(exc).startswith(_tx_failed_prefix):

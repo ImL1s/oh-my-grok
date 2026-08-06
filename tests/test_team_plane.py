@@ -545,6 +545,348 @@ def test_live_split_start_clears_intent_only_after_verified_team_meta(
     assert loaded["launch_receipt_sha256"] == meta["launch_receipt_sha256"]
 
 
+def test_live_split_start_writes_status_before_intent_clear(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """write_status must precede WAL clear so status failure leaves the intent."""
+    import omg_cli.team.tmux as tmux_mod
+    from omg_cli.team.tmux import write_team_launch_intent
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    nonce_holder: dict[str, str] = {}
+    order: list[str] = []
+    intent_path: dict[str, Any] = {}
+
+    def fake_create(**kwargs: Any) -> tuple[str, str]:
+        tasks = kwargs["tasks"]
+        root = Path(kwargs["root"])
+        rid = str(kwargs["run_id"])
+        intent = write_team_launch_intent(
+            root,
+            run_id=rid,
+            session_id="$3",
+            window_name="omg-team-abad1dea",
+            nonce="abad1deaabad1deaabad1deaabad1dea",
+        )
+        intent_path["path"] = intent
+        intent_path["run_id"] = rid
+        tasks[0]["pane_id"] = "%10"
+        tasks[1]["pane_id"] = "%11"
+        tasks[0]["_tmux_launch"] = {
+            "attach_mode": "detached",
+            "session_owned": True,
+            "leader_pane_id": None,
+            "window_id": "@7",
+            "attach_hint": "tmux attach -t sess",
+        }
+        tasks[0]["_tmux_launch_intent"] = str(intent)
+        return (str(kwargs["session"]), "$3")
+
+    def fake_tmux_run(args: Any, **_kw: Any) -> MagicMock:
+        command = list(args)
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        if command[0] == "set-option" and command[-2] == plane.LAUNCH_NONCE_OPTION:
+            nonce_holder["nonce"] = command[-1]
+        elif command[0] == "display-message":
+            result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+        elif command[0] == "list-panes":
+            nonce = nonce_holder["nonce"]
+            result.stdout = (
+                f"%10\t424242\t$3\t@7\t{nonce}\n"
+                f"%11\t424243\t$3\t@7\t{nonce}\n"
+            )
+        return result
+
+    real_write_status = plane.write_status
+    real_clear = tmux_mod.clear_team_launch_intent
+
+    def track_status(*args: Any, **kwargs: Any) -> Any:
+        order.append("status")
+        assert intent_path["path"].is_file(), "WAL must still exist during status"
+        return real_write_status(*args, **kwargs)
+
+    def track_clear(path: Path | str | None) -> None:
+        order.append("clear")
+        assert "status" in order, "WAL clear must follow write_status"
+        real_clear(path)
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux.create_split_team_session", fake_create
+    )
+    monkeypatch.setattr(plane, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(plane.os, "getpgid", lambda pid: pid + 1000)
+    monkeypatch.setattr(plane, "_pid_start_identity", lambda pid: f"start-{pid}")
+    monkeypatch.setattr(plane, "write_status", track_status)
+    monkeypatch.setattr(tmux_mod, "clear_team_launch_intent", track_clear)
+
+    start_team(
+        "status before clear",
+        TASKS_TWO,
+        root=tmp_path,
+        topology="split",
+    )
+    assert order == ["status", "clear"]
+    assert not intent_path["path"].is_file()
+
+
+def test_live_start_status_failure_keeps_intent_and_rolls_back_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Status failure before WAL clear must leave intent and remove new authority."""
+    import omg_cli.team.tmux as tmux_mod
+    from omg_cli.team.tmux import write_team_launch_intent
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    nonce_holder: dict[str, str] = {}
+    intent_path: dict[str, Any] = {}
+    alive = False
+    commands: list[list[str]] = []
+
+    def fake_create(**kwargs: Any) -> tuple[str, str]:
+        nonlocal alive
+        alive = True
+        tasks = kwargs["tasks"]
+        root = Path(kwargs["root"])
+        rid = str(kwargs["run_id"])
+        intent = write_team_launch_intent(
+            root,
+            run_id=rid,
+            session_id="$3",
+            window_name="omg-team-abad1dea",
+            nonce="abad1deaabad1deaabad1deaabad1dea",
+        )
+        intent_path["path"] = intent
+        intent_path["run_id"] = rid
+        tasks[0]["pane_id"] = "%10"
+        tasks[1]["pane_id"] = "%11"
+        tasks[0]["_tmux_launch"] = {
+            "attach_mode": "detached",
+            "session_owned": True,
+            "leader_pane_id": None,
+            "window_id": "@7",
+            "attach_hint": "tmux attach -t sess",
+        }
+        tasks[0]["_tmux_launch_intent"] = str(intent)
+        return (str(kwargs["session"]), "$3")
+
+    def fake_tmux_run(args: Any, **_kw: Any) -> MagicMock:
+        nonlocal alive
+        command = list(args)
+        commands.append(command)
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        if command[0] == "set-option" and command[-2] == plane.LAUNCH_NONCE_OPTION:
+            nonce_holder["nonce"] = command[-1]
+        elif command[0] == "display-message":
+            result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+        elif command[0] == "list-panes":
+            nonce = nonce_holder["nonce"]
+            result.stdout = (
+                f"%10\t424242\t$3\t@7\t{nonce}\n"
+                f"%11\t424243\t$3\t@7\t{nonce}\n"
+            )
+        elif command[0] == "kill-session":
+            alive = False
+        elif command[0] == "has-session":
+            result.returncode = 0 if alive else 1
+        return result
+
+    def status_fail(*_a: Any, **_k: Any) -> None:
+        raise OSError("injected status failure before WAL clear")
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux.create_split_team_session", fake_create
+    )
+    monkeypatch.setattr(plane, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(plane.os, "getpgid", lambda pid: pid + 1000)
+    monkeypatch.setattr(plane, "_pid_start_identity", lambda pid: f"start-{pid}")
+    monkeypatch.setattr(plane, "write_status", status_fail)
+
+    with pytest.raises(TeamError, match="transaction"):
+        start_team(
+            "status fail keeps intent",
+            TASKS_TWO,
+            root=tmp_path,
+            topology="split",
+        )
+
+    assert alive is False
+    assert intent_path["path"].is_file(), "WAL must survive status failure"
+    rid = str(intent_path["run_id"])
+    assert not plane.team_launch_receipt_path(tmp_path, rid).exists()
+    assert not team_meta_path(tmp_path, rid).exists()
+
+
+def test_live_start_keeps_authority_when_cleanup_unproven_after_meta(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unproven tmux cleanup must not unlink newly published receipt/team.json."""
+    import omg_cli.team.tmux as tmux_mod
+    from omg_cli.team.tmux import write_team_launch_intent
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    nonce_holder: dict[str, str] = {}
+    intent_path: dict[str, Any] = {}
+
+    def fake_create(**kwargs: Any) -> tuple[str, str]:
+        tasks = kwargs["tasks"]
+        root = Path(kwargs["root"])
+        rid = str(kwargs["run_id"])
+        intent = write_team_launch_intent(
+            root,
+            run_id=rid,
+            session_id="$3",
+            window_name="omg-team-abad1dea",
+            nonce="abad1deaabad1deaabad1deaabad1dea",
+        )
+        intent_path["path"] = intent
+        intent_path["run_id"] = rid
+        tasks[0]["pane_id"] = "%10"
+        tasks[1]["pane_id"] = "%11"
+        tasks[0]["_tmux_launch"] = {
+            "attach_mode": "detached",
+            "session_owned": True,
+            "leader_pane_id": None,
+            "window_id": "@7",
+            "attach_hint": "tmux attach -t sess",
+        }
+        tasks[0]["_tmux_launch_intent"] = str(intent)
+        return (str(kwargs["session"]), "$3")
+
+    def fake_tmux_run(args: Any, **_kw: Any) -> MagicMock:
+        command = list(args)
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        if command[0] == "set-option" and command[-2] == plane.LAUNCH_NONCE_OPTION:
+            nonce_holder["nonce"] = command[-1]
+        elif command[0] == "display-message":
+            result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+        elif command[0] == "list-panes":
+            nonce = nonce_holder["nonce"]
+            result.stdout = (
+                f"%10\t424242\t$3\t@7\t{nonce}\n"
+                f"%11\t424243\t$3\t@7\t{nonce}\n"
+            )
+        elif command[0] == "kill-session":
+            result.returncode = 0
+        elif command[0] == "has-session":
+            # Absence unproven — session still reports present.
+            result.returncode = 0
+        return result
+
+    def status_fail(*_a: Any, **_k: Any) -> None:
+        raise OSError("injected status failure with unproven cleanup")
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux.create_split_team_session", fake_create
+    )
+    monkeypatch.setattr(plane, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(plane.os, "getpgid", lambda pid: pid + 1000)
+    monkeypatch.setattr(plane, "_pid_start_identity", lambda pid: f"start-{pid}")
+    monkeypatch.setattr(plane, "write_status", status_fail)
+
+    with pytest.raises(TeamError, match="cleanup unproven|authority retained"):
+        start_team(
+            "keep authority on unproven cleanup",
+            TASKS_TWO,
+            root=tmp_path,
+            topology="split",
+        )
+
+    rid = str(intent_path["run_id"])
+    assert intent_path["path"].is_file()
+    assert plane.team_launch_receipt_path(tmp_path, rid).is_file()
+    assert team_meta_path(tmp_path, rid).is_file()
+
+
+def test_live_start_retains_authority_after_wal_cleared_postcommit_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """After WAL clear, post-commit failure must not delete receipt/team.json."""
+    import omg_cli.team.tmux as tmux_mod
+    from omg_cli.team.tmux import write_team_launch_intent
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    nonce_holder: dict[str, str] = {}
+    intent_path: dict[str, Any] = {}
+    kill_calls: list[list[str]] = []
+
+    def fake_create(**kwargs: Any) -> tuple[str, str]:
+        tasks = kwargs["tasks"]
+        root = Path(kwargs["root"])
+        rid = str(kwargs["run_id"])
+        intent = write_team_launch_intent(
+            root,
+            run_id=rid,
+            session_id="$3",
+            window_name="omg-team-abad1dea",
+            nonce="abad1deaabad1deaabad1deaabad1dea",
+        )
+        intent_path["path"] = intent
+        intent_path["run_id"] = rid
+        tasks[0]["pane_id"] = "%10"
+        tasks[1]["pane_id"] = "%11"
+        tasks[0]["_tmux_launch"] = {
+            "attach_mode": "detached",
+            "session_owned": True,
+            "leader_pane_id": None,
+            "window_id": "@7",
+            "attach_hint": "tmux attach -t sess",
+        }
+        tasks[0]["_tmux_launch_intent"] = str(intent)
+        return (str(kwargs["session"]), "$3")
+
+    def fake_tmux_run(args: Any, **_kw: Any) -> MagicMock:
+        command = list(args)
+        if command[0] == "kill-session":
+            kill_calls.append(command)
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        if command[0] == "set-option" and command[-2] == plane.LAUNCH_NONCE_OPTION:
+            nonce_holder["nonce"] = command[-1]
+        elif command[0] == "display-message":
+            result.stdout = f"{command[command.index('-t') + 1]}\t$3\n"
+        elif command[0] == "list-panes":
+            nonce = nonce_holder["nonce"]
+            result.stdout = (
+                f"%10\t424242\t$3\t@7\t{nonce}\n"
+                f"%11\t424243\t$3\t@7\t{nonce}\n"
+            )
+        return result
+
+    real_clear = tmux_mod.clear_team_launch_intent
+
+    def clear_then_boom(path: Path | str | None) -> None:
+        real_clear(path)
+        raise RuntimeError("injected post-WAL-clear failure")
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux.create_split_team_session", fake_create
+    )
+    monkeypatch.setattr(plane, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(plane.os, "getpgid", lambda pid: pid + 1000)
+    monkeypatch.setattr(plane, "_pid_start_identity", lambda pid: f"start-{pid}")
+    monkeypatch.setattr(tmux_mod, "clear_team_launch_intent", clear_then_boom)
+
+    with pytest.raises(TeamError, match="durable authority retained|WAL cleared"):
+        start_team(
+            "retain after wal clear",
+            TASKS_TWO,
+            root=tmp_path,
+            topology="split",
+        )
+
+    rid = str(intent_path["run_id"])
+    assert not intent_path["path"].is_file()
+    assert plane.team_launch_receipt_path(tmp_path, rid).is_file()
+    assert team_meta_path(tmp_path, rid).is_file()
+    assert kill_calls == [], "must not kill session after durable WAL clear"
+
+
 def test_snapshot_launch_pane_identities_refuses_session_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
