@@ -2129,10 +2129,10 @@ def test_detached_success_stamps_tmux_server_on_launch_meta(
     assert meta["tmux_server_pid_start"] == FAKE_TMUX_SERVER["tmux_server_pid_start"]
 
 
-def test_sweep_clears_unbound_side_effect_when_name_absent_same_server(
+def test_sweep_clears_unbound_side_effect_when_name_and_nonce_absent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """P2: mark-before-dispatch — name absent on same live server must unwedge."""
+    """P2: mark-before-dispatch — name+intent-nonce absent on same server unwedes."""
     from omg_cli.team.tmux import (
         mark_team_launch_intent_side_effect,
         require_clean_team_launch_intents,
@@ -2140,12 +2140,13 @@ def test_sweep_clears_unbound_side_effect_when_name_absent_same_server(
     )
 
     rid = "20260806T120000Z-unbound-se"
+    nonce = "sideeffect00000000000000000000001"
     intent = _write_launch_intent(
         tmp_path,
         run_id=rid,
         session_id="$42",
         window_name="omg-team-never-dispatched",
-        nonce="sideeffect00000000000000000000001",
+        nonce=nonce,
     )
     mark_team_launch_intent_side_effect(intent)
     raw = json.loads(intent.read_text(encoding="utf-8"))
@@ -2158,7 +2159,8 @@ def test_sweep_clears_unbound_side_effect_when_name_absent_same_server(
     def fake_kill(**kwargs):
         assert kwargs.get("require_durable_window_id") is True
         assert list(kwargs.get("known_window_ids") or []) == []
-        # Same live server + name absent + no @N → clear authorized.
+        assert kwargs.get("intent_nonce") == nonce
+        # Same live server + name absent + intent nonce absent → clear.
         return None
 
     monkeypatch.setattr(
@@ -2170,10 +2172,10 @@ def test_sweep_clears_unbound_side_effect_when_name_absent_same_server(
     assert require_clean_team_launch_intents(tmp_path) == []
 
 
-def test_kill_inside_unbound_side_effect_clears_on_name_absence(
+def test_kill_inside_unbound_side_effect_refuses_name_only_clear(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """P2: unbound side_effect + name absent on live server → allow WAL clear."""
+    """P2: unbound side_effect without intent nonce must not clear on name gone."""
     from types import SimpleNamespace
 
     from omg_cli.team import tmux as tmux_mod
@@ -2189,11 +2191,120 @@ def test_kill_inside_unbound_side_effect_clears_on_name_absence(
         return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
 
     monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(
+        tmux_mod,
+        "_probe_tmux_server_identity",
+        lambda *, socket_path=None: dict(FAKE_TMUX_SERVER),
+    )
     err = tmux_mod._kill_inside_windows_by_name(
         session_id="$42",
         window_name="omg-team-renamed-before-bind",
         known_window_ids=[],
         require_durable_window_id=True,
+        intent_nonce=None,
+        socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
+        expected_server=FAKE_TMUX_SERVER,
+    )
+    assert err is not None
+    assert "intent nonce" in err
+
+
+def test_kill_inside_unbound_side_effect_refuses_when_intent_nonce_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2: rename-before-bind — name gone but intent nonce on @N must keep WAL."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    nonce = "renamedbeforebind000000000000001"
+    residual = {"@7"}
+    nonce_present = True
+
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
+        nonlocal nonce_present
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "list-windows":
+            if "@omg_intent_nonce" in joined:
+                # Name gone; rename-surviving nonce still on @7.
+                if nonce_present:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout=f"@7\t{nonce}\t$42\n",
+                        stderr="",
+                    )
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if "-a" in args:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="".join(f"{wid}\n" for wid in sorted(residual)),
+                    stderr="",
+                )
+            # Launch name absent (renamed).
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "if-shell":
+            # @N kill appears to succeed for absence list, but nonce option
+            # remains discoverable (rename-before-bind recovery key).
+            residual.discard("@7")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "kill-window":
+            residual.discard("@7")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(
+        tmux_mod,
+        "_probe_tmux_server_identity",
+        lambda *, socket_path=None: dict(FAKE_TMUX_SERVER),
+    )
+    err = tmux_mod._kill_inside_windows_by_name(
+        session_id="$42",
+        window_name="omg-team-renamed-before-bind",
+        known_window_ids=[],
+        require_durable_window_id=True,
+        intent_nonce=nonce,
+        socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
+        expected_server=FAKE_TMUX_SERVER,
+    )
+    assert err is not None
+    assert "intent nonce still present" in err
+    assert nonce_present is True
+
+
+def test_kill_inside_unbound_side_effect_clears_when_name_and_nonce_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2: unbound side_effect + name and intent nonce absent → allow WAL clear."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    nonce = "nevercreated00000000000000000001"
+
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
+        cmd = args[0]
+        if cmd == "list-windows":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "if-shell" and "kill-window" in " ".join(args):
+            return SimpleNamespace(returncode=1, stdout="", stderr="can't find")
+        if cmd == "kill-window":
+            return SimpleNamespace(returncode=1, stdout="", stderr="can't find")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(
+        tmux_mod,
+        "_probe_tmux_server_identity",
+        lambda *, socket_path=None: dict(FAKE_TMUX_SERVER),
+    )
+    err = tmux_mod._kill_inside_windows_by_name(
+        session_id="$42",
+        window_name="omg-team-never-created",
+        known_window_ids=[],
+        require_durable_window_id=True,
+        intent_nonce=nonce,
         socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
         expected_server=FAKE_TMUX_SERVER,
     )
@@ -2212,7 +2323,7 @@ def test_pre_side_effect_wal_may_clear_on_name_absence(
         run_id=rid,
         session_id="$42",
         window_name="omg-team-never-created",
-        nonce="presideeffect0000000000000000001",
+        nonce="presideffect0000000000000000001",
     )
     raw = json.loads(intent.read_text(encoding="utf-8"))
     assert raw.get("side_effect_started") is False
@@ -3139,6 +3250,48 @@ def test_bind_launch_nonce_skips_session_when_not_owned(
     assert not any(
         c[:1] == ["set-option"] and "-p" not in c and "-w" not in c for c in calls
     )
+
+
+def test_bind_launch_nonce_uses_identity_if_shell_when_server_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2: set-option must be if-shell gated so replacement B cannot keep nonce."""
+    from omg_cli.team import plane
+    from omg_cli.team import tmux as tmux_mod
+
+    calls: list[list[str]] = []
+
+    def fake_tmux(args, **_kw):
+        from unittest.mock import MagicMock
+
+        calls.append(list(args))
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(plane, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(
+        plane,
+        "_require_plane_tmux_server",
+        lambda *_a, **_k: dict(FAKE_TMUX_SERVER),
+    )
+    plane._bind_tmux_launch_nonce(
+        session_id="$9",
+        launch_nonce="e" * 32,
+        window_id="@3",
+        pane_ids=["%81"],
+        session_owned=True,
+        socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
+        expected_server=FAKE_TMUX_SERVER,
+    )
+    if_shells = [c for c in calls if c and c[0] == "if-shell"]
+    assert len(if_shells) >= 3  # pane + window + session
+    joined = "\n".join(" ".join(c) for c in if_shells)
+    assert "set-option -p -t %81" in joined
+    assert "set-option -w -t @3" in joined
+    assert "set-option -t $9" in joined
+    assert "424242" in joined or "ps:omg-test-server" in joined
+    # No bare set-option mutation outside if-shell.
+    assert not any(c[0] == "set-option" for c in calls)
 
 
 def test_resolve_live_signal_target_refuses_respawn_pid(

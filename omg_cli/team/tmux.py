@@ -29,6 +29,10 @@ _TMUX_PANE_ID = re.compile(r"^%[0-9]{1,16}$")
 _TMUX_WINDOW_ID = re.compile(r"^@[0-9]{1,16}$")
 _SAFE_INTENT_TOKEN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 TEAM_LAUNCH_LOCK_NAME = "team-launch.lock"
+# Immutable launch-intent nonce stamped on the created window/pane in the same
+# tmux command queue as ``new-window``. Survives rename so sweep can find a
+# worker that crashed after create but before WAL ``@N`` bind.
+INTENT_NONCE_OPTION = "@omg_intent_nonce"
 
 
 class TmuxTeamError(RuntimeError):
@@ -441,14 +445,14 @@ def _require_tmux_server(
 
 
 def _intent_requires_durable_window_id(raw: Mapping[str, Any]) -> bool:
-    """True when known ``@N`` targets must be proven absent before WAL clear.
+    """True when unbound ``side_effect`` WAL must not clear on name-only absence.
 
     After ``side_effect_started`` (or legacy/missing flag), an unbound WAL may
-    represent mark-before-dispatch (never created) *or* a renamed live worker.
-    Same-live-server recovery clears when the unique launch name is proven
-    absent and no durable ``@N`` is bound; bound ids still require ID absence.
-    Only an explicit ``side_effect_started: false`` (pre-``new-window``) skips
-    durable-id requirements entirely.
+    represent mark-before-dispatch (never created) *or* a renamed live worker
+    that crashed before ``@N`` bind. Name absence alone must never authorize
+    clear — sweep must also prove the create-time intent nonce (and any known
+    ``@N``) absent on the same live server. Only an explicit
+    ``side_effect_started: false`` (pre-``new-window``) skips that bar.
     """
     if _intent_known_window_ids(raw):
         return True
@@ -456,6 +460,14 @@ def _intent_requires_durable_window_id(raw: Mapping[str, Any]) -> bool:
     if flag is False:
         return False
     return True
+
+
+def _intent_nonce_value(raw: Mapping[str, Any]) -> str | None:
+    """Return the WAL launch-intent nonce when present and non-empty."""
+    nonce = raw.get("nonce")
+    if isinstance(nonce, str) and nonce:
+        return nonce
+    return None
 
 
 def write_team_launch_intent(
@@ -531,7 +543,8 @@ def mark_team_launch_intent_side_effect(path: Path | str) -> None:
     """Stamp ``side_effect_started`` immediately before ``new-window``.
 
     After this mark, crash recovery must not clear the WAL on name-only
-    absence until a durable ``@window_id`` is bound and proven gone.
+    absence: unbound intents require the create-time intent nonce (and any
+    bound ``@window_id``) proven absent on the same live server.
     """
     from omg_cli.contracts.path_keys import (
         DATA_FILE_MODE,
@@ -998,6 +1011,7 @@ def sweep_stale_team_launch_intents(
             socket_path=str(expected_server["tmux_socket_path"]),
             expected_server=expected_server,
             require_durable_window_id=_intent_requires_durable_window_id(raw),
+            intent_nonce=_intent_nonce_value(raw),
         )
         if cleanup is None:
             try:
@@ -1865,6 +1879,72 @@ def _discover_inside_window_by_name(
     )
 
 
+def _discover_inside_windows_by_intent_nonce(
+    *,
+    session_id: str,
+    intent_nonce: str,
+    socket_path: str | None = None,
+) -> tuple[str, list[str], str | None]:
+    """Discover windows in *session_id* carrying create-time intent nonce.
+
+    Returns ``(status, window_ids, detail)`` with the same status vocabulary as
+    :func:`_discover_inside_windows_by_name`. The option survives rename, so
+    this closes the create→bind crash window where the launch name is gone.
+    """
+    if _TMUX_SESSION_ID.fullmatch(session_id) is None:
+        return (
+            "unknown",
+            [],
+            f"intent nonce discovery requires session id, got {session_id!r}",
+        )
+    if not isinstance(intent_nonce, str) or not intent_nonce:
+        return "unknown", [], "intent nonce discovery requires a non-empty nonce"
+    try:
+        listed = _tmux_run(
+            [
+                "list-windows",
+                "-t",
+                session_id,
+                "-F",
+                f"#{{window_id}}\t#{{{INTENT_NONCE_OPTION}}}\t#{{session_id}}",
+            ],
+            socket_path=socket_path,
+        )
+    except OSError as exc:
+        return "unknown", [], f"list-windows OSError: {exc}"
+    if listed.returncode != 0:
+        err = (listed.stderr or listed.stdout or "").strip()
+        return (
+            "unknown",
+            [],
+            f"list-windows exit {listed.returncode}"
+            + (f" {err}" if err else ""),
+        )
+    matches: list[str] = []
+    valid_rows = 0
+    for line in (listed.stdout or "").splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        parts = raw.split("\t")
+        if len(parts) != 3:
+            continue
+        wid, nonce, sid = parts
+        if _TMUX_WINDOW_ID.fullmatch(wid) is None:
+            continue
+        valid_rows += 1
+        if nonce == intent_nonce and sid == session_id:
+            matches.append(wid)
+    if matches:
+        if len(matches) > 1:
+            return "ambiguous", matches, None
+        return "found", matches, None
+    raw_content = (listed.stdout or "").strip()
+    if raw_content and valid_rows == 0:
+        return "unknown", [], "list-windows returned malformed output"
+    return "absent", [], None
+
+
 def _kill_inside_windows_by_name(
     *,
     session_id: str,
@@ -1873,6 +1953,7 @@ def _kill_inside_windows_by_name(
     socket_path: str | None = None,
     expected_server: Mapping[str, Any] | None = None,
     require_durable_window_id: bool = False,
+    intent_nonce: str | None = None,
 ) -> str | None:
     """Kill windows matching *window_name* in *session_id*; require absence proof.
 
@@ -1881,15 +1962,16 @@ def _kill_inside_windows_by_name(
     window IDs — or the launch WAL already stamped durable ``known_window_ids``
     — each ID must also be globally absent on the **WAL-scoped** tmux server.
     A rename can hide the launch name while ``@N`` still lives; name-only
-    absence must never authorize WAL clear when a durable id is known. Unbound
-    ``side_effect_started`` intents (*require_durable_window_id* with empty
-    targets) may clear once the unique launch name is proven absent on the
-    same live server (mark-before-dispatch recovery). When the ambient server
-    does not match the WAL server identity, refuse foreign ``@N`` kills. Bare
-    ``kill-window`` rc 0/1 is never treated as success by itself. Returns
+    absence must never authorize WAL clear when a durable id is known.
+
+    Unbound ``side_effect_started`` intents (*require_durable_window_id* with
+    empty targets) must also prove the create-time :data:`INTENT_NONCE_OPTION`
+    absent on the same live server — name absence alone conflates
+    mark-before-dispatch with rename-before-``@N``-bind. When the ambient
+    server does not match the WAL server identity, refuse foreign ``@N`` kills.
+    Bare ``kill-window`` rc 0/1 is never treated as success by itself. Returns
     ``None`` only when absence is proven; otherwise returns an error detail.
     """
-    _ = require_durable_window_id  # API: callers stamp side_effect intents.
     if expected_server is not None:
         live = _probe_tmux_server_identity(socket_path=socket_path)
         if not _tmux_server_matches(expected_server, live):
@@ -1905,17 +1987,46 @@ def _kill_inside_windows_by_name(
             return f"refused kill with non-window known id {wid!r}"
         if wid not in durable_ids:
             durable_ids.append(wid)
+    # Unbound side_effect recovery needs the intent nonce to distinguish
+    # "never created" from "created then renamed before @N bind". Missing
+    # nonce still attempts name/@N kills (orphan cleanup) but must not
+    # authorize WAL clear on name-only absence — see final proof below.
+    unbound_durable = bool(require_durable_window_id and not durable_ids)
     status, matches, detail = _discover_inside_windows_by_name(
         session_id=session_id,
         window_name=window_name,
         socket_path=socket_path,
     )
+    nonce_matches: list[str] = []
+    if (
+        unbound_durable
+        and isinstance(intent_nonce, str)
+        and intent_nonce
+    ):
+        n_status, nonce_matches, n_detail = _discover_inside_windows_by_intent_nonce(
+            session_id=session_id,
+            intent_nonce=intent_nonce,
+            socket_path=socket_path,
+        )
+        if n_status == "unknown":
+            # Do not abort kills — final nonce absence proof refuses clear.
+            nonce_matches = []
+            if n_detail:
+                errors_pre = f"intent nonce scan unknown: {n_detail}"
+            else:
+                errors_pre = "intent nonce scan unknown"
+        else:
+            errors_pre = None
+    else:
+        errors_pre = None
     errors: list[str] = []
+    if errors_pre:
+        errors.append(errors_pre)
     killed_ids: list[str] = []
-    # Union discovery matches with WAL-stamped ids so a rename before the
-    # first name probe still targets the immutable @N.
+    # Union discovery matches with WAL-stamped ids and intent-nonce hits so a
+    # rename before the first name probe still targets the immutable @N.
     targets: list[str] = []
-    for wid in list(matches) + durable_ids:
+    for wid in list(matches) + durable_ids + list(nonce_matches):
         if wid not in targets:
             targets.append(wid)
     if targets:
@@ -1997,10 +2108,6 @@ def _kill_inside_windows_by_name(
         socket_path=socket_path,
     )
     if proof_status == "absent":
-        # Mark-then-crash (side_effect before new-window) leaves unbound WAL
-        # with name never created. On the *same live* server, name absence with
-        # no known @N is enough to clear — otherwise project launches wedge
-        # forever. When durable @N targets exist, still require each id absent.
         # Name gone is not enough when we knew immutable IDs — re-prove each
         # discovered or WAL-stamped @N is globally absent (rename / probe races).
         for wid in targets:
@@ -2014,6 +2121,30 @@ def _kill_inside_windows_by_name(
                 return (
                     f"window id {wid} unproven absent after name "
                     f"{window_name!r} gone; {id_err}"
+                    + (("; " + "; ".join(errors)) if errors else "")
+                )
+        if unbound_durable:
+            if not isinstance(intent_nonce, str) or not intent_nonce:
+                return (
+                    "unbound side_effect WAL requires intent nonce scan — "
+                    "refuse name-only clear"
+                    + (("; " + "; ".join(errors)) if errors else "")
+                )
+            n_proof, n_left, n_detail = _discover_inside_windows_by_intent_nonce(
+                session_id=session_id,
+                intent_nonce=intent_nonce,
+                socket_path=socket_path,
+            )
+            if n_proof == "unknown":
+                return (
+                    f"intent nonce absence unproven for {window_name!r}: "
+                    + (n_detail or "unknown")
+                    + (("; " + "; ".join(errors)) if errors else "")
+                )
+            if n_proof in ("found", "ambiguous"):
+                return (
+                    f"intent nonce still present after name {window_name!r} "
+                    f"gone (ids={n_left}); refuse WAL clear"
                     + (("; " + "; ".join(errors)) if errors else "")
                 )
         return None
@@ -2081,7 +2212,21 @@ def _launch_first_inside(
     # Mark immediately before the client mutation so a pre-call crash cannot
     # leave side_effect_started without attempting create. Synchronous rc!=0
     # with name absence unmarks (see below).
+    intent_nonce: str | None = None
     if intent_path is not None:
+        try:
+            intent_raw = json.loads(Path(intent_path).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise TmuxTeamError(
+                f"launch intent unreadable before new-window: {exc}"
+            ) from exc
+        if not isinstance(intent_raw, dict):
+            raise TmuxTeamError("launch intent must be an object before new-window")
+        intent_nonce = _intent_nonce_value(intent_raw)
+        if not intent_nonce:
+            raise TmuxTeamError(
+                "launch intent missing nonce before new-window — refuse create"
+            )
         mark_team_launch_intent_side_effect(intent_path)
     nw_argv = [
         "new-window",
@@ -2102,25 +2247,61 @@ def _launch_first_inside(
     try:
         if server is not None:
             # Atomic server-side gate: new-window only runs when the leader
-            # window still belongs to the WAL server (pid + start-id).
+            # window still belongs to the WAL server (pid + start-id). Stamp
+            # the intent nonce onto the new window/pane in the *same* command
+            # queue so a crash before Python @N bind still leaves a rename-
+            # surviving recovery key for sweep.
             predicate = _tmux_identity_shell_predicate(
                 expected_server=server,
                 window_id=target_window,
                 expected_session_id=expected_session_id,
             )
+            success_cmd = _tmux_join_command(nw_argv)
+            if intent_nonce is not None:
+                name_tgt = f"{expected_session_id}:{window_name}"
+                success_cmd = (
+                    f"{success_cmd} ; "
+                    f"{_tmux_join_command(['set-option', '-w', '-t', name_tgt, INTENT_NONCE_OPTION, intent_nonce])} ; "
+                    f"{_tmux_join_command(['set-option', '-p', '-t', name_tgt, INTENT_NONCE_OPTION, intent_nonce])}"
+                )
             create = _tmux_run(
                 [
                     "if-shell",
                     "-t",
                     target_window,
                     predicate,
-                    _tmux_join_command(nw_argv),
+                    success_cmd,
                     "",
                 ],
                 socket_path=socket_path,
             )
         else:
             create = _tmux_run(nw_argv, socket_path=socket_path)
+            if create.returncode == 0 and intent_nonce is not None:
+                # Best-effort stamp when no server identity gate (rare); sweep
+                # still requires nonce absence for unbound side_effect WALs.
+                name_tgt = f"{expected_session_id}:{window_name}"
+                try:
+                    _tmux_run(
+                        [
+                            "set-option",
+                            "-w",
+                            "-t",
+                            name_tgt,
+                            INTENT_NONCE_OPTION,
+                            intent_nonce,
+                            ";",
+                            "set-option",
+                            "-p",
+                            "-t",
+                            name_tgt,
+                            INTENT_NONCE_OPTION,
+                            intent_nonce,
+                        ],
+                        socket_path=socket_path,
+                    )
+                except OSError:
+                    pass
     except OSError as exc:
         # Creation itself failed — still name cleanup in case the window was
         # created before the client lost the reply channel. Prefer discover →
@@ -2248,6 +2429,7 @@ def _cleanup_unreplied_inside_window(
     expected_server: dict[str, Any] | None = None
     socket_path: str | None = None
     require_durable = True
+    intent_nonce: str | None = None
     if intent_path is not None:
         try:
             raw = json.loads(Path(intent_path).read_text(encoding="utf-8"))
@@ -2259,6 +2441,7 @@ def _cleanup_unreplied_inside_window(
             if expected_server is not None:
                 socket_path = str(expected_server["tmux_socket_path"])
             require_durable = _intent_requires_durable_window_id(raw)
+            intent_nonce = _intent_nonce_value(raw)
             if expected_server is not None:
                 live = _probe_tmux_server_identity(socket_path=socket_path)
                 if not _tmux_server_matches(expected_server, live):
@@ -2283,6 +2466,7 @@ def _cleanup_unreplied_inside_window(
             socket_path=socket_path,
             expected_server=expected_server,
             require_durable_window_id=require_durable,
+            intent_nonce=intent_nonce,
         )
         if cleanup is None:
             clear_team_launch_intent(intent_path)
@@ -2304,6 +2488,7 @@ def _cleanup_unreplied_inside_window(
         socket_path=socket_path,
         expected_server=expected_server,
         require_durable_window_id=require_durable,
+        intent_nonce=intent_nonce,
     )
     if cleanup is None:
         clear_team_launch_intent(intent_path)
@@ -2749,6 +2934,7 @@ def _create_inside(
                 socket_path=sock,
                 expected_server=intent_server,
                 require_durable_window_id=True,
+                intent_nonce=window_nonce,
             )
             if name_err:
                 cleanup_bits.append(name_err)
@@ -2761,6 +2947,7 @@ def _create_inside(
             # Prefer any WAL-stamped @N (discover→bind path) over name alone.
             known_ids: list[str] = []
             require_durable = True
+            cleanup_intent_nonce: str | None = window_nonce
             if intent_path is not None:
                 try:
                     raw_intent = json.loads(
@@ -2775,6 +2962,9 @@ def _create_inside(
                         if intent_server is not None:
                             sock = str(intent_server["tmux_socket_path"])
                     require_durable = _intent_requires_durable_window_id(raw_intent)
+                    cleanup_intent_nonce = (
+                        _intent_nonce_value(raw_intent) or cleanup_intent_nonce
+                    )
             err = _kill_inside_windows_by_name(
                 session_id=live_id,
                 window_name=window_name,
@@ -2782,6 +2972,7 @@ def _create_inside(
                 socket_path=sock,
                 expected_server=intent_server,
                 require_durable_window_id=require_durable,
+                intent_nonce=cleanup_intent_nonce,
             )
             if err:
                 cleanup_bits.append(err)

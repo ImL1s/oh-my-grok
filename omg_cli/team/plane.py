@@ -1518,10 +1518,13 @@ def _bind_tmux_launch_nonce(
     Team-owned detached sessions — inside mode must not clobber a shared
     ``@omg_launch_nonce`` on the leader session.
 
-    When *expected_server* is set, authorize against the WAL/create server
-    before and after stamping so a restart cannot receive the nonce on
-    reused ``%N``/``@N``/``$N`` identities.
+    When *expected_server* is set, each ``set-option`` runs under a PID+start
+    ``if-shell`` gate (same pattern as create/kill) so a replacement server on
+    the socket cannot retain a foreign nonce mutation between Python precheck
+    and postcheck. Pre/post probes remain defense-in-depth only.
     """
+    from omg_cli.team.tmux import _tmux_run_if_identity
+
     if expected_server is not None:
         _require_plane_tmux_server(
             expected_server,
@@ -1529,11 +1532,29 @@ def _bind_tmux_launch_nonce(
             action="launch nonce bind",
         )
     bound = False
+    win_for_gate = (
+        window_id
+        if isinstance(window_id, str) and _TMUX_WINDOW_ID.fullmatch(window_id)
+        else None
+    )
+
+    def _set_option(argv: list[str], *, target: str) -> subprocess.CompletedProcess[str]:
+        if expected_server is not None:
+            return _tmux_run_if_identity(
+                argv,
+                target=target,
+                expected_server=expected_server,
+                socket_path=socket_path,
+                window_id=win_for_gate if target != session_id else None,
+                expected_session_id=session_id,
+            )
+        return _tmux_run(argv, socket_path=socket_path)
+
     for pane_id in pane_ids:
         if not isinstance(pane_id, str) or _TMUX_PANE_ID.fullmatch(pane_id) is None:
             continue
         try:
-            option = _tmux_run(
+            option = _set_option(
                 [
                     "set-option",
                     "-p",
@@ -1542,25 +1563,25 @@ def _bind_tmux_launch_nonce(
                     LAUNCH_NONCE_OPTION,
                     launch_nonce,
                 ],
-                socket_path=socket_path,
+                target=pane_id,
             )
         except OSError as exc:
             raise TeamError(f"failed to bind tmux launch nonce on pane: {exc}") from exc
         if option.returncode != 0:
             raise TeamError(f"failed to bind tmux launch nonce on pane {pane_id}")
         bound = True
-    if isinstance(window_id, str) and _TMUX_WINDOW_ID.fullmatch(window_id):
+    if win_for_gate is not None:
         try:
-            option = _tmux_run(
+            option = _set_option(
                 [
                     "set-option",
                     "-w",
                     "-t",
-                    window_id,
+                    win_for_gate,
                     LAUNCH_NONCE_OPTION,
                     launch_nonce,
                 ],
-                socket_path=socket_path,
+                target=win_for_gate,
             )
         except OSError as exc:
             raise TeamError(f"failed to bind tmux launch nonce on window: {exc}") from exc
@@ -1569,7 +1590,7 @@ def _bind_tmux_launch_nonce(
         bound = True
     if session_owned:
         try:
-            option = _tmux_run(
+            option = _set_option(
                 [
                     "set-option",
                     "-t",
@@ -1577,7 +1598,7 @@ def _bind_tmux_launch_nonce(
                     LAUNCH_NONCE_OPTION,
                     launch_nonce,
                 ],
-                socket_path=socket_path,
+                target=session_id,
             )
         except OSError as exc:
             raise TeamError(
