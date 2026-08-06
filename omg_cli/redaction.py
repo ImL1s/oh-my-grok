@@ -102,23 +102,48 @@ def _consume_value(text: str, start: int, *, query: bool, key: str) -> int | Non
 
 
 def _redact_query_assignments(text: str) -> str:
+    """Redact ``?key=`` / ``&key=`` assignments in a single O(n) forward pass.
+
+    ``?`` opens URL-query context; ``&`` continues it. Bare shell ``&`` outside
+    that context is ignored here (plain assignment redaction owns those). Each
+    character is visited a constant number of times — no per-marker suffix
+    ``find("=")``.
+    """
+
     parts: list[str] = []
     pos = 0
     i = 0
-    while i < len(text):
-        if text[i] not in "?&":
+    in_query = False
+    length = len(text)
+    while i < length:
+        ch = text[i]
+        if ch in "\r\n":
+            in_query = False
             i += 1
             continue
-        prefix = text[i]
+        start_param = False
+        if ch == "?":
+            in_query = True
+            start_param = True
+        elif ch == "&" and in_query:
+            start_param = True
+        if not start_param:
+            i += 1
+            continue
+
+        prefix = ch
         key_start = i + 1
-        eq = text.find("=", key_start)
-        if eq < 0:
+        j = key_start
+        while j < length and text[j] not in "=\r\n&?#":
+            j += 1
+        if j >= length or text[j] != "=":
+            # No assignment at this marker; advance one char (already scanned).
             i = key_start
             continue
-        # Query keys stop at structural chars; take literal slice to ``=``.
+        eq = j
         key = text[key_start:eq]
-        if not key or any(ch in key for ch in "\r\n&?#"):
-            i = key_start
+        if not key:
+            i = eq + 1
             continue
         # Overlong non-sensitive keys are skipped; overlong sensitive keys
         # still redact (fail-closed — never drop a sensitive assignment).
@@ -144,19 +169,72 @@ def _redact_plain_assignments(text: str) -> str:
     """Scan ``key[:=]value`` in a single O(n) forward pass.
 
     Tracks the most recent structural boundary instead of walking backward from
-    each separator (avoids O(n·cap) separator-flood cost). Keys may include
-    characters stripped by ``_normalized_key`` (``;``, ``/``, brackets, …) so
-    the free-text scanner and ``is_sensitive_key`` stay aligned.
+    each separator (avoids O(n·cap) separator-flood cost). Quoted segments stay
+    intact so keys like ``headers["api&key"]`` reach ``is_sensitive_key``.
+    ``?`` opens query context for value consumption; bare shell ``&`` does not.
+    Keys may include characters stripped by ``_normalized_key`` (``;``, ``/``,
+    brackets, …) so the free-text scanner and ``is_sensitive_key`` stay aligned.
     """
 
     parts: list[str] = []
     pos = 0
     boundary = -1
+    query_active = False
+    # Quote delimiter: '"', "'", '\\"', or "\\'" (JSON-escaped form).
+    quote: str | None = None
     i = 0
     length = len(text)
     while i < length:
         ch = text[i]
-        if ch in "\r\n&?":
+        if quote is not None:
+            if quote in ("\\'", '\\"'):
+                # Close only on matching backslash-quote; other chars are literal.
+                if (
+                    ch == "\\"
+                    and i + 1 < length
+                    and text[i + 1] == quote[1]
+                ):
+                    quote = None
+                    i += 2
+                    continue
+            else:
+                if ch == "\\" and i + 1 < length:
+                    i += 2
+                    continue
+                if ch == quote:
+                    quote = None
+                    i += 1
+                    continue
+            if ch in "\r\n":
+                quote = None
+                boundary = i
+                query_active = False
+                i += 1
+                continue
+            # Inside quotes: &/?/:/= are literal key/value material.
+            i += 1
+            continue
+        # Open quote: bare " / ' or JSON-escaped \" / \'
+        if ch == "\\" and i + 1 < length and text[i + 1] in "'\"":
+            quote = "\\" + text[i + 1]
+            i += 2
+            continue
+        if ch in "'\"":
+            quote = ch
+            i += 1
+            continue
+        if ch in "\r\n":
+            boundary = i
+            query_active = False
+            i += 1
+            continue
+        if ch == "?":
+            boundary = i
+            query_active = True
+            i += 1
+            continue
+        if ch == "&":
+            # Always a key boundary; only continues query mode if ``?`` opened it.
             boundary = i
             i += 1
             continue
@@ -205,10 +283,10 @@ def _redact_plain_assignments(text: str) -> str:
         while sep_end < length and text[sep_end] in " \t":
             sep_end += 1
         sep = text[key_end:sep_end]
-        # Assignments that sit in a query string (after ``?``/``&``) must stop
-        # at the next ``&`` so ``?prompt=…&ok=1`` keeps the safe tail. Plain
-        # shell-style ``command=… & curl secret`` still eats through EOL.
-        in_query = boundary >= 0 and text[boundary] in "?&"
+        # Query-string values (after ``?``, then ``&`` continuations) stop at the
+        # next ``&``. Bare shell ``&`` never opens query mode, so plain
+        # ``token="…" secret`` after background ``&`` still eats through EOL.
+        in_query = query_active and boundary >= 0 and text[boundary] in "?&"
         end = _consume_value(text, sep_end, query=in_query, key=key)
         if end is None:
             boundary = sep_idx

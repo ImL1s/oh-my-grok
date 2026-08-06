@@ -312,3 +312,46 @@ def test_redact_text_closes_pr94p_residual_p2_classes() -> None:
     assert redact_text(flood) == flood
     assert time.perf_counter() - started < 1.0
 
+
+def test_redact_text_closes_pr94q_residual_p2_classes() -> None:
+    """Close Pro reaudit P2s: shell &, quoted bracket delimiters, ? flood."""
+    # Bare shell ``&`` must not open query mode (EOL consumer for plain assign).
+    for source, leaked in (
+        ('echo safe & token="Bearer" super-secret', "super-secret"),
+        ('echo safe & command="rm" -rf /', "-rf /"),
+        ("echo safe & command=echo safe & curl super-secret", "super-secret"),
+    ):
+        out = redact_text(source)
+        assert leaked not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    # Quoted bracket keys keep &/?/:/= inside quotes so is_sensitive_key sees them.
+    for source in (
+        'headers["api&key"]=super-secret',
+        'headers["api?key"]=super-secret',
+        'headers["api:key"]=super-secret',
+        'headers["api=key"]=super-secret',
+        '["api&key"]=super-secret',
+        '["api?key"]=super-secret',
+        '["api:key"]=super-secret',
+        '["api=key"]=super-secret',
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+        assert out.endswith(f"={REDACTED}"), (source, out)
+
+    # Query-marker flood must stay O(n) like colon flood (no per-marker find).
+    n = 50_000
+    q_flood = "?" * n
+    c_flood = ":" * n
+    t0 = time.perf_counter()
+    assert redact_text(q_flood) == q_flood
+    q_elapsed = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    assert redact_text(c_flood) == c_flood
+    c_elapsed = time.perf_counter() - t0
+    # Allow generous slack for CI noise; catastrophic O(n²) is ~10–50× worse.
+    assert q_elapsed < 1.0 and c_elapsed < 1.0
+    assert q_elapsed < max(0.05, c_elapsed * 8.0), (q_elapsed, c_elapsed)
+
