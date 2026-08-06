@@ -342,11 +342,11 @@ while True:
         pytest.fail("grandchild still alive after earliest post-Popen OOM")
 
 
-def test_popen_shares_kill_on_baseexception_try_with_post_spawn() -> None:
-    """Popen must live inside the same try that catches BaseException + _kill_tree.
+def test_popen_wrapper_shares_kill_on_baseexception_try_with_post_spawn() -> None:
+    """The bound Popen wrapper must live in the BaseException cleanup region.
 
-    A separate OSError-only try around Popen leaves an async-exception window
-    between successful spawn and the kill-on-BaseException region.
+    A separate OSError-only try around the wrapper leaves an async-exception
+    window between successful spawn and the kill-on-BaseException region.
     """
     import ast
     import inspect
@@ -383,14 +383,70 @@ def test_popen_shares_kill_on_baseexception_try_with_post_spawn() -> None:
             continue
         if not any(_is_kill_on_baseexception(h) for h in node.handlers):
             continue
-        # Popen must appear in this try's body (possibly nested under OSError convert).
-        if _calls_name(node, "Popen"):
+        if _calls_name(node, "_popen_bound"):
             found_unified = True
             break
     assert found_unified, (
-        "subprocess.Popen must sit inside the BaseException+_kill_tree try "
+        "_popen_bound must sit inside the BaseException+_kill_tree try "
         "(not in a preceding OSError-only try)"
     )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group killpg is POSIX-only")
+def test_popen_post_spawn_exception_kills_process_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Popen wrapper raising after spawn must not orphan the process group."""
+    from omg_cli.providers import process as process_mod
+
+    marker = tmp_path / "grandchild.alive"
+    script = tmp_path / "hang_tree.py"
+    script.write_text(
+        f"""\
+import subprocess, sys, time
+from pathlib import Path
+subprocess.Popen(
+    [sys.executable, "-c",
+     "import time; from pathlib import Path; m=Path({str(marker)!r});\\n"
+     "while True:\\n"
+     " m.write_text(str(time.time()), encoding='utf-8'); time.sleep(0.05)\\n"],
+)
+while True:
+    time.sleep(0.05)
+""",
+        encoding="utf-8",
+    )
+    spawned = []
+
+    def spawn_then_raise(proc_box, popen_kwargs):
+        proc = process_mod.subprocess.Popen(**popen_kwargs)
+        spawned.append(proc)
+        proc_box[0] = proc
+        raise MemoryError("simulated post-spawn Popen failure")
+
+    monkeypatch.setattr(process_mod, "_popen_bound", spawn_then_raise)
+    try:
+        with pytest.raises(MemoryError, match="post-spawn Popen"):
+            run_probe_process(
+                [sys.executable, str(script)],
+                env={"PATH": os.environ.get("PATH", "")},
+                timeout_s=5.0,
+            )
+
+        assert len(spawned) == 1
+        deadline = time.monotonic() + 2.0
+        last = marker.read_text(encoding="utf-8") if marker.exists() else ""
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            now = marker.read_text(encoding="utf-8") if marker.exists() else ""
+            if now == last:
+                break
+            last = now
+        else:
+            pytest.fail("grandchild still alive after post-spawn Popen failure")
+    finally:
+        if spawned:
+            process_mod._kill_tree(spawned[0])
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process-group killpg is POSIX-only")

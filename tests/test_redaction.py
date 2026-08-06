@@ -65,3 +65,19 @@ def test_redact_value_preserves_boolean_supports_models() -> None:
     assert redacted["supports"]["model"] == REDACTED
     assert "raw-secret-token" not in redacted["version"]
     assert REDACTED in redacted["version"]
+
+
+def test_redact_value_redacts_sensitive_integer_values_but_keeps_booleans() -> None:
+    redacted = redact_value(
+        {
+            "token": 123456,
+            "account_id": 998877,
+            "quota": 42,
+            "models": True,
+        }
+    )
+
+    assert redacted["token"] == REDACTED
+    assert redacted["account_id"] == REDACTED
+    assert redacted["quota"] == REDACTED
+    assert redacted["models"] is True

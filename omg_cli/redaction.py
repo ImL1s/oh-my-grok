@@ -68,17 +68,19 @@ def redact_text(value: str) -> str:
 def redact_value(value: Any, *, _key: object | None = None) -> Any:
     """Return a JSON-compatible recursively redacted value.
 
-    JSON schema scalars (``None`` / ``bool`` / ``int``) are preserved even when
-    the key looks sensitive — e.g. ``supports.models: true`` must remain a
-    boolean, not ``"[REDACTED]"``. String / mapping / list values under
-    sensitive keys are still fully redacted.
+    ``None`` and booleans are preserved. Other values under sensitive keys are
+    fully redacted, including integers; e.g. ``supports.models: true`` remains
+    a boolean while a numeric account or quota identifier does not persist.
     """
 
-    # Preserve schema scalar types before key-based redaction.
-    if value is None or isinstance(value, (bool, int)):
+    if value is None:
         return value
     if _key is not None and is_sensitive_key(_key):
+        if isinstance(value, bool):
+            return value
         return REDACTED
+    if isinstance(value, (bool, int)):
+        return value
     if isinstance(value, str):
         return redact_text(value)
     if isinstance(value, bytes):

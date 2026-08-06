@@ -38,6 +38,15 @@ def _post_popen_begin() -> None:
     return None
 
 
+def _popen_bound(
+    proc_box: list[subprocess.Popen[bytes] | None], popen_kwargs: dict
+) -> subprocess.Popen[bytes]:
+    """Spawn and retain the child handle before returning to the caller."""
+    proc = subprocess.Popen(**popen_kwargs)
+    proc_box[0] = proc
+    return proc
+
+
 DEFAULT_PROBE_TIMEOUT_S: Final[float] = 8.0
 DEFAULT_MAX_OUTPUT_BYTES: Final[int] = 256_000
 _PIPE_CLOSE_TIMEOUT_S: float = 1.0
@@ -254,6 +263,7 @@ def run_probe_process(
     # child to reap. Popen + all post-spawn work share ONE BaseException region
     # so async exceptions cannot skip _kill_tree between spawn and setup.
     proc: subprocess.Popen[bytes] | None = None
+    proc_box: list[subprocess.Popen[bytes] | None] = [None]
     started_readers: list[threading.Thread] = []
     stop_readers: threading.Event | None = None
     stdout_buf: bytearray | None = None
@@ -270,7 +280,7 @@ def run_probe_process(
 
     try:
         try:
-            proc = subprocess.Popen(**popen_kwargs)
+            proc = _popen_bound(proc_box, popen_kwargs)
         except OSError as exc:
             raise ProbeProcessError(f"failed to spawn probe: {exc}") from exc
 
@@ -366,12 +376,13 @@ def run_probe_process(
         # Covers Popen-boundary async exceptions, earliest post-Popen setup,
         # buffer/Event alloc, reader start, KeyboardInterrupt during poll/wait.
         # Do not depend on nested defs — they may not exist yet.
-        if proc is not None:
+        cleanup_proc = proc_box[0] or proc
+        if cleanup_proc is not None:
             if cancel_event is not None and cancel_event.is_set():
                 cancelled = True
-            _kill_tree(proc)
+            _kill_tree(cleanup_proc)
             try:
-                proc.wait(timeout=2.0)
+                cleanup_proc.wait(timeout=2.0)
             except (subprocess.TimeoutExpired, OSError):
                 pass
         raise
