@@ -16,6 +16,9 @@ from urllib.parse import unquote_plus
 
 REDACTED = "[REDACTED]"
 _MAX_KEY_LEN = 256
+# Absolute scan cap: oversize keys still reach ``is_sensitive_key`` (fail-closed)
+# instead of silently dropping the assignment.
+_MAX_KEY_SCAN = 4096
 
 _SENSITIVE_KEY_PARTS = (
     "authorization",
@@ -104,17 +107,20 @@ def _consume_value(text: str, start: int, *, query: bool, key: str) -> int | Non
     if query:
         match = re.match(r"[^&#\s]+", text[start:])
     else:
-        match = re.match(r"[^\s&]+", text[start:])
+        # Sensitive plain assignments: eat through EOL (spaces allowed) so
+        # multi-token secrets cannot leak a trailing plaintext segment.
+        match = re.match(r"[^&\r\n]+", text[start:])
     if match is None:
         # Sensitive key with no parseable value: still redact through EOL.
         return _line_end(text, start)
     return start + match.end()
 
+
 def _key_start_before(text: str, key_end: int, floor: int) -> int:
     """Walk backward from ``key_end`` to the start of a key candidate."""
 
     start = key_end
-    limit = max(floor, key_end - _MAX_KEY_LEN)
+    limit = max(floor, key_end - _MAX_KEY_SCAN)
     while start > limit:
         ch = text[start - 1]
         if ch in "\r\n&?;,=":
@@ -143,13 +149,18 @@ def _redact_query_assignments(text: str) -> str:
         prefix = text[i]
         key_start = i + 1
         eq = text.find("=", key_start)
-        if eq < 0 or eq - key_start > _MAX_KEY_LEN:
+        if eq < 0 or eq - key_start > _MAX_KEY_SCAN:
             i = key_start
             continue
         # Query keys stop at structural chars; take literal slice to ``=``.
         key = text[key_start:eq]
         if not key or any(ch in key for ch in "\r\n&?#"):
             i = key_start
+            continue
+        # Overlong non-sensitive keys are skipped; overlong sensitive keys
+        # still redact (fail-closed).
+        if len(key) > _MAX_KEY_LEN and not is_sensitive_key(key):
+            i = eq + 1
             continue
         if key_start < pos or not is_sensitive_key(key):
             i = eq + 1
@@ -183,20 +194,32 @@ def _redact_plain_assignments(text: str) -> str:
             i += 1
             continue
         sep_idx = i
-        # Skip ``://`` URL schemes.
-        if text[i] == ":" and i + 2 < length and text[i + 1 : i + 3] == "//":
-            i += 1
-            continue
         key_end = sep_idx
         while key_end > pos and text[key_end - 1] in " \t":
             key_end -= 1
         key_start = _key_start_before(text, key_end, pos)
         key = text[key_start:key_end]
+        # Skip non-sensitive ``scheme://`` URL forms only after the key check.
+        if (
+            text[i] == ":"
+            and i + 2 < length
+            and text[i + 1 : i + 3] == "//"
+            and (not key or not is_sensitive_key(key))
+        ):
+            i += 1
+            continue
         if not key or not is_sensitive_key(key):
             i = sep_idx + 1
             continue
         # Separator may include surrounding whitespace: ``key = value``.
+        # Also accept ``key://value`` for sensitive keys.
         sep_end = sep_idx + 1
+        if (
+            text[sep_idx] == ":"
+            and sep_idx + 2 < length
+            and text[sep_idx + 1 : sep_idx + 3] == "//"
+        ):
+            sep_end = sep_idx + 3
         while sep_end < length and text[sep_end] in " \t":
             sep_end += 1
         sep = text[key_end:sep_end]

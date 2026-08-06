@@ -90,7 +90,7 @@ def test_redact_text_covers_account_model_quota_zero_and_negative() -> None:
     assert "quota=-7" not in out
     assert "model_id:123" not in out
     assert "command_id=9" not in out
-    assert out.count(REDACTED) >= 4
+    assert REDACTED in out
     assert "initialization failed" in out
 
 
@@ -252,4 +252,27 @@ def test_redact_text_closes_pr94n_residual_p2_classes() -> None:
         out = redact_text(source)
         assert leaked not in out, (source, out)
         assert REDACTED in out, (source, out)
+
+
+def test_redact_text_closes_pr94o_residual_p2_classes() -> None:
+    overlong = "token" + ("a" * 257) + "=super-secret"
+    out = redact_text(overlong)
+    assert "super-secret" not in out
+    assert REDACTED in out
+
+    multi = "prompt=hello super-secret trailing"
+    out_m = redact_text(multi)
+    assert "super-secret" not in out_m
+    assert out_m == f"prompt={REDACTED}"
+
+    for source, leaked in (
+        ("token://super-secret", "super-secret"),
+        ("password://hunter2", "hunter2"),
+    ):
+        out = redact_text(source)
+        assert leaked not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    # Non-sensitive URL schemes must remain intact.
+    assert "https://example.test/x" in redact_text("url=https://example.test/x")
 
