@@ -241,6 +241,177 @@ while True:
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process-group killpg is POSIX-only")
+def test_post_spawn_buffer_setup_failure_kills_process_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BaseException while allocating post-Popen buffers must still killpg."""
+    from omg_cli.providers import process as process_mod
+
+    marker = tmp_path / "grandchild.alive"
+    script = tmp_path / "hang_tree.py"
+    script.write_text(
+        f"""\
+import subprocess, sys, time
+from pathlib import Path
+subprocess.Popen(
+    [sys.executable, "-c",
+     "import time; from pathlib import Path; m=Path({str(marker)!r});\\n"
+     "while True:\\n"
+     " m.write_text(str(time.time()), encoding='utf-8'); time.sleep(0.05)\\n"],
+)
+while True:
+    time.sleep(0.05)
+""",
+        encoding="utf-8",
+    )
+
+    real_bytearray = process_mod._bytearray
+    calls = {"n": 0}
+
+    def boom_bytearray(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise MemoryError("simulated OOM during buffer alloc")
+        return real_bytearray(*args, **kwargs)
+
+    monkeypatch.setattr(process_mod, "_bytearray", boom_bytearray)
+    with pytest.raises(MemoryError, match="simulated OOM"):
+        run_probe_process(
+            [sys.executable, str(script)],
+            env={"PATH": os.environ.get("PATH", "")},
+            timeout_s=5.0,
+        )
+
+    deadline = time.monotonic() + 2.0
+    last = marker.read_text(encoding="utf-8") if marker.exists() else ""
+    while time.monotonic() < deadline:
+        time.sleep(0.2)
+        now = marker.read_text(encoding="utf-8") if marker.exists() else ""
+        if now == last:
+            break
+        last = now
+    else:
+        pytest.fail("grandchild still alive after post-spawn buffer setup failure")
+
+
+def test_join_readers_hung_path_kills_tree_before_pipe_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hung reader cleanup must _kill_tree before stop/pipe.close/join."""
+    from omg_cli.providers import process as process_mod
+
+    order: list[str] = []
+
+    class FakePipe:
+        def close(self) -> None:
+            order.append("close")
+
+    class FakeProc:
+        def __init__(self) -> None:
+            self.pid = 4242
+            self.stdout = FakePipe()
+            self.stderr = FakePipe()
+
+    class FakeThread:
+        def __init__(self, alive: bool) -> None:
+            self._alive = alive
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+        def join(self, timeout=None) -> None:  # noqa: ARG002
+            order.append("join")
+            # Stay alive across the first join wave so hung path is taken;
+            # clear only after killpg (second wave / post-kill join).
+            if "kill" in order:
+                self._alive = False
+
+    proc = FakeProc()
+    stop = threading.Event()
+
+    def fake_kill(p) -> None:  # noqa: ARG001
+        order.append("kill")
+
+    monkeypatch.setattr(process_mod, "_kill_tree", fake_kill)
+    process_mod._join_readers(
+        [FakeThread(True), FakeThread(False)],
+        stop=stop,
+        stdout_early=[False],
+        stderr_early=[False],
+        proc=proc,  # type: ignore[arg-type]
+    )
+    assert "kill" in order
+    assert order.index("kill") < order.index("close")
+    assert stop.is_set()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group killpg is POSIX-only")
+def test_cancel_during_join_readers_kills_process_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cancel_event set during reader join (after pre-join check) must still killpg."""
+    from omg_cli.providers import process as process_mod
+
+    marker = tmp_path / "grandchild.alive"
+    script = tmp_path / "exit_leave_gc.py"
+    script.write_text(
+        f"""\
+import subprocess, sys, time
+from pathlib import Path
+subprocess.Popen(
+    [sys.executable, "-c",
+     "import time; from pathlib import Path; m=Path({str(marker)!r});\\n"
+     "while True:\\n"
+     " m.write_text(str(time.time()), encoding='utf-8'); time.sleep(0.05)\\n"],
+)
+time.sleep(0.2)
+""",
+        encoding="utf-8",
+    )
+
+    cancel = threading.Event()
+    real_join_readers = process_mod._join_readers
+    kills_after_join: list[str] = []
+    real_kill = process_mod._kill_tree
+    join_done = {"v": False}
+
+    def tracking_kill(proc):
+        if join_done["v"]:
+            kills_after_join.append("kill")
+        return real_kill(proc)
+
+    def join_sets_cancel(*args, **kwargs):
+        # Simulate SIGINT arriving after the single pre-join cancel check.
+        cancel.set()
+        result = real_join_readers(*args, **kwargs)
+        join_done["v"] = True
+        return result
+
+    monkeypatch.setattr(process_mod, "_kill_tree", tracking_kill)
+    monkeypatch.setattr(process_mod, "_join_readers", join_sets_cancel)
+
+    result = run_probe_process(
+        [sys.executable, str(script)],
+        env={"PATH": os.environ.get("PATH", "")},
+        timeout_s=5.0,
+        cancel_event=cancel,
+    )
+    assert result.cancelled is True
+    assert kills_after_join, "expected killpg after late cancel during join"
+
+    deadline = time.monotonic() + 2.0
+    last = marker.read_text(encoding="utf-8") if marker.exists() else ""
+    while time.monotonic() < deadline:
+        time.sleep(0.2)
+        now = marker.read_text(encoding="utf-8") if marker.exists() else ""
+        if now == last:
+            break
+        last = now
+    else:
+        pytest.fail("grandchild still alive after late-cancel-during-join killpg")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group killpg is POSIX-only")
 def test_cancel_during_wait_after_child_exit_kills_descendants(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

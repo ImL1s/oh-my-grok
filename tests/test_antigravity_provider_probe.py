@@ -153,6 +153,19 @@ def test_parse_version_anchors_first_line_only() -> None:
     assert parse_version("prefix 1.1.10") is None
 
 
+def test_parse_version_raw_is_matched_fragment_only() -> None:
+    """Trailing child-controlled junk after an anchored semver must not enter raw."""
+    from omg_cli.providers.antigravity import classify_compat, parse_version
+
+    info = parse_version("1.1.10 Authorization: Bearer raw-secret-token")
+    assert info is not None
+    assert info.as_tuple() == (1, 1, 10)
+    assert info.raw == "1.1.10"
+    assert "Bearer" not in info.raw
+    assert "raw-secret-token" not in info.raw
+    assert classify_compat(info) == "compatible"
+
+
 def test_doctor_strict_rejects_impostor_agy_help(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -502,6 +515,65 @@ def test_provider_json_redacts_child_secret_output(
     assert "raw-secret-token" not in doc_out
     assert "leak-me" not in doc_out
     assert REDACTED in doc_out
+
+
+def test_capabilities_success_and_doctor_text_redact_version_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Success capabilities + text doctor must redact child-controlled version text."""
+    import dataclasses
+
+    from omg_cli.main import main
+    from omg_cli.providers import antigravity as agy_mod
+    from omg_cli.redaction import REDACTED
+
+    path = _install_fake_agy(tmp_path / "bin")
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    monkeypatch.setenv("OMG_AGY_BIN", str(path))
+
+    real_probe = agy_mod.probe_capabilities
+
+    def probe_with_secret_version(*args, **kwargs):
+        caps = real_probe(*args, **kwargs)
+        return dataclasses.replace(
+            caps,
+            version="1.1.10 Authorization: Bearer raw-secret-token",
+        )
+
+    monkeypatch.setattr(agy_mod, "probe_capabilities", probe_with_secret_version)
+    monkeypatch.setattr(
+        agy_mod.AntigravityProvider,
+        "probe_capabilities",
+        lambda self: probe_with_secret_version(),
+    )
+
+    rc = main(["provider", "antigravity", "capabilities", "--json"])
+    assert rc == 0
+    caps_out = capsys.readouterr().out
+    assert "raw-secret-token" not in caps_out
+    assert REDACTED in caps_out
+
+    rc = main(["provider", "antigravity", "doctor"])
+    assert rc == 0
+    doc_out = capsys.readouterr().out
+    assert "raw-secret-token" not in doc_out
+    assert REDACTED in doc_out
+
+
+def test_doctor_json_preserves_supports_models_boolean(
+    fake_agy_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Recursive doctor redaction must not coerce supports.models bool → string."""
+    from omg_cli.main import main
+
+    rc = main(["provider", "antigravity", "doctor", "--strict", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    doctor = payload.get("doctor") or {}
+    caps = doctor.get("capabilities") or {}
+    supports = caps.get("supports") or {}
+    assert supports.get("models") is True
+    assert isinstance(supports.get("models"), bool)
 
 
 def test_help_truncated_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:

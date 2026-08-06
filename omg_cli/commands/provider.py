@@ -76,7 +76,9 @@ def _cmd_provider_capabilities(args: argparse.Namespace, name: str) -> int:
         )
         return 1
 
-    payload = caps.to_dict()
+    # Emit boundary: redact child-controlled strings (version etc.) while
+    # preserving schema scalars (supports.models bool, etc.).
+    payload = redact_value(caps.to_dict())
     cmd = f"provider.{name}.capabilities"
     if wants_json(args):
         emit_json(success(cmd, capabilities=payload))
@@ -147,7 +149,7 @@ def _cmd_provider_doctor(args: argparse.Namespace, name: str) -> int:
         if report.capabilities is not None:
             print(
                 f"compat={report.capabilities.compat_status} "
-                f"version={report.capabilities.version} "
+                f"version={redact_text(report.capabilities.version)} "
                 f"live_call_ready={report.capabilities.live_call_ready}"
             )
     return int(report.exit_code)

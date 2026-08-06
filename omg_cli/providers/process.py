@@ -7,10 +7,12 @@ child tree. Windows gets best-effort ``proc.kill()`` only — process-tree cance
 is not claimed there.
 
 Any exception after a successful ``Popen`` must ``_kill_tree`` (including
-failures while starting reader threads). ``cancel_event`` is honored through
-the wait/join/close window so Ctrl-C cannot silently skip cleanup. Success
-paths drain readers to EOF before forcing ``stop``; premature stop sets
-``stdout_truncated`` / ``stderr_truncated``.
+failures while allocating buffers / starting reader threads). ``cancel_event``
+is honored through the wait/join/close window so Ctrl-C cannot silently skip
+cleanup. Success paths drain readers to EOF before forcing ``stop``; premature
+stop sets ``stdout_truncated`` / ``stderr_truncated``. Hung readers kill the
+process tree *before* closing pipes / joining, so orphan pipe holders cannot
+deadlock the parent on buffered I/O locks.
 """
 
 from __future__ import annotations
@@ -22,6 +24,9 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Final, Mapping, Sequence
+
+# Local alias so post-Popen allocation failures remain injectable in tests.
+_bytearray = bytearray
 
 DEFAULT_PROBE_TIMEOUT_S: Final[float] = 8.0
 DEFAULT_MAX_OUTPUT_BYTES: Final[int] = 256_000
@@ -141,6 +146,9 @@ def _join_readers(
             else:
                 stderr_early[0] = True
     if hung:
+        # Kill the tree first so orphan pipe holders release FDs; closing a
+        # still-owned buffered pipe can otherwise block on the I/O lock.
+        _kill_tree(proc)
         stop.set()
         for pipe in (proc.stdout, proc.stderr):
             if pipe is not None:
@@ -204,15 +212,17 @@ def run_probe_process(
     except OSError as exc:
         raise ProbeProcessError(f"failed to spawn probe: {exc}") from exc
 
-    stdout_buf = bytearray()
-    stderr_buf = bytearray()
+    # Fail-closed defaults so finally can always run even if setup raises mid-way.
+    # Do NOT allocate bytearray/Event here — that must be inside the protected try
+    # so a post-Popen BaseException still killpg's the child tree.
+    started_readers: list[threading.Thread] = []
+    stop_readers: threading.Event | None = None
+    stdout_buf: bytearray | None = None
+    stderr_buf: bytearray | None = None
     stdout_overflow = [False]
     stderr_overflow = [False]
     stdout_early_stop = [False]
     stderr_early_stop = [False]
-    stop_readers = threading.Event()
-    readers: list[threading.Thread] = []
-    started_readers: list[threading.Thread] = []
     timed_out = False
     cancelled = False
     overflow = False
@@ -226,84 +236,98 @@ def run_probe_process(
             cancelled = True
         _kill_tree(proc)
 
-    try:
-        try:
-            readers = [
-                threading.Thread(
-                    target=_drain_pipe,
-                    kwargs={
-                        "pipe": proc.stdout,
-                        "max_bytes": max_output_bytes,
-                        "sink": stdout_buf,
-                        "overflow_flag": stdout_overflow,
-                        "stop": stop_readers,
-                        "early_stop_flag": stdout_early_stop,
-                    },
-                    daemon=True,
-                ),
-                threading.Thread(
-                    target=_drain_pipe,
-                    kwargs={
-                        "pipe": proc.stderr,
-                        "max_bytes": max_output_bytes,
-                        "sink": stderr_buf,
-                        "overflow_flag": stderr_overflow,
-                        "stop": stop_readers,
-                        "early_stop_flag": stderr_early_stop,
-                    },
-                    daemon=True,
-                ),
-            ]
-            for t in readers:
-                t.start()
-                started_readers.append(t)
-
-            deadline = time.monotonic() + float(timeout_s)
-            while True:
-                if _cancel_requested():
-                    cancelled = True
-                    _kill_tree(proc)
-                    break
-                if stdout_overflow[0] or stderr_overflow[0]:
-                    overflow = True
-                    _kill_tree(proc)
-                    break
-                rc = proc.poll()
-                if rc is not None:
-                    break
-                if time.monotonic() >= deadline:
-                    timed_out = True
-                    _kill_tree(proc)
-                    break
-                time.sleep(0.02)
-            try:
-                proc.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                _kill_tree(proc)
-                try:
-                    proc.wait(timeout=2.0)
-                except subprocess.TimeoutExpired:
-                    pass
-            # SIGINT may arrive after poll() saw exit — honor cancel through
-            # the wait/join window so descendants still get killpg.
-            if _cancel_requested():
-                cancelled = True
-                _kill_tree(proc)
-        except BaseException:
-            # Covers reader start failures, KeyboardInterrupt during poll/wait,
-            # and any other unwind after a successful Popen.
-            _note_cancel_and_kill()
-            try:
-                proc.wait(timeout=2.0)
-            except (subprocess.TimeoutExpired, OSError):
-                pass
-            raise
-    finally:
+    def _honor_late_cancel() -> None:
+        """Re-check cancel_event through wait/join/close (SIGINT sets event only)."""
+        nonlocal cancelled
         if _cancel_requested():
             cancelled = True
             _kill_tree(proc)
+
+    try:
+        # Buffer / Event / flag setup is inside the kill-on-BaseException region so
+        # a post-Popen MemoryError (etc.) still reaps the child tree.
+        stdout_buf = _bytearray()
+        stderr_buf = _bytearray()
+        stdout_overflow = [False]
+        stderr_overflow = [False]
+        stdout_early_stop = [False]
+        stderr_early_stop = [False]
+        stop_readers = threading.Event()
+
+        readers = [
+            threading.Thread(
+                target=_drain_pipe,
+                kwargs={
+                    "pipe": proc.stdout,
+                    "max_bytes": max_output_bytes,
+                    "sink": stdout_buf,
+                    "overflow_flag": stdout_overflow,
+                    "stop": stop_readers,
+                    "early_stop_flag": stdout_early_stop,
+                },
+                daemon=True,
+            ),
+            threading.Thread(
+                target=_drain_pipe,
+                kwargs={
+                    "pipe": proc.stderr,
+                    "max_bytes": max_output_bytes,
+                    "sink": stderr_buf,
+                    "overflow_flag": stderr_overflow,
+                    "stop": stop_readers,
+                    "early_stop_flag": stderr_early_stop,
+                },
+                daemon=True,
+            ),
+        ]
+        for t in readers:
+            t.start()
+            started_readers.append(t)
+
+        deadline = time.monotonic() + float(timeout_s)
+        while True:
+            if _cancel_requested():
+                cancelled = True
+                _kill_tree(proc)
+                break
+            if stdout_overflow[0] or stderr_overflow[0]:
+                overflow = True
+                _kill_tree(proc)
+                break
+            rc = proc.poll()
+            if rc is not None:
+                break
+            if time.monotonic() >= deadline:
+                timed_out = True
+                _kill_tree(proc)
+                break
+            time.sleep(0.02)
         try:
-            if started_readers:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            _kill_tree(proc)
+            try:
+                proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                pass
+        # SIGINT may arrive after poll() saw exit — honor cancel through
+        # the wait/join window so descendants still get killpg.
+        _honor_late_cancel()
+    except BaseException:
+        # Covers buffer/Event setup, reader start, KeyboardInterrupt during
+        # poll/wait, and any other unwind after a successful Popen.
+        _note_cancel_and_kill()
+        try:
+            proc.wait(timeout=2.0)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        raise
+    finally:
+        # cancel_event may flip during join/close; check before, after join, and
+        # once more before returning so late Ctrl-C still reaps the tree.
+        _honor_late_cancel()
+        try:
+            if started_readers and stop_readers is not None:
                 _join_readers(
                     started_readers,
                     stop=stop_readers,
@@ -313,9 +337,11 @@ def run_probe_process(
                 )
             else:
                 _close_pipes(proc)
+            _honor_late_cancel()
         except BaseException:
             _note_cancel_and_kill()
-            stop_readers.set()
+            if stop_readers is not None:
+                stop_readers.set()
             _close_pipes(proc)
             for t in started_readers:
                 try:
@@ -323,6 +349,8 @@ def run_probe_process(
                 except BaseException:
                     pass
             raise
+        finally:
+            _honor_late_cancel()
 
     overflow = overflow or stdout_overflow[0] or stderr_overflow[0]
     stdout_truncated = bool(stdout_overflow[0] or stdout_early_stop[0])
@@ -332,6 +360,9 @@ def run_probe_process(
         # Distinct sentinel when we forced termination before a natural exit.
         if proc.returncode is None:
             returncode = -9
+
+    # Setup completed if we reached here (exceptions re-raise above).
+    assert stdout_buf is not None and stderr_buf is not None
 
     def _decode(buf: bytearray) -> str:
         return bytes(buf).decode("utf-8", errors="replace")

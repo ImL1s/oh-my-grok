@@ -47,3 +47,21 @@ def test_text_redaction_is_deterministic_and_preserves_safe_context() -> None:
     assert "failure" in first and "https://x.test/" in first
     assert "secret-value" not in first and "token-value" not in first
     assert REDACTED in first
+
+
+def test_redact_value_preserves_boolean_supports_models() -> None:
+    """Key substring 'model' must not coerce supports.models bool into a string."""
+    body = {
+        "supports": {
+            "models": True,
+            "agents": False,
+            "model": "private-model-name",
+        },
+        "version": "1.1.10 Authorization: Bearer raw-secret-token",
+    }
+    redacted = redact_value(body)
+    assert redacted["supports"]["models"] is True
+    assert redacted["supports"]["agents"] is False
+    assert redacted["supports"]["model"] == REDACTED
+    assert "raw-secret-token" not in redacted["version"]
+    assert REDACTED in redacted["version"]

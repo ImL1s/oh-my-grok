@@ -158,8 +158,10 @@ def parse_version(text: str | None) -> VersionInfo | None:
     m = _VERSION_RE.match(first)
     if not m:
         return None
+    # Store only the matched semver fragment — never the rest of a
+    # child-controlled line (which may carry credentials / junk).
     return VersionInfo(
-        raw=first,
+        raw=m.group(0),
         major=int(m.group(1)),
         minor=int(m.group(2)),
         patch=int(m.group(3)),
