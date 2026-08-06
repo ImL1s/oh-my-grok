@@ -58,11 +58,14 @@ def _is_cookie_key(key: str) -> bool:
     return "cookie" in normalized or "setcookie" in normalized
 
 
-def _line_end(text: str, start: int) -> int:
-    for idx in range(start, len(text)):
+def _line_end(text: str, start: int, limit: int | None = None) -> int:
+    end = len(text) if limit is None else min(limit, len(text))
+    if end < start:
+        return start
+    for idx in range(start, end):
         if text[idx] in "\r\n":
             return idx
-    return len(text)
+    return end
 
 
 class _UrlQueryTracker:
@@ -112,7 +115,14 @@ class _UrlQueryTracker:
         return other
 
 
-def _consume_value(text: str, start: int, *, query: bool, key: str) -> int | None:
+def _consume_value(
+    text: str,
+    start: int,
+    *,
+    query: bool,
+    key: str,
+    limit: int | None = None,
+) -> int | None:
     """Return end index of a value starting at ``start``, or None if empty.
 
     Plain (non-query) sensitive assignments always eat through EOL so matching
@@ -120,17 +130,29 @@ def _consume_value(text: str, start: int, *, query: bool, key: str) -> int | Non
     fail-closed to the next ``&``/``#``/EOL (quotes and whitespace do not end
     the value early). Authorization/cookie keys use an EOL consumer in both
     modes.
+
+    ``limit`` caps the scan (key-bracket close) so nested ``]=x`` depth stays
+    O(n) instead of each EOL probe walking the full remaining string.
+
+    Callers must run :func:`_query_value_after_consume` on the returned span:
+    when the consumer jumps over a structural clearer (``<>`` / quotes / JSON /
+    grouping), query mode must be cleared — and when the clearer is not a
+    clean quoted-value delimiter, the redact end fail-closed to EOL so a later
+    bare ``&second-secret`` tail cannot leak.
     """
 
     if start >= len(text):
         return None
+    scan_end = len(text) if limit is None else min(limit, len(text))
+    if start >= scan_end:
+        return None
     if not query or _is_authorization_key(key) or _is_cookie_key(key):
-        return _line_end(text, start)
+        return _line_end(text, start, limit)
 
-    for idx in range(start, len(text)):
+    for idx in range(start, scan_end):
         if text[idx] in "&#\r\n":
             return idx
-    return len(text)
+    return scan_end
 
 
 # Key-bracket table codes (O(n) single forward pass; never re-scan suffixes).
@@ -147,6 +169,66 @@ def _clears_query_token(ch: str) -> bool:
     """True when ``ch`` ends a URL/query token (must clear ``in_query``)."""
     return ch in " \t;|," or ch in _QUERY_TOKEN_END
 
+
+def _query_value_after_consume(text: str, start: int, end: int) -> str:
+    """Classify a consumed query-value span for query-mode cleanup.
+
+    Returns:
+      ``""`` — no structural clearer jumped; keep query mode.
+      ``"clear"`` — clearer present; clear query mode, keep end at ``&``/``#``.
+        Used for clean quoted values (``?prompt="…"&ok=1``) and terminal
+        clearers (``foo>``) so a following ``&`` remains a real separator.
+      ``"clear_eol"`` — clearer mid-span (``foo>out``, JSON quote/comma junk);
+        clear query mode and fail-closed to EOL so ``&second-secret`` cannot
+        leak as a truncated tail.
+
+    ``]`` is ignored (appears inside ``[REDACTED]`` on re-scan).
+    """
+
+    if start >= end:
+        return ""
+    # Well-delimited quoted value then real ``&``: ``?prompt="hello world"&ok=1``.
+    if (
+        end - start >= 2
+        and text[start] in "'\""
+        and text[end - 1] == text[start]
+    ):
+        return "clear"
+
+    saw_mid = False
+    last_clear = False
+    for idx in range(start, end):
+        ch = text[idx]
+        if ch in " \t]":
+            continue
+        if _clears_query_token(ch):
+            if idx == end - 1:
+                last_clear = True
+            else:
+                saw_mid = True
+    if saw_mid:
+        return "clear_eol"
+    if last_clear:
+        return "clear"
+    return ""
+
+
+def _flatten_parts(parts: list) -> str:
+    """Join a possibly nested parts tree in O(total leaf chars).
+
+    Nested key-bracket frames store interior segments by reference so frame-pop
+    stays O(1) per level instead of re-materializing O(depth) strings.
+    """
+
+    out: list[str] = []
+    stack: list = list(reversed(parts))
+    while stack:
+        item = stack.pop()
+        if isinstance(item, list):
+            stack.extend(reversed(item))
+        else:
+            out.append(item)
+    return "".join(out)
 
 def _compute_key_brackets(text: str) -> list[int]:
     """O(n) table: for each ``[``, store close idx / ``_KB_NOT_KEY`` / ``_KB_EXHAUSTED``.
@@ -353,10 +435,19 @@ def _redact_query_assignments(text: str) -> str:
         if key_start < pos or not is_sensitive_key(key):
             i = eq + 1
             continue
-        end = _consume_value(text, eq + 1, query=True, key=key)
+        value_start = eq + 1
+        end = _consume_value(text, value_start, query=True, key=key)
         if end is None:
             i = eq + 1
             continue
+        # Consumer may jump over ``<>`` / quotes / JSON / grouping — clear query
+        # mode; mid-span clearers fail-closed to EOL so ``&second-secret`` tails
+        # cannot leak (clean ``?prompt="…"&ok=1`` only clears, keeps ``&ok``).
+        action = _query_value_after_consume(text, value_start, end)
+        if action:
+            in_query = False
+        if action == "clear_eol":
+            end = _line_end(text, value_start)
         parts.append(text[pos:i])
         parts.append(f"{prefix}{key}={REDACTED}")
         pos = end
@@ -372,14 +463,15 @@ class _BracketFrame:
     open_idx: int
     close_idx: int
     token_start: int
-    parts: list[str]
+    parts: list
     pos: int
     boundary: int
     query_active: bool
     url: _UrlQueryTracker
-    pending_key: str | None
+    pending_key: str | list | None
     pending_key_start: int
     pending_key_end: int
+    pending_known_sensitive: bool = False
     had_nested_key_bracket: bool = False
 
 
@@ -405,7 +497,8 @@ def _redact_plain_assignments(text: str) -> str:
     O(n) bracket table, and for quoted object keys (``"api?key":``) so
     ``?``/``&``/``://`` inside the quotes stay key material while interiors are
     still scanned for nested assignments. Nested key-brackets use an explicit
-    stack over original index ranges (no recursive sliced re-entry). Array
+    stack over original index ranges (no recursive sliced re-entry); frame-pop
+    keeps interior segments by reference so rewrite nests stay O(n). Array
     values / malformed bracket quotes fall back to ordinary scanning.
     Non-sensitive ``:``/``=`` inside a contiguous (no-whitespace) token do
     **not** advance the boundary. ``?`` opens query context only for URL/query
@@ -414,25 +507,28 @@ def _redact_plain_assignments(text: str) -> str:
     inherit query mode.
     """
 
-    parts: list[str] = []
+    parts: list = []
     pos = 0
     boundary = -1
     query_active = False
     url = _UrlQueryTracker()
     brackets = _compute_key_brackets(text)
     quoted_keys = _compute_quoted_keys(text)
-    pending_key: str | None = None
+    pending_key: str | list | None = None
     pending_key_start = -1
     pending_key_end = -1
+    pending_known_sensitive = False
     bracket_stack: list[_BracketFrame] = []
     i = 0
     length = len(text)
 
     def _clear_pending() -> None:
         nonlocal pending_key, pending_key_start, pending_key_end
+        nonlocal pending_known_sensitive
         pending_key = None
         pending_key_start = -1
         pending_key_end = -1
+        pending_known_sensitive = False
 
     def _finish_bracket_frame() -> bool:
         """If ``i`` is the close of the active key-bracket frame, pop it.
@@ -440,21 +536,19 @@ def _redact_plain_assignments(text: str) -> str:
         Returns True when a frame was closed (caller should ``continue``).
         """
         nonlocal parts, pos, boundary, query_active, url
-        nonlocal pending_key, pending_key_start, pending_key_end, i
+        nonlocal pending_key, pending_key_start, pending_key_end
+        nonlocal pending_known_sensitive, i
         if not bracket_stack:
             return False
         frame = bracket_stack[-1]
         if i != frame.close_idx:
             return False
         bracket_stack.pop()
-        # Interior unchanged iff no assignment redaction advanced ``pos``.
-        if not parts and pos == frame.open_idx + 1:
-            red_changed = False
-            red_int = ""
-        else:
-            red_int = "".join(parts) + text[pos:i]
-            interior = text[frame.open_idx + 1 : frame.close_idx]
-            red_changed = red_int != interior
+        # Interior changed iff an assignment redaction advanced ``pos`` / parts.
+        # Avoid materializing O(depth) interior strings for the comparison.
+        red_changed = bool(parts) or pos != frame.open_idx + 1
+        interior_parts = parts
+        interior_pos = pos
         # Restore outer scanner state.
         parts = frame.parts
         pos = frame.pos
@@ -464,6 +558,7 @@ def _redact_plain_assignments(text: str) -> str:
         pending_key = frame.pending_key
         pending_key_start = frame.pending_key_start
         pending_key_end = frame.pending_key_end
+        pending_known_sensitive = frame.pending_known_sensitive
         # Sensitivity of this ``prefix[interior]`` as an outer assignment key.
         # Avoid re-normalizing O(depth)-sized nested ``]=x`` aggregates (O(n²)):
         # when nested key-brackets were scanned and left the interior unchanged,
@@ -483,13 +578,21 @@ def _redact_plain_assignments(text: str) -> str:
             )
         if key_sensitive:
             if red_changed:
-                pending_key = (
-                    text[frame.token_start : frame.open_idx + 1] + red_int + "]"
-                )
+                # Segment tree by reference — O(1) wrap per level, flatten once.
+                trailing = text[interior_pos : frame.close_idx]
+                seg: list = [
+                    text[frame.token_start : frame.open_idx + 1],
+                    interior_parts,
+                ]
+                if trailing:
+                    seg.append(trailing)
+                seg.append("]")
+                pending_key = seg
             else:
                 pending_key = text[frame.token_start : frame.close_idx + 1]
             pending_key_start = frame.token_start
             pending_key_end = frame.close_idx + 1
+            pending_known_sensitive = True
         else:
             _clear_pending()
             # Do not let nested ``]=x`` layers re-accumulate into one key span.
@@ -529,6 +632,7 @@ def _redact_plain_assignments(text: str) -> str:
                         pending_key=pending_key,
                         pending_key_start=pending_key_start,
                         pending_key_end=pending_key_end,
+                        pending_known_sensitive=pending_known_sensitive,
                     )
                 )
                 # Fresh interior scan state over original indices (open+1 .. close).
@@ -571,6 +675,7 @@ def _redact_plain_assignments(text: str) -> str:
                     )
                     pending_key_start = token_start
                     pending_key_end = qclose + 1
+                    pending_known_sensitive = False
                 else:
                     _clear_pending()
                 url.line_has_content = True
@@ -651,14 +756,16 @@ def _redact_plain_assignments(text: str) -> str:
             continue
 
         sep_idx = i
+        known_sensitive = False
         if (
             pending_key is not None
             and pending_key_end >= 0
             and sep_idx >= pending_key_end
         ):
-            key = pending_key
+            key: str | list = pending_key
             key_start = pending_key_start
             key_end = pending_key_end
+            known_sensitive = pending_known_sensitive
             _clear_pending()
         else:
             _clear_pending()
@@ -673,12 +780,15 @@ def _redact_plain_assignments(text: str) -> str:
                 key_start += 1
             key = text[key_start:key_end]
 
+        key_sensitive = known_sensitive or (
+            isinstance(key, str) and bool(key) and is_sensitive_key(key)
+        )
         # Skip non-sensitive ``scheme://`` URL forms only after the key check.
         if (
             ch == ":"
             and i + 2 < length
             and text[i + 1 : i + 3] == "//"
-            and (not key or not is_sensitive_key(key))
+            and not key_sensitive
         ):
             boundary = sep_idx
             url.on_other(text, i, ch)
@@ -693,24 +803,25 @@ def _redact_plain_assignments(text: str) -> str:
             continue
         # Overlong spans: fail-closed redact when sensitive; otherwise advance
         # the boundary so ``:=`` floods stay O(n) (no unbounded re-normalize).
-        if len(key) > _MAX_KEY_LEN:
-            if not is_sensitive_key(key):
-                boundary = sep_idx
+        if not known_sensitive and isinstance(key, str):
+            if len(key) > _MAX_KEY_LEN:
+                if not is_sensitive_key(key):
+                    boundary = sep_idx
+                    url.on_other(text, i, ch)
+                    i = sep_idx + 1
+                    continue
+            elif not is_sensitive_key(key):
+                # Keep boundary so contiguous fragments (``api:key``, ``api=key``)
+                # accumulate into one candidate for the next separator. Whitespace
+                # already ends the token via the space handler above.
+                # Exception: a completed key-bracket span (ends with ``]``) must not
+                # re-accumulate across nested ``]=x`` layers — that is O(n²) on
+                # ``"["*n + "safe" + "]=x"*n``.
+                if key.endswith("]"):
+                    boundary = sep_idx
                 url.on_other(text, i, ch)
                 i = sep_idx + 1
                 continue
-        elif not is_sensitive_key(key):
-            # Keep boundary so contiguous fragments (``api:key``, ``api=key``)
-            # accumulate into one candidate for the next separator. Whitespace
-            # already ends the token via the space handler above.
-            # Exception: a completed key-bracket span (ends with ``]``) must not
-            # re-accumulate across nested ``]=x`` layers — that is O(n²) on
-            # ``"["*n + "safe" + "]=x"*n``.
-            if key.endswith("]"):
-                boundary = sep_idx
-            url.on_other(text, i, ch)
-            i = sep_idx + 1
-            continue
 
         # Separator may include surrounding whitespace: ``key = value``.
         # Also accept ``key://value`` for sensitive keys.
@@ -728,17 +839,40 @@ def _redact_plain_assignments(text: str) -> str:
         # next ``&``. Bare shell ``&`` / prose ``?`` never open query mode, so
         # plain ``token="…" secret`` still eats through EOL.
         in_query = query_active and boundary >= 0 and text[boundary] in "?&"
-        end = _consume_value(text, sep_end, query=in_query, key=key)
+        # Segment-tree keys are known-sensitive bracket rewrites; pass a
+        # sensitive stand-in so auth/cookie EOL rules are not required.
+        consume_key = key if isinstance(key, str) else "token"
+        value_start = sep_end
+        bracket_limit = (
+            bracket_stack[-1].close_idx if bracket_stack else None
+        )
+        end = _consume_value(
+            text,
+            value_start,
+            query=in_query,
+            key=consume_key,
+            limit=bracket_limit,
+        )
         if end is None:
             url.on_other(text, i, ch)
             i = sep_idx + 1
             continue
+        if in_query:
+            action = _query_value_after_consume(text, value_start, end)
+            if action:
+                query_active = False
+            if action == "clear_eol":
+                end = _line_end(text, value_start, bracket_limit)
         # Clamp to active key-bracket close so in-place interiors match sliced
         # EOL semantics (never consume past the closing ``]``).
         if bracket_stack:
             end = min(end, bracket_stack[-1].close_idx)
         parts.append(text[pos:key_start])
-        parts.append(f"{key}{sep}{REDACTED}")
+        if isinstance(key, list):
+            parts.append(key)
+            parts.append(f"{sep}{REDACTED}")
+        else:
+            parts.append(f"{key}{sep}{REDACTED}")
         pos = end
         boundary = end - 1 if end > 0 else -1
         url.line_has_content = True
@@ -746,7 +880,7 @@ def _redact_plain_assignments(text: str) -> str:
         url.seen_scheme = False
         i = end
     parts.append(text[pos:])
-    return "".join(parts)
+    return _flatten_parts(parts)
 
 
 def redact_text(value: str) -> str:

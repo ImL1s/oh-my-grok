@@ -654,3 +654,65 @@ def test_redact_text_closes_pr94u_residual_p2_classes() -> None:
     finally:
         sys.setrecursionlimit(old_limit)
 
+
+def test_redact_text_closes_pr94v_residual_p2_classes() -> None:
+    """Close Pro reaudit P2s: sensitive-query clearer swallow; nest rewrite O(n)."""
+    # P2-1: ``_consume_value`` must not jump over ``<>`` / quotes / JSON clearers
+    # while leaving query mode on — later ``&token=…&second-secret`` would leak.
+    for source, leaked in (
+        (
+            "curl https://x.test/?api_key=foo>out&token=Bearer first&second-secret",
+            "second-secret",
+        ),
+        (
+            "curl https://x.test/?token=x<in&command=echo safe&curl-secret",
+            "curl-secret",
+        ),
+        (
+            '?token=x","token":"Bearer first&second-secret"',
+            "second-secret",
+        ),
+        (
+            '?token=x"&&token=Bearer first&second-secret',
+            "second-secret",
+        ),
+        (
+            '{"url":"https://x.test/?token=foo","token":"Bearer first&second-secret"}',
+            "second-secret",
+        ),
+    ):
+        out = redact_text(source)
+        assert leaked not in out, (source, out)
+        assert "second-secret" not in out and "curl-secret" not in out
+        assert REDACTED in out, (source, out)
+
+    # Prior named redirect repros remain FIXED.
+    for source in (
+        "curl https://x.test/?ok=1>out&token=Bearer first&second-secret",
+        "curl https://x.test/?ok=1<in&token=Bearer first&second-secret",
+    ):
+        out = redact_text(source)
+        assert "second-secret" not in out, (source, out)
+
+    # Real same-token query continuation still stops at ``&`` (no false EOL).
+    assert (
+        redact_text("https://x.test/?token=secret-value&ok=1")
+        == f"https://x.test/?token={REDACTED}&ok=1"
+    )
+
+    # P2-2: nested key-bracket *rewrite* path must stay O(n), not O(n²).
+    # (Unchanged ``safe`` nests were already linear; ``token=secret`` was not.)
+    rewrite_timings: list[float] = []
+    for n in (200, 400, 800, 1_600):
+        source = "[" * n + "token=secret" + "]=x" * n
+        t0 = time.perf_counter()
+        out = redact_text(source)
+        rewrite_timings.append(time.perf_counter() - t0)
+        assert "secret" not in out, n
+        assert REDACTED in out, n
+    # Doubling n must not ~4× the time (quadratic). Allow CI slack.
+    assert rewrite_timings[3] < max(0.05, rewrite_timings[0] * 10.0), rewrite_timings
+    assert rewrite_timings[3] < 1.0, rewrite_timings
+    # Small functional shape.
+    assert "secret" not in redact_text("[[[token=secret]=x]=x]=x")
+
