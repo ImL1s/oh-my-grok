@@ -756,6 +756,7 @@ def test_drain_pipe_stop_before_eof_sets_truncation_flag() -> None:
     sink = bytearray()
     overflow = [False]
     early = [False]
+    read_error = [False]
     pipe = os.fdopen(r_fd, "rb", buffering=0)
     try:
         _drain_pipe(
@@ -765,6 +766,7 @@ def test_drain_pipe_stop_before_eof_sets_truncation_flag() -> None:
             overflow_flag=overflow,
             stop=stop,
             early_stop_flag=early,
+            read_error_flag=read_error,
         )
     finally:
         try:
@@ -773,6 +775,61 @@ def test_drain_pipe_stop_before_eof_sets_truncation_flag() -> None:
             pass
     assert early[0] is True
     assert overflow[0] is False
+    assert read_error[0] is False
+
+
+def test_drain_pipe_read_error_marks_partial_output_unusable() -> None:
+    """A read failure after partial output is neither EOF nor valid evidence."""
+    from omg_cli.providers.process import _drain_pipe
+
+    class ErrorPipe:
+        def __init__(self) -> None:
+            self.reads = 0
+
+        def read(self, size: int) -> bytes:  # noqa: ARG002
+            self.reads += 1
+            if self.reads == 1:
+                return b"Usage of agy:\n"
+            raise OSError("simulated pipe failure")
+
+        def close(self) -> None:
+            return None
+
+    sink = bytearray()
+    overflow = [False]
+    early = [False]
+    read_error = [False]
+    _drain_pipe(
+        ErrorPipe(),
+        max_bytes=10_000,
+        sink=sink,
+        overflow_flag=overflow,
+        stop=threading.Event(),
+        early_stop_flag=early,
+        read_error_flag=read_error,
+    )
+    assert bytes(sink) == b"Usage of agy:\n"
+    assert overflow[0] is False
+    assert early[0] is True
+    assert read_error[0] is True
+
+
+def test_bounded_pipe_close_reraises_interrupt_from_join(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cleanup owner must receive join interrupts and kill the process tree."""
+    from omg_cli.providers import process as process_mod
+
+    class Pipe:
+        def close(self) -> None:
+            return None
+
+    def interrupt_join(self, timeout=None):  # noqa: ARG001
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(threading.Thread, "join", interrupt_join)
+    with pytest.raises(KeyboardInterrupt):
+        process_mod._close_pipe_bounded(Pipe(), timeout_s=0.1)
 
 
 def test_antigravity_probes_pass_cancel_event(monkeypatch: pytest.MonkeyPatch) -> None:

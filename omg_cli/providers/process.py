@@ -56,6 +56,8 @@ class ProbeProcessResult:
     overflow: bool = False
     stdout_truncated: bool = False
     stderr_truncated: bool = False
+    stdout_read_error: bool = False
+    stderr_read_error: bool = False
     bytes_stdout: int = 0
     bytes_stderr: int = 0
     # POSIX session leader / process-group id (child pid with start_new_session).
@@ -124,10 +126,9 @@ def _close_pipe_bounded(pipe, *, timeout_s: float | None = None) -> None:
     if not done.wait(timeout=limit):
         # Abandon the close; caller already killed the tree (or will).
         return
-    try:
-        closer.join(timeout=0.1)
-    except BaseException:
-        pass
+    # Do not swallow interrupts here. The owning cleanup region catches them,
+    # kills the process tree, then preserves the original exception.
+    closer.join(timeout=0.1)
 
 
 def _drain_pipe(
@@ -138,6 +139,7 @@ def _drain_pipe(
     overflow_flag: list[bool],
     stop: threading.Event,
     early_stop_flag: list[bool],
+    read_error_flag: list[bool],
 ) -> None:
     """Read until EOF, byte cap, or forced ``stop`` (which marks early truncation)."""
     try:
@@ -158,7 +160,10 @@ def _drain_pipe(
                 break
             sink.extend(chunk)
     except (ValueError, OSError):
-        pass
+        # A failed read is not EOF. Preserve the partial output for diagnostics,
+        # but make the result unusable as probe evidence.
+        read_error_flag[0] = True
+        early_stop_flag[0] = True
     finally:
         try:
             pipe.close()
@@ -256,6 +261,8 @@ def run_probe_process(
     stderr_overflow = [False]
     stdout_early_stop = [False]
     stderr_early_stop = [False]
+    stdout_read_error = [False]
+    stderr_read_error = [False]
     timed_out = False
     cancelled = False
     overflow = False
@@ -275,6 +282,8 @@ def run_probe_process(
         stderr_overflow = [False]
         stdout_early_stop = [False]
         stderr_early_stop = [False]
+        stdout_read_error = [False]
+        stderr_read_error = [False]
 
         def _cancel_requested() -> bool:
             return cancel_event is not None and cancel_event.is_set()
@@ -301,6 +310,7 @@ def run_probe_process(
                     "overflow_flag": stdout_overflow,
                     "stop": stop_readers,
                     "early_stop_flag": stdout_early_stop,
+                    "read_error_flag": stdout_read_error,
                 },
                 daemon=True,
             ),
@@ -313,6 +323,7 @@ def run_probe_process(
                     "overflow_flag": stderr_overflow,
                     "stop": stop_readers,
                     "early_stop_flag": stderr_early_stop,
+                    "read_error_flag": stderr_read_error,
                 },
                 daemon=True,
             ),
@@ -409,8 +420,12 @@ def run_probe_process(
     assert proc is not None
     try:
         overflow = overflow or stdout_overflow[0] or stderr_overflow[0]
-        stdout_truncated = bool(stdout_overflow[0] or stdout_early_stop[0])
-        stderr_truncated = bool(stderr_overflow[0] or stderr_early_stop[0])
+        stdout_truncated = bool(
+            stdout_overflow[0] or stdout_early_stop[0] or stdout_read_error[0]
+        )
+        stderr_truncated = bool(
+            stderr_overflow[0] or stderr_early_stop[0] or stderr_read_error[0]
+        )
         returncode = int(proc.returncode if proc.returncode is not None else -9)
         if timed_out or cancelled or overflow:
             # Distinct sentinel when we forced termination before a natural exit.
@@ -432,6 +447,8 @@ def run_probe_process(
             overflow=overflow,
             stdout_truncated=stdout_truncated,
             stderr_truncated=stderr_truncated,
+            stdout_read_error=stdout_read_error[0],
+            stderr_read_error=stderr_read_error[0],
             bytes_stdout=len(stdout_buf),
             bytes_stderr=len(stderr_buf),
             pid=int(proc.pid or 0),
@@ -451,6 +468,8 @@ def run_probe_process(
                     overflow=result.overflow,
                     stdout_truncated=result.stdout_truncated,
                     stderr_truncated=result.stderr_truncated,
+                    stdout_read_error=result.stdout_read_error,
+                    stderr_read_error=result.stderr_read_error,
                     bytes_stdout=result.bytes_stdout,
                     bytes_stderr=result.bytes_stderr,
                     pid=result.pid,

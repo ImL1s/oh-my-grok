@@ -228,6 +228,59 @@ def test_doctor_strict_rejects_impostor_agy_help(
     assert any("identity" in c.lower() or "probe error" in c.lower() for c in report.checks)
 
 
+@pytest.mark.parametrize(
+    "help_text",
+    (
+        "Usage of agy-helper:\n",
+        "introductory text\nUsage of agy:\n",
+    ),
+)
+def test_help_identity_rejects_non_exact_or_buried_header(help_text: str) -> None:
+    """Only the exact first non-empty help line binds the provider identity."""
+    from omg_cli.providers.antigravity import _verify_agy_help_identity
+    from omg_cli.providers.errors import ProviderProbeError
+
+    with pytest.raises(ProviderProbeError, match="first non-empty"):
+        _verify_agy_help_identity("/tmp/agy", help_text)
+
+
+def test_help_identity_accepts_exact_first_nonempty_header() -> None:
+    from omg_cli.providers.antigravity import _verify_agy_help_identity
+
+    _verify_agy_help_identity("/tmp/agy", "\n\nUsage of agy:\t\n  --help  help\n")
+
+
+def test_doctor_strict_rejects_partial_help_after_reader_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Partial identity/flag output after a read error must not strict-green."""
+    from omg_cli.providers import antigravity as agy_mod
+    from omg_cli.providers.process import ProbeProcessResult
+
+    def failed_read(argv, **kwargs):  # noqa: ARG001
+        if "--version" in argv:
+            return ProbeProcessResult(
+                argv=tuple(argv), returncode=0, stdout="1.1.10\n", stderr=""
+            )
+        return ProbeProcessResult(
+            argv=tuple(argv),
+            returncode=0,
+            stdout=(
+                "Usage of agy:\n"
+                "  --effort                        Reasoning effort (low|medium|high)\n"
+            ),
+            stderr="",
+            stdout_truncated=True,
+            stdout_read_error=True,
+        )
+
+    monkeypatch.setattr(agy_mod, "run_probe_process", failed_read)
+    report = agy_mod.doctor(strict=True, binary="/tmp/agy")
+    assert report.ok is False
+    assert report.exit_code == 1
+    assert any("truncated" in check for check in report.checks)
+
+
 def test_probe_version_parse(fake_agy_path: Path) -> None:
     from omg_cli.providers.antigravity import discover_binary, probe_version
 

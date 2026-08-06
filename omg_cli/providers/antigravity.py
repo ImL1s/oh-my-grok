@@ -59,8 +59,8 @@ _VERSION_RE = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)$")
 # Parser-owned bounds — do not rely on CPython's global int digit limit.
 _VERSION_COMPONENT_MAX_DIGITS: Final[int] = 9
 _VERSION_COMPONENT_MAX_VALUE: Final[int] = 999_999_999
-# Help identity: real agy --help begins with ``Usage of agy:``.
-_AGY_HELP_IDENTITY_RE = re.compile(r"(?im)^Usage of agy\b")
+# Help identity: the first non-empty line of real ``agy --help`` is exactly
+# ``Usage of agy:`` (apart from trailing horizontal whitespace).
 _PROBE_TIMEOUT_S: Final[float] = DEFAULT_PROBE_TIMEOUT_S
 
 # Flag lines: ``  --flag   description`` (two+ spaces before description).
@@ -214,11 +214,16 @@ def parse_version(text: str | None) -> VersionInfo | None:
 
 def _verify_agy_help_identity(binary: str, help_text: str) -> None:
     """Require Antigravity help identity so impostor ``agy`` names cannot green."""
-    if not _AGY_HELP_IDENTITY_RE.search(help_text or ""):
-        raise ProviderProbeError(
-            f"binary {binary!r} help output lacks Antigravity identity "
-            f"(expected a 'Usage of agy' header)"
-        )
+    for line in (help_text or "").splitlines():
+        if not line.strip():
+            continue
+        if line.rstrip(" \t") == "Usage of agy:":
+            return
+        break
+    raise ProviderProbeError(
+        f"binary {binary!r} help output lacks Antigravity identity "
+        f"(expected first non-empty line 'Usage of agy:')"
+    )
 
 
 def classify_compat(version: VersionInfo | tuple[int, int, int] | None) -> CompatStatus:
@@ -260,25 +265,27 @@ def _run_probe_argv(argv: list[str]):
             timeout_s=_PROBE_TIMEOUT_S,
             cancel_event=cancel,
         )
+        if cancel.is_set():
+            # Preserve Ctrl-C semantics after process-group cleanup. cancel_event
+            # may be set during wait/join even when the direct child already exited;
+            # killpg again before raising so descendants cannot outlive the interrupt.
+            pgid = int(getattr(result, "pid", 0) or 0)
+            if os.name == "posix" and pgid > 0:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+            raise KeyboardInterrupt()
+        return result
     finally:
+        # Keep the event-only handler installed through the final cancel check
+        # and killpg decision. Restoring it sooner permits a SIGINT to raise
+        # before descendants can be reaped.
         if previous is not None:
             try:
                 signal.signal(signal.SIGINT, previous)
             except (ValueError, OSError):
                 pass
-
-    if cancel.is_set():
-        # Preserve Ctrl-C semantics after process-group cleanup. cancel_event
-        # may be set during wait/join even when the direct child already exited;
-        # killpg again before raising so descendants cannot outlive the interrupt.
-        pgid = int(getattr(result, "pid", 0) or 0)
-        if os.name == "posix" and pgid > 0:
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-        raise KeyboardInterrupt()
-    return result
 
 
 def probe_version(binary: str | None = None) -> VersionInfo:
@@ -299,8 +306,14 @@ def probe_version(binary: str | None = None) -> VersionInfo:
         raise ProviderVersionError(f"version probe timed out for {path}")
     if result.cancelled:
         raise ProviderVersionError(f"version probe cancelled for {path}")
-    if result.overflow or result.stdout_truncated or result.stderr_truncated:
-        raise ProviderVersionError(f"version probe output truncated for {path}")
+    if (
+        result.overflow
+        or result.stdout_truncated
+        or result.stderr_truncated
+        or result.stdout_read_error
+        or result.stderr_read_error
+    ):
+        raise ProviderVersionError(f"version probe output truncated or unreadable for {path}")
     if result.returncode != 0:
         detail = redact_text((result.stderr or result.stdout or "").strip())
         raise ProviderVersionError(
@@ -426,7 +439,13 @@ def _probe_help_text(binary: str) -> str:
         raise ProviderProbeError(f"help probe timed out for {binary}")
     if result.cancelled:
         raise ProviderProbeError(f"help probe cancelled for {binary}")
-    if result.overflow or result.stdout_truncated or result.stderr_truncated:
+    if (
+        result.overflow
+        or result.stdout_truncated
+        or result.stderr_truncated
+        or result.stdout_read_error
+        or result.stderr_read_error
+    ):
         # Partial help must not feed strict doctor a truncated capability surface.
         raise ProviderProbeError(f"help probe output truncated for {binary}")
     if result.returncode != 0:
