@@ -168,7 +168,58 @@ def _parse_session_handle(stdout: str, *, expected_name: str | None = None) -> t
     return parts[0], parts[1]
 
 
+def resolve_invoking_pane(
+    *,
+    pane: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """Resolve the exact leader pane that invoked Team launch.
+
+    Prefer an explicit ``pane`` / ``TMUX_PANE`` so mid-launch client focus
+    changes cannot retarget the Team. Fall back to an untargeted
+    ``display-message`` only when neither is available (legacy shells).
+    """
+    if pane is not None:
+        candidate = str(pane).strip()
+        if _TMUX_PANE_ID.fullmatch(candidate) is None:
+            raise TmuxTeamError(f"invalid invoking pane id {pane!r}")
+        return candidate
+    environ = env if env is not None else os.environ
+    from_env = str(environ.get("TMUX_PANE") or "").strip()
+    if from_env:
+        if _TMUX_PANE_ID.fullmatch(from_env) is None:
+            raise TmuxTeamError(f"invalid TMUX_PANE {from_env!r}")
+        return from_env
+    probe = _tmux_run(["display-message", "-p", "#{pane_id}"])
+    candidate = (probe.stdout or "").strip()
+    if probe.returncode != 0 or _TMUX_PANE_ID.fullmatch(candidate) is None:
+        raise TmuxTeamError(
+            "failed to resolve invoking leader pane "
+            "(set TMUX_PANE or pass an exact pane id)"
+        )
+    return candidate
+
+
+def _session_handle_for_pane(pane_id: str) -> tuple[str, str]:
+    if _TMUX_PANE_ID.fullmatch(pane_id) is None:
+        raise TmuxTeamError(f"invalid pane id for session probe {pane_id!r}")
+    probe = _tmux_run(
+        [
+            "display-message",
+            "-p",
+            "-t",
+            pane_id,
+            "#{session_name}\t#{session_id}",
+        ]
+    )
+    if probe.returncode != 0:
+        err = (probe.stderr or probe.stdout or "").strip()
+        raise TmuxTeamError(f"failed to read tmux session for pane {pane_id}: {err}")
+    return _parse_session_handle(probe.stdout)
+
+
 def _current_session_handle() -> tuple[str, str]:
+    """Legacy untargeted probe — prefer :func:`_session_handle_for_pane`."""
     probe = _tmux_run(
         ["display-message", "-p", "#{session_name}\t#{session_id}"]
     )
@@ -179,10 +230,18 @@ def _current_session_handle() -> tuple[str, str]:
 
 
 def _current_leader_pane() -> str:
-    probe = _tmux_run(["display-message", "-p", "#{pane_id}"])
-    if probe.returncode != 0 or _TMUX_PANE_ID.fullmatch((probe.stdout or "").strip()) is None:
-        raise TmuxTeamError("failed to read current leader pane id")
-    return (probe.stdout or "").strip()
+    """Deprecated alias — use :func:`resolve_invoking_pane`."""
+    return resolve_invoking_pane()
+
+
+def _restore_leader_focus(leader_pane: str) -> None:
+    """Reselect the exact leader pane after focus-detached worker creation."""
+    if _TMUX_PANE_ID.fullmatch(leader_pane) is None:
+        raise TmuxTeamError(f"invalid leader pane for focus restore {leader_pane!r}")
+    selected = _tmux_run(["select-pane", "-t", leader_pane])
+    if selected.returncode != 0:
+        err = (selected.stderr or selected.stdout or "").strip()
+        raise TmuxTeamError(f"failed to restore leader focus on {leader_pane}: {err}")
 
 
 def _bind_pane_pid(pane_id: str) -> int:
@@ -248,15 +307,23 @@ def _launch_first_inside(
     task: dict[str, Any],
     env_pairs: list[tuple[str, str]],
     window_name: str,
+    leader_pane: str,
 ) -> tuple[str, str]:
-    """Create a new window in the current session; return (window_id, pane_id)."""
+    """Create a new window in the leader's session; return (window_id, pane_id).
+
+    Uses ``-d`` so the client stays on the invoking leader pane.
+    """
     first_env = tmux_env_args(list(task.get("_env_pairs") or env_pairs))
     create = _tmux_run(
         [
             "new-window",
+            "-d",
             "-P",
             "-F",
             "#{window_id}\t#{pane_id}",
+            "-a",
+            "-t",
+            leader_pane,
             "-n",
             window_name,
             "-c",
@@ -286,13 +353,17 @@ def _split_remaining(
     tasks: Sequence[dict[str, Any]],
     env_pairs: list[tuple[str, str]],
 ) -> list[str]:
-    """Split remaining tasks into ``target`` (session id or window id)."""
+    """Split remaining tasks into ``target`` (session id or window id).
+
+    Uses ``-d`` so splits do not steal client focus from the leader pane.
+    """
     created: list[str] = []
     for task in tasks:
         task_env = tmux_env_args(list(task.get("_env_pairs") or env_pairs))
         split = _tmux_run(
             [
                 "split-window",
+                "-d",
                 "-P",
                 "-F",
                 "#{pane_id}",
@@ -327,6 +398,7 @@ def create_split_team_session(
     detach: bool = False,
     env: Mapping[str, str] | None = None,
     isatty: Callable[[], bool] | None = None,
+    invoking_pane: str | None = None,
 ) -> tuple[str, str]:
     """Create worker panes in one window; return ``(session_name, session_id)``.
 
@@ -349,7 +421,13 @@ def create_split_team_session(
         raise TmuxTeamError(f"unsupported attach_mode {mode!r}")
 
     if mode == "inside":
-        return _create_inside(session=session, tasks=tasks, env_pairs=env_pairs)
+        return _create_inside(
+            session=session,
+            tasks=tasks,
+            env_pairs=env_pairs,
+            env=env,
+            invoking_pane=invoking_pane,
+        )
     return _create_detached(session=session, tasks=tasks, env_pairs=env_pairs)
 
 
@@ -416,23 +494,28 @@ def _create_inside(
     session: str,
     tasks: list[dict[str, Any]],
     env_pairs: list[tuple[str, str]],
+    env: Mapping[str, str] | None = None,
+    invoking_pane: str | None = None,
 ) -> tuple[str, str]:
-    """Split into a new window of the current session; never touch leader pane."""
-    handle = _current_session_handle()
-    # Prefer caller session name for meta continuity when it matches; otherwise
-    # record the live session we actually joined.
-    live_name, live_id = handle
+    """Create a dedicated worker window bound to the invoking leader pane.
+
+    Never kills the leader pane or the whole session on cleanup. Worker
+    creation uses focus-detached tmux flags and restores the leader selection.
+    """
+    leader_pane = resolve_invoking_pane(pane=invoking_pane, env=env)
+    live_name, live_id = _session_handle_for_pane(leader_pane)
     if session and live_name != session:
-        # Join current session regardless of planned name — inside attach binds
-        # to the leader's real session.
+        # Join the leader's real session regardless of planned name.
         pass
-    leader_pane = _current_leader_pane()
     window_name = "omg-team"
     window_id: str | None = None
     created_panes: list[str] = []
     try:
         window_id, first_pane = _launch_first_inside(
-            task=tasks[0], env_pairs=env_pairs, window_name=window_name
+            task=tasks[0],
+            env_pairs=env_pairs,
+            window_name=window_name,
+            leader_pane=leader_pane,
         )
         if first_pane == leader_pane:
             raise TmuxTeamError("refusing to overwrite leader pane with worker")
@@ -449,13 +532,14 @@ def _create_inside(
         layout = _tmux_run(["select-layout", "-t", window_id, "tiled"])
         if layout.returncode != 0:
             raise TmuxTeamError("failed to apply tiled layout")
+        _restore_leader_focus(leader_pane)
         _stamp_launch_meta(
             tasks,
             attach_mode="inside",
             session_owned=False,
             leader_pane_id=leader_pane,
             window_id=window_id,
-            attach_hint=f"tmux select-window -t {window_id}",
+            attach_hint=f"tmux select-pane -t {leader_pane}",
         )
     except (TmuxTeamError, OSError) as exc:
         # Never kill-session: only the team window / worker panes we created.

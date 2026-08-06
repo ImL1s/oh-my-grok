@@ -2423,11 +2423,19 @@ def team_status(
         widx = int(raw.get("window_index") or 0)
         wt = str(raw.get("worktree") or "")
         st = str(raw.get("status") or "unknown")
+        pane_id = raw.get("pane_id")
         # dry_run / never-launched panes are not live
         if dry or st == "dry_run" or raw.get("pid") is None and dry:
             alive = False
         elif not probe_tmux:
             alive = False
+        elif isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id) is not None:
+            # Exact pane identity (#98): window_index is a logical slot under
+            # split topology and must not decide liveness.
+            from omg_cli.team.tmux import pane_alive
+
+            probed = pane_alive(pane_id)
+            alive = bool(probed) if probed is not None else False
         else:
             win = _window_alive(session, widx)
             alive = bool(win) if win is not None else False

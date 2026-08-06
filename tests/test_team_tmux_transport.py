@@ -267,26 +267,38 @@ def test_resolve_attach_mode_inside_detached_and_fail_closed(
 
 
 def test_inside_tmux_splits_current_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When TMUX is set, create uses new-window + split-window (not new-session)."""
+    """When TMUX is set, create uses new-window + split-window (not new-session).
+
+    Launch binds TMUX_PANE, creates workers with -d, and restores leader focus.
+    """
     from types import SimpleNamespace
 
     from omg_cli.team import tmux as tmux_mod
 
     monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    monkeypatch.setenv("TMUX_PANE", "%9")
     calls: list[list[str]] = []
 
     def fake_tmux(args: list[str]) -> SimpleNamespace:
         calls.append(list(args))
         cmd = args[0]
-        if cmd == "display-message" and "#{session_name}" in " ".join(args):
+        joined = " ".join(args)
+        if cmd == "display-message" and "#{session_name}" in joined and "-t" in args:
+            assert args[args.index("-t") + 1] == "%9"
             return SimpleNamespace(returncode=0, stdout="leader\t$42\n", stderr="")
-        if cmd == "display-message" and "#{pane_id}" in " ".join(args) and "-t" not in args:
+        if cmd == "display-message" and "#{pane_id}" in joined and "-t" not in args:
             return SimpleNamespace(returncode=0, stdout="%9\n", stderr="")
         if cmd == "new-window":
+            assert "-d" in args
+            assert "-t" in args and args[args.index("-t") + 1] == "%9"
             return SimpleNamespace(returncode=0, stdout="@7\t%10\n", stderr="")
         if cmd == "split-window":
+            assert "-d" in args
             return SimpleNamespace(returncode=0, stdout="%11\n", stderr="")
-        if cmd in ("select-layout", "set-option"):
+        if cmd == "select-layout":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "select-pane":
+            assert args[-1] == "%9"
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "kill-window":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -322,7 +334,69 @@ def test_inside_tmux_splits_current_window(monkeypatch: pytest.MonkeyPatch) -> N
     assert tasks[0]["_tmux_launch"]["session_owned"] is False
     assert tasks[0]["_tmux_launch"]["leader_pane_id"] == "%9"
     assert tasks[0]["_tmux_launch"]["window_id"] == "@7"
-    assert any(c[0] == "new-window" for c in calls)
-    assert any(c[0] == "split-window" for c in calls)
+    assert tasks[0]["_tmux_launch"]["attach_hint"] == "tmux select-pane -t %9"
+    assert any(c[0] == "new-window" and "-d" in c for c in calls)
+    assert any(c[0] == "split-window" and "-d" in c for c in calls)
+    assert any(c == ["select-pane", "-t", "%9"] for c in calls)
     assert not any(c[0] == "new-session" for c in calls)
     assert not any(c[0] == "kill-session" for c in calls)
+
+
+def test_resolve_invoking_pane_prefers_tmux_pane_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.team.tmux import resolve_invoking_pane
+
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    assert resolve_invoking_pane(pane="%42") == "%42"
+    assert resolve_invoking_pane(env={"TMUX_PANE": "%7"}) == "%7"
+
+
+def test_team_status_prefers_exact_pane_alive(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Split topology stores pane slot in window_index; status must use pane_id."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team import plane
+
+    rid = "20260806T000000Z-status98"
+    meta = {
+        "run_id": rid,
+        "session": "team-sess",
+        "dry_run": False,
+        "workspace_mode": "worktree",
+        "writer": CLI_WRITER,
+        "tasks": [
+            {
+                "task_id": "w1",
+                "window_index": 0,  # pane slot — must NOT decide liveness alone
+                "worktree": str(tmp_path / "w1"),
+                "status": "running",
+                "pid": 1234,
+                "pane_id": "%81",
+            },
+            {
+                "task_id": "w2",
+                "window_index": 1,
+                "worktree": str(tmp_path / "w2"),
+                "status": "running",
+                "pid": 1235,
+                "pane_id": "%82",
+            },
+        ],
+    }
+    plane._atomic_write_json(plane.team_meta_path(tmp_path, rid), meta)
+
+    def fake_pane_alive(pane_id: str) -> bool | None:
+        return pane_id == "%81"
+
+    def boom_window(_session: str, _widx: int) -> bool | None:
+        raise AssertionError("_window_alive must not run when pane_id is recorded")
+
+    monkeypatch.setattr("omg_cli.team.tmux.pane_alive", fake_pane_alive)
+    monkeypatch.setattr(plane, "_window_alive", boom_window)
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+
+    st = plane.team_status(tmp_path, rid)
+    by_id = {t["task_id"]: t["alive"] for t in st["tasks"]}
+    assert by_id == {"w1": True, "w2": False}
