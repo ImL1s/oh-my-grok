@@ -137,6 +137,11 @@ def test_create_tmux_session_injects_task_scoped_worker_identity(
     monkeypatch.setattr(plane, "_tmux_run", fake_tmux_run)
     monkeypatch.setattr(
         tmux_mod,
+        "_tmux_run",
+        fake_tmux_run,
+    )
+    monkeypatch.setattr(
+        tmux_mod,
         "_probe_tmux_server_identity",
         lambda *, socket_path=None: dict(FAKE_TMUX_SERVER),
     )
@@ -167,17 +172,23 @@ def test_create_tmux_session_injects_task_scoped_worker_identity(
     ) == ("omg-workers", "$7")
 
     create = next(command for command in calls if command[0] == "new-session")
-    later = next(command for command in calls if command[0] == "new-window")
+    later = next(
+        command
+        for command in calls
+        if command[0] == "if-shell" and "new-window" in " ".join(command)
+    )
+    later_joined = " ".join(later)
     assert f"{plane.TEAM_WORKER_ID_ENV}=task-a" in create
     assert f"{plane.TEAM_WORKER_ID_ENV}=task-b" not in create
-    assert f"{plane.TEAM_WORKER_ID_ENV}=task-b" in later
-    assert f"{plane.TEAM_WORKER_ID_ENV}=task-a" not in later
+    assert f"{plane.TEAM_WORKER_ID_ENV}=task-b" in later_joined
+    assert f"{plane.TEAM_WORKER_ID_ENV}=task-a" not in later_joined
     for key, value in common_identity.items():
         assert f"{key}={value}" in create
-        assert f"{key}={value}" in later
+        assert f"{key}={value}" in later_joined
     assert tasks[0]["_tmux_launch"]["tmux_server_pid"] == FAKE_TMUX_SERVER[
         "tmux_server_pid"
     ]
+    assert not any(c[0] == "new-window" for c in calls)
 
 
 # ---------------------------------------------------------------------------

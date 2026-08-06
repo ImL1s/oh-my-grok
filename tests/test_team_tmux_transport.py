@@ -346,14 +346,13 @@ def test_inside_tmux_splits_current_window(monkeypatch: pytest.MonkeyPatch) -> N
                 returncode=0, stdout="@7\t%10\t$42\t424242\n", stderr=""
             )
         if cmd == "new-window":
-            assert "-d" in args
-            assert "-t" in args and args[args.index("-t") + 1] == "@3"
-            return SimpleNamespace(
-                returncode=0, stdout="@7\t%10\t$42\t424242\n", stderr=""
-            )
-        if cmd == "split-window":
-            assert "-d" in args
+            raise AssertionError(f"bare new-window forbidden: {args}")
+        if cmd == "if-shell" and "split-window" in joined:
+            assert "-d" in joined
+            assert "@7" in joined or "424242" in joined
             return SimpleNamespace(returncode=0, stdout="%11\n", stderr="")
+        if cmd == "split-window":
+            raise AssertionError(f"bare split-window forbidden: {args}")
         if cmd == "select-layout":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "select-pane":
@@ -403,7 +402,10 @@ def test_inside_tmux_splits_current_window(monkeypatch: pytest.MonkeyPatch) -> N
         and "-d" in " ".join(c)
         for c in calls
     )
-    assert any(c[0] == "split-window" and "-d" in c for c in calls)
+    assert any(
+        c[0] == "if-shell" and "split-window" in " ".join(c) for c in calls
+    )
+    assert not any(c[0] == "split-window" for c in calls)
     assert any(c == ["select-pane", "-t", "%9"] for c in calls)
     assert not any(c[0] == "new-session" for c in calls)
     assert not any(c[0] == "kill-session" for c in calls)
@@ -1768,6 +1770,15 @@ def test_kill_window_atomic_predicate_includes_pid_start_id() -> None:
     assert "ps -o lstart=" in pred or "/proc/" in pred
     assert "@1" in pred
     assert "$0" in pred
+    # After tmux expands #{session_id}→$N, double quotes would treat $N as a
+    # positional parameter and fail every session-scoped gate.
+    assert "['#{session_id}' =" in pred.replace(" ", "") or (
+        "'#{session_id}'" in pred and "\"#{session_id}\"" not in pred
+    )
+    assert "'#{window_id}'" in pred
+    assert "\"#{session_id}\"" not in pred
+    assert "\"#{window_id}\"" not in pred
+    assert "\"#{pid}\"" not in pred
 
 
 def test_kill_inside_name_cleanup_uses_identity_gated_if_shell(
@@ -1882,7 +1893,11 @@ def test_new_window_gated_by_wal_server_identity(
 def test_sweep_abandons_unbound_side_effect_wal_on_dead_server(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """P2: mark-then-crash unbound WAL must not permanently gate after server death."""
+    """P2: mark-then-crash unbound WAL must not permanently gate after server death.
+
+    Abandon requires OS-proven PID death (or a live mismatched probe) — not
+    probe→None alone.
+    """
     from omg_cli.team.tmux import (
         mark_team_launch_intent_side_effect,
         require_clean_team_launch_intents,
@@ -1907,11 +1922,20 @@ def test_sweep_abandons_unbound_side_effect_wal_on_dead_server(
 
     from omg_cli.team import tmux as tmux_mod
 
+    wal_pid = int(FAKE_TMUX_SERVER["tmux_server_pid"])
+
     monkeypatch.setattr(
         tmux_mod,
         "_probe_tmux_server_identity",
-        lambda *, socket_path=None: None,  # server gone
+        lambda *, socket_path=None: None,  # socket unreadable
     )
+
+    def fake_kill_sig(pid: int, _sig: int) -> None:
+        if pid == wal_pid:
+            raise ProcessLookupError(pid)
+        raise ProcessLookupError(pid)
+
+    monkeypatch.setattr(os, "kill", fake_kill_sig)
 
     def boom_kill(**_kwargs):
         raise AssertionError("must not kill when server is unreachable")
@@ -1925,6 +1949,64 @@ def test_sweep_abandons_unbound_side_effect_wal_on_dead_server(
     assert not intent.is_file()
     # Project launch gate must clear.
     assert require_clean_team_launch_intents(tmp_path) == []
+
+
+def test_sweep_refuses_abandon_when_server_probe_unknown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """P1: probe→None is UNKNOWN — must not delete WAL while server may live."""
+    from omg_cli.team.tmux import (
+        mark_team_launch_intent_side_effect,
+        sweep_stale_team_launch_intents,
+    )
+
+    rid = "20260806T120000Z-probe-unk"
+    intent = _write_launch_intent(
+        tmp_path,
+        run_id=rid,
+        session_id="$42",
+        window_name="omg-team-probe-unknown",
+        nonce="probeunknown00000000000000000001",
+    )
+    mark_team_launch_intent_side_effect(intent)
+    raw = json.loads(intent.read_text(encoding="utf-8"))
+    raw["owner_pid"] = 999999999
+    raw["owner_pid_start"] = "stale-owner"
+    intent.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+    from omg_cli.team import tmux as tmux_mod
+
+    monkeypatch.setattr(
+        tmux_mod,
+        "_probe_tmux_server_identity",
+        lambda *, socket_path=None: None,
+    )
+    # WAL pid still looks alive with matching start-id → not proven gone.
+    wal_pid = int(FAKE_TMUX_SERVER["tmux_server_pid"])
+    wal_start = str(FAKE_TMUX_SERVER["tmux_server_pid_start"])
+
+    def fake_kill_sig(pid: int, _sig: int) -> None:
+        if pid == wal_pid:
+            return None
+        raise ProcessLookupError(pid)
+
+    monkeypatch.setattr(os, "kill", fake_kill_sig)
+    monkeypatch.setattr(
+        tmux_mod,
+        "_process_start_identity",
+        lambda pid: wal_start if pid == wal_pid else None,
+    )
+
+    def boom_kill(**_kwargs):
+        raise AssertionError("must not kill when probe is unknown")
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux._kill_inside_windows_by_name", boom_kill
+    )
+    results = sweep_stale_team_launch_intents(tmp_path)
+    assert results and results[0].get("ok") is False
+    assert "probe unknown" in str(results[0].get("error") or "")
+    assert intent.is_file()
 
 
 def test_detached_create_stamps_and_scopes_cleanup_to_server(
@@ -1951,8 +2033,12 @@ def test_detached_create_stamps_and_scopes_cleanup_to_server(
                 ),
                 stderr="",
             )
-        if cmd == "split-window":
+        if cmd == "if-shell" and "split-window" in joined:
+            assert socket_path == FAKE_TMUX_SERVER["tmux_socket_path"]
+            assert "$9" in joined or "424242" in joined
             return SimpleNamespace(returncode=0, stdout="%11\n", stderr="")
+        if cmd == "split-window":
+            raise AssertionError(f"bare split-window forbidden: {args}")
         if cmd == "select-layout":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "set-option" and "mouse" in joined:
@@ -2043,12 +2129,13 @@ def test_detached_success_stamps_tmux_server_on_launch_meta(
     assert meta["tmux_server_pid_start"] == FAKE_TMUX_SERVER["tmux_server_pid_start"]
 
 
-def test_sweep_refuses_name_only_clear_after_side_effect_unbound(
+def test_sweep_clears_unbound_side_effect_when_name_absent_same_server(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """P2: post-new-window/pre-bind crash — name absence must not clear WAL."""
+    """P2: mark-before-dispatch — name absent on same live server must unwedge."""
     from omg_cli.team.tmux import (
         mark_team_launch_intent_side_effect,
+        require_clean_team_launch_intents,
         sweep_stale_team_launch_intents,
     )
 
@@ -2057,7 +2144,7 @@ def test_sweep_refuses_name_only_clear_after_side_effect_unbound(
         tmp_path,
         run_id=rid,
         session_id="$42",
-        window_name="omg-team-renamed-away",
+        window_name="omg-team-never-dispatched",
         nonce="sideeffect00000000000000000000001",
     )
     mark_team_launch_intent_side_effect(intent)
@@ -2071,24 +2158,22 @@ def test_sweep_refuses_name_only_clear_after_side_effect_unbound(
     def fake_kill(**kwargs):
         assert kwargs.get("require_durable_window_id") is True
         assert list(kwargs.get("known_window_ids") or []) == []
-        return (
-            "window 'omg-team-renamed-away' name absent but durable window_id "
-            "required (side effect started / unbound) — refuse WAL clear"
-        )
+        # Same live server + name absent + no @N → clear authorized.
+        return None
 
     monkeypatch.setattr(
         "omg_cli.team.tmux._kill_inside_windows_by_name", fake_kill
     )
     results = sweep_stale_team_launch_intents(tmp_path)
-    assert results and results[0].get("ok") is False
-    assert "durable window_id" in str(results[0].get("error") or "")
-    assert intent.is_file()
+    assert results and results[0].get("ok") is True
+    assert not intent.is_file()
+    assert require_clean_team_launch_intents(tmp_path) == []
 
 
-def test_kill_inside_unbound_side_effect_refuses_name_only_absence(
+def test_kill_inside_unbound_side_effect_clears_on_name_absence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """P2: require_durable_window_id + empty targets → refuse name-only success."""
+    """P2: unbound side_effect + name absent on live server → allow WAL clear."""
     from types import SimpleNamespace
 
     from omg_cli.team import tmux as tmux_mod
@@ -2097,6 +2182,8 @@ def test_kill_inside_unbound_side_effect_refuses_name_only_absence(
         cmd = args[0]
         if cmd == "list-windows":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "if-shell" and "kill-window" in " ".join(args):
+            return SimpleNamespace(returncode=1, stdout="", stderr="can't find")
         if cmd == "kill-window":
             return SimpleNamespace(returncode=1, stdout="", stderr="can't find")
         return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
@@ -2107,9 +2194,10 @@ def test_kill_inside_unbound_side_effect_refuses_name_only_absence(
         window_name="omg-team-renamed-before-bind",
         known_window_ids=[],
         require_durable_window_id=True,
+        socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
+        expected_server=FAKE_TMUX_SERVER,
     )
-    assert err is not None
-    assert "durable window_id" in err
+    assert err is None
 
 
 def test_pre_side_effect_wal_may_clear_on_name_absence(

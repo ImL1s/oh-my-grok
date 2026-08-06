@@ -1058,21 +1058,29 @@ def _create_tmux_session(
     }
 
     try:
+        from omg_cli.team.tmux import _tmux_run_if_identity
+
         for task in tasks[1:]:
             task_env_args = tmux_env_args(list(task.get("_env_pairs") or env_pairs))
-            nw = _tmux_run(
-                [
-                    "new-window",
-                    "-t",
-                    handle[1],
-                    "-n",
-                    str(task["task_id"]),
-                    "-c",
-                    str(task["worktree"]),
-                    *task_env_args,
-                    str(task["pane_command"]),
-                ],
+            nw_argv = [
+                "new-window",
+                "-t",
+                handle[1],
+                "-n",
+                str(task["task_id"]),
+                "-c",
+                str(task["worktree"]),
+                *task_env_args,
+                str(task["pane_command"]),
+            ]
+            # PID+start if-shell so a replacement server on the same socket
+            # cannot receive subsequent worker windows before postcheck.
+            nw = _tmux_run_if_identity(
+                nw_argv,
+                target=handle[1],
+                expected_server=server,
                 socket_path=sock,
+                expected_session_id=handle[1],
             )
             if nw.returncode != 0:
                 err = (nw.stderr or nw.stdout or "").strip()
@@ -1253,7 +1261,12 @@ def _snapshot_launch_pane_identities(
     return {pane_id: by_pane[pane_id] for pane_id in expected}
 
 
-def _list_pane_identities(session: str) -> dict[int, tuple[str, int]]:
+def _list_pane_identities(
+    session: str,
+    *,
+    socket_path: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
+) -> dict[int, tuple[str, int]]:
     """Map slot index to exact tmux pane identity and pane PID.
 
     *Windows* topology: one pane per window — slot equals ``window_index``.
@@ -1261,11 +1274,21 @@ def _list_pane_identities(session: str) -> dict[int, tuple[str, int]]:
     ``pane_index`` (creation order), matching task ``window_index`` slots.
     Ambiguous multi-window multi-pane layouts fail closed (empty map).
 
+    When *expected_server* is set, authorize against that server before and
+    after the ``-S``-scoped list so a replacement cannot publish foreign
+    ``%N``/pane PIDs into the immutable launch receipt.
+
     Accepts list-panes rows as either::
 
         window_index\\tpane_index\\tpane_id\\tpane_pid   (preferred)
         window_index\\tpane_id\\tpane_pid                 (legacy windows mocks)
     """
+    if expected_server is not None:
+        _require_plane_tmux_server(
+            expected_server,
+            socket_path=socket_path,
+            action="list pane identities",
+        )
     r = _tmux_run(
         [
             "list-panes",
@@ -1274,7 +1297,8 @@ def _list_pane_identities(session: str) -> dict[int, tuple[str, int]]:
             session,
             "-F",
             "#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_pid}",
-        ]
+        ],
+        socket_path=socket_path,
     )
     if r.returncode != 0:
         return {}
@@ -1306,17 +1330,15 @@ def _list_pane_identities(session: str) -> dict[int, tuple[str, int]]:
     if not rows:
         return {}
     windows = {row[0] for row in rows}
+    out: dict[int, tuple[str, int]] = {}
     if len(rows) == len(windows):
         # One pane per window (legacy windows topology).
-        out: dict[int, tuple[str, int]] = {}
         for window_index, _pane_index, pane_id, pane_pid in rows:
             if window_index in out:
                 return {}
             out[window_index] = (pane_id, pane_pid)
-        return out
-    if len(windows) == 1 and all(row[1] is not None for row in rows):
+    elif len(windows) == 1 and all(row[1] is not None for row in rows):
         # Split topology: key by pane_index within the single window.
-        out = {}
         for _window_index, pane_index, pane_id, pane_pid in sorted(
             rows, key=lambda row: int(row[1] or 0)
         ):
@@ -1324,16 +1346,32 @@ def _list_pane_identities(session: str) -> dict[int, tuple[str, int]]:
             if pane_index in out:
                 return {}
             out[pane_index] = (pane_id, pane_pid)
-        return out
-    # Mixed multi-window multi-pane — refuse ambiguous identity.
-    return {}
+    else:
+        # Mixed multi-window multi-pane — refuse ambiguous identity.
+        return {}
+    if expected_server is not None:
+        _require_plane_tmux_server(
+            expected_server,
+            socket_path=socket_path,
+            action="list pane identities commit",
+        )
+    return out
 
 
-def _list_pane_pids(session: str) -> dict[int, int]:
+def _list_pane_pids(
+    session: str,
+    *,
+    socket_path: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
+) -> dict[int, int]:
     """Compatibility view used by dynamic scaling; not process authority."""
     return {
         window_index: pane_pid
-        for window_index, (_pane_id, pane_pid) in _list_pane_identities(session).items()
+        for window_index, (_pane_id, pane_pid) in _list_pane_identities(
+            session,
+            socket_path=socket_path,
+            expected_server=expected_server,
+        ).items()
     }
 
 
@@ -1365,6 +1403,15 @@ def _read_tmux_session_identity(
         or _TMUX_SESSION_ID.fullmatch(parts[1]) is None
     ):
         return None
+    if expected_server is not None:
+        try:
+            _require_plane_tmux_server(
+                expected_server,
+                socket_path=socket_path,
+                action="session identity readback commit",
+            )
+        except TeamError:
+            return None
     return parts[0], parts[1]
 
 
@@ -2805,7 +2852,11 @@ def start_team(
                             else "launched"
                         )
                 else:
-                    pane_identities = _list_pane_identities(created_handle[1])
+                    pane_identities = _list_pane_identities(
+                        created_handle[1],
+                        socket_path=launch_sock,
+                        expected_server=launch_server,
+                    )
                     if len(pane_identities) != len(task_records):
                         raise TeamError("tmux launch identity readback failed")
                     for rec in task_records:
@@ -2824,6 +2875,12 @@ def start_team(
                             )
                         else:
                             rec["status"] = "launched"  # session created; pid unknown
+                    if launch_server is not None:
+                        _require_plane_tmux_server(
+                            launch_server,
+                            socket_path=launch_sock,
+                            action="windows receipt identity commit",
+                        )
 
                 intent_nonce: str | None = None
                 intent_window_name: str | None = None
