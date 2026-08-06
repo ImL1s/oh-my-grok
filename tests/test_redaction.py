@@ -112,3 +112,26 @@ def test_redact_value_redacts_free_text_and_mapping_keys_with_sensitive_ints() -
     assert "account_id=[REDACTED]" in redacted
     assert redacted["account_id=[REDACTED]"] == REDACTED
 
+
+def test_redact_text_matches_is_sensitive_key_compound_forms() -> None:
+    """Free-text must honor the same predicate as structured keys."""
+    cases = (
+        ("account_number=123", "123"),
+        ("model_name=-7", "-7"),
+        ("quota.remaining=42", "42"),
+        ("auth_token=abc", "abc"),
+        ("customer_account_ref=9", "9"),
+        ('prompt="hello world"', "hello world"),
+        ("command='rm -rf /tmp/x'", "rm -rf"),
+        ("https://x.test/?model_name=secret&ok=1", "secret"),
+    )
+    for source, leaked in cases:
+        out = redact_text(source)
+        assert leaked not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+
+def test_redact_text_leaves_non_sensitive_assignments() -> None:
+    source = "path=/usr/bin count=3 ok=true"
+    assert redact_text(source) == source
+

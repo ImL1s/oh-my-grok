@@ -30,26 +30,28 @@ _SENSITIVE_KEY_PARTS = (
     "command",
 )
 
-# Free-text assign/query patterns must share the same sensitive-name set as
-# ``is_sensitive_key`` so integers under account/model/quota/… cannot leak via
-# ``key=0`` / ``key: -7`` strings (or mapping keys that embed those forms).
-_SENSITIVE_NAME_ALT = (
-    r"authorization|proxy-authorization|cookie|set-cookie|"
-    r"access[_-]?token|refresh[_-]?token|token|password|passwd|"
-    r"secret|client[_-]?secret|api[_-]?key|apikey|"
-    r"account(?:[_-]?id)?|model(?:[_-]?id)?|quota(?:[_-]?id)?|"
-    r"prompt(?:[_-]?id)?|command(?:[_-]?id)?"
-)
 _HEADER_RE = re.compile(
     r"(?i)\b(authorization|proxy-authorization)\s*[:=]\s*"
     r"(?:bearer|basic)?\s*([^\s,;]+)"
 )
 _COOKIE_RE = re.compile(r"(?i)\b(cookie|set-cookie)\s*[:=]\s*([^\r\n]+)")
-_QUERY_RE = re.compile(
-    rf"(?i)([?&](?:{_SENSITIVE_NAME_ALT})=)([^&#\s]+)"
+# Broad key tokenizer → filtered by ``is_sensitive_key`` (single source of truth).
+# Captures dotted/underscored compound names: account_number, quota.remaining, …
+_ASSIGN_CANDIDATE_RE = re.compile(
+    r"(?i)(?P<prefix>\b|(?<=[?&]))"
+    r"(?P<key>[A-Za-z][A-Za-z0-9_.-]{0,127})"
+    r"(?P<sep>\s*[:=]\s*)"
+    r"(?P<val>"
+    r"\"(?:\\.|[^\"\\])*\"|"
+    r"'(?:\\.|[^'\\])*'|"
+    r"[^\s,;&]+"
+    r")"
 )
-_ASSIGN_RE = re.compile(
-    rf"(?i)\b((?:{_SENSITIVE_NAME_ALT})\s*[:=]\s*)([^\s,;&]+)"
+_QUERY_CANDIDATE_RE = re.compile(
+    r"(?i)(?P<prefix>[?&])"
+    r"(?P<key>[A-Za-z][A-Za-z0-9_.-]{0,127})"
+    r"(?P<sep>=)"
+    r"(?P<val>[^&#\s]+)"
 )
 
 
@@ -62,24 +64,32 @@ def is_sensitive_key(value: object) -> bool:
     return any(part in normalized for part in _SENSITIVE_KEY_PARTS)
 
 
+def _redact_candidate(match: re.Match[str]) -> str:
+    key = match.group("key")
+    if not is_sensitive_key(key):
+        return match.group(0)
+    return f"{match.group('prefix')}{key}{match.group('sep')}{REDACTED}"
+
+
 def redact_text(value: str) -> str:
-    """Redact credential-shaped substrings while retaining safe context."""
+    """Redact credential-shaped substrings while retaining safe context.
+
+    Free-text assign/query forms use the same ``is_sensitive_key`` predicate as
+    structured mapping keys (compound names included). Quoted values are
+    redacted as a whole when the key is sensitive.
+    """
 
     if not isinstance(value, str):
         raise TypeError("redact_text requires a string")
     result = _HEADER_RE.sub(lambda match: f"{match.group(1)}: {REDACTED}", value)
     result = _COOKIE_RE.sub(lambda match: f"{match.group(1)}: {REDACTED}", result)
-    result = _QUERY_RE.sub(lambda match: f"{match.group(1)}{REDACTED}", result)
-    result = _ASSIGN_RE.sub(lambda match: f"{match.group(1)}{REDACTED}", result)
+    result = _QUERY_CANDIDATE_RE.sub(_redact_candidate, result)
+    result = _ASSIGN_CANDIDATE_RE.sub(_redact_candidate, result)
     return result
 
 
 def _redact_mapping_key(key: object) -> str:
-    """Apply free-text redaction to mapping keys (keeps plain sensitive names).
-
-    Keys like ``token`` stay addressable so boolean ``supports.models`` survives;
-    keys that embed ``account_id=0`` style leaks are scrubbed in place.
-    """
+    """Apply free-text redaction to mapping keys (keeps plain sensitive names)."""
     return redact_text(str(key))
 
 
