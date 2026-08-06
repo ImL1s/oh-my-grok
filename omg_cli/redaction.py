@@ -176,6 +176,25 @@ def _clears_query_token(ch: str) -> bool:
     return ch in " \t;|,#" or ch in _QUERY_TOKEN_END
 
 
+def _clears_query_at(text: str, idx: int) -> bool:
+    """True when ``text[idx]`` starts a query-token clearer (incl. digraphs).
+
+    Single-char clearers match :func:`_clears_query_token`. Shell expansions
+    ``${…}`` / ``$[…]`` clear as digraphs (parity with ``$(…`` via ``(``) —
+    bare ``$`` alone does **not**, so legitimate keys/values with ``$`` are
+    preserved. Opening ``{`` / ``[`` are intentionally *not* global clearers
+    here (URLs / key-brackets); only the ``$``-prefixed forms qualify.
+    """
+    if idx < 0 or idx >= len(text):
+        return False
+    ch = text[idx]
+    if _clears_query_token(ch):
+        return True
+    if ch == "$" and idx + 1 < len(text) and text[idx + 1] in "{[":
+        return True
+    return False
+
+
 def _query_value_after_consume(text: str, start: int, end: int) -> str:
     """Classify a consumed query-value span for query-mode cleanup.
 
@@ -185,12 +204,13 @@ def _query_value_after_consume(text: str, start: int, end: int) -> str:
         Used for clean quoted values (``?prompt="…"&ok=1``) and terminal
         clearers (``foo>``) so a following ``&`` remains a real separator.
       ``"clear_eol"`` — clearer mid-span (``foo>out``, ``foo bar``, ``foo]bar``,
-        JSON quote/comma junk); clear query mode and fail-closed to EOL so
-        ``&second-secret`` cannot leak as a truncated tail.
+        JSON quote/comma junk, ``${…}`` / ``$[…]``); clear query mode and
+        fail-closed to EOL so ``&second-secret`` cannot leak as a truncated
+        tail.
 
     Whitespace / ``]`` are real clearers (``_consume_value`` may jump over them
     before the main loop can see them). Fragment ``#`` is handled by the
-    caller via :func:`_clears_query_token` when consume stops at ``#``.
+    caller via :func:`_clears_query_at` when consume stops at ``#``.
     """
 
     if start >= end:
@@ -206,8 +226,7 @@ def _query_value_after_consume(text: str, start: int, end: int) -> str:
     saw_mid = False
     last_clear = False
     for idx in range(start, end):
-        ch = text[idx]
-        if _clears_query_token(ch):
+        if _clears_query_at(text, idx):
             if idx == end - 1:
                 last_clear = True
             else:
@@ -369,8 +388,9 @@ def _redact_query_assignments(text: str) -> str:
     (plain assignment redaction owns those). Query mode is confined to a single
     continuous URL/query token — whitespace / ``;`` / ``|`` / ``#`` / closing
     quotes / JSON ``,`` / grouping openers/closers (incl. ``(`` ``]``; covers
-    ``$(…)``) / shell redirection (``<`` ``>``) / shell ``&&`` clear
-    ``in_query`` so a later assignment cannot inherit query continuation.
+    ``$(…)``) / shell expansions ``${…}`` / ``$[…]`` / shell redirection
+    (``<`` ``>``) / shell ``&&`` clear ``in_query`` so a later assignment
+    cannot inherit query continuation.
     Whitespace between a marker and the key rejects the param (``? token=`` is
     not a query assignment). Each character is visited a constant number of
     times — no per-marker suffix ``find("=")``.
@@ -408,7 +428,7 @@ def _redact_query_assignments(text: str) -> str:
                 # Token boundary: query state must not survive into later shell.
                 in_query = False
                 url.on_whitespace()
-            elif _clears_query_token(ch) and ch not in " \t":
+            elif _clears_query_at(text, i) and ch not in " \t":
                 in_query = False
                 url.on_other(text, i, ch)
             elif ch != "?":
@@ -770,6 +790,13 @@ def _redact_plain_assignments(text: str, *, quote_interior: bool = False) -> str
             # hard-bound keys (malformed ``headers["api_key]=secret`` still
             # redacts; ``$(…)`` must not inherit query into ``&second-secret``).
             # Note: key-bracket ``]`` is handled via ``_finish_bracket_frame``.
+            query_active = False
+            url.on_other(text, i, ch)
+            i += 1
+            continue
+        if ch == "$" and i + 1 < length and text[i + 1] in "{[":
+            # Shell ``${…}`` / ``$[…]`` digraphs clear query (parity with
+            # ``$(``); bare ``$`` alone does not — keep key material intact.
             query_active = False
             url.on_other(text, i, ch)
             i += 1

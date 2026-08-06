@@ -833,3 +833,25 @@ def test_redact_text_closes_pr94y_hash_quote_interior_cmdsub_p2() -> None:
     assert "second-secret" not in out_paren
     assert REDACTED in out_paren
 
+
+def test_redact_text_closes_pr94z_dollar_brace_bracket_query_p2() -> None:
+    """Close Pro reaudit P2: ``${…}`` / ``$[…]`` clear query like ``$(``."""
+    # Digraph clearers — with and without backslash before ``&``.
+    for source in (
+        r"curl https://x.test/?api_key=foo${token=first\&second-secret}",
+        "curl https://x.test/?api_key=foo${token=first&second-secret}",
+        r"?api_key=foo${token=first\&second-secret}",
+        "?api_key=foo${token=first&second-secret}",
+        r"curl https://x.test/?api_key=foo$[token=first\&second-secret]",
+        "curl https://x.test/?api_key=foo$[token=first&second-secret]",
+        r"?api_key=foo$[token=first\&second-secret]",
+        "?api_key=foo$[token=first&second-secret]",
+    ):
+        out = redact_text(source)
+        assert "second-secret" not in out, (source, out)
+        assert "first" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+    # Bare ``$`` alone must NOT clear_eol (contrast: digraphs above).
+    bare = "?api_key=foo$bar&ok=visible-tail"
+    assert redact_text(bare) == f"?api_key={REDACTED}&ok=visible-tail"
+
