@@ -135,3 +135,35 @@ def test_redact_text_leaves_non_sensitive_assignments() -> None:
     source = "path=/usr/bin count=3 ok=true"
     assert redact_text(source) == source
 
+
+def test_redact_text_quoted_query_and_nested_assign_forms() -> None:
+    quoted = 'https://x.test/?prompt="hello world"&ok=1'
+    out = redact_text(quoted)
+    assert "hello world" not in out
+    assert 'world"' not in out
+    assert "ok=1" in out
+    assert REDACTED in out
+
+    nested = "detail=token=secret-value"
+    out2 = redact_text(nested)
+    assert "secret-value" not in out2
+    assert "token=[REDACTED]" in out2
+
+    key_leak = redact_value({"detail=token=secret-value": "x"})
+    body = json.dumps(key_leak)
+    assert "secret-value" not in body
+
+
+def test_redact_text_odd_key_shapes_reach_is_sensitive_key() -> None:
+    cases = (
+        "2fa_token=secret",
+        "_api_key=secret",
+        "api key=secret",
+        "headers[api_key]=secret",
+        "api%2Ekey=secret",
+    )
+    for source in cases:
+        out = redact_text(source)
+        assert "secret" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
