@@ -119,6 +119,7 @@ IDENTITY_RECEIPT_SCHEMA_VERSION = 2
 LAUNCH_NONCE_OPTION = "@omg_launch_nonce"
 _TMUX_SESSION_ID = re.compile(r"^\$[0-9]{1,16}$")
 _TMUX_PANE_ID = re.compile(r"^%[0-9]{1,16}$")
+_TMUX_WINDOW_ID = re.compile(r"^@[0-9]{1,16}$")
 
 # Locked status field set (freeze for --json consumers / tests).
 STATUS_TOP_KEYS: tuple[str, ...] = (
@@ -1120,13 +1121,101 @@ def _read_tmux_session_identity(session: str) -> tuple[str, str] | None:
 
 
 def _read_tmux_launch_nonce(session: str) -> str | None:
-    r = _tmux_run(["show-options", "-v", "-t", session, LAUNCH_NONCE_OPTION])
+    """Read session-scoped launch nonce (legacy / detached session ownership)."""
+    try:
+        r = _tmux_run(["show-options", "-v", "-t", session, LAUNCH_NONCE_OPTION])
+    except OSError:
+        return None
     if r.returncode != 0:
         return None
     value = (r.stdout or "").strip()
     if len(value) != 32 or any(ch not in "0123456789abcdef" for ch in value):
         return None
     return value
+
+
+def _read_tmux_launch_nonce_for_pane(pane_id: str, session: str) -> str | None:
+    """Prefer pane-scoped nonce; fall back to session for legacy teams."""
+    if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id) is not None:
+        try:
+            r = _tmux_run(
+                ["show-options", "-p", "-v", "-t", pane_id, LAUNCH_NONCE_OPTION]
+            )
+        except OSError:
+            r = None
+        if r is not None and r.returncode == 0:
+            value = (r.stdout or "").strip()
+            if len(value) == 32 and all(ch in "0123456789abcdef" for ch in value):
+                return value
+    return _read_tmux_launch_nonce(session)
+
+
+def _bind_tmux_launch_nonce(
+    *,
+    session_id: str,
+    launch_nonce: str,
+    window_id: str | None,
+    pane_ids: Sequence[str],
+) -> None:
+    """Bind nonce so concurrent Teams in one session cannot overwrite each other.
+
+    Pane-scoped options isolate workers; session-scoped remains for detached
+    sessions / legacy stop identity when no panes are recorded yet.
+    """
+    bound = False
+    for pane_id in pane_ids:
+        if not isinstance(pane_id, str) or _TMUX_PANE_ID.fullmatch(pane_id) is None:
+            continue
+        try:
+            option = _tmux_run(
+                [
+                    "set-option",
+                    "-p",
+                    "-t",
+                    pane_id,
+                    LAUNCH_NONCE_OPTION,
+                    launch_nonce,
+                ]
+            )
+        except OSError as exc:
+            raise TeamError(f"failed to bind tmux launch nonce on pane: {exc}") from exc
+        if option.returncode != 0:
+            raise TeamError(f"failed to bind tmux launch nonce on pane {pane_id}")
+        bound = True
+    if isinstance(window_id, str) and _TMUX_WINDOW_ID.fullmatch(window_id):
+        try:
+            option = _tmux_run(
+                [
+                    "set-option",
+                    "-w",
+                    "-t",
+                    window_id,
+                    LAUNCH_NONCE_OPTION,
+                    launch_nonce,
+                ]
+            )
+        except OSError as exc:
+            raise TeamError(f"failed to bind tmux launch nonce on window: {exc}") from exc
+        if option.returncode != 0:
+            raise TeamError("failed to bind tmux launch nonce on window")
+        bound = True
+    # Detached / legacy: also stamp session so older stop paths keep working.
+    try:
+        option = _tmux_run(
+            [
+                "set-option",
+                "-t",
+                session_id,
+                LAUNCH_NONCE_OPTION,
+                launch_nonce,
+            ]
+        )
+    except OSError as exc:
+        raise TeamError(f"failed to bind tmux launch nonce on session: {exc}") from exc
+    if option.returncode != 0:
+        raise TeamError("failed to bind tmux launch nonce")
+    if not bound and not session_id:
+        raise TeamError("failed to bind tmux launch nonce")
 
 
 def _persist_team_launch_receipt(
@@ -2223,17 +2312,20 @@ def start_team(
                     tasks=task_records,
                     env_pairs=env_pairs,
                 )
-            option = _tmux_run(
-                [
-                    "set-option",
-                    "-t",
-                    created_handle[1],
-                    LAUNCH_NONCE_OPTION,
-                    launch_nonce,
-                ]
+            _bind_tmux_launch_nonce(
+                session_id=created_handle[1],
+                launch_nonce=launch_nonce,
+                window_id=(
+                    str(tmux_launch.get("window_id"))
+                    if isinstance(tmux_launch.get("window_id"), str)
+                    else None
+                ),
+                pane_ids=[
+                    str(rec.get("pane_id"))
+                    for rec in task_records
+                    if isinstance(rec.get("pane_id"), str)
+                ],
             )
-            if option.returncode != 0:
-                raise TeamError("failed to bind tmux launch nonce")
 
             session_identity = _read_tmux_session_identity(session)
             if session_identity != created_handle:
@@ -2399,25 +2491,29 @@ def _status_worker_alive(
     """Fail-closed status liveness using pane + session + nonce (+ PID start)."""
     if not expected_session_id or not launch_nonce or not session:
         return False
-    from omg_cli.team.tmux import probe_worker_pane_identity
+    try:
+        from omg_cli.team.tmux import probe_worker_pane_identity
 
-    probed = probe_worker_pane_identity(pane_id)
-    if probed is None or probed.get("dead"):
-        return False
-    if probed.get("session_id") != expected_session_id:
-        return False
-    if _read_tmux_launch_nonce(session) != launch_nonce:
-        return False
-    live_pid = probed.get("pane_pid")
-    if not isinstance(live_pid, int) or live_pid <= 0:
-        return False
-    if expected_pid_start:
-        live_start = _pid_start_identity(live_pid)
-        if not live_start or live_start != expected_pid_start:
+        probed = probe_worker_pane_identity(pane_id)
+        if probed is None or probed.get("dead"):
             return False
-    elif expected_pid is not None and expected_pid != live_pid:
+        if probed.get("session_id") != expected_session_id:
+            return False
+        live_nonce = _read_tmux_launch_nonce_for_pane(pane_id, session)
+        if live_nonce != launch_nonce:
+            return False
+        live_pid = probed.get("pane_pid")
+        if not isinstance(live_pid, int) or live_pid <= 0:
+            return False
+        if expected_pid_start:
+            live_start = _pid_start_identity(live_pid)
+            if not live_start or live_start != expected_pid_start:
+                return False
+        elif expected_pid is not None and expected_pid != live_pid:
+            return False
+        return True
+    except OSError:
         return False
-    return True
 
 
 def team_status(

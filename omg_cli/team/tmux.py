@@ -79,18 +79,26 @@ def pane_alive(pane_id: str) -> bool | None:
 
 
 def probe_worker_pane_identity(pane_id: str) -> dict[str, Any] | None:
-    """Return ``{pane_id, dead, session_id, pane_pid}`` or None on probe failure."""
+    """Return ``{pane_id, dead, session_id, pane_pid}`` or None on probe failure.
+
+    Fail-closed: missing tmux / spawn OSError → None (never raise into status).
+    """
+    if not tmux_available():
+        return None
     if not isinstance(pane_id, str) or _TMUX_PANE_ID.fullmatch(pane_id) is None:
         return None
-    probe = _tmux_run(
-        [
-            "display-message",
-            "-p",
-            "-t",
-            pane_id,
-            "#{pane_id}\t#{pane_dead}\t#{session_id}\t#{pane_pid}",
-        ]
-    )
+    try:
+        probe = _tmux_run(
+            [
+                "display-message",
+                "-p",
+                "-t",
+                pane_id,
+                "#{pane_id}\t#{pane_dead}\t#{session_id}\t#{pane_pid}",
+            ]
+        )
+    except OSError:
+        return None
     if probe.returncode != 0:
         return None
     parts = (probe.stdout or "").strip().split("\t")
@@ -387,12 +395,17 @@ def _launch_first_inside(
     task: dict[str, Any],
     env_pairs: list[tuple[str, str]],
     window_name: str,
-    leader_pane: str,
+    target_window: str,
 ) -> tuple[str, str]:
-    """Create a new window in the leader's session; return (window_id, pane_id).
+    """Create a new window beside *target_window* (``@N``); return (window_id, pane_id).
 
-    Uses ``-d`` so the client stays on the invoking leader pane.
+    Uses ``-d`` so the client stays on the invoking leader pane. Target must be
+    a window id — tmux rejects ``new-window -a -t %pane`` (CMD_FIND_WINDOW).
     """
+    if _TMUX_WINDOW_ID.fullmatch(target_window) is None:
+        raise TmuxTeamError(
+            f"new-window target must be a window id (@N), got {target_window!r}"
+        )
     first_env = tmux_env_args(list(task.get("_env_pairs") or env_pairs))
     create = _tmux_run(
         [
@@ -403,7 +416,7 @@ def _launch_first_inside(
             "#{window_id}\t#{pane_id}",
             "-a",
             "-t",
-            leader_pane,
+            target_window,
             "-n",
             window_name,
             "-c",
@@ -596,11 +609,12 @@ def _create_inside(
         # Re-validate immediately before the first mutation so a mid-launch
         # client move cannot bind workers to a different session (#97 Pro P1).
         assert_invoking_identity(snap)
+        leader_window = str(snap["window_id"])
         window_id, first_pane = _launch_first_inside(
             task=tasks[0],
             env_pairs=env_pairs,
             window_name=window_name,
-            leader_pane=leader_pane,
+            target_window=leader_window,
         )
         # Prove the new window belongs to the snapshotted session.
         win_probe = _tmux_run(

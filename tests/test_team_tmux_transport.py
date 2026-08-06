@@ -293,7 +293,7 @@ def test_inside_tmux_splits_current_window(monkeypatch: pytest.MonkeyPatch) -> N
                 return SimpleNamespace(returncode=0, stdout="$42\t@7\n", stderr="")
         if cmd == "new-window":
             assert "-d" in args
-            assert "-t" in args and args[args.index("-t") + 1] == "%9"
+            assert "-t" in args and args[args.index("-t") + 1] == "@3"
             return SimpleNamespace(returncode=0, stdout="@7\t%10\n", stderr="")
         if cmd == "split-window":
             assert "-d" in args
@@ -482,7 +482,9 @@ def test_team_status_prefers_exact_pane_alive(
         raise AssertionError("_window_alive must not run for status liveness")
 
     monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
-    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _s: "nonce-abc")
+    monkeypatch.setattr(
+        plane, "_read_tmux_launch_nonce_for_pane", lambda _pane, _s: "nonce-abc"
+    )
     monkeypatch.setattr(
         plane,
         "_pid_start_identity",
@@ -494,3 +496,48 @@ def test_team_status_prefers_exact_pane_alive(
     st = plane.team_status(tmp_path, rid)
     by_id = {t["task_id"]: t["alive"] for t in st["tasks"]}
     assert by_id == {"w1": True, "w2": False, "w3-legacy": False}
+
+
+def test_team_status_probe_oserror_is_fail_closed(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team import plane
+
+    rid = "20260806T000000Z-status-os"
+    meta = {
+        "run_id": rid,
+        "session": "team-sess",
+        "launch_nonce": "nonce-abc",
+        "dry_run": False,
+        "workspace_mode": "worktree",
+        "writer": CLI_WRITER,
+        "tasks": [
+            {
+                "task_id": "w1",
+                "window_index": 0,
+                "worktree": str(tmp_path / "w1"),
+                "status": "running",
+                "pid": 1,
+                "pane_id": "%81",
+            }
+        ],
+    }
+    plane._atomic_write_json(plane.team_meta_path(tmp_path, rid), meta)
+    plane._atomic_write_json(
+        plane.team_launch_receipt_path(tmp_path, rid),
+        {
+            "writer": CLI_WRITER,
+            "session": "team-sess",
+            "session_id": "$42",
+            "launch_nonce": "nonce-abc",
+        },
+    )
+
+    def boom_probe(_pane: str):
+        raise OSError("tmux missing")
+
+    monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", boom_probe)
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+    st = plane.team_status(tmp_path, rid)
+    assert st["tasks"][0]["alive"] is False
