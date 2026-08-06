@@ -33,6 +33,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `success`/`failure` envelopes (`E_PROVIDER_DOCTOR`) instead of splatting
   `DoctorReport.ok` over `success()`. Top-level `omg doctor --strict` remains
   out of scope for the Antigravity probe in slice A.
+- **#67-A PR #94 GPT Pro re-audit round 3:** post-`Popen` setup failures and
+  cancel/SIGINT through the wait/join/close window always `_kill_tree`; success
+  drains readers to EOF (forced stop sets truncation flags; truncated help
+  fails closed); `OMG_AGY_BIN` requires `agy` basename + `Usage of agy` help
+  identity; `parse_version` is first-line-anchored; tested compat window is
+  fixture-backed `1.1.10` only; provider JSON/doctor errors run through
+  `redact_text`/`redact_value`.
 
 ## [0.7.6] - 2026-08-06
 

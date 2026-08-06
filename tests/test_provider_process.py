@@ -186,6 +186,174 @@ while True:
         pytest.fail("grandchild still alive after KeyboardInterrupt killpg")
 
 
+@pytest.mark.skipif(os.name != "posix", reason="process-group killpg is POSIX-only")
+def test_post_spawn_reader_start_failure_kills_process_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exceptions after Popen (e.g. Thread.start) must still killpg."""
+    import threading
+
+    marker = tmp_path / "grandchild.alive"
+    script = tmp_path / "hang_tree.py"
+    script.write_text(
+        f"""\
+import subprocess, sys, time
+from pathlib import Path
+subprocess.Popen(
+    [sys.executable, "-c",
+     "import time; from pathlib import Path; m=Path({str(marker)!r});\\n"
+     "while True:\\n"
+     " m.write_text(str(time.time()), encoding='utf-8'); time.sleep(0.05)\\n"],
+)
+while True:
+    time.sleep(0.05)
+""",
+        encoding="utf-8",
+    )
+
+    real_start = threading.Thread.start
+    calls = {"n": 0}
+
+    def start_then_boom(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_start(self, *args, **kwargs)
+        raise RuntimeError("reader start failed")
+
+    monkeypatch.setattr(threading.Thread, "start", start_then_boom)
+    with pytest.raises(RuntimeError, match="reader start failed"):
+        run_probe_process(
+            [sys.executable, str(script)],
+            env={"PATH": os.environ.get("PATH", "")},
+            timeout_s=5.0,
+        )
+
+    deadline = time.monotonic() + 2.0
+    last = marker.read_text(encoding="utf-8") if marker.exists() else ""
+    while time.monotonic() < deadline:
+        time.sleep(0.2)
+        now = marker.read_text(encoding="utf-8") if marker.exists() else ""
+        if now == last:
+            break
+        last = now
+    else:
+        pytest.fail("grandchild still alive after post-spawn setup failure")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group killpg is POSIX-only")
+def test_cancel_during_wait_after_child_exit_kills_descendants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cancel_event set after poll() exit must still killpg descendants."""
+    import subprocess
+
+    from omg_cli.providers import process as process_mod
+
+    marker = tmp_path / "grandchild.alive"
+    script = tmp_path / "exit_leave_gc.py"
+    script.write_text(
+        f"""\
+import subprocess, sys, time
+from pathlib import Path
+subprocess.Popen(
+    [sys.executable, "-c",
+     "import time; from pathlib import Path; m=Path({str(marker)!r});\\n"
+     "while True:\\n"
+     " m.write_text(str(time.time()), encoding='utf-8'); time.sleep(0.05)\\n"],
+)
+# Direct child exits quickly; grandchild remains in the session/process group.
+time.sleep(0.2)
+""",
+        encoding="utf-8",
+    )
+
+    cancel = threading.Event()
+    real_wait = subprocess.Popen.wait
+
+    def wait_sets_cancel(self, *args, **kwargs):
+        cancel.set()
+        return real_wait(self, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "wait", wait_sets_cancel)
+    monkeypatch.setattr(process_mod.subprocess.Popen, "wait", wait_sets_cancel)
+
+    result = run_probe_process(
+        [sys.executable, str(script)],
+        env={"PATH": os.environ.get("PATH", "")},
+        timeout_s=5.0,
+        cancel_event=cancel,
+    )
+    assert result.cancelled is True
+
+    deadline = time.monotonic() + 2.0
+    last = marker.read_text(encoding="utf-8") if marker.exists() else ""
+    while time.monotonic() < deadline:
+        time.sleep(0.2)
+        now = marker.read_text(encoding="utf-8") if marker.exists() else ""
+        if now == last:
+            break
+        last = now
+    else:
+        pytest.fail("grandchild still alive after post-exit cancel killpg")
+
+
+def test_success_path_drains_stdout_past_chunk_without_silent_truncation(
+    tmp_path: Path,
+) -> None:
+    """Natural exit must drain to EOF; no truncation flag when under max_bytes."""
+    script = tmp_path / "spew_eof.py"
+    payload = ("A" * 12_000) + "END_MARKER"
+    script.write_text(
+        "import sys\n"
+        f"sys.stdout.write({payload!r})\n"
+        "sys.stdout.flush()\n",
+        encoding="utf-8",
+    )
+    result = run_probe_process(
+        [sys.executable, str(script)],
+        env={"PATH": os.environ.get("PATH", "")},
+        timeout_s=5.0,
+        max_output_bytes=64_000,
+    )
+    assert result.returncode == 0
+    assert result.stdout_truncated is False
+    assert result.overflow is False
+    assert result.stdout.endswith("END_MARKER")
+    assert len(result.stdout) == len(payload)
+
+
+def test_drain_pipe_stop_before_eof_sets_truncation_flag() -> None:
+    """Forced reader stop before EOF must set early-stop truncation (not silent)."""
+    import os
+
+    from omg_cli.providers.process import _drain_pipe
+
+    r_fd, w_fd = os.pipe()
+    os.write(w_fd, b"partial-output-still-open")
+    stop = threading.Event()
+    stop.set()
+    sink = bytearray()
+    overflow = [False]
+    early = [False]
+    pipe = os.fdopen(r_fd, "rb", buffering=0)
+    try:
+        _drain_pipe(
+            pipe,
+            max_bytes=10_000,
+            sink=sink,
+            overflow_flag=overflow,
+            stop=stop,
+            early_stop_flag=early,
+        )
+    finally:
+        try:
+            os.close(w_fd)
+        except OSError:
+            pass
+    assert early[0] is True
+    assert overflow[0] is False
+
+
 def test_antigravity_probes_pass_cancel_event(monkeypatch: pytest.MonkeyPatch) -> None:
     """version/help probes must wire cancel_event into run_probe_process."""
     from omg_cli.providers import antigravity as agy_mod

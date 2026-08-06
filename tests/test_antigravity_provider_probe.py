@@ -125,6 +125,60 @@ def test_discover_binary_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert Path(discover_binary()) == path.resolve()
 
 
+def test_omg_agy_bin_rejects_non_agy_basename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OMG_AGY_BIN must not accept an arbitrary executable name."""
+    from omg_cli.providers.antigravity import discover_binary
+    from omg_cli.providers.errors import ProviderBinaryMissing
+
+    impostor = tmp_path / "not-agy"
+    impostor.write_text("#!/bin/sh\necho 1.1.10\n", encoding="utf-8")
+    impostor.chmod(impostor.stat().st_mode | 0o111)
+    monkeypatch.setenv("OMG_AGY_BIN", str(impostor))
+    with pytest.raises(ProviderBinaryMissing, match="basename"):
+        discover_binary()
+
+
+def test_parse_version_anchors_first_line_only() -> None:
+    from omg_cli.providers.antigravity import parse_version
+
+    assert parse_version("1.1.10\n") is not None
+    assert parse_version("1.1.10\n").as_tuple() == (1, 1, 10)
+    assert parse_version("1.1.10\n").raw == "1.1.10"
+    # Buried semver on a later line must not parse / must not disagree with raw.
+    assert parse_version("init failed\nsee 1.1.10 docs\n") is None
+    # Leading junk on the version line must not match.
+    assert parse_version("agy version 1.1.10") is None
+    assert parse_version("prefix 1.1.10") is None
+
+
+def test_doctor_strict_rejects_impostor_agy_help(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same-named binary without Antigravity help identity must not strict-green."""
+    from omg_cli.providers.antigravity import doctor
+
+    path = _install_fake_agy(tmp_path / "bin")
+    junk = tmp_path / "impostor-help.txt"
+    # Looks like structured evidence but lacks ``Usage of agy`` identity header.
+    junk.write_text(
+        "Usage of other-cli:\n"
+        "  --effort                        Reasoning effort (low|medium|high)\n"
+        "  --output-format                 Output format (text, json, stream-json)\n"
+        "  --mode                          Mode (accept-edits, plan)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    monkeypatch.setenv("OMG_AGY_BIN", str(path))
+    monkeypatch.setenv("FAKE_AGY_HELP", str(junk))
+
+    report = doctor(strict=True, binary=str(path))
+    assert report.ok is False
+    assert report.exit_code == 1
+    assert any("identity" in c.lower() or "probe error" in c.lower() for c in report.checks)
+
+
 def test_probe_version_parse(fake_agy_path: Path) -> None:
     from omg_cli.providers.antigravity import discover_binary, probe_version
 
@@ -281,8 +335,13 @@ def test_compat_classification_range(tmp_path: Path, monkeypatch: pytest.MonkeyP
         parse_version,
     )
 
-    assert TESTED_MIN <= (1, 1, 10) <= TESTED_MAX
-    assert classify_compat(parse_version("1.1.10")) == "compatible"
+    # Compat window is fixture-backed (version.txt pin only).
+    assert TESTED_MIN == TESTED_MAX == (1, 1, 10)
+    pin = FIXTURES.joinpath("version.txt").read_text(encoding="utf-8").strip()
+    assert pin == "1.1.10"
+    assert classify_compat(parse_version(pin)) == "compatible"
+    assert classify_compat(parse_version("1.1.0")) == "too_old"
+    assert classify_compat(parse_version("1.1.99")) == "too_new"
     assert classify_compat(parse_version("0.9.0")) == "too_old"
     assert classify_compat(parse_version("9.9.9")) == "too_new"
     assert classify_compat(None) == "unknown"
@@ -413,6 +472,60 @@ def test_cli_doctor_json_failure_envelope(
         "E_PROVIDER_DOCTOR"
     )
     assert "message" in payload or (isinstance(err, dict) and err.get("message"))
+
+
+def test_provider_json_redacts_child_secret_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Child stderr/stdout secrets must not leak into JSON failure envelopes."""
+    from omg_cli.main import main
+    from omg_cli.redaction import REDACTED
+
+    path = _install_fake_agy(tmp_path / "bin")
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    monkeypatch.setenv("OMG_AGY_BIN", str(path))
+    monkeypatch.setenv("FAKE_AGY_VERSION_RC", "1")
+    monkeypatch.setenv(
+        "FAKE_AGY_VERSION_TEXT",
+        "init failed Authorization: Bearer raw-secret-token api_key=leak-me\n",
+    )
+    rc = main(["provider", "antigravity", "capabilities", "--json"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "raw-secret-token" not in out
+    assert "leak-me" not in out
+    assert REDACTED in out
+
+    rc = main(["provider", "antigravity", "doctor", "--strict", "--json"])
+    assert rc == 1
+    doc_out = capsys.readouterr().out
+    assert "raw-secret-token" not in doc_out
+    assert "leak-me" not in doc_out
+    assert REDACTED in doc_out
+
+
+def test_help_truncated_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Truncated help must not feed partial enums into strict doctor."""
+    from omg_cli.providers import antigravity as agy_mod
+    from omg_cli.providers.errors import ProviderProbeError
+    from omg_cli.providers.process import ProbeProcessResult
+
+    def trunc_help(argv, **kwargs):
+        text = (
+            "Usage of agy:\n"
+            "  --effort                        Reasoning effort (low|medium|high)\n"
+        )
+        return ProbeProcessResult(
+            argv=tuple(argv),
+            returncode=0,
+            stdout=text,
+            stderr="",
+            stdout_truncated=True,
+        )
+
+    monkeypatch.setattr(agy_mod, "run_probe_process", trunc_help)
+    with pytest.raises(ProviderProbeError, match="truncated"):
+        agy_mod._probe_help_text("/tmp/agy")
 
 
 def test_cli_doctor_json_success_envelope(

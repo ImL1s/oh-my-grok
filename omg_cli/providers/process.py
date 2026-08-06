@@ -5,6 +5,12 @@ stdout/stderr, and on POSIX ``start_new_session`` so timeout/cancel/overflow/
 KeyboardInterrupt (and other BaseException unwind) can ``killpg`` the whole
 child tree. Windows gets best-effort ``proc.kill()`` only — process-tree cancel
 is not claimed there.
+
+Any exception after a successful ``Popen`` must ``_kill_tree`` (including
+failures while starting reader threads). ``cancel_event`` is honored through
+the wait/join/close window so Ctrl-C cannot silently skip cleanup. Success
+paths drain readers to EOF before forcing ``stop``; premature stop sets
+``stdout_truncated`` / ``stderr_truncated``.
 """
 
 from __future__ import annotations
@@ -81,9 +87,14 @@ def _drain_pipe(
     sink: bytearray,
     overflow_flag: list[bool],
     stop: threading.Event,
+    early_stop_flag: list[bool],
 ) -> None:
+    """Read until EOF, byte cap, or forced ``stop`` (which marks early truncation)."""
     try:
-        while not stop.is_set():
+        while True:
+            if stop.is_set():
+                early_stop_flag[0] = True
+                break
             chunk = pipe.read(4096)
             if not chunk:
                 break
@@ -103,6 +114,62 @@ def _drain_pipe(
             pipe.close()
         except Exception:
             pass
+
+
+def _join_readers(
+    readers: list[threading.Thread],
+    *,
+    stop: threading.Event,
+    stdout_early: list[bool],
+    stderr_early: list[bool],
+    proc: subprocess.Popen[bytes],
+) -> None:
+    """Prefer EOF drain; force-stop + truncation flags only if readers hang."""
+    for t in readers:
+        try:
+            t.join(timeout=2.0)
+        except BaseException:
+            stop.set()
+            _kill_tree(proc)
+            raise
+    hung = False
+    for idx, t in enumerate(readers):
+        if t.is_alive():
+            hung = True
+            if idx == 0:
+                stdout_early[0] = True
+            else:
+                stderr_early[0] = True
+    if hung:
+        stop.set()
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                try:
+                    pipe.close()
+                except Exception:
+                    pass
+        for t in readers:
+            try:
+                t.join(timeout=1.0)
+            except BaseException:
+                _kill_tree(proc)
+                raise
+    else:
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                try:
+                    pipe.close()
+                except Exception:
+                    pass
+
+
+def _close_pipes(proc: subprocess.Popen[bytes]) -> None:
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is not None:
+            try:
+                pipe.close()
+            except Exception:
+                pass
 
 
 def run_probe_process(
@@ -141,42 +208,59 @@ def run_probe_process(
     stderr_buf = bytearray()
     stdout_overflow = [False]
     stderr_overflow = [False]
+    stdout_early_stop = [False]
+    stderr_early_stop = [False]
     stop_readers = threading.Event()
-    readers = [
-        threading.Thread(
-            target=_drain_pipe,
-            kwargs={
-                "pipe": proc.stdout,
-                "max_bytes": max_output_bytes,
-                "sink": stdout_buf,
-                "overflow_flag": stdout_overflow,
-                "stop": stop_readers,
-            },
-            daemon=True,
-        ),
-        threading.Thread(
-            target=_drain_pipe,
-            kwargs={
-                "pipe": proc.stderr,
-                "max_bytes": max_output_bytes,
-                "sink": stderr_buf,
-                "overflow_flag": stderr_overflow,
-                "stop": stop_readers,
-            },
-            daemon=True,
-        ),
-    ]
-    for t in readers:
-        t.start()
-
+    readers: list[threading.Thread] = []
+    started_readers: list[threading.Thread] = []
     timed_out = False
     cancelled = False
     overflow = False
-    deadline = time.monotonic() + float(timeout_s)
+
+    def _cancel_requested() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
+    def _note_cancel_and_kill() -> None:
+        nonlocal cancelled
+        if _cancel_requested():
+            cancelled = True
+        _kill_tree(proc)
+
     try:
         try:
+            readers = [
+                threading.Thread(
+                    target=_drain_pipe,
+                    kwargs={
+                        "pipe": proc.stdout,
+                        "max_bytes": max_output_bytes,
+                        "sink": stdout_buf,
+                        "overflow_flag": stdout_overflow,
+                        "stop": stop_readers,
+                        "early_stop_flag": stdout_early_stop,
+                    },
+                    daemon=True,
+                ),
+                threading.Thread(
+                    target=_drain_pipe,
+                    kwargs={
+                        "pipe": proc.stderr,
+                        "max_bytes": max_output_bytes,
+                        "sink": stderr_buf,
+                        "overflow_flag": stderr_overflow,
+                        "stop": stop_readers,
+                        "early_stop_flag": stderr_early_stop,
+                    },
+                    daemon=True,
+                ),
+            ]
+            for t in readers:
+                t.start()
+                started_readers.append(t)
+
+            deadline = time.monotonic() + float(timeout_s)
             while True:
-                if cancel_event is not None and cancel_event.is_set():
+                if _cancel_requested():
                     cancelled = True
                     _kill_tree(proc)
                     break
@@ -200,29 +284,49 @@ def run_probe_process(
                     proc.wait(timeout=2.0)
                 except subprocess.TimeoutExpired:
                     pass
+            # SIGINT may arrive after poll() saw exit — honor cancel through
+            # the wait/join window so descendants still get killpg.
+            if _cancel_requested():
+                cancelled = True
+                _kill_tree(proc)
         except BaseException:
-            # KeyboardInterrupt / SIGINT unwind: POSIX children are in a new
-            # session and will not receive the terminal signal — killpg first
-            # so finally does not block forever on pipe readers.
-            _kill_tree(proc)
+            # Covers reader start failures, KeyboardInterrupt during poll/wait,
+            # and any other unwind after a successful Popen.
+            _note_cancel_and_kill()
             try:
                 proc.wait(timeout=2.0)
             except (subprocess.TimeoutExpired, OSError):
                 pass
             raise
     finally:
-        stop_readers.set()
-        for t in readers:
-            t.join(timeout=1.0)
-        # Ensure pipes closed if readers died early
-        for pipe in (proc.stdout, proc.stderr):
-            if pipe is not None:
+        if _cancel_requested():
+            cancelled = True
+            _kill_tree(proc)
+        try:
+            if started_readers:
+                _join_readers(
+                    started_readers,
+                    stop=stop_readers,
+                    stdout_early=stdout_early_stop,
+                    stderr_early=stderr_early_stop,
+                    proc=proc,
+                )
+            else:
+                _close_pipes(proc)
+        except BaseException:
+            _note_cancel_and_kill()
+            stop_readers.set()
+            _close_pipes(proc)
+            for t in started_readers:
                 try:
-                    pipe.close()
-                except Exception:
+                    t.join(timeout=0.5)
+                except BaseException:
                     pass
+            raise
 
     overflow = overflow or stdout_overflow[0] or stderr_overflow[0]
+    stdout_truncated = bool(stdout_overflow[0] or stdout_early_stop[0])
+    stderr_truncated = bool(stderr_overflow[0] or stderr_early_stop[0])
     returncode = int(proc.returncode if proc.returncode is not None else -9)
     if timed_out or cancelled or overflow:
         # Distinct sentinel when we forced termination before a natural exit.
@@ -240,8 +344,8 @@ def run_probe_process(
         timed_out=timed_out,
         cancelled=cancelled,
         overflow=overflow,
-        stdout_truncated=stdout_overflow[0],
-        stderr_truncated=stderr_overflow[0],
+        stdout_truncated=stdout_truncated,
+        stderr_truncated=stderr_truncated,
         bytes_stdout=len(stdout_buf),
         bytes_stderr=len(stderr_buf),
     )

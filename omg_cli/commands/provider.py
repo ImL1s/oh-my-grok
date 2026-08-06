@@ -14,6 +14,7 @@ import sys
 
 from omg_cli.cli_envelope import emit_data, emit_json, failure, success, wants_json
 from omg_cli.providers.base import ProviderAdapter
+from omg_cli.redaction import redact_text, redact_value
 
 
 def _resolve_adapter(name: str) -> ProviderAdapter:
@@ -60,7 +61,7 @@ def _cmd_provider_capabilities(args: argparse.Namespace, name: str) -> int:
             failure(
                 f"provider.{name}.capabilities",
                 "E_PROVIDER_MISSING",
-                str(exc),
+                redact_text(str(exc)),
                 next_action="Install agy or set OMG_AGY_BIN",
             )
         )
@@ -70,7 +71,7 @@ def _cmd_provider_capabilities(args: argparse.Namespace, name: str) -> int:
             failure(
                 f"provider.{name}.capabilities",
                 "E_PROVIDER_PROBE",
-                str(exc),
+                redact_text(str(exc)),
             )
         )
         return 1
@@ -100,17 +101,21 @@ def _cmd_provider_doctor(args: argparse.Namespace, name: str) -> int:
         "ok": bool(report.ok),
         "ready": bool(report.ok),
         "exit_code": int(report.exit_code),
-        "checks": list(report.checks),
+        "checks": list(redact_value(list(report.checks))),
         "strict": strict,
     }
     if report.capabilities is not None:
         doctor_body["capabilities"] = report.capabilities.to_dict()
 
     fail_lines = [c for c in report.checks if c.startswith("FAIL:")]
-    message = fail_lines[0] if fail_lines else (
-        "provider doctor reported not ready"
-        if not report.ok
-        else "provider doctor ready"
+    message = redact_text(
+        fail_lines[0]
+        if fail_lines
+        else (
+            "provider doctor reported not ready"
+            if not report.ok
+            else "provider doctor ready"
+        )
     )
 
     if wants_json(args):
@@ -120,7 +125,7 @@ def _cmd_provider_doctor(args: argparse.Namespace, name: str) -> int:
                     cmd,
                     "E_PROVIDER_DOCTOR",
                     message,
-                    details={"doctor": doctor_body},
+                    details=redact_value({"doctor": doctor_body}),
                     next_action=(
                         "Install/fix agy, set OMG_AGY_BIN, or re-run without "
                         "--strict for a degraded report"
@@ -133,12 +138,12 @@ def _cmd_provider_doctor(args: argparse.Namespace, name: str) -> int:
                 success(
                     cmd,
                     ready=bool(report.ok),
-                    doctor=doctor_body,
+                    doctor=redact_value(doctor_body),
                 )
             )
     else:
         for line in report.checks:
-            print(line)
+            print(redact_text(line))
         if report.capabilities is not None:
             print(
                 f"compat={report.capabilities.compat_status} "

@@ -29,6 +29,7 @@ from omg_cli.providers.process import (
     ProbeProcessError,
     run_probe_process,
 )
+from omg_cli.redaction import redact_text
 
 PROVIDER_NAME: Final[str] = "antigravity"
 BINARY_NAME: Final[str] = "agy"
@@ -38,18 +39,23 @@ ENV_BIN_OVERRIDE: Final[str] = "OMG_AGY_BIN"
 # version-string based, not git SHA).
 PIN_REVISION: Final[str] = "bfab12dac5bd090015a89cf82e65093d13b567d9"
 
-# Tested compatibility window for hermetic fixtures (pinned capture 1.1.10).
-TESTED_MIN: Final[tuple[int, int, int]] = (1, 1, 0)
-TESTED_MAX: Final[tuple[int, int, int]] = (1, 1, 99)
-TESTED_MIN_STR: Final[str] = "1.1.0"
-TESTED_MAX_STR: Final[str] = "1.1.99"
+# Fixture-backed tested window only (tests/fixtures/antigravity/version.txt).
+# Do not widen past captures that lack hermetic evidence.
+TESTED_MIN: Final[tuple[int, int, int]] = (1, 1, 10)
+TESTED_MAX: Final[tuple[int, int, int]] = (1, 1, 10)
+TESTED_MIN_STR: Final[str] = "1.1.10"
+TESTED_MAX_STR: Final[str] = "1.1.10"
 
 _AG_LIMITATIONS: Final[tuple[str, ...]] = (
     "Slice A probe only; headless run/ask/Team cutover deferred (#67-B..D).",
     "Authentication and live-call readiness are not verified hermetically.",
 )
 
-_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+# Anchored to the start of the first non-empty line — never scoop a semver from
+# later prose / error banners.
+_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)\b")
+# Help identity: real agy --help begins with ``Usage of agy:``.
+_AGY_HELP_IDENTITY_RE = re.compile(r"(?im)^Usage of agy\b")
 _PROBE_TIMEOUT_S: Final[float] = DEFAULT_PROBE_TIMEOUT_S
 
 # Flag lines: ``  --flag   description`` (two+ spaces before description).
@@ -61,6 +67,7 @@ _KNOWN_OUTPUT_FORMATS: Final[frozenset[str]] = frozenset(
 )
 _KNOWN_EFFORTS: Final[frozenset[str]] = frozenset({"low", "medium", "high"})
 _KNOWN_MODES: Final[frozenset[str]] = frozenset({"accept-edits", "plan"})
+_AGY_BASENAMES: Final[frozenset[str]] = frozenset({BINARY_NAME, f"{BINARY_NAME}.exe"})
 
 # Env keys allowed through to child probes (plus PATH / override path).
 _BOUNDED_ENV_KEYS: Final[frozenset[str]] = frozenset(
@@ -97,13 +104,27 @@ def _bounded_env(extra: Mapping[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def _require_agy_basename(path: Path, *, source: str) -> None:
+    """Fail closed when an override/path does not resolve to an ``agy`` name."""
+    if path.name not in _AGY_BASENAMES:
+        raise ProviderBinaryMissing(
+            f"{source} basename must be {BINARY_NAME!r}, got {path.name!r}"
+        )
+
+
 def discover_binary(*, env: Mapping[str, str] | None = None) -> str:
-    """Resolve ``agy`` path from ``OMG_AGY_BIN`` override or PATH."""
+    """Resolve ``agy`` path from ``OMG_AGY_BIN`` override or PATH.
+
+    ``OMG_AGY_BIN`` must point at an executable whose basename is ``agy``
+    (not an arbitrary binary). Product identity is further bound by help
+    output during capability probes.
+    """
     source = env if env is not None else os.environ
     override = (source.get(ENV_BIN_OVERRIDE) or "").strip()
     if override:
         path = Path(override).expanduser()
         if path.is_file() and os.access(path, os.X_OK):
+            _require_agy_basename(path, source=f"{ENV_BIN_OVERRIDE}={override!r}")
             return str(path.resolve())
         raise ProviderBinaryMissing(
             f"OMG_AGY_BIN={override!r} is not an executable file"
@@ -113,22 +134,45 @@ def discover_binary(*, env: Mapping[str, str] | None = None) -> str:
         raise ProviderBinaryMissing(
             f"{BINARY_NAME!r} not found on PATH (set {ENV_BIN_OVERRIDE} to override)"
         )
-    return str(Path(path_str).resolve())
+    resolved = Path(path_str).resolve()
+    _require_agy_basename(resolved, source="PATH")
+    return str(resolved)
 
 
 def parse_version(text: str | None) -> VersionInfo | None:
-    """Parse a semver triple from ``agy --version`` text."""
+    """Parse a semver triple from ``agy --version`` text.
+
+    Only the first non-empty line is considered, and the version must be
+    anchored at the start of that line (``raw`` and the tuple always agree).
+    """
     if not text or not str(text).strip():
         return None
-    m = _VERSION_RE.search(str(text).strip())
+    first = ""
+    for line in str(text).splitlines():
+        stripped = line.strip()
+        if stripped:
+            first = stripped
+            break
+    if not first:
+        return None
+    m = _VERSION_RE.match(first)
     if not m:
         return None
     return VersionInfo(
-        raw=str(text).strip().splitlines()[0].strip(),
+        raw=first,
         major=int(m.group(1)),
         minor=int(m.group(2)),
         patch=int(m.group(3)),
     )
+
+
+def _verify_agy_help_identity(binary: str, help_text: str) -> None:
+    """Require Antigravity help identity so impostor ``agy`` names cannot green."""
+    if not _AGY_HELP_IDENTITY_RE.search(help_text or ""):
+        raise ProviderProbeError(
+            f"binary {binary!r} help output lacks Antigravity identity "
+            f"(expected a 'Usage of agy' header)"
+        )
 
 
 def classify_compat(version: VersionInfo | tuple[int, int, int] | None) -> CompatStatus:
@@ -177,8 +221,9 @@ def _run_probe_argv(argv: list[str]):
             except (ValueError, OSError):
                 pass
 
-    if cancel.is_set() and result.cancelled:
-        # Preserve Ctrl-C semantics after process-group cleanup.
+    if cancel.is_set():
+        # Preserve Ctrl-C semantics after process-group cleanup. cancel_event
+        # may be set during wait/join even when the direct child already exited.
         raise KeyboardInterrupt()
     return result
 
@@ -194,15 +239,17 @@ def probe_version(binary: str | None = None) -> VersionInfo:
     try:
         result = _run_probe_argv(argv)
     except ProbeProcessError as exc:
-        raise ProviderVersionError(f"version probe failed for {path}: {exc}") from exc
+        raise ProviderVersionError(
+            f"version probe failed for {path}: {redact_text(str(exc))}"
+        ) from exc
     if result.timed_out:
         raise ProviderVersionError(f"version probe timed out for {path}")
     if result.cancelled:
         raise ProviderVersionError(f"version probe cancelled for {path}")
-    if result.overflow:
-        raise ProviderVersionError(f"version probe output overflow for {path}")
+    if result.overflow or result.stdout_truncated or result.stderr_truncated:
+        raise ProviderVersionError(f"version probe output truncated for {path}")
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
+        detail = redact_text((result.stderr or result.stdout or "").strip())
         raise ProviderVersionError(
             f"version probe exit {result.returncode} for {path}"
             + (f": {detail}" if detail else "")
@@ -212,7 +259,9 @@ def probe_version(binary: str | None = None) -> VersionInfo:
         raise ProviderVersionError(f"version probe exit 0 with empty output: {path}")
     info = parse_version(out)
     if info is None:
-        raise ProviderVersionError(f"cannot parse agy version from {out!r}")
+        raise ProviderVersionError(
+            f"cannot parse agy version from {redact_text(out)!r}"
+        )
     return info
 
 
@@ -317,15 +366,18 @@ def _probe_help_text(binary: str) -> str:
     try:
         result = _run_probe_argv(argv)
     except ProbeProcessError as exc:
-        raise ProviderProbeError(f"help probe failed for {binary}: {exc}") from exc
+        raise ProviderProbeError(
+            f"help probe failed for {binary}: {redact_text(str(exc))}"
+        ) from exc
     if result.timed_out:
         raise ProviderProbeError(f"help probe timed out for {binary}")
     if result.cancelled:
         raise ProviderProbeError(f"help probe cancelled for {binary}")
-    if result.overflow:
-        raise ProviderProbeError(f"help probe output overflow for {binary}")
+    if result.overflow or result.stdout_truncated or result.stderr_truncated:
+        # Partial help must not feed strict doctor a truncated capability surface.
+        raise ProviderProbeError(f"help probe output truncated for {binary}")
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
+        detail = redact_text((result.stderr or result.stdout or "").strip())
         raise ProviderProbeError(
             f"help probe exit {result.returncode} for {binary}"
             + (f": {detail}" if detail else "")
@@ -339,8 +391,11 @@ def _probe_help_text(binary: str) -> str:
 def probe_capabilities(binary: str | None = None) -> ProviderCapabilities:
     """Build the golden capabilities envelope for the discovered binary."""
     path = binary or discover_binary()
+    # Basename gate even when callers pass an explicit path.
+    _require_agy_basename(Path(path), source="binary")
     info = probe_version(path)
     help_text = _probe_help_text(path)
+    _verify_agy_help_identity(path, help_text)
     supports = _parse_help_supports(help_text)
     status = classify_compat(info)
     return ProviderCapabilities(
@@ -387,13 +442,13 @@ def doctor(*, strict: bool = False, binary: str | None = None) -> DoctorReport:
         path = binary or discover_binary()
         checks.append(f"OK: installed {path}")
     except ProviderBinaryMissing as exc:
-        checks.append(f"FAIL: missing binary ({exc})")
+        checks.append(f"FAIL: missing binary ({redact_text(str(exc))})")
         return DoctorReport(ok=False, exit_code=1, checks=tuple(checks))
 
     try:
         caps = probe_capabilities(path)
     except (ProviderVersionError, ProviderProbeError, ProviderBinaryMissing) as exc:
-        checks.append(f"FAIL: probe error ({exc})")
+        checks.append(f"FAIL: probe error ({redact_text(str(exc))})")
         return DoctorReport(ok=False, exit_code=1, checks=tuple(checks))
 
     status = caps.compat_status
