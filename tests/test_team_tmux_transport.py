@@ -597,18 +597,20 @@ def test_inside_new_window_malformed_stdout_kills_orphan(
             return SimpleNamespace(returncode=0, stdout="\n", stderr="")
         if cmd == "list-windows":
             listed_windows += 1
-            if "-a" in args:
-                # Global window-id absence proof from _kill_window.
-                ids = "".join(f"{wid}\n" for wid in sorted(residual))
-                return SimpleNamespace(returncode=0, stdout=ids, stderr="")
-            assert args[args.index("-t") + 1] == "$42"
-            if residual:
-                return SimpleNamespace(
-                    returncode=0,
-                    stdout="@77\tomg-team-deadbeef\t$42\n",
-                    stderr="",
-                )
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
+            assert "-a" in args
+            assert "-t" not in args
+            # Name discovery / proof uses window_name in -F; id absence does not.
+            if "window_name" in joined:
+                if residual:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout="@77\tomg-team-deadbeef\t$42\n",
+                        stderr="",
+                    )
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            # Global window-id absence proof from _kill_window.
+            ids = "".join(f"{wid}\n" for wid in sorted(residual))
+            return SimpleNamespace(returncode=0, stdout=ids, stderr="")
         if cmd == "if-shell" and "kill-window" in joined:
             if "@77" in joined:
                 killed.append("@77")
@@ -690,7 +692,10 @@ def test_inside_new_window_readback_failure_modes_kill_by_name(
             return SimpleNamespace(returncode=0, stdout="garbage", stderr="")
         if cmd == "list-windows":
             list_phase["n"] += 1
-            if "-a" in args:
+            joined_lw = " ".join(args)
+            # Id-absence probes (-a without window_name) stay separate from
+            # server-global name discovery/proof (-a + window_name).
+            if "-a" in args and "window_name" not in joined_lw:
                 ids = "".join(f"{wid}\n" for wid in sorted(residual_windows))
                 return SimpleNamespace(returncode=0, stdout=ids, stderr="")
             # First discovery may be unknown; after kill, absence proof for
@@ -772,7 +777,14 @@ def test_kill_inside_windows_absence_proof_rejects_still_present(
 
     def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         cmd = args[0]
+        joined = " ".join(args)
         if cmd == "list-windows":
+            if "window_name" in joined:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="@77\tomg-team-stillhere\t$42\n",
+                    stderr="",
+                )
             if "-a" in args:
                 return SimpleNamespace(returncode=0, stdout="@77\n", stderr="")
             return SimpleNamespace(
@@ -880,6 +892,12 @@ def test_inside_launch_writes_and_clears_intent_on_successful_cleanup(
             return SimpleNamespace(returncode=0, stdout="\n", stderr="")
         if cmd == "list-windows":
             if residual:
+                if "window_name" in joined:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout="@77\tomg-team-abad1dea\t$42\n",
+                        stderr="",
+                    )
                 if "-a" in args:
                     return SimpleNamespace(
                         returncode=0,
@@ -1199,7 +1217,16 @@ def test_kill_inside_name_absence_does_not_override_unproven_window_id(
     def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         nonlocal name_visible
         cmd = args[0]
+        joined = " ".join(args)
         if cmd == "list-windows":
+            if "window_name" in joined:
+                if name_visible:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout="@77\tomg-team-renamed-away\t$42\n",
+                        stderr="",
+                    )
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
             if "-a" in args:
                 # Immutable id still globally present throughout.
                 return SimpleNamespace(returncode=0, stdout="@77\n", stderr="")
@@ -3202,6 +3229,175 @@ def test_split_transport_create_inside_recovers_bound_moved_after_ack(
             pass
 
 
+def test_split_transport_sweep_clears_after_moved_window_and_vanished_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P2 live: kill WAL $session after moved-@N ACK; sweep must clear + unblock.
+
+    Interleaving: create+bind+nonce ACK, after-new-window moves @W to $D, leave
+    the WAL, kill source session while $D/park keeps the server alive. Stale
+    sweep must kill the nonce-proven @W, remove the WAL, and leave
+    require_clean_team_launch_intents clear (not permanently blocked by
+    session-scoped name-proof unknown).
+    """
+    from omg_cli.team import tmux as tmux_mod
+    from omg_cli.team.tmux import (
+        require_clean_team_launch_intents,
+        sweep_stale_team_launch_intents,
+        team_launch_intents_dir,
+    )
+
+    sock = f"/tmp/omg-p2-vanish-{os.getpid()}.sock"
+    src = "omg-p2-vanish-src"
+    dst = "omg-p2-vanish-dst"
+    work = tmp_path / "wt"
+    work.mkdir()
+    rid = "20260806T120000Z-vanish"
+    win_name = "omg-team-vanish"
+
+    def t(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["tmux", "-S", sock, *args],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    try:
+        assert (
+            t("new-session", "-d", "-s", src, "-n", "leader", "sleep", "60").returncode
+            == 0
+        )
+        assert (
+            t("new-window", "-d", "-t", src, "-n", "extra", "sleep", "60").returncode
+            == 0
+        )
+        assert (
+            t("new-session", "-d", "-s", dst, "-n", "park", "sleep", "60").returncode
+            == 0
+        )
+        assert (
+            t(
+                "set-hook", "-g", "after-new-window", f"move-window -t {dst}:"
+            ).returncode
+            == 0
+        )
+
+        leader = t(
+            "display-message",
+            "-p",
+            "-t",
+            f"{src}:leader",
+            "#{session_id}\t#{window_id}\t#{pane_id}\t#{pid}\t#{socket_path}",
+        )
+        assert leader.returncode == 0
+        sid, leader_wid, leader_pane, pid_s, sock_out = (
+            leader.stdout or ""
+        ).strip().split("\t")
+        assert sock_out == sock
+        server = tmux_mod._server_identity_from_create(
+            pid=int(pid_s), socket_path=sock
+        )
+
+        monkeypatch.setenv("TMUX", f"{sock},{pid_s},0")
+        monkeypatch.setenv("TMUX_PANE", leader_pane)
+
+        nonce = "vanishsesslive0000000000000000001"
+        intent = tmux_mod.write_team_launch_intent(
+            tmp_path,
+            run_id=rid,
+            session_id=sid,
+            window_name=win_name,
+            nonce=nonce,
+            tmux_server=server,
+        )
+
+        window_id, pane_id = tmux_mod._launch_first_inside(
+            task={
+                "task_id": "w1",
+                "worktree": str(work),
+                "pane_command": "sleep 60",
+                "_env_pairs": [],
+            },
+            env_pairs=[],
+            window_name=win_name,
+            target_window=leader_wid,
+            expected_session_id=sid,
+            intent_path=intent,
+            socket_path=sock,
+            expected_server=server,
+        )
+
+        raw = json.loads(intent.read_text(encoding="utf-8"))
+        assert raw["window_id"] == window_id
+        assert raw.get("nonce_published") is True
+        assert raw.get("side_effect_started") is True
+
+        # Worker lives under destination after the move hook.
+        where = t(
+            "display-message",
+            "-p",
+            "-t",
+            window_id,
+            "#{session_name}\t#{window_id}",
+        )
+        assert where.returncode == 0
+        sess_name, wid_check = (where.stdout or "").strip().split("\t")
+        assert wid_check == window_id
+        assert sess_name == dst
+
+        # Crash-before-receipt: leave the bound WAL with a dead owner stamp,
+        # then kill WAL $session. Destination park keeps the same tmux server.
+        raw["owner_pid_start"] = "stale-owner"
+        intent.write_text(
+            json.dumps(raw, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        assert t("kill-session", "-t", src).returncode == 0
+        gone = t("list-windows", "-t", sid, "-F", "#{window_id}")
+        assert gone.returncode != 0  # session-scoped list fails (the old wedge)
+
+        # Server still alive via destination.
+        alive = t("list-windows", "-t", dst, "-F", "#{window_name}")
+        assert alive.returncode == 0
+        assert "park" in (alive.stdout or "")
+
+        results = sweep_stale_team_launch_intents(tmp_path)
+        assert results and all(r.get("ok") for r in results), results
+
+        # Exact moved @W gone; destination only has park.
+        dst_wins = t("list-windows", "-t", dst, "-F", "#{window_id}\t#{window_name}")
+        assert dst_wins.returncode == 0
+        dst_rows = [
+            line.strip() for line in (dst_wins.stdout or "").splitlines() if line.strip()
+        ]
+        assert all(window_id not in row for row in dst_rows)
+        assert not any(win_name in row for row in dst_rows)
+        assert any("park" in row for row in dst_rows)
+
+        nonce_scan = t(
+            "list-windows",
+            "-a",
+            "-F",
+            "#{window_id}\t#{@omg_intent_nonce}\t#{session_id}",
+        )
+        assert nonce_scan.returncode == 0
+        for line in (nonce_scan.stdout or "").splitlines():
+            parts = line.strip().split("\t")
+            if len(parts) >= 2 and parts[1]:
+                pytest.fail(f"intent nonce still present after sweep: {line!r}")
+
+        assert list(team_launch_intents_dir(tmp_path).glob(f"{rid}-*.json")) == []
+        assert t("set-hook", "-gu", "after-new-window").returncode == 0
+        require_clean_team_launch_intents(tmp_path)
+    finally:
+        t("kill-server")
+        try:
+            os.unlink(sock)
+        except OSError:
+            pass
+
+
 def test_intent_nonce_discovery_is_server_global(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3236,6 +3432,111 @@ def test_intent_nonce_discovery_is_server_global(
     )
     assert status == "found"
     assert matches == ["@7"]
+
+
+def test_name_discovery_absent_when_wal_session_vanished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2: list-windows -a with no WAL-session rows is absent (not unknown)."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "list-windows":
+            assert "-a" in args
+            assert "-t" not in args
+            assert "window_name" in joined
+            # WAL $42 gone; destination session still has park + moved worker.
+            return SimpleNamespace(
+                returncode=0,
+                stdout="@1\tpark\t$99\n@7\tomg-team-vanished\t$99\n",
+                stderr="",
+            )
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    status, matches, detail = tmux_mod._discover_inside_windows_by_name(
+        session_id="$42",
+        window_name="omg-team-vanished",
+        socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
+    )
+    assert status == "absent"
+    assert matches == []
+    assert detail is None
+
+
+def test_kill_inside_clears_when_wal_session_vanished_after_moved_nonce(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2: vanished WAL $session must not wedge clear after nonce-proven @N kill."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    nonce = "vanishsess00000000000000000000001"
+    residual = {"@7"}
+    kill_calls: list[dict[str, object]] = []
+
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "list-windows":
+            assert "-a" in args
+            assert "-t" not in args
+            if "@omg_intent_nonce" in joined:
+                if residual:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout=f"@7\t{nonce}\t$99\n",
+                        stderr="",
+                    )
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if "window_name" in joined:
+                # Session-scoped name rows: WAL $42 gone; only $99 remains.
+                # Must count as name-absent (not list-windows -t unknown).
+                rows = ["@1\tpark\t$99"]
+                if residual:
+                    rows.append("@7\tomg-team-vanished\t$99")
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="\n".join(rows) + "\n",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd in ("if-shell", "kill-window"):
+            return SimpleNamespace(returncode=1, stdout="", stderr="can't find")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    def track_kill(wid: str, **kwargs: object) -> str | None:
+        kill_calls.append({"wid": wid, **kwargs})
+        if kwargs.get("expected_session_id") is not None:
+            return (
+                f"kill-window {wid}: belongs to session '$99', not WAL session "
+                f"{kwargs['expected_session_id']!r} — refuse foreign/restarted @N"
+            )
+        residual.discard(wid)
+        return None
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "_kill_window", track_kill)
+    err = tmux_mod._kill_inside_windows_by_name(
+        session_id="$42",
+        window_name="omg-team-vanished",
+        known_window_ids=["@7"],
+        require_durable_window_id=True,
+        intent_nonce=nonce,
+        nonce_published=True,
+        socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
+        expected_server=FAKE_TMUX_SERVER,
+    )
+    assert err is None
+    assert residual == set()
+    assert any(
+        c["wid"] == "@7" and c.get("expected_session_id") is None for c in kill_calls
+    )
 
 
 def test_kill_inside_refuses_clear_when_server_swaps_after_absence_proof(

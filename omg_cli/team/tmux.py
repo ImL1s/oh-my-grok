@@ -1913,9 +1913,16 @@ def _discover_inside_windows_by_name(
 ) -> tuple[str, list[str], str | None]:
     """Discover windows in *session_id* by exact name for orphan recovery.
 
+    Uses ``list-windows -a`` (server-global) and filters rows to *session_id*
+    + *window_name*. A successful global enumeration with no matching row is
+    ``absent`` — including when the WAL session itself is gone (no rows for
+    that ``$session``). Session-scoped ``list-windows -t`` cannot prove name
+    absence when the session disappeared while the same tmux server remains
+    alive; do not infer absence from ``can't find session`` text alone.
+
     Returns ``(status, window_ids, detail)`` where *status* is one of:
     - ``found`` — exactly one matching window id
-    - ``absent`` — successful list with zero matches
+    - ``absent`` — successful list with zero matches for the WAL session+name
     - ``ambiguous`` — successful list with multiple matches
     - ``unknown`` — list-windows non-zero / OSError / malformed (not absence)
     """
@@ -1935,8 +1942,7 @@ def _discover_inside_windows_by_name(
         listed = _tmux_run(
             [
                 "list-windows",
-                "-t",
-                session_id,
+                "-a",
                 "-F",
                 "#{window_id}\t#{window_name}\t#{session_id}",
             ],
@@ -2089,10 +2095,13 @@ def _kill_inside_windows_by_name(
 ) -> str | None:
     """Kill windows matching *window_name* in *session_id*; require absence proof.
 
-    After kill attempts, re-runs a successful ``list-windows`` and requires the
-    transaction name to be **absent**. When discovery previously returned exact
-    window IDs — or the launch WAL already stamped durable ``known_window_ids``
-    — each ID must also be globally absent on the **WAL-scoped** tmux server.
+    After kill attempts, re-runs a successful server-global ``list-windows -a``
+    filtered to the WAL ``$session`` + transaction name and requires that name
+    to be **absent** (a vanished WAL session with no matching rows counts as
+    absent — do not leave the WAL uncleared solely because session-scoped
+    listing is unavailable). When discovery previously returned exact window
+    IDs — or the launch WAL already stamped durable ``known_window_ids`` —
+    each ID must also be globally absent on the **WAL-scoped** tmux server.
     A rename can hide the launch name while ``@N`` still lives; name-only
     absence must never authorize WAL clear when a durable id is known.
 
