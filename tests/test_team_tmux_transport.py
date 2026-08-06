@@ -883,6 +883,7 @@ def test_sweep_adopts_receipt_bound_intent_without_kill(
         plane.team_launch_receipt_path(tmp_path, rid),
         {
             "store_kind": "team_launch_receipt",
+            "schema_version": plane.LAUNCH_RECEIPT_SCHEMA_VERSION,
             "writer": CLI_WRITER,
             "run_id": rid,
             "session_id": "$42",
@@ -934,6 +935,7 @@ def test_sweep_refuses_unbound_receipt_for_new_intent(
         plane.team_launch_receipt_path(tmp_path, rid),
         {
             "store_kind": "team_launch_receipt",
+            "schema_version": plane.LAUNCH_RECEIPT_SCHEMA_VERSION,
             "writer": CLI_WRITER,
             "run_id": rid,
             "session_id": "$42",
@@ -958,6 +960,66 @@ def test_sweep_refuses_unbound_receipt_for_new_intent(
     results = sweep_stale_team_launch_intents(tmp_path)
     assert results and results[0].get("ok") is False
     assert "unbound" in str(results[0].get("error"))
+    assert kills == []
+    assert intent.is_file()
+
+
+def test_sweep_refuses_schema_v1_receipt_for_intent_adoption(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Legacy v1 launch receipts cannot prove intent identity — never adopt."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team import plane
+    from omg_cli.team.tmux import (
+        _intent_receipt_matches,
+        sweep_stale_team_launch_intents,
+        write_team_launch_intent,
+    )
+
+    rid = "20260806T120000Z-v1legacy"
+    nonce = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    window_name = "omg-team-worker"
+    intent = write_team_launch_intent(
+        tmp_path,
+        run_id=rid,
+        session_id="$42",
+        window_name=window_name,
+        nonce=nonce,
+    )
+    # Exact #106 key set — no intent_nonce / window_name.
+    plane._atomic_write_json(
+        plane.team_launch_receipt_path(tmp_path, rid),
+        {
+            "store_kind": "team_launch_receipt",
+            "schema_version": plane.LEGACY_LAUNCH_RECEIPT_SCHEMA_VERSION,
+            "writer": CLI_WRITER,
+            "run_id": rid,
+            "session_name": "omg-workers",
+            "session_id": "$42",
+            "launch_nonce": "a" * 32,
+            "generation": 0,
+            "previous_receipt_sha256": None,
+            "tasks": [],
+        },
+    )
+    raw = json.loads(intent.read_text(encoding="utf-8"))
+    raw["owner_pid"] = 999999999
+    raw["owner_pid_start"] = "stale-owner"
+    intent.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+    assert _intent_receipt_matches(tmp_path, raw) is False
+
+    kills: list[dict[str, str]] = []
+
+    def boom_kill(**kwargs):
+        kills.append(dict(kwargs))
+        return "should not kill"
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux._kill_inside_windows_by_name", boom_kill
+    )
+    results = sweep_stale_team_launch_intents(tmp_path)
+    assert results and results[0].get("ok") is False
     assert kills == []
     assert intent.is_file()
 

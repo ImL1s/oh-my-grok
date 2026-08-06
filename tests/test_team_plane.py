@@ -1812,6 +1812,90 @@ def test_identity_receipt_loader_accepts_committed_legacy_v1_chain(
     assert chain[-1] == legacy
 
 
+def _write_legacy_v1_launch_receipt(
+    root: Path,
+    live: dict[str, Any],
+    *,
+    session_id: str = "$9",
+) -> dict[str, Any]:
+    """Persist a #106-era schema-v1 launch receipt and sync meta hashes."""
+    from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes
+    from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
+
+    rows = [
+        {
+            "task_id": task.get("task_id"),
+            "window_index": task.get("window_index"),
+            "pane_id": task.get("pane_id"),
+            "pid": task.get("pid"),
+            "pgid": task.get("pgid"),
+            "pid_start": task.get("pid_start"),
+        }
+        for task in live["tasks"]
+    ]
+    receipt = {
+        "store_kind": "team_launch_receipt",
+        "schema_version": plane.LEGACY_LAUNCH_RECEIPT_SCHEMA_VERSION,
+        "writer": CLI_WRITER,
+        "run_id": live["run_id"],
+        "session_name": live["session"],
+        "session_id": session_id,
+        "launch_nonce": live["launch_nonce"],
+        "generation": 0,
+        "previous_receipt_sha256": None,
+        "tasks": rows,
+    }
+    body = canonical_json_bytes(receipt)
+    path = plane.team_launch_receipt_path(root, str(live["run_id"]))
+    if path.exists():
+        path.unlink()
+    atomic_write_bytes(path, body, mode=DATA_FILE_MODE, replace=False)
+    digest = sha256_hex(body)
+    live["launch_receipt_sha256"] = digest
+    live["identity_receipt_sha256"] = digest
+    live["identity_generation"] = 0
+    plane._atomic_write_json(team_meta_path(root, str(live["run_id"])), live)
+    return receipt
+
+
+def test_launch_receipt_loader_accepts_schema_v1_for_identity_chain(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#106 v1 launch receipts remain readable for stop/scale/relaunch chains."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team("legacy launch", [TASKS_TWO[0]], root=tmp_path, dry_run=True)
+    live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
+    receipt = _write_legacy_v1_launch_receipt(tmp_path, live)
+
+    loaded = plane._load_team_launch_receipt(tmp_path, live["run_id"], live)
+    chain = plane._load_team_identity_chain(tmp_path, live["run_id"], live)
+
+    assert loaded == receipt
+    assert loaded["schema_version"] == plane.LEGACY_LAUNCH_RECEIPT_SCHEMA_VERSION
+    assert "intent_nonce" not in loaded
+    assert "window_name" not in loaded
+    assert chain[0] == receipt
+
+
+def test_launch_receipt_loader_still_accepts_schema_v2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Current schema-v2 receipts (with intent binding fields) still load."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team("v2 launch", [TASKS_TWO[0]], root=tmp_path, dry_run=True)
+    live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
+
+    loaded = plane._load_team_launch_receipt(tmp_path, live["run_id"], live)
+    chain = plane._load_team_identity_chain(tmp_path, live["run_id"], live)
+
+    assert loaded["schema_version"] == plane.LAUNCH_RECEIPT_SCHEMA_VERSION
+    assert "intent_nonce" in loaded
+    assert "window_name" in loaded
+    assert chain[0] == loaded
+
+
 def test_identity_receipt_publish_then_raise_rejects_unexpected_body(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

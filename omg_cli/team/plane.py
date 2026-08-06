@@ -115,6 +115,9 @@ SPAWN_DENY_API_MARKERS: tuple[str, ...] = (
 WORKSPACE_MODE = "worktree"
 SCHEMA_VERSION = 1
 LAUNCH_RECEIPT_SCHEMA_VERSION = 2
+# #106-era immutable launch receipts (no intent_nonce / window_name).
+# Readable only for existing-Team identity-chain ops (stop/scale/relaunch).
+LEGACY_LAUNCH_RECEIPT_SCHEMA_VERSION = 1
 # Legacy identity receipts reused schema_version=1 before scale_intent fields.
 LEGACY_IDENTITY_RECEIPT_SCHEMA_VERSION = 1
 IDENTITY_RECEIPT_SCHEMA_VERSION = 2
@@ -1636,7 +1639,8 @@ def _load_team_launch_receipt(
     parsed = parse_canonical_json_bytes(body)
     if not isinstance(parsed, dict):
         raise TeamError("team launch receipt must be an object")
-    required = {
+    # Exact key sets: v1 (#106) lacked intent binding fields; v2 includes them.
+    legacy_required = {
         "store_kind",
         "schema_version",
         "writer",
@@ -1644,28 +1648,45 @@ def _load_team_launch_receipt(
         "session_name",
         "session_id",
         "launch_nonce",
-        "intent_nonce",
-        "window_name",
         "generation",
         "previous_receipt_sha256",
         "tasks",
     }
-    if set(parsed) != required:
-        raise TeamError("team launch receipt keys mismatch")
-    intent_nonce = parsed.get("intent_nonce")
-    window_name = parsed.get("window_name")
-    if (intent_nonce is None) != (window_name is None):
-        raise TeamError("team launch receipt identity mismatch")
-    if intent_nonce is not None and (
-        not isinstance(intent_nonce, str)
-        or not intent_nonce
-        or not isinstance(window_name, str)
-        or not window_name
+    v2_required = legacy_required | {
+        "intent_nonce",
+        "window_name",
+    }
+    schema_version = parsed.get("schema_version")
+    if (
+        (
+            schema_version == LEGACY_LAUNCH_RECEIPT_SCHEMA_VERSION
+            and set(parsed) != legacy_required
+        )
+        or (
+            schema_version == LAUNCH_RECEIPT_SCHEMA_VERSION
+            and set(parsed) != v2_required
+        )
+        or schema_version
+        not in {
+            LEGACY_LAUNCH_RECEIPT_SCHEMA_VERSION,
+            LAUNCH_RECEIPT_SCHEMA_VERSION,
+        }
     ):
-        raise TeamError("team launch receipt identity mismatch")
+        raise TeamError("team launch receipt keys mismatch")
+    if schema_version == LAUNCH_RECEIPT_SCHEMA_VERSION:
+        intent_nonce = parsed.get("intent_nonce")
+        window_name = parsed.get("window_name")
+        if (intent_nonce is None) != (window_name is None):
+            raise TeamError("team launch receipt identity mismatch")
+        if intent_nonce is not None and (
+            not isinstance(intent_nonce, str)
+            or not intent_nonce
+            or not isinstance(window_name, str)
+            or not window_name
+        ):
+            raise TeamError("team launch receipt identity mismatch")
     if (
         parsed["store_kind"] != "team_launch_receipt"
-        or parsed["schema_version"] != LAUNCH_RECEIPT_SCHEMA_VERSION
         or parsed["writer"] != CLI_WRITER
         or parsed["run_id"] != run_id
         or parsed["session_name"] != meta.get("session")

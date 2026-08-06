@@ -289,8 +289,14 @@ def _intent_owner_blocks_sweep(raw: Mapping[str, Any]) -> str | None:
 
 
 def _intent_receipt_matches(root: Path, intent: Mapping[str, Any]) -> bool:
-    """True only when durable receipt binds the *exact* intent identity."""
+    """True only when durable receipt binds the *exact* intent identity.
+
+    Schema-v1 (#106) launch receipts omit ``intent_nonce`` / ``window_name`` and
+    must never be adopted for a new launch intent — they cannot prove intent
+    identity. Only schema-v2 receipts with matching binding fields qualify.
+    """
     from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team.plane import LAUNCH_RECEIPT_SCHEMA_VERSION
 
     intent_run = intent.get("run_id")
     intent_session = intent.get("session_id")
@@ -321,15 +327,24 @@ def _intent_receipt_matches(root: Path, intent: Mapping[str, Any]) -> bool:
         return False
     if raw.get("store_kind") != "team_launch_receipt":
         return False
+    # Fail-closed: legacy v1 (and any non-v2) cannot prove intent identity.
+    if raw.get("schema_version") != LAUNCH_RECEIPT_SCHEMA_VERSION:
+        return False
     if raw.get("writer") != CLI_WRITER:
         return False
     if raw.get("run_id") != intent_run:
         return False
     if raw.get("session_id") != intent_session:
         return False
-    if raw.get("intent_nonce") != intent_nonce:
+    receipt_intent = raw.get("intent_nonce")
+    receipt_window = raw.get("window_name")
+    if not isinstance(receipt_intent, str) or not receipt_intent:
         return False
-    if raw.get("window_name") != intent_name:
+    if not isinstance(receipt_window, str) or not receipt_window:
+        return False
+    if receipt_intent != intent_nonce:
+        return False
+    if receipt_window != intent_name:
         return False
     return True
 
