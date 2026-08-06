@@ -17,9 +17,10 @@ import re
 import secrets
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from omg_cli.madmax import tmux_available, tmux_env_args
 
@@ -27,6 +28,7 @@ _TMUX_SESSION_ID = re.compile(r"^\$[0-9]{1,16}$")
 _TMUX_PANE_ID = re.compile(r"^%[0-9]{1,16}$")
 _TMUX_WINDOW_ID = re.compile(r"^@[0-9]{1,16}$")
 _SAFE_INTENT_TOKEN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+TEAM_LAUNCH_LOCK_NAME = "team-launch.lock"
 
 
 class TmuxTeamError(RuntimeError):
@@ -37,9 +39,130 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+
+def _process_start_identity(pid: int) -> str | None:
+    """OS start identity for *pid* (changes when the PID is reused)."""
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return None
+    proc_stat = Path(f"/proc/{pid}/stat")
+    try:
+        raw = proc_stat.read_text(encoding="utf-8")
+    except OSError:
+        raw = ""
+    if raw:
+        close = raw.rfind(")")
+        fields = raw[close + 2 :].split()
+        if close >= 0 and len(fields) > 19:
+            return f"proc:{fields[19]}"
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = " ".join((result.stdout or "").split())
+    return f"ps:{value}" if result.returncode == 0 and value else None
+
+
 def team_launch_intents_dir(root: Path | str) -> Path:
     """Durable WAL dir for inside ``new-window`` launch intents."""
     return Path(root).resolve() / ".omg" / "state" / "team-launch-intents"
+
+
+def team_launch_lock_path(root: Path | str) -> Path:
+    """Project-scoped lock serializing start_team sweep→receipt."""
+    return Path(root).resolve() / ".omg" / "state" / TEAM_LAUNCH_LOCK_NAME
+
+
+@contextmanager
+def acquire_team_launch_lock(root: Path | str) -> Iterator[Path]:
+    """Exclusive project lock for launch-intent sweep + start transaction.
+
+    Non-blocking: concurrent ``start_team`` refuses rather than interleaving
+    sweep with another in-flight new-window→receipt window.
+    """
+    try:
+        import fcntl
+    except ImportError as exc:  # pragma: no cover
+        raise TmuxTeamError(
+            "team launch lock requires POSIX fcntl.flock"
+        ) from exc
+
+    from omg_cli.contracts.path_keys import (
+        ContractPathError,
+        open_managed_dir_fd,
+    )
+
+    path = team_launch_lock_path(root)
+    try:
+        parent_fd = open_managed_dir_fd(path.parent)
+    except ContractPathError as exc:
+        raise TmuxTeamError(f"team launch lock parent open refused: {exc}") from exc
+    fd = -1
+    try:
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(TEAM_LAUNCH_LOCK_NAME, flags, 0o644, dir_fd=parent_fd)
+        except OSError as exc:
+            raise TmuxTeamError(
+                f"team launch lock open refused (symlink or non-regular?): {exc}"
+            ) from exc
+        try:
+            import stat as stat_mod
+
+            st = os.fstat(fd)
+            if not stat_mod.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                raise TmuxTeamError(
+                    f"team launch lock must be a unique regular file "
+                    f"(nlink={st.st_nlink})"
+                )
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            st = os.fstat(fd)
+            if not stat_mod.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                raise TmuxTeamError(
+                    f"team launch lock inode must be a unique regular file "
+                    f"(nlink={st.st_nlink})"
+                )
+        except BlockingIOError as exc:
+            holder = ""
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                holder = os.read(fd, 64).decode("utf-8", errors="replace").strip()
+            except OSError:
+                pass
+            raise TmuxTeamError(
+                "team launch lock held"
+                + (f" (pid={holder})" if holder else "")
+                + f"; refuse concurrent start ({path})"
+            ) from exc
+        try:
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
+            try:
+                os.fsync(fd)
+            except OSError:
+                pass
+            yield path
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            os.close(parent_fd)
+        except OSError:
+            pass
 
 
 def team_launch_intent_path(root: Path | str, run_id: str, nonce: str) -> Path:
@@ -66,12 +189,20 @@ def write_team_launch_intent(
         ensure_managed_dir,
     )
 
+    owner_pid = os.getpid()
+    owner_start = _process_start_identity(owner_pid)
+    if not owner_start:
+        raise TmuxTeamError(
+            "launch intent write refused: owner pid_start identity unavailable"
+        )
     path = team_launch_intent_path(root, run_id, nonce)
     payload = {
         "run_id": run_id,
         "session_id": session_id,
         "window_name": window_name,
         "nonce": nonce,
+        "owner_pid": owner_pid,
+        "owner_pid_start": owner_start,
         "created_at": _utc_now_iso(),
     }
     body = (
@@ -128,24 +259,79 @@ def clear_team_launch_intent(path: Path | str | None) -> None:
         os.close(parent_fd)
 
 
-def _intent_receipt_exists(root: Path, run_id: str) -> bool:
-    """True when a durable launch receipt exists for *run_id* (adopt, don't kill)."""
-    if not _SAFE_INTENT_TOKEN.fullmatch(run_id):
+def _intent_owner_blocks_sweep(raw: Mapping[str, Any]) -> str | None:
+    """Return a refuse reason when the intent owner is still the live launcher.
+
+    Missing owner fields (legacy intents) do not block — those are treated as
+    crash orphans eligible for kill-by-name. Live owner with matching start-id
+    must never be killed by another start_team sweep.
+    """
+    pid = raw.get("owner_pid")
+    start = raw.get("owner_pid_start")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
+    if not isinstance(start, str) or not start:
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        return "in-flight launch owner pid probe permission denied"
+    except OSError as exc:
+        return f"in-flight launch owner pid probe failed: {exc}"
+    live_start = _process_start_identity(pid)
+    if live_start is None:
+        return "in-flight launch owner start-id probe unknown"
+    if live_start == start:
+        return "in-flight launch (owner alive)"
+    return None
+
+
+def _intent_receipt_matches(root: Path, intent: Mapping[str, Any]) -> bool:
+    """True only when durable receipt binds the *exact* intent identity."""
+    from omg_cli.evidence import CLI_WRITER
+
+    intent_run = intent.get("run_id")
+    intent_session = intent.get("session_id")
+    intent_name = intent.get("window_name")
+    intent_nonce = intent.get("nonce")
+    if not isinstance(intent_run, str) or not _SAFE_INTENT_TOKEN.fullmatch(intent_run):
         return False
-    # Avoid importing plane (circular): receipt lives under runs/<id>/team/.
+    if not isinstance(intent_session, str) or not isinstance(intent_name, str):
+        return False
+    if not isinstance(intent_nonce, str) or not intent_nonce:
+        return False
     receipt = (
         Path(root).resolve()
         / ".omg"
         / "state"
         / "runs"
-        / run_id
+        / intent_run
         / "team"
         / "launch-receipt.json"
     )
     try:
-        return receipt.is_file() and not receipt.is_symlink()
-    except OSError:
+        if not receipt.is_file() or receipt.is_symlink():
+            return False
+        raw = json.loads(receipt.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
+    if not isinstance(raw, dict):
+        return False
+    if raw.get("store_kind") != "team_launch_receipt":
+        return False
+    if raw.get("writer") != CLI_WRITER:
+        return False
+    if raw.get("run_id") != intent_run:
+        return False
+    if raw.get("session_id") != intent_session:
+        return False
+    if raw.get("intent_nonce") != intent_nonce:
+        return False
+    if raw.get("window_name") != intent_name:
+        return False
+    return True
 
 
 def sweep_stale_team_launch_intents(
@@ -158,8 +344,8 @@ def sweep_stale_team_launch_intents(
 
     Called at ``start_team`` entry so a prior crash after ``new-window`` cannot
     leave an unrecepted worker across CLI restarts. Clears intent only when
-    absence is proven, or when a durable launch receipt already exists (adopt —
-    never kill a receipt-bound worker).
+    absence is proven, or when a durable launch receipt already binds the
+    *exact* intent identity (adopt — never kill a receipt-bound worker).
 
     Each result has ``ok: bool``. Callers must treat any ``ok=False`` (or an
     OSError from this function) as a **launch gate** — refuse ``new-window``.
@@ -203,10 +389,19 @@ def sweep_stale_team_launch_intents(
                 {"path": str(entry), "ok": False, "error": "incomplete intent"}
             )
             continue
-        # Receipt already durable → adopt/reconcile; never kill committed worker.
-        if isinstance(intent_run, str) and _intent_receipt_exists(
-            root_path, intent_run
-        ):
+        owner_block = _intent_owner_blocks_sweep(raw)
+        if owner_block is not None:
+            results.append(
+                {
+                    "path": str(entry),
+                    "ok": False,
+                    "session_id": intent_session,
+                    "window_name": intent_name,
+                    "error": owner_block,
+                }
+            )
+            continue
+        if _intent_receipt_matches(root_path, raw):
             try:
                 clear_team_launch_intent(entry)
             except TmuxTeamError as exc:
@@ -230,6 +425,31 @@ def sweep_stale_team_launch_intents(
                 }
             )
             continue
+        if isinstance(intent_run, str) and _SAFE_INTENT_TOKEN.fullmatch(intent_run):
+            receipt_path = (
+                root_path
+                / ".omg"
+                / "state"
+                / "runs"
+                / intent_run
+                / "team"
+                / "launch-receipt.json"
+            )
+            try:
+                receipt_present = receipt_path.is_file() and not receipt_path.is_symlink()
+            except OSError:
+                receipt_present = False
+            if receipt_present:
+                results.append(
+                    {
+                        "path": str(entry),
+                        "ok": False,
+                        "session_id": intent_session,
+                        "window_name": intent_name,
+                        "error": "receipt present but intent identity unbound",
+                    }
+                )
+                continue
         cleanup = _kill_inside_windows_by_name(
             session_id=intent_session, window_name=intent_name
         )
@@ -288,6 +508,7 @@ def require_clean_team_launch_intents(root: Path | str) -> list[dict[str, Any]]:
     return results
 
 
+
 def _tmux_run(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["tmux", *args],
@@ -341,7 +562,9 @@ def pane_alive(pane_id: str) -> bool | None:
 def probe_worker_pane_identity(pane_id: str) -> dict[str, Any] | None:
     """Return ``{pane_id, dead, session_id, pane_pid}`` or None on probe failure.
 
-    Fail-closed: missing tmux / spawn OSError → None (never raise into status).
+    Fail-closed: missing tmux / spawn OSError / malformed fields → None
+    (never raise into status). ``pane_dead`` must be exactly ``0``/``1`` and
+    ``session_id`` must match ``$N``; otherwise treat as UNKNOWN.
     """
     if not tmux_available():
         return None
@@ -364,6 +587,10 @@ def probe_worker_pane_identity(pane_id: str) -> dict[str, Any] | None:
     parts = (probe.stdout or "").strip().split("\t")
     if len(parts) != 4 or parts[0] != pane_id:
         return None
+    if parts[1] not in ("0", "1"):
+        return None
+    if _TMUX_SESSION_ID.fullmatch(parts[2]) is None:
+        return None
     try:
         pane_pid = int(parts[3])
     except ValueError:
@@ -372,7 +599,7 @@ def probe_worker_pane_identity(pane_id: str) -> dict[str, Any] | None:
         return None
     return {
         "pane_id": parts[0],
-        "dead": parts[1] != "0",
+        "dead": parts[1] == "1",
         "session_id": parts[2],
         "pane_pid": pane_pid,
     }

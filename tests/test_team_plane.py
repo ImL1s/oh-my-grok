@@ -1786,7 +1786,7 @@ def test_identity_receipt_loader_accepts_committed_legacy_v1_chain(
     ]
     legacy = {
         "store_kind": "team_identity_receipt",
-        "schema_version": plane.LAUNCH_RECEIPT_SCHEMA_VERSION,
+        "schema_version": 1,
         "writer": CLI_WRITER,
         "run_id": live["run_id"],
         "session_name": live["session"],
