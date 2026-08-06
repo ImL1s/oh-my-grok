@@ -9,6 +9,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-08-06
+
 ### Fixed
 - **Release install gate / `omg update` dogfood (#89):** install-time dual-pass
   doctor probe (`--strict` then non-strict) for **both** release and
@@ -31,23 +33,6 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   (source preserved); clean development still fast-forwards +
   `install-plugin.sh`. Interactive `omg doctor --strict` coexistence semantics
   are unchanged.
-
-### Added
-- **Parity full upstream inventory (#78-B):** expand the v2 catalogue with
-  `source_status` (OMC/OMX/OmO/Antigravity), the #78-B category taxonomy,
-  minimum OMC/OMX/OmO/Antigravity capability rows (mostly `catalogued`; no
-  fake `live_verified`), generated per-source matrices + SUMMARY (EN/zh/zh-TW),
-  and NON-AUTHORITATIVE banners on historical research matrices. Inventory
-  completeness ≠ product parity — `inventory_status` stays `bootstrapping` while
-  `parity_governance` / `platform_live_evidence` remain open. Issue #78 stays
-  open for #78-C (pin refresh / live-evidence freshness / release claim gate).
-- **Partial work for issue 78 (slice C / #78-C):** seed pinned upstream snapshot
-  catalogues (`docs/parity/upstream-snapshots/`), `omg parity refresh --plan`
-  review workflow, release claim gate (`--strict --release` in `release.yml`),
-  and live-evidence freshness enforcement. Completeness promotion and issue #78
-  remain open — no fake `live_verified` product claims.
-
-### Fixed
 - **Parity release claim gate (PR #91 Pro re-audit):** expand overclaim scan to
   `CHANGELOG.md` / `docs/skills.md`; keep forbidden-phrase restrictions active
   until `inventory_completion_claims_allowed` (category + source complete);
@@ -69,6 +54,21 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   fingerprints; validate upstream snapshot capability schema (no duplicate /
   malformed silent skip); forbid `live-proven` / `live-tested` doc phrases and
   scrub historical CHANGELOG wording.
+
+### Added
+- **Parity full upstream inventory (#78-B):** expand the v2 catalogue with
+  `source_status` (OMC/OMX/OmO/Antigravity), the #78-B category taxonomy,
+  minimum OMC/OMX/OmO/Antigravity capability rows (mostly `catalogued`; no
+  fake `live_verified`), generated per-source matrices + SUMMARY (EN/zh/zh-TW),
+  and NON-AUTHORITATIVE banners on historical research matrices. Inventory
+  completeness ≠ product parity — `inventory_status` stays `bootstrapping` while
+  `parity_governance` / `platform_live_evidence` remain open. Issue #78 stays
+  open after #78-C for remaining maturity / live-evidence work.
+- **Partial work for issue 78 (slice C / #78-C):** seed pinned upstream snapshot
+  catalogues (`docs/parity/upstream-snapshots/`), `omg parity refresh --plan`
+  review workflow, release claim gate (`--strict --release` in `release.yml`),
+  and live-evidence freshness enforcement. Completeness promotion and issue #78
+  remain open — no fake `live_verified` product claims.
 
 ## [0.7.5] - 2026-08-05
 
