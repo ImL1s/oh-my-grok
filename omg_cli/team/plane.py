@@ -119,6 +119,7 @@ IDENTITY_RECEIPT_SCHEMA_VERSION = 2
 LAUNCH_NONCE_OPTION = "@omg_launch_nonce"
 _TMUX_SESSION_ID = re.compile(r"^\$[0-9]{1,16}$")
 _TMUX_PANE_ID = re.compile(r"^%[0-9]{1,16}$")
+_TMUX_WINDOW_ID = re.compile(r"^@[0-9]{1,16}$")
 
 # Locked status field set (freeze for --json consumers / tests).
 STATUS_TOP_KEYS: tuple[str, ...] = (
@@ -1019,6 +1020,115 @@ def _cleanup_created_tmux_session(handle: tuple[str, str]) -> str | None:
     return None
 
 
+_LAUNCH_PANE_SNAPSHOT_FMT = (
+    "#{pane_id}\t#{pane_pid}\t#{session_id}\t#{window_id}\t"
+    "#{@omg_launch_nonce}"
+)
+
+
+def _snapshot_launch_pane_identities(
+    *,
+    expected_session_id: str,
+    expected_pane_ids: Sequence[str],
+    expected_window_id: str | None = None,
+    expected_launch_nonce: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """One ``list-panes`` snapshot for receipt commit (anti split-brain).
+
+    Prefer ``list-panes -t <window_id>`` when the Team window is known (inside
+    mode). Refuse commit when any expected pane left ``session_id`` /
+    ``window_id``, or when a bound launch nonce is present but mismatched.
+    """
+    if (
+        not isinstance(expected_session_id, str)
+        or _TMUX_SESSION_ID.fullmatch(expected_session_id) is None
+    ):
+        raise TeamError("tmux launch identity snapshot requires session id")
+    expected = [
+        pane_id
+        for pane_id in expected_pane_ids
+        if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id) is not None
+    ]
+    if not expected or len(expected) != len(list(expected_pane_ids)):
+        raise TeamError("tmux launch identity snapshot requires exact pane ids")
+    target: str
+    argv: list[str]
+    if (
+        isinstance(expected_window_id, str)
+        and _TMUX_WINDOW_ID.fullmatch(expected_window_id) is not None
+    ):
+        target = expected_window_id
+        argv = [
+            "list-panes",
+            "-t",
+            target,
+            "-F",
+            _LAUNCH_PANE_SNAPSHOT_FMT,
+        ]
+    else:
+        target = expected_session_id
+        argv = [
+            "list-panes",
+            "-s",
+            "-t",
+            target,
+            "-F",
+            _LAUNCH_PANE_SNAPSHOT_FMT,
+        ]
+    try:
+        listed = _tmux_run(argv)
+    except OSError as exc:
+        raise TeamError(f"tmux launch identity snapshot failed: {exc}") from exc
+    if listed.returncode != 0:
+        raise TeamError("tmux launch identity snapshot failed")
+    by_pane: dict[str, dict[str, Any]] = {}
+    for line in (listed.stdout or "").splitlines():
+        parts = line.strip().split("\t")
+        if len(parts) != 5:
+            continue
+        pane_id, pid_s, session_id, window_id, nonce_s = parts
+        if _TMUX_PANE_ID.fullmatch(pane_id) is None:
+            continue
+        if session_id != expected_session_id:
+            continue
+        if (
+            isinstance(expected_window_id, str)
+            and _TMUX_WINDOW_ID.fullmatch(expected_window_id) is not None
+            and window_id != expected_window_id
+        ):
+            continue
+        try:
+            pane_pid = int(pid_s)
+        except ValueError:
+            continue
+        if pane_pid <= 0:
+            continue
+        if _TMUX_WINDOW_ID.fullmatch(window_id) is None:
+            continue
+        live_nonce = _parse_tmux_launch_nonce(nonce_s)
+        by_pane[pane_id] = {
+            "pane_id": pane_id,
+            "pane_pid": pane_pid,
+            "session_id": session_id,
+            "window_id": window_id,
+            "launch_nonce": live_nonce,
+        }
+    for pane_id in expected:
+        row = by_pane.get(pane_id)
+        if row is None:
+            raise TeamError(
+                "tmux launch identity snapshot missing worker pane "
+                f"{pane_id} in expected session/window"
+            )
+        if expected_launch_nonce is not None:
+            live_nonce = row.get("launch_nonce")
+            if live_nonce != expected_launch_nonce:
+                raise TeamError(
+                    f"tmux launch nonce mismatch on pane {pane_id} before receipt"
+                )
+    return {pane_id: by_pane[pane_id] for pane_id in expected}
+
+
 def _list_pane_identities(session: str) -> dict[int, tuple[str, int]]:
     """Map slot index to exact tmux pane identity and pane PID.
 
@@ -1119,15 +1229,164 @@ def _read_tmux_session_identity(session: str) -> tuple[str, str] | None:
     return parts[0], parts[1]
 
 
+def _parse_tmux_launch_nonce(value: str | None) -> str | None:
+    text = (value or "").strip()
+    if len(text) != 32 or any(ch not in "0123456789abcdef" for ch in text):
+        return None
+    return text
+
+
 def _read_tmux_launch_nonce(session: str) -> str | None:
-    r = _tmux_run(["show-options", "-v", "-t", session, LAUNCH_NONCE_OPTION])
+    """Read session-scoped launch nonce (owned detached sessions only)."""
+    try:
+        r = _tmux_run(["show-options", "-v", "-t", session, LAUNCH_NONCE_OPTION])
+    except OSError:
+        return None
     if r.returncode != 0:
         return None
-    value = (r.stdout or "").strip()
-    if len(value) != 32 or any(ch not in "0123456789abcdef" for ch in value):
-        return None
-    return value
+    return _parse_tmux_launch_nonce(r.stdout)
 
+
+def _probe_tmux_launch_nonce_for_pane(
+    pane_id: str,
+    session: str,
+    *,
+    allow_session_fallback: bool = False,
+) -> tuple[str | None, bool]:
+    """Probe pane-scoped launch nonce with an explicit ok/unknown bit.
+
+    Returns ``(nonce, True)`` only when a valid 32-hex nonce was read.
+    Returns ``(None, False)`` on OSError, non-zero tmux, malformed, or missing
+    — callers must treat that as UNKNOWN, never as a confirmed foreign nonce.
+    """
+    if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id) is not None:
+        try:
+            r = _tmux_run(
+                ["show-options", "-p", "-v", "-t", pane_id, LAUNCH_NONCE_OPTION]
+            )
+        except OSError:
+            return None, False
+        if r.returncode != 0:
+            return None, False
+        parsed = _parse_tmux_launch_nonce(r.stdout)
+        if parsed is not None:
+            return parsed, True
+        # Malformed/missing pane nonce: do not fall through unless legacy.
+        if not allow_session_fallback:
+            return None, False
+    if allow_session_fallback:
+        nonce = _read_tmux_launch_nonce(session)
+        return nonce, nonce is not None
+    return None, False
+
+
+def _read_tmux_launch_nonce_for_pane(
+    pane_id: str,
+    session: str,
+    *,
+    allow_session_fallback: bool = False,
+) -> str | None:
+    """Read pane-scoped launch nonce; session fallback is legacy-only.
+
+    New receipts with a valid ``pane_id`` must fail closed on OSError, non-zero
+    tmux status, or malformed output — never silently adopt a shared session
+    nonce (concurrent Teams in one session overwrite that option).
+
+    Note: ``None`` means probe unknown *or* absent — use
+    :func:`_probe_tmux_launch_nonce_for_pane` when UNKNOWN must not collapse
+    into DEAD_OR_FOREIGN (relaunch / side-effect paths).
+    """
+    nonce, ok = _probe_tmux_launch_nonce_for_pane(
+        pane_id, session, allow_session_fallback=allow_session_fallback
+    )
+    return nonce if ok else None
+
+
+def _read_tmux_launch_nonce_for_window(window_id: str) -> str | None:
+    if not isinstance(window_id, str) or _TMUX_WINDOW_ID.fullmatch(window_id) is None:
+        return None
+    try:
+        r = _tmux_run(
+            ["show-options", "-w", "-v", "-t", window_id, LAUNCH_NONCE_OPTION]
+        )
+    except OSError:
+        return None
+    if r.returncode != 0:
+        return None
+    return _parse_tmux_launch_nonce(r.stdout)
+
+
+def _bind_tmux_launch_nonce(
+    *,
+    session_id: str,
+    launch_nonce: str,
+    window_id: str | None,
+    pane_ids: Sequence[str],
+    session_owned: bool = True,
+) -> None:
+    """Bind nonce so concurrent Teams in one session cannot overwrite each other.
+
+    Pane/window options isolate workers. Session-scoped stamp is only for
+    Team-owned detached sessions — inside mode must not clobber a shared
+    ``@omg_launch_nonce`` on the leader session.
+    """
+    bound = False
+    for pane_id in pane_ids:
+        if not isinstance(pane_id, str) or _TMUX_PANE_ID.fullmatch(pane_id) is None:
+            continue
+        try:
+            option = _tmux_run(
+                [
+                    "set-option",
+                    "-p",
+                    "-t",
+                    pane_id,
+                    LAUNCH_NONCE_OPTION,
+                    launch_nonce,
+                ]
+            )
+        except OSError as exc:
+            raise TeamError(f"failed to bind tmux launch nonce on pane: {exc}") from exc
+        if option.returncode != 0:
+            raise TeamError(f"failed to bind tmux launch nonce on pane {pane_id}")
+        bound = True
+    if isinstance(window_id, str) and _TMUX_WINDOW_ID.fullmatch(window_id):
+        try:
+            option = _tmux_run(
+                [
+                    "set-option",
+                    "-w",
+                    "-t",
+                    window_id,
+                    LAUNCH_NONCE_OPTION,
+                    launch_nonce,
+                ]
+            )
+        except OSError as exc:
+            raise TeamError(f"failed to bind tmux launch nonce on window: {exc}") from exc
+        if option.returncode != 0:
+            raise TeamError("failed to bind tmux launch nonce on window")
+        bound = True
+    if session_owned:
+        try:
+            option = _tmux_run(
+                [
+                    "set-option",
+                    "-t",
+                    session_id,
+                    LAUNCH_NONCE_OPTION,
+                    launch_nonce,
+                ]
+            )
+        except OSError as exc:
+            raise TeamError(
+                f"failed to bind tmux launch nonce on session: {exc}"
+            ) from exc
+        if option.returncode != 0:
+            raise TeamError("failed to bind tmux launch nonce")
+        bound = True
+    if not bound:
+        raise TeamError("failed to bind tmux launch nonce")
 
 def _persist_team_launch_receipt(
     root: Path,
@@ -1860,6 +2119,20 @@ def start_team(
             raise TeamError(str(exc)) from exc
         # UnknownRoleError propagates (FLOOR 2) — do not swallow.
 
+    # Launch-intent WAL recovery gate: sweep ALL project intents *before*
+    # create_run / active-run refusal so crash orphans are reachable even when
+    # an active run blocks a new start (or --force creates a different rid).
+    if not dry_run:
+        try:
+            from omg_cli.team.tmux import (
+                TmuxTeamError,
+                require_clean_team_launch_intents,
+            )
+
+            require_clean_team_launch_intents(root_path)
+        except TmuxTeamError as exc:
+            raise TeamError(str(exc)) from exc
+
     # Resolve / create run — track created_* for #17 rollback scope.
     # When --run reuses an existing run, never destroy pre-existing worktrees /
     # team dir / ownership (Codex P1 on PR #34).
@@ -2184,6 +2457,7 @@ def start_team(
 
         # Live path: create tmux session + fill pids
         launch_nonce = uuid.uuid4().hex
+        # Project-wide intent sweep already ran (fail-closed) before create_run.
         transaction_paths = (
             team_launch_receipt_path(root_path, rid),
             team_meta_path(root_path, rid),
@@ -2198,6 +2472,7 @@ def start_team(
             "window_id": None,
             "attach_hint": None,
         }
+        launch_intent_path: str | None = None
         try:
             if topology == "split":
                 from omg_cli.team.tmux import TmuxTeamError, create_split_team_session
@@ -2209,10 +2484,15 @@ def start_team(
                         env_pairs=env_pairs,
                         detach=detach,
                         env=env,
+                        root=root_path,
+                        run_id=rid,
                     )
                 except TmuxTeamError as exc:
                     raise TeamError(str(exc)) from exc
                 raw_launch = task_records[0].pop("_tmux_launch", None)
+                raw_intent = task_records[0].pop("_tmux_launch_intent", None)
+                if isinstance(raw_intent, str):
+                    launch_intent_path = raw_intent
                 if isinstance(raw_launch, Mapping):
                     tmux_launch = {**tmux_launch, **dict(raw_launch)}
                 # Inside mode joins the live session (name may differ from plan).
@@ -2223,17 +2503,21 @@ def start_team(
                     tasks=task_records,
                     env_pairs=env_pairs,
                 )
-            option = _tmux_run(
-                [
-                    "set-option",
-                    "-t",
-                    created_handle[1],
-                    LAUNCH_NONCE_OPTION,
-                    launch_nonce,
-                ]
+            _bind_tmux_launch_nonce(
+                session_id=created_handle[1],
+                launch_nonce=launch_nonce,
+                window_id=(
+                    str(tmux_launch.get("window_id"))
+                    if isinstance(tmux_launch.get("window_id"), str)
+                    else None
+                ),
+                pane_ids=[
+                    str(rec.get("pane_id"))
+                    for rec in task_records
+                    if isinstance(rec.get("pane_id"), str)
+                ],
+                session_owned=bool(tmux_launch.get("session_owned", True)),
             )
-            if option.returncode != 0:
-                raise TeamError("failed to bind tmux launch nonce")
 
             session_identity = _read_tmux_session_identity(session)
             if session_identity != created_handle:
@@ -2244,21 +2528,26 @@ def start_team(
                 and _TMUX_PANE_ID.fullmatch(str(rec.get("pane_id"))) is not None
                 for rec in task_records
             ):
-                # Prefer exact pane ids from new-session/split-window -P (required
-                # for inside-tmux where the session already has extra panes).
+                # Final linearization before immutable receipt: one list-panes
+                # snapshot of pane_id+pid+session_id+window_id (+nonce when set).
+                # Never commit from separate PID-only probes after revalidation.
+                snap_window = tmux_launch.get("window_id")
+                snap_window_id = (
+                    str(snap_window)
+                    if isinstance(snap_window, str)
+                    and _TMUX_WINDOW_ID.fullmatch(str(snap_window)) is not None
+                    else None
+                )
+                pane_snapshot = _snapshot_launch_pane_identities(
+                    expected_session_id=created_handle[1],
+                    expected_pane_ids=[str(rec["pane_id"]) for rec in task_records],
+                    expected_window_id=snap_window_id,
+                    expected_launch_nonce=launch_nonce,
+                )
                 for rec in task_records:
                     pane_id = str(rec["pane_id"])
-                    pid_probe = _tmux_run(
-                        ["display-message", "-p", "-t", pane_id, "#{pane_pid}"]
-                    )
-                    if pid_probe.returncode != 0:
-                        raise TeamError(f"tmux pane pid readback failed for {pane_id}")
-                    try:
-                        pid = int((pid_probe.stdout or "").strip())
-                    except ValueError as exc:
-                        raise TeamError(f"tmux pane pid invalid for {pane_id}") from exc
-                    if pid <= 0:
-                        raise TeamError(f"tmux pane pid non-positive for {pane_id}")
+                    snap = pane_snapshot[pane_id]
+                    pid = int(snap["pane_pid"])
                     rec["pid"] = pid
                     rec["pgid"] = _pgid_for_pid(pid)
                     rec["pid_start"] = _pid_start_identity(pid)
@@ -2296,6 +2585,11 @@ def start_team(
                 launch_nonce=launch_nonce,
                 tasks=task_records,
             )
+            # Receipt published — clear durable new-window intent WAL.
+            if launch_intent_path:
+                from omg_cli.team.tmux import clear_team_launch_intent
+
+                clear_team_launch_intent(launch_intent_path)
 
             meta = {
                 "writer": CLI_WRITER,
@@ -2387,6 +2681,85 @@ def start_team(
         raise _fail_start(exc) from exc
 
 
+def _status_worker_alive(
+    *,
+    pane_id: str,
+    session: str,
+    expected_session_id: str | None,
+    launch_nonce: str | None,
+    expected_pid_start: str | None,
+    expected_pid: int | None,
+) -> bool | None:
+    """Fail-closed status liveness using pane + session + nonce (+ PID start).
+
+    Tri-state (ALIVE / DEAD_OR_FOREIGN / UNKNOWN):
+    - ``True`` — exact receipt identity is live (ALIVE)
+    - ``False`` — successful probe proves dead / foreign identity (DEAD_OR_FOREIGN)
+    - ``None`` — probe unknown (tmux error / malformed / unavailable) (UNKNOWN)
+
+    Side-effect paths (resume / relaunch) must treat ``None`` as refuse/skip,
+    never as confirmed dead (avoids double-worker respawn). Only ``False`` may
+    enter relaunch candidates / write relaunch WAL / call ``respawn_worker_pane``.
+
+    Layer rules:
+    - pane probe OSError / non-zero / malformed → try ``list-panes -a`` absence
+      proof; proven absent → False; otherwise → None
+    - ``pane_dead=1`` or session-id mismatch → False
+    - pane nonce OSError / non-zero / malformed / missing → None (not False)
+    - successfully read a different valid nonce → False
+    - pid-start probe unavailable → None; successful mismatch → False
+
+    New-format receipts (``pid_start`` present) require AND identity:
+    ``live_pid == expected_pid`` **and** ``live_start == expected_pid_start``.
+    Start-id alone is insufficient (collision across different PIDs).
+    Legacy receipts with only ``pid`` keep pid-only comparison.
+    """
+    if not expected_session_id or not launch_nonce or not session:
+        return None
+    try:
+        from omg_cli.team.tmux import probe_worker_pane_identity
+
+        probed = probe_worker_pane_identity(pane_id)
+        if probed is None:
+            # display-message failed or malformed — prove absence via list-panes
+            # before treating as UNKNOWN (killed panes must be relaunchable).
+            absent, _err = _pane_proven_absent(pane_id)
+            if absent is True:
+                return False
+            return None
+        if probed.get("dead"):
+            return False
+        if probed.get("session_id") != expected_session_id:
+            return False
+        # Valid pane_id receipts never adopt a shared session nonce fallback.
+        live_nonce, nonce_ok = _probe_tmux_launch_nonce_for_pane(
+            pane_id, session, allow_session_fallback=False
+        )
+        if not nonce_ok:
+            return None
+        if live_nonce != launch_nonce:
+            return False
+        live_pid = probed.get("pane_pid")
+        if not isinstance(live_pid, int) or live_pid <= 0:
+            return False
+        if expected_pid_start:
+            # When both pid and pid_start are receipted, require AND (not OR).
+            if expected_pid is not None and live_pid != expected_pid:
+                return False
+            live_start = _pid_start_identity(live_pid)
+            # Unavailable start-id probe is UNKNOWN — never authorize relaunch.
+            if not live_start:
+                return None
+            if live_start != expected_pid_start:
+                return False
+            return True
+        if expected_pid is not None:
+            return live_pid == expected_pid
+        return True
+    except OSError:
+        return None
+
+
 def team_status(
     root: Path | str | None = None,
     run_id: str | None = None,
@@ -2406,6 +2779,26 @@ def team_status(
     session = str(meta.get("session") or "")
     dry = bool(meta.get("dry_run"))
     workspace_mode = str(meta.get("workspace_mode") or WORKSPACE_MODE)
+    launch_nonce = meta.get("launch_nonce")
+    expected_session_id: str | None = None
+    receipt_path = team_launch_receipt_path(root_path, run_id)
+    if receipt_path.is_file():
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            receipt = None
+        if isinstance(receipt, dict):
+            if isinstance(receipt.get("session_id"), str):
+                expected_session_id = str(receipt["session_id"])
+            if isinstance(receipt.get("launch_nonce"), str):
+                launch_nonce = receipt.get("launch_nonce") or launch_nonce
+    if expected_session_id is None and session and not dry and probe_tmux:
+        try:
+            ident = _read_tmux_session_identity(session)
+        except Exception:
+            ident = None
+        if ident is not None and ident[0] == session and ident[1]:
+            expected_session_id = str(ident[1])
 
     # Optional ownership presence (read-only; ignore missing)
     ownership_present = ownership_manifest_path(root_path, run_id).is_file()
@@ -2423,14 +2816,28 @@ def team_status(
         widx = int(raw.get("window_index") or 0)
         wt = str(raw.get("worktree") or "")
         st = str(raw.get("status") or "unknown")
+        pane_id = raw.get("pane_id")
         # dry_run / never-launched panes are not live
         if dry or st == "dry_run" or raw.get("pid") is None and dry:
             alive = False
         elif not probe_tmux:
             alive = False
+        elif isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id) is not None:
+            probed_alive = _status_worker_alive(
+                pane_id=pane_id,
+                session=session,
+                expected_session_id=expected_session_id,
+                launch_nonce=launch_nonce if isinstance(launch_nonce, str) else None,
+                expected_pid_start=raw.get("pid_start")
+                if isinstance(raw.get("pid_start"), str)
+                else None,
+                expected_pid=raw.get("pid") if isinstance(raw.get("pid"), int) else None,
+            )
+            # Locked status schema keeps bool; unknown → not-alive display.
+            alive = bool(probed_alive)
         else:
-            win = _window_alive(session, widx)
-            alive = bool(win) if win is not None else False
+            # No exact pane identity → never guess via logical window_index (#98).
+            alive = False
         tasks_out.append(
             {
                 "task_id": tid,
@@ -2655,18 +3062,79 @@ def _write_confined_linked_ralph_state(
         raise TeamError(f"linked Ralph write refused: {exc}") from exc
 
 
+def _team_launch_nonce_matches(
+    *,
+    session: str,
+    receipt: Mapping[str, Any],
+    session_owned: bool,
+    window_id: str | None,
+    pane_ids: Sequence[str] | None = None,
+) -> bool:
+    """Verify launch nonce using the authority mode for this Team.
+
+    Owned detached sessions may use the session option. Inside mode must match
+    pane-scoped (or window-scoped) stamps — never a shared session option that
+    a later Team can overwrite.
+    """
+    expected = receipt.get("launch_nonce")
+    if not isinstance(expected, str):
+        return False
+    if session_owned:
+        return _read_tmux_launch_nonce(session) == expected
+    if isinstance(window_id, str) and _read_tmux_launch_nonce_for_window(window_id) == expected:
+        return True
+    if pane_ids:
+        for pane_id in pane_ids:
+            if (
+                isinstance(pane_id, str)
+                and _read_tmux_launch_nonce_for_pane(
+                    pane_id, session, allow_session_fallback=False
+                )
+                == expected
+            ):
+                return True
+        return False
+    return False
+
+
+def _tmux_launch_authority_matches(
+    session: str,
+    *,
+    expected_nonce: str,
+    session_owned: bool,
+    window_id: str | None = None,
+    pane_ids: Sequence[str] | None = None,
+) -> bool:
+    """Same session_owned-aware authority rule for a bare nonce string.
+
+    Thin wrapper around :func:`_team_launch_nonce_matches` for callers (scaling
+    / relaunch) that hold a raw ``launch_nonce`` string from a launch/identity
+    receipt rather than the full receipt mapping.
+    """
+    return _team_launch_nonce_matches(
+        session=session,
+        receipt={"launch_nonce": expected_nonce},
+        session_owned=session_owned,
+        window_id=window_id,
+        pane_ids=pane_ids,
+    )
+
+
 def _resolve_live_signal_target(
     session: str,
     receipt: Mapping[str, Any],
     row: Mapping[str, Any],
+    *,
+    session_owned: bool = True,
+    window_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Resolve a kill target bound to session/nonce/pane_id.
+    """Resolve a kill target bound to exact launch-receipt process identity.
 
-    Launch receipts capture pane PIDs immediately after create; the
-    ``worker-ready && exec …`` pane chain often replaces that process before
-    stop. When the receipted pane_id still lives under the same session_id +
-    launch_nonce, rebind to the *current* pane_pid/pgid/pid_start. Refuse when
-    session/nonce/pane_id diverge (no free-form pkill).
+    Pane token + launch nonce alone are not authority to adopt a *new* PID/PGID
+    (``tmux respawn-pane`` / pane reuse keep ``%N`` while replacing the worker).
+    Signal only the receipted pid/pgid/pid_start. PID drift requires a CLI
+    identity-chain relaunch receipt (already reflected in ``row``), not a live
+    pane rebind.
     """
     window_index = row.get("window_index")
     pane_id = row.get("pane_id")
@@ -2679,29 +3147,62 @@ def _resolve_live_signal_target(
         return None
     if _read_tmux_session_identity(session) != (session, receipt.get("session_id")):
         return None
-    if _read_tmux_launch_nonce(session) != receipt.get("launch_nonce"):
-        return None
+    expected_nonce = receipt.get("launch_nonce")
+    live_nonce = _read_tmux_launch_nonce_for_pane(
+        pane_id, session, allow_session_fallback=False
+    )
+    if live_nonce != expected_nonce:
+        if session_owned:
+            # Owned detached session may still stamp session option; accept
+            # only when pane option is absent *and* session matches (no pane
+            # option was ever written). Prefer explicit pane authority.
+            if live_nonce is not None:
+                return None
+            if _read_tmux_launch_nonce(session) != expected_nonce:
+                return None
+        else:
+            # Inside mode: never use shared session nonce. Window stamp is the
+            # only non-pane fallback when the Team window is known.
+            if (
+                not isinstance(window_id, str)
+                or _read_tmux_launch_nonce_for_window(window_id) != expected_nonce
+            ):
+                return None
 
     live_pid: int | None = None
+    live_window_id: str | None = None
+    # Atomic pane probe: id + pid + session + window (+ pane nonce when supported).
     pane_probe = _tmux_run(
-        ["display-message", "-p", "-t", pane_id, "#{pane_id}\t#{pane_pid}"]
+        [
+            "display-message",
+            "-p",
+            "-t",
+            pane_id,
+            "#{pane_id}\t#{pane_pid}\t#{session_id}\t#{window_id}",
+        ]
     )
     if pane_probe.returncode == 0:
         parts = (pane_probe.stdout or "").strip().split("\t")
         if (
-            len(parts) == 2
+            len(parts) == 4
             and _TMUX_PANE_ID.fullmatch(parts[0]) is not None
             and parts[0] == pane_id
+            and parts[2] == receipt.get("session_id")
         ):
+            if (
+                isinstance(window_id, str)
+                and _TMUX_WINDOW_ID.fullmatch(window_id) is not None
+                and parts[3] != window_id
+            ):
+                return None
+            if _TMUX_WINDOW_ID.fullmatch(parts[3]) is not None:
+                live_window_id = parts[3]
             try:
                 live_pid = int(parts[1])
             except ValueError:
                 return None
     if live_pid is None:
-        observed = _list_pane_identities(session).get(window_index)
-        if observed is None or observed[0] != pane_id:
-            return None
-        live_pid = int(observed[1])
+        return None
     if live_pid <= 0:
         return None
     live_pgid = _pgid_for_pid(live_pid)
@@ -2711,16 +3212,20 @@ def _resolve_live_signal_target(
     receipt_pid = row.get("pid")
     receipt_pgid = row.get("pgid")
     receipt_start = row.get("pid_start")
-    rebound = not (
+    if not (
         receipt_pid == live_pid
         and receipt_pgid == live_pgid
         and receipt_start == live_start
-    )
+    ):
+        # Refuse respawn / reuse rebound — do not signal a foreign PGID.
+        return None
     out = dict(row)
     out["pid"] = live_pid
     out["pgid"] = live_pgid
     out["pid_start"] = live_start
-    out["identity_rebound"] = rebound
+    if live_window_id is not None:
+        out["window_id"] = live_window_id
+    out["identity_rebound"] = False
     return out
 
 
@@ -2728,9 +3233,21 @@ def _live_signal_target_matches(
     session: str,
     receipt: Mapping[str, Any],
     row: Mapping[str, Any],
+    *,
+    session_owned: bool = True,
+    window_id: str | None = None,
 ) -> bool:
     """Revalidate session/nonce/pane-bound identity immediately before signal."""
-    return _resolve_live_signal_target(session, receipt, row) is not None
+    return (
+        _resolve_live_signal_target(
+            session,
+            receipt,
+            row,
+            session_owned=session_owned,
+            window_id=window_id,
+        )
+        is not None
+    )
 
 
 def _process_group_disappeared(pgid: int) -> tuple[bool, str | None]:
@@ -2748,6 +3265,44 @@ def _process_group_disappeared(pgid: int) -> tuple[bool, str | None]:
     except OSError as exc:
         return False, f"process group disappearance probe failed pgid={pgid}: {exc}"
     return False, None
+
+
+def _pane_proven_absent(pane_id: str) -> tuple[bool | None, str | None]:
+    """Prove pane absence only via a successful complete ``list-panes -a``.
+
+    Returns:
+      ``(True, None)`` — pane token explicitly absent from a clean global list
+      ``(False, None)`` — pane token present
+      ``(None, reason)`` — unknown (OSError / non-zero / malformed); never
+        treat unknown as gone (would authorize unsafe SIGKILL escalation)
+    """
+    if _TMUX_PANE_ID.fullmatch(pane_id) is None:
+        return None, f"invalid pane id for absence probe {pane_id!r}"
+    try:
+        listed = _tmux_run(["list-panes", "-a", "-F", "#{pane_id}"])
+    except OSError as exc:
+        return None, f"pane absence probe OSError pane={pane_id}: {exc}"
+    if listed.returncode != 0:
+        err = (listed.stderr or listed.stdout or "").strip()
+        return (
+            None,
+            f"pane absence probe failed pane={pane_id} exit={listed.returncode}"
+            + (f" {err}" if err else ""),
+        )
+    seen: set[str] = set()
+    for line in (listed.stdout or "").splitlines():
+        token = line.strip()
+        if not token:
+            continue
+        if _TMUX_PANE_ID.fullmatch(token) is None:
+            return (
+                None,
+                f"pane absence probe malformed row {token!r} pane={pane_id}",
+            )
+        seen.add(token)
+    if pane_id in seen:
+        return False, None
+    return True, None
 
 
 def _receipt_leader_pgid(
@@ -2967,6 +3522,13 @@ def _stop_team_locked(
     verified_targets: list[dict[str, Any]] = []
     receipt: dict[str, Any] | None = None
     identity_verified = False
+    session_owned = bool(meta.get("session_owned", True))
+    window_id = meta.get("window_id")
+    window_id_str = (
+        str(window_id)
+        if isinstance(window_id, str) and _TMUX_WINDOW_ID.fullmatch(window_id)
+        else None
+    )
     if session and not dry:
         try:
             chain = _load_team_identity_chain(root_path, run_id, meta)
@@ -2977,35 +3539,42 @@ def _stop_team_locked(
             if not tmux_available():
                 raise TeamError("tmux unavailable for launch identity readback")
             observed_session = _read_tmux_session_identity(session)
-            observed_nonce = _read_tmux_launch_nonce(session)
             observed_panes = _list_pane_identities(session)
             if observed_session != (session, receipt["session_id"]):
                 raise TeamError("live tmux session identity mismatch")
-            if observed_nonce != receipt["launch_nonce"]:
+            if not _team_launch_nonce_matches(
+                session=session,
+                receipt=receipt,
+                session_owned=session_owned,
+                window_id=window_id_str,
+                pane_ids=[
+                    str(row.get("pane_id"))
+                    for row in current_rows
+                    if isinstance(row.get("pane_id"), str)
+                ],
+            ):
                 raise TeamError("live tmux launch nonce mismatch")
             # observed_panes used only as a soft preflight; kill authority is
-            # resolved per-pane via session/nonce/pane_id rebind below.
+            # resolved per-pane via exact receipt process identity below.
             _ = observed_panes
             for row in current_rows:
-                resolved = _resolve_live_signal_target(session, receipt, row)
+                resolved = _resolve_live_signal_target(
+                    session,
+                    receipt,
+                    row,
+                    session_owned=session_owned,
+                    window_id=window_id_str,
+                )
                 if resolved is None:
                     raise TeamError("live tmux pane/process identity mismatch")
-                if resolved.get("identity_rebound"):
-                    actions.append(
-                        "pane identity rebound "
-                        f"task={resolved.get('task_id')} "
-                        f"pid={row.get('pid')}→{resolved.get('pid')} "
-                        f"pgid={row.get('pgid')}→{resolved.get('pgid')}"
-                    )
                 verified_targets.append(resolved)
             identity_verified = True
         except (TeamError, ProcessLookupError, PermissionError, OSError) as exc:
             errors.append(f"identity verification refused signalling: {exc}")
 
-    # 1) Signal each target only while its session/nonce/pane_id identity is
-    # still live (pane_pid may rebind after worker-ready && exec).  Do this
-    # before killing tmux: after kill-session the pane authority is gone and a
-    # recorded PGID could already have been reused.
+    # 1) Signal each target only while its exact receipt process identity is
+    # still live. Do this before killing tmux: after kill-session the pane
+    # authority is gone and a recorded PGID could already have been reused.
     signalled: list[dict[str, Any]] = []
     attempted_task_ids: set[str] = set()
     process_disappearance_verified = bool(identity_verified and verified_targets)
@@ -3019,44 +3588,50 @@ def _stop_team_locked(
                 )
                 process_disappearance_verified = False
                 continue
-            resolved = _resolve_live_signal_target(session, receipt, raw)
+            resolved = _resolve_live_signal_target(
+                session,
+                receipt,
+                raw,
+                session_owned=session_owned,
+                window_id=window_id_str,
+            )
             if resolved is None:
                 # Worker may have already exited (claim→completed) while the
-                # owned session/nonce still match. Treat as already stopped.
+                # owned session/nonce still match. Treat as already stopped
+                # only when pane absence is *proven* (not probe-unknown).
                 session_ok = _read_tmux_session_identity(session) == (
                     session,
                     receipt.get("session_id"),
-                ) and _read_tmux_launch_nonce(session) == receipt.get("launch_nonce")
+                ) and _team_launch_nonce_matches(
+                    session=session,
+                    receipt=receipt,
+                    session_owned=session_owned,
+                    window_id=window_id_str,
+                    pane_ids=[str(raw["pane_id"])]
+                    if isinstance(raw.get("pane_id"), str)
+                    else None,
+                )
                 pane_id = raw.get("pane_id")
-                pane_gone = False
+                pane_absent: bool | None = None
+                pane_probe_error: str | None = None
                 if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id):
-                    probe = _tmux_run(
-                        ["display-message", "-p", "-t", pane_id, "#{pane_pid}"]
-                    )
-                    if probe.returncode != 0:
-                        pane_gone = True
-                    else:
-                        try:
-                            live_pid = int((probe.stdout or "").strip())
-                        except ValueError:
-                            live_pid = -1
-                        if live_pid <= 0 or _pgid_for_pid(live_pid) is None:
-                            pane_gone = True
-                if session_ok and pane_gone:
+                    pane_absent, pane_probe_error = _pane_proven_absent(pane_id)
+                if session_ok and pane_absent is True:
                     actions.append(f"process already gone before signal task={tid}")
                     attempted_task_ids.add(str(tid))
                     continue
                 identity_verified = False
-                errors.append(
-                    f"signal identity drift refused signalling for task={tid}"
-                )
                 process_disappearance_verified = False
+                if pane_probe_error:
+                    errors.append(
+                        f"signal identity drift refused signalling for task={tid}: "
+                        f"{pane_probe_error}"
+                    )
+                else:
+                    errors.append(
+                        f"signal identity drift refused signalling for task={tid}"
+                    )
                 continue
-            if resolved.get("identity_rebound"):
-                actions.append(
-                    "pane identity rebound at signal "
-                    f"task={tid} pid={raw.get('pid')}→{resolved.get('pid')}"
-                )
             pid = resolved["pid"]
             pgid = resolved["pgid"]
             if not isinstance(pid, int) or not isinstance(pgid, int):
@@ -3099,17 +3674,17 @@ def _stop_team_locked(
                 errors.append(group_error)
                 continue
             if not group_gone:
-                # Prefer a fresh pane-bound target (exec-replaced PIDs). If the
-                # receipted leader was already reaped, keep the last known pgid
-                # when session/nonce still match so same-group survivors can be
-                # SIGKILL'd (see test_stop_kills_same_pgid_child_…).
-                resolved_kill = _resolve_live_signal_target(session, receipt, resolved)
+                # Prefer a fresh exact-identity target. NEVER fall back to a
+                # previously cached numeric PGID when the final leader probe
+                # returns None (PID gone / PGID reuse risk).
+                resolved_kill = _resolve_live_signal_target(
+                    session,
+                    receipt,
+                    resolved,
+                    session_owned=session_owned,
+                    window_id=window_id_str,
+                )
                 if resolved_kill is not None:
-                    if resolved_kill.get("identity_rebound"):
-                        actions.append(
-                            "pane identity rebound at SIGKILL "
-                            f"task={tid} pid={pid}→{resolved_kill.get('pid')}"
-                        )
                     pid = resolved_kill["pid"]
                     pgid = resolved_kill["pgid"]
                     target = pgid
@@ -3122,22 +3697,78 @@ def _stop_team_locked(
                 session_exact = _read_tmux_session_identity(session) == (
                     session,
                     receipt.get("session_id"),
-                ) and _read_tmux_launch_nonce(session) == receipt.get("launch_nonce")
-                escalation_authorized = bool(
-                    session_exact
-                    and (
-                        resolved_kill is not None
-                        and leader_pgid in (None, pgid)
-                        or resolved_kill is None
-                        and leader_pgid is None
-                    )
+                ) and _team_launch_nonce_matches(
+                    session=session,
+                    receipt=receipt,
+                    session_owned=session_owned,
+                    window_id=window_id_str,
+                    pane_ids=[str(resolved.get("pane_id"))]
+                    if isinstance(resolved.get("pane_id"), str)
+                    else None,
                 )
+                pane_id = resolved.get("pane_id")
+                pane_absent: bool | None = None
+                pane_probe_error: str | None = None
+                if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id):
+                    pane_absent, pane_probe_error = _pane_proven_absent(pane_id)
+                receipt_pid_start = resolved.get("pid_start")
+                # Exact live pane identity → SIGKILL that pgid only after a
+                # final leader PGID + start-id revalidation. leader_pgid is
+                # None must refuse (never authorize from cached numeric PGID).
+                if resolved_kill is not None:
+                    target = int(resolved_kill["pgid"])
+                    pgid = target
+                    pid = int(resolved_kill["pid"])
+                    start_ok = True
+                    if isinstance(receipt_pid_start, str) and receipt_pid_start:
+                        live_start = _pid_start_identity(pid)
+                        start_ok = live_start == receipt_pid_start
+                    escalation_authorized = bool(
+                        session_exact
+                        and leader_pgid is not None
+                        and leader_pgid == pgid
+                        and start_ok
+                    )
+                    if leader_pgid is None:
+                        errors.append(
+                            f"SIGKILL refused task={tid}: leader gone after "
+                            "resolve; refusing PGID-only kill (reuse risk)"
+                        )
+                    elif not start_ok:
+                        errors.append(
+                            f"SIGKILL refused task={tid}: pid_start revalidation "
+                            "failed after resolve"
+                        )
+                else:
+                    escalation_authorized = False
+                    if pane_probe_error:
+                        errors.append(
+                            f"SIGKILL refused task={tid}: pane probe unknown "
+                            f"({pane_probe_error})"
+                        )
+                    elif pane_absent is True and leader_pgid is None:
+                        errors.append(
+                            f"SIGKILL refused task={tid}: receipt pane and leader "
+                            "gone; refusing PGID-only kill (reuse risk)"
+                        )
+                    elif pane_absent is False and leader_pgid is None:
+                        errors.append(
+                            f"SIGKILL refused task={tid}: receipt pane still "
+                            "present without exact process identity"
+                        )
+                    else:
+                        errors.append(
+                            f"SIGKILL group authority drift refused signalling "
+                            f"task={tid}"
+                        )
                 if not escalation_authorized:
                     identity_verified = False
                     process_disappearance_verified = False
-                    errors.append(
-                        f"SIGKILL group authority drift refused signalling task={tid}"
-                    )
+                    if resolved_kill is not None and leader_pgid is not None:
+                        errors.append(
+                            f"SIGKILL group authority drift refused signalling "
+                            f"task={tid}"
+                        )
                     continue
                 try:
                     os.killpg(target, signal.SIGKILL)
@@ -3183,8 +3814,6 @@ def _stop_team_locked(
     # auto-destroyed with its last pane — treat that as verified disappearance
     # instead of requiring a live identity match for kill-session.
     session_disappearance_verified = bool(dry)
-    session_owned = bool(meta.get("session_owned", True))
-    window_id = meta.get("window_id")
     if session and not dry:
         session_still_exact = False
         session_already_gone = False
@@ -3192,14 +3821,21 @@ def _stop_team_locked(
             has = _tmux_run(["has-session", "-t", session])
             has_rc = getattr(has, "returncode", None) if has is not None else None
             if (
-                has_rc not in (None, 0)
+                has_rc == 1
                 and identity_verified
                 and process_disappearance_verified
             ):
+                # tmux has-session: 0 = exists, 1 = missing. Other codes are
+                # probe errors and must not count as verified disappearance.
                 session_already_gone = True
                 session_disappearance_verified = True
                 actions.append(
                     f"tmux session already gone after process teardown {session}"
+                )
+            elif has_rc not in (None, 0, 1):
+                session_still_exact = False
+                errors.append(
+                    f"tmux has-session readback refused exit {has_rc} for {session}"
                 )
             elif has_rc == 0 or has_rc is None:
                 session_still_exact = bool(
@@ -3208,7 +3844,17 @@ def _stop_team_locked(
                     and receipt is not None
                     and _read_tmux_session_identity(session)
                     == (session, receipt.get("session_id"))
-                    and _read_tmux_launch_nonce(session) == receipt.get("launch_nonce")
+                    and _team_launch_nonce_matches(
+                        session=session,
+                        receipt=receipt,
+                        session_owned=session_owned,
+                        window_id=window_id_str,
+                        pane_ids=[
+                            str(t.get("pane_id"))
+                            for t in verified_targets
+                            if isinstance(t.get("pane_id"), str)
+                        ],
+                    )
                 )
         except OSError as exc:
             session_still_exact = False

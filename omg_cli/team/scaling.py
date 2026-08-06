@@ -49,9 +49,11 @@ from omg_cli.team.plane import (
     _pgid_for_pid,
     _pid_start_identity,
     _persist_team_identity_receipt,
-    _read_tmux_launch_nonce,
+    _read_tmux_launch_nonce_for_pane,
     _read_tmux_session_identity,
     _session_alive,
+    _status_worker_alive,
+    _tmux_launch_authority_matches,
     _task_role,
     _tmux_run,
     _utc_now,
@@ -63,6 +65,7 @@ from omg_cli.team.plane import (
     load_team_meta,
     mutate_team_meta,
     team_dir,
+    team_launch_receipt_path,
     team_meta_path,
     plugin_root,
     wrap_pane_with_worker_ready,
@@ -1326,8 +1329,16 @@ def _add_tmux_windows(
     *,
     session: str,
     records: Sequence[dict[str, Any]],
+    session_owned: bool = True,
+    window_id: str | None = None,
 ) -> None:
-    """Adopt an exact WAL-planned orphan, or launch it exactly once."""
+    """Adopt an exact WAL-planned orphan, or launch it exactly once.
+
+    ``session_owned=False`` (inside Teams) never trusts the shared session's
+    ``@omg_launch_nonce`` — it does not exist there by design, since two
+    inside Teams in one tmux session would otherwise clobber each other's
+    stamp. Authority instead gates on the Team's own ``window_id``.
+    """
     if not tmux_available():
         raise TeamError(
             "tmux is required for omg team scale --add (non-dry-run).\n"
@@ -1338,6 +1349,13 @@ def _add_tmux_windows(
             f"tmux session {session!r} is not alive; cannot scale up. "
             "Use omg team resume / restart the team first."
         )
+    team_window_id = (
+        window_id
+        if isinstance(window_id, str) and _TMUX_WINDOW_ID.fullmatch(window_id)
+        else None
+    )
+    if not session_owned and window_id is not None and team_window_id is None:
+        raise TeamError("scale-up requires a valid team window id for inside Teams")
     created_records: list[dict[str, Any]] = []
     allocation_floor = 0
     session_id = (
@@ -1353,7 +1371,12 @@ def _add_tmux_windows(
     if session_id is not None and launch_nonce is not None:
         if (
             _read_tmux_session_identity(session) != (session, session_id)
-            or _read_tmux_launch_nonce(session) != launch_nonce
+            or not _tmux_launch_authority_matches(
+                session,
+                expected_nonce=launch_nonce,
+                session_owned=session_owned,
+                window_id=team_window_id,
+            )
         ):
             raise TeamError("scale-up tmux session authority changed before launch")
         for rec in records:
@@ -1453,10 +1476,24 @@ def _add_tmux_windows(
                 ),
             ]
         )
-        command = (
-            f"set-window-option -t {window_id} {_TMUX_SCALE_NONCE_OPTION} {nonce}"
-            f" ; rename-window -t {window_id} {task_id}"
-        )
+        command_parts = [
+            f"set-window-option -t {window_id} {_TMUX_SCALE_NONCE_OPTION} {nonce}",
+            f"rename-window -t {window_id} {task_id}",
+        ]
+        if launch_nonce is not None:
+            # ``team status`` reads a strict pane-scoped nonce with no session
+            # fallback (see ``_status_worker_alive``); a scaled-in pane/window
+            # that only carries ``@omg_scale_nonce`` is judged alive=False even
+            # when the worker is running. Stamp both scopes atomically with
+            # the rename/scale-nonce bind so there is no window where the pane
+            # exists without its launch-nonce authority.
+            command_parts.append(
+                f"set-option -p -t {pane_id} {_TMUX_LAUNCH_NONCE_OPTION} {launch_nonce}"
+            )
+            command_parts.append(
+                f"set-option -w -t {window_id} {_TMUX_LAUNCH_NONCE_OPTION} {launch_nonce}"
+            )
+        command = " ; ".join(command_parts)
         bound = _tmux_run(
             ["if-shell", "-F", "-t", window_id, predicate, command, ""]
         )
@@ -1469,6 +1506,17 @@ def _add_tmux_windows(
         expected = f"{window_id}\t{pane_id}\t{task_id}\t{nonce}"
         if readback.returncode != 0 or (readback.stdout or "").splitlines() != [expected]:
             raise TeamError(f"scaled window ownership readback failed for {task_id!r}")
+        if launch_nonce is not None:
+            # Read back through the exact pane-scoped, no-fallback mechanism
+            # ``team status`` itself uses, so a bind that silently missed the
+            # pane option (window-only) is caught here, not in status later.
+            live_pane_nonce = _read_tmux_launch_nonce_for_pane(
+                pane_id, session, allow_session_fallback=False
+            )
+            if live_pane_nonce != launch_nonce:
+                raise TeamError(
+                    f"scaled pane launch-nonce readback failed for {task_id!r}"
+                )
         rec["window_id"] = window_id
         rec["pane_id"] = pane_id
 
@@ -1531,19 +1579,42 @@ def _add_tmux_windows(
                     pane_cmd,
                 ]
                 if session_id is not None and launch_nonce is not None:
-                    create_predicate = _and_tmux_formats(
-                        [
-                            f"#{{==:#{{session_name}},{session}}}",
-                            f"#{{==:#{{session_id}},{session_id}}}",
-                            f"#{{==:#{{{_TMUX_LAUNCH_NONCE_OPTION}}},{launch_nonce}}}",
-                        ]
-                    )
+                    if session_owned:
+                        # Owned detached session: the session-level stamp is
+                        # this Team's own authority.
+                        authority_target = session
+                        create_predicate = _and_tmux_formats(
+                            [
+                                f"#{{==:#{{session_name}},{session}}}",
+                                f"#{{==:#{{session_id}},{session_id}}}",
+                                f"#{{==:#{{{_TMUX_LAUNCH_NONCE_OPTION}}},{launch_nonce}}}",
+                            ]
+                        )
+                    else:
+                        # Inside mode: the shared session never carries this
+                        # Team's ``@omg_launch_nonce`` (a second inside Team
+                        # in the same session would otherwise stamp over it).
+                        # Gate on the Team's own home window instead.
+                        if team_window_id is None:
+                            raise TeamError(
+                                "scale-up requires a team window id for "
+                                "inside-tmux authority"
+                            )
+                        authority_target = team_window_id
+                        create_predicate = _and_tmux_formats(
+                            [
+                                f"#{{==:#{{session_name}},{session}}}",
+                                f"#{{==:#{{session_id}},{session_id}}}",
+                                f"#{{==:#{{window_id}},{team_window_id}}}",
+                                f"#{{==:#{{{_TMUX_LAUNCH_NONCE_OPTION}}},{launch_nonce}}}",
+                            ]
+                        )
                     created = _tmux_run(
                         [
                             "if-shell",
                             "-F",
                             "-t",
-                            session,
+                            authority_target,
                             create_predicate,
                             shlex.join(new_window_args),
                             "",
@@ -1711,7 +1782,12 @@ def _add_tmux_windows(
                 raise TeamError(f"failed to create scaled-in window for {tid!r}")
         if session_id is not None and launch_nonce is not None and (
             _read_tmux_session_identity(session) != (session, session_id)
-            or _read_tmux_launch_nonce(session) != launch_nonce
+            or not _tmux_launch_authority_matches(
+                session,
+                expected_nonce=launch_nonce,
+                session_owned=session_owned,
+                window_id=team_window_id,
+            )
         ):
             raise TeamError("scale-up tmux session authority changed after launch")
     except (OSError, TeamError) as exc:
@@ -2388,11 +2464,21 @@ def _recover_pending_scale_up(
     session = str(meta.get("session") or "")
     session_id = authority.get("session_id")
     launch_nonce = authority.get("launch_nonce")
+    meta_session_owned = bool(meta.get("session_owned", True))
+    meta_window_id = meta.get("window_id")
+    meta_window_id = (
+        str(meta_window_id) if isinstance(meta_window_id, str) else None
+    )
     if (
         not isinstance(session_id, str)
         or not isinstance(launch_nonce, str)
         or _read_tmux_session_identity(session) != (session, session_id)
-        or _read_tmux_launch_nonce(session) != launch_nonce
+        or not _tmux_launch_authority_matches(
+            session,
+            expected_nonce=launch_nonce,
+            session_owned=meta_session_owned,
+            window_id=meta_window_id,
+        )
     ):
         raise TeamError("pending scale-up tmux session identity mismatch")
     for record in records:
@@ -2680,6 +2766,8 @@ def _kill_pane_recorded(
     errors: list[str],
     signalled: list[dict[str, Any]],
     authority: Mapping[str, Any],
+    session_owned: bool = True,
+    window_id: str | None = None,
 ) -> None:
     """Kill only an immutable, immediately revalidated pane identity."""
     tid = rec.get("task_id")
@@ -2693,6 +2781,16 @@ def _kill_pane_recorded(
         errors.append(f"missing tmux session identity task={tid}")
         return
     session_id = raw_session_id if isinstance(raw_session_id, str) else ""
+
+    def _authority_ok() -> bool:
+        expected_nonce = authority.get("launch_nonce")
+        return isinstance(expected_nonce, str) and _tmux_launch_authority_matches(
+            session,
+            expected_nonce=expected_nonce,
+            session_owned=session_owned,
+            window_id=window_id,
+            pane_ids=[pane_id] if isinstance(pane_id, str) else None,
+        )
 
     if not dry:
         if (
@@ -2708,7 +2806,7 @@ def _kill_pane_recorded(
             or not pid_start
             or not tmux_available()
             or _read_tmux_session_identity(session) != (session, session_id)
-            or _read_tmux_launch_nonce(session) != authority.get("launch_nonce")
+            or not _authority_ok()
             or _read_recorded_tmux_pane(
                 rec,
                 session=session,
@@ -2727,7 +2825,7 @@ def _kill_pane_recorded(
             return
         if (
             _read_tmux_session_identity(session) != (session, session_id)
-            or _read_tmux_launch_nonce(session) != authority.get("launch_nonce")
+            or not _authority_ok()
             or _read_recorded_tmux_pane(
                 rec,
                 session=session,
@@ -2760,7 +2858,7 @@ def _kill_pane_recorded(
             if _read_tmux_session_identity(session) != (
                 session,
                 session_id,
-            ) or _read_tmux_launch_nonce(session) != authority.get("launch_nonce"):
+            ) or not _authority_ok():
                 errors.append(f"post-signal tmux session identity drift task={tid}")
                 return
             live_handle = _read_recorded_tmux_pane(
@@ -2812,6 +2910,8 @@ def _recover_or_kill_remove_victim(
     actions: list[str],
     errors: list[str],
     signalled: list[dict[str, Any]],
+    session_owned: bool = True,
+    window_id: str | None = None,
 ) -> None:
     """Resume an authenticated remove after partial signal/pane side effects."""
     task_id = str(rec.get("task_id") or "")
@@ -2835,7 +2935,13 @@ def _recover_or_kill_remove_victim(
         or not isinstance(session_id, str)
         or not isinstance(launch_nonce, str)
         or _read_tmux_session_identity(session) != (session, session_id)
-        or _read_tmux_launch_nonce(session) != launch_nonce
+        or not _tmux_launch_authority_matches(
+            session,
+            expected_nonce=launch_nonce,
+            session_owned=session_owned,
+            window_id=window_id,
+            pane_ids=[pane_id],
+        )
     ):
         errors.append(f"remove retry authority mismatch task={task_id}")
         return
@@ -2866,6 +2972,8 @@ def _recover_or_kill_remove_victim(
             errors=errors,
             signalled=signalled,
             authority=authority,
+            session_owned=session_owned,
+            window_id=window_id,
         )
         return
     if live_handle is not None and process_absent:
@@ -3179,7 +3287,16 @@ def _scale_up(
                 for rec in new_records:
                     rec["_session_id"] = str(authority["session_id"])
                     rec["_launch_nonce"] = str(authority["launch_nonce"])
-                _add_tmux_windows(session=session, records=new_records)
+                _add_tmux_windows(
+                    session=session,
+                    records=new_records,
+                    session_owned=bool(meta.get("session_owned", True)),
+                    window_id=(
+                        str(meta["window_id"])
+                        if isinstance(meta.get("window_id"), str)
+                        else None
+                    ),
+                )
                 windows_created = True
                 session_id = str(authority["session_id"])
                 for rec in new_records:
@@ -3471,6 +3588,9 @@ def _scale_down(
     active = [t for t in tasks_all if str(t.get("status") or "") != STATUS_SCALED_DOWN]
     session = str(meta.get("session") or "")
     effective_dry = bool(dry_run or meta.get("dry_run"))
+    meta_session_owned = bool(meta.get("session_owned", True))
+    meta_window_id = meta.get("window_id")
+    meta_window_id = str(meta_window_id) if isinstance(meta_window_id, str) else None
     actions: list[str] = []
     errors: list[str] = []
     signalled: list[dict[str, Any]] = []
@@ -3679,6 +3799,8 @@ def _scale_down(
                 actions=actions,
                 errors=errors,
                 signalled=signalled,
+                session_owned=meta_session_owned,
+                window_id=meta_window_id,
             )
         else:
             # First live attempt (or dry-run) uses the strict kill path so
@@ -3691,6 +3813,8 @@ def _scale_down(
                 errors=errors,
                 signalled=signalled,
                 authority=authority,
+                session_owned=meta_session_owned,
+                window_id=meta_window_id,
             )
         wt = str(v.get("worktree") or "")
         if wt:
@@ -3878,14 +4002,26 @@ def _reconcile_resume_tasks(
     meta: Mapping[str, Any],
     *,
     probe_tmux: bool,
+    expected_session_id: str | None = None,
+    launch_nonce: str | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], int]:
-    """Probe liveness for *meta* tasks; return (status_by_tid, reconciliations, changed)."""
+    """Probe liveness for *meta* tasks; return (status_by_tid, reconciliations, changed).
+
+    Pane-id tasks use the same fail-closed identity chain as ``team_status``
+    (session_id + pane nonce + pid/pid_start). Bare ``pane_alive`` is never
+    enough to write ``STATUS_RUNNING`` — a respawned pane keeps ``%id`` while
+    replacing the worker process.
+    """
 
     session = str(meta.get("session") or "")
     dry = bool(meta.get("dry_run"))
     changed = 0
     tasks_out: list[dict[str, Any]] = []
     reconciliations: list[dict[str, Any]] = []
+    nonce = launch_nonce if isinstance(launch_nonce, str) else None
+    if nonce is None:
+        raw_nonce = meta.get("launch_nonce")
+        nonce = raw_nonce if isinstance(raw_nonce, str) else None
 
     for raw in meta.get("tasks") or []:
         if not isinstance(raw, Mapping):
@@ -3909,10 +4045,26 @@ def _reconcile_resume_tasks(
 
         pane_id = rec.get("pane_id")
         if isinstance(pane_id, str) and pane_id:
-            from omg_cli.team.tmux import pane_alive
-
-            win = pane_alive(pane_id)
+            expected_pid = rec.get("pid")
+            expected_pid_i = (
+                expected_pid if isinstance(expected_pid, int) and not isinstance(expected_pid, bool) else None
+            )
+            expected_start = rec.get("pid_start")
+            expected_start_s = (
+                expected_start if isinstance(expected_start, str) else None
+            )
+            # Tri-state: True/False/None (unknown). Do not coerce None→False —
+            # unknown must leave needs-collect alone rather than force-dead.
+            win = _status_worker_alive(
+                pane_id=pane_id,
+                session=session,
+                expected_session_id=expected_session_id,
+                launch_nonce=nonce,
+                expected_pid_start=expected_start_s,
+                expected_pid=expected_pid_i,
+            )
         else:
+            # Legacy windows topology / hermetic mocks without pane_id.
             win = _window_alive(session, widx)
         if win is True:
             new_st = STATUS_RUNNING
@@ -4017,8 +4169,24 @@ def _resume_team_locked_impl(
         )
         session = str(meta.get("session") or "")
         dry = bool(meta.get("dry_run"))
+        expected_session_id: str | None = None
+        launch_nonce = meta.get("launch_nonce")
+        receipt_path = team_launch_receipt_path(root_path, rid)
+        if receipt_path.is_file():
+            try:
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                receipt = None
+            if isinstance(receipt, dict):
+                if isinstance(receipt.get("session_id"), str):
+                    expected_session_id = str(receipt["session_id"])
+                if isinstance(receipt.get("launch_nonce"), str):
+                    launch_nonce = receipt.get("launch_nonce") or launch_nonce
         status_by_tid, reconciliations, changed = _reconcile_resume_tasks(
-            meta, probe_tmux=probe_tmux
+            meta,
+            probe_tmux=probe_tmux,
+            expected_session_id=expected_session_id,
+            launch_nonce=launch_nonce if isinstance(launch_nonce, str) else None,
         )
         resumed_at = _utc_now()
         resume_changes = changed
@@ -4866,7 +5034,7 @@ def _relaunch_dead_incomplete_workers_locked(
 ) -> dict[str, Any]:
     """Body of relaunch; caller must hold :func:`acquire_scale_lock`."""
     from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
-    from omg_cli.team.tmux import TmuxTeamError, pane_alive, respawn_worker_pane
+    from omg_cli.team.tmux import TmuxTeamError, respawn_worker_pane
 
     meta = _require_team_run(root_path, rid)
     pending_operation = pending_identity_wal_operation(root_path, rid, meta)
@@ -4932,6 +5100,23 @@ def _relaunch_dead_incomplete_workers_locked(
             pending_task_ids.append(task_id)
 
     candidates: list[dict[str, Any]] = []
+    relaunch_expected_session_id: str | None = None
+    relaunch_launch_nonce: str | None = None
+    receipt_path = team_launch_receipt_path(root_path, rid)
+    if receipt_path.is_file():
+        try:
+            launch_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            launch_receipt = None
+        if isinstance(launch_receipt, dict):
+            if isinstance(launch_receipt.get("session_id"), str):
+                relaunch_expected_session_id = str(launch_receipt["session_id"])
+            if isinstance(launch_receipt.get("launch_nonce"), str):
+                relaunch_launch_nonce = str(launch_receipt["launch_nonce"])
+    if relaunch_launch_nonce is None:
+        raw_nonce = meta.get("launch_nonce")
+        relaunch_launch_nonce = raw_nonce if isinstance(raw_nonce, str) else None
+
     for rec in tasks_all:
         tid = str(rec.get("task_id") or "")
         if pending_task_ids is not None:
@@ -4948,14 +5133,35 @@ def _relaunch_dead_incomplete_workers_locked(
         if not isinstance(pane_id, str) or not pane_id:
             skipped.append({"task_id": tid, "reason": "no_pane_id"})
             continue
-        alive = pane_alive(pane_id)
+        if not tmux_available():
+            skipped.append({"task_id": tid, "reason": "tmux_unavailable"})
+            continue
+        expected_pid = rec.get("pid")
+        expected_pid_i = (
+            expected_pid
+            if isinstance(expected_pid, int) and not isinstance(expected_pid, bool)
+            else None
+        )
+        expected_start = rec.get("pid_start")
+        expected_start_s = expected_start if isinstance(expected_start, str) else None
+        # Exact identity only — bare pane_alive would skip relaunch for a
+        # respawned %id hosting a foreign process. Tri-state: None=unknown
+        # must never spawn a replacement (double-worker risk).
+        alive = _status_worker_alive(
+            pane_id=pane_id,
+            session=session,
+            expected_session_id=relaunch_expected_session_id,
+            launch_nonce=relaunch_launch_nonce,
+            expected_pid_start=expected_start_s,
+            expected_pid=expected_pid_i,
+        )
         if alive is True:
             skipped.append({"task_id": tid, "reason": "alive"})
             continue
         if alive is None:
-            skipped.append({"task_id": tid, "reason": "tmux_unavailable"})
+            skipped.append({"task_id": tid, "reason": "probe_unknown"})
             continue
-        # Dead pane.
+        # Dead pane or identity drift (respawn / reuse).
         terminal = _worker_api_tasks_terminal(
             root_path,
             run_id=rid,
@@ -5010,7 +5216,17 @@ def _relaunch_dead_incomplete_workers_locked(
         authority.get("session_id"),
     ):
         raise TeamError("live tmux session identity mismatch; refuse relaunch")
-    if _read_tmux_launch_nonce(session) != authority.get("launch_nonce"):
+    relaunch_expected_nonce = authority.get("launch_nonce")
+    relaunch_window_id = meta.get("window_id")
+    relaunch_window_id = (
+        str(relaunch_window_id) if isinstance(relaunch_window_id, str) else None
+    )
+    if not isinstance(relaunch_expected_nonce, str) or not _tmux_launch_authority_matches(
+        session,
+        expected_nonce=relaunch_expected_nonce,
+        session_owned=bool(meta.get("session_owned", True)),
+        window_id=relaunch_window_id,
+    ):
         raise TeamError("live tmux launch nonce mismatch; refuse relaunch")
 
     if meta.get("topology") != "split":

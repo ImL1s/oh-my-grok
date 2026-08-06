@@ -217,7 +217,10 @@ def test_add_tmux_windows_adopts_each_exact_orphan_stage_without_relaunch(
         "_read_tmux_session_identity",
         lambda _session: ("omg-workers", "$7"),
     )
-    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "b" * 32)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "b" * 32)
+    monkeypatch.setattr(
+        scaling, "_read_tmux_launch_nonce_for_pane", lambda *_a, **_k: "b" * 32
+    )
     record = {
         "task_id": "scale-2",
         "window_index": 2,
@@ -265,7 +268,7 @@ def test_add_tmux_windows_rejects_duplicate_exact_orphans_without_relaunch(
         "_read_tmux_session_identity",
         lambda _session: ("omg-workers", "$7"),
     )
-    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "b" * 32)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "b" * 32)
     record = {
         "task_id": "scale-2",
         "window_index": 2,
@@ -313,7 +316,7 @@ def test_add_tmux_windows_does_not_stamp_reused_foreign_window_id(
         "_read_tmux_session_identity",
         lambda _session: ("omg-workers", "$7"),
     )
-    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "b" * 32)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "b" * 32)
     record = {
         "task_id": "scale-2",
         "window_index": 2,
@@ -382,7 +385,10 @@ def test_add_tmux_windows_adopts_ambiguous_create_result_without_duplicate(
         "_read_tmux_session_identity",
         lambda _session: ("omg-workers", "$7"),
     )
-    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "b" * 32)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "b" * 32)
+    monkeypatch.setattr(
+        scaling, "_read_tmux_launch_nonce_for_pane", lambda *_a, **_k: "b" * 32
+    )
     record = {
         "task_id": "scale-2",
         "window_index": 2,
@@ -404,6 +410,189 @@ def test_add_tmux_windows_adopts_ambiguous_create_result_without_duplicate(
     assert len(creates) == 1
     assert record["window_id"] == "@12"
     assert record["pane_id"] == "%22"
+
+
+def test_add_tmux_windows_inside_mode_gates_create_on_window_not_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Inside Teams (``session_owned=False``) never stamp a session-scoped
+    ``@omg_launch_nonce`` (a second inside Team sharing the tmux session
+    would otherwise clobber it). Scale-up authority must gate on the Team's
+    own home window instead of the (deliberately wrong/absent) session nonce.
+    """
+    calls: list[list[str]] = []
+    launch_nonce = "b" * 32
+    window_nonce = "a" * 32
+
+    def fake_tmux_run(args: Any, **_kwargs: Any) -> MagicMock:
+        command = list(args)
+        calls.append(command)
+        if command[0] == "list-windows":
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if command[0] == "if-shell" and command[command.index("-t") + 1] == "@7":
+            return MagicMock(returncode=0, stdout="2\t@12\t%22\n", stderr="")
+        if command[0] == "if-shell":
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if command[0] == "display-message":
+            return MagicMock(
+                returncode=0,
+                stdout=f"@12\t%22\tscale-2\t{window_nonce}\n",
+                stderr="",
+            )
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(scaling, "tmux_available", lambda: True)
+    monkeypatch.setattr(scaling, "_session_alive", lambda _session: True)
+    monkeypatch.setattr(scaling, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(
+        scaling, "_read_tmux_session_identity", lambda _session: ("omg-workers", "$7")
+    )
+    # Session-level nonce is deliberately wrong/unset: proves the inside path
+    # never consults it (session_owned=False must not fall back to it).
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: None)
+    monkeypatch.setattr(
+        plane,
+        "_read_tmux_launch_nonce_for_window",
+        lambda wid: launch_nonce if wid == "@7" else None,
+    )
+    monkeypatch.setattr(
+        scaling, "_read_tmux_launch_nonce_for_pane", lambda *_a, **_k: launch_nonce
+    )
+
+    record = {
+        "task_id": "scale-2",
+        "window_index": 2,
+        "window_nonce": window_nonce,
+        "_launch_name": f"scale-2-{window_nonce}",
+        "worktree": str(tmp_path / "scale-2"),
+        "pane_command": "run-scale-2",
+        "_env_pairs": [],
+        "_session_id": "$7",
+        "_launch_nonce": launch_nonce,
+    }
+
+    scaling._add_tmux_windows(
+        session="omg-workers",
+        records=[record],
+        session_owned=False,
+        window_id="@7",
+    )
+
+    creates = [
+        call
+        for call in calls
+        if call[0] == "if-shell" and call[call.index("-t") + 1] == "@7"
+    ]
+    assert len(creates) == 1
+    assert "#{==:#{window_id},@7}" in creates[0][4]
+    assert f"#{{==:#{{@omg_launch_nonce}},{launch_nonce}}}" in creates[0][4]
+    assert not any(
+        call[0] == "if-shell" and call[call.index("-t") + 1] == "omg-workers"
+        for call in calls
+    )
+    assert record["window_id"] == "@12"
+    assert record["pane_id"] == "%22"
+
+    # bind_and_rename must atomically stamp both pane- and window-scoped
+    # launch nonce, so ``team status`` (pane-scoped, no session fallback)
+    # sees the scaled-in worker as alive.
+    bind_call = next(
+        call
+        for call in calls
+        if call[0] == "if-shell" and call[call.index("-t") + 1] == "@12"
+    )
+    assert f"set-option -p -t %22 @omg_launch_nonce {launch_nonce}" in bind_call[5]
+    assert f"set-option -w -t @12 @omg_launch_nonce {launch_nonce}" in bind_call[5]
+
+
+def test_add_tmux_windows_inside_mode_fails_closed_on_stale_window_nonce(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Fail-closed counterpart: a mismatched team-window nonce must refuse
+    scale-up even though the session-level nonce (if any) is irrelevant."""
+
+    def fake_tmux_run(args: Any, **_kwargs: Any) -> MagicMock:
+        raise AssertionError("tmux must not be invoked once authority fails")
+
+    monkeypatch.setattr(scaling, "tmux_available", lambda: True)
+    monkeypatch.setattr(scaling, "_session_alive", lambda _session: True)
+    monkeypatch.setattr(scaling, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(
+        scaling, "_read_tmux_session_identity", lambda _session: ("omg-workers", "$7")
+    )
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "b" * 32)
+    monkeypatch.setattr(
+        plane, "_read_tmux_launch_nonce_for_window", lambda _wid: "stale" + "0" * 27
+    )
+
+    record = {
+        "task_id": "scale-2",
+        "window_index": 2,
+        "window_nonce": "a" * 32,
+        "_launch_name": f"scale-2-{'a' * 32}",
+        "worktree": str(tmp_path / "scale-2"),
+        "pane_command": "run-scale-2",
+        "_env_pairs": [],
+        "_session_id": "$7",
+        "_launch_nonce": "b" * 32,
+    }
+
+    with pytest.raises(TeamError, match="authority changed before launch"):
+        scaling._add_tmux_windows(
+            session="omg-workers",
+            records=[record],
+            session_owned=False,
+            window_id="@7",
+        )
+
+
+def test_bind_and_rename_fails_closed_when_pane_launch_nonce_readback_mismatches(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """If the atomic pane/window stamp silently misses the pane option, the
+    ``team status`` pane-scoped nonce read would judge the worker dead — so
+    ``_add_tmux_windows`` must refuse (and roll back) rather than report a
+    launch nonce readback it cannot corroborate."""
+    calls: list[list[str]] = []
+
+    def fake_tmux_run(args: Any, **_kwargs: Any) -> MagicMock:
+        command = list(args)
+        calls.append(command)
+        if command[0] == "new-window":
+            return MagicMock(returncode=0, stdout="2\t@12\t%22\n", stderr="")
+        if command[0] == "if-shell":
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if command[0] == "display-message":
+            return MagicMock(
+                returncode=0,
+                stdout=f"@12\t%22\tscale-2\t{'a' * 32}\n",
+                stderr="",
+            )
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(scaling, "tmux_available", lambda: True)
+    monkeypatch.setattr(scaling, "_session_alive", lambda _session: True)
+    monkeypatch.setattr(scaling, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(scaling.secrets, "token_hex", lambda _size: "a" * 32)
+    # Window-level stamp lands, but the pane option is (hypothetically) never
+    # observed by the strict, no-fallback pane reader ``team status`` uses.
+    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce_for_pane", lambda *_a, **_k: None)
+
+    record = {
+        "task_id": "scale-2",
+        "window_index": 2,
+        "worktree": str(tmp_path / "scale-2"),
+        "pane_command": "run-scale-2",
+        "_env_pairs": [],
+        "_launch_nonce": "b" * 32,
+    }
+
+    with pytest.raises(TeamError, match="pane launch-nonce readback failed"):
+        scaling._add_tmux_windows(
+            session="omg-workers",
+            records=[record],
+            session_owned=True,
+        )
 
 
 def test_add_tmux_windows_collision_fallback_records_actual_index(
@@ -666,7 +855,7 @@ def test_add_tmux_windows_malformed_success_refuses_replacement_session(
         "_read_tmux_session_identity",
         lambda _session: ("omg-workers", "$7"),
     )
-    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
     monkeypatch.setattr(scaling, "_tmux_run", fake_tmux_run)
 
     with pytest.raises(TeamError, match="cleanup handle unavailable"):
@@ -1040,7 +1229,7 @@ def test_kill_pane_recorded_uses_atomic_receipt_bound_tmux_predicate(
         "_read_tmux_session_identity",
         lambda _session: ("omg-workers", "$7"),
     )
-    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
     monkeypatch.setattr(
         scaling,
         "_read_recorded_tmux_pane",
@@ -1093,6 +1282,145 @@ def test_kill_pane_recorded_uses_atomic_receipt_bound_tmux_predicate(
     assert "#{==:#{pane_pid},10002}" in predicate
     assert "#{==:#{@omg_scale_nonce}," + "c" * 32 + "}" in predicate
     assert all(call[0] not in {"kill-pane", "kill-window"} for call in calls)
+
+
+def test_kill_pane_recorded_inside_mode_uses_pane_authority_not_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inside Teams (``session_owned=False``): scale-down's signal gate must
+    authenticate via the task's own pane (or team window) nonce, never the
+    shared session's (which inside Teams never stamp) — otherwise every
+    scale-down signal is refused after WAL publish (P2 fix)."""
+    record = {
+        "task_id": "scale-2",
+        "window_index": 7,
+        "window_id": "@17",
+        "window_nonce": "c" * 32,
+        "pane_id": "%27",
+        "pid": 10002,
+        "pgid": 20002,
+        "pid_start": "start-10002",
+    }
+    authority = {"session_id": "$7", "launch_nonce": "a" * 32}
+    signals: list[tuple[int, int]] = []
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(scaling, "tmux_available", lambda: True)
+    monkeypatch.setattr(
+        scaling,
+        "_read_tmux_session_identity",
+        lambda _session: ("omg-workers", "$7"),
+    )
+    # Session-level nonce is deliberately wrong/unset: inside Teams never
+    # stamp it, so a hard session-nonce gate would always refuse this signal.
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: None)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce_for_window", lambda _wid: None)
+    monkeypatch.setattr(
+        plane,
+        "_read_tmux_launch_nonce_for_pane",
+        lambda pane_id, _session, allow_session_fallback=False: (
+            "a" * 32 if pane_id == "%27" else None
+        ),
+    )
+    monkeypatch.setattr(
+        scaling,
+        "_read_recorded_tmux_pane",
+        lambda _rec, **_kwargs: ("@17", "%27"),
+    )
+    monkeypatch.setattr(scaling, "_pid_start_identity", lambda _pid: "start-10002")
+    monkeypatch.setattr(scaling, "_pgid_for_pid", lambda _pid: 20002)
+    monkeypatch.setattr(
+        scaling.os,
+        "killpg",
+        lambda pgid, sig: signals.append((pgid, int(sig))),
+    )
+
+    def fake_tmux_run(args: Any, **_kwargs: Any) -> MagicMock:
+        command = list(args)
+        calls.append(command)
+        if command[0] == "if-shell":
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if command[0] == "list-panes":
+            return MagicMock(returncode=0, stdout="%27\n", stderr="")
+        raise AssertionError(f"unexpected tmux call: {command}")
+
+    monkeypatch.setattr(scaling, "_tmux_run", fake_tmux_run)
+    actions: list[str] = []
+    errors: list[str] = []
+    signalled: list[dict[str, Any]] = []
+
+    scaling._kill_pane_recorded(
+        record,
+        session="omg-workers",
+        dry=False,
+        actions=actions,
+        errors=errors,
+        signalled=signalled,
+        authority=authority,
+        session_owned=False,
+        window_id="@7",
+    )
+
+    assert signals == [(20002, int(signal.SIGTERM))]
+    assert signalled == [{"task_id": "scale-2", "pgid": 20002, "pid": 10002}]
+    assert not any("authority mismatch" in err for err in errors)
+    assert not any("identity mismatch" in err for err in errors)
+
+
+def test_kill_pane_recorded_inside_mode_fails_closed_without_pane_or_window_nonce(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail-closed counterpart: if neither the team window nor this task's
+    own pane carries the launch nonce, the signal must be refused even
+    though the (irrelevant) session-level nonce happens to be unset too."""
+    record = {
+        "task_id": "scale-2",
+        "window_index": 7,
+        "window_id": "@17",
+        "window_nonce": "c" * 32,
+        "pane_id": "%27",
+        "pid": 10002,
+        "pgid": 20002,
+        "pid_start": "start-10002",
+    }
+    authority = {"session_id": "$7", "launch_nonce": "a" * 32}
+
+    monkeypatch.setattr(scaling, "tmux_available", lambda: True)
+    monkeypatch.setattr(
+        scaling,
+        "_read_tmux_session_identity",
+        lambda _session: ("omg-workers", "$7"),
+    )
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: None)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce_for_window", lambda _wid: None)
+    monkeypatch.setattr(
+        plane,
+        "_read_tmux_launch_nonce_for_pane",
+        lambda *_a, **_k: None,
+    )
+
+    def fake_tmux_run(args: Any, **_kwargs: Any) -> MagicMock:
+        raise AssertionError("tmux must not be invoked once authority fails")
+
+    monkeypatch.setattr(scaling, "_tmux_run", fake_tmux_run)
+    actions: list[str] = []
+    errors: list[str] = []
+    signalled: list[dict[str, Any]] = []
+
+    scaling._kill_pane_recorded(
+        record,
+        session="omg-workers",
+        dry=False,
+        actions=actions,
+        errors=errors,
+        signalled=signalled,
+        authority=authority,
+        session_owned=False,
+        window_id="@7",
+    )
+
+    assert signalled == []
+    assert errors == ["immutable signal identity mismatch task=scale-2"]
 
 
 def test_read_recorded_tmux_pane_refuses_scale_nonce_mismatch(
@@ -1218,7 +1546,7 @@ def _prepare_live_relaunch_team(
         "_read_tmux_session_identity",
         lambda _session: (live["session"], "$7"),
     )
-    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
     monkeypatch.setattr(scaling, "_session_alive", lambda _session: True)
     monkeypatch.setattr(scaling, "_resolve_relaunch_target", lambda *_args, **_kwargs: "@7")
     monkeypatch.setattr(
@@ -1227,10 +1555,16 @@ def _prepare_live_relaunch_team(
         lambda *_args, **_kwargs: False,
     )
     monkeypatch.setattr(scaling, "_worktree_dirty", lambda _path: False)
-    monkeypatch.setattr(
-        "omg_cli.team.tmux.pane_alive",
-        lambda pane: pane_to_task.get(pane) not in dead_ids,
-    )
+    monkeypatch.setattr(scaling, "tmux_available", lambda: True)
+
+    def fake_status_alive(
+        *,
+        pane_id: str,
+        **_kwargs: Any,
+    ) -> bool:
+        return pane_to_task.get(pane_id) not in dead_ids
+
+    monkeypatch.setattr(scaling, "_status_worker_alive", fake_status_alive)
     monkeypatch.setattr(scaling, "_resync_window_indices", lambda *_args: None)
     launched: dict[str, str] = {}
     respawns: list[str] = []
@@ -1267,7 +1601,7 @@ def test_scale_up_persists_actual_tmux_identity_and_scale_down_uses_it(
 
     launched: list[dict[str, Any]] = []
 
-    def capture_add(*, session: str, records: Any) -> None:
+    def capture_add(*, session: str, records: Any, **_kwargs: Any) -> None:
         assert session == "omg-workers"
         for record in records:
             record["window_index"] = 7
@@ -1331,7 +1665,7 @@ def test_scale_up_persists_actual_tmux_identity_and_scale_down_uses_it(
         "_read_tmux_session_identity",
         lambda _session: (live["session"], "$7"),
     )
-    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
     monkeypatch.setattr(
         scaling,
         "_list_pane_identities",
@@ -1432,7 +1766,7 @@ def test_scale_up_refuses_pane_identity_replacement_and_rolls_back(
 ) -> None:
     rid, _live = _prepare_live_scale_team(monkeypatch, tmp_path)
 
-    def capture_add(*, session: str, records: Any) -> None:
+    def capture_add(*, session: str, records: Any, **_kwargs: Any) -> None:
         assert session == "omg-workers"
         records[0]["window_index"] = 7
         records[0]["window_id"] = "@17"
@@ -1647,7 +1981,7 @@ def test_pending_add_wal_exact_retry_ignores_later_cap_reduction(
     rid, _live = _prepare_live_scale_team(monkeypatch, tmp_path)
     state = {"present": False, "creates": 0, "calls": 0, "crashed": False}
 
-    def launch_or_adopt(*, session: str, records: Any) -> None:
+    def launch_or_adopt(*, session: str, records: Any, **_kwargs: Any) -> None:
         assert session == "omg-workers"
         state["calls"] += 1
         if not state["present"]:
@@ -1702,7 +2036,7 @@ def test_scale_up_pane_binding_failure_exact_retry_reuses_preparation(
         builds += 1
         return real_build(*args, **kwargs)
 
-    def fail_then_launch(*, session: str, records: Any) -> None:
+    def fail_then_launch(*, session: str, records: Any, **_kwargs: Any) -> None:
         nonlocal launches
         launches += 1
         if launches == 1:
@@ -1768,7 +2102,7 @@ def test_scale_up_partial_atomic_preparation_crash_repairs_without_rebuild(
     monkeypatch.setattr(path_keys, "atomic_write_bytes", real_atomic)
     launches = 0
 
-    def launch(*, session: str, records: Any) -> None:
+    def launch(*, session: str, records: Any, **_kwargs: Any) -> None:
         nonlocal launches
         launches += 1
         records[0].update(
@@ -1829,13 +2163,56 @@ def test_relaunch_invalid_linked_worktree_refuses_before_wal_or_spawn(
     assert not (plane.team_dir(tmp_path, rid) / "scale-wal" / "1.json").exists()
 
 
+def test_relaunch_gate_inside_mode_uses_window_authority_not_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Inside Teams no longer stamp the shared session; relaunch must not
+    gate on a session nonce that a later Team could overwrite."""
+    rid, live, _launched, respawns = _prepare_live_relaunch_team(
+        monkeypatch, tmp_path
+    )
+    live["session_owned"] = False
+    _write_team_meta(tmp_path, rid, live)
+    # Session-level nonce is stale/foreign for inside mode; must be ignored.
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "z" * 32)
+    monkeypatch.setattr(
+        plane,
+        "_read_tmux_launch_nonce_for_window",
+        lambda window_id: "a" * 32 if window_id == "@7" else None,
+    )
+
+    out = relaunch_dead_incomplete_workers(tmp_path, rid)
+
+    assert respawns == ["t-a"]
+    assert {row["task_id"] for row in out["relaunched"]} == {"t-a"}
+
+
+def test_relaunch_gate_fails_closed_on_stale_window_nonce_inside_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    rid, live, _launched, respawns = _prepare_live_relaunch_team(
+        monkeypatch, tmp_path
+    )
+    live["session_owned"] = False
+    _write_team_meta(tmp_path, rid, live)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "z" * 32)
+    monkeypatch.setattr(
+        plane, "_read_tmux_launch_nonce_for_window", lambda _window_id: "z" * 32
+    )
+
+    with pytest.raises(TeamError, match="live tmux launch nonce mismatch"):
+        relaunch_dead_incomplete_workers(tmp_path, rid)
+    assert respawns == []
+    assert not (plane.team_dir(tmp_path, rid) / "scale-wal" / "1.json").exists()
+
+
 def test_scale_up_exact_retry_recovers_legacy_receipt_without_wal(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     rid, live = _prepare_live_scale_team(monkeypatch, tmp_path)
     launches = 0
 
-    def capture_add(*, session: str, records: Any) -> None:
+    def capture_add(*, session: str, records: Any, **_kwargs: Any) -> None:
         nonlocal launches
         assert session == "omg-workers"
         launches += 1
@@ -1864,7 +2241,7 @@ def test_scale_up_exact_retry_recovers_legacy_receipt_without_wal(
         "_read_tmux_session_identity",
         lambda _session: (live["session"], "$7"),
     )
-    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
     real_mutate = scaling.mutate_team_meta
     commit_attempts = 0
 
@@ -1944,7 +2321,7 @@ def test_scale_up_pending_retry_fails_closed_when_live_pane_is_rebound(
     rid, live = _prepare_live_scale_team(monkeypatch, tmp_path)
     launches = 0
 
-    def capture_add(*, session: str, records: Any) -> None:
+    def capture_add(*, session: str, records: Any, **_kwargs: Any) -> None:
         nonlocal launches
         assert session == "omg-workers"
         launches += 1
@@ -1966,7 +2343,7 @@ def test_scale_up_pending_retry_fails_closed_when_live_pane_is_rebound(
         "_read_tmux_session_identity",
         lambda _session: (live["session"], "$7"),
     )
-    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
     real_mutate = scaling.mutate_team_meta
     commit_attempts = 0
 
@@ -2015,7 +2392,7 @@ def test_scale_up_pending_remain_on_exit_dead_cleanup_then_needs_collect(
     rid, live = _prepare_live_scale_team(monkeypatch, tmp_path)
     launches = 0
 
-    def capture_add(*, session: str, records: Any) -> None:
+    def capture_add(*, session: str, records: Any, **_kwargs: Any) -> None:
         nonlocal launches
         launches += 1
         records[0].update(
@@ -2047,7 +2424,7 @@ def test_scale_up_pending_remain_on_exit_dead_cleanup_then_needs_collect(
         "_read_tmux_session_identity",
         lambda _session: (live["session"], "$7"),
     )
-    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
     monkeypatch.setattr(scaling, "_persist_team_identity_receipt", publish_then_lose)
 
     with pytest.raises(TeamError, match="receipt-bound windows preserved"):
@@ -2096,7 +2473,7 @@ def test_scale_up_receipt_result_loss_preserves_window_and_retry_recovers(
     launches = 0
     rollbacks: list[str] = []
 
-    def capture_add(*, session: str, records: Any) -> None:
+    def capture_add(*, session: str, records: Any, **_kwargs: Any) -> None:
         nonlocal launches
         assert session == "omg-workers"
         launches += 1
@@ -2129,7 +2506,7 @@ def test_scale_up_receipt_result_loss_preserves_window_and_retry_recovers(
         "_read_tmux_session_identity",
         lambda _session: (live["session"], "$7"),
     )
-    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
     monkeypatch.setattr(
         scaling, "_persist_team_identity_receipt", publish_then_lose_result
     )
@@ -2204,7 +2581,7 @@ def test_scale_up_pending_receipt_without_retry_intent_fails_closed(
         "_read_tmux_session_identity",
         lambda _session: (live["session"], "$7"),
     )
-    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
 
     with pytest.raises(TeamError, match="lacks authenticated retry intent"):
         scale_team(tmp_path, rid, add=1)
@@ -2219,7 +2596,7 @@ def test_scale_up_receipt_contract_path_error_rolls_back_created_window(
 
     rid, _live = _prepare_live_scale_team(monkeypatch, tmp_path)
 
-    def capture_add(*, session: str, records: Any) -> None:
+    def capture_add(*, session: str, records: Any, **_kwargs: Any) -> None:
         assert session == "omg-workers"
         records[0]["window_index"] = 7
         records[0]["window_id"] = "@17"
@@ -2257,7 +2634,7 @@ def test_scale_up_meta_publish_then_raise_preserves_committed_identity(
 ) -> None:
     rid, _live = _prepare_live_scale_team(monkeypatch, tmp_path)
 
-    def capture_add(*, session: str, records: Any) -> None:
+    def capture_add(*, session: str, records: Any, **_kwargs: Any) -> None:
         assert session == "omg-workers"
         records[0]["window_index"] = 7
         records[0]["window_id"] = "@17"
@@ -2300,7 +2677,7 @@ def test_scale_up_unknown_meta_readback_preserves_windows_and_receipt(
 ) -> None:
     rid, _live = _prepare_live_scale_team(monkeypatch, tmp_path)
 
-    def capture_add(*, session: str, records: Any) -> None:
+    def capture_add(*, session: str, records: Any, **_kwargs: Any) -> None:
         assert session == "omg-workers"
         records[0]["window_index"] = 7
         records[0]["window_id"] = "@17"
@@ -2355,7 +2732,7 @@ def test_scale_up_meta_durability_unknown_preserves_windows_and_receipt(
 
     rid, _live = _prepare_live_scale_team(monkeypatch, tmp_path)
 
-    def capture_add(*, session: str, records: Any) -> None:
+    def capture_add(*, session: str, records: Any, **_kwargs: Any) -> None:
         assert session == "omg-workers"
         records[0]["window_index"] = 7
         records[0]["window_id"] = "@17"
@@ -2592,7 +2969,7 @@ def test_scale_down_kills_only_recorded_targets_preserves_worktrees(
         "_read_tmux_session_identity",
         lambda _session: (live["session"], "$77"),
     )
-    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "b" * 32)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "b" * 32)
     monkeypatch.setattr(
         scaling,
         "_list_pane_identities",
@@ -2686,7 +3063,7 @@ def test_scale_down_fails_closed_when_pid_pgid_drifts_before_signal(
         "_read_tmux_session_identity",
         lambda _session: (live["session"], "$31"),
     )
-    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "c" * 32)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "c" * 32)
     monkeypatch.setattr(scaling, "tmux_available", lambda: True)
     monkeypatch.setattr(
         scaling,
@@ -3350,6 +3727,550 @@ def test_resume_does_not_trust_stale_running_without_live_window(
     assert disk["tasks"][0]["status"] == STATUS_NEEDS_COLLECT
 
 
+def test_resume_refuses_respawned_pane_same_id_new_pid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Same %pane with a new PID must not be written STATUS_RUNNING on resume."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    meta = start_team("respawn resume", TASKS_TWO, root=tmp_path, dry_run=True)
+    rid = meta["run_id"]
+    live = dict(load_team_meta(tmp_path, rid))
+    live["dry_run"] = False
+    live["session"] = "omg-resume-respawn"
+    live["topology"] = "split"
+    live["launch_nonce"] = "a" * 32
+    live["tasks"] = [
+        {
+            **live["tasks"][0],
+            "status": STATUS_RUNNING,
+            "window_index": 0,
+            "pane_id": "%81",
+            "pid": 1111,
+            "pgid": 2111,
+            "pid_start": "start-1111",
+        },
+        {
+            **live["tasks"][1],
+            "status": STATUS_RUNNING,
+            "window_index": 1,
+            "pane_id": "%82",
+            "pid": 2222,
+            "pgid": 3222,
+            "pid_start": "start-2222",
+        },
+    ]
+    _receipt, receipt_hash = plane._persist_team_launch_receipt(
+        tmp_path,
+        rid,
+        session=live["session"],
+        session_id="$7",
+        launch_nonce="a" * 32,
+        tasks=live["tasks"],
+    )
+    live["launch_receipt_sha256"] = receipt_hash
+    live["identity_receipt_sha256"] = receipt_hash
+    _write_team_meta(tmp_path, rid, live)
+
+    def fake_probe(pane_id: str):
+        # Pane object still exists (respawn kept %id) but hosts a new PID.
+        if pane_id == "%81":
+            return {
+                "pane_id": "%81",
+                "dead": False,
+                "session_id": "$7",
+                "pane_pid": 9999,
+            }
+        if pane_id == "%82":
+            return {
+                "pane_id": "%82",
+                "dead": False,
+                "session_id": "$7",
+                "pane_pid": 2222,
+            }
+        return None
+
+    monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
+    monkeypatch.setattr(
+        plane,
+        "_probe_tmux_launch_nonce_for_pane",
+        lambda pane_id, _session, **_kw: ("a" * 32, True),
+    )
+    monkeypatch.setattr(plane, "_pid_start_identity", lambda pid: f"start-{pid}")
+    # Bare pane_alive would claim both alive — must not drive resume FSM.
+    monkeypatch.setattr("omg_cli.team.tmux.pane_alive", lambda _pane: True)
+
+    out = resume_team(tmp_path, rid)
+    disk = load_team_meta(tmp_path, rid)
+    by_id = {t["task_id"]: t for t in disk["tasks"]}
+    assert by_id["t-a"]["status"] == STATUS_NEEDS_COLLECT
+    assert by_id["t-b"]["status"] == STATUS_RUNNING
+    assert out["changes"] == 1
+    assert out["verified"] is False
+
+
+def test_resume_refuses_start_id_collision_with_different_pid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Same pane/nonce/start-id but different live PID must not resume as running."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    meta = start_team("start-id collide resume", TASKS_TWO, root=tmp_path, dry_run=True)
+    rid = meta["run_id"]
+    live = dict(load_team_meta(tmp_path, rid))
+    live["dry_run"] = False
+    live["session"] = "omg-resume-collide"
+    live["topology"] = "split"
+    live["launch_nonce"] = "a" * 32
+    live["tasks"] = [
+        {
+            **live["tasks"][0],
+            "status": STATUS_RUNNING,
+            "window_index": 0,
+            "pane_id": "%81",
+            "pid": 1111,
+            "pgid": 2111,
+            "pid_start": "collide-start",
+        }
+    ]
+    _receipt, receipt_hash = plane._persist_team_launch_receipt(
+        tmp_path,
+        rid,
+        session=live["session"],
+        session_id="$7",
+        launch_nonce="a" * 32,
+        tasks=live["tasks"],
+    )
+    live["launch_receipt_sha256"] = receipt_hash
+    live["identity_receipt_sha256"] = receipt_hash
+    _write_team_meta(tmp_path, rid, live)
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux.probe_worker_pane_identity",
+        lambda pane_id: {
+            "pane_id": "%81",
+            "dead": False,
+            "session_id": "$7",
+            "pane_pid": 9999,
+        }
+        if pane_id == "%81"
+        else None,
+    )
+    monkeypatch.setattr(
+        plane,
+        "_probe_tmux_launch_nonce_for_pane",
+        lambda _pane, _session, **_kw: ("a" * 32, True),
+    )
+    monkeypatch.setattr(plane, "_pid_start_identity", lambda _pid: "collide-start")
+    monkeypatch.setattr(scaling, "tmux_available", lambda: True)
+
+    out = resume_team(tmp_path, rid)
+    disk = load_team_meta(tmp_path, rid)
+    assert disk["tasks"][0]["status"] == STATUS_NEEDS_COLLECT
+    assert out["changes"] == 1
+
+
+def test_relaunch_treats_start_id_collision_as_dead(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Respawn with colliding start-id must not skip relaunch as alive."""
+    rid, live, _launched, respawns = _prepare_live_relaunch_team(
+        monkeypatch, tmp_path
+    )
+    # Use the real AND-gated helper instead of the prepare stub.
+    monkeypatch.setattr(
+        scaling, "_status_worker_alive", plane._status_worker_alive
+    )
+    first = live["tasks"][0]
+    second = live["tasks"][1]
+
+    def fake_probe(pane_id: str):
+        if pane_id == str(first["pane_id"]):
+            return {
+                "pane_id": pane_id,
+                "dead": False,
+                "session_id": "$7",
+                # Foreign PID sharing the receipt start-id → not alive.
+                "pane_pid": 55555,
+            }
+        if pane_id == str(second["pane_id"]):
+            return {
+                "pane_id": pane_id,
+                "dead": False,
+                "session_id": "$7",
+                "pane_pid": int(second["pid"]),
+            }
+        return None
+
+    monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
+    monkeypatch.setattr(
+        plane,
+        "_probe_tmux_launch_nonce_for_pane",
+        lambda _pane, _session, **_kw: ("a" * 32, True),
+    )
+
+    def start_for(pid: int) -> str | None:
+        if pid == 55555:
+            return str(first["pid_start"])
+        if pid == int(second["pid"]):
+            return str(second["pid_start"])
+        return f"start-{pid}"
+
+    monkeypatch.setattr(plane, "_pid_start_identity", start_for)
+    monkeypatch.setattr(scaling, "_pid_start_identity", start_for)
+
+    assert (
+        plane._status_worker_alive(
+            pane_id=str(first["pane_id"]),
+            session=str(live["session"]),
+            expected_session_id="$7",
+            launch_nonce="a" * 32,
+            expected_pid_start=str(first["pid_start"]),
+            expected_pid=int(first["pid"]),
+        )
+        is False
+    )
+    assert (
+        plane._status_worker_alive(
+            pane_id=str(second["pane_id"]),
+            session=str(live["session"]),
+            expected_session_id="$7",
+            launch_nonce="a" * 32,
+            expected_pid_start=str(second["pid_start"]),
+            expected_pid=int(second["pid"]),
+        )
+        is True
+    )
+
+    out = relaunch_dead_incomplete_workers(tmp_path, rid)
+
+    assert "alive" not in {
+        row.get("reason")
+        for row in out["skipped"]
+        if row.get("task_id") == first["task_id"]
+    }
+    assert any(
+        row.get("task_id") == second["task_id"] and row.get("reason") == "alive"
+        for row in out["skipped"]
+    )
+    assert respawns == ["t-a"]
+    assert {row["task_id"] for row in out["relaunched"]} == {"t-a"}
+
+
+def test_relaunch_skips_when_probe_unknown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """probe_worker_pane_identity None/OSError must not respawn (double worker)."""
+    rid, live, _launched, respawns = _prepare_live_relaunch_team(
+        monkeypatch, tmp_path
+    )
+    monkeypatch.setattr(
+        scaling, "_status_worker_alive", plane._status_worker_alive
+    )
+    first = live["tasks"][0]
+    second = live["tasks"][1]
+
+    def fake_probe(pane_id: str):
+        if pane_id == str(first["pane_id"]):
+            return None  # unknown — not confirmed dead
+        if pane_id == str(second["pane_id"]):
+            return {
+                "pane_id": pane_id,
+                "dead": False,
+                "session_id": "$7",
+                "pane_pid": int(second["pid"]),
+            }
+        return None
+
+    monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
+    # Probe None must stay UNKNOWN unless absence is proven.
+    monkeypatch.setattr(
+        plane, "_pane_proven_absent", lambda _pane: (None, "probe unknown")
+    )
+    monkeypatch.setattr(
+        plane,
+        "_probe_tmux_launch_nonce_for_pane",
+        lambda _pane, _session, **_kw: ("a" * 32, True),
+    )
+    monkeypatch.setattr(
+        plane,
+        "_pid_start_identity",
+        lambda pid: (
+            str(second["pid_start"])
+            if pid == int(second["pid"])
+            else f"start-{pid}"
+        ),
+    )
+    monkeypatch.setattr(
+        scaling,
+        "_pid_start_identity",
+        lambda pid: (
+            str(second["pid_start"])
+            if pid == int(second["pid"])
+            else f"start-{pid}"
+        ),
+    )
+
+    assert (
+        plane._status_worker_alive(
+            pane_id=str(first["pane_id"]),
+            session=str(live["session"]),
+            expected_session_id="$7",
+            launch_nonce="a" * 32,
+            expected_pid_start=str(first["pid_start"]),
+            expected_pid=int(first["pid"]),
+        )
+        is None
+    )
+
+    out = relaunch_dead_incomplete_workers(tmp_path, rid)
+
+    assert respawns == []
+    assert any(
+        row.get("task_id") == first["task_id"] and row.get("reason") == "probe_unknown"
+        for row in out["skipped"]
+    )
+    assert any(
+        row.get("task_id") == second["task_id"] and row.get("reason") == "alive"
+        for row in out["skipped"]
+    )
+    assert out["relaunched"] == []
+
+
+def test_relaunch_skips_when_probe_raises_oserror(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """OSError from identity probe must not call respawn_worker_pane."""
+    rid, live, _launched, respawns = _prepare_live_relaunch_team(
+        monkeypatch, tmp_path, dead_tasks=1
+    )
+    monkeypatch.setattr(
+        scaling, "_status_worker_alive", plane._status_worker_alive
+    )
+
+    def boom_probe(_pane_id: str):
+        raise OSError("tmux display-message pipe broken")
+
+    monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", boom_probe)
+    monkeypatch.setattr(
+        plane, "_pane_proven_absent", lambda _pane: (None, "probe unknown")
+    )
+
+    out = relaunch_dead_incomplete_workers(tmp_path, rid)
+
+    assert respawns == []
+    assert all(row.get("reason") == "probe_unknown" for row in out["skipped"]
+               if row.get("task_id") == live["tasks"][0]["task_id"])
+    assert out["relaunched"] == []
+
+
+def _assert_relaunch_skipped_probe_unknown(
+    *,
+    out: dict[str, Any],
+    respawns: list[str],
+    task_id: str,
+    root: Path,
+    rid: str,
+) -> None:
+    assert respawns == []
+    assert out["relaunched"] == []
+    assert any(
+        row.get("task_id") == task_id and row.get("reason") == "probe_unknown"
+        for row in out["skipped"]
+    )
+    # No relaunch WAL published for UNKNOWN skips.
+    wal = scaling._scale_wal_path(root, rid, 1)
+    assert not wal.is_file(), f"relaunch WAL must not publish on probe_unknown: {wal}"
+
+
+def _run_relaunch_nonce_probe_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    nonce_behavior: str,
+) -> None:
+    """Pane nonce OSError/nonzero/malformed/missing → UNKNOWN → no respawn."""
+    rid, live, _launched, respawns = _prepare_live_relaunch_team(
+        monkeypatch, tmp_path
+    )
+    monkeypatch.setattr(
+        scaling, "_status_worker_alive", plane._status_worker_alive
+    )
+    first = live["tasks"][0]
+    second = live["tasks"][1]
+
+    def fake_probe(pane_id: str):
+        if pane_id == str(first["pane_id"]):
+            return {
+                "pane_id": pane_id,
+                "dead": False,
+                "session_id": "$7",
+                "pane_pid": int(first["pid"]),
+            }
+        if pane_id == str(second["pane_id"]):
+            return {
+                "pane_id": pane_id,
+                "dead": False,
+                "session_id": "$7",
+                "pane_pid": int(second["pid"]),
+            }
+        return None
+
+    def fake_nonce_probe(pane_id: str, _session: str, **_kw: Any):
+        if pane_id == str(second["pane_id"]):
+            return ("a" * 32, True)
+        # All failure modes collapse to (None, False) = UNKNOWN.
+        assert nonce_behavior in {"oserror", "nonzero", "malformed", "missing"}
+        return None, False
+
+    monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
+    monkeypatch.setattr(plane, "_probe_tmux_launch_nonce_for_pane", fake_nonce_probe)
+    monkeypatch.setattr(
+        plane,
+        "_pid_start_identity",
+        lambda pid: (
+            str(first["pid_start"])
+            if pid == int(first["pid"])
+            else str(second["pid_start"])
+            if pid == int(second["pid"])
+            else f"start-{pid}"
+        ),
+    )
+    monkeypatch.setattr(
+        scaling,
+        "_pid_start_identity",
+        lambda pid: (
+            str(first["pid_start"])
+            if pid == int(first["pid"])
+            else str(second["pid_start"])
+            if pid == int(second["pid"])
+            else f"start-{pid}"
+        ),
+    )
+
+    assert (
+        plane._status_worker_alive(
+            pane_id=str(first["pane_id"]),
+            session=str(live["session"]),
+            expected_session_id="$7",
+            launch_nonce="a" * 32,
+            expected_pid_start=str(first["pid_start"]),
+            expected_pid=int(first["pid"]),
+        )
+        is None
+    )
+
+    out = relaunch_dead_incomplete_workers(tmp_path, rid)
+    _assert_relaunch_skipped_probe_unknown(
+        out=out,
+        respawns=respawns,
+        task_id=str(first["task_id"]),
+        root=tmp_path,
+        rid=rid,
+    )
+    assert any(
+        row.get("task_id") == second["task_id"] and row.get("reason") == "alive"
+        for row in out["skipped"]
+    )
+
+
+def test_relaunch_skips_when_pane_nonce_probe_oserror(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _run_relaunch_nonce_probe_unknown(monkeypatch, tmp_path, nonce_behavior="oserror")
+
+
+def test_relaunch_skips_when_pane_nonce_probe_nonzero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _run_relaunch_nonce_probe_unknown(monkeypatch, tmp_path, nonce_behavior="nonzero")
+
+
+def test_relaunch_skips_when_pane_nonce_probe_malformed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _run_relaunch_nonce_probe_unknown(
+        monkeypatch, tmp_path, nonce_behavior="malformed"
+    )
+
+
+def test_relaunch_skips_when_pane_nonce_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _run_relaunch_nonce_probe_unknown(monkeypatch, tmp_path, nonce_behavior="missing")
+
+
+def test_relaunch_skips_when_pid_start_probe_unknown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unavailable pid_start probe → UNKNOWN → no respawn (not False)."""
+    rid, live, _launched, respawns = _prepare_live_relaunch_team(
+        monkeypatch, tmp_path
+    )
+    monkeypatch.setattr(
+        scaling, "_status_worker_alive", plane._status_worker_alive
+    )
+    first = live["tasks"][0]
+    second = live["tasks"][1]
+
+    def fake_probe(pane_id: str):
+        if pane_id == str(first["pane_id"]):
+            return {
+                "pane_id": pane_id,
+                "dead": False,
+                "session_id": "$7",
+                "pane_pid": int(first["pid"]),
+            }
+        if pane_id == str(second["pane_id"]):
+            return {
+                "pane_id": pane_id,
+                "dead": False,
+                "session_id": "$7",
+                "pane_pid": int(second["pid"]),
+            }
+        return None
+
+    monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
+    monkeypatch.setattr(
+        plane,
+        "_probe_tmux_launch_nonce_for_pane",
+        lambda _pane, _session, **_kw: ("a" * 32, True),
+    )
+
+    def start_for(pid: int) -> str | None:
+        if pid == int(first["pid"]):
+            return None  # probe unavailable → UNKNOWN
+        if pid == int(second["pid"]):
+            return str(second["pid_start"])
+        return f"start-{pid}"
+
+    monkeypatch.setattr(plane, "_pid_start_identity", start_for)
+    monkeypatch.setattr(scaling, "_pid_start_identity", start_for)
+
+    assert (
+        plane._status_worker_alive(
+            pane_id=str(first["pane_id"]),
+            session=str(live["session"]),
+            expected_session_id="$7",
+            launch_nonce="a" * 32,
+            expected_pid_start=str(first["pid_start"]),
+            expected_pid=int(first["pid"]),
+        )
+        is None
+    )
+
+    out = relaunch_dead_incomplete_workers(tmp_path, rid)
+    _assert_relaunch_skipped_probe_unknown(
+        out=out,
+        respawns=respawns,
+        task_id=str(first["task_id"]),
+        root=tmp_path,
+        rid=rid,
+    )
+
+
 # ---------------------------------------------------------------------------
 # CLI smoke (dry-run scale/resume)
 # ---------------------------------------------------------------------------
@@ -3514,7 +4435,7 @@ def _prepare_scale_signal_team(
         "_read_tmux_session_identity",
         lambda _session: (live["session"], "$31"),
     )
-    monkeypatch.setattr(scaling, "_read_tmux_launch_nonce", lambda _session: "c" * 32)
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "c" * 32)
     monkeypatch.setattr(scaling, "tmux_available", lambda: True)
     monkeypatch.setattr(
         scaling,
