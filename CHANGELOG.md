@@ -9,6 +9,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Added
+- **Partial work for issue 67 (slice A / #67-A):** typed `omg_cli/providers/`
+  Antigravity probe (discover binary, version argv probe, compat range,
+  schema-versioned capabilities envelope) plus
+  `omg provider antigravity {capabilities,doctor}`. Hermetic fake-`agy`
+  fixtures only — no ask/Team cutover, no `live_verified` claims. Issue #67
+  remains open for slices B–D.
+
 ## [0.7.6] - 2026-08-06
 
 ### Fixed

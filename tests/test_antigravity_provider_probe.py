@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import stat
 import sys
 from pathlib import Path
@@ -19,16 +18,17 @@ def _install_fake_agy(bin_dir: Path, *, version: str | None = None) -> Path:
     """Place an executable named ``agy`` that runs the hermetic stub."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     target = bin_dir / "agy"
+    py = sys.executable
     if version is None:
         script = (
-            "#!/usr/bin/env python3\n"
+            f"#!{py}\n"
             "import runpy, sys\n"
             f"sys.argv[0] = {str(target)!r}\n"
             f"raise SystemExit(runpy.run_path({str(FAKE_AGY)!r}, run_name='__main__'))\n"
         )
     else:
         script = (
-            "#!/usr/bin/env python3\n"
+            f"#!{py}\n"
             "import os, runpy, sys\n"
             f"os.environ['FAKE_AGY_VERSION'] = {version!r}\n"
             f"sys.argv[0] = {str(target)!r}\n"
@@ -54,9 +54,16 @@ def fake_agy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_models_export_compat_and_capabilities() -> None:
+    from typing import get_args
+
     from omg_cli.providers.models import CompatStatus, ProviderCapabilities
 
-    assert "compatible" in CompatStatus.__args__  # type: ignore[attr-defined]
+    assert set(get_args(CompatStatus)) == {
+        "compatible",
+        "too_old",
+        "too_new",
+        "unknown",
+    }
     caps = ProviderCapabilities(
         provider="antigravity",
         binary="/tmp/agy",
@@ -174,12 +181,7 @@ def test_cli_capabilities_json(fake_agy_path: Path, capsys: pytest.CaptureFixtur
     assert rc == 0
     out = capsys.readouterr().out
     data = json.loads(out)
-    # Envelope may wrap domain payload; accept either shape.
-    body = data.get("capabilities") or data
-    if "ok" in data and data.get("command"):
-        body = {k: v for k, v in data.items() if k not in {"ok", "schema_version", "command"}}
-        if "capabilities" in data:
-            body = data["capabilities"]
+    body = data.get("capabilities", data)
     assert body["schema"] == "omg-provider-capabilities/v1"
     assert body["provider"] == "antigravity"
     assert body["ready"]["live_call_ready"] is False
