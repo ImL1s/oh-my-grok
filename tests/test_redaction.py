@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 
-from omg_cli.redaction import REDACTED, redact_text, redact_value
+from omg_cli.redaction import REDACTED, is_sensitive_key, redact_text, redact_value
 
 
 def test_recursive_redaction_covers_frozen_secret_classes() -> None:
@@ -398,4 +398,78 @@ def test_redact_text_closes_pr94r_residual_p2_classes() -> None:
         out = redact_text(source)
         assert "super-secret" not in out, (source, out)
         assert out.endswith(f"={REDACTED}"), (source, out)
+
+
+def test_redact_text_closes_pr94s_residual_p2_classes() -> None:
+    """Close Pro reaudit P2s: query-token boundary, array quotes, key fragments."""
+    # P2-1: real URL query must not leave query mode across whitespace into shell ``&``.
+    for source, leaked in (
+        (
+            "https://x.test/?ok=1 safe & command=echo safe & curl super-secret",
+            "super-secret",
+        ),
+        (
+            "https://x.test/?ok=1 safe & token=Bearer first&second-secret",
+            "second-secret",
+        ),
+    ):
+        out = redact_text(source)
+        assert leaked not in out, (source, out)
+        assert REDACTED in out, (source, out)
+        assert "super-secret" not in out and "second-secret" not in out
+
+    # Real same-token query continuation still stops at ``&``.
+    assert (
+        redact_text("https://x.test/?token=secret-value&ok=1")
+        == f"https://x.test/?token={REDACTED}&ok=1"
+    )
+
+    # P2-2: array / malformed bracket quotes are not key-quotes — still redact.
+    for source in (
+        '["token=super-secret"]',
+        'args=["--token=super-secret"]',
+        'echo [ "token=super-secret"',
+        'headers["api_key]=super-secret',
+        '[["token=super-secret"]]',
+        'args=["--flag", "--token=super-secret"]',
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    # Real quoted bracket-keys still keep embedded delimiters literal.
+    for source in (
+        'headers["api&key"]=super-secret',
+        'headers["api=key"]=super-secret',
+        '["api=key"]=super-secret',
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+        assert out.endswith(f"={REDACTED}"), (source, out)
+
+    # P2-3: structural delimiters must not fragment keys before is_sensitive_key.
+    assert is_sensitive_key("api:key")
+    assert is_sensitive_key("api=key")
+    assert is_sensitive_key("headers[api:key]")
+    assert is_sensitive_key("headers[api=key]")
+    for source in (
+        "api:key=super-secret",
+        "api=key=super-secret",
+        "headers[api:key]=super-secret",
+        "headers[api=key]=super-secret",
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+        assert out.endswith(f"={REDACTED}"), (source, out)
+
+    # Structured mapping and free-text share the same predicate (parity).
+    assert redact_value({"api:key": "super-secret"}) == {"api:key": REDACTED}
+    assert "super-secret" not in redact_text("api:key=super-secret")
+
+    # Bracket / separator floods stay O(n).
+    n = 50_000
+    for flood in ("[" * n, ("?&" * (n // 2)), (":=" * (n // 2))):
+        t0 = time.perf_counter()
+        redact_text(flood)
+        assert time.perf_counter() - t0 < 1.0
 
