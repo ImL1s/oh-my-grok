@@ -2387,6 +2387,39 @@ def start_team(
         raise _fail_start(exc) from exc
 
 
+def _status_worker_alive(
+    *,
+    pane_id: str,
+    session: str,
+    expected_session_id: str | None,
+    launch_nonce: str | None,
+    expected_pid_start: str | None,
+    expected_pid: int | None,
+) -> bool:
+    """Fail-closed status liveness using pane + session + nonce (+ PID start)."""
+    if not expected_session_id or not launch_nonce or not session:
+        return False
+    from omg_cli.team.tmux import probe_worker_pane_identity
+
+    probed = probe_worker_pane_identity(pane_id)
+    if probed is None or probed.get("dead"):
+        return False
+    if probed.get("session_id") != expected_session_id:
+        return False
+    if _read_tmux_launch_nonce(session) != launch_nonce:
+        return False
+    live_pid = probed.get("pane_pid")
+    if not isinstance(live_pid, int) or live_pid <= 0:
+        return False
+    if expected_pid_start:
+        live_start = _pid_start_identity(live_pid)
+        if not live_start or live_start != expected_pid_start:
+            return False
+    elif expected_pid is not None and expected_pid != live_pid:
+        return False
+    return True
+
+
 def team_status(
     root: Path | str | None = None,
     run_id: str | None = None,
@@ -2406,6 +2439,26 @@ def team_status(
     session = str(meta.get("session") or "")
     dry = bool(meta.get("dry_run"))
     workspace_mode = str(meta.get("workspace_mode") or WORKSPACE_MODE)
+    launch_nonce = meta.get("launch_nonce")
+    expected_session_id: str | None = None
+    receipt_path = team_launch_receipt_path(root_path, run_id)
+    if receipt_path.is_file():
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            receipt = None
+        if isinstance(receipt, dict):
+            if isinstance(receipt.get("session_id"), str):
+                expected_session_id = str(receipt["session_id"])
+            if isinstance(receipt.get("launch_nonce"), str):
+                launch_nonce = receipt.get("launch_nonce") or launch_nonce
+    if expected_session_id is None and session and not dry and probe_tmux:
+        try:
+            ident = _read_tmux_session_identity(session)
+        except Exception:
+            ident = None
+        if ident is not None and ident[0] == session and ident[1]:
+            expected_session_id = str(ident[1])
 
     # Optional ownership presence (read-only; ignore missing)
     ownership_present = ownership_manifest_path(root_path, run_id).is_file()
@@ -2430,15 +2483,19 @@ def team_status(
         elif not probe_tmux:
             alive = False
         elif isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id) is not None:
-            # Exact pane identity (#98): window_index is a logical slot under
-            # split topology and must not decide liveness.
-            from omg_cli.team.tmux import pane_alive
-
-            probed = pane_alive(pane_id)
-            alive = bool(probed) if probed is not None else False
+            alive = _status_worker_alive(
+                pane_id=pane_id,
+                session=session,
+                expected_session_id=expected_session_id,
+                launch_nonce=launch_nonce if isinstance(launch_nonce, str) else None,
+                expected_pid_start=raw.get("pid_start")
+                if isinstance(raw.get("pid_start"), str)
+                else None,
+                expected_pid=raw.get("pid") if isinstance(raw.get("pid"), int) else None,
+            )
         else:
-            win = _window_alive(session, widx)
-            alive = bool(win) if win is not None else False
+            # No exact pane identity → never guess via logical window_index (#98).
+            alive = False
         tasks_out.append(
             {
                 "task_id": tid,
