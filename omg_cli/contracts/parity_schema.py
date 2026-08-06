@@ -317,6 +317,7 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             (
                 "test_install_cmd.py",
                 "test_install_classifier.py",
+                "test_install_gate_89.py",
                 "test_hook_install.py",
                 "test_hook_install_hardening.py",
                 "test_update_uninstall.py",
