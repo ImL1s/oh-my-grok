@@ -3959,6 +3959,106 @@ def test_relaunch_treats_start_id_collision_as_dead(
     assert {row["task_id"] for row in out["relaunched"]} == {"t-a"}
 
 
+def test_relaunch_skips_when_probe_unknown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """probe_worker_pane_identity None/OSError must not respawn (double worker)."""
+    rid, live, _launched, respawns = _prepare_live_relaunch_team(
+        monkeypatch, tmp_path
+    )
+    monkeypatch.setattr(
+        scaling, "_status_worker_alive", plane._status_worker_alive
+    )
+    first = live["tasks"][0]
+    second = live["tasks"][1]
+
+    def fake_probe(pane_id: str):
+        if pane_id == str(first["pane_id"]):
+            return None  # unknown — not confirmed dead
+        if pane_id == str(second["pane_id"]):
+            return {
+                "pane_id": pane_id,
+                "dead": False,
+                "session_id": "$7",
+                "pane_pid": int(second["pid"]),
+            }
+        return None
+
+    monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
+    monkeypatch.setattr(
+        plane,
+        "_read_tmux_launch_nonce_for_pane",
+        lambda _pane, _session, **_kw: "a" * 32,
+    )
+    monkeypatch.setattr(
+        plane,
+        "_pid_start_identity",
+        lambda pid: (
+            str(second["pid_start"])
+            if pid == int(second["pid"])
+            else f"start-{pid}"
+        ),
+    )
+    monkeypatch.setattr(
+        scaling,
+        "_pid_start_identity",
+        lambda pid: (
+            str(second["pid_start"])
+            if pid == int(second["pid"])
+            else f"start-{pid}"
+        ),
+    )
+
+    assert (
+        plane._status_worker_alive(
+            pane_id=str(first["pane_id"]),
+            session=str(live["session"]),
+            expected_session_id="$7",
+            launch_nonce="a" * 32,
+            expected_pid_start=str(first["pid_start"]),
+            expected_pid=int(first["pid"]),
+        )
+        is None
+    )
+
+    out = relaunch_dead_incomplete_workers(tmp_path, rid)
+
+    assert respawns == []
+    assert any(
+        row.get("task_id") == first["task_id"] and row.get("reason") == "probe_unknown"
+        for row in out["skipped"]
+    )
+    assert any(
+        row.get("task_id") == second["task_id"] and row.get("reason") == "alive"
+        for row in out["skipped"]
+    )
+    assert out["relaunched"] == []
+
+
+def test_relaunch_skips_when_probe_raises_oserror(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """OSError from identity probe must not call respawn_worker_pane."""
+    rid, live, _launched, respawns = _prepare_live_relaunch_team(
+        monkeypatch, tmp_path, dead_tasks=1
+    )
+    monkeypatch.setattr(
+        scaling, "_status_worker_alive", plane._status_worker_alive
+    )
+
+    def boom_probe(_pane_id: str):
+        raise OSError("tmux display-message pipe broken")
+
+    monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", boom_probe)
+
+    out = relaunch_dead_incomplete_workers(tmp_path, rid)
+
+    assert respawns == []
+    assert all(row.get("reason") == "probe_unknown" for row in out["skipped"]
+               if row.get("task_id") == live["tasks"][0]["task_id"])
+    assert out["relaunched"] == []
+
+
 # ---------------------------------------------------------------------------
 # CLI smoke (dry-run scale/resume)
 # ---------------------------------------------------------------------------

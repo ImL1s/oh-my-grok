@@ -11,11 +11,14 @@ Attach modes:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import secrets
 import subprocess
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from omg_cli.madmax import tmux_available, tmux_env_args
@@ -23,10 +26,147 @@ from omg_cli.madmax import tmux_available, tmux_env_args
 _TMUX_SESSION_ID = re.compile(r"^\$[0-9]{1,16}$")
 _TMUX_PANE_ID = re.compile(r"^%[0-9]{1,16}$")
 _TMUX_WINDOW_ID = re.compile(r"^@[0-9]{1,16}$")
+_SAFE_INTENT_TOKEN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
 class TmuxTeamError(RuntimeError):
     """tmux transport failure for team launch."""
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def team_launch_intents_dir(root: Path | str) -> Path:
+    """Durable WAL dir for inside ``new-window`` launch intents."""
+    return Path(root).resolve() / ".omg" / "state" / "team-launch-intents"
+
+
+def team_launch_intent_path(root: Path | str, run_id: str, nonce: str) -> Path:
+    if not _SAFE_INTENT_TOKEN.fullmatch(run_id):
+        raise TmuxTeamError(f"invalid run_id for launch intent: {run_id!r}")
+    if not _SAFE_INTENT_TOKEN.fullmatch(nonce):
+        raise TmuxTeamError(f"invalid nonce for launch intent: {nonce!r}")
+    return team_launch_intents_dir(root) / f"{run_id}-{nonce}.json"
+
+
+def write_team_launch_intent(
+    root: Path | str,
+    *,
+    run_id: str,
+    session_id: str,
+    window_name: str,
+    nonce: str,
+) -> Path:
+    """Atomically persist launch intent *before* ``new-window`` side effects."""
+    from omg_cli.contracts.path_keys import (
+        DATA_FILE_MODE,
+        ContractPathError,
+        atomic_write_bytes,
+        ensure_managed_dir,
+    )
+
+    path = team_launch_intent_path(root, run_id, nonce)
+    payload = {
+        "run_id": run_id,
+        "session_id": session_id,
+        "window_name": window_name,
+        "nonce": nonce,
+        "created_at": _utc_now_iso(),
+    }
+    body = (
+        json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    try:
+        ensure_managed_dir(path.parent)
+        atomic_write_bytes(path, body, mode=DATA_FILE_MODE, replace=True)
+    except ContractPathError as exc:
+        raise TmuxTeamError(f"launch intent write refused: {exc}") from exc
+    return path
+
+
+def clear_team_launch_intent(path: Path | str | None) -> None:
+    """Remove a launch intent after receipt publish or proven cleanup."""
+    if path is None:
+        return
+    intent = Path(path)
+    try:
+        if intent.is_file():
+            intent.unlink()
+    except OSError:
+        pass
+
+
+def sweep_stale_team_launch_intents(
+    root: Path | str,
+    *,
+    run_id: str | None = None,
+    session_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Best-effort: kill-by-name + absence proof for leftover launch intents.
+
+    Called at ``start_team`` entry so a prior crash after ``new-window`` cannot
+    leave an unrecepted worker across CLI restarts. Clears intent only when
+    absence is proven.
+    """
+    intents_dir = team_launch_intents_dir(root)
+    if not intents_dir.is_dir():
+        return []
+    results: list[dict[str, Any]] = []
+    try:
+        entries = sorted(intents_dir.iterdir())
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.is_file() or entry.suffix != ".json":
+            continue
+        if run_id is not None and not entry.name.startswith(f"{run_id}-"):
+            continue
+        try:
+            raw = json.loads(entry.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            results.append(
+                {"path": str(entry), "ok": False, "error": "unreadable intent"}
+            )
+            continue
+        if not isinstance(raw, dict):
+            results.append(
+                {"path": str(entry), "ok": False, "error": "invalid intent"}
+            )
+            continue
+        intent_session = raw.get("session_id")
+        intent_name = raw.get("window_name")
+        if session_id is not None and intent_session != session_id:
+            continue
+        if not isinstance(intent_session, str) or not isinstance(intent_name, str):
+            results.append(
+                {"path": str(entry), "ok": False, "error": "incomplete intent"}
+            )
+            continue
+        cleanup = _kill_inside_windows_by_name(
+            session_id=intent_session, window_name=intent_name
+        )
+        if cleanup is None:
+            clear_team_launch_intent(entry)
+            results.append(
+                {
+                    "path": str(entry),
+                    "ok": True,
+                    "session_id": intent_session,
+                    "window_name": intent_name,
+                }
+            )
+        else:
+            results.append(
+                {
+                    "path": str(entry),
+                    "ok": False,
+                    "session_id": intent_session,
+                    "window_name": intent_name,
+                    "error": cleanup,
+                }
+            )
+    return results
 
 
 def _tmux_run(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -492,11 +632,12 @@ def _kill_inside_windows_by_name(
     session_id: str,
     window_name: str,
 ) -> str | None:
-    """Best-effort kill of every window matching *window_name* in *session_id*.
+    """Kill windows matching *window_name* in *session_id*; require absence proof.
 
-    Always attempts cleanup after a successful ``new-window`` whose result
-    publication failed — including when list-windows is unknown/ambiguous.
-    Returns an error detail string, or ``None`` when cleanup appears clean.
+    After kill attempts, re-runs a successful ``list-windows`` and requires the
+    transaction name to be **absent**. Bare ``kill-window`` rc 0/1 is never
+    treated as success by itself. Returns ``None`` only when absence is proven;
+    otherwise returns an error detail (unknown list / still present / OSError).
     """
     status, matches, detail = _discover_inside_windows_by_name(
         session_id=session_id, window_name=window_name
@@ -530,9 +671,24 @@ def _kill_inside_windows_by_name(
         errors.append(
             f"ambiguous name {window_name!r}; killed ids={killed_ids or matches}"
         )
-    if errors:
-        return "; ".join(errors)
-    return None
+
+    # Absence proof — required; kill rc alone is insufficient.
+    proof_status, proof_matches, proof_detail = _discover_inside_windows_by_name(
+        session_id=session_id, window_name=window_name
+    )
+    if proof_status == "absent":
+        return None
+    if proof_status in ("found", "ambiguous"):
+        return (
+            f"window {window_name!r} still present after kill "
+            f"(ids={proof_matches}); "
+            + ("; ".join(errors) if errors else "absence unproven")
+        )
+    return (
+        f"absence unproven for {window_name!r}: "
+        + (proof_detail or proof_status)
+        + (("; " + "; ".join(errors)) if errors else "")
+    )
 
 
 def _launch_first_inside(
@@ -542,6 +698,7 @@ def _launch_first_inside(
     window_name: str,
     target_window: str,
     expected_session_id: str,
+    intent_path: Path | None = None,
 ) -> tuple[str, str]:
     """Create a new window beside *target_window* (``@N``); return (window_id, pane_id).
 
@@ -549,8 +706,8 @@ def _launch_first_inside(
     a window id — tmux rejects ``new-window -a -t %pane`` (CMD_FIND_WINDOW).
 
     When ``new-window`` returns rc=0 but stdout is empty/malformed, always
-    attempt discover-by-name + kill-window (including name-target fallback)
-    before raising so the caller never leaves an unrecepted orphan.
+    attempt discover-by-name + kill-window with absence proof before raising
+    so the caller never leaves an unrecepted orphan silently OK.
     """
     if _TMUX_WINDOW_ID.fullmatch(target_window) is None:
         raise TmuxTeamError(
@@ -581,11 +738,13 @@ def _launch_first_inside(
             ]
         )
     except OSError as exc:
-        # Creation itself failed — still best-effort name cleanup in case the
-        # window was created before the client lost the reply channel.
+        # Creation itself failed — still name cleanup in case the window was
+        # created before the client lost the reply channel.
         cleanup = _kill_inside_windows_by_name(
             session_id=expected_session_id, window_name=window_name
         )
+        if cleanup is None:
+            clear_team_launch_intent(intent_path)
         message = f"tmux new-window OSError: {exc}"
         if cleanup:
             message = f"{message}; orphan cleanup: {cleanup}"
@@ -607,13 +766,17 @@ def _launch_first_inside(
     cleanup = _kill_inside_windows_by_name(
         session_id=expected_session_id, window_name=window_name
     )
-    message = "tmux new-window did not return window/pane ids"
-    if cleanup:
-        message = f"{message}; orphan cleanup: {cleanup}"
+    if cleanup is None:
+        clear_team_launch_intent(intent_path)
+        message = (
+            f"tmux new-window did not return window/pane ids; "
+            f"killed orphan window(s) named {window_name!r} "
+            f"in session {expected_session_id} (absence proven)"
+        )
     else:
         message = (
-            f"{message}; killed orphan window(s) named {window_name!r} "
-            f"in session {expected_session_id}"
+            f"tmux new-window did not return window/pane ids; "
+            f"orphan cleanup: {cleanup}"
         )
     raise TmuxTeamError(message)
 
@@ -670,6 +833,8 @@ def create_split_team_session(
     env: Mapping[str, str] | None = None,
     isatty: Callable[[], bool] | None = None,
     invoking_pane: str | None = None,
+    root: Path | str | None = None,
+    run_id: str | None = None,
 ) -> tuple[str, str]:
     """Create worker panes in one window; return ``(session_name, session_id)``.
 
@@ -677,6 +842,10 @@ def create_split_team_session(
     (shared dict key consumed by plane) describing attach policy:
     ``attach_mode``, ``session_owned``, ``leader_pane_id``, ``window_id``,
     ``attach_hint``.
+
+    When *root* and *run_id* are provided (inside mode), a durable launch
+    intent is written before ``new-window`` and cleared only after successful
+    create (caller clears after receipt) or cleanup with absence proof.
     """
     if not tmux_available():
         raise TmuxTeamError(
@@ -698,6 +867,8 @@ def create_split_team_session(
             env_pairs=env_pairs,
             env=env,
             invoking_pane=invoking_pane,
+            root=root,
+            run_id=run_id,
         )
     return _create_detached(session=session, tasks=tasks, env_pairs=env_pairs)
 
@@ -767,6 +938,8 @@ def _create_inside(
     env_pairs: list[tuple[str, str]],
     env: Mapping[str, str] | None = None,
     invoking_pane: str | None = None,
+    root: Path | str | None = None,
+    run_id: str | None = None,
 ) -> tuple[str, str]:
     """Create a dedicated worker window bound to the invoking leader pane.
 
@@ -780,20 +953,31 @@ def _create_inside(
     if session and live_name != session:
         # Join the leader's real session regardless of planned name.
         pass
-    window_name = f"omg-team-{secrets.token_hex(8)}"
+    window_nonce = secrets.token_hex(8)
+    window_name = f"omg-team-{window_nonce}"
     window_id: str | None = None
     created_panes: list[str] = []
+    intent_path: Path | None = None
     try:
         # Re-validate immediately before the first mutation so a mid-launch
         # client move cannot bind workers to a different session (#97 Pro P1).
         assert_invoking_identity(snap)
         leader_window = str(snap["window_id"])
+        if root is not None and run_id is not None:
+            intent_path = write_team_launch_intent(
+                root,
+                run_id=str(run_id),
+                session_id=live_id,
+                window_name=window_name,
+                nonce=window_nonce,
+            )
         window_id, first_pane = _launch_first_inside(
             task=tasks[0],
             env_pairs=env_pairs,
             window_name=window_name,
             target_window=leader_window,
             expected_session_id=live_id,
+            intent_path=intent_path,
         )
         # Prove the new window belongs to the snapshotted session.
         win_probe = _tmux_run(
@@ -885,24 +1069,41 @@ def _create_inside(
             window_id=window_id,
             attach_hint=f"tmux select-pane -t {leader_pane}",
         )
+        # Stash intent path for plane to clear after launch receipt publish.
+        if intent_path is not None:
+            tasks[0]["_tmux_launch_intent"] = str(intent_path)
     except (TmuxTeamError, OSError) as exc:
         # Never kill-session: only the team window / worker panes we created.
         # When window_id was never published, still kill by the unique launch
         # name so a failed new-window readback cannot leave an unrecepted orphan.
         cleanup_bits: list[str] = []
+        cleanup_ok = False
         if window_id:
             err = _kill_window(window_id)
             if err:
                 cleanup_bits.append(err)
+            # Also require name-level absence proof when we have session+name.
+            name_err = _kill_inside_windows_by_name(
+                session_id=live_id, window_name=window_name
+            )
+            if name_err:
+                cleanup_bits.append(name_err)
+            else:
+                cleanup_ok = True
         else:
             err = _kill_inside_windows_by_name(
                 session_id=live_id, window_name=window_name
             )
             if err:
                 cleanup_bits.append(err)
+            else:
+                cleanup_ok = True
             err = _kill_panes(created_panes)
             if err:
                 cleanup_bits.append(err)
+                cleanup_ok = False
+        if cleanup_ok:
+            clear_team_launch_intent(intent_path)
         if cleanup_bits:
             raise TmuxTeamError(f"{exc}; " + "; ".join(cleanup_bits)) from exc
         raise

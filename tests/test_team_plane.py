@@ -1322,6 +1322,55 @@ def test_stop_refuses_sigkill_when_pane_absence_probe_unknown(
     assert any("pane probe unknown" in e for e in (result.get("errors") or []))
 
 
+def test_stop_refuses_sigkill_when_leader_pgid_none_after_resolve(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Resolve succeeds then final leader PGID is None → never SIGKILL on cache."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team(
+        "final leader pgid none", [TASKS_TWO[0]], root=tmp_path, dry_run=True
+    )
+    live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
+    commands: list[list[str]] = []
+    signals: list[tuple[int, int]] = []
+
+    def killpg(pgid: int, sig: int) -> None:
+        if sig == 0:
+            return
+        signals.append((pgid, int(sig)))
+
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+    monkeypatch.setattr(plane, "_tmux_run", _tmux_identity_runner(live, commands))
+    monkeypatch.setattr(plane.os, "getpgid", lambda _pid: 525252)
+    monkeypatch.setattr(plane.os, "killpg", killpg)
+    # Final revalidation: leader already gone even though resolve still sees
+    # the receipt-bound identity via pane probe / _pgid_for_pid.
+    monkeypatch.setattr(plane, "_receipt_leader_pgid", lambda _pid: (None, None))
+    monkeypatch.setattr(
+        plane,
+        "_wait_process_group_disappearance",
+        lambda _pgid, **_kw: (False, None),
+    )
+    monkeypatch.setattr(
+        plane,
+        "_process_group_disappeared",
+        lambda _pgid: (False, None),
+    )
+
+    result = stop_team(tmp_path, meta["run_id"], kill_grace_s=0)
+
+    assert signals == [(525252, int(signal.SIGTERM))]
+    assert not any(sig == int(signal.SIGKILL) for _pgid, sig in signals)
+    assert result["stop_completed"] is False
+    assert any(
+        "leader gone after resolve" in e or "refusing PGID-only kill" in e
+        for e in (result.get("errors") or [])
+    )
+    durable = load_team_meta(tmp_path, meta["run_id"])
+    assert durable["stop_state"] == "stop_refused"
+
+
 def test_pane_proven_absent_distinguishes_unknown_from_gone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

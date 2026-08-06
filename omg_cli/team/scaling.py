@@ -4053,7 +4053,9 @@ def _reconcile_resume_tasks(
             expected_start_s = (
                 expected_start if isinstance(expected_start, str) else None
             )
-            exact = _status_worker_alive(
+            # Tri-state: True/False/None (unknown). Do not coerce None→False —
+            # unknown must leave needs-collect alone rather than force-dead.
+            win = _status_worker_alive(
                 pane_id=pane_id,
                 session=session,
                 expected_session_id=expected_session_id,
@@ -4061,7 +4063,6 @@ def _reconcile_resume_tasks(
                 expected_pid_start=expected_start_s,
                 expected_pid=expected_pid_i,
             )
-            win = True if exact else False
         else:
             # Legacy windows topology / hermetic mocks without pane_id.
             win = _window_alive(session, widx)
@@ -5144,16 +5145,21 @@ def _relaunch_dead_incomplete_workers_locked(
         expected_start = rec.get("pid_start")
         expected_start_s = expected_start if isinstance(expected_start, str) else None
         # Exact identity only — bare pane_alive would skip relaunch for a
-        # respawned %id hosting a foreign process.
-        if _status_worker_alive(
+        # respawned %id hosting a foreign process. Tri-state: None=unknown
+        # must never spawn a replacement (double-worker risk).
+        alive = _status_worker_alive(
             pane_id=pane_id,
             session=session,
             expected_session_id=relaunch_expected_session_id,
             launch_nonce=relaunch_launch_nonce,
             expected_pid_start=expected_start_s,
             expected_pid=expected_pid_i,
-        ):
+        )
+        if alive is True:
             skipped.append({"task_id": tid, "reason": "alive"})
+            continue
+        if alive is None:
+            skipped.append({"task_id": tid, "reason": "probe_unknown"})
             continue
         # Dead pane or identity drift (respawn / reuse).
         terminal = _worker_api_tasks_terminal(

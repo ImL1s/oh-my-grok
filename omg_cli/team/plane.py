@@ -2420,6 +2420,13 @@ def start_team(
 
         # Live path: create tmux session + fill pids
         launch_nonce = uuid.uuid4().hex
+        # Sweep any prior inside-launch intents for this run (crash recovery).
+        try:
+            from omg_cli.team.tmux import sweep_stale_team_launch_intents
+
+            sweep_stale_team_launch_intents(root_path, run_id=rid)
+        except Exception:
+            pass
         transaction_paths = (
             team_launch_receipt_path(root_path, rid),
             team_meta_path(root_path, rid),
@@ -2434,6 +2441,7 @@ def start_team(
             "window_id": None,
             "attach_hint": None,
         }
+        launch_intent_path: str | None = None
         try:
             if topology == "split":
                 from omg_cli.team.tmux import TmuxTeamError, create_split_team_session
@@ -2445,10 +2453,15 @@ def start_team(
                         env_pairs=env_pairs,
                         detach=detach,
                         env=env,
+                        root=root_path,
+                        run_id=rid,
                     )
                 except TmuxTeamError as exc:
                     raise TeamError(str(exc)) from exc
                 raw_launch = task_records[0].pop("_tmux_launch", None)
+                raw_intent = task_records[0].pop("_tmux_launch_intent", None)
+                if isinstance(raw_intent, str):
+                    launch_intent_path = raw_intent
                 if isinstance(raw_launch, Mapping):
                     tmux_launch = {**tmux_launch, **dict(raw_launch)}
                 # Inside mode joins the live session (name may differ from plan).
@@ -2541,6 +2554,11 @@ def start_team(
                 launch_nonce=launch_nonce,
                 tasks=task_records,
             )
+            # Receipt published — clear durable new-window intent WAL.
+            if launch_intent_path:
+                from omg_cli.team.tmux import clear_team_launch_intent
+
+                clear_team_launch_intent(launch_intent_path)
 
             meta = {
                 "writer": CLI_WRITER,
@@ -2640,8 +2658,16 @@ def _status_worker_alive(
     launch_nonce: str | None,
     expected_pid_start: str | None,
     expected_pid: int | None,
-) -> bool:
+) -> bool | None:
     """Fail-closed status liveness using pane + session + nonce (+ PID start).
+
+    Tri-state:
+    - ``True`` — exact receipt identity is live
+    - ``False`` — successful probe proves dead / foreign identity
+    - ``None`` — probe unknown (tmux error / malformed / unavailable)
+
+    Side-effect paths (resume / relaunch) must treat ``None`` as refuse/skip,
+    never as confirmed dead (avoids double-worker respawn).
 
     New-format receipts (``pid_start`` present) require AND identity:
     ``live_pid == expected_pid`` **and** ``live_start == expected_pid_start``.
@@ -2649,12 +2675,14 @@ def _status_worker_alive(
     Legacy receipts with only ``pid`` keep pid-only comparison.
     """
     if not expected_session_id or not launch_nonce or not session:
-        return False
+        return None
     try:
         from omg_cli.team.tmux import probe_worker_pane_identity
 
         probed = probe_worker_pane_identity(pane_id)
-        if probed is None or probed.get("dead"):
+        if probed is None:
+            return None
+        if probed.get("dead"):
             return False
         if probed.get("session_id") != expected_session_id:
             return False
@@ -2680,7 +2708,7 @@ def _status_worker_alive(
             return live_pid == expected_pid
         return True
     except OSError:
-        return False
+        return None
 
 
 def team_status(
@@ -2746,7 +2774,7 @@ def team_status(
         elif not probe_tmux:
             alive = False
         elif isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id) is not None:
-            alive = _status_worker_alive(
+            probed_alive = _status_worker_alive(
                 pane_id=pane_id,
                 session=session,
                 expected_session_id=expected_session_id,
@@ -2756,6 +2784,8 @@ def team_status(
                 else None,
                 expected_pid=raw.get("pid") if isinstance(raw.get("pid"), int) else None,
             )
+            # Locked status schema keeps bool; unknown → not-alive display.
+            alive = bool(probed_alive)
         else:
             # No exact pane identity → never guess via logical window_index (#98).
             alive = False
@@ -3595,9 +3625,9 @@ def _stop_team_locked(
                 errors.append(group_error)
                 continue
             if not group_gone:
-                # Prefer a fresh exact-identity target. If the receipted leader
-                # was already reaped, keep the last known pgid when session/
-                # nonce still match so same-group survivors can be SIGKILL'd.
+                # Prefer a fresh exact-identity target. NEVER fall back to a
+                # previously cached numeric PGID when the final leader probe
+                # returns None (PID gone / PGID reuse risk).
                 resolved_kill = _resolve_live_signal_target(
                     session,
                     receipt,
@@ -3632,16 +3662,34 @@ def _stop_team_locked(
                 pane_probe_error: str | None = None
                 if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id):
                     pane_absent, pane_probe_error = _pane_proven_absent(pane_id)
-                # Exact live pane identity → SIGKILL that pgid (safe).
-                # Leader reaped + pane gone/unknown: NEVER SIGKILL solely on
-                # numeric PGID existence (reuse risk). Fail closed.
+                receipt_pid_start = resolved.get("pid_start")
+                # Exact live pane identity → SIGKILL that pgid only after a
+                # final leader PGID + start-id revalidation. leader_pgid is
+                # None must refuse (never authorize from cached numeric PGID).
                 if resolved_kill is not None:
-                    escalation_authorized = bool(
-                        session_exact and leader_pgid in (None, pgid)
-                    )
                     target = int(resolved_kill["pgid"])
                     pgid = target
                     pid = int(resolved_kill["pid"])
+                    start_ok = True
+                    if isinstance(receipt_pid_start, str) and receipt_pid_start:
+                        live_start = _pid_start_identity(pid)
+                        start_ok = live_start == receipt_pid_start
+                    escalation_authorized = bool(
+                        session_exact
+                        and leader_pgid is not None
+                        and leader_pgid == pgid
+                        and start_ok
+                    )
+                    if leader_pgid is None:
+                        errors.append(
+                            f"SIGKILL refused task={tid}: leader gone after "
+                            "resolve; refusing PGID-only kill (reuse risk)"
+                        )
+                    elif not start_ok:
+                        errors.append(
+                            f"SIGKILL refused task={tid}: pid_start revalidation "
+                            "failed after resolve"
+                        )
                 else:
                     escalation_authorized = False
                     if pane_probe_error:
@@ -3667,7 +3715,7 @@ def _stop_team_locked(
                 if not escalation_authorized:
                     identity_verified = False
                     process_disappearance_verified = False
-                    if resolved_kill is not None:
+                    if resolved_kill is not None and leader_pgid is not None:
                         errors.append(
                             f"SIGKILL group authority drift refused signalling "
                             f"task={tid}"

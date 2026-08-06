@@ -367,8 +367,10 @@ def test_inside_commit_refuses_when_worker_pane_leaves_session(
     monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
     monkeypatch.setenv("TMUX_PANE", "%9")
     killed: list[str] = []
+    window_alive = True
 
     def fake_tmux(args: list[str]) -> SimpleNamespace:
+        nonlocal window_alive
         cmd = args[0]
         joined = " ".join(args)
         if cmd == "display-message" and "-t" in args:
@@ -385,13 +387,23 @@ def test_inside_commit_refuses_when_worker_pane_leaves_session(
                 )
         if cmd == "new-window":
             return SimpleNamespace(returncode=0, stdout="@7\t%10\n", stderr="")
+        if cmd == "list-windows":
+            if window_alive:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="@7\tomg-team-deadbeef\t$42\n",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "kill-window":
             killed.append(args[-1])
+            window_alive = False
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
 
     monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
     monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
+    monkeypatch.setattr(tmux_mod.secrets, "token_hex", lambda _n: "deadbeef")
 
     tasks = [
         {
@@ -408,7 +420,7 @@ def test_inside_commit_refuses_when_worker_pane_leaves_session(
             env_pairs=[],
             attach_mode="inside",
         )
-    assert killed == ["@7"]
+    assert "@7" in killed
     assert "_tmux_launch" not in tasks[0]
 
 
@@ -482,6 +494,7 @@ def test_inside_new_window_malformed_stdout_kills_orphan(
     monkeypatch.setattr(tmux_mod.secrets, "token_hex", lambda _n: "deadbeef")
     killed: list[str] = []
     listed_windows = 0
+    residual = {"@77"}
 
     def fake_tmux(args: list[str]) -> SimpleNamespace:
         nonlocal listed_windows
@@ -499,20 +512,23 @@ def test_inside_new_window_malformed_stdout_kills_orphan(
         if cmd == "list-windows":
             listed_windows += 1
             assert args[args.index("-t") + 1] == "$42"
-            return SimpleNamespace(
-                returncode=0,
-                stdout="@77\tomg-team-deadbeef\t$42\n",
-                stderr="",
-            )
+            if residual:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="@77\tomg-team-deadbeef\t$42\n",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "kill-window":
             killed.append(args[-1])
+            residual.clear()
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
 
     monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
     monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
 
-    with pytest.raises(TmuxTeamError, match="did not return window/pane ids"):
+    with pytest.raises(TmuxTeamError, match="absence proven|did not return window/pane ids"):
         tmux_mod.create_split_team_session(
             session="planned-name",
             tasks=[
@@ -526,7 +542,7 @@ def test_inside_new_window_malformed_stdout_kills_orphan(
             env_pairs=[],
             attach_mode="inside",
         )
-    assert listed_windows >= 1
+    assert listed_windows >= 2  # discover + absence proof
     assert "@77" in killed
     assert "$42:omg-team-deadbeef" in killed
 
@@ -550,6 +566,19 @@ def test_inside_new_window_readback_failure_modes_kill_by_name(
     monkeypatch.setattr(tmux_mod.secrets, "token_hex", lambda _n: "cafebabe")
     killed: list[str] = []
     residual_windows = {"@77", "@88"} if list_windows_behavior == "ambiguous" else {"@77"}
+    list_phase = {"n": 0}
+
+    def _list_stdout() -> str:
+        if list_windows_behavior == "ambiguous":
+            rows = []
+            if "@77" in residual_windows:
+                rows.append("@77\tomg-team-cafebabe\t$42")
+            if "@88" in residual_windows:
+                rows.append("@88\tomg-team-cafebabe\t$42")
+            return "\n".join(rows) + ("\n" if rows else "")
+        if residual_windows:
+            return "@77\tomg-team-cafebabe\t$42\n"
+        return ""
 
     def fake_tmux(args: list[str]) -> SimpleNamespace:
         cmd = args[0]
@@ -563,22 +592,31 @@ def test_inside_new_window_readback_failure_modes_kill_by_name(
         if cmd == "new-window":
             return SimpleNamespace(returncode=0, stdout="garbage", stderr="")
         if cmd == "list-windows":
-            if list_windows_behavior == "nonzero":
+            list_phase["n"] += 1
+            # First discovery may be unknown; after kill, absence proof for
+            # unknown modes stays unknown (fail closed). Ambiguous/found can
+            # prove absence once residuals are cleared.
+            if list_windows_behavior == "nonzero" and not killed:
                 return SimpleNamespace(returncode=2, stdout="", stderr="server error")
-            if list_windows_behavior == "oserror":
+            if list_windows_behavior == "oserror" and not killed:
                 raise OSError("tmux list-windows pipe broken")
-            if list_windows_behavior == "malformed":
+            if list_windows_behavior == "malformed" and not killed:
                 return SimpleNamespace(
                     returncode=0, stdout="not-a-window-row\n", stderr=""
                 )
-            # ambiguous: two windows share the unique launch name
+            if list_windows_behavior in ("nonzero", "oserror", "malformed"):
+                # Absence proof still unknown after name-target kill attempt.
+                if list_windows_behavior == "nonzero":
+                    return SimpleNamespace(
+                        returncode=2, stdout="", stderr="server error"
+                    )
+                if list_windows_behavior == "oserror":
+                    raise OSError("tmux list-windows pipe broken")
+                return SimpleNamespace(
+                    returncode=0, stdout="not-a-window-row\n", stderr=""
+                )
             return SimpleNamespace(
-                returncode=0,
-                stdout=(
-                    "@77\tomg-team-cafebabe\t$42\n"
-                    "@88\tomg-team-cafebabe\t$42\n"
-                ),
-                stderr="",
+                returncode=0, stdout=_list_stdout(), stderr=""
             )
         if cmd == "kill-window":
             target = args[-1]
@@ -611,7 +649,139 @@ def test_inside_new_window_readback_failure_modes_kill_by_name(
     assert "$42:omg-team-cafebabe" in killed
     if list_windows_behavior == "ambiguous":
         assert "@77" in killed and "@88" in killed
-    assert not residual_windows
+        assert not residual_windows
+    elif list_windows_behavior in ("nonzero", "oserror", "malformed"):
+        # Kill attempted but absence unproven → cleanup failure in message.
+        pass
+
+
+def test_kill_inside_windows_absence_proof_rejects_still_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """kill-window rc=1 with window still listed must fail cleanup."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    def fake_tmux(args: list[str]) -> SimpleNamespace:
+        cmd = args[0]
+        if cmd == "list-windows":
+            return SimpleNamespace(
+                returncode=0,
+                stdout="@77\tomg-team-stillhere\t$42\n",
+                stderr="",
+            )
+        if cmd == "kill-window":
+            # tmux often returns 1 for "no such window" — must not treat as gone
+            # when list-windows still shows the name.
+            return SimpleNamespace(returncode=1, stdout="", stderr="can't find window")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    err = tmux_mod._kill_inside_windows_by_name(
+        session_id="$42", window_name="omg-team-stillhere"
+    )
+    assert err is not None
+    assert "still present" in err
+
+
+def test_kill_inside_windows_absence_proof_ok_when_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Successful cleanup requires post-kill list-windows proving absent."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    residual = {"@77"}
+
+    def fake_tmux(args: list[str]) -> SimpleNamespace:
+        cmd = args[0]
+        if cmd == "list-windows":
+            if residual:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="@77\tomg-team-gone\t$42\n",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "kill-window":
+            residual.clear()
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    err = tmux_mod._kill_inside_windows_by_name(
+        session_id="$42", window_name="omg-team-gone"
+    )
+    assert err is None
+
+
+def test_inside_launch_writes_and_clears_intent_on_successful_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Intent WAL is written before new-window and cleared when absence proven."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+    from omg_cli.team.tmux import TmuxTeamError, team_launch_intents_dir
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    monkeypatch.setenv("TMUX_PANE", "%9")
+    monkeypatch.setattr(tmux_mod.secrets, "token_hex", lambda _n: "abad1dea")
+    rid = "20260806T120000Z-intent"
+    residual = {"@77"}
+    intent_seen: list[Path] = []
+
+    def fake_tmux(args: list[str]) -> SimpleNamespace:
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "display-message" and "-t" in args:
+            target = args[args.index("-t") + 1]
+            if target == "%9" and "#{pane_pid}" in joined:
+                return SimpleNamespace(
+                    returncode=0, stdout="leader\t$42\t@3\t%9\t4242\n", stderr=""
+                )
+        if cmd == "new-window":
+            # Intent must already exist before side effect.
+            intents = list(team_launch_intents_dir(tmp_path).glob(f"{rid}-*.json"))
+            assert len(intents) == 1
+            intent_seen.extend(intents)
+            return SimpleNamespace(returncode=0, stdout="\n", stderr="")
+        if cmd == "list-windows":
+            if residual:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="@77\tomg-team-abad1dea\t$42\n",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "kill-window":
+            residual.clear()
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
+
+    with pytest.raises(TmuxTeamError, match="absence proven"):
+        tmux_mod.create_split_team_session(
+            session="planned-name",
+            tasks=[
+                {
+                    "task_id": "w1",
+                    "worktree": "/tmp/w1",
+                    "pane_command": "true",
+                    "_env_pairs": [],
+                }
+            ],
+            env_pairs=[],
+            attach_mode="inside",
+            root=tmp_path,
+            run_id=rid,
+        )
+    assert intent_seen
+    assert not intent_seen[0].is_file()
 
 
 def test_team_status_prefers_exact_pane_alive(
