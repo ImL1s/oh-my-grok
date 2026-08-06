@@ -855,3 +855,30 @@ def test_redact_text_closes_pr94z_dollar_brace_bracket_query_p2() -> None:
     bare = "?api_key=foo$bar&ok=visible-tail"
     assert redact_text(bare) == f"?api_key={REDACTED}&ok=visible-tail"
 
+
+def test_redact_text_closes_pr94aa_bash_special_param_query_p2() -> None:
+    """Close Pro reaudit P2: Bash special-parameter digraphs clear query.
+
+    ``$@ $$ $* $? $- $! $0`` are complete shell expansions (not ``$`` + id).
+    Mid-span clear must apply clear_eol so ``&second-secret`` cannot leak.
+    """
+    specials = ("$@", "$$", "$*", "$?", "$-", "$!", "$0")
+    sources: list[str] = []
+    for digraph in specials:
+        sources.extend(
+            (
+                rf"curl https://x.test/?api_key=foo{digraph}token=first\&second-secret",
+                f"curl https://x.test/?api_key=foo{digraph}token=first&second-secret",
+                rf"?api_key=foo{digraph}token=first\&second-secret",
+                f"?api_key=foo{digraph}token=first&second-secret",
+            )
+        )
+    for source in sources:
+        out = redact_text(source)
+        assert "second-secret" not in out, (source, out)
+        assert "first" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+    # Bare ``$`` + normal identifier must NOT clear (contrast: specials above).
+    bare = "?api_key=foo$bar&ok=visible-tail"
+    assert redact_text(bare) == f"?api_key={REDACTED}&ok=visible-tail"
+
