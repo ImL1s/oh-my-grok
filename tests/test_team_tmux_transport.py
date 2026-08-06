@@ -857,7 +857,6 @@ def test_require_clean_launch_intents_refuses_when_sweep_unproven(
     from omg_cli.team import plane, tmux as tmux_mod
     from omg_cli.team.tmux import (
         require_clean_team_launch_intents,
-        write_team_launch_intent,
     )
 
     intent = _write_launch_intent(
@@ -982,7 +981,6 @@ def test_sweep_refuses_adopt_when_identity_generation_skips_chain(
     from omg_cli.team.tmux import (
         _intent_receipt_matches,
         sweep_stale_team_launch_intents,
-        write_team_launch_intent,
     )
 
     rid = "20260806T120000Z-gen-skip"
@@ -1039,7 +1037,6 @@ def test_sweep_refuses_adopt_on_malformed_identity_generation(
     from omg_cli.team.tmux import (
         _intent_receipt_matches,
         sweep_stale_team_launch_intents,
-        write_team_launch_intent,
     )
 
     rid = "20260806T120000Z-malgen" + str(abs(hash(repr(bad_generation))))[:8]
@@ -1232,7 +1229,6 @@ def test_bind_team_launch_intent_window_id_stamps_and_is_idempotent(
     from omg_cli.team.tmux import (
         TmuxTeamError,
         bind_team_launch_intent_window_id,
-        write_team_launch_intent,
     )
 
     intent = _write_launch_intent(
@@ -1397,7 +1393,6 @@ def test_sweep_retains_wal_when_bound_window_renamed_before_discovery(
     from omg_cli.team.tmux import (
         bind_team_launch_intent_window_id,
         sweep_stale_team_launch_intents,
-        write_team_launch_intent,
     )
 
     rid = "20260806T120000Z-renamed-wal"
@@ -1436,7 +1431,6 @@ def test_sweep_clears_wal_when_bound_window_id_proven_absent(
     from omg_cli.team.tmux import (
         bind_team_launch_intent_window_id,
         sweep_stale_team_launch_intents,
-        write_team_launch_intent,
     )
 
     rid = "20260806T120000Z-bound-gone"
@@ -1739,7 +1733,7 @@ def test_clear_intent_fsync_failure_after_unlink_is_nonfatal(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Parent fsync failure after unlink must not raise (WAL already gone)."""
-    from omg_cli.team.tmux import clear_team_launch_intent, write_team_launch_intent
+    from omg_cli.team.tmux import clear_team_launch_intent
 
     intent = _write_launch_intent(
         tmp_path,
@@ -1764,7 +1758,6 @@ def test_sweep_adopts_receipt_bound_intent_without_kill(
     """Authoritative v2 receipt with matching intent identity → clear WAL, no kill."""
     from omg_cli.team.tmux import (
         sweep_stale_team_launch_intents,
-        write_team_launch_intent,
     )
 
     rid = "20260806T120000Z-adopt"
@@ -1812,7 +1805,6 @@ def test_sweep_refuses_receipt_only_without_team_json(
     from omg_cli.team.tmux import (
         _intent_receipt_matches,
         sweep_stale_team_launch_intents,
-        write_team_launch_intent,
     )
 
     rid = "20260806T120000Z-receiptonly"
@@ -1881,7 +1873,6 @@ def test_sweep_refuses_forged_minimal_matching_receipt(
     from omg_cli.team.tmux import (
         _intent_receipt_matches,
         sweep_stale_team_launch_intents,
-        write_team_launch_intent,
     )
 
     rid = "20260806T120000Z-forged"
@@ -1937,7 +1928,6 @@ def test_sweep_refuses_unbound_receipt_for_new_intent(
     """Old receipt without matching intent identity must not adopt a new WAL."""
     from omg_cli.team.tmux import (
         sweep_stale_team_launch_intents,
-        write_team_launch_intent,
     )
 
     rid = "20260806T120000Z-orphan"
@@ -1984,7 +1974,6 @@ def test_sweep_refuses_schema_v1_receipt_for_intent_adoption(
     from omg_cli.team.tmux import (
         _intent_receipt_matches,
         sweep_stale_team_launch_intents,
-        write_team_launch_intent,
     )
 
     rid = "20260806T120000Z-v1legacy"
@@ -2041,7 +2030,6 @@ def test_sweep_refuses_kill_when_intent_owner_alive(
     """In-flight launch intent with live owner must not be kill-swept."""
     from omg_cli.team.tmux import (
         sweep_stale_team_launch_intents,
-        write_team_launch_intent,
     )
 
     intent = _write_launch_intent(
@@ -2074,7 +2062,6 @@ def test_start_team_sweeps_all_run_ids_before_create(
     import subprocess
 
     from omg_cli.team import plane
-    from omg_cli.team.tmux import write_team_launch_intent
 
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "README.md").write_text("x\n", encoding="utf-8")
