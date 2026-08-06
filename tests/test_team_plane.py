@@ -919,6 +919,61 @@ def test_live_start_retains_authority_after_wal_cleared_postcommit_failure(
     assert kill_calls == [], "must not kill session after durable WAL clear"
 
 
+def test_live_split_inside_rollback_scopes_kill_window_to_wal_server(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """P1-B: plane rollback must not bare-call _kill_window(@N) on ambient tmux."""
+    import omg_cli.team.tmux as tmux_mod
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    kill_kwargs: list[dict[str, Any]] = []
+
+    def fake_create(**kwargs: Any) -> tuple[str, str]:
+        tasks = kwargs["tasks"]
+        tasks[0]["pane_id"] = "%10"
+        tasks[0]["_tmux_launch"] = {
+            "attach_mode": "inside",
+            "session_owned": False,
+            "leader_pane_id": "%9",
+            "window_id": "@7",
+            "attach_hint": "tmux select-pane -t %9",
+            "session_id": "$3",
+            **FAKE_TMUX_SERVER,
+        }
+        return (str(kwargs["session"]), "$3")
+
+    def boom_bind(*_a: Any, **_kw: Any) -> None:
+        raise TeamError("injected post-create bind failure")
+
+    def capture_kill(window_id: str, **kwargs: Any) -> str | None:
+        kill_kwargs.append({"window_id": window_id, **kwargs})
+        return None
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux.create_split_team_session", fake_create
+    )
+    monkeypatch.setattr(plane, "_bind_tmux_launch_nonce", boom_bind)
+    monkeypatch.setattr(tmux_mod, "_kill_window", capture_kill)
+    monkeypatch.setattr(plane, "_cleanup_created_tmux_session", lambda *_a, **_k: None)
+
+    with pytest.raises(TeamError, match="injected post-create bind failure"):
+        start_team(
+            "scoped rollback kill",
+            [TASKS_TWO[0]],
+            root=tmp_path,
+            topology="split",
+        )
+
+    assert kill_kwargs, "expected scoped _kill_window on inside rollback"
+    assert kill_kwargs[0]["window_id"] == "@7"
+    assert kill_kwargs[0].get("expected_session_id") == "$3"
+    assert kill_kwargs[0].get("expected_server") == FAKE_TMUX_SERVER
+    assert (
+        kill_kwargs[0].get("socket_path") == FAKE_TMUX_SERVER["tmux_socket_path"]
+    )
+
+
 def test_snapshot_launch_pane_identities_refuses_session_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -370,6 +370,50 @@ def mark_team_launch_intent_side_effect(path: Path | str) -> None:
         ) from exc
 
 
+def unmark_team_launch_intent_side_effect(path: Path | str) -> None:
+    """Revert ``side_effect_started`` when ``new-window`` is proven not to create.
+
+    Used after a synchronous ``new-window`` failure (non-zero rc) when session
+    discovery shows the launch name absent and no durable ``@N`` was bound.
+    Without this, a false-positive mark permanently wedges project launches.
+    Refuses to unmark when a durable ``window_id`` is already bound.
+    """
+    from omg_cli.contracts.path_keys import (
+        DATA_FILE_MODE,
+        ContractPathError,
+        atomic_write_bytes,
+    )
+
+    intent = Path(path)
+    try:
+        raw = json.loads(intent.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TmuxTeamError(
+            f"launch intent side-effect unmark refused (unreadable): {intent}: {exc}"
+        ) from exc
+    if not isinstance(raw, dict):
+        raise TmuxTeamError(
+            f"launch intent side-effect unmark refused (invalid): {intent}"
+        )
+    if _intent_known_window_ids(raw):
+        raise TmuxTeamError(
+            "launch intent side-effect unmark refused: durable window_id bound"
+        )
+    if raw.get("side_effect_started") is False:
+        return
+    payload = dict(raw)
+    payload["side_effect_started"] = False
+    body = (
+        json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    try:
+        atomic_write_bytes(intent, body, mode=DATA_FILE_MODE, replace=True)
+    except ContractPathError as exc:
+        raise TmuxTeamError(
+            f"launch intent side-effect unmark refused: {exc}"
+        ) from exc
+
+
 def bind_team_launch_intent_window_id(
     path: Path | str,
     window_id: str,
@@ -941,6 +985,16 @@ def respawn_worker_pane(
     return pane_id
 
 
+def _and_tmux_formats(checks: Sequence[str]) -> str:
+    """Combine already-safe tmux boolean formats without invoking a shell."""
+    if not checks:
+        return "0"
+    combined = checks[0]
+    for check in checks[1:]:
+        combined = f"#{{&&:{combined},{check}}}"
+    return combined
+
+
 def _kill_window(
     window_id: str,
     *,
@@ -951,17 +1005,17 @@ def _kill_window(
     """Kill *window_id* and require global absence proof on the scoped server.
 
     Bare ``kill-window`` rc 0/1 is never success by itself — list-windows -a
-    must complete with well-formed ids and omit the target. When
-    *expected_server* is provided, the live ``-S`` server must match before any
-    kill (foreign/restarted servers must not satisfy a stale ``@N``). When
-    *expected_session_id* is provided, a still-addressable ``@N`` must belong to
-    that session — otherwise refuse rather than tearing down a stranger window.
-    Unknown / malformed probes return an error so callers do not treat cleanup
-    as proven.
+    must omit the target. When *expected_server* and/or *expected_session_id*
+    are provided, identity check and kill run as **one** server-side
+    ``if-shell`` conditional in the same client command queue as the absence
+    ``list-windows`` — closing the probe→kill TOCTOU where a restarted server
+    could reuse ``@N`` between separate client calls. Foreign/restarted
+    servers must not satisfy a stale ``@N``.
     """
     if _TMUX_WINDOW_ID.fullmatch(window_id) is None:
         return f"refused kill-window for non-window id {window_id!r}"
     if expected_server is not None:
+        # Defense-in-depth start-id gate before the atomic queue (PID reuse).
         live = _probe_tmux_server_identity(socket_path=socket_path)
         if not _tmux_server_matches(expected_server, live):
             return (
@@ -976,84 +1030,164 @@ def _kill_window(
                 f"kill-window {window_id}: invalid expected session "
                 f"{expected_session_id!r}"
             )
-        try:
-            probe = _tmux_run(
-                [
-                    "display-message",
-                    "-p",
-                    "-t",
-                    window_id,
-                    "#{session_id}\t#{window_id}\t#{socket_path}\t#{pid}",
-                ],
-                socket_path=socket_path,
-            )
-        except OSError as exc:
-            return f"kill-window {window_id}: identity probe OSError {exc}"
-        if probe.returncode == 0:
-            parts = (probe.stdout or "").strip().split("\t")
-            if len(parts) != 4:
-                return (
-                    f"kill-window {window_id}: identity probe malformed "
-                    f"{(probe.stdout or '').strip()!r}"
-                )
-            sid, wid, sock, pid_s = (p.strip() for p in parts)
-            if wid != window_id:
-                return (
-                    f"kill-window {window_id}: identity probe window mismatch "
-                    f"{wid!r}"
-                )
-            if sid != expected_session_id:
-                return (
-                    f"kill-window {window_id}: belongs to session {sid!r}, "
-                    f"not WAL session {expected_session_id!r} — refuse"
-                )
-            if expected_server is not None:
-                if sock != expected_server.get("tmux_socket_path"):
-                    return (
-                        f"kill-window {window_id}: socket mismatch "
-                        f"{sock!r} != {expected_server.get('tmux_socket_path')!r}"
-                    )
-                if not pid_s.isdigit() or int(pid_s) != expected_server.get(
-                    "tmux_server_pid"
-                ):
-                    return (
-                        f"kill-window {window_id}: server pid mismatch "
-                        f"{pid_s!r}"
-                    )
-        # Non-zero probe: window may already be gone — fall through to kill +
-        # absence proof on the scoped server.
-    try:
-        killed = _tmux_run(
-            ["kill-window", "-t", window_id], socket_path=socket_path
+    if expected_server is not None or expected_session_id is not None:
+        return _kill_window_atomic(
+            window_id,
+            socket_path=socket_path,
+            expected_session_id=expected_session_id,
+            expected_server=expected_server,
         )
-    except OSError as exc:
-        return f"kill-window {window_id}: OSError {exc}"
-    if killed.returncode not in (0, 1):
-        err = (killed.stderr or killed.stdout or "").strip()
-        return f"kill-window {window_id}: exit {killed.returncode} {err}"
+    # Unscoped path (no WAL server/session): still kill+list in one queue so
+    # a mid-cleanup socket swap cannot satisfy kill without absence proof.
     try:
         listed = _tmux_run(
-            ["list-windows", "-a", "-F", "#{window_id}"],
+            [
+                "kill-window",
+                "-t",
+                window_id,
+                ";",
+                "list-windows",
+                "-a",
+                "-F",
+                "#{window_id}",
+            ],
             socket_path=socket_path,
         )
     except OSError as exc:
-        return f"kill-window {window_id}: absence probe OSError {exc}"
-    if listed.returncode != 0:
-        err = (listed.stderr or listed.stdout or "").strip()
+        return f"kill-window {window_id}: OSError {exc}"
+    return _absence_from_list_windows(
+        window_id, listed, allow_dead_server=True
+    )
+
+
+def _kill_window_atomic(
+    window_id: str,
+    *,
+    socket_path: str | None,
+    expected_session_id: str | None,
+    expected_server: Mapping[str, Any] | None,
+) -> str | None:
+    """Server-side conditional kill + absence list in one tmux client queue."""
+    checks: list[str] = [f"#{{==:#{{window_id}},{window_id}}}"]
+    if expected_session_id is not None:
+        checks.append(f"#{{==:#{{session_id}},{expected_session_id}}}")
+    if expected_server is not None:
+        pid = expected_server.get("tmux_server_pid")
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+            return f"kill-window {window_id}: invalid expected server pid"
+        checks.append(f"#{{==:#{{pid}},{pid}}}")
+        # Socket is pinned via ``-S``; embedding path in formats is unsafe
+        # (commas/braces). Pid match on the connected server closes restart
+        # TOCTOU for the common different-pid replacement case.
+    predicate = _and_tmux_formats(checks)
+    try:
+        listed = _tmux_run(
+            [
+                "if-shell",
+                "-F",
+                "-t",
+                window_id,
+                predicate,
+                f"kill-window -t {window_id}",
+                "",
+                ";",
+                "list-windows",
+                "-a",
+                "-F",
+                "#{window_id}\t#{session_id}\t#{pid}",
+            ],
+            socket_path=socket_path,
+        )
+    except OSError as exc:
+        return f"kill-window {window_id}: OSError {exc}"
+    # Parse rich rows so a still-present foreign @N is refused, not retried.
+    stdout = listed.stdout or ""
+    stderr = (listed.stderr or "").strip()
+    if listed.returncode != 0 and not stdout.strip():
+        # Last-window kill can tear down the server ("no current target" /
+        # "no server running") — absence is then proven on this socket.
+        low = stderr.lower()
+        if "no server" in low or "no current target" in low or "no such" in low:
+            return None
         return (
             f"kill-window {window_id}: absence probe exit {listed.returncode}"
-            + (f" {err}" if err else "")
+            + (f" {stderr}" if stderr else "")
         )
-    present: list[str] = []
-    for line in (listed.stdout or "").splitlines():
+    present_rows: list[tuple[str, str, str]] = []
+    for line in stdout.splitlines():
         token = line.strip()
         if not token:
             continue
-        if _TMUX_WINDOW_ID.fullmatch(token) is None:
+        parts = token.split("\t")
+        if len(parts) != 3:
             return (
                 f"kill-window {window_id}: absence probe malformed row {token!r}"
             )
-        present.append(token)
+        wid, sid, pid_s = (p.strip() for p in parts)
+        if _TMUX_WINDOW_ID.fullmatch(wid) is None:
+            return (
+                f"kill-window {window_id}: absence probe malformed row {token!r}"
+            )
+        present_rows.append((wid, sid, pid_s))
+    matches = [row for row in present_rows if row[0] == window_id]
+    if not matches:
+        return None
+    # Still addressable: distinguish foreign identity (refused kill) from
+    # same-identity kill failure.
+    for wid, sid, pid_s in matches:
+        foreign = False
+        if (
+            expected_session_id is not None
+            and sid != expected_session_id
+        ):
+            foreign = True
+        if expected_server is not None:
+            exp_pid = expected_server.get("tmux_server_pid")
+            if not pid_s.isdigit() or int(pid_s) != exp_pid:
+                foreign = True
+        if foreign:
+            detail = f"session {sid!r}"
+            if expected_session_id is not None and sid != expected_session_id:
+                detail = (
+                    f"belongs to session {sid!r}, not WAL session "
+                    f"{expected_session_id!r}"
+                )
+            return (
+                f"kill-window {window_id}: {detail} — refuse foreign/restarted @N"
+            )
+    return f"kill-window {window_id}: still present after kill"
+
+
+def _absence_from_list_windows(
+    window_id: str,
+    listed: subprocess.CompletedProcess[str],
+    *,
+    allow_dead_server: bool = False,
+) -> str | None:
+    """Interpret list-windows -a stdout as absence proof for *window_id*."""
+    stdout = listed.stdout or ""
+    stderr = (listed.stderr or "").strip()
+    if listed.returncode != 0 and not stdout.strip():
+        if allow_dead_server:
+            low = stderr.lower()
+            if "no server" in low or "no current target" in low or "no such" in low:
+                return None
+        return (
+            f"kill-window {window_id}: absence probe exit {listed.returncode}"
+            + (f" {stderr}" if stderr else "")
+        )
+    present: list[str] = []
+    for line in stdout.splitlines():
+        token = line.strip()
+        if not token:
+            continue
+        # Rich rows from atomic path may include tabs — take first field.
+        wid = token.split("\t", 1)[0].strip()
+        if _TMUX_WINDOW_ID.fullmatch(wid) is None:
+            return (
+                f"kill-window {window_id}: absence probe malformed row {token!r}"
+            )
+        present.append(wid)
     if window_id in present:
         return f"kill-window {window_id}: still present after kill"
     return None
@@ -1211,11 +1345,15 @@ def _current_leader_pane() -> str:
     return resolve_invoking_pane()
 
 
-def _restore_leader_focus(leader_pane: str) -> None:
+def _restore_leader_focus(
+    leader_pane: str, *, socket_path: str | None = None
+) -> None:
     """Reselect the exact leader pane after focus-detached worker creation."""
     if _TMUX_PANE_ID.fullmatch(leader_pane) is None:
         raise TmuxTeamError(f"invalid leader pane for focus restore {leader_pane!r}")
-    selected = _tmux_run(["select-pane", "-t", leader_pane])
+    selected = _tmux_run(
+        ["select-pane", "-t", leader_pane], socket_path=socket_path
+    )
     if selected.returncode != 0:
         err = (selected.stderr or selected.stdout or "").strip()
         raise TmuxTeamError(f"failed to restore leader focus on {leader_pane}: {err}")
@@ -1518,6 +1656,8 @@ def _launch_first_inside(
     expected_session_id: str,
     intent_path: Path | None = None,
     publish_created: Callable[[str, str], None] | None = None,
+    socket_path: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Create a new window beside *target_window* (``@N``); return (window_id, pane_id).
 
@@ -1531,6 +1671,9 @@ def _launch_first_inside(
     stdout is empty/malformed (or the reply channel raises OSError), always
     attempt discover-by-name, bind any found id, then kill with absence proof
     before raising so the caller never leaves an unrecepted orphan silently OK.
+
+    *socket_path* / *expected_server* pin create + orphan cleanup to the WAL
+    tmux server so a restarted ambient server cannot receive the side effect.
     """
     if _TMUX_WINDOW_ID.fullmatch(target_window) is None:
         raise TmuxTeamError(
@@ -1558,7 +1701,8 @@ def _launch_first_inside(
                 str(task["worktree"]),
                 *first_env,
                 str(task["pane_command"]),
-            ]
+            ],
+            socket_path=socket_path,
         )
     except OSError as exc:
         # Creation itself failed — still name cleanup in case the window was
@@ -1575,6 +1719,29 @@ def _launch_first_inside(
         raise TmuxTeamError(message) from exc
     if create.returncode != 0:
         err = (create.stderr or create.stdout or "").strip()
+        # Synchronous failure: prove whether a window was created. If the launch
+        # name is absent and no @N is bound, unmark side_effect_started so the
+        # false-positive mark cannot permanently wedge project launches.
+        status, matches, _detail = _discover_inside_windows_by_name(
+            session_id=expected_session_id,
+            window_name=window_name,
+            socket_path=socket_path,
+        )
+        if status == "found" and matches:
+            cleanup = _cleanup_unreplied_inside_window(
+                session_id=expected_session_id,
+                window_name=window_name,
+                intent_path=intent_path,
+            )
+            message = f"failed to create team window in current session: {err}"
+            if cleanup:
+                message = f"{message}; orphan cleanup: {cleanup}"
+            raise TmuxTeamError(message)
+        if status == "absent" and intent_path is not None:
+            try:
+                unmark_team_launch_intent_side_effect(intent_path)
+            except TmuxTeamError:
+                pass
         raise TmuxTeamError(
             f"failed to create team window in current session: {err}"
         )
@@ -1698,6 +1865,7 @@ def _split_remaining(
     target: str,
     tasks: Sequence[dict[str, Any]],
     env_pairs: list[tuple[str, str]],
+    socket_path: str | None = None,
 ) -> list[str]:
     """Split remaining tasks into ``target`` (session id or window id).
 
@@ -1719,7 +1887,8 @@ def _split_remaining(
                 str(task["worktree"]),
                 *task_env,
                 str(task["pane_command"]),
-            ]
+            ],
+            socket_path=socket_path,
         )
         if split.returncode != 0:
             err = (split.stderr or split.stdout or "").strip()
@@ -1793,14 +1962,24 @@ def _stamp_launch_meta(
     leader_pane_id: str | None,
     window_id: str | None,
     attach_hint: str | None,
+    session_id: str | None = None,
+    tmux_server: Mapping[str, Any] | None = None,
 ) -> None:
-    tasks[0]["_tmux_launch"] = {
+    meta: dict[str, Any] = {
         "attach_mode": attach_mode,
         "session_owned": session_owned,
         "leader_pane_id": leader_pane_id,
         "window_id": window_id,
         "attach_hint": attach_hint,
     }
+    if isinstance(session_id, str) and _TMUX_SESSION_ID.fullmatch(session_id):
+        meta["session_id"] = session_id
+    server = _intent_tmux_server(tmux_server) if tmux_server is not None else None
+    if server is not None:
+        meta["tmux_socket_path"] = server["tmux_socket_path"]
+        meta["tmux_server_pid"] = server["tmux_server_pid"]
+        meta["tmux_server_pid_start"] = server["tmux_server_pid_start"]
+    tasks[0]["_tmux_launch"] = meta
 
 
 def _create_detached(
@@ -1834,6 +2013,7 @@ def _create_detached(
             leader_pane_id=None,
             window_id=None,
             attach_hint=f"tmux attach -t {handle[0]}",
+            session_id=handle[1],
         )
     except (TmuxTeamError, OSError) as exc:
         cleanup = _cleanup_session(handle)
@@ -1871,6 +2051,7 @@ def _create_inside(
     created_panes: list[str] = []
     intent_path: Path | None = None
     intent_server: dict[str, Any] | None = None
+    sock: str | None = None
     try:
         # Re-validate immediately before the first mutation so a mid-launch
         # client move cannot bind workers to a different session (#97 Pro P1).
@@ -1890,6 +2071,8 @@ def _create_inside(
                 raw_intent = None
             if isinstance(raw_intent, dict):
                 intent_server = _intent_tmux_server(raw_intent)
+                if intent_server is not None:
+                    sock = str(intent_server["tmux_socket_path"])
             # Mark before new-window so a post-side-effect crash cannot clear
             # on name-only absence while the worker is still live/renamed.
             mark_team_launch_intent_side_effect(intent_path)
@@ -1907,6 +2090,8 @@ def _create_inside(
             expected_session_id=live_id,
             intent_path=intent_path,
             publish_created=_publish_created,
+            socket_path=sock,
+            expected_server=intent_server,
         )
         # Prove the new window belongs to the snapshotted session.
         win_probe = _tmux_run(
@@ -1916,7 +2101,8 @@ def _create_inside(
                 "-t",
                 window_id,
                 "#{session_id}\t#{window_id}",
-            ]
+            ],
+            socket_path=sock,
         )
         win_parts = (win_probe.stdout or "").strip().split("\t")
         if (
@@ -1933,7 +2119,12 @@ def _create_inside(
             raise TmuxTeamError("refusing to overwrite leader pane with worker")
         created_panes.append(first_pane)
         created_panes.extend(
-            _split_remaining(target=window_id, tasks=tasks[1:], env_pairs=env_pairs)
+            _split_remaining(
+                target=window_id,
+                tasks=tasks[1:],
+                env_pairs=env_pairs,
+                socket_path=sock,
+            )
         )
         if leader_pane in created_panes:
             raise TmuxTeamError("worker pane list incorrectly includes leader pane")
@@ -1949,7 +2140,8 @@ def _create_inside(
                     "-t",
                     pane_id,
                     "#{pane_id}\t#{session_id}\t#{window_id}",
-                ]
+                ],
+                socket_path=sock,
             )
             pane_parts = (pane_probe.stdout or "").strip().split("\t")
             if (
@@ -1971,7 +2163,8 @@ def _create_inside(
                 "-t",
                 window_id,
                 "#{session_id}\t#{window_id}",
-            ]
+            ],
+            socket_path=sock,
         )
         win_recheck_parts = (win_recheck.stdout or "").strip().split("\t")
         if (
@@ -1986,10 +2179,12 @@ def _create_inside(
             )
         for task, pane_id in zip(tasks, created_panes, strict=True):
             task["pane_id"] = pane_id
-        layout = _tmux_run(["select-layout", "-t", window_id, "tiled"])
+        layout = _tmux_run(
+            ["select-layout", "-t", window_id, "tiled"], socket_path=sock
+        )
         if layout.returncode != 0:
             raise TmuxTeamError("failed to apply tiled layout")
-        _restore_leader_focus(leader_pane)
+        _restore_leader_focus(leader_pane, socket_path=sock)
         _stamp_launch_meta(
             tasks,
             attach_mode="inside",
@@ -1997,6 +2192,8 @@ def _create_inside(
             leader_pane_id=leader_pane,
             window_id=window_id,
             attach_hint=f"tmux select-pane -t {leader_pane}",
+            session_id=live_id,
+            tmux_server=intent_server,
         )
         # Stash intent path for plane to clear after receipt + team.json commit.
         if intent_path is not None:
@@ -2007,11 +2204,8 @@ def _create_inside(
         # name so a failed new-window readback cannot leave an unrecepted orphan.
         cleanup_bits: list[str] = []
         cleanup_ok = False
-        sock = (
-            str(intent_server["tmux_socket_path"])
-            if intent_server is not None
-            else None
-        )
+        if intent_server is not None and sock is None:
+            sock = str(intent_server["tmux_socket_path"])
         if window_id:
             id_err = _kill_window(
                 window_id,

@@ -2739,6 +2739,19 @@ def start_team(
                         )
                     ),
                 }
+                # Persist WAL tmux server/session scope for stop/rollback kills.
+                launch_sid = tmux_launch.get("session_id")
+                if isinstance(launch_sid, str) and launch_sid:
+                    meta["session_id"] = launch_sid
+                else:
+                    meta["session_id"] = created_handle[1]
+                for _srv_key in (
+                    "tmux_socket_path",
+                    "tmux_server_pid",
+                    "tmux_server_pid_start",
+                ):
+                    if tmux_launch.get(_srv_key) is not None:
+                        meta[_srv_key] = tmux_launch[_srv_key]
                 # Commit point = durable receipt AND hash-bound team.json.
                 # write_status before WAL clear so a status failure still leaves
                 # the intent WAL as a sweep gate. Clear is terminal for the
@@ -2801,11 +2814,29 @@ def start_team(
                     if topology == "split" and not bool(
                         tmux_launch.get("session_owned", True)
                     ):
-                        from omg_cli.team.tmux import _kill_panes, _kill_window
+                        from omg_cli.team.tmux import (
+                            _intent_tmux_server,
+                            _kill_panes,
+                            _kill_window,
+                        )
 
                         window_id = tmux_launch.get("window_id")
                         if isinstance(window_id, str) and window_id:
-                            cleanup_error = _kill_window(window_id)
+                            expected_server = _intent_tmux_server(tmux_launch)
+                            sock = (
+                                str(expected_server["tmux_socket_path"])
+                                if expected_server is not None
+                                else None
+                            )
+                            expected_session = tmux_launch.get("session_id")
+                            if not isinstance(expected_session, str):
+                                expected_session = created_handle[1]
+                            cleanup_error = _kill_window(
+                                window_id,
+                                socket_path=sock,
+                                expected_session_id=expected_session,
+                                expected_server=expected_server,
+                            )
                         else:
                             pane_ids = [
                                 str(rec.get("pane_id"))
@@ -4059,10 +4090,25 @@ def _stop_team_locked(
                         )
                 else:
                     # Shared session: remove only the team window (or panes).
-                    from omg_cli.team.tmux import _kill_panes, _kill_window
+                    from omg_cli.team.tmux import (
+                        _intent_tmux_server,
+                        _kill_panes,
+                        _kill_window,
+                    )
 
                     if isinstance(window_id, str) and window_id:
-                        win_err = _kill_window(window_id)
+                        expected_server = _intent_tmux_server(meta)
+                        sock = (
+                            str(expected_server["tmux_socket_path"])
+                            if expected_server is not None
+                            else None
+                        )
+                        win_err = _kill_window(
+                            window_id,
+                            socket_path=sock,
+                            expected_session_id=session_id,
+                            expected_server=expected_server,
+                        )
                         if win_err:
                             errors.append(win_err)
                         else:
