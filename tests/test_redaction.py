@@ -473,3 +473,93 @@ def test_redact_text_closes_pr94s_residual_p2_classes() -> None:
         redact_text(flood)
         assert time.perf_counter() - t0 < 1.0
 
+
+def test_redact_text_closes_pr94t_residual_p2_classes() -> None:
+    """Close Pro reaudit P2s: query closers, bracket interior, quoted JSON keys, O(n)."""
+    # P2-1: query state must not survive closing quote / JSON comma / shell ``&&``.
+    for source, leaked in (
+        (
+            'curl "https://x.test/?ok=1"&&token=Bearer first&second-secret',
+            "second-secret",
+        ),
+        (
+            '{"url":"https://x.test/?ok=1","token":"Bearer first&second-secret"}',
+            "second-secret",
+        ),
+    ):
+        out = redact_text(source)
+        assert leaked not in out, (source, out)
+        assert "super-secret" not in out and "second-secret" not in out
+        assert REDACTED in out, (source, out)
+
+    # Prior whitespace query-boundary cases remain FIXED.
+    for source, leaked in (
+        (
+            "https://x.test/?ok=1 safe & command=echo safe & curl super-secret",
+            "super-secret",
+        ),
+        (
+            "https://x.test/?ok=1 safe & token=Bearer first&second-secret",
+            "second-secret",
+        ),
+    ):
+        out = redact_text(source)
+        assert leaked not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    # P2-2: key-brackets are not opaque — interior assignments still redact.
+    for source in (
+        'headers["token=super-secret"]=safe',
+        '["token=super-secret"]=safe',
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    mapped = redact_value({'headers["token=super-secret"]=safe': "x"})
+    body = json.dumps(mapped)
+    assert "super-secret" not in body
+    assert REDACTED in body
+
+    # Array / malformed cases from pr94s remain FIXED.
+    for source in (
+        '["token=super-secret"]',
+        'args=["--token=super-secret"]',
+        'echo [ "token=super-secret"',
+        'headers["api_key]=super-secret',
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    # P2-3: quoted JSON keys keep ?/&/:// so is_sensitive_key parity holds.
+    assert is_sensitive_key("api?key")
+    assert is_sensitive_key("api&key")
+    assert is_sensitive_key("api://key")
+    for source in (
+        '{"api?key":"super-secret"}',
+        '{"api&key":"super-secret"}',
+        '{"api://key":"super-secret"}',
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    assert redact_value({"api?key": "super-secret"}) == {"api?key": REDACTED}
+    assert redact_value({"api&key": "super-secret"}) == {"api&key": REDACTED}
+    assert redact_value({"api://key": "super-secret"}) == {"api://key": REDACTED}
+
+    # P2-4: balanced nested non-key brackets must stay O(n), not O(n²).
+    timings: list[float] = []
+    for n in (1_000, 2_000, 4_000):
+        source = "[" * n + "]" * n
+        t0 = time.perf_counter()
+        assert redact_text(source) == source
+        timings.append(time.perf_counter() - t0)
+    # Doubling n must not ~4× the time (quadratic). Allow CI slack.
+    assert timings[2] < max(0.05, timings[0] * 10.0), timings
+    n = 50_000
+    t0 = time.perf_counter()
+    redact_text("[" * n + "]" * n)
+    assert time.perf_counter() - t0 < 1.0
+

@@ -125,29 +125,26 @@ def _consume_value(text: str, start: int, *, query: bool, key: str) -> int | Non
     return len(text)
 
 
-# Key-bracket probe results (O(n): at most one EOL-exhausting probe per line).
+# Key-bracket table codes (O(n) single forward pass; never re-scan suffixes).
 _KB_NOT_KEY = -1  # matched ``]`` but not an assignment key-bracket
-_KB_EXHAUSTED = -2  # hit EOL/newline while unclosed — disarm further probes
+_KB_EXHAUSTED = -2  # hit EOL/newline while unclosed
+
+# Lexical ends for URL/query tokens (closing quotes, JSON, shell, groups).
+_QUERY_TOKEN_END = frozenset("\"',)]}`")
 
 
-def _key_bracket_close(text: str, open_idx: int) -> int:
-    """Probe whether ``text[open_idx]`` opens a real bracket-**key**.
+def _compute_key_brackets(text: str) -> list[int]:
+    """O(n) table: for each ``[``, store close idx / ``_KB_NOT_KEY`` / ``_KB_EXHAUSTED``.
 
-    Returns:
-      - index of closing ``]`` when ``[...]`` is followed by ``=`` / ``:``
-      - ``_KB_NOT_KEY`` when a matching ``]`` exists but is not an assignment key
-      - ``_KB_EXHAUSTED`` on EOL/newline while still unclosed (caller disarms)
-
-    Quotes inside are respected only to locate the matching ``]``. Array values
-    and malformed unclosed quotes fall through to ordinary assignment scanning.
+    A single quote-aware bracket stack resolves every open exactly once, so
+    balanced nested non-key brackets stay linear (no repeated suffix probes).
     """
 
-    if open_idx >= len(text) or text[open_idx] != "[":
-        return _KB_NOT_KEY
     length = len(text)
-    i = open_idx + 1
-    depth = 1
+    table = [0] * length
+    stack: list[int] = []
     quote: str | None = None
+    i = 0
     while i < length:
         ch = text[i]
         if quote is not None:
@@ -169,7 +166,18 @@ def _key_bracket_close(text: str, open_idx: int) -> int:
                     i += 1
                     continue
             if ch in "\r\n":
-                return _KB_EXHAUSTED
+                for open_idx in stack:
+                    table[open_idx] = _KB_EXHAUSTED
+                stack.clear()
+                quote = None
+                i += 1
+                continue
+            i += 1
+            continue
+        if ch in "\r\n":
+            for open_idx in stack:
+                table[open_idx] = _KB_EXHAUSTED
+            stack.clear()
             i += 1
             continue
         if ch == "\\" and i + 1 < length and text[i + 1] in "'\"":
@@ -181,24 +189,56 @@ def _key_bracket_close(text: str, open_idx: int) -> int:
             i += 1
             continue
         if ch == "[":
-            depth += 1
+            stack.append(i)
             i += 1
             continue
         if ch == "]":
-            depth -= 1
-            if depth == 0:
+            if stack:
+                open_idx = stack.pop()
                 j = i + 1
                 while j < length and text[j] in " \t":
                     j += 1
                 if j < length and text[j] in ":=":
-                    return i
-                return _KB_NOT_KEY
+                    table[open_idx] = i
+                else:
+                    table[open_idx] = _KB_NOT_KEY
             i += 1
             continue
-        if ch in "\r\n":
-            return _KB_EXHAUSTED
         i += 1
-    return _KB_EXHAUSTED
+    for open_idx in stack:
+        table[open_idx] = _KB_EXHAUSTED
+    return table
+
+
+def _quoted_key_close(text: str, open_idx: int) -> int:
+    """Return closing quote index when ``text[open_idx]`` opens a quoted object key.
+
+    A quoted key is ``"…"`` / ``'…'`` (backslash escapes OK) followed by
+    optional whitespace then ``:`` / ``=``. Returns -1 otherwise. Stops at
+    newline so free-text quotes do not span lines.
+    """
+
+    if open_idx >= len(text) or text[open_idx] not in "'\"":
+        return -1
+    quote = text[open_idx]
+    length = len(text)
+    i = open_idx + 1
+    while i < length:
+        ch = text[i]
+        if ch in "\r\n":
+            return -1
+        if ch == "\\" and i + 1 < length:
+            i += 2
+            continue
+        if ch == quote:
+            j = i + 1
+            while j < length and text[j] in " \t":
+                j += 1
+            if j < length and text[j] in ":=":
+                return i
+            return -1
+        i += 1
+    return -1
 
 
 def _redact_query_assignments(text: str) -> str:
@@ -207,11 +247,12 @@ def _redact_query_assignments(text: str) -> str:
     ``?`` opens query context only in real URL/query shapes; ``&`` continues
     it. Bare shell ``&`` / prose ``?`` outside that context are ignored here
     (plain assignment redaction owns those). Query mode is confined to a single
-    continuous URL/query token — whitespace / ``;`` / ``|`` clear ``in_query``
-    so a later shell ``&`` cannot inherit query continuation. Whitespace
-    between a marker and the key rejects the param (``? token=`` is not a
-    query assignment). Each character is visited a constant number of times —
-    no per-marker suffix ``find("=")``.
+    continuous URL/query token — whitespace / ``;`` / ``|`` / closing quotes /
+    JSON ``,`` / grouping closers / shell ``&&`` clear ``in_query`` so a later
+    assignment cannot inherit query continuation. Whitespace between a marker
+    and the key rejects the param (``? token=`` is not a query assignment).
+    Each character is visited a constant number of times — no per-marker
+    suffix ``find("=")``.
     """
 
     parts: list[str] = []
@@ -234,13 +275,19 @@ def _redact_query_assignments(text: str) -> str:
                 start_param = True
             url.after_query_marker()
         elif ch == "&" and in_query:
+            # Shell ``&&`` ends the URL/query token — not a query continuation.
+            if i + 1 < length and text[i + 1] == "&":
+                in_query = False
+                url.on_other(text, i, ch)
+                i += 1
+                continue
             start_param = True
         if not start_param:
             if ch in " \t":
                 # Token boundary: query state must not survive into later shell.
                 in_query = False
                 url.on_whitespace()
-            elif ch in ";|":
+            elif ch in ";|" or ch in _QUERY_TOKEN_END or ch == ",":
                 in_query = False
                 url.on_other(text, i, ch)
             elif ch != "?":
@@ -291,49 +338,91 @@ def _redact_plain_assignments(text: str) -> str:
 
     Tracks the most recent structural boundary instead of walking backward from
     each separator (avoids O(n·cap) separator-flood cost). Quote awareness
-    applies **only** for real bracket-**key** segments (``headers["api&key"]=``)
-    discovered via lookahead — array values / malformed bracket quotes fall
-    back to ordinary scanning so ``["token=secret"]`` still redacts. Non-
-    sensitive ``:``/``=`` inside a contiguous (no-whitespace) token do **not**
-    advance the boundary, so full candidates like ``api:key`` / ``api=key``
-    reach ``is_sensitive_key`` once. ``?`` opens query context only for
-    URL/query shapes; whitespace / ``;`` / ``|`` clear it so shell ``&`` after
-    a real URL query cannot inherit query continuation.
+    applies for real bracket-**key** segments (``headers["api&key"]=``) via an
+    O(n) bracket table, and for quoted object keys (``"api?key":``) so
+    ``?``/``&``/``://`` inside the quotes stay key material. Bracket interiors
+    are still scanned for nested assignments (not opaque). Array values /
+    malformed bracket quotes fall back to ordinary scanning. Non-sensitive
+    ``:``/``=`` inside a contiguous (no-whitespace) token do **not** advance
+    the boundary. ``?`` opens query context only for URL/query shapes;
+    whitespace / ``;`` / ``|`` / closing quotes / JSON ``,`` / grouping /
+    shell ``&&`` clear it so later assignments cannot inherit query mode.
     """
 
     parts: list[str] = []
     pos = 0
     boundary = -1
     query_active = False
-    # Disarm after an EOL-exhausting bracket probe to keep ``[`` floods O(n).
-    bracket_probe_armed = True
     url = _UrlQueryTracker()
+    brackets = _compute_key_brackets(text)
+    # When a key-bracket interior was rewritten, outer ``headers[…]=`` must still
+    # see one coherent (redacted) key span at the following separator.
+    pending_key: str | None = None
+    pending_key_start = -1
+    pending_key_end = -1
     i = 0
     length = len(text)
+
+    def _clear_pending() -> None:
+        nonlocal pending_key, pending_key_start, pending_key_end
+        pending_key = None
+        pending_key_start = -1
+        pending_key_end = -1
+
     while i < length:
         ch = text[i]
         if ch == "[":
-            if bracket_probe_armed:
-                close = _key_bracket_close(text, i)
-                if close >= 0:
-                    # Whole ``[...]`` is key material (quoted delimiters literal).
-                    url.line_has_content = True
-                    i = close + 1
-                    continue
-                if close == _KB_EXHAUSTED:
-                    bracket_probe_armed = False
-            # Array / non-key / unclosed bracket: ordinary character.
+            close = brackets[i]
+            if close >= 0:
+                # Key-bracket: redact interior, keep outer ``[…]=`` as one key.
+                interior = text[i + 1 : close]
+                red_int = (
+                    _redact_plain_assignments(interior) if interior else interior
+                )
+                token_start = boundary + 1
+                if token_start < pos:
+                    token_start = pos
+                while token_start < i and text[token_start] in " \t":
+                    token_start += 1
+                if red_int != interior:
+                    pending_key = text[token_start : i + 1] + red_int + "]"
+                    pending_key_start = token_start
+                    pending_key_end = close + 1
+                else:
+                    _clear_pending()
+                url.line_has_content = True
+                query_active = False
+                i = close + 1
+                continue
+            # Array / non-key / unclosed: ordinary character (table is O(1)).
+            _clear_pending()
+            query_active = False
             url.on_other(text, i, ch)
             i += 1
             continue
         if ch in "\r\n":
+            _clear_pending()
             boundary = i
             query_active = False
-            bracket_probe_armed = True
             url.on_newline()
             i += 1
             continue
+        if ch in "'\"":
+            qclose = _quoted_key_close(text, i)
+            if qclose >= 0:
+                # Quoted object key: skip to closer; ?/&/:// inside are literal.
+                url.line_has_content = True
+                i = qclose + 1
+                continue
+            # Non-key quote still ends URL/query token inheritance.
+            _clear_pending()
+            boundary = i
+            query_active = False
+            url.on_other(text, i, ch)
+            i += 1
+            continue
         if ch == "?":
+            _clear_pending()
             boundary = i
             if url.is_url_query():
                 query_active = True
@@ -341,38 +430,77 @@ def _redact_plain_assignments(text: str) -> str:
             i += 1
             continue
         if ch == "&":
-            # Always a key boundary; query continuation only if still active.
+            _clear_pending()
             boundary = i
+            # Shell ``&&`` ends URL/query inheritance.
+            if i + 1 < length and text[i + 1] == "&":
+                query_active = False
             url.on_other(text, i, ch)
             i += 1
             continue
         if ch in " \t":
             # Token boundary ends URL-query inheritance into later shell tokens.
-            query_active = False
+            # Keep pending bracket-key across ``headers[…] = value`` whitespace.
+            if pending_key is None:
+                query_active = False
+                url.on_whitespace()
+                i += 1
+                continue
             url.on_whitespace()
             i += 1
             continue
         if ch in ";|":
+            # Clear query inheritance but do NOT hard-bound keys — ``api;key=``
+            # and ``to;ken://`` must still reach ``is_sensitive_key``.
+            query_active = False
+            url.on_other(text, i, ch)
+            i += 1
+            continue
+        if ch in ",{}":
+            # JSON structural punctuation: end query + hard-bound keys.
+            _clear_pending()
+            boundary = i
+            query_active = False
+            url.on_other(text, i, ch)
+            i += 1
+            continue
+        if ch in ")]}`":
+            # Grouping closers end query inheritance but must NOT hard-bound keys
+            # (malformed ``headers["api_key]=secret`` still redacts).
             query_active = False
             url.on_other(text, i, ch)
             i += 1
             continue
         if ch not in ":=":
+            if pending_key is not None and i >= pending_key_end:
+                # Non-assignment after a rewritten bracket-key: flush span.
+                _clear_pending()
             url.on_other(text, i, ch)
             i += 1
             continue
 
         sep_idx = i
-        region_start = boundary + 1
-        if region_start < pos:
-            region_start = pos
-        key_end = sep_idx
-        while key_end > region_start and text[key_end - 1] in " \t":
-            key_end -= 1
-        key_start = region_start
-        while key_start < key_end and text[key_start] in " \t":
-            key_start += 1
-        key = text[key_start:key_end]
+        if (
+            pending_key is not None
+            and pending_key_end >= 0
+            and sep_idx >= pending_key_end
+        ):
+            key = pending_key
+            key_start = pending_key_start
+            key_end = pending_key_end
+            _clear_pending()
+        else:
+            _clear_pending()
+            region_start = boundary + 1
+            if region_start < pos:
+                region_start = pos
+            key_end = sep_idx
+            while key_end > region_start and text[key_end - 1] in " \t":
+                key_end -= 1
+            key_start = region_start
+            while key_start < key_end and text[key_start] in " \t":
+                key_start += 1
+            key = text[key_start:key_end]
 
         # Skip non-sensitive ``scheme://`` URL forms only after the key check.
         if (
