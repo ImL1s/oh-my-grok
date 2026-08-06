@@ -745,3 +745,35 @@ def test_redact_text_closes_pr94w_escaped_quote_key_p2() -> None:
     assert "super-secret" not in body
     assert REDACTED in body
 
+
+def test_redact_text_closes_pr94x_query_state_ws_bracket_hash_p2() -> None:
+    """P2: whitespace / ``]`` / ``#`` must clear query mode (no ``&second-secret`` leak)."""
+    for source in (
+        "curl https://x.test/?api_key=foo bar&token=Bearer first&second-secret",
+        "curl https://x.test/?api_key=foo]bar&token=Bearer first&second-secret",
+        "curl https://x.test/?api_key=foo#frag&token=Bearer first&second-secret",
+        # Tab mid-value (same class as space).
+        "curl https://x.test/?api_key=foo\tbar&token=Bearer first&second-secret",
+    ):
+        out = redact_text(source)
+        assert "second-secret" not in out, (source, out)
+        assert "Bearer first" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    # Legitimate same-token query continuation still stops at ``&``.
+    assert (
+        redact_text("https://x.test/?token=secret-value&ok=1")
+        == f"https://x.test/?token={REDACTED}&ok=1"
+    )
+    assert (
+        redact_text('https://x.test/?prompt="hello world"&ok=1')
+        == f"https://x.test/?prompt={REDACTED}&ok=1"
+    )
+    # Prior <> / quote clearer residuals remain FIXED.
+    for source in (
+        "curl https://x.test/?api_key=foo>out&token=Bearer first&second-secret",
+        '?token=x","token":"Bearer first&second-secret"',
+    ):
+        out = redact_text(source)
+        assert "second-secret" not in out, (source, out)
+

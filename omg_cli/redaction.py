@@ -166,8 +166,13 @@ _QUERY_TOKEN_END = frozenset("\"',)]}`<>")
 
 
 def _clears_query_token(ch: str) -> bool:
-    """True when ``ch`` ends a URL/query token (must clear ``in_query``)."""
-    return ch in " \t;|," or ch in _QUERY_TOKEN_END
+    """True when ``ch`` ends a URL/query token (must clear ``in_query``).
+
+    Includes whitespace, shell/JSON clearers, grouping closers (``]``), and
+    URL fragment ``#`` — query mode must not survive any of these into a later
+    ``&token=`` / ``&second-secret`` tail.
+    """
+    return ch in " \t;|,#" or ch in _QUERY_TOKEN_END
 
 
 def _query_value_after_consume(text: str, start: int, end: int) -> str:
@@ -178,11 +183,13 @@ def _query_value_after_consume(text: str, start: int, end: int) -> str:
       ``"clear"`` — clearer present; clear query mode, keep end at ``&``/``#``.
         Used for clean quoted values (``?prompt="…"&ok=1``) and terminal
         clearers (``foo>``) so a following ``&`` remains a real separator.
-      ``"clear_eol"`` — clearer mid-span (``foo>out``, JSON quote/comma junk);
-        clear query mode and fail-closed to EOL so ``&second-secret`` cannot
-        leak as a truncated tail.
+      ``"clear_eol"`` — clearer mid-span (``foo>out``, ``foo bar``, ``foo]bar``,
+        JSON quote/comma junk); clear query mode and fail-closed to EOL so
+        ``&second-secret`` cannot leak as a truncated tail.
 
-    ``]`` is ignored (appears inside ``[REDACTED]`` on re-scan).
+    Whitespace / ``]`` are real clearers (``_consume_value`` may jump over them
+    before the main loop can see them). Fragment ``#`` is handled by the
+    caller via :func:`_clears_query_token` when consume stops at ``#``.
     """
 
     if start >= end:
@@ -199,8 +206,6 @@ def _query_value_after_consume(text: str, start: int, end: int) -> str:
     last_clear = False
     for idx in range(start, end):
         ch = text[idx]
-        if ch in " \t]":
-            continue
         if _clears_query_token(ch):
             if idx == end - 1:
                 last_clear = True
@@ -361,12 +366,12 @@ def _redact_query_assignments(text: str) -> str:
     ``?`` opens query context only in real URL/query shapes; ``&`` continues
     it. Bare shell ``&`` / prose ``?`` outside that context are ignored here
     (plain assignment redaction owns those). Query mode is confined to a single
-    continuous URL/query token — whitespace / ``;`` / ``|`` / closing quotes /
-    JSON ``,`` / grouping closers / shell redirection (``<`` ``>``) / shell
-    ``&&`` clear ``in_query`` so a later assignment cannot inherit query
-    continuation. Whitespace between a marker and the key rejects the param
-    (``? token=`` is not a query assignment). Each character is visited a
-    constant number of times — no per-marker suffix ``find("=")``.
+    continuous URL/query token — whitespace / ``;`` / ``|`` / ``#`` / closing
+    quotes / JSON ``,`` / grouping closers (incl. ``]``) / shell redirection
+    (``<`` ``>``) / shell ``&&`` clear ``in_query`` so a later assignment cannot
+    inherit query continuation. Whitespace between a marker and the key rejects
+    the param (``? token=`` is not a query assignment). Each character is
+    visited a constant number of times — no per-marker suffix ``find("=")``.
     """
 
     parts: list[str] = []
@@ -736,6 +741,14 @@ def _redact_plain_assignments(text: str, *, quote_interior: bool = False) -> str
                 i += 1
                 continue
             url.on_whitespace()
+            i += 1
+            continue
+        if ch == "#":
+            # URL fragment ends query inheritance (``?api_key=foo#frag&token=``).
+            _clear_pending()
+            boundary = i
+            query_active = False
+            url.on_other(text, i, ch)
             i += 1
             continue
         if ch in ";|":
