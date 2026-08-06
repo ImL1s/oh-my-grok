@@ -7,12 +7,13 @@ child tree. Windows gets best-effort ``proc.kill()`` only — process-tree cance
 is not claimed there.
 
 Any exception after a successful ``Popen`` must ``_kill_tree`` (including
-failures while allocating buffers / starting reader threads). ``cancel_event``
-is honored through the wait/join/close window so Ctrl-C cannot silently skip
-cleanup. Success paths drain readers to EOF before forcing ``stop``; premature
-stop sets ``stdout_truncated`` / ``stderr_truncated``. Hung readers kill the
-process tree *before* closing pipes / joining, so orphan pipe holders cannot
-deadlock the parent on buffered I/O locks.
+failures while allocating lists / closures / buffers / starting reader
+threads). ``cancel_event`` is honored through the wait/join/close window so
+Ctrl-C cannot silently skip cleanup. Success paths drain readers to EOF before
+forcing ``stop``; premature stop sets ``stdout_truncated`` / ``stderr_truncated``.
+Hung readers kill the process tree *before* closing pipes / joining, and pipe
+closes are time-bounded so an escaped helper holding a buffered-I/O lock cannot
+deadlock cancel forever.
 """
 
 from __future__ import annotations
@@ -25,11 +26,18 @@ import time
 from dataclasses import dataclass
 from typing import Final, Mapping, Sequence
 
-# Local alias so post-Popen allocation failures remain injectable in tests.
+# Local aliases so post-Popen allocation failures remain injectable in tests.
 _bytearray = bytearray
+
+
+def _post_popen_begin() -> None:
+    """First action inside the post-Popen kill-on-exception region (test hook)."""
+    return None
+
 
 DEFAULT_PROBE_TIMEOUT_S: Final[float] = 8.0
 DEFAULT_MAX_OUTPUT_BYTES: Final[int] = 256_000
+_PIPE_CLOSE_TIMEOUT_S: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +90,37 @@ def _kill_tree(proc: subprocess.Popen[bytes]) -> None:
                 pass
         proc.kill()
     except (ProcessLookupError, OSError):
+        pass
+
+
+def _close_pipe_bounded(pipe, *, timeout_s: float | None = None) -> None:
+    """Close a pipe without blocking forever on a contended buffered-I/O lock.
+
+    Escaped helpers that left the process group may still hold the write end;
+    a synchronous ``pipe.close()`` in the parent can then wait on the reader
+    thread's lock indefinitely. Fail-closed: bound the wait and move on.
+    """
+    if pipe is None:
+        return
+    limit = float(_PIPE_CLOSE_TIMEOUT_S if timeout_s is None else timeout_s)
+    done = threading.Event()
+
+    def _do_close() -> None:
+        try:
+            pipe.close()
+        except Exception:
+            pass
+        finally:
+            done.set()
+
+    closer = threading.Thread(target=_do_close, daemon=True)
+    closer.start()
+    if not done.wait(timeout=limit):
+        # Abandon the close; caller already killed the tree (or will).
+        return
+    try:
+        closer.join(timeout=0.1)
+    except BaseException:
         pass
 
 
@@ -151,33 +190,25 @@ def _join_readers(
         _kill_tree(proc)
         stop.set()
         for pipe in (proc.stdout, proc.stderr):
-            if pipe is not None:
-                try:
-                    pipe.close()
-                except Exception:
-                    pass
+            _close_pipe_bounded(pipe)
         for t in readers:
             try:
                 t.join(timeout=1.0)
             except BaseException:
                 _kill_tree(proc)
                 raise
+        # Still hung after kill + bounded close: kill again and return
+        # (never block forever waiting on pipe holders).
+        if any(t.is_alive() for t in readers):
+            _kill_tree(proc)
     else:
         for pipe in (proc.stdout, proc.stderr):
-            if pipe is not None:
-                try:
-                    pipe.close()
-                except Exception:
-                    pass
+            _close_pipe_bounded(pipe)
 
 
 def _close_pipes(proc: subprocess.Popen[bytes]) -> None:
     for pipe in (proc.stdout, proc.stderr):
-        if pipe is not None:
-            try:
-                pipe.close()
-            except Exception:
-                pass
+        _close_pipe_bounded(pipe)
 
 
 def run_probe_process(
@@ -207,14 +238,9 @@ def run_probe_process(
     if os.name == "posix":
         popen_kwargs["start_new_session"] = True
 
-    try:
-        proc = subprocess.Popen(**popen_kwargs)
-    except OSError as exc:
-        raise ProbeProcessError(f"failed to spawn probe: {exc}") from exc
-
-    # Fail-closed defaults so finally can always run even if setup raises mid-way.
-    # Do NOT allocate bytearray/Event here — that must be inside the protected try
-    # so a post-Popen BaseException still killpg's the child tree.
+    # Unbound-safe defaults BEFORE Popen — if allocation fails here there is no
+    # child to reap. After a successful Popen, the very next statement must be
+    # the kill-on-BaseException try (no list/closure/buffer work in between).
     started_readers: list[threading.Thread] = []
     stop_readers: threading.Event | None = None
     stdout_buf: bytearray | None = None
@@ -227,31 +253,35 @@ def run_probe_process(
     cancelled = False
     overflow = False
 
-    def _cancel_requested() -> bool:
-        return cancel_event is not None and cancel_event.is_set()
-
-    def _note_cancel_and_kill() -> None:
-        nonlocal cancelled
-        if _cancel_requested():
-            cancelled = True
-        _kill_tree(proc)
-
-    def _honor_late_cancel() -> None:
-        """Re-check cancel_event through wait/join/close (SIGINT sets event only)."""
-        nonlocal cancelled
-        if _cancel_requested():
-            cancelled = True
-            _kill_tree(proc)
+    try:
+        proc = subprocess.Popen(**popen_kwargs)
+    except OSError as exc:
+        raise ProbeProcessError(f"failed to spawn probe: {exc}") from exc
 
     try:
-        # Buffer / Event / flag setup is inside the kill-on-BaseException region so
-        # a post-Popen MemoryError (etc.) still reaps the child tree.
-        stdout_buf = _bytearray()
-        stderr_buf = _bytearray()
+        # Earliest post-Popen window — injectable for OOM coverage before any
+        # list/closure/buffer work (must still hit kill-on-BaseException).
+        _post_popen_begin()
+
+        started_readers = []
         stdout_overflow = [False]
         stderr_overflow = [False]
         stdout_early_stop = [False]
         stderr_early_stop = [False]
+
+        def _cancel_requested() -> bool:
+            return cancel_event is not None and cancel_event.is_set()
+
+        def _honor_late_cancel() -> None:
+            """Re-check cancel_event through wait/join/close (SIGINT sets event only)."""
+            nonlocal cancelled
+            if _cancel_requested():
+                cancelled = True
+                _kill_tree(proc)
+
+        # Buffer / Event setup remains inside the same kill-on-BaseException region.
+        stdout_buf = _bytearray()
+        stderr_buf = _bytearray()
         stop_readers = threading.Event()
 
         readers = [
@@ -314,9 +344,12 @@ def run_probe_process(
         # the wait/join window so descendants still get killpg.
         _honor_late_cancel()
     except BaseException:
-        # Covers buffer/Event setup, reader start, KeyboardInterrupt during
-        # poll/wait, and any other unwind after a successful Popen.
-        _note_cancel_and_kill()
+        # Covers earliest post-Popen setup, buffer/Event alloc, reader start,
+        # KeyboardInterrupt during poll/wait, and any other unwind after Popen.
+        # Do not depend on nested defs — they may not exist yet.
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+        _kill_tree(proc)
         try:
             proc.wait(timeout=2.0)
         except (subprocess.TimeoutExpired, OSError):
@@ -325,7 +358,9 @@ def run_probe_process(
     finally:
         # cancel_event may flip during join/close; check before, after join, and
         # once more before returning so late Ctrl-C still reaps the tree.
-        _honor_late_cancel()
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+            _kill_tree(proc)
         try:
             if started_readers and stop_readers is not None:
                 _join_readers(
@@ -337,9 +372,13 @@ def run_probe_process(
                 )
             else:
                 _close_pipes(proc)
-            _honor_late_cancel()
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                _kill_tree(proc)
         except BaseException:
-            _note_cancel_and_kill()
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+            _kill_tree(proc)
             if stop_readers is not None:
                 stop_readers.set()
             _close_pipes(proc)
@@ -350,7 +389,9 @@ def run_probe_process(
                     pass
             raise
         finally:
-            _honor_late_cancel()
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                _kill_tree(proc)
 
     overflow = overflow or stdout_overflow[0] or stderr_overflow[0]
     stdout_truncated = bool(stdout_overflow[0] or stdout_early_stop[0])

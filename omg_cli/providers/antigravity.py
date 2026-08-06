@@ -51,9 +51,10 @@ _AG_LIMITATIONS: Final[tuple[str, ...]] = (
     "Authentication and live-call readiness are not verified hermetically.",
 )
 
-# Anchored to the start of the first non-empty line — never scoop a semver from
-# later prose / error banners.
-_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)\b")
+# Exact triple on the first non-empty line — never scoop a prefix from
+# prerelease / extra components / trailing child-controlled junk (pin-only
+# window must not false-green ``1.1.10-rc.1`` / ``1.1.10.1`` as ``1.1.10``).
+_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 # Help identity: real agy --help begins with ``Usage of agy:``.
 _AGY_HELP_IDENTITY_RE = re.compile(r"(?im)^Usage of agy\b")
 _PROBE_TIMEOUT_S: Final[float] = DEFAULT_PROBE_TIMEOUT_S
@@ -142,8 +143,10 @@ def discover_binary(*, env: Mapping[str, str] | None = None) -> str:
 def parse_version(text: str | None) -> VersionInfo | None:
     """Parse a semver triple from ``agy --version`` text.
 
-    Only the first non-empty line is considered, and the version must be
-    anchored at the start of that line (``raw`` and the tuple always agree).
+    Only the first non-empty line is considered, and that line must be an
+    exact ``MAJOR.MINOR.PATCH`` (no prerelease / build / extra components).
+    Oversized components raise :class:`ProviderVersionError` (typed envelope)
+    rather than a bare ``ValueError`` from ``int()``.
     """
     if not text or not str(text).strip():
         return None
@@ -158,13 +161,20 @@ def parse_version(text: str | None) -> VersionInfo | None:
     m = _VERSION_RE.match(first)
     if not m:
         return None
-    # Store only the matched semver fragment — never the rest of a
-    # child-controlled line (which may carry credentials / junk).
+    # Exact-line match: raw is the whole first line (no trailing fragment).
+    try:
+        major = int(m.group(1))
+        minor = int(m.group(2))
+        patch = int(m.group(3))
+    except ValueError as exc:
+        raise ProviderVersionError(
+            f"version component overflow or invalid: {m.group(0)!r}"
+        ) from exc
     return VersionInfo(
         raw=m.group(0),
-        major=int(m.group(1)),
-        minor=int(m.group(2)),
-        patch=int(m.group(3)),
+        major=major,
+        minor=minor,
+        patch=patch,
     )
 
 

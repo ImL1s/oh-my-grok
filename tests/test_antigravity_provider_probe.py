@@ -153,17 +153,30 @@ def test_parse_version_anchors_first_line_only() -> None:
     assert parse_version("prefix 1.1.10") is None
 
 
-def test_parse_version_raw_is_matched_fragment_only() -> None:
-    """Trailing child-controlled junk after an anchored semver must not enter raw."""
+def test_parse_version_requires_exact_triple_on_first_line() -> None:
+    """Pin-only window: reject trailing junk / prerelease / extra components."""
     from omg_cli.providers.antigravity import classify_compat, parse_version
 
-    info = parse_version("1.1.10 Authorization: Bearer raw-secret-token")
+    info = parse_version("1.1.10")
     assert info is not None
     assert info.as_tuple() == (1, 1, 10)
     assert info.raw == "1.1.10"
-    assert "Bearer" not in info.raw
-    assert "raw-secret-token" not in info.raw
     assert classify_compat(info) == "compatible"
+    # Trailing child-controlled text must not prefix-match into a false pin.
+    assert parse_version("1.1.10 Authorization: Bearer raw-secret-token") is None
+    assert parse_version("1.1.10-rc.1") is None
+    assert parse_version("1.1.10.1") is None
+    assert parse_version("1.1.10+build.1") is None
+
+
+def test_parse_version_oversized_component_raises_provider_version_error() -> None:
+    """int() overflow / digit-limit ValueError must become ProviderVersionError."""
+    from omg_cli.providers.antigravity import parse_version
+    from omg_cli.providers.errors import ProviderVersionError
+
+    huge = "1." + ("9" * 5000) + ".0"
+    with pytest.raises(ProviderVersionError, match="overflow|invalid"):
+        parse_version(huge)
 
 
 def test_doctor_strict_rejects_impostor_agy_help(

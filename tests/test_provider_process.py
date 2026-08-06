@@ -294,6 +294,54 @@ while True:
         pytest.fail("grandchild still alive after post-spawn buffer setup failure")
 
 
+@pytest.mark.skipif(os.name != "posix", reason="process-group killpg is POSIX-only")
+def test_post_spawn_early_window_oom_kills_process_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OOM in the earliest post-Popen setup (before buffer alloc) must still killpg."""
+    from omg_cli.providers import process as process_mod
+
+    marker = tmp_path / "grandchild.alive"
+    script = tmp_path / "hang_tree.py"
+    script.write_text(
+        f"""\
+import subprocess, sys, time
+from pathlib import Path
+subprocess.Popen(
+    [sys.executable, "-c",
+     "import time; from pathlib import Path; m=Path({str(marker)!r});\\n"
+     "while True:\\n"
+     " m.write_text(str(time.time()), encoding='utf-8'); time.sleep(0.05)\\n"],
+)
+while True:
+    time.sleep(0.05)
+""",
+        encoding="utf-8",
+    )
+
+    def boom_early() -> None:
+        raise MemoryError("simulated OOM in earliest post-Popen window")
+
+    monkeypatch.setattr(process_mod, "_post_popen_begin", boom_early)
+    with pytest.raises(MemoryError, match="earliest post-Popen"):
+        run_probe_process(
+            [sys.executable, str(script)],
+            env={"PATH": os.environ.get("PATH", "")},
+            timeout_s=5.0,
+        )
+
+    deadline = time.monotonic() + 2.0
+    last = marker.read_text(encoding="utf-8") if marker.exists() else ""
+    while time.monotonic() < deadline:
+        time.sleep(0.2)
+        now = marker.read_text(encoding="utf-8") if marker.exists() else ""
+        if now == last:
+            break
+        last = now
+    else:
+        pytest.fail("grandchild still alive after earliest post-Popen OOM")
+
+
 def test_join_readers_hung_path_kills_tree_before_pipe_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -343,6 +391,62 @@ def test_join_readers_hung_path_kills_tree_before_pipe_close(
     assert "kill" in order
     assert order.index("kill") < order.index("close")
     assert stop.is_set()
+
+
+def test_join_readers_blocking_pipe_close_does_not_hang_forever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Escaped helper holding a pipe must not block cancel forever on close()."""
+    from omg_cli.providers import process as process_mod
+
+    order: list[str] = []
+    close_entered = threading.Event()
+
+    class BlockingPipe:
+        def close(self) -> None:
+            order.append("close")
+            close_entered.set()
+            # Simulate buffered-I/O lock held by a hung reader / escaped helper.
+            time.sleep(60.0)
+
+    class FakeProc:
+        def __init__(self) -> None:
+            self.pid = 4242
+            self.stdout = BlockingPipe()
+            self.stderr = BlockingPipe()
+
+    class FakeThread:
+        def __init__(self) -> None:
+            self._alive = True
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+        def join(self, timeout=None) -> None:  # noqa: ARG002
+            order.append("join")
+            if "kill" in order:
+                self._alive = False
+
+    def fake_kill(p) -> None:  # noqa: ARG001
+        order.append("kill")
+
+    monkeypatch.setattr(process_mod, "_kill_tree", fake_kill)
+    # Keep the bounded-close timeout short so the test stays hermetic/fast.
+    monkeypatch.setattr(process_mod, "_PIPE_CLOSE_TIMEOUT_S", 0.15)
+
+    t0 = time.monotonic()
+    process_mod._join_readers(
+        [FakeThread(), FakeThread()],
+        stop=threading.Event(),
+        stdout_early=[False],
+        stderr_early=[False],
+        proc=FakeProc(),  # type: ignore[arg-type]
+    )
+    elapsed = time.monotonic() - t0
+    assert elapsed < 2.0, f"_join_readers blocked too long ({elapsed:.2f}s)"
+    assert "kill" in order
+    assert order.index("kill") < order.index("close")
+    assert close_entered.wait(timeout=0.5)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process-group killpg is POSIX-only")
