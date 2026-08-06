@@ -1561,6 +1561,50 @@ def _kill_window_atomic(
     return f"kill-window {window_id}: still present after kill"
 
 
+def _kill_window_allowing_intent_nonce_move(
+    window_id: str,
+    *,
+    expected_session_id: str,
+    intent_nonce: str | None,
+    socket_path: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
+) -> str | None:
+    """Kill *window_id*; relax session only when live intent-nonce proves ours.
+
+    Session-scoped kill is preferred. When ``@N`` was moved to another session
+    after bind+nonce publication, a foreign-session refuse is retried without
+    the stale WAL ``$session`` constraint **only** if server-global nonce
+    discovery still lists this exact ``@N`` under *intent_nonce* on the WAL
+    server. Never relax on bare ``@N`` (leader-kill / foreign reuse).
+    """
+    err = _kill_window(
+        window_id,
+        socket_path=socket_path,
+        expected_session_id=expected_session_id,
+        expected_server=expected_server,
+    )
+    if err is None:
+        return None
+    if not isinstance(intent_nonce, str) or not intent_nonce:
+        return err
+    # Only the moved-session refuse shape is eligible for nonce-scoped retry.
+    if "belongs to session" not in err and "not WAL session" not in err:
+        return err
+    n_status, n_matches, _detail = _discover_inside_windows_by_intent_nonce(
+        session_id=expected_session_id,
+        intent_nonce=intent_nonce,
+        socket_path=socket_path,
+    )
+    if n_status not in ("found", "ambiguous") or window_id not in n_matches:
+        return err
+    return _kill_window(
+        window_id,
+        socket_path=socket_path,
+        expected_session_id=None,
+        expected_server=expected_server,
+    )
+
+
 def _absence_from_list_windows(
     window_id: str,
     listed: subprocess.CompletedProcess[str],
@@ -2058,11 +2102,17 @@ def _kill_inside_windows_by_name(
     acknowledged (*nonce_published*) or the nonce was positively observed on
     this sweep and then removed (happens-before). Pane-child self-stamp is
     asynchronous; treating pre-publication absence as "never created" would
-    clear the WAL while a hook-renamed live window still exists. When the
-    ambient server does not match the WAL server identity, refuse foreign
-    ``@N`` kills. Bare ``kill-window`` rc 0/1 is never treated as success by
-    itself. Returns ``None`` only when absence is proven; otherwise returns an
-    error detail.
+    clear the WAL while a hook-renamed live window still exists.
+
+    Bound intents with a known ``@N`` also run server-global nonce discovery:
+    after bind+ACK a synchronous ``after-new-window`` move can leave ``@N`` in
+    another session on the same WAL server. A live intent-nonce match on that
+    durable id authorizes kill/absence under *expected_server* + exact ``@N``
+    **without** the stale WAL ``$session`` constraint (still never leader-kill
+    or foreign ``@N`` without nonce proof). When the ambient server does not
+    match the WAL server identity, refuse foreign ``@N`` kills. Bare
+    ``kill-window`` rc 0/1 is never treated as success by itself. Returns
+    ``None`` only when absence is proven; otherwise returns an error detail.
     """
     if expected_server is not None:
         live = _probe_tmux_server_identity(socket_path=socket_path)
@@ -2091,11 +2141,9 @@ def _kill_inside_windows_by_name(
     )
     nonce_matches: list[str] = []
     nonce_observed = False
-    if (
-        unbound_durable
-        and isinstance(intent_nonce, str)
-        and intent_nonce
-    ):
+    # Bound *and* unbound: scan nonce server-globally when present so a
+    # post-bind session move remains recoverable (durable ∩ nonce).
+    if isinstance(intent_nonce, str) and intent_nonce:
         n_status, nonce_matches, n_detail = _discover_inside_windows_by_intent_nonce(
             session_id=session_id,
             intent_nonce=intent_nonce,
@@ -2124,12 +2172,13 @@ def _kill_inside_windows_by_name(
     for wid in list(matches) + durable_ids + list(nonce_matches):
         if wid not in targets:
             targets.append(wid)
-    # Nonce-only @N may have been moved to another session on this server;
-    # gate those kills on server+@N only (not the original $session).
-    nonce_only = {
-        wid
-        for wid in nonce_matches
-        if wid not in matches and wid not in durable_ids
+    # Nonce-proven @N may live in another session on this server (including
+    # durable_ids ∩ nonce_matches after bind+ACK + move). Gate those kills on
+    # server+@N only — not the stale WAL $session. Name hits in the WAL
+    # session keep the session constraint. Never relax without a live nonce
+    # match (blocks foreign @N reuse / leader-kill attacks).
+    nonce_relocated = {
+        wid for wid in nonce_matches if wid not in matches
     }
     if targets:
         for wid in targets:
@@ -2137,7 +2186,7 @@ def _kill_inside_windows_by_name(
                 wid,
                 socket_path=socket_path,
                 expected_session_id=(
-                    None if wid in nonce_only else session_id
+                    None if wid in nonce_relocated else session_id
                 ),
                 expected_server=expected_server,
             )
@@ -2219,7 +2268,7 @@ def _kill_inside_windows_by_name(
                 wid,
                 socket_path=socket_path,
                 expected_session_id=(
-                    None if wid in nonce_only else session_id
+                    None if wid in nonce_relocated else session_id
                 ),
                 expected_server=expected_server,
             )
@@ -2229,13 +2278,7 @@ def _kill_inside_windows_by_name(
                     f"{window_name!r} gone; {id_err}"
                     + (("; " + "; ".join(errors)) if errors else "")
                 )
-        if unbound_durable:
-            if not isinstance(intent_nonce, str) or not intent_nonce:
-                return (
-                    "unbound side_effect WAL requires intent nonce scan — "
-                    "refuse name-only clear"
-                    + (("; " + "; ".join(errors)) if errors else "")
-                )
+        if isinstance(intent_nonce, str) and intent_nonce:
             n_proof, n_left, n_detail = _discover_inside_windows_by_intent_nonce(
                 session_id=session_id,
                 intent_nonce=intent_nonce,
@@ -2253,16 +2296,23 @@ def _kill_inside_windows_by_name(
                     f"gone (ids={n_left}); refuse WAL clear"
                     + (("; " + "; ".join(errors)) if errors else "")
                 )
-            # Nonce absent: only authorize clear when publication completed
-            # (durable ack) or we positively observed then removed it on this
-            # sweep. Scanning twice without that happens-before is insufficient
-            # — the pane-child stamp may still be pending after a rename.
-            if not nonce_published and not nonce_observed:
-                return (
-                    "unbound side_effect WAL: create-time nonce publication "
-                    "unacknowledged — refuse clear on nonce absence alone"
-                    + (("; " + "; ".join(errors)) if errors else "")
-                )
+            if unbound_durable:
+                # Nonce absent: only authorize clear when publication completed
+                # (durable ack) or we positively observed then removed it on this
+                # sweep. Scanning twice without that happens-before is insufficient
+                # — the pane-child stamp may still be pending after a rename.
+                if not nonce_published and not nonce_observed:
+                    return (
+                        "unbound side_effect WAL: create-time nonce publication "
+                        "unacknowledged — refuse clear on nonce absence alone"
+                        + (("; " + "; ".join(errors)) if errors else "")
+                    )
+        elif unbound_durable:
+            return (
+                "unbound side_effect WAL requires intent nonce scan — "
+                "refuse name-only clear"
+                + (("; " + "; ".join(errors)) if errors else "")
+            )
         # Final PID+start revalidation — absence probes are separate clients;
         # a mid-proof socket swap to a empty server B must not authorize clear.
         if expected_server is not None:
@@ -3232,17 +3282,29 @@ def _create_inside(
         if intent_server is not None and sock is None:
             sock = str(intent_server["tmux_socket_path"])
         if window_id:
-            id_err = _kill_window(
+            id_err = _kill_window_allowing_intent_nonce_move(
                 window_id,
-                socket_path=sock,
                 expected_session_id=live_id,
+                intent_nonce=window_nonce,
+                socket_path=sock,
                 expected_server=intent_server,
             )
             if id_err:
                 cleanup_bits.append(id_err)
             # Also require name-level absence proof when we have session+name.
             # Pass durable @N so a rename cannot authorize WAL clear via
-            # name-only absence while the id still lives.
+            # name-only absence while the id still lives. Nonce (+ published
+            # ack when present) recovers a post-bind session move.
+            cleanup_nonce_published = False
+            if intent_path is not None:
+                try:
+                    raw_intent = json.loads(
+                        Path(intent_path).read_text(encoding="utf-8")
+                    )
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    raw_intent = None
+                if isinstance(raw_intent, dict):
+                    cleanup_nonce_published = _intent_nonce_published(raw_intent)
             name_err = _kill_inside_windows_by_name(
                 session_id=live_id,
                 window_name=window_name,
@@ -3251,6 +3313,7 @@ def _create_inside(
                 expected_server=intent_server,
                 require_durable_window_id=True,
                 intent_nonce=window_nonce,
+                nonce_published=cleanup_nonce_published,
             )
             if name_err:
                 cleanup_bits.append(name_err)

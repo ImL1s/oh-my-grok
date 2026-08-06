@@ -2956,6 +2956,252 @@ def test_split_transport_after_new_window_move_stamps_created_not_leader(
             pass
 
 
+def test_kill_inside_bound_relocated_clears_with_nonce_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2: durable @N moved sessions but carrying intent nonce must clear WAL."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    nonce = "boundreloc00000000000000000000001"
+    residual = {"@7"}
+    kill_calls: list[dict[str, object]] = []
+
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "list-windows":
+            if "@omg_intent_nonce" in joined:
+                if residual:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout=f"@7\t{nonce}\t$99\n",
+                        stderr="",
+                    )
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            # Name discovery / proof in WAL session $42 — absent (moved away).
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd in ("if-shell", "kill-window"):
+            return SimpleNamespace(returncode=1, stdout="", stderr="can't find")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    def track_kill(wid: str, **kwargs: object) -> str | None:
+        kill_calls.append({"wid": wid, **kwargs})
+        if kwargs.get("expected_session_id") is not None:
+            return (
+                f"kill-window {wid}: belongs to session '$99', not WAL session "
+                f"{kwargs['expected_session_id']!r} — refuse foreign/restarted @N"
+            )
+        # Session-free (nonce-proven): kill if present; already-absent is success.
+        residual.discard(wid)
+        return None
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "_kill_window", track_kill)
+    err = tmux_mod._kill_inside_windows_by_name(
+        session_id="$42",
+        window_name="omg-team-bound-moved",
+        known_window_ids=["@7"],
+        require_durable_window_id=True,
+        intent_nonce=nonce,
+        nonce_published=True,
+        socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
+        expected_server=FAKE_TMUX_SERVER,
+    )
+    assert err is None
+    assert residual == set()
+    assert any(
+        c["wid"] == "@7" and c.get("expected_session_id") is None for c in kill_calls
+    )
+
+
+def test_kill_inside_bound_foreign_session_without_nonce_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2 safety: moved durable @N without matching intent nonce stays refused."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    nonce = "boundforeign00000000000000000001"
+    kill_calls: list[dict[str, object]] = []
+
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "list-windows":
+            if "@omg_intent_nonce" in joined:
+                # Live @7 has a different nonce (or none) — not our intent.
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="@7\tothernonce000000000000000000001\t$99\n",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd in ("if-shell", "kill-window"):
+            return SimpleNamespace(returncode=1, stdout="", stderr="can't find")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    def track_kill(wid: str, **kwargs: object) -> str | None:
+        kill_calls.append({"wid": wid, **kwargs})
+        if kwargs.get("expected_session_id") is not None:
+            return (
+                f"kill-window {wid}: belongs to session '$99', not WAL session "
+                f"{kwargs['expected_session_id']!r} — refuse foreign/restarted @N"
+            )
+        # Must never reach session-free kill for non-matching nonce.
+        raise AssertionError("session-free kill without nonce match")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "_kill_window", track_kill)
+    err = tmux_mod._kill_inside_windows_by_name(
+        session_id="$42",
+        window_name="omg-team-bound-foreign",
+        known_window_ids=["@7"],
+        require_durable_window_id=True,
+        intent_nonce=nonce,
+        nonce_published=True,
+        socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
+        expected_server=FAKE_TMUX_SERVER,
+    )
+    assert err is not None
+    assert "refuse" in err or "unproven" in err
+    assert all(c.get("expected_session_id") == "$42" for c in kill_calls)
+
+
+def test_split_transport_create_inside_recovers_bound_moved_after_ack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P2 live: post-bind session move must kill orphan + clear WAL (no start gate).
+
+    after-new-window moves @W to $D after create+bind+nonce ACK. Full
+    create_split_team_session rejects session drift, removes the nonce-proven
+    moved @W, leaves the leader live, clears the launch WAL, and the next
+    require_clean / start gate must not stay blocked.
+    """
+    from omg_cli.team import tmux as tmux_mod
+    from omg_cli.team.tmux import (
+        TmuxTeamError,
+        require_clean_team_launch_intents,
+        team_launch_intents_dir,
+    )
+
+    sock = f"/tmp/omg-p2-bound-move-{os.getpid()}.sock"
+    src = "omg-p2-src"
+    dst = "omg-p2-dst"
+    work = tmp_path / "wt"
+    work.mkdir()
+    rid = "20260806T120000Z-boundmove"
+
+    def t(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["tmux", "-S", sock, *args],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    try:
+        assert (
+            t("new-session", "-d", "-s", src, "-n", "leader", "sleep", "60").returncode
+            == 0
+        )
+        assert (
+            t("new-window", "-d", "-t", src, "-n", "extra", "sleep", "60").returncode
+            == 0
+        )
+        assert (
+            t("new-session", "-d", "-s", dst, "-n", "park", "sleep", "60").returncode
+            == 0
+        )
+        assert (
+            t(
+                "set-hook", "-g", "after-new-window", f"move-window -t {dst}:"
+            ).returncode
+            == 0
+        )
+
+        leader = t(
+            "display-message",
+            "-p",
+            "-t",
+            f"{src}:leader",
+            "#{session_id}\t#{window_id}\t#{pane_id}\t#{pid}\t#{socket_path}",
+        )
+        assert leader.returncode == 0
+        _sid, _leader_wid, leader_pane, pid_s, sock_out = (
+            leader.stdout or ""
+        ).strip().split("\t")
+        assert sock_out == sock
+
+        monkeypatch.setenv("TMUX", f"{sock},{pid_s},0")
+        monkeypatch.setenv("TMUX_PANE", leader_pane)
+
+        with pytest.raises(TmuxTeamError, match="not in the invoking session"):
+            tmux_mod.create_split_team_session(
+                session=src,
+                tasks=[
+                    {
+                        "task_id": "w1",
+                        "worktree": str(work),
+                        "pane_command": "sleep 60",
+                        "_env_pairs": [],
+                    }
+                ],
+                env_pairs=[],
+                attach_mode="inside",
+                root=tmp_path,
+                run_id=rid,
+            )
+
+        # WAL cleared — must not permanently block later starts.
+        intents = list(team_launch_intents_dir(tmp_path).glob(f"{rid}-*.json"))
+        assert intents == []
+
+        # Moved worker orphan gone; destination only has the park window.
+        dst_wins = t("list-windows", "-t", dst, "-F", "#{window_name}")
+        assert dst_wins.returncode == 0
+        dst_names = {
+            (line or "").strip() for line in (dst_wins.stdout or "").splitlines()
+        }
+        assert dst_names == {"park"}
+        assert not any(n.startswith("omg-team-") for n in dst_names)
+
+        # No intent-nonce residue on the server.
+        nonce_scan = t(
+            "list-windows",
+            "-a",
+            "-F",
+            "#{window_id}\t#{@omg_intent_nonce}\t#{session_id}",
+        )
+        assert nonce_scan.returncode == 0
+        for line in (nonce_scan.stdout or "").splitlines():
+            parts = line.strip().split("\t")
+            if len(parts) >= 2 and parts[1]:
+                pytest.fail(f"intent nonce still present after cleanup: {line!r}")
+
+        # Leader + extra remain in source.
+        src_wins = t("list-windows", "-t", src, "-F", "#{window_name}")
+        assert src_wins.returncode == 0
+        src_names = {
+            (line or "").strip() for line in (src_wins.stdout or "").splitlines()
+        }
+        assert "leader" in src_names
+        assert "extra" in src_names
+
+        # Drop the move hook so a subsequent start is not forced to fail again.
+        assert t("set-hook", "-gu", "after-new-window").returncode == 0
+        # Start gate must be clear (the permanent-block failure mode).
+        require_clean_team_launch_intents(tmp_path)
+    finally:
+        t("kill-server")
+        try:
+            os.unlink(sock)
+        except OSError:
+            pass
+
+
 def test_intent_nonce_discovery_is_server_global(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
