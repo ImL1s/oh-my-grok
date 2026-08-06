@@ -160,17 +160,18 @@ _KB_NOT_KEY = -1  # matched ``]`` but not an assignment key-bracket
 _KB_EXHAUSTED = -2  # hit EOL/newline while unclosed
 
 # Lexical ends for URL/query tokens (closing quotes, JSON, shell, groups,
-# redirection). Shared by query + plain scanners so ``>`` / ``<`` cannot leave
-# query mode into a later ``&token=`` tail.
-_QUERY_TOKEN_END = frozenset("\"',)]}`<>")
+# redirection). Shared by query + plain scanners so ``>`` / ``<`` / ``(``
+# cannot leave query mode into a later ``&token=`` tail. ``(`` covers shell
+# grouping / command-substitution openers (``$(…)``) symmetrically with ``)``.
+_QUERY_TOKEN_END = frozenset("\"',()]}`<>")
 
 
 def _clears_query_token(ch: str) -> bool:
     """True when ``ch`` ends a URL/query token (must clear ``in_query``).
 
-    Includes whitespace, shell/JSON clearers, grouping closers (``]``), and
-    URL fragment ``#`` — query mode must not survive any of these into a later
-    ``&token=`` / ``&second-secret`` tail.
+    Includes whitespace, shell/JSON clearers, grouping openers/closers
+    (``(`` ``]``), and URL fragment ``#`` — query mode must not survive any of
+    these into a later ``&token=`` / ``&second-secret`` tail.
     """
     return ch in " \t;|,#" or ch in _QUERY_TOKEN_END
 
@@ -367,11 +368,12 @@ def _redact_query_assignments(text: str) -> str:
     it. Bare shell ``&`` / prose ``?`` outside that context are ignored here
     (plain assignment redaction owns those). Query mode is confined to a single
     continuous URL/query token — whitespace / ``;`` / ``|`` / ``#`` / closing
-    quotes / JSON ``,`` / grouping closers (incl. ``]``) / shell redirection
-    (``<`` ``>``) / shell ``&&`` clear ``in_query`` so a later assignment cannot
-    inherit query continuation. Whitespace between a marker and the key rejects
-    the param (``? token=`` is not a query assignment). Each character is
-    visited a constant number of times — no per-marker suffix ``find("=")``.
+    quotes / JSON ``,`` / grouping openers/closers (incl. ``(`` ``]``; covers
+    ``$(…)``) / shell redirection (``<`` ``>``) / shell ``&&`` clear
+    ``in_query`` so a later assignment cannot inherit query continuation.
+    Whitespace between a marker and the key rejects the param (``? token=`` is
+    not a query assignment). Each character is visited a constant number of
+    times — no per-marker suffix ``find("=")``.
     """
 
     parts: list[str] = []
@@ -483,28 +485,18 @@ class _BracketFrame:
 def _redact_quote_interior(text: str) -> str:
     """Redact assignments inside a quoted object-key interior (non-opaque).
 
-    Runs the plain scanner on the interior slice with escaped quotes treated as
-    key material (parity with ``is_sensitive_key`` normalize). Key-brackets
-    inside are handled by the iterative stack in that call; this is not the
-    nested key-bracket hot path (``[`` * n), so a slice here is acceptable.
+    Runs the plain scanner on the interior slice with shell/query/JSON
+    punctuation treated as key material (parity with ``is_sensitive_key``
+    normalize, which strips ``?`` ``&`` ``#`` quotes ``,`` etc.). Only ``:`` /
+    ``=`` open assignments; newlines and key-brackets remain structural.
+    Key-brackets inside are handled by the iterative stack in that call; this
+    is not the nested key-bracket hot path (``[`` * n), so a slice here is
+    acceptable.
     """
 
     if not text:
         return text
     return _redact_plain_assignments(text, quote_interior=True)
-
-
-def _escaped_quote_at(text: str, i: int) -> bool:
-    """True when ``text[i]`` is a quote escaped by an odd run of backslashes."""
-
-    if i <= 0 or text[i] not in "'\"":
-        return False
-    bs = 0
-    j = i - 1
-    while j >= 0 and text[j] == "\\":
-        bs += 1
-        j -= 1
-    return bs % 2 == 1
 
 
 def _redact_plain_assignments(text: str, *, quote_interior: bool = False) -> str:
@@ -516,16 +508,19 @@ def _redact_plain_assignments(text: str, *, quote_interior: bool = False) -> str
     O(n) bracket table, and for quoted object keys (``"api?key":``) so
     ``?``/``&``/``://`` inside the quotes stay key material while interiors are
     still scanned for nested assignments. When ``quote_interior`` is set (quoted
-    object-key interior re-scan), legal escaped quotes (``\\"``, ``\\'``) stay
-    key material so ``to\\"ken=…`` still reaches ``is_sensitive_key``. Nested
-    key-brackets use an explicit stack over original index ranges (no recursive
-    sliced re-entry); frame-pop keeps interior segments by reference so rewrite
-    nests stay O(n). Array values / malformed bracket quotes fall back to
-    ordinary scanning. Non-sensitive ``:``/``=`` inside a contiguous
-    (no-whitespace) token do **not** advance the boundary. ``?`` opens query
-    context only for URL/query shapes; whitespace / ``;`` / ``|`` / ``<`` /
-    ``>`` / closing quotes / JSON ``,`` / grouping / shell ``&&`` clear it so
-    later assignments cannot inherit query mode.
+    object-key interior re-scan), shell/query/JSON punctuation (``?`` ``&``
+    ``#`` quotes ``,`` ``<>`` ``{}`` etc.) stays key material so
+    ``to?ken=…`` / ``to\\"ken=…`` still reach ``is_sensitive_key``; only ``:`` /
+    ``=`` open assignments. Nested key-brackets use an explicit stack over
+    original index ranges (no recursive sliced re-entry); frame-pop keeps
+    interior segments by reference so rewrite nests stay O(n). Array values /
+    malformed bracket quotes fall back to ordinary scanning. Non-sensitive
+    ``:``/``=`` inside a contiguous (no-whitespace) token do **not** advance the
+    boundary. ``?`` opens query context only for URL/query shapes; whitespace /
+    ``;`` / ``|`` / ``#`` / ``<`` / ``>`` / closing quotes / JSON ``,`` /
+    grouping (incl. ``(``) / shell ``&&`` clear it so later assignments cannot
+    inherit query mode. Fragment ``#`` clears query without hard-bounding keys
+    (``api#key=`` must still reach the predicate).
     """
 
     parts: list = []
@@ -679,13 +674,16 @@ def _redact_plain_assignments(text: str, *, quote_interior: bool = False) -> str
             url.on_newline()
             i += 1
             continue
+        # Quoted object-key interiors: shell/query/JSON punctuation is literal
+        # key material (``is_sensitive_key`` strips it). Only ``:`` / ``=`` open
+        # assignments; brackets/newlines already handled above.
+        if quote_interior and ch not in ":=":
+            if pending_key is not None and i >= pending_key_end:
+                _clear_pending()
+            url.on_other(text, i, ch)
+            i += 1
+            continue
         if ch in "'\"":
-            # Quoted-key interiors: legal ``\"`` / ``\'`` are key material
-            # (``is_sensitive_key`` strips them), not quote boundaries.
-            if quote_interior and _escaped_quote_at(text, i):
-                url.on_other(text, i, ch)
-                i += 1
-                continue
             qclose = quoted_keys[i]
             if qclose >= 0:
                 # Quoted object key: scan interior (non-opaque), keep ?/&/://.
@@ -743,17 +741,10 @@ def _redact_plain_assignments(text: str, *, quote_interior: bool = False) -> str
             url.on_whitespace()
             i += 1
             continue
-        if ch == "#":
-            # URL fragment ends query inheritance (``?api_key=foo#frag&token=``).
-            _clear_pending()
-            boundary = i
-            query_active = False
-            url.on_other(text, i, ch)
-            i += 1
-            continue
-        if ch in ";|":
-            # Clear query inheritance but do NOT hard-bound keys — ``api;key=``
-            # and ``to;ken://`` must still reach ``is_sensitive_key``.
+        if ch in ";|#":
+            # Clear query inheritance but do NOT hard-bound keys — ``api;key=``,
+            # ``api#key=``, and ``to;ken://`` must still reach ``is_sensitive_key``.
+            # Fragment ``#`` still ends URL/query mode (``?api_key=foo#frag&…``).
             query_active = False
             url.on_other(text, i, ch)
             i += 1
@@ -774,9 +765,10 @@ def _redact_plain_assignments(text: str, *, quote_interior: bool = False) -> str
             url.on_other(text, i, ch)
             i += 1
             continue
-        if ch in ")]}`":
-            # Grouping closers end query inheritance but must NOT hard-bound keys
-            # (malformed ``headers["api_key]=secret`` still redacts).
+        if ch in "()]}`":
+            # Grouping openers/closers end query inheritance but must NOT
+            # hard-bound keys (malformed ``headers["api_key]=secret`` still
+            # redacts; ``$(…)`` must not inherit query into ``&second-secret``).
             # Note: key-bracket ``]`` is handled via ``_finish_bracket_frame``.
             query_active = False
             url.on_other(text, i, ch)

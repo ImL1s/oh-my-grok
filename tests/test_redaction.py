@@ -777,3 +777,59 @@ def test_redact_text_closes_pr94x_query_state_ws_bracket_hash_p2() -> None:
         out = redact_text(source)
         assert "second-secret" not in out, (source, out)
 
+
+def test_redact_text_closes_pr94y_hash_quote_interior_cmdsub_p2() -> None:
+    """Close Pro reaudit P2s: ``#`` key parity, quote-interior punct, ``$()``."""
+    # P2-1: ``#`` clears query but must NOT hard-cut sensitive keys (predicate parity).
+    assert is_sensitive_key("api#key")
+    assert is_sensitive_key("to#ken")
+    assert "super-secret" not in redact_text("api#key=super-secret")
+    assert redact_text("api#key=super-secret").endswith(f"={REDACTED}")
+    assert redact_value({"api#key": "super-secret"}) == {"api#key": REDACTED}
+    out_hash_key = redact_text('{"to#ken=super-secret":"safe"}')
+    assert "super-secret" not in out_hash_key
+    assert REDACTED in out_hash_key
+    # Fragment clearer still stops query inheritance (pr94x FIXED).
+    out_frag = redact_text(
+        "curl https://x.test/?api_key=foo#frag&token=Bearer first&second-secret"
+    )
+    assert "second-secret" not in out_frag and "Bearer first" not in out_frag
+    assert REDACTED in out_frag
+
+    # P2-2: quoted object-key interiors must not apply shell/query grammar to
+    # literal punctuation — ``to?ken=`` / ``to'ken=`` stay one sensitive key.
+    assert is_sensitive_key("to?ken")
+    assert is_sensitive_key("to'ken")
+    for source in (
+        '{"to?ken=super-secret":"safe"}',
+        '{"to\'ken=super-secret":"safe"}',
+        '{"to#ken=super-secret":"safe"}',
+        '{"to&ken=super-secret":"safe"}',
+        '{"to,ken=super-secret":"safe"}',
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+    # Prior escaped-quote + simple interior FIXED cases still redact.
+    for source in (
+        '{"to\\"ken=super-secret":"safe"}',
+        '{"token=super-secret":"safe"}',
+        '{"api?key":"super-secret"}',
+        '{"api&key":"super-secret"}',
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+
+    # P2-3: query state must not cross shell ``$(`` into ``&second-secret``.
+    cmdsub = r"curl https://x.test/?ok=1$(token=first\&second-secret)"
+    out_cmd = redact_text(cmdsub)
+    assert "second-secret" not in out_cmd, out_cmd
+    assert "first" not in out_cmd, out_cmd
+    assert REDACTED in out_cmd
+    # Grouping opener without ``$`` is the same clearer class.
+    out_paren = redact_text(
+        "curl https://x.test/?ok=1(token=first&second-secret)"
+    )
+    assert "second-secret" not in out_paren
+    assert REDACTED in out_paren
+
