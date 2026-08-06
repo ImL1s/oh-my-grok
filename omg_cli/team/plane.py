@@ -3515,14 +3515,21 @@ def _stop_team_locked(
             has = _tmux_run(["has-session", "-t", session])
             has_rc = getattr(has, "returncode", None) if has is not None else None
             if (
-                has_rc not in (None, 0)
+                has_rc == 1
                 and identity_verified
                 and process_disappearance_verified
             ):
+                # tmux has-session: 0 = exists, 1 = missing. Other codes are
+                # probe errors and must not count as verified disappearance.
                 session_already_gone = True
                 session_disappearance_verified = True
                 actions.append(
                     f"tmux session already gone after process teardown {session}"
+                )
+            elif has_rc not in (None, 0, 1):
+                session_still_exact = False
+                errors.append(
+                    f"tmux has-session readback refused exit {has_rc} for {session}"
                 )
             elif has_rc == 0 or has_rc is None:
                 session_still_exact = bool(

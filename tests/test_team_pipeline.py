@@ -1173,7 +1173,22 @@ def test_ralph_stop_and_cancel_cascade_linked_state(
         m.returncode = 0
         m.stdout = ""
         if command[0] == "display-message":
-            m.stdout = f"{live['session']}\t$17\n"
+            target = None
+            if "-t" in command:
+                try:
+                    target = command[command.index("-t") + 1]
+                except (ValueError, IndexError):
+                    target = None
+            fmt = command[-1] if command else ""
+            if target == "%17" or (
+                isinstance(target, str) and target.startswith("%")
+            ):
+                if "#{session_id}" in str(fmt) or "#{window_id}" in str(fmt):
+                    m.stdout = "%17\t55555\t$17\t@1\n"
+                else:
+                    m.stdout = "55555\n" if "#{pane_pid}" in str(fmt) else "%17\t55555\n"
+            else:
+                m.stdout = f"{live['session']}\t$17\n"
         elif command[0] == "show-options":
             m.stdout = launch_nonce + "\n"
         elif command[0] == "list-panes":
@@ -1299,6 +1314,7 @@ def _linked_live_ralph_stop_fixture(
             "pane_id": "%23",
             "pid": 55555,
             "pgid": 515151,
+            "pid_start": "test-start-55555",
             "status": "running",
         }
     ]
@@ -1350,7 +1366,22 @@ def test_stop_refusal_preserves_durable_team_run_and_linked_ralph_truth(
         commands.append(command)
         result = MagicMock(returncode=0, stdout="", stderr="")
         if command[0] == "display-message":
-            result.stdout = "omg-linked-stop\t$23\n"
+            target = None
+            if "-t" in command:
+                try:
+                    target = command[command.index("-t") + 1]
+                except (ValueError, IndexError):
+                    target = None
+            fmt = command[-1] if command else ""
+            if isinstance(target, str) and target.startswith("%"):
+                if "#{session_id}" in str(fmt) or "#{window_id}" in str(fmt):
+                    result.stdout = "%23\t55555\t$23\t@1\n"
+                elif str(fmt).strip() == "#{pane_pid}":
+                    result.stdout = "55555\n"
+                else:
+                    result.stdout = "%23\t55555\n"
+            else:
+                result.stdout = "omg-linked-stop\t$23\n"
         elif command[0] == "show-options":
             result.stdout = "d" * 32 + "\n"
         elif command[0] == "list-panes":
@@ -1398,6 +1429,9 @@ def test_stop_refusal_preserves_durable_team_run_and_linked_ralph_truth(
     monkeypatch.setattr(plane, "_tmux_run", tmux_runner)
     monkeypatch.setattr(plane.os, "getpgid", getpgid)
     monkeypatch.setattr(plane.os, "killpg", killpg)
+    monkeypatch.setattr(
+        plane, "_pid_start_identity", lambda _pid: "test-start-55555"
+    )
     if failure_mode == "group_survivor":
         monkeypatch.setattr(
             plane,
