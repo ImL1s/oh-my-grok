@@ -17,6 +17,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   fixtures only — no ask/Team cutover, no `live_verified` claims. Issue #67
   remains open for slices B–D.
 
+### Fixed
+- **#67-A probe fail-closed / process contract (PR #94 re-audit):** version and
+  help probes require successful exit + observed evidence (no invented
+  formats/efforts/modes); `run_probe_process` uses POSIX `start_new_session` +
+  `killpg` on timeout/cancel/overflow with bounded output; `provider` is
+  install/global-scoped; CLI routes via `ProviderAdapter`; neutral
+  `ProviderCapabilities` defaults no longer carry Antigravity-positive claims.
+
 ## [0.7.6] - 2026-08-06
 
 ### Fixed

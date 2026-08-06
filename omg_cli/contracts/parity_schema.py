@@ -459,6 +459,7 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "test_lsp_symbols.py",
                 "test_ask.py",
                 "test_antigravity_provider_probe.py",
+                "test_provider_process.py",
                 "test_roles.py",
                 "test_skill_inventory.py",
                 "test_plugin_session_discovery.py",

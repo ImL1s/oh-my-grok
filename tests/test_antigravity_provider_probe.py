@@ -77,6 +77,33 @@ def test_models_export_compat_and_capabilities() -> None:
     json.dumps(payload)  # must be JSON-serializable
 
 
+def test_provider_capabilities_defaults_are_neutral() -> None:
+    """Neutral model must not invent Antigravity-positive claims."""
+    from omg_cli.providers.models import ProviderCapabilities
+
+    caps = ProviderCapabilities(
+        provider="example",
+        binary="/bin/example",
+        version="0.0.1",
+        version_tuple=(0, 0, 1),
+        compat_status="unknown",
+    )
+    assert caps.tested_min == ""
+    assert caps.tested_max == ""
+    assert caps.output_formats == ()
+    assert caps.efforts == ()
+    assert caps.modes == ()
+    assert caps.print_mode is False
+    assert caps.sandbox is False
+    assert caps.agents_subcommand is False
+    assert caps.needs_pty is False
+    assert caps.limitations == ()
+    payload = caps.to_dict()
+    assert payload["supports"]["output_formats"] == []
+    assert payload["platform"]["needs_pty"] is False
+    assert payload["platform"]["limitations"] == []
+
+
 def test_discover_binary_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from omg_cli.providers.antigravity import discover_binary
     from omg_cli.providers.errors import ProviderBinaryMissing
@@ -105,6 +132,79 @@ def test_probe_version_parse(fake_agy_path: Path) -> None:
     info = probe_version(binary)
     assert info.raw == FIXTURES.joinpath("version.txt").read_text(encoding="utf-8").strip()
     assert info.as_tuple() == (1, 1, 10)
+
+
+def test_probe_version_nonzero_with_semver_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """rc!=0 must fail closed even when stderr embeds a parseable semver."""
+    from omg_cli.providers.antigravity import probe_version
+    from omg_cli.providers.errors import ProviderVersionError
+
+    path = _install_fake_agy(tmp_path / "bin")
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    monkeypatch.setenv("OMG_AGY_BIN", str(path))
+    monkeypatch.setenv("FAKE_AGY_VERSION_RC", "1")
+    monkeypatch.setenv(
+        "FAKE_AGY_VERSION_TEXT", "agy 1.1.10: initialization failed\n"
+    )
+    with pytest.raises(ProviderVersionError, match="exit 1"):
+        probe_version(str(path))
+
+
+def test_probe_help_nonzero_or_empty_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.providers.antigravity import _parse_help_supports, _probe_help_text
+    from omg_cli.providers.errors import ProviderProbeError
+
+    path = _install_fake_agy(tmp_path / "bin")
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    monkeypatch.setenv("OMG_AGY_BIN", str(path))
+
+    monkeypatch.setenv("FAKE_AGY_HELP_RC", "1")
+    monkeypatch.setenv("FAKE_AGY_HELP_EMPTY", "1")
+    with pytest.raises(ProviderProbeError, match="exit 1"):
+        _probe_help_text(str(path))
+
+    monkeypatch.setenv("FAKE_AGY_HELP_RC", "0")
+    monkeypatch.setenv("FAKE_AGY_HELP_EMPTY", "1")
+    with pytest.raises(ProviderProbeError, match="empty"):
+        _probe_help_text(str(path))
+
+    # Empty help must not invent formats/efforts/modes.
+    invented = _parse_help_supports("")
+    assert invented["output_formats"] == ()
+    assert invented["efforts"] == ()
+    assert invented["modes"] == ()
+    assert invented["print_mode"] is False
+
+
+def test_doctor_strict_false_green_on_failed_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """doctor --strict must not green a binary that fails version/help probes."""
+    from omg_cli.providers.antigravity import doctor
+
+    path = _install_fake_agy(tmp_path / "bin")
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    monkeypatch.setenv("OMG_AGY_BIN", str(path))
+    monkeypatch.setenv("FAKE_AGY_VERSION_RC", "1")
+    monkeypatch.setenv(
+        "FAKE_AGY_VERSION_TEXT", "agy 1.1.10: initialization failed\n"
+    )
+    report = doctor(strict=True, binary=str(path))
+    assert report.ok is False
+    assert report.exit_code == 1
+    assert any("probe error" in c.lower() or "FAIL" in c for c in report.checks)
+
+    monkeypatch.delenv("FAKE_AGY_VERSION_RC", raising=False)
+    monkeypatch.delenv("FAKE_AGY_VERSION_TEXT", raising=False)
+    monkeypatch.setenv("FAKE_AGY_HELP_RC", "1")
+    monkeypatch.setenv("FAKE_AGY_HELP_EMPTY", "1")
+    help_fail = doctor(strict=True, binary=str(path))
+    assert help_fail.ok is False
+    assert help_fail.exit_code == 1
 
 
 def test_compat_classification_range(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -187,6 +287,31 @@ def test_cli_capabilities_json(fake_agy_path: Path, capsys: pytest.CaptureFixtur
     assert body["ready"]["live_call_ready"] is False
 
 
+def test_cli_routes_through_provider_adapter(
+    fake_agy_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.commands import provider as provider_cmd
+    from omg_cli.main import main
+    from omg_cli.providers.antigravity import AntigravityProvider
+    from omg_cli.providers.base import ProviderAdapter
+
+    seen: list[ProviderAdapter] = []
+    real = provider_cmd._resolve_adapter
+
+    def tracking(name: str) -> ProviderAdapter:
+        adapter = real(name)
+        seen.append(adapter)
+        assert isinstance(adapter, ProviderAdapter)
+        assert isinstance(adapter, AntigravityProvider)
+        assert adapter.name == "antigravity"
+        return adapter
+
+    monkeypatch.setattr(provider_cmd, "_resolve_adapter", tracking)
+    assert main(["provider", "antigravity", "capabilities", "--json"]) == 0
+    assert main(["provider", "antigravity", "doctor", "--strict"]) == 0
+    assert len(seen) >= 2
+
+
 def test_cli_doctor_strict_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -200,31 +325,45 @@ def test_cli_doctor_strict_missing(
     assert rc == 1
 
 
+def test_provider_ignores_stale_project_root(
+    fake_agy_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """provider is install/global scoped — stale OMG_PROJECT_ROOT must not block."""
+    from omg_cli.main import main
+
+    missing = tmp_path / "no-such-project-root"
+    monkeypatch.setenv("OMG_PROJECT_ROOT", str(missing))
+    rc = main(["provider", "antigravity", "doctor", "--strict"])
+    assert rc == 0
+
+
 def test_no_shell_in_version_probe(fake_agy_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """probe_version must use argv subprocess, never shell=True."""
+    """probe_version must use argv process runner, never shell=True."""
     import subprocess
 
     from omg_cli.providers import antigravity as agy_mod
+    from omg_cli.providers import process as process_mod
 
-    calls: list[dict] = []
-    real_run = subprocess.run
+    popen_calls: list[dict] = []
+    real_popen = subprocess.Popen
 
-    def tracking_run(*args, **kwargs):
-        calls.append({"args": args, "kwargs": kwargs})
-        return real_run(*args, **kwargs)
+    class TrackingPopen(real_popen):  # type: ignore[valid-type,misc]
+        def __init__(self, *args, **kwargs):
+            popen_calls.append({"args": args, "kwargs": dict(kwargs)})
+            super().__init__(*args, **kwargs)
 
-    monkeypatch.setattr(subprocess, "run", tracking_run)
-    # Also patch the module-level binding if imported
-    if hasattr(agy_mod, "subprocess"):
-        monkeypatch.setattr(agy_mod.subprocess, "run", tracking_run)
+    monkeypatch.setattr(subprocess, "Popen", TrackingPopen)
+    monkeypatch.setattr(process_mod.subprocess, "Popen", TrackingPopen)
 
     binary = agy_mod.discover_binary()
     agy_mod.probe_version(binary)
-    assert calls, "expected subprocess.run"
-    for call in calls:
+    assert popen_calls, "expected subprocess.Popen"
+    for call in popen_calls:
         kwargs = call["kwargs"]
         assert kwargs.get("shell") in (None, False)
-        argv = call["args"][0] if call["args"] else kwargs.get("args")
+        if os.name == "posix":
+            assert kwargs.get("start_new_session") is True
+        argv = kwargs.get("args") or (call["args"][0] if call["args"] else None)
         assert isinstance(argv, (list, tuple))
         assert all(isinstance(x, str) for x in argv)
 
@@ -245,3 +384,12 @@ def test_registry_lists_provider() -> None:
     parser = build_parser()
     ns = parser.parse_args(["provider", "antigravity", "capabilities", "--json"])
     assert callable(getattr(ns, "func", None))
+
+
+def test_antigravity_provider_satisfies_adapter_protocol() -> None:
+    from omg_cli.providers.antigravity import AntigravityProvider
+    from omg_cli.providers.base import ProviderAdapter
+
+    adapter = AntigravityProvider()
+    assert isinstance(adapter, ProviderAdapter)
+    assert adapter.name == "antigravity"

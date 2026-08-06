@@ -2,6 +2,9 @@
 
 Commands: ``omg provider antigravity capabilities|doctor``.
 Parser construction: ``register_provider_parsers``.
+
+Handlers route through :class:`~omg_cli.providers.base.ProviderAdapter`
+implementations — never provider-module free functions alone.
 """
 
 from __future__ import annotations
@@ -10,6 +13,15 @@ import argparse
 import sys
 
 from omg_cli.cli_envelope import emit_data, emit_json, failure, success, wants_json
+from omg_cli.providers.base import ProviderAdapter
+
+
+def _resolve_adapter(name: str) -> ProviderAdapter:
+    if name == "antigravity":
+        from omg_cli.providers.antigravity import AntigravityProvider
+
+        return AntigravityProvider()
+    raise KeyError(name)
 
 
 def cmd_provider(args: argparse.Namespace) -> int:
@@ -23,9 +35,9 @@ def cmd_provider(args: argparse.Namespace) -> int:
         )
         return 2
     if action == "capabilities":
-        return _cmd_antigravity_capabilities(args)
+        return _cmd_provider_capabilities(args, name)
     if action == "doctor":
-        return _cmd_antigravity_doctor(args)
+        return _cmd_provider_doctor(args, name)
     print(
         "usage: omg provider antigravity {capabilities,doctor}",
         file=sys.stderr,
@@ -33,8 +45,7 @@ def cmd_provider(args: argparse.Namespace) -> int:
     return 2
 
 
-def _cmd_antigravity_capabilities(args: argparse.Namespace) -> int:
-    from omg_cli.providers.antigravity import probe_capabilities
+def _cmd_provider_capabilities(args: argparse.Namespace, name: str) -> int:
     from omg_cli.providers.errors import (
         ProviderBinaryMissing,
         ProviderProbeError,
@@ -42,11 +53,12 @@ def _cmd_antigravity_capabilities(args: argparse.Namespace) -> int:
     )
 
     try:
-        caps = probe_capabilities()
+        adapter = _resolve_adapter(name)
+        caps = adapter.probe_capabilities()
     except ProviderBinaryMissing as exc:
         emit_json(
             failure(
-                "provider.antigravity.capabilities",
+                f"provider.{name}.capabilities",
                 "E_PROVIDER_MISSING",
                 str(exc),
                 next_action="Install agy or set OMG_AGY_BIN",
@@ -56,7 +68,7 @@ def _cmd_antigravity_capabilities(args: argparse.Namespace) -> int:
     except (ProviderVersionError, ProviderProbeError) as exc:
         emit_json(
             failure(
-                "provider.antigravity.capabilities",
+                f"provider.{name}.capabilities",
                 "E_PROVIDER_PROBE",
                 str(exc),
             )
@@ -64,23 +76,22 @@ def _cmd_antigravity_capabilities(args: argparse.Namespace) -> int:
         return 1
 
     payload = caps.to_dict()
+    cmd = f"provider.{name}.capabilities"
     if wants_json(args):
-        emit_json(
-            success("provider.antigravity.capabilities", capabilities=payload)
-        )
+        emit_json(success(cmd, capabilities=payload))
     else:
-        emit_data(args, "provider.antigravity.capabilities", payload)
+        emit_data(args, cmd, payload)
     return 0
 
 
-def _cmd_antigravity_doctor(args: argparse.Namespace) -> int:
-    from omg_cli.providers.antigravity import doctor
-
+def _cmd_provider_doctor(args: argparse.Namespace, name: str) -> int:
+    adapter = _resolve_adapter(name)
     strict = bool(getattr(args, "strict", False))
-    report = doctor(strict=strict)
+    report = adapter.doctor(strict=strict)
     payload = report.to_dict()
+    cmd = f"provider.{name}.doctor"
     if wants_json(args):
-        emit_json(success("provider.antigravity.doctor", **payload))
+        emit_json(success(cmd, **payload))
     else:
         for line in report.checks:
             print(line)

@@ -21,11 +21,13 @@ from omg_cli.providers.models import (
     ProviderCapabilities,
     VersionInfo,
 )
+from omg_cli.providers.process import ProbeProcessResult, run_probe_process
 
 __all__ = [
     "CAPABILITIES_SCHEMA",
     "CompatStatus",
     "DoctorReport",
+    "ProbeProcessResult",
     "ProviderAdapter",
     "ProviderBinaryMissing",
     "ProviderCapabilities",
@@ -34,4 +36,5 @@ __all__ = [
     "ProviderVersionError",
     "VersionInfo",
     "antigravity",
+    "run_probe_process",
 ]

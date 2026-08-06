@@ -1,4 +1,8 @@
-"""Typed, JSON-serializable provider probe models (#67-A)."""
+"""Typed, JSON-serializable provider probe models (#67-A).
+
+Provider-neutral defaults are empty / false / unknown — never Antigravity-positive
+claims. Per-provider adapters must fill observed fields explicitly.
+"""
 
 from __future__ import annotations
 
@@ -25,37 +29,38 @@ class VersionInfo:
 
 @dataclass(frozen=True, slots=True)
 class ProviderCapabilities:
-    """Golden capabilities envelope for one provider probe."""
+    """Golden capabilities envelope for one provider probe.
+
+    Defaults are provider-neutral (empty / false). Antigravity-specific ranges,
+    formats, and limitations belong in the Antigravity adapter only.
+    """
 
     provider: str
     binary: str
     version: str
     version_tuple: tuple[int, int, int]
     compat_status: CompatStatus
-    tested_min: str = "1.1.0"
-    tested_max: str = "1.1.99"
+    tested_min: str = ""
+    tested_max: str = ""
     pin_revision: str = ""
     authenticated: bool | None = None  # None = not probed (slice A)
     live_call_ready: bool = False
-    output_formats: tuple[str, ...] = ("text", "json", "stream-json")
-    efforts: tuple[str, ...] = ("low", "medium", "high")
-    modes: tuple[str, ...] = ("accept-edits", "plan")
-    print_mode: bool = True
-    sandbox: bool = True
-    agents_subcommand: bool = True
-    models_subcommand: bool = True
-    plugins_subcommand: bool = True
+    output_formats: tuple[str, ...] = ()
+    efforts: tuple[str, ...] = ()
+    modes: tuple[str, ...] = ()
+    print_mode: bool = False
+    sandbox: bool = False
+    agents_subcommand: bool = False
+    models_subcommand: bool = False
+    plugins_subcommand: bool = False
     # Extension surfaces — not claimed live in #67-A
     background_tasks: bool = False
     hooks: bool = False
     skills: bool = False
     mcp: bool = False
     subagents: bool = False
-    needs_pty: bool = True
-    limitations: tuple[str, ...] = (
-        "Slice A probe only; headless run/ask/Team cutover deferred (#67-B..D).",
-        "Authentication and live-call readiness are not verified hermetically.",
-    )
+    needs_pty: bool = False
+    limitations: tuple[str, ...] = ()
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

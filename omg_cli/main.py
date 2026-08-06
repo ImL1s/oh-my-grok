@@ -300,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
             "uninstall",
             "mcp-install",
             "version",  # not a command today; harmless
+            "provider",  # global binary/version probe (#67-A); no project root
         }
     )
     command = str(getattr(args, "command", "") or "")
