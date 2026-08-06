@@ -1538,6 +1538,9 @@ def _prepare_live_relaunch_team(
     rid, live = _prepare_live_scale_team(monkeypatch, tmp_path)
     live["topology"] = "split"
     live["window_id"] = "@7"
+    live["tmux_socket_path"] = "/tmp/omg-test-tmux.sock"
+    live["tmux_server_pid"] = 424242
+    live["tmux_server_pid_start"] = "ps:omg-test-server"
     _write_team_meta(tmp_path, rid, live)
     dead_ids = {str(row["task_id"]) for row in live["tasks"][:dead_tasks]}
     pane_to_task = {str(row["pane_id"]): str(row["task_id"]) for row in live["tasks"]}
@@ -3171,10 +3174,9 @@ def test_relaunch_refuses_when_scale_lock_held(
 def test_relaunch_wal_precedes_respawn_and_commits_generation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    rid, _live, _launched, respawns = _prepare_live_relaunch_team(
+    rid, _live, launched, respawns = _prepare_live_relaunch_team(
         monkeypatch, tmp_path
     )
-    real_respawn = __import__("omg_cli.team.tmux", fromlist=["respawn_worker_pane"]).respawn_worker_pane
 
     def assert_wal_first(**kwargs: Any) -> str:
         meta = load_team_meta(tmp_path, rid)
@@ -3185,7 +3187,18 @@ def test_relaunch_wal_precedes_respawn_and_commits_generation(
         assert wal["store_kind"] == "team_relaunch_wal"
         assert wal["writer_contract"] == "relaunch-wal-v1"
         assert wal["target_window_id"] == "@7"
-        return real_respawn(**kwargs)
+        # P2-NEW: relaunch split must carry WAL socket + server + session + @window.
+        assert kwargs.get("socket_path") == "/tmp/omg-test-tmux.sock"
+        assert kwargs.get("expected_server", {}).get("tmux_server_pid") == 424242
+        assert kwargs.get("expected_session_id") == "$7"
+        assert kwargs.get("expected_window_id") == "@7"
+        task_id = next(
+            tid for tid in ("t-a", "t-b") if tid in str(kwargs["pane_command"])
+        )
+        respawns.append(task_id)
+        pane_id = f"%{80 + len(respawns)}"
+        launched[task_id] = pane_id
+        return pane_id
 
     monkeypatch.setattr("omg_cli.team.tmux.respawn_worker_pane", assert_wal_first)
     out = relaunch_dead_incomplete_workers(tmp_path, rid)
@@ -3371,7 +3384,6 @@ def test_relaunch_partial_retry_launches_each_task_once(
     rid, _live, launched, respawns = _prepare_live_relaunch_team(
         monkeypatch, tmp_path, dead_tasks=2
     )
-    original = __import__("omg_cli.team.tmux", fromlist=["respawn_worker_pane"]).respawn_worker_pane
     failed = False
 
     def fail_second_once(**kwargs: Any) -> str:
@@ -3381,7 +3393,15 @@ def test_relaunch_partial_retry_launches_each_task_once(
             raise __import__("omg_cli.team.tmux", fromlist=["TmuxTeamError"]).TmuxTeamError(
                 "simulated second-task crash"
             )
-        return original(**kwargs)
+        assert kwargs.get("expected_server", {}).get("tmux_server_pid") == 424242
+        assert kwargs.get("expected_window_id") == "@7"
+        task_id = next(
+            tid for tid in ("t-a", "t-b") if tid in str(kwargs["pane_command"])
+        )
+        respawns.append(task_id)
+        pane_id = f"%{80 + len(respawns)}"
+        launched[task_id] = pane_id
+        return pane_id
 
     monkeypatch.setattr("omg_cli.team.tmux.respawn_worker_pane", fail_second_once)
     with pytest.raises(TeamError, match="second-task crash"):

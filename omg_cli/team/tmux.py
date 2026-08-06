@@ -15,6 +15,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -29,8 +30,8 @@ _TMUX_PANE_ID = re.compile(r"^%[0-9]{1,16}$")
 _TMUX_WINDOW_ID = re.compile(r"^@[0-9]{1,16}$")
 _SAFE_INTENT_TOKEN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 TEAM_LAUNCH_LOCK_NAME = "team-launch.lock"
-# Immutable launch-intent nonce stamped on the created window/pane in the same
-# tmux command queue as ``new-window``. Survives rename so sweep can find a
+# Immutable launch-intent nonce stamped on the created window/pane (pane
+# self-stamp + post-handle ``@N`` stamp). Survives rename so sweep can find a
 # worker that crashed after create but before WAL ``@N`` bind.
 INTENT_NONCE_OPTION = "@omg_intent_nonce"
 
@@ -1248,11 +1249,19 @@ def respawn_worker_pane(
     worktree: str,
     pane_command: str,
     env_pairs: Sequence[tuple[str, str]] | None = None,
+    socket_path: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
+    expected_session_id: str | None = None,
+    expected_window_id: str | None = None,
 ) -> str:
     """Split a replacement worker pane into ``target``; return new ``pane_id``.
 
     Used by resume when a worker pane died but the team session/window remains.
     Never kills the leader pane or the whole session.
+
+    When *expected_server* is set, ``split-window`` runs under a PID+start
+    ``if-shell`` gate (same socket / ``$session`` / ``@window``) so a
+    replacement server on the ambient socket cannot receive the pane mutation.
     """
     if not tmux_available():
         raise TmuxTeamError("tmux is required to respawn a team worker pane")
@@ -1261,20 +1270,37 @@ def respawn_worker_pane(
     if not worktree or not pane_command:
         raise TmuxTeamError("respawn requires worktree and pane_command")
     task_env = tmux_env_args(list(env_pairs or []))
-    split = _tmux_run(
-        [
-            "split-window",
-            "-P",
-            "-F",
-            "#{pane_id}",
-            "-t",
-            str(target),
-            "-c",
-            str(worktree),
-            *task_env,
-            str(pane_command),
-        ]
+    split_argv = [
+        "split-window",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        str(target),
+        "-c",
+        str(worktree),
+        *task_env,
+        str(pane_command),
+    ]
+    server = (
+        _intent_tmux_server(expected_server) if expected_server is not None else None
     )
+    if server is not None:
+        if socket_path is None:
+            socket_path = str(server["tmux_socket_path"])
+        window_id = expected_window_id
+        if window_id is None and _TMUX_WINDOW_ID.fullmatch(str(target)):
+            window_id = str(target)
+        split = _tmux_run_if_identity(
+            split_argv,
+            target=str(target),
+            expected_server=server,
+            socket_path=socket_path,
+            window_id=window_id,
+            expected_session_id=expected_session_id,
+        )
+    else:
+        split = _tmux_run(split_argv, socket_path=socket_path)
     if split.returncode != 0:
         err = (split.stderr or split.stdout or "").strip()
         raise TmuxTeamError(f"failed to respawn worker pane: {err}")
@@ -1885,7 +1911,12 @@ def _discover_inside_windows_by_intent_nonce(
     intent_nonce: str,
     socket_path: str | None = None,
 ) -> tuple[str, list[str], str | None]:
-    """Discover windows in *session_id* carrying create-time intent nonce.
+    """Discover windows on the scoped tmux server carrying create-time intent nonce.
+
+    Uses ``list-windows -a`` (server-global) so a window moved to another session
+    on the same WAL-scoped server still proves nonce presence and blocks WAL
+    clear. *session_id* is validated for call-site contract only — matches are
+    **not** filtered to that session.
 
     Returns ``(status, window_ids, detail)`` with the same status vocabulary as
     :func:`_discover_inside_windows_by_name`. The option survives rename, so
@@ -1903,8 +1934,7 @@ def _discover_inside_windows_by_intent_nonce(
         listed = _tmux_run(
             [
                 "list-windows",
-                "-t",
-                session_id,
+                "-a",
                 "-F",
                 f"#{{window_id}}\t#{{{INTENT_NONCE_OPTION}}}\t#{{session_id}}",
             ],
@@ -1929,11 +1959,11 @@ def _discover_inside_windows_by_intent_nonce(
         parts = raw.split("\t")
         if len(parts) != 3:
             continue
-        wid, nonce, sid = parts
+        wid, nonce, _sid = parts
         if _TMUX_WINDOW_ID.fullmatch(wid) is None:
             continue
         valid_rows += 1
-        if nonce == intent_nonce and sid == session_id:
+        if nonce == intent_nonce:
             matches.append(wid)
     if matches:
         if len(matches) > 1:
@@ -2029,12 +2059,21 @@ def _kill_inside_windows_by_name(
     for wid in list(matches) + durable_ids + list(nonce_matches):
         if wid not in targets:
             targets.append(wid)
+    # Nonce-only @N may have been moved to another session on this server;
+    # gate those kills on server+@N only (not the original $session).
+    nonce_only = {
+        wid
+        for wid in nonce_matches
+        if wid not in matches and wid not in durable_ids
+    }
     if targets:
         for wid in targets:
             err = _kill_window(
                 wid,
                 socket_path=socket_path,
-                expected_session_id=session_id,
+                expected_session_id=(
+                    None if wid in nonce_only else session_id
+                ),
                 expected_server=expected_server,
             )
             if err:
@@ -2114,7 +2153,9 @@ def _kill_inside_windows_by_name(
             id_err = _kill_window(
                 wid,
                 socket_path=socket_path,
-                expected_session_id=session_id,
+                expected_session_id=(
+                    None if wid in nonce_only else session_id
+                ),
                 expected_server=expected_server,
             )
             if id_err:
@@ -2147,6 +2188,16 @@ def _kill_inside_windows_by_name(
                     f"gone (ids={n_left}); refuse WAL clear"
                     + (("; " + "; ".join(errors)) if errors else "")
                 )
+        # Final PID+start revalidation — absence probes are separate clients;
+        # a mid-proof socket swap to a empty server B must not authorize clear.
+        if expected_server is not None:
+            live = _probe_tmux_server_identity(socket_path=socket_path)
+            if not _tmux_server_matches(expected_server, live):
+                return (
+                    "tmux server identity mismatch after absence proof — "
+                    f"refuse WAL clear for {window_name!r}"
+                    + (("; " + "; ".join(errors)) if errors else "")
+                )
         return None
     if proof_status in ("found", "ambiguous"):
         return (
@@ -2159,6 +2210,109 @@ def _kill_inside_windows_by_name(
         + (proof_detail or proof_status)
         + (("; " + "; ".join(errors)) if errors else "")
     )
+
+
+def _parse_new_window_create_handle(
+    stdout: str,
+    *,
+    expected_session_id: str,
+) -> tuple[str, str, str, int] | None:
+    """Parse ``new-window -P`` handle from client stdout (first valid row).
+
+    Returns ``(window_id, pane_id, session_id, server_pid)`` or ``None``.
+    Tolerates trailing noise so a later failed queue item (hook-renamed
+    name-targeted stamp) does not hide a successful create ``@N``.
+    """
+    for line in (stdout or "").splitlines():
+        parts = line.strip().split("\t")
+        if (
+            len(parts) == 4
+            and _TMUX_WINDOW_ID.fullmatch(parts[0]) is not None
+            and _TMUX_PANE_ID.fullmatch(parts[1]) is not None
+            and parts[2] == expected_session_id
+            and parts[3].isdigit()
+        ):
+            return parts[0], parts[1], parts[2], int(parts[3])
+    return None
+
+
+def _pane_command_with_intent_nonce_stamp(
+    pane_command: str, intent_nonce: str
+) -> str:
+    """Prefix *pane_command* so the new pane self-stamps intent nonce on start.
+
+    Runs inside the created pane (window object identity), so an
+    ``after-new-window`` rename cannot defeat the stamp the way a queued
+    ``set-option -t $session:name`` can.
+    """
+    nq = shlex.quote(intent_nonce)
+    opt = INTENT_NONCE_OPTION
+    return (
+        f"tmux set-option -wq {opt} {nq} && "
+        f"tmux set-option -pq {opt} {nq} && "
+        f"exec /bin/sh -c {shlex.quote(pane_command)}"
+    )
+
+
+def _stamp_intent_nonce_on_handles(
+    *,
+    window_id: str,
+    pane_id: str,
+    intent_nonce: str,
+    expected_session_id: str,
+    socket_path: str | None,
+    expected_server: Mapping[str, Any] | None,
+) -> None:
+    """Best-effort stamp intent nonce onto immutable ``@N`` / ``%pane``.
+
+    Used after create-handle acceptance so rename-before-name-stamp still
+    leaves a server-global recovery key. Failures are ignored — WAL ``@N``
+    bind is the durable authority.
+    """
+    win_argv = [
+        "set-option",
+        "-w",
+        "-t",
+        window_id,
+        INTENT_NONCE_OPTION,
+        intent_nonce,
+    ]
+    pane_argv = [
+        "set-option",
+        "-p",
+        "-t",
+        pane_id,
+        INTENT_NONCE_OPTION,
+        intent_nonce,
+    ]
+    try:
+        if expected_server is not None:
+            server = _intent_tmux_server(expected_server)
+            if server is None:
+                return
+            _tmux_run_if_identity(
+                win_argv,
+                target=window_id,
+                expected_server=server,
+                socket_path=socket_path,
+                window_id=window_id,
+                expected_session_id=expected_session_id,
+            )
+            _tmux_run_if_identity(
+                pane_argv,
+                target=pane_id,
+                expected_server=server,
+                socket_path=socket_path,
+                window_id=window_id,
+                expected_session_id=expected_session_id,
+            )
+        else:
+            _tmux_run(
+                [*win_argv, ";", *pane_argv],
+                socket_path=socket_path,
+            )
+    except (OSError, TmuxTeamError):
+        return
 
 
 def _launch_first_inside(
@@ -2190,6 +2344,13 @@ def _launch_first_inside(
     tmux server so a restarted ambient server cannot receive the side effect.
     Create is authorized against the full WAL identity (pid **and** start-id)
     before mutation; successful handles must re-verify that identity before bind.
+
+    Create-time intent nonce is stamped by the pane command itself (window
+    object) and re-stamped via immutable ``@N`` after handle acceptance — never
+    only via mutable ``$session:name`` after ``new-window`` (``after-new-window``
+    can rename before a queued name-targeted ``set-option``). A valid ``@N`` in
+    ``-P`` stdout is consumed even when a later queue item makes the overall
+    client non-zero; that path binds WAL and must not unmark as "never created".
     """
     if _TMUX_WINDOW_ID.fullmatch(target_window) is None:
         raise TmuxTeamError(
@@ -2211,7 +2372,7 @@ def _launch_first_inside(
     first_env = tmux_env_args(list(task.get("_env_pairs") or env_pairs))
     # Mark immediately before the client mutation so a pre-call crash cannot
     # leave side_effect_started without attempting create. Synchronous rc!=0
-    # with name absence unmarks (see below).
+    # with name absence unmarks (see below) only when no @N was emitted.
     intent_nonce: str | None = None
     if intent_path is not None:
         try:
@@ -2228,6 +2389,11 @@ def _launch_first_inside(
                 "launch intent missing nonce before new-window — refuse create"
             )
         mark_team_launch_intent_side_effect(intent_path)
+    pane_command = str(task["pane_command"])
+    if intent_nonce is not None:
+        pane_command = _pane_command_with_intent_nonce_stamp(
+            pane_command, intent_nonce
+        )
     nw_argv = [
         "new-window",
         "-d",
@@ -2242,66 +2408,33 @@ def _launch_first_inside(
         "-c",
         str(task["worktree"]),
         *first_env,
-        str(task["pane_command"]),
+        pane_command,
     ]
     try:
         if server is not None:
             # Atomic server-side gate: new-window only runs when the leader
-            # window still belongs to the WAL server (pid + start-id). Stamp
-            # the intent nonce onto the new window/pane in the *same* command
-            # queue so a crash before Python @N bind still leaves a rename-
-            # surviving recovery key for sweep.
+            # window still belongs to the WAL server (pid + start-id). Intent
+            # nonce is stamped by the pane command (rename-immune) and again
+            # via @N after handle acceptance — not via $session:name in this
+            # queue (after-new-window can rename before that stamp).
             predicate = _tmux_identity_shell_predicate(
                 expected_server=server,
                 window_id=target_window,
                 expected_session_id=expected_session_id,
             )
-            success_cmd = _tmux_join_command(nw_argv)
-            if intent_nonce is not None:
-                name_tgt = f"{expected_session_id}:{window_name}"
-                success_cmd = (
-                    f"{success_cmd} ; "
-                    f"{_tmux_join_command(['set-option', '-w', '-t', name_tgt, INTENT_NONCE_OPTION, intent_nonce])} ; "
-                    f"{_tmux_join_command(['set-option', '-p', '-t', name_tgt, INTENT_NONCE_OPTION, intent_nonce])}"
-                )
             create = _tmux_run(
                 [
                     "if-shell",
                     "-t",
                     target_window,
                     predicate,
-                    success_cmd,
+                    _tmux_join_command(nw_argv),
                     "",
                 ],
                 socket_path=socket_path,
             )
         else:
             create = _tmux_run(nw_argv, socket_path=socket_path)
-            if create.returncode == 0 and intent_nonce is not None:
-                # Best-effort stamp when no server identity gate (rare); sweep
-                # still requires nonce absence for unbound side_effect WALs.
-                name_tgt = f"{expected_session_id}:{window_name}"
-                try:
-                    _tmux_run(
-                        [
-                            "set-option",
-                            "-w",
-                            "-t",
-                            name_tgt,
-                            INTENT_NONCE_OPTION,
-                            intent_nonce,
-                            ";",
-                            "set-option",
-                            "-p",
-                            "-t",
-                            name_tgt,
-                            INTENT_NONCE_OPTION,
-                            intent_nonce,
-                        ],
-                        socket_path=socket_path,
-                    )
-                except OSError:
-                    pass
     except OSError as exc:
         # Creation itself failed — still name cleanup in case the window was
         # created before the client lost the reply channel. Prefer discover →
@@ -2315,11 +2448,17 @@ def _launch_first_inside(
         if cleanup:
             message = f"{message}; orphan cleanup: {cleanup}"
         raise TmuxTeamError(message) from exc
-    if create.returncode != 0:
+
+    handle = _parse_new_window_create_handle(
+        create.stdout or "",
+        expected_session_id=expected_session_id,
+    )
+    if handle is None and create.returncode != 0:
         err = (create.stderr or create.stdout or "").strip()
-        # Synchronous failure: prove whether a window was created. If the launch
-        # name is absent and no @N is bound, unmark side_effect_started so the
-        # false-positive mark cannot permanently wedge project launches.
+        # Synchronous failure with no @N emitted: prove whether a window was
+        # created. If the launch name is absent and no @N is bound, unmark
+        # side_effect_started so the false-positive mark cannot permanently
+        # wedge project launches.
         status, matches, _detail = _discover_inside_windows_by_name(
             session_id=expected_session_id,
             window_name=window_name,
@@ -2343,16 +2482,11 @@ def _launch_first_inside(
         raise TmuxTeamError(
             f"failed to create team window in current session: {err}"
         )
-    parts = (create.stdout or "").strip().split("\t")
-    if (
-        len(parts) == 4
-        and _TMUX_WINDOW_ID.fullmatch(parts[0]) is not None
-        and _TMUX_PANE_ID.fullmatch(parts[1]) is not None
-        and parts[2] == expected_session_id
-        and parts[3].isdigit()
-    ):
+
+    if handle is not None:
+        window_id, pane_id, _sid, create_pid = handle
         if server is not None:
-            if int(parts[3]) != server["tmux_server_pid"]:
+            if create_pid != server["tmux_server_pid"]:
                 cleanup = _cleanup_unreplied_inside_window(
                     session_id=expected_session_id,
                     window_name=window_name,
@@ -2384,13 +2518,22 @@ def _launch_first_inside(
         # Publish handles to the caller *before* WAL bind so a bind raise
         # cannot lose the exact @N for exception cleanup.
         if publish_created is not None:
-            publish_created(parts[0], parts[1])
+            publish_created(window_id, pane_id)
         if intent_path is not None:
             # Durable @N before any further work — closes rename-before-
             # discovery crash recovery that would otherwise clear on name-only
-            # absence.
-            bind_team_launch_intent_window_id(intent_path, parts[0])
-        return parts[0], parts[1]
+            # absence. Bind even when overall client rc!=0 (later stamp noise).
+            bind_team_launch_intent_window_id(intent_path, window_id)
+        if intent_nonce is not None:
+            _stamp_intent_nonce_on_handles(
+                window_id=window_id,
+                pane_id=pane_id,
+                intent_nonce=intent_nonce,
+                expected_session_id=expected_session_id,
+                socket_path=socket_path,
+                expected_server=server,
+            )
+        return window_id, pane_id
 
     # Side effect succeeded; result publication failed — discover/bind/kill.
     # Also covers if-shell predicate-false (empty stdout, rc 0).

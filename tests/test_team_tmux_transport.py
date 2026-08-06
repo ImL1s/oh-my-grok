@@ -2485,6 +2485,215 @@ def test_new_window_nonzero_unmarks_side_effect_when_name_absent(
     assert intents == []
 
 
+def test_new_window_nonzero_with_atN_stdout_binds_and_keeps_wal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """P2-1a: hook-rename stamp failure must not unmark when @N was emitted."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+    from omg_cli.team.tmux import team_launch_intents_dir
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    monkeypatch.setenv("TMUX_PANE", "%9")
+    monkeypatch.setattr(tmux_mod.secrets, "token_hex", lambda _n: "hookrn001")
+    rid = "20260806T120000Z-hookrn"
+    bound: list[str] = []
+    stamps: list[list[str]] = []
+
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "display-message" and "-t" in args:
+            target = args[args.index("-t") + 1]
+            if target == "%9" and "#{pane_pid}" in joined:
+                return SimpleNamespace(
+                    returncode=0, stdout="leader\t$42\t@3\t%9\t4242\n", stderr=""
+                )
+            if target == "@88":
+                return SimpleNamespace(
+                    returncode=0, stdout="$42\t@88\t424242\n", stderr=""
+                )
+            if target == "%10":
+                return SimpleNamespace(
+                    returncode=0, stdout="%10\t$42\t@88\t424242\n", stderr=""
+                )
+        if cmd == "if-shell" and "new-window" in joined:
+            # new-window -P succeeded; later queue noise makes overall rc!=0.
+            # Pane command must self-stamp (rename-immune); no name-targeted
+            # set-option chained after new-window in the if-shell success cmd.
+            assert "tmux set-option -wq @omg_intent_nonce" in joined
+            assert "set-option -w -t $42:" not in joined
+            assert "set-option -p -t $42:" not in joined
+            return SimpleNamespace(
+                returncode=1,
+                stdout="@88\t%10\t$42\t424242\n",
+                stderr="can't find window: omg-team-hookrn",
+            )
+        if cmd == "if-shell" and "set-option" in joined:
+            stamps.append(list(args))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "select-layout":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "select-pane":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "list-windows":
+            return SimpleNamespace(returncode=0, stdout="@88\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
+
+    real_bind = tmux_mod.bind_team_launch_intent_window_id
+
+    def track_bind(path, window_id):
+        bound.append(window_id)
+        return real_bind(path, window_id)
+
+    monkeypatch.setattr(tmux_mod, "bind_team_launch_intent_window_id", track_bind)
+
+    tasks = [
+        {
+            "task_id": "w1",
+            "worktree": "/tmp/w1",
+            "pane_command": "true",
+            "_env_pairs": [],
+        }
+    ]
+    tmux_mod.create_split_team_session(
+        session="planned-name",
+        tasks=tasks,
+        env_pairs=[],
+        attach_mode="inside",
+        root=tmp_path,
+        run_id=rid,
+    )
+    assert bound == ["@88"]
+    assert tasks[0]["pane_id"] == "%10"
+    # WAL retains durable @N — must not have been unmarked/cleared.
+    intents = list(team_launch_intents_dir(tmp_path).glob("*.json"))
+    assert len(intents) == 1
+    raw = json.loads(intents[0].read_text(encoding="utf-8"))
+    assert raw["window_id"] == "@88"
+    assert raw["side_effect_started"] is True
+    # Post-handle @N stamp via identity-gated set-option.
+    assert any("set-option -w -t @88" in " ".join(c) for c in stamps)
+
+
+def test_intent_nonce_discovery_is_server_global(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2-1b: moved-window nonce on another session still counts as present."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    nonce = "movedwindow000000000000000000001"
+
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "list-windows":
+            assert "-a" in args
+            assert "-t" not in args
+            if "@omg_intent_nonce" in joined:
+                # Original session $42 empty of nonce; window lives under $99.
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=f"@7\t{nonce}\t$99\n",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    status, matches, _detail = tmux_mod._discover_inside_windows_by_intent_nonce(
+        session_id="$42",
+        intent_nonce=nonce,
+        socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
+    )
+    assert status == "found"
+    assert matches == ["@7"]
+
+
+def test_kill_inside_refuses_clear_when_server_swaps_after_absence_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2-1c: revalidate PID+start after final probes before authorizing clear."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    nonce = "serverswap0000000000000000000001"
+    probes = {"n": 0}
+
+    def fake_probe(*, socket_path: str | None = None):
+        probes["n"] += 1
+        # Initial check sees expected server; final revalidation sees swap.
+        if probes["n"] >= 2:
+            return {
+                "tmux_socket_path": FAKE_TMUX_SERVER["tmux_socket_path"],
+                "tmux_server_pid": 999999,
+                "tmux_server_pid_start": "ps:replacement-B",
+            }
+        return dict(FAKE_TMUX_SERVER)
+
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
+        cmd = args[0]
+        if cmd == "list-windows":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "if-shell" and "kill-window" in " ".join(args):
+            return SimpleNamespace(returncode=1, stdout="", stderr="can't find")
+        if cmd == "kill-window":
+            return SimpleNamespace(returncode=1, stdout="", stderr="can't find")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "_probe_tmux_server_identity", fake_probe)
+    err = tmux_mod._kill_inside_windows_by_name(
+        session_id="$42",
+        window_name="omg-team-server-swap",
+        known_window_ids=[],
+        require_durable_window_id=True,
+        intent_nonce=nonce,
+        socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
+        expected_server=FAKE_TMUX_SERVER,
+    )
+    assert err is not None
+    assert "after absence proof" in err
+
+
+def test_respawn_worker_pane_uses_identity_if_shell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2-NEW: relaunch split-window must be PID+start gated."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    calls: list[list[str]] = []
+
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
+        calls.append(list(args))
+        assert socket_path == FAKE_TMUX_SERVER["tmux_socket_path"]
+        return SimpleNamespace(returncode=0, stdout="%99\n", stderr="")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
+    pane = tmux_mod.respawn_worker_pane(
+        target="@7",
+        worktree="/tmp/w1",
+        pane_command="true",
+        socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
+        expected_server=FAKE_TMUX_SERVER,
+        expected_session_id="$7",
+        expected_window_id="@7",
+    )
+    assert pane == "%99"
+    assert any(c[0] == "if-shell" and "split-window" in " ".join(c) for c in calls)
+    assert not any(c[0] == "split-window" for c in calls)
+
+
 def test_unmark_side_effect_refuses_when_window_id_bound(
     tmp_path: Path,
 ) -> None:

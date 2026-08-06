@@ -5234,6 +5234,16 @@ def _relaunch_dead_incomplete_workers_locked(
     ):
         raise TeamError("live tmux launch nonce mismatch; refuse relaunch")
 
+    from omg_cli.team.tmux import _intent_tmux_server
+
+    relaunch_server = _intent_tmux_server(meta)
+    if relaunch_server is None:
+        raise TeamError(
+            "relaunch refused: team meta missing durable tmux server identity"
+        )
+    relaunch_socket = str(relaunch_server["tmux_socket_path"])
+    relaunch_session_id = str(authority["session_id"])
+
     if meta.get("topology") != "split":
         raise TeamError(
             "relaunch requires receipt-bound split topology"
@@ -5384,6 +5394,14 @@ def _relaunch_dead_incomplete_workers_locked(
                         worktree=str(rec["worktree"]),
                         pane_command=start_command,
                         env_pairs=env_pairs,
+                        socket_path=relaunch_socket,
+                        expected_server=relaunch_server,
+                        expected_session_id=relaunch_session_id,
+                        expected_window_id=(
+                            str(target)
+                            if isinstance(target, str) and target.startswith("@")
+                            else relaunch_window_id
+                        ),
                     )
                 except TmuxTeamError as exc:
                     adopted = _wait_for_relaunch_pane(
