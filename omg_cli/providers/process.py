@@ -159,9 +159,10 @@ def _drain_pipe(
                 overflow_flag[0] = True
                 break
             sink.extend(chunk)
-    except (ValueError, OSError):
-        # A failed read is not EOF. Preserve the partial output for diagnostics,
-        # but make the result unusable as probe evidence.
+    except BaseException:
+        # A reader failure is not EOF.  In particular, Thread.join() does not
+        # surface exceptions raised by this worker, so mark partial output
+        # unusable rather than letting version/help probes accept it as proof.
         read_error_flag[0] = True
         early_stop_flag[0] = True
     finally:
@@ -396,6 +397,21 @@ def run_probe_process(
                     _close_pipes(proc)
                 if cancel_event is not None and cancel_event.is_set():
                     cancelled = True
+                    _kill_tree(proc)
+                # The direct child may have exited before a reader publishes
+                # its terminal state.  Re-check after joining so an escaped
+                # descendant in the same group cannot outlive a late
+                # overflow, read error, or forced-reader-stop result.
+                reader_failure = (
+                    stdout_overflow[0]
+                    or stderr_overflow[0]
+                    or stdout_read_error[0]
+                    or stderr_read_error[0]
+                    or stdout_early_stop[0]
+                    or stderr_early_stop[0]
+                )
+                if reader_failure:
+                    overflow = overflow or stdout_overflow[0] or stderr_overflow[0]
                     _kill_tree(proc)
             except BaseException:
                 if cancel_event is not None and cancel_event.is_set():

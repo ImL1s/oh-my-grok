@@ -245,6 +245,27 @@ def _run_probe_argv(argv: list[str]):
 
     cancel = threading.Event()
     previous = None
+    result = None
+    result_tree_kill_attempted = False
+
+    def _kill_result_tree() -> None:
+        """Reap a returned probe's POSIX process group, if it has one."""
+        nonlocal result_tree_kill_attempted
+        pgid = int(getattr(result, "pid", 0) or 0)
+        if os.name == "posix" and pgid > 0 and not result_tree_kill_attempted:
+            result_tree_kill_attempted = True
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+
+    def _raise_if_cancelled() -> None:
+        if cancel.is_set():
+            # The direct child may already have exited, while descendants in
+            # its probe process group remain alive.
+            _kill_result_tree()
+            raise KeyboardInterrupt()
+
     if (
         os.name == "posix"
         and threading.current_thread() is threading.main_thread()
@@ -265,27 +286,32 @@ def _run_probe_argv(argv: list[str]):
             timeout_s=_PROBE_TIMEOUT_S,
             cancel_event=cancel,
         )
-        if cancel.is_set():
-            # Preserve Ctrl-C semantics after process-group cleanup. cancel_event
-            # may be set during wait/join even when the direct child already exited;
-            # killpg again before raising so descendants cannot outlive the interrupt.
-            pgid = int(getattr(result, "pid", 0) or 0)
-            if os.name == "posix" and pgid > 0:
-                try:
-                    os.killpg(pgid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
-            raise KeyboardInterrupt()
+        _raise_if_cancelled()
+        if previous is not None:
+            # Restore only after the event-only handler's final decision.  Any
+            # SIGINT after this point is a real KeyboardInterrupt, caught
+            # below before it can leave descendants behind.
+            signal.signal(signal.SIGINT, previous)
+            previous = None
+        _raise_if_cancelled()
         return result
+    except BaseException:
+        # This includes an interrupt while restoring the old handler or in the
+        # final return window.  A result may name a still-live process group
+        # even when its direct child has exited.
+        _kill_result_tree()
+        raise
     finally:
-        # Keep the event-only handler installed through the final cancel check
-        # and killpg decision. Restoring it sooner permits a SIGINT to raise
-        # before descendants can be reaped.
+        # A setup/probe exception can skip the normal restoration path.  Keep
+        # the event-only handler until restoration has completed, then make a
+        # final cancellation decision before allowing control to leave.
         if previous is not None:
             try:
                 signal.signal(signal.SIGINT, previous)
-            except (ValueError, OSError):
-                pass
+            except BaseException:
+                _kill_result_tree()
+                raise
+            _raise_if_cancelled()
 
 
 def probe_version(binary: str | None = None) -> VersionInfo:

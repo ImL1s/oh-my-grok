@@ -778,8 +778,11 @@ def test_drain_pipe_stop_before_eof_sets_truncation_flag() -> None:
     assert read_error[0] is False
 
 
-def test_drain_pipe_read_error_marks_partial_output_unusable() -> None:
-    """A read failure after partial output is neither EOF nor valid evidence."""
+@pytest.mark.parametrize("error_type", (OSError, MemoryError))
+def test_drain_pipe_read_error_marks_partial_output_unusable(
+    error_type: type[BaseException],
+) -> None:
+    """Any reader failure after partial output is neither EOF nor evidence."""
     from omg_cli.providers.process import _drain_pipe
 
     class ErrorPipe:
@@ -790,7 +793,7 @@ def test_drain_pipe_read_error_marks_partial_output_unusable() -> None:
             self.reads += 1
             if self.reads == 1:
                 return b"Usage of agy:\n"
-            raise OSError("simulated pipe failure")
+            raise error_type("simulated pipe failure")
 
         def close(self) -> None:
             return None
@@ -880,6 +883,69 @@ def test_overflow_stops_process_and_flags_result(tmp_path: Path) -> None:
     assert result.bytes_stdout <= 8_192
     assert result.stdout_truncated is True
     assert len(result.stdout.encode("utf-8", errors="replace")) <= 8_192
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group killpg is POSIX-only")
+@pytest.mark.parametrize("late_flag", ("overflow", "read_error"))
+def test_late_reader_failure_after_child_exit_kills_process_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, late_flag: str
+) -> None:
+    """A reader flag published after child exit must still kill descendants."""
+    from omg_cli.providers import process as process_mod
+
+    marker = tmp_path / "grandchild.alive"
+    script = tmp_path / "exit_leave_detached_stdio_gc.py"
+    script.write_text(
+        f"""\
+import subprocess, sys
+from pathlib import Path
+marker = Path({str(marker)!r})
+subprocess.Popen(
+    [sys.executable, "-c",
+     "import time; from pathlib import Path; m=Path({str(marker)!r});\\n"
+     "while True:\\n"
+     " m.write_text(str(time.time()), encoding='utf-8'); time.sleep(0.05)\\n"],
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+print("direct child exits before reader publishes")
+""",
+        encoding="utf-8",
+    )
+
+    real_drain = process_mod._drain_pipe
+
+    def delayed_failure(*args, **kwargs) -> None:
+        real_drain(*args, **kwargs)
+        # The direct child has exited and closed its pipes.  Publish the reader
+        # status only while cleanup is joining readers.
+        time.sleep(0.05)
+        if late_flag == "overflow":
+            kwargs["overflow_flag"][0] = True
+        else:
+            kwargs["read_error_flag"][0] = True
+            kwargs["early_stop_flag"][0] = True
+
+    monkeypatch.setattr(process_mod, "_drain_pipe", delayed_failure)
+    result = run_probe_process(
+        [sys.executable, str(script)],
+        env={"PATH": os.environ.get("PATH", "")},
+        timeout_s=5.0,
+    )
+    assert result.overflow is (late_flag == "overflow")
+    assert result.stdout_truncated is True
+    assert result.stdout_read_error is (late_flag == "read_error")
+
+    deadline = time.monotonic() + 2.0
+    last = marker.read_text(encoding="utf-8") if marker.exists() else ""
+    while time.monotonic() < deadline:
+        time.sleep(0.2)
+        now = marker.read_text(encoding="utf-8") if marker.exists() else ""
+        if now == last:
+            break
+        last = now
+    else:
+        pytest.fail(f"grandchild still alive after late {late_flag} killpg")
 
 
 def test_secret_parent_env_not_inherited_by_default() -> None:

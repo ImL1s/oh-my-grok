@@ -250,6 +250,56 @@ def test_help_identity_accepts_exact_first_nonempty_header() -> None:
     _verify_agy_help_identity("/tmp/agy", "\n\nUsage of agy:\t\n  --help  help\n")
 
 
+@pytest.mark.skipif(os.name != "posix", reason="SIGINT handler race is POSIX-only")
+def test_probe_cancel_during_handler_restore_kills_before_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A SIGINT delivered while restoring the old handler cannot return success."""
+    import signal
+
+    from omg_cli.providers import antigravity as agy_mod
+    from omg_cli.providers.process import ProbeProcessResult
+
+    killed: list[int] = []
+    installed_handler = None
+    previous_handler = signal.default_int_handler
+
+    def fake_getsignal(sig):  # noqa: ARG001
+        return previous_handler
+
+    def fake_signal(sig, handler):  # noqa: ARG001
+        nonlocal installed_handler
+        if handler is previous_handler:
+            assert installed_handler is not None
+            # Deliver Ctrl-C after the pre-restore cancel check, while the
+            # event-only handler remains responsible for recording it.
+            installed_handler(signal.SIGINT, None)
+        else:
+            installed_handler = handler
+        return previous_handler
+
+    def fake_run(argv, **kwargs):  # noqa: ARG001
+        return ProbeProcessResult(
+            argv=tuple(argv),
+            returncode=0,
+            stdout="1.1.10\n",
+            stderr="",
+            pid=424242,
+        )
+
+    def fake_killpg(pid, sig):  # noqa: ARG001
+        killed.append(pid)
+
+    monkeypatch.setattr(signal, "getsignal", fake_getsignal)
+    monkeypatch.setattr(signal, "signal", fake_signal)
+    monkeypatch.setattr(agy_mod, "run_probe_process", fake_run)
+    monkeypatch.setattr(agy_mod.os, "killpg", fake_killpg)
+
+    with pytest.raises(KeyboardInterrupt):
+        agy_mod._run_probe_argv(["/tmp/fake-agy", "--version"])
+    assert killed == [424242]
+
+
 def test_doctor_strict_rejects_partial_help_after_reader_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
