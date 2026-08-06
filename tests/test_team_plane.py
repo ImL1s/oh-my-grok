@@ -118,6 +118,8 @@ def _boom_subprocess(*_a: Any, **_k: Any) -> Any:
 def test_create_tmux_session_injects_task_scoped_worker_identity(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    import omg_cli.team.tmux as tmux_mod
+
     calls: list[list[str]] = []
 
     def fake_tmux_run(args: Any, **_kwargs: Any) -> MagicMock:
@@ -125,11 +127,20 @@ def test_create_tmux_session_injects_task_scoped_worker_identity(
         calls.append(command)
         result = MagicMock(returncode=0, stdout="", stderr="")
         if command[0] == "new-session":
-            result.stdout = "omg-workers\t$7\n"
+            result.stdout = (
+                f"omg-workers\t$7\t{FAKE_TMUX_SERVER['tmux_server_pid']}\t"
+                f"{FAKE_TMUX_SERVER['tmux_socket_path']}\n"
+            )
         return result
 
     monkeypatch.setattr(plane, "tmux_available", lambda: True)
     monkeypatch.setattr(plane, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(
+        tmux_mod,
+        "_probe_tmux_server_identity",
+        lambda *, socket_path=None: dict(FAKE_TMUX_SERVER),
+    )
+    monkeypatch.setattr(tmux_mod, "_process_start_identity", lambda _pid: None)
     common_identity = {
         plane.TEAM_RUN_ID_ENV: "run-1",
         plane.TEAM_ID_ENV: "team-1",
@@ -164,6 +175,9 @@ def test_create_tmux_session_injects_task_scoped_worker_identity(
     for key, value in common_identity.items():
         assert f"{key}={value}" in create
         assert f"{key}={value}" in later
+    assert tasks[0]["_tmux_launch"]["tmux_server_pid"] == FAKE_TMUX_SERVER[
+        "tmux_server_pid"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1009,6 +1023,8 @@ def test_live_start_transaction_cleans_exact_session_and_partial_state(
     tmp_path: Path,
     failure_point: str,
 ) -> None:
+    import omg_cli.team.tmux as tmux_mod
+
     _init_repo(tmp_path)
     _enable_team(monkeypatch)
     run = create_run(tmp_path, mode="ulw", goal=f"transaction {failure_point}")
@@ -1026,7 +1042,14 @@ def test_live_start_transaction_cleans_exact_session_and_partial_state(
         if command[0] == "new-session":
             alive = True
             session_name = command[command.index("-s") + 1]
-            result.stdout = f"{session_name}\t$3\n"
+            result.stdout = (
+                f"{session_name}\t$3\t{FAKE_TMUX_SERVER['tmux_server_pid']}\t"
+                f"{FAKE_TMUX_SERVER['tmux_socket_path']}\n"
+            )
+        elif command[0] == "if-shell" and "kill-session" in " ".join(command):
+            alive = False
+            # has-session half of the queue — session gone.
+            result.returncode = 1
         elif command[0] == "set-option" and command[-2:] == ["mouse", "on"]:
             if failure_point == "mouse":
                 result.returncode = 1
@@ -1051,6 +1074,13 @@ def test_live_start_transaction_cleans_exact_session_and_partial_state(
 
     monkeypatch.setattr(plane, "tmux_available", lambda: True)
     monkeypatch.setattr(plane, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(
+        tmux_mod,
+        "_probe_tmux_server_identity",
+        lambda *, socket_path=None: dict(FAKE_TMUX_SERVER),
+    )
+    monkeypatch.setattr(tmux_mod, "_process_start_identity", lambda _pid: None)
     monkeypatch.setattr(plane.os, "getpgid", lambda pid: pid + 1000)
 
     if failure_point == "receipt":
@@ -1088,8 +1118,13 @@ def test_live_start_transaction_cleans_exact_session_and_partial_state(
         )
 
     assert alive is False
-    assert ["kill-session", "-t", "$3"] in commands
-    assert ["has-session", "-t", "$3"] in commands
+    assert any(
+        c[0] == "if-shell" and "kill-session -t $3" in " ".join(c) for c in commands
+    ) or ["kill-session", "-t", "$3"] in commands
+    assert any(
+        c[0] == "has-session" or (c[0] == "if-shell" and "has-session" in " ".join(c))
+        for c in commands
+    )
     assert not plane.team_launch_receipt_path(tmp_path, run_id).exists()
     assert not team_meta_path(tmp_path, run_id).exists()
     assert status_path.read_bytes() == status_before

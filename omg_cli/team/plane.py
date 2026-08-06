@@ -913,14 +913,62 @@ def build_fixture_pane_command() -> str:
 
 
 def _tmux_run(
-    args: Sequence[str], *, check: bool = False
+    args: Sequence[str],
+    *,
+    check: bool = False,
+    socket_path: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    """Run a tmux client command, optionally pinned to ``-S socket_path``."""
+    argv: list[str] = ["tmux"]
+    if socket_path is not None:
+        if (
+            not isinstance(socket_path, str)
+            or not socket_path
+            or "\x00" in socket_path
+        ):
+            raise TeamError(
+                f"refused tmux -S with invalid socket_path {socket_path!r}"
+            )
+        argv.extend(["-S", socket_path])
+    argv.extend(args)
     return subprocess.run(
-        ["tmux", *args],
+        argv,
         check=check,
         capture_output=True,
         text=True,
     )
+
+
+def _tmux_scope_from_launch(
+    tmux_launch: Mapping[str, Any] | None,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Extract ``(socket_path, server)`` from ``_tmux_launch`` / team meta."""
+    if not isinstance(tmux_launch, Mapping):
+        return None, None
+    from omg_cli.team.tmux import _intent_tmux_server
+
+    server = _intent_tmux_server(tmux_launch)
+    if server is None:
+        return None, None
+    return str(server["tmux_socket_path"]), server
+
+
+def _require_plane_tmux_server(
+    expected: Mapping[str, Any] | None,
+    *,
+    socket_path: str | None = None,
+    action: str,
+) -> dict[str, Any]:
+    """Fail closed unless live tmux server matches WAL/launch identity."""
+    from omg_cli.team.tmux import _require_tmux_server
+
+    try:
+        return _require_tmux_server(
+            expected, socket_path=socket_path, action=action
+        )
+    except Exception as exc:
+        # TmuxTeamError → TeamError for plane callers.
+        raise TeamError(str(exc)) from exc
 
 
 def _create_tmux_session(
@@ -929,7 +977,11 @@ def _create_tmux_session(
     tasks: list[dict[str, Any]],
     env_pairs: list[tuple[str, str]],
 ) -> tuple[str, str]:
-    """Create one session and return its exact tmux name/ID handle."""
+    """Create one session and return its exact tmux name/ID handle.
+
+    Stamps ``tasks[0]["_tmux_launch"]`` with the creating server identity so
+    nonce bind / receipt / rollback cannot act on a restarted server's ``$N``.
+    """
     if not tmux_available():
         raise TeamError(
             "tmux is required for omg team start (non-dry-run).\n"
@@ -947,7 +999,7 @@ def _create_tmux_session(
             "-d",
             "-P",
             "-F",
-            "#{session_name}\t#{session_id}",
+            "#{session_name}\t#{session_id}\t#{pid}\t#{socket_path}",
             "-s",
             session,
             "-n",
@@ -965,9 +1017,11 @@ def _create_tmux_session(
         )
     parts = (create.stdout or "").strip().split("\t")
     if (
-        len(parts) != 2
+        len(parts) != 4
         or parts[0] != session
         or _TMUX_SESSION_ID.fullmatch(parts[1]) is None
+        or not parts[2].isdigit()
+        or not parts[3]
     ):
         # A successful non-attached ``new-session`` created the requested name.
         # A pre-existing name would have made ``new-session`` fail, so this
@@ -978,6 +1032,30 @@ def _create_tmux_session(
             message += f"; {cleanup_error}"
         raise TeamError(message)
     handle = (parts[0], parts[1])
+    from omg_cli.team.tmux import _server_identity_from_create
+
+    try:
+        server = _server_identity_from_create(
+            pid=int(parts[2]), socket_path=parts[3].strip()
+        )
+    except Exception as exc:
+        cleanup_error = _cleanup_created_tmux_session(handle)
+        message = f"tmux create refused: {exc}"
+        if cleanup_error:
+            message += f"; {cleanup_error}"
+        raise TeamError(message) from exc
+    sock = str(server["tmux_socket_path"])
+    tasks[0]["_tmux_launch"] = {
+        "attach_mode": "detached",
+        "session_owned": True,
+        "leader_pane_id": None,
+        "window_id": None,
+        "attach_hint": f"tmux attach -t {handle[0]}",
+        "session_id": handle[1],
+        "tmux_socket_path": server["tmux_socket_path"],
+        "tmux_server_pid": server["tmux_server_pid"],
+        "tmux_server_pid_start": server["tmux_server_pid_start"],
+    }
 
     try:
         for task in tasks[1:]:
@@ -993,7 +1071,8 @@ def _create_tmux_session(
                     str(task["worktree"]),
                     *task_env_args,
                     str(task["pane_command"]),
-                ]
+                ],
+                socket_path=sock,
             )
             if nw.returncode != 0:
                 err = (nw.stderr or nw.stdout or "").strip()
@@ -1001,23 +1080,47 @@ def _create_tmux_session(
                     f"failed to create window for task {task['task_id']!r}: {err}"
                 )
 
-        option = _tmux_run(["set-option", "-t", handle[1], "mouse", "on"])
+        option = _tmux_run(
+            ["set-option", "-t", handle[1], "mouse", "on"], socket_path=sock
+        )
         if option.returncode != 0:
             raise TeamError("failed to configure created tmux session")
+        _require_plane_tmux_server(
+            server, socket_path=sock, action="windows-topology create commit"
+        )
     except (TeamError, OSError) as exc:
-        cleanup_error = _cleanup_created_tmux_session(handle)
+        cleanup_error = _cleanup_created_tmux_session(
+            handle, socket_path=sock, expected_server=server
+        )
         if cleanup_error:
             raise TeamError(f"{exc}; {cleanup_error}") from exc
         raise
     return handle
 
 
-def _cleanup_created_tmux_session(handle: tuple[str, str]) -> str | None:
-    """Kill only the immutable ID returned by ``tmux new-session`` and verify."""
+def _cleanup_created_tmux_session(
+    handle: tuple[str, str],
+    *,
+    socket_path: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
+) -> str | None:
+    """Kill only the immutable ID returned by ``tmux new-session`` and verify.
+
+    When *expected_server* is set, refuse to kill a same-numbered ``$N`` on a
+    restarted/replaced tmux server (pid + start-id gated).
+    """
     _session_name, session_id = handle
+    if expected_server is not None:
+        from omg_cli.team.tmux import _cleanup_session
+
+        return _cleanup_session(
+            handle, socket_path=socket_path, expected_server=expected_server
+        )
     try:
-        _tmux_run(["kill-session", "-t", session_id])
-        probe = _tmux_run(["has-session", "-t", session_id])
+        _tmux_run(["kill-session", "-t", session_id], socket_path=socket_path)
+        probe = _tmux_run(
+            ["has-session", "-t", session_id], socket_path=socket_path
+        )
     except OSError as exc:
         return f"created tmux session cleanup failed: {exc}"
     if probe.returncode != 1:
@@ -1037,13 +1140,23 @@ def _snapshot_launch_pane_identities(
     expected_pane_ids: Sequence[str],
     expected_window_id: str | None = None,
     expected_launch_nonce: str | None = None,
+    socket_path: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """One ``list-panes`` snapshot for receipt commit (anti split-brain).
 
     Prefer ``list-panes -t <window_id>`` when the Team window is known (inside
     mode). Refuse commit when any expected pane left ``session_id`` /
     ``window_id``, or when a bound launch nonce is present but mismatched.
+    When *expected_server* is set, refuse unless the live server matches before
+    accepting pane PIDs into the immutable receipt.
     """
+    if expected_server is not None:
+        _require_plane_tmux_server(
+            expected_server,
+            socket_path=socket_path,
+            action="launch pane identity snapshot",
+        )
     if (
         not isinstance(expected_session_id, str)
         or _TMUX_SESSION_ID.fullmatch(expected_session_id) is None
@@ -1081,7 +1194,7 @@ def _snapshot_launch_pane_identities(
             _LAUNCH_PANE_SNAPSHOT_FMT,
         ]
     try:
-        listed = _tmux_run(argv)
+        listed = _tmux_run(argv, socket_path=socket_path)
     except OSError as exc:
         raise TeamError(f"tmux launch identity snapshot failed: {exc}") from exc
     if listed.returncode != 0:
@@ -1131,6 +1244,12 @@ def _snapshot_launch_pane_identities(
                 raise TeamError(
                     f"tmux launch nonce mismatch on pane {pane_id} before receipt"
                 )
+    if expected_server is not None:
+        _require_plane_tmux_server(
+            expected_server,
+            socket_path=socket_path,
+            action="launch pane identity snapshot commit",
+        )
     return {pane_id: by_pane[pane_id] for pane_id in expected}
 
 
@@ -1218,9 +1337,24 @@ def _list_pane_pids(session: str) -> dict[int, int]:
     }
 
 
-def _read_tmux_session_identity(session: str) -> tuple[str, str] | None:
+def _read_tmux_session_identity(
+    session: str,
+    *,
+    socket_path: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
+) -> tuple[str, str] | None:
+    if expected_server is not None:
+        try:
+            _require_plane_tmux_server(
+                expected_server,
+                socket_path=socket_path,
+                action="session identity readback",
+            )
+        except TeamError:
+            return None
     r = _tmux_run(
-        ["display-message", "-p", "-t", session, "#{session_name}\t#{session_id}"]
+        ["display-message", "-p", "-t", session, "#{session_name}\t#{session_id}"],
+        socket_path=socket_path,
     )
     if r.returncode != 0:
         return None
@@ -1328,13 +1462,25 @@ def _bind_tmux_launch_nonce(
     window_id: str | None,
     pane_ids: Sequence[str],
     session_owned: bool = True,
+    socket_path: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
 ) -> None:
     """Bind nonce so concurrent Teams in one session cannot overwrite each other.
 
     Pane/window options isolate workers. Session-scoped stamp is only for
     Team-owned detached sessions — inside mode must not clobber a shared
     ``@omg_launch_nonce`` on the leader session.
+
+    When *expected_server* is set, authorize against the WAL/create server
+    before and after stamping so a restart cannot receive the nonce on
+    reused ``%N``/``@N``/``$N`` identities.
     """
+    if expected_server is not None:
+        _require_plane_tmux_server(
+            expected_server,
+            socket_path=socket_path,
+            action="launch nonce bind",
+        )
     bound = False
     for pane_id in pane_ids:
         if not isinstance(pane_id, str) or _TMUX_PANE_ID.fullmatch(pane_id) is None:
@@ -1348,7 +1494,8 @@ def _bind_tmux_launch_nonce(
                     pane_id,
                     LAUNCH_NONCE_OPTION,
                     launch_nonce,
-                ]
+                ],
+                socket_path=socket_path,
             )
         except OSError as exc:
             raise TeamError(f"failed to bind tmux launch nonce on pane: {exc}") from exc
@@ -1365,7 +1512,8 @@ def _bind_tmux_launch_nonce(
                     window_id,
                     LAUNCH_NONCE_OPTION,
                     launch_nonce,
-                ]
+                ],
+                socket_path=socket_path,
             )
         except OSError as exc:
             raise TeamError(f"failed to bind tmux launch nonce on window: {exc}") from exc
@@ -1381,7 +1529,8 @@ def _bind_tmux_launch_nonce(
                     session_id,
                     LAUNCH_NONCE_OPTION,
                     launch_nonce,
-                ]
+                ],
+                socket_path=socket_path,
             )
         except OSError as exc:
             raise TeamError(
@@ -1392,6 +1541,12 @@ def _bind_tmux_launch_nonce(
         bound = True
     if not bound:
         raise TeamError("failed to bind tmux launch nonce")
+    if expected_server is not None:
+        _require_plane_tmux_server(
+            expected_server,
+            socket_path=socket_path,
+            action="launch nonce bind commit",
+        )
 
 def _persist_team_launch_receipt(
     root: Path,
@@ -2584,6 +2739,10 @@ def start_team(
                         tasks=task_records,
                         env_pairs=env_pairs,
                     )
+                    raw_launch = task_records[0].pop("_tmux_launch", None)
+                    if isinstance(raw_launch, Mapping):
+                        tmux_launch = {**tmux_launch, **dict(raw_launch)}
+                launch_sock, launch_server = _tmux_scope_from_launch(tmux_launch)
                 _bind_tmux_launch_nonce(
                     session_id=created_handle[1],
                     launch_nonce=launch_nonce,
@@ -2598,9 +2757,15 @@ def start_team(
                         if isinstance(rec.get("pane_id"), str)
                     ],
                     session_owned=bool(tmux_launch.get("session_owned", True)),
+                    socket_path=launch_sock,
+                    expected_server=launch_server,
                 )
 
-                session_identity = _read_tmux_session_identity(session)
+                session_identity = _read_tmux_session_identity(
+                    session,
+                    socket_path=launch_sock,
+                    expected_server=launch_server,
+                )
                 if session_identity != created_handle:
                     raise TeamError("tmux launch identity readback failed")
 
@@ -2624,6 +2789,8 @@ def start_team(
                         expected_pane_ids=[str(rec["pane_id"]) for rec in task_records],
                         expected_window_id=snap_window_id,
                         expected_launch_nonce=launch_nonce,
+                        socket_path=launch_sock,
+                        expected_server=launch_server,
                     )
                     for rec in task_records:
                         pane_id = str(rec["pane_id"])
@@ -2845,7 +3012,14 @@ def start_team(
                             ]
                             cleanup_error = _kill_panes(pane_ids)
                     else:
-                        cleanup_error = _cleanup_created_tmux_session(created_handle)
+                        cleanup_sock, cleanup_server = _tmux_scope_from_launch(
+                            tmux_launch
+                        )
+                        cleanup_error = _cleanup_created_tmux_session(
+                            created_handle,
+                            socket_path=cleanup_sock,
+                            expected_server=cleanup_server,
+                        )
                 if cleanup_error is not None:
                     # Unproven cleanup → keep receipt/team.json/WAL/team dir so
                     # stop/sweep retain identity authority. Do not rmtree.
@@ -4073,21 +4247,43 @@ def _stop_team_locked(
             session_id = str(receipt["session_id"])
             try:
                 if session_owned:
-                    r = _tmux_run(["kill-session", "-t", session_id])
-                    probe = _tmux_run(["has-session", "-t", session_id])
-                    if r.returncode == 0 and probe.returncode == 1:
-                        session_disappearance_verified = True
-                        actions.append(f"tmux kill-session -t {session_id}")
-                        actions.append(f"tmux disappearance verified {session_id}")
-                    elif r.returncode != 0:
-                        errors.append(
-                            f"tmux kill-session failed for {session_id}: exit {r.returncode}"
+                    stop_sock, stop_server = _tmux_scope_from_launch(meta)
+                    if stop_server is not None:
+                        from omg_cli.team.tmux import _cleanup_session
+
+                        kill_err = _cleanup_session(
+                            (session, session_id),
+                            socket_path=stop_sock,
+                            expected_server=stop_server,
                         )
+                        if kill_err is None:
+                            session_disappearance_verified = True
+                            actions.append(f"tmux kill-session -t {session_id}")
+                            actions.append(
+                                f"tmux disappearance verified {session_id}"
+                            )
+                        else:
+                            errors.append(kill_err)
                     else:
-                        errors.append(
-                            "tmux session disappearance unproved "
-                            f"for {session_id}: has-session exit {probe.returncode}"
-                        )
+                        r = _tmux_run(["kill-session", "-t", session_id])
+                        probe = _tmux_run(["has-session", "-t", session_id])
+                        if r.returncode == 0 and probe.returncode == 1:
+                            session_disappearance_verified = True
+                            actions.append(f"tmux kill-session -t {session_id}")
+                            actions.append(
+                                f"tmux disappearance verified {session_id}"
+                            )
+                        elif r.returncode != 0:
+                            errors.append(
+                                f"tmux kill-session failed for {session_id}: "
+                                f"exit {r.returncode}"
+                            )
+                        else:
+                            errors.append(
+                                "tmux session disappearance unproved "
+                                f"for {session_id}: has-session exit "
+                                f"{probe.returncode}"
+                            )
                 else:
                     # Shared session: remove only the team window (or panes).
                     from omg_cli.team.tmux import (

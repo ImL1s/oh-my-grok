@@ -248,6 +248,133 @@ def _tmux_server_matches(
     )
 
 
+def _sh_single_quote(value: str) -> str:
+    """POSIX single-quote *value* for embedding in an ``if-shell`` script."""
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _tmux_join_command(argv: Sequence[str]) -> str:
+    """Join *argv* into one tmux command string for ``if-shell`` success/fail."""
+    parts: list[str] = []
+    for arg in argv:
+        text = str(arg)
+        if text and not any(ch in text for ch in " \t\n'\"\\#{};"):
+            parts.append(text)
+        else:
+            parts.append(_sh_single_quote(text))
+    return " ".join(parts)
+
+
+def _tmux_identity_shell_predicate(
+    *,
+    expected_server: Mapping[str, Any],
+    window_id: str | None = None,
+    expected_session_id: str | None = None,
+) -> str:
+    """Build a shell predicate for ``if-shell`` (no ``-F``).
+
+    tmux expands ``#{…}`` before ``sh`` runs. Includes server **pid start-id**
+    so a same-PID replacement after the Python pre-probe cannot satisfy the
+    atomic kill/create gate.
+    """
+    pid = expected_server.get("tmux_server_pid")
+    start = expected_server.get("tmux_server_pid_start")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        raise TmuxTeamError("tmux identity predicate: invalid server pid")
+    if not isinstance(start, str) or not start:
+        raise TmuxTeamError("tmux identity predicate: invalid server pid_start")
+    checks: list[str] = []
+    if window_id is not None:
+        if _TMUX_WINDOW_ID.fullmatch(window_id) is None:
+            raise TmuxTeamError(
+                f"tmux identity predicate: invalid window id {window_id!r}"
+            )
+        checks.append(f'[ "#{{window_id}}" = {_sh_single_quote(window_id)} ]')
+    if expected_session_id is not None:
+        if _TMUX_SESSION_ID.fullmatch(expected_session_id) is None:
+            raise TmuxTeamError(
+                f"tmux identity predicate: invalid session {expected_session_id!r}"
+            )
+        checks.append(
+            f'[ "#{{session_id}}" = {_sh_single_quote(expected_session_id)} ]'
+        )
+    checks.append(f'[ "#{{pid}}" = {_sh_single_quote(str(pid))} ]')
+    if start.startswith("proc:") and start[5:].isdigit():
+        # Mirror _process_start_identity: field 20 after `pid (comm) `.
+        checks.append(
+            '[ "$(sed \'s/.*) //\' /proc/#{pid}/stat 2>/dev/null | '
+            f"awk '{{print $20}}')\" = {_sh_single_quote(start[5:])} ]"
+        )
+    elif start.startswith("ps:") and start[3:]:
+        checks.append(
+            '[ "$(ps -o lstart= -p #{pid} 2>/dev/null | '
+            "tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')\" = "
+            f"{_sh_single_quote(start[3:])} ]"
+        )
+    else:
+        # Unknown start form — never authorize mutation.
+        checks.append("[ 0 -eq 1 ]")
+    return " && ".join(checks)
+
+
+def _server_identity_from_create(
+    *,
+    pid: int,
+    socket_path: str,
+) -> dict[str, Any]:
+    """Build durable server identity from ``new-session``/``new-window`` fields.
+
+    Prefer OS start-id for the create-reported pid so a mocked ambient probe
+    cannot disagree with the server that actually performed the create (live
+    tests). Fall back to a matching probe only for hermetic fake PIDs that
+    have no ``/proc``/``ps`` start identity.
+    """
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        raise TmuxTeamError("create server identity refused: invalid pid")
+    if not isinstance(socket_path, str) or not socket_path or "\x00" in socket_path:
+        raise TmuxTeamError("create server identity refused: invalid socket_path")
+    start = _process_start_identity(pid)
+    if not start:
+        probed = _probe_tmux_server_identity(socket_path=socket_path)
+        if (
+            probed is not None
+            and probed.get("tmux_socket_path") == socket_path
+            and probed.get("tmux_server_pid") == pid
+            and isinstance(probed.get("tmux_server_pid_start"), str)
+            and probed["tmux_server_pid_start"]
+        ):
+            start = str(probed["tmux_server_pid_start"])
+        else:
+            raise TmuxTeamError(
+                "create server identity refused: pid_start unavailable"
+            )
+    return {
+        "tmux_socket_path": socket_path,
+        "tmux_server_pid": pid,
+        "tmux_server_pid_start": start,
+    }
+
+
+def _require_tmux_server(
+    expected: Mapping[str, Any] | None,
+    *,
+    socket_path: str | None = None,
+    action: str,
+) -> dict[str, Any]:
+    """Fail closed unless live server matches *expected* (socket+pid+start)."""
+    server = _intent_tmux_server(expected) if expected is not None else None
+    if server is None:
+        raise TmuxTeamError(f"{action} refused: tmux server identity required")
+    sock = socket_path or str(server["tmux_socket_path"])
+    live = _probe_tmux_server_identity(socket_path=sock)
+    if not _tmux_server_matches(server, live):
+        raise TmuxTeamError(
+            f"{action} refused: tmux server identity mismatch "
+            f"(wal_pid={server['tmux_server_pid']})"
+        )
+    return server
+
+
 def _intent_requires_durable_window_id(raw: Mapping[str, Any]) -> bool:
     """True when name-only absence must not authorize WAL clear.
 
@@ -748,17 +875,32 @@ def sweep_stale_team_launch_intents(
             socket_path=str(expected_server["tmux_socket_path"])
         )
         if not _tmux_server_matches(expected_server, live_server):
+            # Original server gone/replaced: never kill same-numbered @N on the
+            # live socket. Unbound (and bound-but-unreachable) WAL would
+            # permanently gate project launches if retained — abandon clear.
+            try:
+                clear_team_launch_intent(entry)
+            except TmuxTeamError as exc:
+                results.append(
+                    {
+                        "path": str(entry),
+                        "ok": False,
+                        "session_id": intent_session,
+                        "window_name": intent_name,
+                        "error": (
+                            "tmux server identity mismatch — abandon clear "
+                            f"failed: {exc}"
+                        ),
+                    }
+                )
+                continue
             results.append(
                 {
                     "path": str(entry),
-                    "ok": False,
+                    "ok": True,
+                    "abandoned_server": True,
                     "session_id": intent_session,
                     "window_name": intent_name,
-                    "error": (
-                        "tmux server identity mismatch for launch intent — "
-                        "refuse foreign @N kill/clear "
-                        f"(wal_pid={expected_server['tmux_server_pid']})"
-                    ),
                 }
             )
             continue
@@ -856,10 +998,66 @@ def _tmux_run(
     )
 
 
-def _cleanup_session(handle: tuple[str, str]) -> str | None:
+def _cleanup_session(
+    handle: tuple[str, str],
+    *,
+    socket_path: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
+) -> str | None:
+    """Kill a Team-owned detached session; refuse foreign/restarted servers."""
     name, session_id = handle
+    if expected_server is not None:
+        server = _intent_tmux_server(expected_server)
+        if server is None:
+            return (
+                f"refused kill-session for {session_id}: invalid expected server"
+            )
+        if socket_path is None:
+            socket_path = str(server["tmux_socket_path"])
+        live = _probe_tmux_server_identity(socket_path=socket_path)
+        if not _tmux_server_matches(server, live):
+            return (
+                f"kill-session {session_id}: tmux server identity mismatch — "
+                "refuse foreign/restarted $N"
+            )
+        if _TMUX_SESSION_ID.fullmatch(session_id) is None:
+            return f"refused kill-session for non-session id {session_id!r}"
+        try:
+            predicate = _tmux_identity_shell_predicate(
+                expected_server=server,
+                expected_session_id=session_id,
+            )
+        except TmuxTeamError as exc:
+            return f"kill-session {session_id}: {exc}"
+        try:
+            killed = _tmux_run(
+                [
+                    "if-shell",
+                    "-t",
+                    session_id,
+                    predicate,
+                    f"kill-session -t {session_id}",
+                    "",
+                    ";",
+                    "has-session",
+                    "-t",
+                    session_id,
+                ],
+                socket_path=socket_path,
+            )
+        except OSError as exc:
+            return f"kill-session {session_id}: OSError {exc}"
+        # has-session exit 1 → gone; 0 → still present (predicate refused or kill failed).
+        if killed.returncode == 1:
+            return None
+        return (
+            f"kill-session {session_id}: still present or identity refused "
+            f"(exit {killed.returncode})"
+        )
     for target in (session_id, name):
-        killed = _tmux_run(["kill-session", "-t", target])
+        killed = _tmux_run(
+            ["kill-session", "-t", target], socket_path=socket_path
+        )
         if killed.returncode == 0:
             return None
     return f"failed to cleanup tmux session {name!r}"
@@ -1067,29 +1265,50 @@ def _kill_window_atomic(
     expected_session_id: str | None,
     expected_server: Mapping[str, Any] | None,
 ) -> str | None:
-    """Server-side conditional kill + absence list in one tmux client queue."""
-    checks: list[str] = [f"#{{==:#{{window_id}},{window_id}}}"]
-    if expected_session_id is not None:
-        checks.append(f"#{{==:#{{session_id}},{expected_session_id}}}")
+    """Server-side conditional kill + absence list in one tmux client queue.
+
+    When *expected_server* is set, the predicate is a **shell** ``if-shell``
+    (no ``-F``) that checks ``#{pid}`` **and** the durable pid start-id, so a
+    same-PID OS reuse after the Python pre-probe cannot authorize kill.
+    """
     if expected_server is not None:
-        pid = expected_server.get("tmux_server_pid")
-        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
-            return f"kill-window {window_id}: invalid expected server pid"
-        checks.append(f"#{{==:#{{pid}},{pid}}}")
-        # Socket is pinned via ``-S``; embedding path in formats is unsafe
-        # (commas/braces). Pid match on the connected server closes restart
-        # TOCTOU for the common different-pid replacement case.
-    predicate = _and_tmux_formats(checks)
+        server = _intent_tmux_server(expected_server)
+        if server is None:
+            return f"kill-window {window_id}: invalid expected server identity"
+        try:
+            predicate = _tmux_identity_shell_predicate(
+                expected_server=server,
+                window_id=window_id,
+                expected_session_id=expected_session_id,
+            )
+        except TmuxTeamError as exc:
+            return f"kill-window {window_id}: {exc}"
+        if_shell_argv = [
+            "if-shell",
+            "-t",
+            window_id,
+            predicate,
+            f"kill-window -t {window_id}",
+            "",
+        ]
+    else:
+        checks: list[str] = [f"#{{==:#{{window_id}},{window_id}}}"]
+        if expected_session_id is not None:
+            checks.append(f"#{{==:#{{session_id}},{expected_session_id}}}")
+        predicate = _and_tmux_formats(checks)
+        if_shell_argv = [
+            "if-shell",
+            "-F",
+            "-t",
+            window_id,
+            predicate,
+            f"kill-window -t {window_id}",
+            "",
+        ]
     try:
         listed = _tmux_run(
             [
-                "if-shell",
-                "-F",
-                "-t",
-                window_id,
-                predicate,
-                f"kill-window -t {window_id}",
-                "",
+                *if_shell_argv,
                 ";",
                 "list-windows",
                 "-a",
@@ -1275,7 +1494,12 @@ _INVOCATION_FMT = (
 
 
 def snapshot_invoking_identity(pane_id: str) -> dict[str, str | int]:
-    """Capture immutable invocation coordinates for the leader pane."""
+    """Capture immutable invocation coordinates for the leader pane.
+
+    Also stamps the ambient tmux **server** identity (socket + pid start-id)
+    so WAL write and later ``new-window`` authorize against the same server
+    that owned the snapshotted leader — not a later socket replacement.
+    """
     if _TMUX_PANE_ID.fullmatch(pane_id) is None:
         raise TmuxTeamError(f"invalid pane id for identity snapshot {pane_id!r}")
     probe = _tmux_run(
@@ -1302,12 +1526,22 @@ def snapshot_invoking_identity(pane_id: str) -> dict[str, str | int]:
         raise TmuxTeamError(f"invalid pane pid in identity snapshot: {pid_s!r}") from exc
     if pane_pid <= 0:
         raise TmuxTeamError(f"non-positive pane pid in identity snapshot: {pane_pid}")
+    server = _probe_tmux_server_identity()
+    if server is None or _intent_tmux_server(server) is None:
+        raise TmuxTeamError(
+            "invoking pane identity snapshot refused: tmux server identity unavailable"
+        )
+    server = _intent_tmux_server(server)
+    assert server is not None
     return {
         "session_name": session_name,
         "session_id": session_id,
         "window_id": window_id,
         "pane_id": got_pane,
         "pane_pid": pane_pid,
+        "tmux_socket_path": server["tmux_socket_path"],
+        "tmux_server_pid": server["tmux_server_pid"],
+        "tmux_server_pid_start": server["tmux_server_pid_start"],
     }
 
 
@@ -1315,7 +1549,20 @@ def assert_invoking_identity(snapshot: Mapping[str, Any]) -> dict[str, str | int
     """Re-query the invoking pane and require an exact match to *snapshot*."""
     pane_id = str(snapshot.get("pane_id") or "")
     live = snapshot_invoking_identity(pane_id)
-    for key in ("session_name", "session_id", "window_id", "pane_id", "pane_pid"):
+    for key in (
+        "session_name",
+        "session_id",
+        "window_id",
+        "pane_id",
+        "pane_pid",
+        "tmux_socket_path",
+        "tmux_server_pid",
+        "tmux_server_pid_start",
+    ):
+        if key not in snapshot:
+            # Legacy snapshots without server fields: still require pane coords.
+            if key.startswith("tmux_"):
+                continue
         if live.get(key) != snapshot.get(key):
             raise TmuxTeamError(
                 f"invoking pane identity drifted before worker create "
@@ -1377,7 +1624,8 @@ def _launch_first_detached(
     session: str,
     task: dict[str, Any],
     env_pairs: list[tuple[str, str]],
-) -> tuple[tuple[str, str], str]:
+) -> tuple[tuple[str, str], str, dict[str, Any]]:
+    """Create detached session; return handle, first pane, and server identity."""
     first_env = tmux_env_args(list(task.get("_env_pairs") or env_pairs))
     create = _tmux_run(
         [
@@ -1385,7 +1633,7 @@ def _launch_first_detached(
             "-d",
             "-P",
             "-F",
-            "#{session_name}\t#{session_id}\t#{pane_id}",
+            "#{session_name}\t#{session_id}\t#{pane_id}\t#{pid}\t#{socket_path}",
             "-s",
             session,
             "-n",
@@ -1404,17 +1652,29 @@ def _launch_first_detached(
         )
     parts = (create.stdout or "").strip().split("\t")
     if (
-        len(parts) != 3
+        len(parts) != 5
         or parts[0] != session
         or _TMUX_SESSION_ID.fullmatch(parts[1]) is None
         or _TMUX_PANE_ID.fullmatch(parts[2]) is None
+        or not parts[3].isdigit()
+        or not parts[4]
     ):
         cleanup = _cleanup_session((session, session))
-        message = "tmux create did not return an exact session/pane handle"
+        message = "tmux create did not return an exact session/pane/server handle"
         if cleanup:
             message += f"; {cleanup}"
         raise TmuxTeamError(message)
-    return (parts[0], parts[1]), parts[2]
+    try:
+        server = _server_identity_from_create(
+            pid=int(parts[3]), socket_path=parts[4].strip()
+        )
+    except TmuxTeamError as exc:
+        cleanup = _cleanup_session((parts[0], parts[1]))
+        message = str(exc)
+        if cleanup:
+            message += f"; {cleanup}"
+        raise TmuxTeamError(message) from exc
+    return (parts[0], parts[1]), parts[2], server
 
 
 def _discover_inside_windows_by_name(
@@ -1581,15 +1841,52 @@ def _kill_inside_windows_by_name(
             else:
                 killed_ids.append(wid)
     # Always also target session:name so a discovery-unknown path still
-    # attempts kill-window against the unique launch name we stamped.
+    # attempts kill against the unique launch name we stamped. When a WAL
+    # server identity is present, use the same shell if-shell+start-id gate
+    # as @N kills — never a bare kill-window that could hit a replacement.
     name_target = f"{session_id}:{window_name}"
-    try:
-        by_name = _tmux_run(
-            ["kill-window", "-t", name_target], socket_path=socket_path
-        )
-    except OSError as exc:
-        errors.append(f"kill-window -t {name_target!r} OSError: {exc}")
-        by_name = None
+    if expected_server is not None:
+        server = _intent_tmux_server(expected_server)
+        if server is None:
+            errors.append(
+                f"kill-window -t {name_target!r}: invalid expected server"
+            )
+            by_name = None
+        else:
+            try:
+                predicate = _tmux_identity_shell_predicate(
+                    expected_server=server,
+                    expected_session_id=session_id,
+                )
+            except TmuxTeamError as exc:
+                errors.append(f"kill-window -t {name_target!r}: {exc}")
+                by_name = None
+            else:
+                try:
+                    by_name = _tmux_run(
+                        [
+                            "if-shell",
+                            "-t",
+                            name_target,
+                            predicate,
+                            f"kill-window -t {name_target}",
+                            "",
+                        ],
+                        socket_path=socket_path,
+                    )
+                except OSError as exc:
+                    errors.append(
+                        f"kill-window -t {name_target!r} OSError: {exc}"
+                    )
+                    by_name = None
+    else:
+        try:
+            by_name = _tmux_run(
+                ["kill-window", "-t", name_target], socket_path=socket_path
+            )
+        except OSError as exc:
+            errors.append(f"kill-window -t {name_target!r} OSError: {exc}")
+            by_name = None
     if by_name is not None and by_name.returncode not in (0, 1):
         err = (by_name.stderr or by_name.stdout or "").strip()
         errors.append(
@@ -1674,6 +1971,8 @@ def _launch_first_inside(
 
     *socket_path* / *expected_server* pin create + orphan cleanup to the WAL
     tmux server so a restarted ambient server cannot receive the side effect.
+    Create is authorized against the full WAL identity (pid **and** start-id)
+    before mutation; successful handles must re-verify that identity before bind.
     """
     if _TMUX_WINDOW_ID.fullmatch(target_window) is None:
         raise TmuxTeamError(
@@ -1683,27 +1982,59 @@ def _launch_first_inside(
         raise TmuxTeamError(
             f"new-window requires expected session id, got {expected_session_id!r}"
         )
-    first_env = tmux_env_args(list(task.get("_env_pairs") or env_pairs))
-    try:
-        create = _tmux_run(
-            [
-                "new-window",
-                "-d",
-                "-P",
-                "-F",
-                "#{window_id}\t#{pane_id}",
-                "-a",
-                "-t",
-                target_window,
-                "-n",
-                window_name,
-                "-c",
-                str(task["worktree"]),
-                *first_env,
-                str(task["pane_command"]),
-            ],
+    server: dict[str, Any] | None = None
+    if expected_server is not None:
+        server = _require_tmux_server(
+            expected_server,
             socket_path=socket_path,
+            action="new-window",
         )
+        if socket_path is None:
+            socket_path = str(server["tmux_socket_path"])
+    first_env = tmux_env_args(list(task.get("_env_pairs") or env_pairs))
+    # Mark immediately before the client mutation so a pre-call crash cannot
+    # leave side_effect_started without attempting create. Synchronous rc!=0
+    # with name absence unmarks (see below).
+    if intent_path is not None:
+        mark_team_launch_intent_side_effect(intent_path)
+    nw_argv = [
+        "new-window",
+        "-d",
+        "-P",
+        "-F",
+        "#{window_id}\t#{pane_id}\t#{session_id}\t#{pid}",
+        "-a",
+        "-t",
+        target_window,
+        "-n",
+        window_name,
+        "-c",
+        str(task["worktree"]),
+        *first_env,
+        str(task["pane_command"]),
+    ]
+    try:
+        if server is not None:
+            # Atomic server-side gate: new-window only runs when the leader
+            # window still belongs to the WAL server (pid + start-id).
+            predicate = _tmux_identity_shell_predicate(
+                expected_server=server,
+                window_id=target_window,
+                expected_session_id=expected_session_id,
+            )
+            create = _tmux_run(
+                [
+                    "if-shell",
+                    "-t",
+                    target_window,
+                    predicate,
+                    _tmux_join_command(nw_argv),
+                    "",
+                ],
+                socket_path=socket_path,
+            )
+        else:
+            create = _tmux_run(nw_argv, socket_path=socket_path)
     except OSError as exc:
         # Creation itself failed — still name cleanup in case the window was
         # created before the client lost the reply channel. Prefer discover →
@@ -1747,10 +2078,42 @@ def _launch_first_inside(
         )
     parts = (create.stdout or "").strip().split("\t")
     if (
-        len(parts) == 2
+        len(parts) == 4
         and _TMUX_WINDOW_ID.fullmatch(parts[0]) is not None
         and _TMUX_PANE_ID.fullmatch(parts[1]) is not None
+        and parts[2] == expected_session_id
+        and parts[3].isdigit()
     ):
+        if server is not None:
+            if int(parts[3]) != server["tmux_server_pid"]:
+                cleanup = _cleanup_unreplied_inside_window(
+                    session_id=expected_session_id,
+                    window_name=window_name,
+                    intent_path=intent_path,
+                )
+                message = (
+                    "new-window returned foreign/restarted server pid — refuse bind"
+                )
+                if cleanup:
+                    message = f"{message}; orphan cleanup: {cleanup}"
+                raise TmuxTeamError(message)
+            # Full identity recheck (pid start-id) before accepting the handle.
+            try:
+                _require_tmux_server(
+                    server,
+                    socket_path=socket_path,
+                    action="new-window readback",
+                )
+            except TmuxTeamError as exc:
+                cleanup = _cleanup_unreplied_inside_window(
+                    session_id=expected_session_id,
+                    window_name=window_name,
+                    intent_path=intent_path,
+                )
+                message = str(exc)
+                if cleanup:
+                    message = f"{message}; orphan cleanup: {cleanup}"
+                raise TmuxTeamError(message) from exc
         # Publish handles to the caller *before* WAL bind so a bind raise
         # cannot lose the exact @N for exception cleanup.
         if publish_created is not None:
@@ -1763,6 +2126,7 @@ def _launch_first_inside(
         return parts[0], parts[1]
 
     # Side effect succeeded; result publication failed — discover/bind/kill.
+    # Also covers if-shell predicate-false (empty stdout, rc 0).
     cleanup = _cleanup_unreplied_inside_window(
         session_id=expected_session_id,
         window_name=window_name,
@@ -1988,22 +2352,37 @@ def _create_detached(
     tasks: list[dict[str, Any]],
     env_pairs: list[tuple[str, str]],
 ) -> tuple[str, str]:
-    handle, first_pane = _launch_first_detached(
+    handle, first_pane, server = _launch_first_detached(
         session=session, task=tasks[0], env_pairs=env_pairs
     )
+    sock = str(server["tmux_socket_path"])
     created_panes = [first_pane]
     try:
         created_panes.extend(
-            _split_remaining(target=handle[1], tasks=tasks[1:], env_pairs=env_pairs)
+            _split_remaining(
+                target=handle[1],
+                tasks=tasks[1:],
+                env_pairs=env_pairs,
+                socket_path=sock,
+            )
         )
         if len(created_panes) != len(tasks):
             raise TmuxTeamError("pane count mismatch after detached split")
+        # Re-authorize before commit so a mid-create server restart cannot be
+        # receipted under the original identity.
+        _require_tmux_server(
+            server, socket_path=sock, action="detached create commit"
+        )
         for task, pane_id in zip(tasks, created_panes, strict=True):
             task["pane_id"] = pane_id
-        layout = _tmux_run(["select-layout", "-t", handle[1], "tiled"])
+        layout = _tmux_run(
+            ["select-layout", "-t", handle[1], "tiled"], socket_path=sock
+        )
         if layout.returncode != 0:
             raise TmuxTeamError("failed to apply tiled layout")
-        option = _tmux_run(["set-option", "-t", handle[1], "mouse", "on"])
+        option = _tmux_run(
+            ["set-option", "-t", handle[1], "mouse", "on"], socket_path=sock
+        )
         if option.returncode != 0:
             raise TmuxTeamError("failed to configure created tmux session")
         _stamp_launch_meta(
@@ -2014,9 +2393,12 @@ def _create_detached(
             window_id=None,
             attach_hint=f"tmux attach -t {handle[0]}",
             session_id=handle[1],
+            tmux_server=server,
         )
     except (TmuxTeamError, OSError) as exc:
-        cleanup = _cleanup_session(handle)
+        cleanup = _cleanup_session(
+            handle, socket_path=sock, expected_server=server
+        )
         if cleanup:
             raise TmuxTeamError(f"{exc}; {cleanup}") from exc
         raise
@@ -2050,32 +2432,33 @@ def _create_inside(
     window_id: str | None = None
     created_panes: list[str] = []
     intent_path: Path | None = None
-    intent_server: dict[str, Any] | None = None
-    sock: str | None = None
+    intent_server = _intent_tmux_server(snap)
+    sock = (
+        str(intent_server["tmux_socket_path"]) if intent_server is not None else None
+    )
     try:
         # Re-validate immediately before the first mutation so a mid-launch
         # client move cannot bind workers to a different session (#97 Pro P1).
         assert_invoking_identity(snap)
         leader_window = str(snap["window_id"])
         if root is not None and run_id is not None:
+            if intent_server is None:
+                raise TmuxTeamError(
+                    "inside launch refused: invoking server identity unavailable"
+                )
+            # Stamp WAL with the *snapshotted* server — not a later ambient probe
+            # that could belong to a socket replacement after the pane snapshot.
             intent_path = write_team_launch_intent(
                 root,
                 run_id=str(run_id),
                 session_id=live_id,
                 window_name=window_name,
                 nonce=window_nonce,
+                tmux_server=intent_server,
             )
-            try:
-                raw_intent = json.loads(intent_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-                raw_intent = None
-            if isinstance(raw_intent, dict):
-                intent_server = _intent_tmux_server(raw_intent)
-                if intent_server is not None:
-                    sock = str(intent_server["tmux_socket_path"])
-            # Mark before new-window so a post-side-effect crash cannot clear
-            # on name-only absence while the worker is still live/renamed.
-            mark_team_launch_intent_side_effect(intent_path)
+            # side_effect_started is marked inside _launch_first_inside
+            # immediately before new-window (not here) so mark-then-crash
+            # before the client call cannot permanently wedge launches.
 
         def _publish_created(wid: str, pane: str) -> None:
             nonlocal window_id
@@ -2093,23 +2476,36 @@ def _create_inside(
             socket_path=sock,
             expected_server=intent_server,
         )
-        # Prove the new window belongs to the snapshotted session.
+        # Prove the new window belongs to the snapshotted session + server.
+        if intent_server is not None:
+            _require_tmux_server(
+                intent_server,
+                socket_path=sock,
+                action="inside window readback",
+            )
         win_probe = _tmux_run(
             [
                 "display-message",
                 "-p",
                 "-t",
                 window_id,
-                "#{session_id}\t#{window_id}",
+                "#{session_id}\t#{window_id}\t#{pid}",
             ],
             socket_path=sock,
         )
         win_parts = (win_probe.stdout or "").strip().split("\t")
         if (
             win_probe.returncode != 0
-            or len(win_parts) != 2
+            or len(win_parts) != 3
             or win_parts[0] != live_id
             or win_parts[1] != window_id
+            or (
+                intent_server is not None
+                and (
+                    not win_parts[2].isdigit()
+                    or int(win_parts[2]) != intent_server["tmux_server_pid"]
+                )
+            )
         ):
             raise TmuxTeamError(
                 "created team window is not in the invoking session "
@@ -2139,39 +2535,59 @@ def _create_inside(
                     "-p",
                     "-t",
                     pane_id,
-                    "#{pane_id}\t#{session_id}\t#{window_id}",
+                    "#{pane_id}\t#{session_id}\t#{window_id}\t#{pid}",
                 ],
                 socket_path=sock,
             )
             pane_parts = (pane_probe.stdout or "").strip().split("\t")
             if (
                 pane_probe.returncode != 0
-                or len(pane_parts) != 3
+                or len(pane_parts) != 4
                 or pane_parts[0] != pane_id
                 or pane_parts[1] != live_id
                 or pane_parts[2] != window_id
+                or (
+                    intent_server is not None
+                    and (
+                        not pane_parts[3].isdigit()
+                        or int(pane_parts[3]) != intent_server["tmux_server_pid"]
+                    )
+                )
             ):
                 raise TmuxTeamError(
                     "worker pane left the invoking session/window before commit "
                     f"(pane={pane_id!r}, expected session_id={live_id!r} "
                     f"window_id={window_id!r})"
                 )
+        if intent_server is not None:
+            _require_tmux_server(
+                intent_server,
+                socket_path=sock,
+                action="inside create commit",
+            )
         win_recheck = _tmux_run(
             [
                 "display-message",
                 "-p",
                 "-t",
                 window_id,
-                "#{session_id}\t#{window_id}",
+                "#{session_id}\t#{window_id}\t#{pid}",
             ],
             socket_path=sock,
         )
         win_recheck_parts = (win_recheck.stdout or "").strip().split("\t")
         if (
             win_recheck.returncode != 0
-            or len(win_recheck_parts) != 2
+            or len(win_recheck_parts) != 3
             or win_recheck_parts[0] != live_id
             or win_recheck_parts[1] != window_id
+            or (
+                intent_server is not None
+                and (
+                    not win_recheck_parts[2].isdigit()
+                    or int(win_recheck_parts[2]) != intent_server["tmux_server_pid"]
+                )
+            )
         ):
             raise TmuxTeamError(
                 "team window left the invoking session before commit "
