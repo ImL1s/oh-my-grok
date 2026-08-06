@@ -210,3 +210,46 @@ def test_redact_text_authorization_redacts_full_header_line() -> None:
     assert "AKIAEXAMPLE" not in out_aws and "super-secret" not in out_aws
     assert out_aws == "Authorization: [REDACTED]"
 
+
+def test_redact_text_closes_pr94n_residual_p2_classes() -> None:
+    quoted_comma = 'prompt="hello, super-secret"'
+    out = redact_text(quoted_comma)
+    assert "super-secret" not in out
+    assert out == f"prompt={REDACTED}"
+
+    quoted_semi = 'prompt="hello; super-secret"'
+    assert "super-secret" not in redact_text(quoted_semi)
+
+    for source in (
+        "api/key=secret",
+        'headers[ "api_key" ]=secret',
+        r'headers[\"api_key\"]=secret',
+    ):
+        out = redact_text(source)
+        assert "secret" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    env_auth = (
+        'HTTP_AUTHORIZATION=Digest username="u", response="deadbeef"'
+    )
+    out_env = redact_text(env_auth)
+    assert "deadbeef" not in out_env and "username" not in out_env
+    assert out_env == f"HTTP_AUTHORIZATION={REDACTED}"
+
+    bracket_auth = (
+        'headers["Authorization"]=AWS4-HMAC-SHA256 Credential=AKIA/x, '
+        "Signature=abcdef"
+    )
+    out_b = redact_text(bracket_auth)
+    assert "AKIA" not in out_b and "abcdef" not in out_b
+    assert REDACTED in out_b
+
+    for source, leaked in (
+        ("password=;hunter2", "hunter2"),
+        ("token=,secret", "secret"),
+        ("command=;rm -rf /", "rm -rf"),
+    ):
+        out = redact_text(source)
+        assert leaked not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
