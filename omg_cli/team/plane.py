@@ -37,7 +37,7 @@ import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Collection, Mapping, Sequence
+from typing import Any, Collection, Literal, Mapping, Sequence
 
 from omg_cli.evidence import CLI_WRITER, safe_supervised_child_env
 from omg_cli.fanout import max_workers_cap
@@ -114,7 +114,12 @@ SPAWN_DENY_API_MARKERS: tuple[str, ...] = (
 )
 WORKSPACE_MODE = "worktree"
 SCHEMA_VERSION = 1
-LAUNCH_RECEIPT_SCHEMA_VERSION = 1
+LAUNCH_RECEIPT_SCHEMA_VERSION = 2
+# #106-era immutable launch receipts (no intent_nonce / window_name).
+# Readable only for existing-Team identity-chain ops (stop/scale/relaunch).
+LEGACY_LAUNCH_RECEIPT_SCHEMA_VERSION = 1
+# Legacy identity receipts reused schema_version=1 before scale_intent fields.
+LEGACY_IDENTITY_RECEIPT_SCHEMA_VERSION = 1
 IDENTITY_RECEIPT_SCHEMA_VERSION = 2
 LAUNCH_NONCE_OPTION = "@omg_launch_nonce"
 _TMUX_SESSION_ID = re.compile(r"^\$[0-9]{1,16}$")
@@ -908,14 +913,62 @@ def build_fixture_pane_command() -> str:
 
 
 def _tmux_run(
-    args: Sequence[str], *, check: bool = False
+    args: Sequence[str],
+    *,
+    check: bool = False,
+    socket_path: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    """Run a tmux client command, optionally pinned to ``-S socket_path``."""
+    argv: list[str] = ["tmux"]
+    if socket_path is not None:
+        if (
+            not isinstance(socket_path, str)
+            or not socket_path
+            or "\x00" in socket_path
+        ):
+            raise TeamError(
+                f"refused tmux -S with invalid socket_path {socket_path!r}"
+            )
+        argv.extend(["-S", socket_path])
+    argv.extend(args)
     return subprocess.run(
-        ["tmux", *args],
+        argv,
         check=check,
         capture_output=True,
         text=True,
     )
+
+
+def _tmux_scope_from_launch(
+    tmux_launch: Mapping[str, Any] | None,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Extract ``(socket_path, server)`` from ``_tmux_launch`` / team meta."""
+    if not isinstance(tmux_launch, Mapping):
+        return None, None
+    from omg_cli.team.tmux import _intent_tmux_server
+
+    server = _intent_tmux_server(tmux_launch)
+    if server is None:
+        return None, None
+    return str(server["tmux_socket_path"]), server
+
+
+def _require_plane_tmux_server(
+    expected: Mapping[str, Any] | None,
+    *,
+    socket_path: str | None = None,
+    action: str,
+) -> dict[str, Any]:
+    """Fail closed unless live tmux server matches WAL/launch identity."""
+    from omg_cli.team.tmux import _require_tmux_server
+
+    try:
+        return _require_tmux_server(
+            expected, socket_path=socket_path, action=action
+        )
+    except Exception as exc:
+        # TmuxTeamError → TeamError for plane callers.
+        raise TeamError(str(exc)) from exc
 
 
 def _create_tmux_session(
@@ -924,7 +977,11 @@ def _create_tmux_session(
     tasks: list[dict[str, Any]],
     env_pairs: list[tuple[str, str]],
 ) -> tuple[str, str]:
-    """Create one session and return its exact tmux name/ID handle."""
+    """Create one session and return its exact tmux name/ID handle.
+
+    Stamps ``tasks[0]["_tmux_launch"]`` with the creating server identity so
+    nonce bind / receipt / rollback cannot act on a restarted server's ``$N``.
+    """
     if not tmux_available():
         raise TeamError(
             "tmux is required for omg team start (non-dry-run).\n"
@@ -942,7 +999,7 @@ def _create_tmux_session(
             "-d",
             "-P",
             "-F",
-            "#{session_name}\t#{session_id}",
+            "#{session_name}\t#{session_id}\t#{pid}\t#{socket_path}",
             "-s",
             session,
             "-n",
@@ -960,9 +1017,11 @@ def _create_tmux_session(
         )
     parts = (create.stdout or "").strip().split("\t")
     if (
-        len(parts) != 2
+        len(parts) != 4
         or parts[0] != session
         or _TMUX_SESSION_ID.fullmatch(parts[1]) is None
+        or not parts[2].isdigit()
+        or not parts[3]
     ):
         # A successful non-attached ``new-session`` created the requested name.
         # A pre-existing name would have made ``new-session`` fail, so this
@@ -973,22 +1032,55 @@ def _create_tmux_session(
             message += f"; {cleanup_error}"
         raise TeamError(message)
     handle = (parts[0], parts[1])
+    from omg_cli.team.tmux import _server_identity_from_create
 
     try:
+        server = _server_identity_from_create(
+            pid=int(parts[2]), socket_path=parts[3].strip()
+        )
+    except Exception as exc:
+        cleanup_error = _cleanup_created_tmux_session(handle)
+        message = f"tmux create refused: {exc}"
+        if cleanup_error:
+            message += f"; {cleanup_error}"
+        raise TeamError(message) from exc
+    sock = str(server["tmux_socket_path"])
+    tasks[0]["_tmux_launch"] = {
+        "attach_mode": "detached",
+        "session_owned": True,
+        "leader_pane_id": None,
+        "window_id": None,
+        "attach_hint": f"tmux attach -t {handle[0]}",
+        "session_id": handle[1],
+        "tmux_socket_path": server["tmux_socket_path"],
+        "tmux_server_pid": server["tmux_server_pid"],
+        "tmux_server_pid_start": server["tmux_server_pid_start"],
+    }
+
+    try:
+        from omg_cli.team.tmux import _tmux_run_if_identity
+
         for task in tasks[1:]:
             task_env_args = tmux_env_args(list(task.get("_env_pairs") or env_pairs))
-            nw = _tmux_run(
-                [
-                    "new-window",
-                    "-t",
-                    handle[1],
-                    "-n",
-                    str(task["task_id"]),
-                    "-c",
-                    str(task["worktree"]),
-                    *task_env_args,
-                    str(task["pane_command"]),
-                ]
+            nw_argv = [
+                "new-window",
+                "-t",
+                handle[1],
+                "-n",
+                str(task["task_id"]),
+                "-c",
+                str(task["worktree"]),
+                *task_env_args,
+                str(task["pane_command"]),
+            ]
+            # PID+start if-shell so a replacement server on the same socket
+            # cannot receive subsequent worker windows before postcheck.
+            nw = _tmux_run_if_identity(
+                nw_argv,
+                target=handle[1],
+                expected_server=server,
+                socket_path=sock,
+                expected_session_id=handle[1],
             )
             if nw.returncode != 0:
                 err = (nw.stderr or nw.stdout or "").strip()
@@ -996,23 +1088,47 @@ def _create_tmux_session(
                     f"failed to create window for task {task['task_id']!r}: {err}"
                 )
 
-        option = _tmux_run(["set-option", "-t", handle[1], "mouse", "on"])
+        option = _tmux_run(
+            ["set-option", "-t", handle[1], "mouse", "on"], socket_path=sock
+        )
         if option.returncode != 0:
             raise TeamError("failed to configure created tmux session")
+        _require_plane_tmux_server(
+            server, socket_path=sock, action="windows-topology create commit"
+        )
     except (TeamError, OSError) as exc:
-        cleanup_error = _cleanup_created_tmux_session(handle)
+        cleanup_error = _cleanup_created_tmux_session(
+            handle, socket_path=sock, expected_server=server
+        )
         if cleanup_error:
             raise TeamError(f"{exc}; {cleanup_error}") from exc
         raise
     return handle
 
 
-def _cleanup_created_tmux_session(handle: tuple[str, str]) -> str | None:
-    """Kill only the immutable ID returned by ``tmux new-session`` and verify."""
+def _cleanup_created_tmux_session(
+    handle: tuple[str, str],
+    *,
+    socket_path: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
+) -> str | None:
+    """Kill only the immutable ID returned by ``tmux new-session`` and verify.
+
+    When *expected_server* is set, refuse to kill a same-numbered ``$N`` on a
+    restarted/replaced tmux server (pid + start-id gated).
+    """
     _session_name, session_id = handle
+    if expected_server is not None:
+        from omg_cli.team.tmux import _cleanup_session
+
+        return _cleanup_session(
+            handle, socket_path=socket_path, expected_server=expected_server
+        )
     try:
-        _tmux_run(["kill-session", "-t", session_id])
-        probe = _tmux_run(["has-session", "-t", session_id])
+        _tmux_run(["kill-session", "-t", session_id], socket_path=socket_path)
+        probe = _tmux_run(
+            ["has-session", "-t", session_id], socket_path=socket_path
+        )
     except OSError as exc:
         return f"created tmux session cleanup failed: {exc}"
     if probe.returncode != 1:
@@ -1032,13 +1148,23 @@ def _snapshot_launch_pane_identities(
     expected_pane_ids: Sequence[str],
     expected_window_id: str | None = None,
     expected_launch_nonce: str | None = None,
+    socket_path: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """One ``list-panes`` snapshot for receipt commit (anti split-brain).
 
     Prefer ``list-panes -t <window_id>`` when the Team window is known (inside
     mode). Refuse commit when any expected pane left ``session_id`` /
     ``window_id``, or when a bound launch nonce is present but mismatched.
+    When *expected_server* is set, refuse unless the live server matches before
+    accepting pane PIDs into the immutable receipt.
     """
+    if expected_server is not None:
+        _require_plane_tmux_server(
+            expected_server,
+            socket_path=socket_path,
+            action="launch pane identity snapshot",
+        )
     if (
         not isinstance(expected_session_id, str)
         or _TMUX_SESSION_ID.fullmatch(expected_session_id) is None
@@ -1076,7 +1202,7 @@ def _snapshot_launch_pane_identities(
             _LAUNCH_PANE_SNAPSHOT_FMT,
         ]
     try:
-        listed = _tmux_run(argv)
+        listed = _tmux_run(argv, socket_path=socket_path)
     except OSError as exc:
         raise TeamError(f"tmux launch identity snapshot failed: {exc}") from exc
     if listed.returncode != 0:
@@ -1126,10 +1252,21 @@ def _snapshot_launch_pane_identities(
                 raise TeamError(
                     f"tmux launch nonce mismatch on pane {pane_id} before receipt"
                 )
+    if expected_server is not None:
+        _require_plane_tmux_server(
+            expected_server,
+            socket_path=socket_path,
+            action="launch pane identity snapshot commit",
+        )
     return {pane_id: by_pane[pane_id] for pane_id in expected}
 
 
-def _list_pane_identities(session: str) -> dict[int, tuple[str, int]]:
+def _list_pane_identities(
+    session: str,
+    *,
+    socket_path: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
+) -> dict[int, tuple[str, int]]:
     """Map slot index to exact tmux pane identity and pane PID.
 
     *Windows* topology: one pane per window — slot equals ``window_index``.
@@ -1137,11 +1274,21 @@ def _list_pane_identities(session: str) -> dict[int, tuple[str, int]]:
     ``pane_index`` (creation order), matching task ``window_index`` slots.
     Ambiguous multi-window multi-pane layouts fail closed (empty map).
 
+    When *expected_server* is set, authorize against that server before and
+    after the ``-S``-scoped list so a replacement cannot publish foreign
+    ``%N``/pane PIDs into the immutable launch receipt.
+
     Accepts list-panes rows as either::
 
         window_index\\tpane_index\\tpane_id\\tpane_pid   (preferred)
         window_index\\tpane_id\\tpane_pid                 (legacy windows mocks)
     """
+    if expected_server is not None:
+        _require_plane_tmux_server(
+            expected_server,
+            socket_path=socket_path,
+            action="list pane identities",
+        )
     r = _tmux_run(
         [
             "list-panes",
@@ -1150,7 +1297,8 @@ def _list_pane_identities(session: str) -> dict[int, tuple[str, int]]:
             session,
             "-F",
             "#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_pid}",
-        ]
+        ],
+        socket_path=socket_path,
     )
     if r.returncode != 0:
         return {}
@@ -1182,17 +1330,15 @@ def _list_pane_identities(session: str) -> dict[int, tuple[str, int]]:
     if not rows:
         return {}
     windows = {row[0] for row in rows}
+    out: dict[int, tuple[str, int]] = {}
     if len(rows) == len(windows):
         # One pane per window (legacy windows topology).
-        out: dict[int, tuple[str, int]] = {}
         for window_index, _pane_index, pane_id, pane_pid in rows:
             if window_index in out:
                 return {}
             out[window_index] = (pane_id, pane_pid)
-        return out
-    if len(windows) == 1 and all(row[1] is not None for row in rows):
+    elif len(windows) == 1 and all(row[1] is not None for row in rows):
         # Split topology: key by pane_index within the single window.
-        out = {}
         for _window_index, pane_index, pane_id, pane_pid in sorted(
             rows, key=lambda row: int(row[1] or 0)
         ):
@@ -1200,22 +1346,53 @@ def _list_pane_identities(session: str) -> dict[int, tuple[str, int]]:
             if pane_index in out:
                 return {}
             out[pane_index] = (pane_id, pane_pid)
-        return out
-    # Mixed multi-window multi-pane — refuse ambiguous identity.
-    return {}
+    else:
+        # Mixed multi-window multi-pane — refuse ambiguous identity.
+        return {}
+    if expected_server is not None:
+        _require_plane_tmux_server(
+            expected_server,
+            socket_path=socket_path,
+            action="list pane identities commit",
+        )
+    return out
 
 
-def _list_pane_pids(session: str) -> dict[int, int]:
+def _list_pane_pids(
+    session: str,
+    *,
+    socket_path: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
+) -> dict[int, int]:
     """Compatibility view used by dynamic scaling; not process authority."""
     return {
         window_index: pane_pid
-        for window_index, (_pane_id, pane_pid) in _list_pane_identities(session).items()
+        for window_index, (_pane_id, pane_pid) in _list_pane_identities(
+            session,
+            socket_path=socket_path,
+            expected_server=expected_server,
+        ).items()
     }
 
 
-def _read_tmux_session_identity(session: str) -> tuple[str, str] | None:
+def _read_tmux_session_identity(
+    session: str,
+    *,
+    socket_path: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
+) -> tuple[str, str] | None:
+    if expected_server is not None:
+        try:
+            _require_plane_tmux_server(
+                expected_server,
+                socket_path=socket_path,
+                action="session identity readback",
+            )
+        except TeamError:
+            return None
     r = _tmux_run(
-        ["display-message", "-p", "-t", session, "#{session_name}\t#{session_id}"]
+        ["display-message", "-p", "-t", session, "#{session_name}\t#{session_id}"],
+        socket_path=socket_path,
     )
     if r.returncode != 0:
         return None
@@ -1226,6 +1403,15 @@ def _read_tmux_session_identity(session: str) -> tuple[str, str] | None:
         or _TMUX_SESSION_ID.fullmatch(parts[1]) is None
     ):
         return None
+    if expected_server is not None:
+        try:
+            _require_plane_tmux_server(
+                expected_server,
+                socket_path=socket_path,
+                action="session identity readback commit",
+            )
+        except TeamError:
+            return None
     return parts[0], parts[1]
 
 
@@ -1323,19 +1509,52 @@ def _bind_tmux_launch_nonce(
     window_id: str | None,
     pane_ids: Sequence[str],
     session_owned: bool = True,
+    socket_path: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
 ) -> None:
     """Bind nonce so concurrent Teams in one session cannot overwrite each other.
 
     Pane/window options isolate workers. Session-scoped stamp is only for
     Team-owned detached sessions — inside mode must not clobber a shared
     ``@omg_launch_nonce`` on the leader session.
+
+    When *expected_server* is set, each ``set-option`` runs under a PID+start
+    ``if-shell`` gate (same pattern as create/kill) so a replacement server on
+    the socket cannot retain a foreign nonce mutation between Python precheck
+    and postcheck. Pre/post probes remain defense-in-depth only.
     """
+    from omg_cli.team.tmux import _tmux_run_if_identity
+
+    if expected_server is not None:
+        _require_plane_tmux_server(
+            expected_server,
+            socket_path=socket_path,
+            action="launch nonce bind",
+        )
     bound = False
+    win_for_gate = (
+        window_id
+        if isinstance(window_id, str) and _TMUX_WINDOW_ID.fullmatch(window_id)
+        else None
+    )
+
+    def _set_option(argv: list[str], *, target: str) -> subprocess.CompletedProcess[str]:
+        if expected_server is not None:
+            return _tmux_run_if_identity(
+                argv,
+                target=target,
+                expected_server=expected_server,
+                socket_path=socket_path,
+                window_id=win_for_gate if target != session_id else None,
+                expected_session_id=session_id,
+            )
+        return _tmux_run(argv, socket_path=socket_path)
+
     for pane_id in pane_ids:
         if not isinstance(pane_id, str) or _TMUX_PANE_ID.fullmatch(pane_id) is None:
             continue
         try:
-            option = _tmux_run(
+            option = _set_option(
                 [
                     "set-option",
                     "-p",
@@ -1343,24 +1562,26 @@ def _bind_tmux_launch_nonce(
                     pane_id,
                     LAUNCH_NONCE_OPTION,
                     launch_nonce,
-                ]
+                ],
+                target=pane_id,
             )
         except OSError as exc:
             raise TeamError(f"failed to bind tmux launch nonce on pane: {exc}") from exc
         if option.returncode != 0:
             raise TeamError(f"failed to bind tmux launch nonce on pane {pane_id}")
         bound = True
-    if isinstance(window_id, str) and _TMUX_WINDOW_ID.fullmatch(window_id):
+    if win_for_gate is not None:
         try:
-            option = _tmux_run(
+            option = _set_option(
                 [
                     "set-option",
                     "-w",
                     "-t",
-                    window_id,
+                    win_for_gate,
                     LAUNCH_NONCE_OPTION,
                     launch_nonce,
-                ]
+                ],
+                target=win_for_gate,
             )
         except OSError as exc:
             raise TeamError(f"failed to bind tmux launch nonce on window: {exc}") from exc
@@ -1369,14 +1590,15 @@ def _bind_tmux_launch_nonce(
         bound = True
     if session_owned:
         try:
-            option = _tmux_run(
+            option = _set_option(
                 [
                     "set-option",
                     "-t",
                     session_id,
                     LAUNCH_NONCE_OPTION,
                     launch_nonce,
-                ]
+                ],
+                target=session_id,
             )
         except OSError as exc:
             raise TeamError(
@@ -1387,6 +1609,12 @@ def _bind_tmux_launch_nonce(
         bound = True
     if not bound:
         raise TeamError("failed to bind tmux launch nonce")
+    if expected_server is not None:
+        _require_plane_tmux_server(
+            expected_server,
+            socket_path=socket_path,
+            action="launch nonce bind commit",
+        )
 
 def _persist_team_launch_receipt(
     root: Path,
@@ -1396,11 +1624,25 @@ def _persist_team_launch_receipt(
     session_id: str,
     launch_nonce: str,
     tasks: Sequence[Mapping[str, Any]],
+    intent_nonce: str | None = None,
+    window_name: str | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Persist the immutable process identity used by ``team stop``."""
     from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes
     from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
 
+    if intent_nonce is not None and (
+        not isinstance(intent_nonce, str) or not intent_nonce
+    ):
+        raise TeamError("launch receipt intent_nonce must be a non-empty string")
+    if window_name is not None and (
+        not isinstance(window_name, str) or not window_name
+    ):
+        raise TeamError("launch receipt window_name must be a non-empty string")
+    if (intent_nonce is None) != (window_name is None):
+        raise TeamError(
+            "launch receipt intent_nonce and window_name must both be set or both null"
+        )
     rows: list[dict[str, Any]] = []
     for raw in tasks:
         rows.append(
@@ -1421,6 +1663,8 @@ def _persist_team_launch_receipt(
         "session_name": session,
         "session_id": session_id,
         "launch_nonce": launch_nonce,
+        "intent_nonce": intent_nonce,
+        "window_name": window_name,
         "generation": 0,
         "previous_receipt_sha256": None,
         "tasks": rows,
@@ -1452,13 +1696,24 @@ def _snapshot_live_start_files(
 
 def _restore_live_start_files(
     snapshots: Mapping[Path, tuple[bytes | None, int | None]],
+    *,
+    unlink_new: bool = True,
 ) -> list[str]:
+    """Restore snapshotted live-start files.
+
+    When ``unlink_new`` is False, paths that did not exist at snapshot time are
+    left in place (keep newly published receipt / team.json). Use that when
+    tmux cleanup is unproven or the launch-intent WAL was already cleared —
+    deleting authority would hide a live worker.
+    """
     from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes
 
     errors: list[str] = []
     for path, (body, mode) in snapshots.items():
         try:
             if body is None:
+                if not unlink_new:
+                    continue
                 if path.is_dir() and not path.is_symlink():
                     raise OSError(
                         f"partial transaction path became a directory: {path}"
@@ -1618,7 +1873,8 @@ def _load_team_launch_receipt(
     parsed = parse_canonical_json_bytes(body)
     if not isinstance(parsed, dict):
         raise TeamError("team launch receipt must be an object")
-    required = {
+    # Exact key sets: v1 (#106) lacked intent binding fields; v2 includes them.
+    legacy_required = {
         "store_kind",
         "schema_version",
         "writer",
@@ -1630,11 +1886,41 @@ def _load_team_launch_receipt(
         "previous_receipt_sha256",
         "tasks",
     }
-    if set(parsed) != required:
+    v2_required = legacy_required | {
+        "intent_nonce",
+        "window_name",
+    }
+    schema_version = parsed.get("schema_version")
+    if (
+        (
+            schema_version == LEGACY_LAUNCH_RECEIPT_SCHEMA_VERSION
+            and set(parsed) != legacy_required
+        )
+        or (
+            schema_version == LAUNCH_RECEIPT_SCHEMA_VERSION
+            and set(parsed) != v2_required
+        )
+        or schema_version
+        not in {
+            LEGACY_LAUNCH_RECEIPT_SCHEMA_VERSION,
+            LAUNCH_RECEIPT_SCHEMA_VERSION,
+        }
+    ):
         raise TeamError("team launch receipt keys mismatch")
+    if schema_version == LAUNCH_RECEIPT_SCHEMA_VERSION:
+        intent_nonce = parsed.get("intent_nonce")
+        window_name = parsed.get("window_name")
+        if (intent_nonce is None) != (window_name is None):
+            raise TeamError("team launch receipt identity mismatch")
+        if intent_nonce is not None and (
+            not isinstance(intent_nonce, str)
+            or not intent_nonce
+            or not isinstance(window_name, str)
+            or not window_name
+        ):
+            raise TeamError("team launch receipt identity mismatch")
     if (
         parsed["store_kind"] != "team_launch_receipt"
-        or parsed["schema_version"] != LAUNCH_RECEIPT_SCHEMA_VERSION
         or parsed["writer"] != CLI_WRITER
         or parsed["run_id"] != run_id
         or parsed["session_name"] != meta.get("session")
@@ -1650,11 +1936,17 @@ def _load_team_launch_receipt(
         raise TeamError("team launch receipt hash mismatch")
     expected_tasks = meta.get("tasks")
     generation = meta.get("identity_generation", 0)
+    # Fail-closed: bool / str / negative must not skip gen-0 continuity.
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 0
+    ):
+        raise TeamError("team identity generation is invalid")
     if not isinstance(expected_tasks, list):
         raise TeamError("team launch receipt task count mismatch")
-    if generation == 0 and len(expected_tasks) != len(parsed["tasks"]):
-        raise TeamError("team launch receipt task count mismatch")
-    for expected, actual in zip(expected_tasks, parsed["tasks"]):
+    # Always validate receipt task row shape (independent of meta.tasks length).
+    for actual in parsed["tasks"]:
         if not isinstance(actual, Mapping):
             raise TeamError("team launch receipt task row mismatch")
         if set(actual) != {
@@ -1666,11 +1958,14 @@ def _load_team_launch_receipt(
             "pid_start",
         }:
             raise TeamError("team launch receipt task keys mismatch")
-        if generation == 0 and (
-            not isinstance(expected, Mapping)
-            or any(expected.get(field) != actual.get(field) for field in actual)
-        ):
-            raise TeamError("team.json differs from immutable launch receipt")
+    if generation == 0:
+        if len(expected_tasks) != len(parsed["tasks"]):
+            raise TeamError("team launch receipt task count mismatch")
+        for expected, actual in zip(expected_tasks, parsed["tasks"]):
+            if not isinstance(expected, Mapping) or any(
+                expected.get(field) != actual.get(field) for field in actual
+            ):
+                raise TeamError("team.json differs from immutable launch receipt")
     return parsed
 
 
@@ -1884,7 +2179,7 @@ def _load_team_identity_chain(
         schema_version = parsed.get("schema_version")
         if (
             (
-                schema_version == LAUNCH_RECEIPT_SCHEMA_VERSION
+                schema_version == LEGACY_IDENTITY_RECEIPT_SCHEMA_VERSION
                 and set(parsed) != legacy_required
             )
             or (
@@ -1893,7 +2188,7 @@ def _load_team_identity_chain(
             )
             or schema_version
             not in {
-                LAUNCH_RECEIPT_SCHEMA_VERSION,
+                LEGACY_IDENTITY_RECEIPT_SCHEMA_VERSION,
                 IDENTITY_RECEIPT_SCHEMA_VERSION,
             }
         ):
@@ -2122,450 +2417,453 @@ def start_team(
     # Launch-intent WAL recovery gate: sweep ALL project intents *before*
     # create_run / active-run refusal so crash orphans are reachable even when
     # an active run blocks a new start (or --force creates a different rid).
-    if not dry_run:
-        try:
-            from omg_cli.team.tmux import (
-                TmuxTeamError,
-                require_clean_team_launch_intents,
-            )
+    # Hold the project launch lock through receipt publish so a concurrent
+    # start cannot kill an in-flight unrecepted window.
+    from contextlib import ExitStack
 
-            require_clean_team_launch_intents(root_path)
-        except TmuxTeamError as exc:
-            raise TeamError(str(exc)) from exc
-
-    # Resolve / create run — track created_* for #17 rollback scope.
-    # When --run reuses an existing run, never destroy pre-existing worktrees /
-    # team dir / ownership (Codex P1 on PR #34).
-    created_run = False
-    created_worktrees: list[Path] = []
-    created_team_dir = False
-    ownership_backup: bytes | None = None
-    remove_ownership = True
-    file_backups: dict[Path, bytes | None] = {}
-    tdir: Path | None = None
-    # Resolve / create run
-    if run_id:
-        if load_run(root_path, run_id) is None:
-            raise TeamError(f"no run found for --run {run_id!r}")
-        rid = run_id
-    else:
-        note = (
-            "experimental multi-CLI tmux team plane "
-            f"(default on; kill {DISABLE_ENV}=1); integration isolation only"
-            if multi_cli
-            else (
-                "experimental grok-only tmux team plane "
-                f"(default on; kill {DISABLE_ENV}=1); multi-CLI via --routing"
-            )
-        )
-        create_extra: dict[str, Any] = {
-            "team": True,
-            "workspace_mode": WORKSPACE_MODE,
-            "task_count": n,
-            "note": note,
-            "multi_cli": multi_cli,
-        }
-        try:
-            from omg_cli.integrate import git_rev_parse_head
-
-            base_sha = git_rev_parse_head(root_path)
-            if base_sha:
-                create_extra["base_sha"] = base_sha
-        except Exception:
-            pass
-        try:
-            run = create_run(
-                root_path,
-                mode="ulw",
-                goal=goal,
-                extra=create_extra,
-                force=force,
-            )
-        except RuntimeError as exc:
-            raise TeamError(str(exc)) from exc
-        rid = str(run["run_id"])
-        created_run = True
-
-    def _fail_start(exc: BaseException, *, extra: Sequence[str] = ()) -> TeamError:
-        rb = _rollback_partial_team_start(
-            root_path,
-            rid,
-            created_run=created_run,
-            worktrees=created_worktrees,
-            team_dir_path=tdir if created_team_dir else None,
-            remove_ownership=remove_ownership,
-            ownership_backup=ownership_backup,
-            file_backups=None if created_team_dir else file_backups,
-        )
-        details = [str(exc), *list(extra), *rb]
-        return TeamError(
-            "team start transaction failed (rolled back partial state): "
-            + "; ".join(d for d in details if d)
-        )
-
-    # Snapshot pre-existing resources before we mutate (existing --run safety).
-    from omg_cli.workers import ownership_manifest_path as _own_path
-
-    mpath_pre = _own_path(root_path, rid)
-    if mpath_pre.is_file() and not mpath_pre.is_symlink():
-        try:
-            ownership_backup = mpath_pre.read_bytes()
-            remove_ownership = False  # will restore backup, not unlink
-        except OSError:
-            ownership_backup = None
-            remove_ownership = True
-    else:
-        ownership_backup = None
-        remove_ownership = True
-
-    pre_existing_worktrees: set[Path] = set()
-    for t in tasks:
-        tid_pre = str(t.get("task_id") or t.get("id") or "")
-        if not tid_pre:
-            continue
-        try:
-            wt_pre = worktree_dir(root_path, rid, tid_pre)
-        except Exception:
-            continue
-        if wt_pre.exists():
-            try:
-                pre_existing_worktrees.add(wt_pre.resolve())
-            except OSError:
-                pre_existing_worktrees.add(wt_pre)
-
-    # Ownership + real worktrees + setup + dry_run/live are all inside the
-    # #17 rollback boundary (Codex: post-prep failures must also roll back).
-    _tx_failed_prefix = "team start transaction failed"
+    _launch_lock_stack = ExitStack()
     try:
-        manifest = build_ownership_manifest(root_path, rid, tasks)
-        # Prepare per-task; register expected path *before* prepare so a
-        # create-then-raise inside prepare_task is still rolled back.
-        for mtask in list(manifest.get("tasks") or []):
-            tid_prep = str(mtask.get("task_id") or "")
-            if not tid_prep:
-                continue
-            wt_expected = worktree_dir(root_path, rid, tid_prep)
+        if not dry_run:
             try:
-                wt_resolved = wt_expected.resolve()
-            except OSError:
-                wt_resolved = wt_expected
-            tracked_new = False
-            if wt_resolved not in pre_existing_worktrees:
-                created_worktrees.append(wt_expected)
-                tracked_new = True
-            try:
-                wt = prepare_task(root_path, rid, tid_prep)
-            except Exception:
-                raise
-            # Prefer the concrete path prepare returned (same location).
-            if tracked_new and wt not in created_worktrees:
-                created_worktrees.append(wt)
-
-        tdir = team_dir(root_path, rid)
-        created_team_dir = not (tdir.is_dir() and not tdir.is_symlink())
-        tdir.mkdir(parents=True, exist_ok=True)
-
-        session = session_name_for_cwd(root_path)
-        env_pairs = _pane_env_pairs(
-            run_id=rid,
-            team_id=tid_plane,
-            leader_root=root_path,
-            state_root=root_path / ".omg" / "state",
-            owner_token=token,
-        )
-
-        # Original task dicts by task_id (for role lookup; manifest may drop fields).
-        tasks_by_id: dict[str, dict[str, Any]] = {}
-        for t in tasks:
-            tid0 = str(t.get("task_id") or t.get("id") or "")
-            if tid0:
-                tasks_by_id[tid0] = t
-
-        task_records: list[dict[str, Any]] = []
-        manifest_tasks = list(manifest.get("tasks") or [])
-        # Preserve manifest order for window indices
-        for i, mtask in enumerate(manifest_tasks):
-            tid = str(mtask["task_id"])
-            wt = Path(
-                str(mtask.get("worktree_path") or worktree_dir(root_path, rid, tid))
-            )
-            owned = list(mtask.get("owned_files") or [])
-            src_task = tasks_by_id.get(tid) or mtask
-            role = _task_role(src_task)
-
-            if multi_cli and resolved is not None:
-                route = resolved.for_role(role)
-                prompt_path = _materialize_task_prompt(
-                    goal=goal,
-                    run_id=rid,
-                    task_id=tid,
-                    task_index=i + 1,
-                    task_count=n,
-                    owned_files=owned,
-                    worktree=wt,
-                    provider=route.provider,
-                    role=route.role,
-                    posture=route.posture,
-                )
-                inv = build_executor_argv(
-                    route.provider,
-                    route.role,
-                    prompt_file=prompt_path,
-                    model=route.model,
-                    cwd=wt,
-                    check_binary=False,  # already checked at resolve
-                )
-                argv = list(inv.argv)
-                needs_pty = bool(inv.needs_pty)
-                provider = inv.provider
-                posture = inv.posture
-                prompt_delivery = inv.prompt_delivery
-                pane_cmd = wrap_pane_with_worker_ready(
-                    build_executor_pane_command(
-                        argv,
-                        needs_pty=needs_pty,
-                        prompt_delivery=prompt_delivery,
-                        prompt_file=prompt_path,
-                    )
-                )
-            else:
-                # D1 zero-config path — identical to pre-D3 behavior.
-                argv = _build_task_grok_argv(
-                    goal=goal,
-                    run_id=rid,
-                    task_id=tid,
-                    task_index=i + 1,
-                    task_count=n,
-                    owned_files=owned,
-                    worktree=wt,
-                    yolo=yolo,
-                    safe=safe,
-                    extra=extra,
-                )
-                needs_pty = False
-                provider = "grok"
-                posture = "read-write"  # executor default; D1 does not route roles
-                prompt_delivery = PROMPT_DELIVERY_PROMPT_FILE
-                pane_cmd = wrap_pane_with_worker_ready(
-                    build_pane_command(_grok_args_for_pane(argv))
+                from omg_cli.team.tmux import (
+                    TmuxTeamError,
+                    acquire_team_launch_lock,
+                    require_clean_team_launch_intents,
                 )
 
-            if fixture_pane_cmd is not None:
-                # Hermetic transport override — keep argv record for diagnostics.
-                # fixture builder already includes worker-ready wrap.
-                pane_cmd = fixture_pane_cmd
-                provider = "fixture"
+                _launch_lock_stack.enter_context(acquire_team_launch_lock(root_path))
+                require_clean_team_launch_intents(root_path)
+            except TmuxTeamError as exc:
+                raise TeamError(str(exc)) from exc
 
-            # Persist per-task argv under team/ (mirrors fanout workers/*.argv.json)
-            argv_path = tdir / f"{tid}.argv.json"
-            # When reusing a team dir, backup prior argv so rollback can restore.
-            if not created_team_dir and argv_path not in file_backups:
-                if argv_path.is_file() and not argv_path.is_symlink():
-                    try:
-                        file_backups[argv_path] = argv_path.read_bytes()
-                    except OSError:
-                        file_backups[argv_path] = None
-                else:
-                    file_backups[argv_path] = None
-            argv_path.write_text(
-                json.dumps(argv, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
-            rec: dict[str, Any] = {
-                "task_id": tid,
-                "window_index": i,
-                "worktree": str(wt),
-                "argv_path": str(argv_path.relative_to(_run_dir(root_path, rid))),
-                "pane_command": pane_cmd,
-                "argv": argv,
-                "role": role,
-                "provider": provider,
-                "posture": posture,
-                "needs_pty": needs_pty,
-                "prompt_delivery": prompt_delivery,
-                "pid": None,
-                "pgid": None,
-                "pid_start": None,
-                "status": "dry_run" if dry_run else "pending",
-                "_env_pairs": _pane_env_pairs(
-                    run_id=rid,
-                    team_id=tid_plane,
-                    worker_id=tid,
-                    leader_root=root_path,
-                    state_root=root_path / ".omg" / "state",
-                    owner_token=token,
-                ),
-            }
-            task_records.append(rec)
-
-        routing_payload = resolved.to_dict() if resolved is not None else None
-
-        def _public_tasks() -> list[dict[str, Any]]:
-            cleaned: list[dict[str, Any]] = []
-            for item in task_records:
-                row = {
-                    k: v
-                    for k, v in item.items()
-                    if k not in ("_env_pairs", "_tmux_launch")
-                }
-                cleaned.append(row)
-            return cleaned
-
-        if dry_run:
-            # HERMETIC: never call tmux_available() / subprocess
-            note = "dry_run skeleton; pid=None; no tmux/subprocess; " + (
-                "multi-CLI per-provider argv recorded"
+        # Resolve / create run — track created_* for #17 rollback scope.
+        # When --run reuses an existing run, never destroy pre-existing worktrees /
+        # team dir / ownership (Codex P1 on PR #34).
+        created_run = False
+        created_worktrees: list[Path] = []
+        created_team_dir = False
+        ownership_backup: bytes | None = None
+        remove_ownership = True
+        file_backups: dict[Path, bytes | None] = {}
+        tdir: Path | None = None
+        # Resolve / create run
+        if run_id:
+            if load_run(root_path, run_id) is None:
+                raise TeamError(f"no run found for --run {run_id!r}")
+            rid = run_id
+        else:
+            note = (
+                "experimental multi-CLI tmux team plane "
+                f"(default on; kill {DISABLE_ENV}=1); integration isolation only"
                 if multi_cli
-                else "grok-only pane argv recorded"
+                else (
+                    "experimental grok-only tmux team plane "
+                    f"(default on; kill {DISABLE_ENV}=1); multi-CLI via --routing"
+                )
             )
-            meta = {
-                "writer": CLI_WRITER,
-                "schema_version": SCHEMA_VERSION,
-                "meta_generation": 0,
-                "run_id": rid,
-                "session": session,
-                "dry_run": True,
+            create_extra: dict[str, Any] = {
+                "team": True,
                 "workspace_mode": WORKSPACE_MODE,
-                "goal": goal,
                 "task_count": n,
-                "next_worker_index": n,
-                "created_at": _utc_now(),
-                "tasks": _public_tasks(),
-                "multi_cli": multi_cli,
-                "routing": routing_payload,
-                "linked_ralph": None,
-                "topology": topology,
-                "team_id": tid_plane,
-                "owner_token": token,
-                "executor": executor_norm,
                 "note": note,
+                "multi_cli": multi_cli,
             }
-            _atomic_write_json(team_meta_path(root_path, rid), meta)
-            write_status(
+            try:
+                from omg_cli.integrate import git_rev_parse_head
+
+                base_sha = git_rev_parse_head(root_path)
+                if base_sha:
+                    create_extra["base_sha"] = base_sha
+            except Exception:
+                pass
+            try:
+                run = create_run(
+                    root_path,
+                    mode="ulw",
+                    goal=goal,
+                    extra=create_extra,
+                    force=force,
+                )
+            except RuntimeError as exc:
+                raise TeamError(str(exc)) from exc
+            rid = str(run["run_id"])
+            created_run = True
+
+        def _fail_start(exc: BaseException, *, extra: Sequence[str] = ()) -> TeamError:
+            rb = _rollback_partial_team_start(
                 root_path,
                 rid,
-                "completed",
-                extra={
-                    "team": True,
-                    "stage": "team_dry_run",
-                    "task_count": n,
-                    "multi_cli": multi_cli,
-                    "note": "team dry_run completed; verified remains false",
-                },
+                created_run=created_run,
+                worktrees=created_worktrees,
+                team_dir_path=tdir if created_team_dir else None,
+                remove_ownership=remove_ownership,
+                ownership_backup=ownership_backup,
+                file_backups=None if created_team_dir else file_backups,
             )
-            return meta
+            details = [str(exc), *list(extra), *rb]
+            return TeamError(
+                "team start transaction failed (rolled back partial state): "
+                + "; ".join(d for d in details if d)
+            )
 
-        # Live path: create tmux session + fill pids
-        launch_nonce = uuid.uuid4().hex
-        # Project-wide intent sweep already ran (fail-closed) before create_run.
-        transaction_paths = (
-            team_launch_receipt_path(root_path, rid),
-            team_meta_path(root_path, rid),
-            _run_dir(root_path, rid) / "status.json",
-        )
-        snapshots = _snapshot_live_start_files(transaction_paths)
-        created_handle: tuple[str, str] | None = None
-        tmux_launch: dict[str, Any] = {
-            "attach_mode": "detached",
-            "session_owned": True,
-            "leader_pane_id": None,
-            "window_id": None,
-            "attach_hint": None,
-        }
-        launch_intent_path: str | None = None
-        try:
-            if topology == "split":
-                from omg_cli.team.tmux import TmuxTeamError, create_split_team_session
+        # Snapshot pre-existing resources before we mutate (existing --run safety).
+        from omg_cli.workers import ownership_manifest_path as _own_path
 
+        mpath_pre = _own_path(root_path, rid)
+        if mpath_pre.is_file() and not mpath_pre.is_symlink():
+            try:
+                ownership_backup = mpath_pre.read_bytes()
+                remove_ownership = False  # will restore backup, not unlink
+            except OSError:
+                ownership_backup = None
+                remove_ownership = True
+        else:
+            ownership_backup = None
+            remove_ownership = True
+
+        pre_existing_worktrees: set[Path] = set()
+        for t in tasks:
+            tid_pre = str(t.get("task_id") or t.get("id") or "")
+            if not tid_pre:
+                continue
+            try:
+                wt_pre = worktree_dir(root_path, rid, tid_pre)
+            except Exception:
+                continue
+            if wt_pre.exists():
                 try:
-                    created_handle = create_split_team_session(
+                    pre_existing_worktrees.add(wt_pre.resolve())
+                except OSError:
+                    pre_existing_worktrees.add(wt_pre)
+
+        # Ownership + real worktrees + setup + dry_run/live are all inside the
+        # #17 rollback boundary (Codex: post-prep failures must also roll back).
+        _tx_failed_prefix = "team start transaction failed"
+        try:
+            manifest = build_ownership_manifest(root_path, rid, tasks)
+            # Prepare per-task; register expected path *before* prepare so a
+            # create-then-raise inside prepare_task is still rolled back.
+            for mtask in list(manifest.get("tasks") or []):
+                tid_prep = str(mtask.get("task_id") or "")
+                if not tid_prep:
+                    continue
+                wt_expected = worktree_dir(root_path, rid, tid_prep)
+                try:
+                    wt_resolved = wt_expected.resolve()
+                except OSError:
+                    wt_resolved = wt_expected
+                tracked_new = False
+                if wt_resolved not in pre_existing_worktrees:
+                    created_worktrees.append(wt_expected)
+                    tracked_new = True
+                try:
+                    wt = prepare_task(root_path, rid, tid_prep)
+                except Exception:
+                    raise
+                # Prefer the concrete path prepare returned (same location).
+                if tracked_new and wt not in created_worktrees:
+                    created_worktrees.append(wt)
+
+            tdir = team_dir(root_path, rid)
+            created_team_dir = not (tdir.is_dir() and not tdir.is_symlink())
+            tdir.mkdir(parents=True, exist_ok=True)
+
+            session = session_name_for_cwd(root_path)
+            env_pairs = _pane_env_pairs(
+                run_id=rid,
+                team_id=tid_plane,
+                leader_root=root_path,
+                state_root=root_path / ".omg" / "state",
+                owner_token=token,
+            )
+
+            # Original task dicts by task_id (for role lookup; manifest may drop fields).
+            tasks_by_id: dict[str, dict[str, Any]] = {}
+            for t in tasks:
+                tid0 = str(t.get("task_id") or t.get("id") or "")
+                if tid0:
+                    tasks_by_id[tid0] = t
+
+            task_records: list[dict[str, Any]] = []
+            manifest_tasks = list(manifest.get("tasks") or [])
+            # Preserve manifest order for window indices
+            for i, mtask in enumerate(manifest_tasks):
+                tid = str(mtask["task_id"])
+                wt = Path(
+                    str(mtask.get("worktree_path") or worktree_dir(root_path, rid, tid))
+                )
+                owned = list(mtask.get("owned_files") or [])
+                src_task = tasks_by_id.get(tid) or mtask
+                role = _task_role(src_task)
+
+                if multi_cli and resolved is not None:
+                    route = resolved.for_role(role)
+                    prompt_path = _materialize_task_prompt(
+                        goal=goal,
+                        run_id=rid,
+                        task_id=tid,
+                        task_index=i + 1,
+                        task_count=n,
+                        owned_files=owned,
+                        worktree=wt,
+                        provider=route.provider,
+                        role=route.role,
+                        posture=route.posture,
+                    )
+                    inv = build_executor_argv(
+                        route.provider,
+                        route.role,
+                        prompt_file=prompt_path,
+                        model=route.model,
+                        cwd=wt,
+                        check_binary=False,  # already checked at resolve
+                    )
+                    argv = list(inv.argv)
+                    needs_pty = bool(inv.needs_pty)
+                    provider = inv.provider
+                    posture = inv.posture
+                    prompt_delivery = inv.prompt_delivery
+                    pane_cmd = wrap_pane_with_worker_ready(
+                        build_executor_pane_command(
+                            argv,
+                            needs_pty=needs_pty,
+                            prompt_delivery=prompt_delivery,
+                            prompt_file=prompt_path,
+                        )
+                    )
+                else:
+                    # D1 zero-config path — identical to pre-D3 behavior.
+                    argv = _build_task_grok_argv(
+                        goal=goal,
+                        run_id=rid,
+                        task_id=tid,
+                        task_index=i + 1,
+                        task_count=n,
+                        owned_files=owned,
+                        worktree=wt,
+                        yolo=yolo,
+                        safe=safe,
+                        extra=extra,
+                    )
+                    needs_pty = False
+                    provider = "grok"
+                    posture = "read-write"  # executor default; D1 does not route roles
+                    prompt_delivery = PROMPT_DELIVERY_PROMPT_FILE
+                    pane_cmd = wrap_pane_with_worker_ready(
+                        build_pane_command(_grok_args_for_pane(argv))
+                    )
+
+                if fixture_pane_cmd is not None:
+                    # Hermetic transport override — keep argv record for diagnostics.
+                    # fixture builder already includes worker-ready wrap.
+                    pane_cmd = fixture_pane_cmd
+                    provider = "fixture"
+
+                # Persist per-task argv under team/ (mirrors fanout workers/*.argv.json)
+                argv_path = tdir / f"{tid}.argv.json"
+                # When reusing a team dir, backup prior argv so rollback can restore.
+                if not created_team_dir and argv_path not in file_backups:
+                    if argv_path.is_file() and not argv_path.is_symlink():
+                        try:
+                            file_backups[argv_path] = argv_path.read_bytes()
+                        except OSError:
+                            file_backups[argv_path] = None
+                    else:
+                        file_backups[argv_path] = None
+                argv_path.write_text(
+                    json.dumps(argv, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
+                rec: dict[str, Any] = {
+                    "task_id": tid,
+                    "window_index": i,
+                    "worktree": str(wt),
+                    "argv_path": str(argv_path.relative_to(_run_dir(root_path, rid))),
+                    "pane_command": pane_cmd,
+                    "argv": argv,
+                    "role": role,
+                    "provider": provider,
+                    "posture": posture,
+                    "needs_pty": needs_pty,
+                    "prompt_delivery": prompt_delivery,
+                    "pid": None,
+                    "pgid": None,
+                    "pid_start": None,
+                    "status": "dry_run" if dry_run else "pending",
+                    "_env_pairs": _pane_env_pairs(
+                        run_id=rid,
+                        team_id=tid_plane,
+                        worker_id=tid,
+                        leader_root=root_path,
+                        state_root=root_path / ".omg" / "state",
+                        owner_token=token,
+                    ),
+                }
+                task_records.append(rec)
+
+            routing_payload = resolved.to_dict() if resolved is not None else None
+
+            def _public_tasks() -> list[dict[str, Any]]:
+                cleaned: list[dict[str, Any]] = []
+                for item in task_records:
+                    row = {
+                        k: v
+                        for k, v in item.items()
+                        if k not in ("_env_pairs", "_tmux_launch")
+                    }
+                    cleaned.append(row)
+                return cleaned
+
+            if dry_run:
+                # HERMETIC: never call tmux_available() / subprocess
+                note = "dry_run skeleton; pid=None; no tmux/subprocess; " + (
+                    "multi-CLI per-provider argv recorded"
+                    if multi_cli
+                    else "grok-only pane argv recorded"
+                )
+                meta = {
+                    "writer": CLI_WRITER,
+                    "schema_version": SCHEMA_VERSION,
+                    "meta_generation": 0,
+                    "run_id": rid,
+                    "session": session,
+                    "dry_run": True,
+                    "workspace_mode": WORKSPACE_MODE,
+                    "goal": goal,
+                    "task_count": n,
+                    "next_worker_index": n,
+                    "created_at": _utc_now(),
+                    "tasks": _public_tasks(),
+                    "multi_cli": multi_cli,
+                    "routing": routing_payload,
+                    "linked_ralph": None,
+                    "topology": topology,
+                    "team_id": tid_plane,
+                    "owner_token": token,
+                    "executor": executor_norm,
+                    "note": note,
+                }
+                _atomic_write_json(team_meta_path(root_path, rid), meta)
+                write_status(
+                    root_path,
+                    rid,
+                    "completed",
+                    extra={
+                        "team": True,
+                        "stage": "team_dry_run",
+                        "task_count": n,
+                        "multi_cli": multi_cli,
+                        "note": "team dry_run completed; verified remains false",
+                    },
+                )
+                return meta
+
+            # Live path: create tmux session + fill pids
+            launch_nonce = uuid.uuid4().hex
+            # Project-wide intent sweep already ran (fail-closed) before create_run.
+            transaction_paths = (
+                team_launch_receipt_path(root_path, rid),
+                team_meta_path(root_path, rid),
+                _run_dir(root_path, rid) / "status.json",
+            )
+            snapshots = _snapshot_live_start_files(transaction_paths)
+            created_handle: tuple[str, str] | None = None
+            tmux_launch: dict[str, Any] = {
+                "attach_mode": "detached",
+                "session_owned": True,
+                "leader_pane_id": None,
+                "window_id": None,
+                "attach_hint": None,
+            }
+            launch_intent_path: str | None = None
+            intent_wal_cleared = False
+            try:
+                if topology == "split":
+                    from omg_cli.team.tmux import TmuxTeamError, create_split_team_session
+
+                    try:
+                        created_handle = create_split_team_session(
+                            session=session,
+                            tasks=task_records,
+                            env_pairs=env_pairs,
+                            detach=detach,
+                            env=env,
+                            root=root_path,
+                            run_id=rid,
+                        )
+                    except TmuxTeamError as exc:
+                        raise TeamError(str(exc)) from exc
+                    raw_launch = task_records[0].pop("_tmux_launch", None)
+                    raw_intent = task_records[0].pop("_tmux_launch_intent", None)
+                    if isinstance(raw_intent, str):
+                        launch_intent_path = raw_intent
+                    if isinstance(raw_launch, Mapping):
+                        tmux_launch = {**tmux_launch, **dict(raw_launch)}
+                    # Inside mode joins the live session (name may differ from plan).
+                    session = created_handle[0]
+                else:
+                    created_handle = _create_tmux_session(
                         session=session,
                         tasks=task_records,
                         env_pairs=env_pairs,
-                        detach=detach,
-                        env=env,
-                        root=root_path,
-                        run_id=rid,
                     )
-                except TmuxTeamError as exc:
-                    raise TeamError(str(exc)) from exc
-                raw_launch = task_records[0].pop("_tmux_launch", None)
-                raw_intent = task_records[0].pop("_tmux_launch_intent", None)
-                if isinstance(raw_intent, str):
-                    launch_intent_path = raw_intent
-                if isinstance(raw_launch, Mapping):
-                    tmux_launch = {**tmux_launch, **dict(raw_launch)}
-                # Inside mode joins the live session (name may differ from plan).
-                session = created_handle[0]
-            else:
-                created_handle = _create_tmux_session(
-                    session=session,
-                    tasks=task_records,
-                    env_pairs=env_pairs,
+                    raw_launch = task_records[0].pop("_tmux_launch", None)
+                    if isinstance(raw_launch, Mapping):
+                        tmux_launch = {**tmux_launch, **dict(raw_launch)}
+                launch_sock, launch_server = _tmux_scope_from_launch(tmux_launch)
+                _bind_tmux_launch_nonce(
+                    session_id=created_handle[1],
+                    launch_nonce=launch_nonce,
+                    window_id=(
+                        str(tmux_launch.get("window_id"))
+                        if isinstance(tmux_launch.get("window_id"), str)
+                        else None
+                    ),
+                    pane_ids=[
+                        str(rec.get("pane_id"))
+                        for rec in task_records
+                        if isinstance(rec.get("pane_id"), str)
+                    ],
+                    session_owned=bool(tmux_launch.get("session_owned", True)),
+                    socket_path=launch_sock,
+                    expected_server=launch_server,
                 )
-            _bind_tmux_launch_nonce(
-                session_id=created_handle[1],
-                launch_nonce=launch_nonce,
-                window_id=(
-                    str(tmux_launch.get("window_id"))
-                    if isinstance(tmux_launch.get("window_id"), str)
-                    else None
-                ),
-                pane_ids=[
-                    str(rec.get("pane_id"))
-                    for rec in task_records
-                    if isinstance(rec.get("pane_id"), str)
-                ],
-                session_owned=bool(tmux_launch.get("session_owned", True)),
-            )
 
-            session_identity = _read_tmux_session_identity(session)
-            if session_identity != created_handle:
-                raise TeamError("tmux launch identity readback failed")
-
-            if topology == "split" and all(
-                isinstance(rec.get("pane_id"), str)
-                and _TMUX_PANE_ID.fullmatch(str(rec.get("pane_id"))) is not None
-                for rec in task_records
-            ):
-                # Final linearization before immutable receipt: one list-panes
-                # snapshot of pane_id+pid+session_id+window_id (+nonce when set).
-                # Never commit from separate PID-only probes after revalidation.
-                snap_window = tmux_launch.get("window_id")
-                snap_window_id = (
-                    str(snap_window)
-                    if isinstance(snap_window, str)
-                    and _TMUX_WINDOW_ID.fullmatch(str(snap_window)) is not None
-                    else None
+                session_identity = _read_tmux_session_identity(
+                    session,
+                    socket_path=launch_sock,
+                    expected_server=launch_server,
                 )
-                pane_snapshot = _snapshot_launch_pane_identities(
-                    expected_session_id=created_handle[1],
-                    expected_pane_ids=[str(rec["pane_id"]) for rec in task_records],
-                    expected_window_id=snap_window_id,
-                    expected_launch_nonce=launch_nonce,
-                )
-                for rec in task_records:
-                    pane_id = str(rec["pane_id"])
-                    snap = pane_snapshot[pane_id]
-                    pid = int(snap["pane_pid"])
-                    rec["pid"] = pid
-                    rec["pgid"] = _pgid_for_pid(pid)
-                    rec["pid_start"] = _pid_start_identity(pid)
-                    rec["status"] = (
-                        "running"
-                        if rec["pgid"] is not None and rec["pid_start"] is not None
-                        else "launched"
-                    )
-            else:
-                pane_identities = _list_pane_identities(created_handle[1])
-                if len(pane_identities) != len(task_records):
+                if session_identity != created_handle:
                     raise TeamError("tmux launch identity readback failed")
-                for rec in task_records:
-                    widx = int(rec["window_index"])
-                    pane_identity = pane_identities.get(widx)
-                    if pane_identity is not None:
-                        pane_id, pid = pane_identity
-                        rec["pane_id"] = pane_id
+
+                if topology == "split" and all(
+                    isinstance(rec.get("pane_id"), str)
+                    and _TMUX_PANE_ID.fullmatch(str(rec.get("pane_id"))) is not None
+                    for rec in task_records
+                ):
+                    # Final linearization before immutable receipt: one list-panes
+                    # snapshot of pane_id+pid+session_id+window_id (+nonce when set).
+                    # Never commit from separate PID-only probes after revalidation.
+                    snap_window = tmux_launch.get("window_id")
+                    snap_window_id = (
+                        str(snap_window)
+                        if isinstance(snap_window, str)
+                        and _TMUX_WINDOW_ID.fullmatch(str(snap_window)) is not None
+                        else None
+                    )
+                    pane_snapshot = _snapshot_launch_pane_identities(
+                        expected_session_id=created_handle[1],
+                        expected_pane_ids=[str(rec["pane_id"]) for rec in task_records],
+                        expected_window_id=snap_window_id,
+                        expected_launch_nonce=launch_nonce,
+                        socket_path=launch_sock,
+                        expected_server=launch_server,
+                    )
+                    for rec in task_records:
+                        pane_id = str(rec["pane_id"])
+                        snap = pane_snapshot[pane_id]
+                        pid = int(snap["pane_pid"])
                         rec["pid"] = pid
                         rec["pgid"] = _pgid_for_pid(pid)
                         rec["pid_start"] = _pid_start_identity(pid)
@@ -2574,111 +2872,318 @@ def start_team(
                             if rec["pgid"] is not None and rec["pid_start"] is not None
                             else "launched"
                         )
-                    else:
-                        rec["status"] = "launched"  # session created; pid unknown
-
-            _receipt, launch_receipt_sha256 = _persist_team_launch_receipt(
-                root_path,
-                rid,
-                session=session,
-                session_id=created_handle[1],
-                launch_nonce=launch_nonce,
-                tasks=task_records,
-            )
-            # Receipt published — clear durable new-window intent WAL.
-            if launch_intent_path:
-                from omg_cli.team.tmux import clear_team_launch_intent
-
-                clear_team_launch_intent(launch_intent_path)
-
-            meta = {
-                "writer": CLI_WRITER,
-                "schema_version": SCHEMA_VERSION,
-                "meta_generation": 0,
-                "run_id": rid,
-                "session": session,
-                "launch_nonce": launch_nonce,
-                "launch_receipt_sha256": launch_receipt_sha256,
-                "identity_generation": 0,
-                "identity_receipt_sha256": launch_receipt_sha256,
-                "dry_run": False,
-                "workspace_mode": WORKSPACE_MODE,
-                "goal": goal,
-                "task_count": n,
-                "next_worker_index": n,
-                "created_at": _utc_now(),
-                "tasks": _public_tasks(),
-                "multi_cli": multi_cli,
-                "routing": routing_payload,
-                "linked_ralph": None,
-                "topology": topology,
-                "team_id": tid_plane,
-                "owner_token": token,
-                "executor": executor_norm,
-                "attach_mode": tmux_launch.get("attach_mode"),
-                "session_owned": bool(tmux_launch.get("session_owned", True)),
-                "leader_pane_id": tmux_launch.get("leader_pane_id"),
-                "window_id": tmux_launch.get("window_id"),
-                "attach_hint": tmux_launch.get("attach_hint"),
-                "note": (
-                    "experimental fixture tmux team; hermetic ACK transport "
-                    "(not Grok live parity); stop via immutable launch identity"
-                    if executor_norm == "fixture"
-                    else (
-                        "experimental multi-CLI tmux team; stop via immutable launch identity"
-                        if multi_cli
-                        else "experimental grok-only tmux team; stop via immutable launch identity"
-                    )
-                ),
-            }
-            _atomic_write_json(team_meta_path(root_path, rid), meta)
-            write_status(
-                root_path,
-                rid,
-                "running",
-                extra={
-                    "team": True,
-                    "stage": "team_running",
-                    "session": session,
-                    "task_count": n,
-                    "multi_cli": multi_cli,
-                },
-            )
-            return meta
-        except Exception as exc:
-            cleanup_error = None
-            if created_handle is not None:
-                if topology == "split" and not bool(
-                    tmux_launch.get("session_owned", True)
-                ):
-                    from omg_cli.team.tmux import _kill_panes, _kill_window
-
-                    window_id = tmux_launch.get("window_id")
-                    if isinstance(window_id, str) and window_id:
-                        cleanup_error = _kill_window(window_id)
-                    else:
-                        pane_ids = [
-                            str(rec.get("pane_id"))
-                            for rec in task_records
-                            if isinstance(rec.get("pane_id"), str)
-                        ]
-                        cleanup_error = _kill_panes(pane_ids)
                 else:
-                    cleanup_error = _cleanup_created_tmux_session(created_handle)
-            restore_errors = _restore_live_start_files(snapshots)
-            # #17: also undo run/active/worktrees/team-dir created before the
-            # narrow file snapshot so a failed launch does not block retries.
-            extra = []
-            if cleanup_error:
-                extra.append(cleanup_error)
-            extra.extend(restore_errors)
-            raise _fail_start(exc, extra=extra) from exc
-    except TeamError as exc:
-        if str(exc).startswith(_tx_failed_prefix):
-            raise
-        raise _fail_start(exc) from exc
-    except Exception as exc:
-        raise _fail_start(exc) from exc
+                    pane_identities = _list_pane_identities(
+                        created_handle[1],
+                        socket_path=launch_sock,
+                        expected_server=launch_server,
+                    )
+                    if len(pane_identities) != len(task_records):
+                        raise TeamError("tmux launch identity readback failed")
+                    for rec in task_records:
+                        widx = int(rec["window_index"])
+                        pane_identity = pane_identities.get(widx)
+                        if pane_identity is not None:
+                            pane_id, pid = pane_identity
+                            rec["pane_id"] = pane_id
+                            rec["pid"] = pid
+                            rec["pgid"] = _pgid_for_pid(pid)
+                            rec["pid_start"] = _pid_start_identity(pid)
+                            rec["status"] = (
+                                "running"
+                                if rec["pgid"] is not None and rec["pid_start"] is not None
+                                else "launched"
+                            )
+                        else:
+                            rec["status"] = "launched"  # session created; pid unknown
+                    if launch_server is not None:
+                        _require_plane_tmux_server(
+                            launch_server,
+                            socket_path=launch_sock,
+                            action="windows receipt identity commit",
+                        )
+
+                intent_nonce: str | None = None
+                intent_window_name: str | None = None
+                if launch_intent_path:
+                    try:
+                        intent_raw = json.loads(
+                            Path(launch_intent_path).read_text(encoding="utf-8")
+                        )
+                    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                        raise TeamError(
+                            f"launch intent unreadable before receipt: {exc}"
+                        ) from exc
+                    if not isinstance(intent_raw, dict):
+                        raise TeamError("launch intent must be an object before receipt")
+                    intent_nonce = intent_raw.get("nonce")
+                    intent_window_name = intent_raw.get("window_name")
+                    intent_session = intent_raw.get("session_id")
+                    if (
+                        not isinstance(intent_nonce, str)
+                        or not intent_nonce
+                        or not isinstance(intent_window_name, str)
+                        or not intent_window_name
+                    ):
+                        raise TeamError(
+                            "launch intent missing nonce/window_name before receipt"
+                        )
+                    if intent_session != created_handle[1]:
+                        raise TeamError(
+                            "launch intent session_id drift before receipt publish"
+                        )
+
+                _receipt, launch_receipt_sha256 = _persist_team_launch_receipt(
+                    root_path,
+                    rid,
+                    session=session,
+                    session_id=created_handle[1],
+                    launch_nonce=launch_nonce,
+                    tasks=task_records,
+                    intent_nonce=intent_nonce,
+                    window_name=intent_window_name,
+                )
+
+                meta = {
+                    "writer": CLI_WRITER,
+                    "schema_version": SCHEMA_VERSION,
+                    "meta_generation": 0,
+                    "run_id": rid,
+                    "session": session,
+                    "launch_nonce": launch_nonce,
+                    "launch_receipt_sha256": launch_receipt_sha256,
+                    "identity_generation": 0,
+                    "identity_receipt_sha256": launch_receipt_sha256,
+                    "dry_run": False,
+                    "workspace_mode": WORKSPACE_MODE,
+                    "goal": goal,
+                    "task_count": n,
+                    "next_worker_index": n,
+                    "created_at": _utc_now(),
+                    "tasks": _public_tasks(),
+                    "multi_cli": multi_cli,
+                    "routing": routing_payload,
+                    "linked_ralph": None,
+                    "topology": topology,
+                    "team_id": tid_plane,
+                    "owner_token": token,
+                    "executor": executor_norm,
+                    "attach_mode": tmux_launch.get("attach_mode"),
+                    "session_owned": bool(tmux_launch.get("session_owned", True)),
+                    "leader_pane_id": tmux_launch.get("leader_pane_id"),
+                    "window_id": tmux_launch.get("window_id"),
+                    "attach_hint": tmux_launch.get("attach_hint"),
+                    "note": (
+                        "experimental fixture tmux team; hermetic ACK transport "
+                        "(not Grok live parity); stop via immutable launch identity"
+                        if executor_norm == "fixture"
+                        else (
+                            "experimental multi-CLI tmux team; stop via immutable launch identity"
+                            if multi_cli
+                            else "experimental grok-only tmux team; stop via immutable launch identity"
+                        )
+                    ),
+                }
+                # Persist WAL tmux server/session scope for stop/rollback kills.
+                launch_sid = tmux_launch.get("session_id")
+                if isinstance(launch_sid, str) and launch_sid:
+                    meta["session_id"] = launch_sid
+                else:
+                    meta["session_id"] = created_handle[1]
+                for _srv_key in (
+                    "tmux_socket_path",
+                    "tmux_server_pid",
+                    "tmux_server_pid_start",
+                ):
+                    if tmux_launch.get(_srv_key) is not None:
+                        meta[_srv_key] = tmux_launch[_srv_key]
+                # Commit point = durable receipt AND hash-bound team.json.
+                # write_status before WAL clear so a status failure still leaves
+                # the intent WAL as a sweep gate. Clear is terminal for the
+                # intent — after it succeeds, do not roll back authority files.
+                _atomic_write_json(team_meta_path(root_path, rid), meta)
+                if launch_intent_path:
+                    committed = load_team_meta(root_path, rid)
+                    verified = _load_team_launch_receipt(root_path, rid, committed)
+                    if (
+                        committed.get("launch_receipt_sha256") != launch_receipt_sha256
+                        or committed.get("session") != session
+                        or committed.get("launch_nonce") != launch_nonce
+                        or verified.get("session_id") != created_handle[1]
+                        or verified.get("launch_nonce") != launch_nonce
+                        or verified.get("session_name") != session
+                    ):
+                        raise TeamError(
+                            "team.json launch binding verification failed "
+                            "before intent clear"
+                        )
+                write_status(
+                    root_path,
+                    rid,
+                    "running",
+                    extra={
+                        "team": True,
+                        "stage": "team_running",
+                        "session": session,
+                        "task_count": n,
+                        "multi_cli": multi_cli,
+                    },
+                )
+                if launch_intent_path:
+                    from omg_cli.team.tmux import clear_team_launch_intent
+
+                    try:
+                        clear_team_launch_intent(launch_intent_path)
+                    except BaseException:
+                        # Unlink is the commit point — if the WAL is already gone,
+                        # retain authority even when clear raises afterward.
+                        try:
+                            if not Path(launch_intent_path).is_file():
+                                intent_wal_cleared = True
+                        except OSError:
+                            intent_wal_cleared = True
+                        raise
+                    intent_wal_cleared = True
+                return meta
+            except Exception as exc:
+                cleanup_error = None
+                if intent_wal_cleared:
+                    # Durable authority + cleared WAL: keep receipt/team.json and
+                    # the live session — rolling back would hide a running team.
+                    # Prefix matches outer handler so _fail_start does not rmtree.
+                    raise TeamError(
+                        f"{_tx_failed_prefix} (durable authority retained; "
+                        f"launch-intent WAL cleared): {exc}"
+                    ) from exc
+                if created_handle is not None:
+                    if topology == "split" and not bool(
+                        tmux_launch.get("session_owned", True)
+                    ):
+                        from omg_cli.team.tmux import (
+                            _intent_tmux_server,
+                            _kill_panes,
+                            _kill_window,
+                        )
+
+                        window_id = tmux_launch.get("window_id")
+                        if isinstance(window_id, str) and window_id:
+                            expected_server = _intent_tmux_server(tmux_launch)
+                            sock = (
+                                str(expected_server["tmux_socket_path"])
+                                if expected_server is not None
+                                else None
+                            )
+                            expected_session = tmux_launch.get("session_id")
+                            if not isinstance(expected_session, str):
+                                expected_session = created_handle[1]
+                            cleanup_error = _kill_window(
+                                window_id,
+                                socket_path=sock,
+                                expected_session_id=expected_session,
+                                expected_server=expected_server,
+                            )
+                        else:
+                            pane_ids = [
+                                str(rec.get("pane_id"))
+                                for rec in task_records
+                                if isinstance(rec.get("pane_id"), str)
+                            ]
+                            cleanup_error = _kill_panes(pane_ids)
+                    else:
+                        cleanup_sock, cleanup_server = _tmux_scope_from_launch(
+                            tmux_launch
+                        )
+                        cleanup_error = _cleanup_created_tmux_session(
+                            created_handle,
+                            socket_path=cleanup_sock,
+                            expected_server=cleanup_server,
+                        )
+                if cleanup_error is not None:
+                    # Unproven cleanup → keep receipt/team.json/WAL/team dir so
+                    # stop/sweep retain identity authority. Do not rmtree.
+                    raise TeamError(
+                        f"{_tx_failed_prefix} (tmux cleanup unproven; "
+                        f"authority retained): {exc}; {cleanup_error}"
+                    ) from exc
+                restore_errors = _restore_live_start_files(
+                    snapshots, unlink_new=True
+                )
+                # #17: also undo run/active/worktrees/team-dir created before the
+                # narrow file snapshot so a failed launch does not block retries.
+                extra = list(restore_errors)
+                raise _fail_start(exc, extra=extra) from exc
+        except TeamError as exc:
+            if str(exc).startswith(_tx_failed_prefix):
+                raise
+            raise _fail_start(exc) from exc
+        except Exception as exc:
+            raise _fail_start(exc) from exc
+
+    finally:
+        _launch_lock_stack.close()
+
+
+def _worker_pane_liveness(
+    *,
+    pane_id: str,
+    session: str,
+    expected_session_id: str | None,
+    launch_nonce: str | None,
+    expected_pid_start: str | None,
+    expected_pid: int | None,
+) -> Literal["alive", "proven_absent", "present_foreign", "unknown"]:
+    """Fail-closed pane liveness for status / resume / relaunch.
+
+    States:
+    - ``alive`` — exact receipt identity is live
+    - ``proven_absent`` — successful complete ``list-panes -a`` missing the pane
+    - ``present_foreign`` — pane still addressable but dead/foreign/drifted
+    - ``unknown`` — probe inconclusive (never authorize side-effect relaunch)
+
+    Side-effect relaunch may create a replacement pane **only** for
+    ``proven_absent``. ``present_foreign`` and ``unknown`` must refuse split.
+    """
+    if not expected_session_id or not launch_nonce or not session:
+        return "unknown"
+    try:
+        from omg_cli.team.tmux import probe_worker_pane_identity
+
+        probed = probe_worker_pane_identity(pane_id)
+        if probed is None:
+            absent, _err = _pane_proven_absent(pane_id)
+            if absent is True:
+                return "proven_absent"
+            return "unknown"
+        if probed.get("dead"):
+            return "present_foreign"
+        if probed.get("session_id") != expected_session_id:
+            return "present_foreign"
+        live_nonce, nonce_ok = _probe_tmux_launch_nonce_for_pane(
+            pane_id, session, allow_session_fallback=False
+        )
+        if not nonce_ok:
+            return "unknown"
+        if live_nonce != launch_nonce:
+            return "present_foreign"
+        live_pid = probed.get("pane_pid")
+        if not isinstance(live_pid, int) or live_pid <= 0:
+            return "present_foreign"
+        if expected_pid_start:
+            if expected_pid is not None and live_pid != expected_pid:
+                return "present_foreign"
+            live_start = _pid_start_identity(live_pid)
+            if not live_start:
+                return "unknown"
+            if live_start != expected_pid_start:
+                return "present_foreign"
+            return "alive"
+        if expected_pid is not None:
+            if live_pid != expected_pid:
+                return "present_foreign"
+            return "alive"
+        return "alive"
+    except OSError:
+        return "unknown"
 
 
 def _status_worker_alive(
@@ -2690,74 +3195,29 @@ def _status_worker_alive(
     expected_pid_start: str | None,
     expected_pid: int | None,
 ) -> bool | None:
-    """Fail-closed status liveness using pane + session + nonce (+ PID start).
+    """Tri-state wrapper over :func:`_worker_pane_liveness` for status/resume.
 
-    Tri-state (ALIVE / DEAD_OR_FOREIGN / UNKNOWN):
-    - ``True`` — exact receipt identity is live (ALIVE)
-    - ``False`` — successful probe proves dead / foreign identity (DEAD_OR_FOREIGN)
-    - ``None`` — probe unknown (tmux error / malformed / unavailable) (UNKNOWN)
+    - ``True`` — ``alive``
+    - ``False`` — ``proven_absent`` or ``present_foreign``
+    - ``None`` — ``unknown``
 
-    Side-effect paths (resume / relaunch) must treat ``None`` as refuse/skip,
-    never as confirmed dead (avoids double-worker respawn). Only ``False`` may
-    enter relaunch candidates / write relaunch WAL / call ``respawn_worker_pane``.
-
-    Layer rules:
-    - pane probe OSError / non-zero / malformed → try ``list-panes -a`` absence
-      proof; proven absent → False; otherwise → None
-    - ``pane_dead=1`` or session-id mismatch → False
-    - pane nonce OSError / non-zero / malformed / missing → None (not False)
-    - successfully read a different valid nonce → False
-    - pid-start probe unavailable → None; successful mismatch → False
-
-    New-format receipts (``pid_start`` present) require AND identity:
-    ``live_pid == expected_pid`` **and** ``live_start == expected_pid_start``.
-    Start-id alone is insufficient (collision across different PIDs).
-    Legacy receipts with only ``pid`` keep pid-only comparison.
+    Side-effect relaunch must call :func:`_worker_pane_liveness` directly and
+    only respawn on ``proven_absent``.
     """
-    if not expected_session_id or not launch_nonce or not session:
-        return None
-    try:
-        from omg_cli.team.tmux import probe_worker_pane_identity
-
-        probed = probe_worker_pane_identity(pane_id)
-        if probed is None:
-            # display-message failed or malformed — prove absence via list-panes
-            # before treating as UNKNOWN (killed panes must be relaunchable).
-            absent, _err = _pane_proven_absent(pane_id)
-            if absent is True:
-                return False
-            return None
-        if probed.get("dead"):
-            return False
-        if probed.get("session_id") != expected_session_id:
-            return False
-        # Valid pane_id receipts never adopt a shared session nonce fallback.
-        live_nonce, nonce_ok = _probe_tmux_launch_nonce_for_pane(
-            pane_id, session, allow_session_fallback=False
-        )
-        if not nonce_ok:
-            return None
-        if live_nonce != launch_nonce:
-            return False
-        live_pid = probed.get("pane_pid")
-        if not isinstance(live_pid, int) or live_pid <= 0:
-            return False
-        if expected_pid_start:
-            # When both pid and pid_start are receipted, require AND (not OR).
-            if expected_pid is not None and live_pid != expected_pid:
-                return False
-            live_start = _pid_start_identity(live_pid)
-            # Unavailable start-id probe is UNKNOWN — never authorize relaunch.
-            if not live_start:
-                return None
-            if live_start != expected_pid_start:
-                return False
-            return True
-        if expected_pid is not None:
-            return live_pid == expected_pid
+    state = _worker_pane_liveness(
+        pane_id=pane_id,
+        session=session,
+        expected_session_id=expected_session_id,
+        launch_nonce=launch_nonce,
+        expected_pid_start=expected_pid_start,
+        expected_pid=expected_pid,
+    )
+    if state == "alive":
         return True
-    except OSError:
+    if state == "unknown":
         return None
+    return False
+
 
 
 def team_status(
@@ -3865,27 +4325,64 @@ def _stop_team_locked(
             session_id = str(receipt["session_id"])
             try:
                 if session_owned:
-                    r = _tmux_run(["kill-session", "-t", session_id])
-                    probe = _tmux_run(["has-session", "-t", session_id])
-                    if r.returncode == 0 and probe.returncode == 1:
-                        session_disappearance_verified = True
-                        actions.append(f"tmux kill-session -t {session_id}")
-                        actions.append(f"tmux disappearance verified {session_id}")
-                    elif r.returncode != 0:
-                        errors.append(
-                            f"tmux kill-session failed for {session_id}: exit {r.returncode}"
+                    stop_sock, stop_server = _tmux_scope_from_launch(meta)
+                    if stop_server is not None:
+                        from omg_cli.team.tmux import _cleanup_session
+
+                        kill_err = _cleanup_session(
+                            (session, session_id),
+                            socket_path=stop_sock,
+                            expected_server=stop_server,
                         )
+                        if kill_err is None:
+                            session_disappearance_verified = True
+                            actions.append(f"tmux kill-session -t {session_id}")
+                            actions.append(
+                                f"tmux disappearance verified {session_id}"
+                            )
+                        else:
+                            errors.append(kill_err)
                     else:
-                        errors.append(
-                            "tmux session disappearance unproved "
-                            f"for {session_id}: has-session exit {probe.returncode}"
-                        )
+                        r = _tmux_run(["kill-session", "-t", session_id])
+                        probe = _tmux_run(["has-session", "-t", session_id])
+                        if r.returncode == 0 and probe.returncode == 1:
+                            session_disappearance_verified = True
+                            actions.append(f"tmux kill-session -t {session_id}")
+                            actions.append(
+                                f"tmux disappearance verified {session_id}"
+                            )
+                        elif r.returncode != 0:
+                            errors.append(
+                                f"tmux kill-session failed for {session_id}: "
+                                f"exit {r.returncode}"
+                            )
+                        else:
+                            errors.append(
+                                "tmux session disappearance unproved "
+                                f"for {session_id}: has-session exit "
+                                f"{probe.returncode}"
+                            )
                 else:
                     # Shared session: remove only the team window (or panes).
-                    from omg_cli.team.tmux import _kill_panes, _kill_window
+                    from omg_cli.team.tmux import (
+                        _intent_tmux_server,
+                        _kill_panes,
+                        _kill_window,
+                    )
 
                     if isinstance(window_id, str) and window_id:
-                        win_err = _kill_window(window_id)
+                        expected_server = _intent_tmux_server(meta)
+                        sock = (
+                            str(expected_server["tmux_socket_path"])
+                            if expected_server is not None
+                            else None
+                        )
+                        win_err = _kill_window(
+                            window_id,
+                            socket_path=sock,
+                            expected_session_id=session_id,
+                            expected_server=expected_server,
+                        )
                         if win_err:
                             errors.append(win_err)
                         else:

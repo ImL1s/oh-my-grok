@@ -46,6 +46,7 @@ from omg_cli.team.plane import (
     _list_pane_identities,
     _load_team_identity_chain,
     _pane_env_pairs,
+    _pane_proven_absent,
     _pgid_for_pid,
     _pid_start_identity,
     _persist_team_identity_receipt,
@@ -58,6 +59,7 @@ from omg_cli.team.plane import (
     _tmux_run,
     _utc_now,
     _window_alive,
+    _worker_pane_liveness,
     build_team_task_prompt,
     build_executor_pane_command,
     experimental_enabled,
@@ -5145,9 +5147,9 @@ def _relaunch_dead_incomplete_workers_locked(
         expected_start = rec.get("pid_start")
         expected_start_s = expected_start if isinstance(expected_start, str) else None
         # Exact identity only — bare pane_alive would skip relaunch for a
-        # respawned %id hosting a foreign process. Tri-state: None=unknown
-        # must never spawn a replacement (double-worker risk).
-        alive = _status_worker_alive(
+        # respawned %id hosting a foreign process. Only proven_absent may
+        # enter relaunch (present_foreign / unknown must never split-window).
+        liveness = _worker_pane_liveness(
             pane_id=pane_id,
             session=session,
             expected_session_id=relaunch_expected_session_id,
@@ -5155,13 +5157,16 @@ def _relaunch_dead_incomplete_workers_locked(
             expected_pid_start=expected_start_s,
             expected_pid=expected_pid_i,
         )
-        if alive is True:
+        if liveness == "alive":
             skipped.append({"task_id": tid, "reason": "alive"})
             continue
-        if alive is None:
+        if liveness == "unknown":
             skipped.append({"task_id": tid, "reason": "probe_unknown"})
             continue
-        # Dead pane or identity drift (respawn / reuse).
+        if liveness == "present_foreign":
+            skipped.append({"task_id": tid, "reason": "present_foreign"})
+            continue
+        # proven_absent — candidate for replacement pane.
         terminal = _worker_api_tasks_terminal(
             root_path,
             run_id=rid,
@@ -5228,6 +5233,16 @@ def _relaunch_dead_incomplete_workers_locked(
         window_id=relaunch_window_id,
     ):
         raise TeamError("live tmux launch nonce mismatch; refuse relaunch")
+
+    from omg_cli.team.tmux import _intent_tmux_server
+
+    relaunch_server = _intent_tmux_server(meta)
+    if relaunch_server is None:
+        raise TeamError(
+            "relaunch refused: team meta missing durable tmux server identity"
+        )
+    relaunch_socket = str(relaunch_server["tmux_socket_path"])
+    relaunch_session_id = str(authority["session_id"])
 
     if meta.get("topology") != "split":
         raise TeamError(
@@ -5356,6 +5371,15 @@ def _relaunch_dead_incomplete_workers_locked(
                 start_command=start_command,
             )
             if adopted is None:
+                old_pane = rec.get("pane_id")
+                if isinstance(old_pane, str) and old_pane:
+                    absent, absent_err = _pane_proven_absent(old_pane)
+                    if absent is not True:
+                        raise TeamError(
+                            f"relaunch refused: receipted pane {old_pane!r} not "
+                            f"proven absent before split"
+                            + (f" ({absent_err})" if absent_err else "")
+                        )
                 env_pairs = _pane_env_pairs(
                     run_id=rid,
                     team_id=team_id,
@@ -5370,6 +5394,14 @@ def _relaunch_dead_incomplete_workers_locked(
                         worktree=str(rec["worktree"]),
                         pane_command=start_command,
                         env_pairs=env_pairs,
+                        socket_path=relaunch_socket,
+                        expected_server=relaunch_server,
+                        expected_session_id=relaunch_session_id,
+                        expected_window_id=(
+                            str(target)
+                            if isinstance(target, str) and target.startswith("@")
+                            else relaunch_window_id
+                        ),
                     )
                 except TmuxTeamError as exc:
                     adopted = _wait_for_relaunch_pane(
