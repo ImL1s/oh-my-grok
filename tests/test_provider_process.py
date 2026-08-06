@@ -128,6 +128,92 @@ def test_cancel_kills_process_group(tmp_path: Path) -> None:
     assert result.timed_out is False
 
 
+@pytest.mark.skipif(os.name != "posix", reason="process-group killpg is POSIX-only")
+def test_keyboard_interrupt_kills_process_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BaseException unwind must killpg before joining pipe readers."""
+    import subprocess
+
+    from omg_cli.providers import process as process_mod
+
+    marker = tmp_path / "grandchild.alive"
+    script = tmp_path / "hang_tree.py"
+    script.write_text(
+        f"""\
+import subprocess, sys, time
+from pathlib import Path
+marker = Path({str(marker)!r})
+subprocess.Popen(
+    [sys.executable, "-c",
+     "import time; from pathlib import Path; m=Path({str(marker)!r});\\n"
+     "while True:\\n"
+     " m.write_text(str(time.time()), encoding='utf-8'); time.sleep(0.05)\\n"],
+)
+while True:
+    time.sleep(0.05)
+""",
+        encoding="utf-8",
+    )
+
+    real_poll = subprocess.Popen.poll
+    armed = {"n": 0}
+
+    def poll_then_interrupt(self, *args, **kwargs):
+        armed["n"] += 1
+        if armed["n"] >= 3:
+            raise KeyboardInterrupt()
+        return real_poll(self, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "poll", poll_then_interrupt)
+    monkeypatch.setattr(process_mod.subprocess.Popen, "poll", poll_then_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        run_probe_process(
+            [sys.executable, str(script)],
+            env={"PATH": os.environ.get("PATH", "")},
+            timeout_s=5.0,
+        )
+
+    deadline = time.monotonic() + 2.0
+    last = marker.read_text(encoding="utf-8") if marker.exists() else ""
+    while time.monotonic() < deadline:
+        time.sleep(0.2)
+        now = marker.read_text(encoding="utf-8") if marker.exists() else ""
+        if now == last:
+            break
+        last = now
+    else:
+        pytest.fail("grandchild still alive after KeyboardInterrupt killpg")
+
+
+def test_antigravity_probes_pass_cancel_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    """version/help probes must wire cancel_event into run_probe_process."""
+    from omg_cli.providers import antigravity as agy_mod
+    from omg_cli.providers.process import ProbeProcessResult
+
+    seen: list[object] = []
+    help_text = (
+        Path(__file__).resolve().parent / "fixtures" / "antigravity" / "help.txt"
+    ).read_text(encoding="utf-8")
+
+    def fake_run(argv, **kwargs):
+        seen.append(kwargs.get("cancel_event"))
+        text = help_text if "--help" in argv else "1.1.10\n"
+        return ProbeProcessResult(
+            argv=tuple(argv),
+            returncode=0,
+            stdout=text,
+            stderr="",
+        )
+
+    monkeypatch.setattr(agy_mod, "run_probe_process", fake_run)
+    monkeypatch.setattr(agy_mod, "discover_binary", lambda: "/tmp/fake-agy")
+    agy_mod.probe_version("/tmp/fake-agy")
+    agy_mod._probe_help_text("/tmp/fake-agy")
+    assert len(seen) == 2
+    assert all(isinstance(ev, threading.Event) for ev in seen)
+
+
 def test_overflow_stops_process_and_flags_result(tmp_path: Path) -> None:
     script = tmp_path / "spew.py"
     script.write_text(

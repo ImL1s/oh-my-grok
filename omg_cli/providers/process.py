@@ -1,9 +1,10 @@
 """Bounded argv probe runner with process-group cleanup (#67-A).
 
 Probes use ``shell=False``, an allowlisted env (caller-supplied), byte-capped
-stdout/stderr, and on POSIX ``start_new_session`` so timeout/cancel/overflow
-can ``killpg`` the whole child tree. Windows gets best-effort ``proc.kill()``
-only — process-tree cancel is not claimed there.
+stdout/stderr, and on POSIX ``start_new_session`` so timeout/cancel/overflow/
+KeyboardInterrupt (and other BaseException unwind) can ``killpg`` the whole
+child tree. Windows gets best-effort ``proc.kill()`` only — process-tree cancel
+is not claimed there.
 """
 
 from __future__ import annotations
@@ -112,7 +113,7 @@ def run_probe_process(
     max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
     cancel_event: threading.Event | None = None,
 ) -> ProbeProcessResult:
-    """Run a fixed argv probe; kill the process group on timeout/cancel/overflow."""
+    """Run a fixed argv probe; kill the process group on timeout/cancel/overflow/interrupt."""
     clean_argv = _validate_argv(argv)
     if timeout_s <= 0:
         raise ProbeProcessError("timeout_s must be positive")
@@ -173,31 +174,42 @@ def run_probe_process(
     overflow = False
     deadline = time.monotonic() + float(timeout_s)
     try:
-        while True:
-            if cancel_event is not None and cancel_event.is_set():
-                cancelled = True
-                _kill_tree(proc)
-                break
-            if stdout_overflow[0] or stderr_overflow[0]:
-                overflow = True
-                _kill_tree(proc)
-                break
-            rc = proc.poll()
-            if rc is not None:
-                break
-            if time.monotonic() >= deadline:
-                timed_out = True
-                _kill_tree(proc)
-                break
-            time.sleep(0.02)
         try:
-            proc.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            _kill_tree(proc)
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                    _kill_tree(proc)
+                    break
+                if stdout_overflow[0] or stderr_overflow[0]:
+                    overflow = True
+                    _kill_tree(proc)
+                    break
+                rc = proc.poll()
+                if rc is not None:
+                    break
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    _kill_tree(proc)
+                    break
+                time.sleep(0.02)
             try:
                 proc.wait(timeout=2.0)
             except subprocess.TimeoutExpired:
+                _kill_tree(proc)
+                try:
+                    proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    pass
+        except BaseException:
+            # KeyboardInterrupt / SIGINT unwind: POSIX children are in a new
+            # session and will not receive the terminal signal — killpg first
+            # so finally does not block forever on pipe readers.
+            _kill_tree(proc)
+            try:
+                proc.wait(timeout=2.0)
+            except (subprocess.TimeoutExpired, OSError):
                 pass
+            raise
     finally:
         stop_readers.set()
         for t in readers:

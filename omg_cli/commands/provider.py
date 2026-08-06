@@ -85,17 +85,61 @@ def _cmd_provider_capabilities(args: argparse.Namespace, name: str) -> int:
 
 
 def _cmd_provider_doctor(args: argparse.Namespace, name: str) -> int:
+    """Emit doctor result using success/failure envelopes (never splat report.ok).
+
+    Exit 0 means the query completed without a hard failure (including non-strict
+    degraded readiness). Exit 1 is a hard failure. Outer ``ok`` follows the
+    envelope contract: ``success`` for exit 0, ``failure`` with ``E_PROVIDER_DOCTOR``
+    for exit 1. Domain readiness lives under ``doctor`` / ``ready``.
+    """
     adapter = _resolve_adapter(name)
     strict = bool(getattr(args, "strict", False))
     report = adapter.doctor(strict=strict)
-    payload = report.to_dict()
     cmd = f"provider.{name}.doctor"
+    doctor_body: dict = {
+        "ok": bool(report.ok),
+        "ready": bool(report.ok),
+        "exit_code": int(report.exit_code),
+        "checks": list(report.checks),
+        "strict": strict,
+    }
+    if report.capabilities is not None:
+        doctor_body["capabilities"] = report.capabilities.to_dict()
+
+    fail_lines = [c for c in report.checks if c.startswith("FAIL:")]
+    message = fail_lines[0] if fail_lines else (
+        "provider doctor reported not ready"
+        if not report.ok
+        else "provider doctor ready"
+    )
+
     if wants_json(args):
-        emit_json(success(cmd, **payload))
+        if int(report.exit_code) != 0:
+            emit_json(
+                failure(
+                    cmd,
+                    "E_PROVIDER_DOCTOR",
+                    message,
+                    details={"doctor": doctor_body},
+                    next_action=(
+                        "Install/fix agy, set OMG_AGY_BIN, or re-run without "
+                        "--strict for a degraded report"
+                    ),
+                )
+            )
+        else:
+            # Query completed: outer ok=true even when nested ready=false (soft).
+            emit_json(
+                success(
+                    cmd,
+                    ready=bool(report.ok),
+                    doctor=doctor_body,
+                )
+            )
     else:
         for line in report.checks:
             print(line)
-        if report.capabilities is not None and not wants_json(args):
+        if report.capabilities is not None:
             print(
                 f"compat={report.capabilities.compat_status} "
                 f"version={report.capabilities.version} "
@@ -132,12 +176,15 @@ def register_provider_parsers(
     p_doc = agy_sub.add_parser(
         "doctor",
         parents=[common],
-        help="classify install/compat readiness (use --strict to fail closed)",
+        help=(
+            "provider-scoped install/compat readiness "
+            "(not part of top-level omg doctor; use --strict to fail closed)"
+        ),
     )
     p_doc.add_argument(
         "--strict",
         action="store_true",
-        help="exit non-zero on missing binary or incompatible version",
+        help="exit non-zero on missing binary, incompatible version, or missing evidence",
     )
     p_doc.set_defaults(func=cmd_provider, provider_action="doctor")
 

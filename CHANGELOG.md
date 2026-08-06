@@ -24,6 +24,15 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `killpg` on timeout/cancel/overflow with bounded output; `provider` is
   install/global-scoped; CLI routes via `ProviderAdapter`; neutral
   `ProviderCapabilities` defaults no longer carry Antigravity-positive claims.
+- **#67-A PR #94 GPT Pro re-audit round 2:** `_parse_help_supports` is
+  fail-closed on structured flag/enum/subcommand boundaries only (colliding
+  prose like `allows`/`plan`/`low`/`--project` cannot forge evidence);
+  `run_probe_process` kills the process group on KeyboardInterrupt/BaseException
+  before joining pipe readers, and version/help probes pass `cancel_event`
+  (SIGINT-wired); `omg provider antigravity doctor --json` uses
+  `success`/`failure` envelopes (`E_PROVIDER_DOCTOR`) instead of splatting
+  `DoctorReport.ok` over `success()`. Top-level `omg doctor --strict` remains
+  out of scope for the Antigravity probe in slice A.
 
 ## [0.7.6] - 2026-08-06
 

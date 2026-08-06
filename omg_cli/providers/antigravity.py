@@ -52,6 +52,16 @@ _AG_LIMITATIONS: Final[tuple[str, ...]] = (
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 _PROBE_TIMEOUT_S: Final[float] = DEFAULT_PROBE_TIMEOUT_S
 
+# Flag lines: ``  --flag   description`` (two+ spaces before description).
+_FLAG_LINE_RE = re.compile(r"^[ \t]+(-{1,2}[\w-]+)[ \t]{2,}(.*)$")
+# Parenthetical enum groups in flag descriptions.
+_ENUM_GROUP_RE = re.compile(r"\(([^)]+)\)")
+_KNOWN_OUTPUT_FORMATS: Final[frozenset[str]] = frozenset(
+    {"text", "json", "stream-json"}
+)
+_KNOWN_EFFORTS: Final[frozenset[str]] = frozenset({"low", "medium", "high"})
+_KNOWN_MODES: Final[frozenset[str]] = frozenset({"accept-edits", "plan"})
+
 # Env keys allowed through to child probes (plus PATH / override path).
 _BOUNDED_ENV_KEYS: Final[frozenset[str]] = frozenset(
     {
@@ -133,6 +143,46 @@ def classify_compat(version: VersionInfo | tuple[int, int, int] | None) -> Compa
     return "compatible"
 
 
+def _run_probe_argv(argv: list[str]):
+    """Run a probe argv with cancel_event wired for Ctrl-C / SIGINT cleanup."""
+    import signal
+    import threading
+
+    cancel = threading.Event()
+    previous = None
+    if (
+        os.name == "posix"
+        and threading.current_thread() is threading.main_thread()
+    ):
+        def _on_sigint(signum, frame):  # noqa: ARG001
+            cancel.set()
+
+        previous = signal.getsignal(signal.SIGINT)
+        try:
+            signal.signal(signal.SIGINT, _on_sigint)
+        except (ValueError, OSError):
+            previous = None
+
+    try:
+        result = run_probe_process(
+            argv,
+            env=_bounded_env(),
+            timeout_s=_PROBE_TIMEOUT_S,
+            cancel_event=cancel,
+        )
+    finally:
+        if previous is not None:
+            try:
+                signal.signal(signal.SIGINT, previous)
+            except (ValueError, OSError):
+                pass
+
+    if cancel.is_set() and result.cancelled:
+        # Preserve Ctrl-C semantics after process-group cleanup.
+        raise KeyboardInterrupt()
+    return result
+
+
 def probe_version(binary: str | None = None) -> VersionInfo:
     """Run ``[binary, --version]`` via argv (no shell) and parse stdout.
 
@@ -142,11 +192,7 @@ def probe_version(binary: str | None = None) -> VersionInfo:
     path = binary or discover_binary()
     argv = [path, "--version"]
     try:
-        result = run_probe_process(
-            argv,
-            env=_bounded_env(),
-            timeout_s=_PROBE_TIMEOUT_S,
-        )
+        result = _run_probe_argv(argv)
     except ProbeProcessError as exc:
         raise ProviderVersionError(f"version probe failed for {path}: {exc}") from exc
     if result.timed_out:
@@ -170,34 +216,98 @@ def probe_version(binary: str | None = None) -> VersionInfo:
     return info
 
 
+def _extract_flag_map(help_text: str) -> dict[str, str]:
+    """Map exact flag tokens (``--print``, ``-p``, …) to their descriptions."""
+    flags: dict[str, str] = {}
+    for line in help_text.splitlines():
+        m = _FLAG_LINE_RE.match(line)
+        if not m:
+            continue
+        flags[m.group(1)] = m.group(2).strip()
+    return flags
+
+
+def _extract_subcommands(help_text: str) -> frozenset[str]:
+    """Parse names under an ``Available subcommands:`` section only."""
+    names: set[str] = set()
+    in_section = False
+    for line in help_text.splitlines():
+        stripped = line.strip()
+        if not in_section:
+            if stripped.lower().startswith("available subcommands"):
+                in_section = True
+            continue
+        if not stripped:
+            if names:
+                break
+            continue
+        # Leave the section on a non-indented header.
+        if line[:1] not in (" ", "\t"):
+            break
+        token = stripped.split(None, 1)[0].lower()
+        if token:
+            names.add(token)
+    return frozenset(names)
+
+
+def _enum_values_from_desc(desc: str, allowed: frozenset[str]) -> tuple[str, ...]:
+    """Pull allowed enum tokens from parenthetical groups; ignore ``default …``."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for group in _ENUM_GROUP_RE.findall(desc):
+        inner = group.strip()
+        if inner.lower().startswith("default"):
+            continue
+        for part in re.split(r"[|,]", inner):
+            token = part.strip().lower()
+            if token in allowed and token not in seen:
+                seen.add(token)
+                found.append(token)
+    return tuple(found)
+
+
 def _parse_help_supports(help_text: str) -> dict[str, object]:
-    """Derive support flags from observed help text only (never invent)."""
-    low = help_text.lower()
-    formats: list[str] = []
-    if "text" in low and "output-format" in low:
-        formats.append("text")
-    if "json" in low:
-        formats.append("json")
-    if "stream-json" in low:
-        formats.append("stream-json")
-    efforts: list[str] = []
-    for e in ("low", "medium", "high"):
-        if e in low:
-            efforts.append(e)
-    modes: list[str] = []
-    if "accept-edits" in low:
-        modes.append("accept-edits")
-    if "plan" in low:
-        modes.append("plan")
+    """Derive supports from structured flag/enum/subcommand evidence only.
+
+    Fail-closed: loose prose / unrelated substrings (``allows``, ``plan``,
+    ``low``, ``-p`` inside ``--project``, ``json`` inside ``--json-schema``)
+    must never invent capability claims.
+    """
+    if not help_text or not str(help_text).strip():
+        return {
+            "output_formats": (),
+            "efforts": (),
+            "modes": (),
+            "print_mode": False,
+            "sandbox": False,
+            "agents_subcommand": False,
+            "models_subcommand": False,
+            "plugins_subcommand": False,
+        }
+
+    flags = _extract_flag_map(help_text)
+    subcommands = _extract_subcommands(help_text)
+
+    formats = _enum_values_from_desc(
+        flags.get("--output-format", ""), _KNOWN_OUTPUT_FORMATS
+    )
+    efforts = _enum_values_from_desc(flags.get("--effort", ""), _KNOWN_EFFORTS)
+    modes = _enum_values_from_desc(flags.get("--mode", ""), _KNOWN_MODES)
+
+    print_mode = "--print" in flags
+    if not print_mode and "-p" in flags:
+        # Accept ``-p`` only when its description aliases ``--print``.
+        print_mode = "--print" in flags["-p"].lower()
+
     return {
-        "output_formats": tuple(formats),
-        "efforts": tuple(efforts),
-        "modes": tuple(modes),
-        "print_mode": "--print" in low or "-p" in low,
-        "sandbox": "--sandbox" in low,
-        "agents_subcommand": "agent" in low,
-        "models_subcommand": "models" in low,
-        "plugins_subcommand": "plugin" in low,
+        "output_formats": formats,
+        "efforts": efforts,
+        "modes": modes,
+        "print_mode": print_mode,
+        "sandbox": "--sandbox" in flags,
+        "agents_subcommand": bool(subcommands & {"agent", "agents"}),
+        "models_subcommand": "models" in subcommands,
+        "plugins_subcommand": bool(subcommands & {"plugin", "plugins"}),
     }
 
 
@@ -205,11 +315,7 @@ def _probe_help_text(binary: str) -> str:
     """Run ``[binary, --help]``; require successful exit and non-empty evidence."""
     argv = [binary, "--help"]
     try:
-        result = run_probe_process(
-            argv,
-            env=_bounded_env(),
-            timeout_s=_PROBE_TIMEOUT_S,
-        )
+        result = _run_probe_argv(argv)
     except ProbeProcessError as exc:
         raise ProviderProbeError(f"help probe failed for {binary}: {exc}") from exc
     if result.timed_out:
@@ -272,6 +378,9 @@ def doctor(*, strict: bool = False, binary: str | None = None) -> DoctorReport:
     Slice A never claims ``live_call_ready`` or authenticated=true without a
     later live probe (#67-B+). Successful version+help probes with real observed
     support evidence are required before ``ok`` / strict exit 0.
+
+    Note: top-level ``omg doctor --strict`` does **not** run this Antigravity
+    probe in slice A — callers must use ``omg provider antigravity doctor``.
     """
     checks: list[str] = []
     try:

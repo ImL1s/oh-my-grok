@@ -180,6 +180,72 @@ def test_probe_help_nonzero_or_empty_fails(
     assert invented["print_mode"] is False
 
 
+def test_parse_help_ignores_unrelated_substrings() -> None:
+    """Loose help prose must not forge formats/efforts/modes/print_mode."""
+    from omg_cli.providers.antigravity import _parse_help_supports
+
+    colliding = """\
+Usage of agy:
+  --project                       Project ID allows explanation of plan at low cost
+  --json-schema                   Optional JSON schema string for structured output
+  --prompt-interactive            Run an initial prompt interactively
+"""
+    parsed = _parse_help_supports(colliding)
+    assert parsed["output_formats"] == ()
+    assert parsed["efforts"] == ()
+    assert parsed["modes"] == ()
+    assert parsed["print_mode"] is False
+    assert parsed["sandbox"] is False
+    assert parsed["agents_subcommand"] is False
+    assert parsed["models_subcommand"] is False
+    assert parsed["plugins_subcommand"] is False
+
+
+def test_parse_help_reads_structured_option_enums() -> None:
+    """Only option/enum/subcommand boundaries count as observed evidence."""
+    from omg_cli.providers.antigravity import _parse_help_supports
+
+    help_text = FIXTURES.joinpath("help.txt").read_text(encoding="utf-8")
+    parsed = _parse_help_supports(help_text)
+    assert parsed["output_formats"] == ("text", "json", "stream-json")
+    assert parsed["efforts"] == ("low", "medium", "high")
+    assert parsed["modes"] == ("accept-edits", "plan")
+    assert parsed["print_mode"] is True
+    assert parsed["sandbox"] is True
+    assert parsed["agents_subcommand"] is True
+    assert parsed["models_subcommand"] is True
+    assert parsed["plugins_subcommand"] is True
+
+
+def test_doctor_strict_rejects_colliding_help_prose(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Compatible version + colliding prose help must not strict false-green."""
+    from omg_cli.providers.antigravity import doctor
+
+    path = _install_fake_agy(tmp_path / "bin")
+    junk = tmp_path / "junk-help.txt"
+    junk.write_text(
+        "Usage of agy:\n"
+        "  --project                       Project ID allows explanation of plan at low cost\n"
+        "  --json-schema                   Optional JSON schema\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    monkeypatch.setenv("OMG_AGY_BIN", str(path))
+    monkeypatch.setenv("FAKE_AGY_HELP", str(junk))
+
+    report = doctor(strict=True, binary=str(path))
+    assert report.ok is False
+    assert report.exit_code == 1
+    assert any("no observed capability evidence" in c for c in report.checks)
+    assert report.capabilities is not None
+    assert report.capabilities.output_formats == ()
+    assert report.capabilities.efforts == ()
+    assert report.capabilities.modes == ()
+    assert report.capabilities.print_mode is False
+
+
 def test_doctor_strict_false_green_on_failed_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -323,6 +389,68 @@ def test_cli_doctor_strict_missing(
     monkeypatch.delenv("OMG_AGY_BIN", raising=False)
     rc = main(["provider", "antigravity", "doctor", "--strict"])
     assert rc == 1
+
+
+def test_cli_doctor_json_failure_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Strict doctor failure must use failure() envelope (error code, ok=false)."""
+    from omg_cli.cli_envelope import SCHEMA_VERSION
+    from omg_cli.main import main
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.delenv("OMG_AGY_BIN", raising=False)
+    rc = main(["provider", "antigravity", "doctor", "--strict", "--json"])
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["schema_version"] == SCHEMA_VERSION
+    assert payload["command"] == "provider.antigravity.doctor"
+    err = payload.get("error") or {}
+    assert err.get("code") == "E_PROVIDER_DOCTOR" or payload.get("error_code") == (
+        "E_PROVIDER_DOCTOR"
+    )
+    assert "message" in payload or (isinstance(err, dict) and err.get("message"))
+
+
+def test_cli_doctor_json_success_envelope(
+    fake_agy_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from omg_cli.cli_envelope import SCHEMA_VERSION
+    from omg_cli.main import main
+
+    rc = main(["provider", "antigravity", "doctor", "--strict", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["schema_version"] == SCHEMA_VERSION
+    assert payload["command"] == "provider.antigravity.doctor"
+    assert "error" not in payload
+    doctor = payload.get("doctor") or payload.get("data") or {}
+    assert doctor.get("ready") is True or payload.get("ready") is True
+
+
+def test_cli_doctor_json_nonstrict_degraded_keeps_success_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Non-strict soft incompat: exit 0 + outer ok=true; readiness nested false."""
+    from omg_cli.cli_envelope import SCHEMA_VERSION
+    from omg_cli.main import main
+
+    _install_fake_agy(tmp_path / "old-bin", version="0.1.0")
+    monkeypatch.setenv("PATH", str(tmp_path / "old-bin"))
+    monkeypatch.delenv("OMG_AGY_BIN", raising=False)
+    rc = main(["provider", "antigravity", "doctor", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["schema_version"] == SCHEMA_VERSION
+    assert payload["command"] == "provider.antigravity.doctor"
+    assert payload.get("ready") is False
+    doctor = payload.get("doctor") or {}
+    assert doctor.get("ok") is False
 
 
 def test_provider_ignores_stale_project_root(
