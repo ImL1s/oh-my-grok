@@ -355,3 +355,47 @@ def test_redact_text_closes_pr94q_residual_p2_classes() -> None:
     assert q_elapsed < 1.0 and c_elapsed < 1.0
     assert q_elapsed < max(0.05, c_elapsed * 8.0), (q_elapsed, c_elapsed)
 
+
+def test_redact_text_closes_pr94r_residual_p2_classes() -> None:
+    """Close Pro reaudit P2s: prose ``?`` query-mode leak; global quote skip."""
+    # Arbitrary prose/shell ``?`` must not open query mode (EOL consumer).
+    for source, leaked in (
+        ('safe ? command="rm" -rf /', "-rf /"),
+        ('safe ? x & token="Bearer" super-secret', "super-secret"),
+        ("safe ? x & command=echo safe & curl super-secret", "super-secret"),
+        ('maybe? token="Bearer" super-secret', "super-secret"),
+        ('q?token="Bearer" super-secret', "super-secret"),
+    ):
+        out = redact_text(source)
+        assert leaked not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    # Real URL / clear query-string context still stops at ``&``.
+    url = "https://x.test/?token=secret-value&ok=1"
+    out_url = redact_text(url)
+    assert "secret-value" not in out_url
+    assert out_url == f"https://x.test/?token={REDACTED}&ok=1"
+    assert redact_text("?api+key=super-secret&ok=1") == f"?api+key={REDACTED}&ok=1"
+
+    # Free-text quoted assignments must redact (quote awareness is bracket-only).
+    for source in (
+        '"token=super-secret"',
+        'echo "token=super-secret"',
+        "msg 'api_key=super-secret'",
+        r'\"token=super-secret\"',
+        'say "unclosed token=super-secret',
+        'prefix "token=super-secret" suffix',
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    # Bracket-quoted keys with embedded delimiters still redact (prior FIXED).
+    for source in (
+        'headers["api&key"]=super-secret',
+        'headers["api?key"]=super-secret',
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+        assert out.endswith(f"={REDACTED}"), (source, out)
+

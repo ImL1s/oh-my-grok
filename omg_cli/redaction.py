@@ -64,13 +64,54 @@ def _line_end(text: str, start: int) -> int:
     return len(text)
 
 
+class _UrlQueryTracker:
+    """O(1)-per-char forward tracker: real URL/query ``?`` vs prose/shell.
+
+    Accepts ``http(s)://…?``, relative paths whose token contains ``/``, or
+    clear query context (``?`` at BOL / after only leading whitespace).
+    Rejects ``maybe?`` / ``safe ?`` / ``q?token`` without URL shape.
+    """
+
+    __slots__ = ("line_has_content", "token_has_slash", "seen_scheme")
+
+    def __init__(self) -> None:
+        self.line_has_content = False
+        self.token_has_slash = False
+        self.seen_scheme = False
+
+    def on_newline(self) -> None:
+        self.line_has_content = False
+        self.token_has_slash = False
+        self.seen_scheme = False
+
+    def on_whitespace(self) -> None:
+        self.token_has_slash = False
+        self.seen_scheme = False
+
+    def on_other(self, text: str, i: int, ch: str) -> None:
+        self.line_has_content = True
+        if ch == "/":
+            self.token_has_slash = True
+            if i >= 2 and text[i - 2] == ":" and text[i - 1] == "/":
+                self.seen_scheme = True
+
+    def is_url_query(self) -> bool:
+        return (not self.line_has_content) or self.seen_scheme or self.token_has_slash
+
+    def after_query_marker(self) -> None:
+        self.line_has_content = True
+        self.token_has_slash = False
+        self.seen_scheme = False
+
+
 def _consume_value(text: str, start: int, *, query: bool, key: str) -> int | None:
     """Return end index of a value starting at ``start``, or None if empty.
 
     Plain (non-query) sensitive assignments always eat through EOL so matching
-    quotes, ampersands, and multi-token tails cannot leak. Query values still
-    stop at ``&``/``#``; unclosed quotes eat to that boundary or EOL/EOF.
-    Authorization/cookie keys use an EOL consumer in both modes.
+    quotes, ampersands, and multi-token tails cannot leak. Query values
+    fail-closed to the next ``&``/``#``/EOL (quotes and whitespace do not end
+    the value early). Authorization/cookie keys use an EOL consumer in both
+    modes.
     """
 
     if start >= len(text):
@@ -78,34 +119,19 @@ def _consume_value(text: str, start: int, *, query: bool, key: str) -> int | Non
     if not query or _is_authorization_key(key) or _is_cookie_key(key):
         return _line_end(text, start)
 
-    quote = text[start]
-    if quote in "'\"":
-        i = start + 1
-        while i < len(text):
-            ch = text[i]
-            if ch == "\\" and i + 1 < len(text):
-                i += 2
-                continue
-            if ch == quote:
-                return i + 1
-            if ch in "\r\n":
-                return i
-            if ch in "&#":
-                return i
-            i += 1
-        return len(text)
-
-    match = re.match(r"[^&#\s]+", text[start:])
-    if match is None:
-        return _line_end(text, start)
-    return start + match.end()
+    for idx in range(start, len(text)):
+        if text[idx] in "&#\r\n":
+            return idx
+    return len(text)
 
 
 def _redact_query_assignments(text: str) -> str:
     """Redact ``?key=`` / ``&key=`` assignments in a single O(n) forward pass.
 
-    ``?`` opens URL-query context; ``&`` continues it. Bare shell ``&`` outside
-    that context is ignored here (plain assignment redaction owns those). Each
+    ``?`` opens query context only in real URL/query shapes; ``&`` continues
+    it. Bare shell ``&`` / prose ``?`` outside that context are ignored here
+    (plain assignment redaction owns those). Whitespace between a marker and
+    the key rejects the param (``? token=`` is not a query assignment). Each
     character is visited a constant number of times — no per-marker suffix
     ``find("=")``.
     """
@@ -114,25 +140,37 @@ def _redact_query_assignments(text: str) -> str:
     pos = 0
     i = 0
     in_query = False
+    url = _UrlQueryTracker()
     length = len(text)
     while i < length:
         ch = text[i]
         if ch in "\r\n":
             in_query = False
+            url.on_newline()
             i += 1
             continue
         start_param = False
         if ch == "?":
-            in_query = True
-            start_param = True
+            if url.is_url_query():
+                in_query = True
+                start_param = True
+            url.after_query_marker()
         elif ch == "&" and in_query:
             start_param = True
         if not start_param:
+            if ch in " \t":
+                url.on_whitespace()
+            elif ch != "?":
+                url.on_other(text, i, ch)
             i += 1
             continue
 
         prefix = ch
         key_start = i + 1
+        # Prose ``? token=`` / ``& key=``: whitespace before key is not a param.
+        if key_start < length and text[key_start] in " \t":
+            i = key_start
+            continue
         j = key_start
         while j < length and text[j] not in "=\r\n&?#":
             j += 1
@@ -169,18 +207,22 @@ def _redact_plain_assignments(text: str) -> str:
     """Scan ``key[:=]value`` in a single O(n) forward pass.
 
     Tracks the most recent structural boundary instead of walking backward from
-    each separator (avoids O(n·cap) separator-flood cost). Quoted segments stay
-    intact so keys like ``headers["api&key"]`` reach ``is_sensitive_key``.
-    ``?`` opens query context for value consumption; bare shell ``&`` does not.
-    Keys may include characters stripped by ``_normalized_key`` (``;``, ``/``,
-    brackets, …) so the free-text scanner and ``is_sensitive_key`` stay aligned.
+    each separator (avoids O(n·cap) separator-flood cost). Quote awareness
+    applies **only** inside bracket-key segments ``[...]`` so
+    ``headers["api&key"]`` keeps delimiters literal, while free-text
+    ``"token=secret"`` still redacts. Unclosed bracket quotes fail-closed
+    (EOL resets quote state; scanning continues). ``?`` opens query context
+    only for URL/query shapes; bare shell ``&`` does not. Keys may include
+    characters stripped by ``_normalized_key`` (``;``, ``/``, brackets, …).
     """
 
     parts: list[str] = []
     pos = 0
     boundary = -1
     query_active = False
-    # Quote delimiter: '"', "'", '\\"', or "\\'" (JSON-escaped form).
+    bracket_depth = 0
+    url = _UrlQueryTracker()
+    # Quote delimiter only while bracket_depth > 0: '"', "'", '\\"', "\\'".
     quote: str | None = None
     i = 0
     length = len(text)
@@ -206,39 +248,66 @@ def _redact_plain_assignments(text: str) -> str:
                     i += 1
                     continue
             if ch in "\r\n":
+                # Fail-closed: unclosed bracket quote does not freeze the line.
                 quote = None
+                bracket_depth = 0
                 boundary = i
                 query_active = False
+                url.on_newline()
                 i += 1
                 continue
-            # Inside quotes: &/?/:/= are literal key/value material.
+            # Inside bracket quotes: &/?/:/= are literal key material.
+            url.on_other(text, i, ch)
             i += 1
             continue
-        # Open quote: bare " / ' or JSON-escaped \" / \'
-        if ch == "\\" and i + 1 < length and text[i + 1] in "'\"":
-            quote = "\\" + text[i + 1]
-            i += 2
-            continue
-        if ch in "'\"":
-            quote = ch
+        if ch == "[":
+            bracket_depth += 1
+            url.on_other(text, i, ch)
             i += 1
             continue
+        if ch == "]" and bracket_depth > 0:
+            bracket_depth -= 1
+            url.on_other(text, i, ch)
+            i += 1
+            continue
+        # Quote awareness only inside ``[...]`` bracket-key segments.
+        if bracket_depth > 0:
+            if ch == "\\" and i + 1 < length and text[i + 1] in "'\"":
+                quote = "\\" + text[i + 1]
+                url.on_other(text, i, ch)
+                i += 2
+                continue
+            if ch in "'\"":
+                quote = ch
+                url.on_other(text, i, ch)
+                i += 1
+                continue
         if ch in "\r\n":
             boundary = i
             query_active = False
+            bracket_depth = 0
+            url.on_newline()
             i += 1
             continue
         if ch == "?":
             boundary = i
-            query_active = True
+            if url.is_url_query():
+                query_active = True
+            url.after_query_marker()
             i += 1
             continue
         if ch == "&":
-            # Always a key boundary; only continues query mode if ``?`` opened it.
+            # Always a key boundary; only continues query mode if URL ``?`` opened it.
             boundary = i
+            url.on_other(text, i, ch)
+            i += 1
+            continue
+        if ch in " \t":
+            url.on_whitespace()
             i += 1
             continue
         if ch not in ":=":
+            url.on_other(text, i, ch)
             i += 1
             continue
 
@@ -262,12 +331,14 @@ def _redact_plain_assignments(text: str) -> str:
             and (not key or not is_sensitive_key(key))
         ):
             boundary = sep_idx
+            url.on_other(text, i, ch)
             i += 1
             continue
         if not key or not is_sensitive_key(key):
             # Non-matching separators become boundaries so the next key cannot
             # glue across them (``detail=token=secret`` → inner ``token``).
             boundary = sep_idx
+            url.on_other(text, i, ch)
             i = sep_idx + 1
             continue
 
@@ -283,19 +354,23 @@ def _redact_plain_assignments(text: str) -> str:
         while sep_end < length and text[sep_end] in " \t":
             sep_end += 1
         sep = text[key_end:sep_end]
-        # Query-string values (after ``?``, then ``&`` continuations) stop at the
-        # next ``&``. Bare shell ``&`` never opens query mode, so plain
-        # ``token="…" secret`` after background ``&`` still eats through EOL.
+        # Query-string values (URL ``?``, then ``&`` continuations) stop at the
+        # next ``&``. Bare shell ``&`` / prose ``?`` never open query mode, so
+        # plain ``token="…" secret`` still eats through EOL.
         in_query = query_active and boundary >= 0 and text[boundary] in "?&"
         end = _consume_value(text, sep_end, query=in_query, key=key)
         if end is None:
             boundary = sep_idx
+            url.on_other(text, i, ch)
             i = sep_idx + 1
             continue
         parts.append(text[pos:key_start])
         parts.append(f"{key}{sep}{REDACTED}")
         pos = end
         boundary = end - 1 if end > 0 else -1
+        url.line_has_content = True
+        url.token_has_slash = False
+        url.seen_scheme = False
         i = end
     parts.append(text[pos:])
     return "".join(parts)
