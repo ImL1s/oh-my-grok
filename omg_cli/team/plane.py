@@ -2893,6 +2893,29 @@ def _team_launch_nonce_matches(
     return False
 
 
+def _tmux_launch_authority_matches(
+    session: str,
+    *,
+    expected_nonce: str,
+    session_owned: bool,
+    window_id: str | None = None,
+    pane_ids: Sequence[str] | None = None,
+) -> bool:
+    """Same session_owned-aware authority rule for a bare nonce string.
+
+    Thin wrapper around :func:`_team_launch_nonce_matches` for callers (scaling
+    / relaunch) that hold a raw ``launch_nonce`` string from a launch/identity
+    receipt rather than the full receipt mapping.
+    """
+    return _team_launch_nonce_matches(
+        session=session,
+        receipt={"launch_nonce": expected_nonce},
+        session_owned=session_owned,
+        window_id=window_id,
+        pane_ids=pane_ids,
+    )
+
+
 def _resolve_live_signal_target(
     session: str,
     receipt: Mapping[str, Any],
