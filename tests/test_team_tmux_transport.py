@@ -483,7 +483,9 @@ def test_team_status_prefers_exact_pane_alive(
 
     monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
     monkeypatch.setattr(
-        plane, "_read_tmux_launch_nonce_for_pane", lambda _pane, _s: "nonce-abc"
+        plane,
+        "_read_tmux_launch_nonce_for_pane",
+        lambda _pane, _s, **_kw: "nonce-abc",
     )
     monkeypatch.setattr(
         plane,
@@ -541,3 +543,157 @@ def test_team_status_probe_oserror_is_fail_closed(
     monkeypatch.setattr(plane, "tmux_available", lambda: True)
     st = plane.team_status(tmp_path, rid)
     assert st["tasks"][0]["alive"] is False
+
+
+@pytest.mark.parametrize(
+    "pane_nonce_behavior",
+    ["oserror", "nonzero", "malformed", "missing"],
+)
+def test_team_status_pane_nonce_read_fail_closed(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, pane_nonce_behavior: str
+) -> None:
+    """Pane nonce OSError / non-zero / malformed must not adopt session nonce."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team import plane
+
+    rid = f"20260806T000000Z-nonce-{pane_nonce_behavior}"
+    nonce = "a" * 32
+    meta = {
+        "run_id": rid,
+        "session": "team-sess",
+        "launch_nonce": nonce,
+        "dry_run": False,
+        "workspace_mode": "worktree",
+        "writer": CLI_WRITER,
+        "tasks": [
+            {
+                "task_id": "w1",
+                "window_index": 0,
+                "worktree": str(tmp_path / "w1"),
+                "status": "running",
+                "pid": 1234,
+                "pid_start": "ps:start-w1",
+                "pane_id": "%81",
+            }
+        ],
+    }
+    plane._atomic_write_json(plane.team_meta_path(tmp_path, rid), meta)
+    plane._atomic_write_json(
+        plane.team_launch_receipt_path(tmp_path, rid),
+        {
+            "writer": CLI_WRITER,
+            "session": "team-sess",
+            "session_id": "$42",
+            "launch_nonce": nonce,
+        },
+    )
+
+    def fake_probe(pane_id: str):
+        return {
+            "pane_id": pane_id,
+            "dead": False,
+            "session_id": "$42",
+            "pane_pid": 1234,
+        }
+
+    def fake_tmux(args, **_kw):
+        from unittest.mock import MagicMock
+
+        cmd = list(args)
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        if cmd[:1] == ["show-options"] and "-p" in cmd:
+            if pane_nonce_behavior == "oserror":
+                raise OSError("pane options unavailable")
+            if pane_nonce_behavior == "nonzero":
+                result.returncode = 1
+                return result
+            if pane_nonce_behavior == "malformed":
+                result.stdout = "not-a-nonce\n"
+                return result
+            result.stdout = "\n"
+            return result
+        if cmd[:1] == ["show-options"]:
+            # Session nonce still matches — must not rescue status.
+            result.stdout = nonce + "\n"
+            return result
+        return result
+
+    monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
+    monkeypatch.setattr(plane, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(
+        plane, "_pid_start_identity", lambda pid: "ps:start-w1" if pid == 1234 else None
+    )
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+
+    st = plane.team_status(tmp_path, rid)
+    assert st["tasks"][0]["alive"] is False
+
+
+def test_bind_launch_nonce_skips_session_when_not_owned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.team import plane
+
+    calls: list[list[str]] = []
+
+    def fake_tmux(args, **_kw):
+        from unittest.mock import MagicMock
+
+        calls.append(list(args))
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(plane, "_tmux_run", fake_tmux)
+    plane._bind_tmux_launch_nonce(
+        session_id="$9",
+        launch_nonce="c" * 32,
+        window_id="@3",
+        pane_ids=["%81"],
+        session_owned=False,
+    )
+    assert any(c[:2] == ["set-option", "-p"] for c in calls)
+    assert any(c[:2] == ["set-option", "-w"] for c in calls)
+    assert not any(
+        c[:1] == ["set-option"] and "-p" not in c and "-w" not in c for c in calls
+    )
+
+
+def test_resolve_live_signal_target_refuses_respawn_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.team import plane
+
+    receipt = {"session_id": "$9", "launch_nonce": "d" * 32}
+    row = {
+        "task_id": "t1",
+        "window_index": 0,
+        "pane_id": "%81",
+        "pid": 100,
+        "pgid": 100,
+        "pid_start": "start-100",
+    }
+
+    def fake_tmux(args, **_kw):
+        from unittest.mock import MagicMock
+
+        cmd = list(args)
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        if cmd[0] == "display-message" and "#{session_name}" in str(cmd[-1]):
+            result.stdout = "sess\t$9\n"
+        elif cmd[0] == "display-message":
+            # Respawned pane: same %81, new pid.
+            result.stdout = "%81\t999\t$9\t@1\n"
+        elif cmd[0] == "show-options":
+            result.stdout = "d" * 32 + "\n"
+        return result
+
+    monkeypatch.setattr(plane, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(plane, "_read_tmux_session_identity", lambda s: (s, "$9"))
+    monkeypatch.setattr(plane, "_pgid_for_pid", lambda pid: pid)
+    monkeypatch.setattr(plane, "_pid_start_identity", lambda pid: f"start-{pid}")
+
+    assert (
+        plane._resolve_live_signal_target(
+            "sess", receipt, row, session_owned=True, window_id=None
+        )
+        is None
+    )

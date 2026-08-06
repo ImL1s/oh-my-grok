@@ -707,7 +707,7 @@ def _tmux_identity_runner(
         commands.append(command)
         result = MagicMock(returncode=0, stdout="", stderr="")
         if command[0] == "display-message":
-            # Pane-targeted probe: display-message -p -t %N #{pane_id}\t#{pane_pid}
+            # Pane-targeted probe: display-message -p -t %N …
             if "-t" in command:
                 try:
                     t_idx = command.index("-t")
@@ -719,9 +719,14 @@ def _tmux_identity_runner(
                     None,
                 )
                 if task is not None:
-                    result.stdout = (
-                        f"{task['pane_id']}\t{int(task['pid']) + pane_pid_delta}\n"
-                    )
+                    fmt = command[-1] if command else ""
+                    live_pid = int(task["pid"]) + pane_pid_delta
+                    if "#{session_id}" in str(fmt) or "#{window_id}" in str(fmt):
+                        result.stdout = (
+                            f"{task['pane_id']}\t{live_pid}\t{session_id}\t@1\n"
+                        )
+                    else:
+                        result.stdout = f"{task['pane_id']}\t{live_pid}\n"
                 else:
                     result.stdout = f"{live['session']}\t{session_id}\n"
             else:
@@ -891,42 +896,41 @@ def test_stop_signals_revalidated_pgids_before_killing_exact_tmux_session(
     assert ["kill-session", "-t", "$9"] in commands
 
 
-def test_stop_rebounds_pgid_when_pane_still_bound(
+def test_stop_refuses_pgid_rebound_without_relaunch_receipt(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Same pane_id under session/nonce may change pgid after exec; rebind + signal."""
+    """Same %pane with drifted pgid/pid must not become signal authority."""
     _init_repo(tmp_path)
     _enable_team(monkeypatch)
     meta = start_team("signal-time rebind", [TASKS_TWO[0]], root=tmp_path, dry_run=True)
     live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
     commands: list[list[str]] = []
-    # verify + signal resolves may each call getpgid; return drifted pgid after first.
-    pgid_reads = iter([525252, 999999, 999999, 999999, 999999, 999999])
+    pgid_reads = iter([999999, 999999, 999999, 999999])
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(plane, "tmux_available", lambda: True)
     monkeypatch.setattr(plane, "_tmux_run", _tmux_identity_runner(live, commands))
-    monkeypatch.setattr(plane.os, "getpgid", lambda _pid: next(pgid_reads))
+    monkeypatch.setattr(plane.os, "getpgid", lambda _pid: next(pgid_reads, 999999))
 
     def killpg(pgid: int, sig: int) -> None:
         if sig == 0:
-            if pgid == 999999:
-                raise ProcessLookupError("gone after rebind")
-            return
+            raise ProcessLookupError("gone")
         signals.append((pgid, int(sig)))
 
     monkeypatch.setattr(plane.os, "killpg", killpg)
 
     result = stop_team(tmp_path, meta["run_id"])
 
-    assert any(pgid == 999999 for pgid, _sig in signals)
-    assert result["identity_verified"] is True
-    assert any("identity rebound" in a for a in (result.get("actions") or []))
+    assert signals == []
+    assert result["identity_verified"] is False
+    assert any(
+        "identity" in e and "refused" in e for e in (result.get("errors") or [])
+    )
 
 
-def test_stop_rebounds_before_sigkill_escalation(
+def test_stop_sigkill_escalation_keeps_exact_receipt_pgid(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Pane-bound pgid may change between SIGTERM and SIGKILL; rebind is allowed."""
+    """SIGKILL uses the receipted pgid; live pgid drift refuses escalation."""
     _init_repo(tmp_path)
     _enable_team(monkeypatch)
     meta = start_team(
@@ -934,16 +938,18 @@ def test_stop_rebounds_before_sigkill_escalation(
     )
     live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
     commands: list[list[str]] = []
-    pgid_reads = iter([525252, 525252, 999999, 999999, 999999, 999999, 999999])
+    # First resolve (preflight + signal): exact pgid. Later getpgid drifts →
+    # resolve_kill returns None; escalation may still use last known pgid when
+    # leader is gone — keep group alive until SIGKILL for this path.
+    pgid_reads = iter([525252, 525252, 525252, 525252, 525252, 525252, 525252])
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(plane, "tmux_available", lambda: True)
     monkeypatch.setattr(plane, "_tmux_run", _tmux_identity_runner(live, commands))
-    monkeypatch.setattr(plane.os, "getpgid", lambda _pid: next(pgid_reads))
+    monkeypatch.setattr(plane.os, "getpgid", lambda _pid: next(pgid_reads, 525252))
 
     def killpg(pgid: int, sig: int) -> None:
         if sig == 0:
-            # Keep group "alive" until SIGKILL so escalation path runs.
-            if sig == 0 and any(s == signal.SIGKILL for _, s in signals):
+            if any(s == signal.SIGKILL for _, s in signals):
                 raise ProcessLookupError("gone")
             return
         signals.append((pgid, int(sig)))
@@ -955,7 +961,6 @@ def test_stop_rebounds_before_sigkill_escalation(
     assert (525252, int(signal.SIGTERM)) in signals
     assert any(sig == int(signal.SIGKILL) for _pgid, sig in signals)
     assert result["identity_verified"] is True
-
 
 def test_stop_refuses_when_process_group_disappearance_remains_unproved(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1180,10 +1185,10 @@ def test_stop_forged_writer_and_pgid_without_launch_receipt_never_signals(
     assert any("launch receipt missing" in error for error in result["errors"])
 
 
-def test_stop_pgid_rebind_on_same_pane_still_signals(
+def test_stop_refuses_pgid_drift_on_same_pane(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Receipted pgid drift under the same pane_id rebinds; still pane-scoped."""
+    """Receipted pgid drift under the same pane_id refuses process signalling."""
     _init_repo(tmp_path)
     _enable_team(monkeypatch)
     meta = start_team("pgid rebind", TASKS_TWO, root=tmp_path, dry_run=True)
@@ -1205,17 +1210,17 @@ def test_stop_pgid_rebind_on_same_pane_still_signals(
 
     result = stop_team(tmp_path, meta["run_id"])
 
-    assert result["identity_verified"] is True
-    assert signals  # pane-bound rebind still signals
-    assert any(pgid == 999999 for pgid, _sig in signals)
+    assert result["identity_verified"] is False
+    assert signals == []
 
 
 @pytest.mark.parametrize(
     ("session_id", "pane_pid_delta", "nonce", "expect_ok"),
     [
         ("$77", 0, None, False),  # wrong session id
-        ("$9", 1, None, True),  # pane pid replaced (exec) → rebind OK
+        ("$9", 1, None, False),  # pane pid replaced (respawn) → refuse
         ("$9", 0, "b" * 32, False),  # wrong launch nonce
+        ("$9", 0, None, True),  # exact identity → OK
     ],
 )
 def test_stop_tmux_session_nonce_or_pane_rebind(
