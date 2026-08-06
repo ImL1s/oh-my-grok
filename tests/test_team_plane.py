@@ -1201,9 +1201,31 @@ else:
             pgid=pgid,
         )
         commands: list[list[str]] = []
-        monkeypatch.setattr(plane, "tmux_available", lambda: True)
-        monkeypatch.setattr(plane, "_tmux_run", _tmux_identity_runner(live, commands))
+        base_runner = _tmux_identity_runner(live, commands)
 
+        def runner(args: Any, **kw: Any) -> Any:
+            # After SIGTERM reaps the receipt leader, report the pane gone so
+            # SIGKILL may target the still-living same-PGID survivor — without
+            # treating a respawned foreign pane_pid as rebound authority.
+            if (
+                leader.poll() is not None
+                and list(args)[:1] == ["display-message"]
+                and "-t" in list(args)
+            ):
+                from unittest.mock import MagicMock
+
+                command = list(args)
+                target = command[command.index("-t") + 1]
+                if isinstance(target, str) and target.startswith("%"):
+                    fmt = command[-1] if command else ""
+                    result = MagicMock(returncode=1, stdout="", stderr="")
+                    if "#{session_id}" in str(fmt):
+                        return result
+                    return result
+            return base_runner(args, **kw)
+
+        monkeypatch.setattr(plane, "tmux_available", lambda: True)
+        monkeypatch.setattr(plane, "_tmux_run", runner)
         reaper = threading.Thread(target=leader.wait, daemon=True)
         reaper.start()
         result = stop_team(tmp_path, meta["run_id"], kill_grace_s=0.1)

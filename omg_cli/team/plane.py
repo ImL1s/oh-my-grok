@@ -3585,11 +3585,42 @@ def _stop_team_locked(
                     if isinstance(resolved.get("pane_id"), str)
                     else None,
                 )
-                escalation_authorized = bool(
+                pane_id = resolved.get("pane_id")
+                pane_gone = False
+                if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id):
+                    probe = _tmux_run(
+                        ["display-message", "-p", "-t", pane_id, "#{pane_pid}"]
+                    )
+                    if probe.returncode != 0:
+                        pane_gone = True
+                    else:
+                        try:
+                            live_pid = int((probe.stdout or "").strip())
+                        except ValueError:
+                            live_pid = -1
+                        if live_pid <= 0 or _pgid_for_pid(live_pid) is None:
+                            pane_gone = True
+                # Exact live pane identity → SIGKILL that pgid.
+                # Leader reaped + receipted pane gone + last PGID still alive →
+                # SIGKILL same-group survivors. Refuse when the %pane still
+                # hosts a foreign process (respawn/reuse) — never trust a
+                # numeric PGID alone in that case.
+                if resolved_kill is not None:
+                    escalation_authorized = bool(
+                        session_exact and leader_pgid in (None, pgid)
+                    )
+                    target = int(resolved_kill["pgid"])
+                    pgid = target
+                    pid = int(resolved_kill["pid"])
+                elif (
                     session_exact
-                    and resolved_kill is not None
-                    and leader_pgid in (None, pgid)
-                )
+                    and leader_pgid is None
+                    and pane_gone
+                ):
+                    group_gone_now, _probe_err = _process_group_disappeared(pgid)
+                    escalation_authorized = not group_gone_now
+                else:
+                    escalation_authorized = False
                 if not escalation_authorized:
                     identity_verified = False
                     process_disappearance_verified = False
@@ -3597,11 +3628,6 @@ def _stop_team_locked(
                         f"SIGKILL group authority drift refused signalling task={tid}"
                     )
                     continue
-                # Never SIGKILL a stale numeric PGID after the pane identity is
-                # gone — the kernel may have reused that PGID for another group.
-                target = int(resolved_kill["pgid"])
-                pgid = target
-                pid = int(resolved_kill["pid"])
                 try:
                     os.killpg(target, signal.SIGKILL)
                     actions.append(f"killpg:SIGKILL pgid={target} task={tid}")
