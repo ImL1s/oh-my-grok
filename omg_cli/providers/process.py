@@ -8,7 +8,10 @@ is not claimed there.
 
 Any exception after a successful ``Popen`` must ``_kill_tree`` (including
 failures while allocating lists / closures / buffers / starting reader
-threads). ``cancel_event`` is honored through the wait/join/close window so
+threads, and during result construction). ``Popen`` itself sits inside the
+same BaseException kill region (``proc = None`` then nested OSError convert)
+so async exceptions cannot skip cleanup between spawn and setup.
+``cancel_event`` is honored through the wait/join/close/result window so
 Ctrl-C cannot silently skip cleanup. Success paths drain readers to EOF before
 forcing ``stop``; premature stop sets ``stdout_truncated`` / ``stderr_truncated``.
 Hung readers kill the process tree *before* closing pipes / joining, and pipe
@@ -55,6 +58,9 @@ class ProbeProcessResult:
     stderr_truncated: bool = False
     bytes_stdout: int = 0
     bytes_stderr: int = 0
+    # POSIX session leader / process-group id (child pid with start_new_session).
+    # Callers may killpg(pid) if cancel flips after return.
+    pid: int = 0
 
     def combined_text(self) -> str:
         return ((self.stdout or "") + (self.stderr or "")).strip()
@@ -239,8 +245,9 @@ def run_probe_process(
         popen_kwargs["start_new_session"] = True
 
     # Unbound-safe defaults BEFORE Popen — if allocation fails here there is no
-    # child to reap. After a successful Popen, the very next statement must be
-    # the kill-on-BaseException try (no list/closure/buffer work in between).
+    # child to reap. Popen + all post-spawn work share ONE BaseException region
+    # so async exceptions cannot skip _kill_tree between spawn and setup.
+    proc: subprocess.Popen[bytes] | None = None
     started_readers: list[threading.Thread] = []
     stop_readers: threading.Event | None = None
     stdout_buf: bytearray | None = None
@@ -254,11 +261,11 @@ def run_probe_process(
     overflow = False
 
     try:
-        proc = subprocess.Popen(**popen_kwargs)
-    except OSError as exc:
-        raise ProbeProcessError(f"failed to spawn probe: {exc}") from exc
+        try:
+            proc = subprocess.Popen(**popen_kwargs)
+        except OSError as exc:
+            raise ProbeProcessError(f"failed to spawn probe: {exc}") from exc
 
-    try:
         # Earliest post-Popen window — injectable for OOM coverage before any
         # list/closure/buffer work (must still hit kill-on-BaseException).
         _post_popen_begin()
@@ -344,83 +351,116 @@ def run_probe_process(
         # the wait/join window so descendants still get killpg.
         _honor_late_cancel()
     except BaseException:
-        # Covers earliest post-Popen setup, buffer/Event alloc, reader start,
-        # KeyboardInterrupt during poll/wait, and any other unwind after Popen.
+        # Covers Popen-boundary async exceptions, earliest post-Popen setup,
+        # buffer/Event alloc, reader start, KeyboardInterrupt during poll/wait.
         # Do not depend on nested defs — they may not exist yet.
+        if proc is not None:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+            _kill_tree(proc)
+            try:
+                proc.wait(timeout=2.0)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+        raise
+    finally:
+        if proc is None:
+            pass
+        else:
+            # cancel_event may flip during join/close; check before, after join,
+            # and once more so late Ctrl-C still reaps the tree.
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                _kill_tree(proc)
+            try:
+                if started_readers and stop_readers is not None:
+                    _join_readers(
+                        started_readers,
+                        stop=stop_readers,
+                        stdout_early=stdout_early_stop,
+                        stderr_early=stderr_early_stop,
+                        proc=proc,
+                    )
+                else:
+                    _close_pipes(proc)
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                    _kill_tree(proc)
+            except BaseException:
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                _kill_tree(proc)
+                if stop_readers is not None:
+                    stop_readers.set()
+                _close_pipes(proc)
+                for t in started_readers:
+                    try:
+                        t.join(timeout=0.5)
+                    except BaseException:
+                        pass
+                raise
+            finally:
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                    _kill_tree(proc)
+
+    # Result construction is still kill-protected: cancel / BaseException here
+    # must _kill_tree before unwinding (descendants may outlive the direct child).
+    assert proc is not None
+    try:
+        overflow = overflow or stdout_overflow[0] or stderr_overflow[0]
+        stdout_truncated = bool(stdout_overflow[0] or stdout_early_stop[0])
+        stderr_truncated = bool(stderr_overflow[0] or stderr_early_stop[0])
+        returncode = int(proc.returncode if proc.returncode is not None else -9)
+        if timed_out or cancelled or overflow:
+            # Distinct sentinel when we forced termination before a natural exit.
+            if proc.returncode is None:
+                returncode = -9
+
+        assert stdout_buf is not None and stderr_buf is not None
+
+        def _decode(buf: bytearray) -> str:
+            return bytes(buf).decode("utf-8", errors="replace")
+
+        result = ProbeProcessResult(
+            argv=clean_argv,
+            returncode=returncode,
+            stdout=_decode(stdout_buf),
+            stderr=_decode(stderr_buf),
+            timed_out=timed_out,
+            cancelled=cancelled,
+            overflow=overflow,
+            stdout_truncated=stdout_truncated,
+            stderr_truncated=stderr_truncated,
+            bytes_stdout=len(stdout_buf),
+            bytes_stderr=len(stderr_buf),
+            pid=int(proc.pid or 0),
+        )
+        # Final cancel check after construction / before return.
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+            _kill_tree(proc)
+            if not result.cancelled:
+                result = ProbeProcessResult(
+                    argv=result.argv,
+                    returncode=result.returncode,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                    timed_out=result.timed_out,
+                    cancelled=True,
+                    overflow=result.overflow,
+                    stdout_truncated=result.stdout_truncated,
+                    stderr_truncated=result.stderr_truncated,
+                    bytes_stdout=result.bytes_stdout,
+                    bytes_stderr=result.bytes_stderr,
+                    pid=result.pid,
+                )
+        return result
+    except BaseException:
         if cancel_event is not None and cancel_event.is_set():
             cancelled = True
         _kill_tree(proc)
-        try:
-            proc.wait(timeout=2.0)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
         raise
-    finally:
-        # cancel_event may flip during join/close; check before, after join, and
-        # once more before returning so late Ctrl-C still reaps the tree.
-        if cancel_event is not None and cancel_event.is_set():
-            cancelled = True
-            _kill_tree(proc)
-        try:
-            if started_readers and stop_readers is not None:
-                _join_readers(
-                    started_readers,
-                    stop=stop_readers,
-                    stdout_early=stdout_early_stop,
-                    stderr_early=stderr_early_stop,
-                    proc=proc,
-                )
-            else:
-                _close_pipes(proc)
-            if cancel_event is not None and cancel_event.is_set():
-                cancelled = True
-                _kill_tree(proc)
-        except BaseException:
-            if cancel_event is not None and cancel_event.is_set():
-                cancelled = True
-            _kill_tree(proc)
-            if stop_readers is not None:
-                stop_readers.set()
-            _close_pipes(proc)
-            for t in started_readers:
-                try:
-                    t.join(timeout=0.5)
-                except BaseException:
-                    pass
-            raise
-        finally:
-            if cancel_event is not None and cancel_event.is_set():
-                cancelled = True
-                _kill_tree(proc)
-
-    overflow = overflow or stdout_overflow[0] or stderr_overflow[0]
-    stdout_truncated = bool(stdout_overflow[0] or stdout_early_stop[0])
-    stderr_truncated = bool(stderr_overflow[0] or stderr_early_stop[0])
-    returncode = int(proc.returncode if proc.returncode is not None else -9)
-    if timed_out or cancelled or overflow:
-        # Distinct sentinel when we forced termination before a natural exit.
-        if proc.returncode is None:
-            returncode = -9
-
-    # Setup completed if we reached here (exceptions re-raise above).
-    assert stdout_buf is not None and stderr_buf is not None
-
-    def _decode(buf: bytearray) -> str:
-        return bytes(buf).decode("utf-8", errors="replace")
-
-    return ProbeProcessResult(
-        argv=clean_argv,
-        returncode=returncode,
-        stdout=_decode(stdout_buf),
-        stderr=_decode(stderr_buf),
-        timed_out=timed_out,
-        cancelled=cancelled,
-        overflow=overflow,
-        stdout_truncated=stdout_truncated,
-        stderr_truncated=stderr_truncated,
-        bytes_stdout=len(stdout_buf),
-        bytes_stderr=len(stderr_buf),
-    )
 
 
 __all__ = [

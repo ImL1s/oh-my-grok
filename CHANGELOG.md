@@ -40,6 +40,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   identity; `parse_version` is first-line-anchored; tested compat window is
   fixture-backed `1.1.10` only; provider JSON/doctor errors run through
   `redact_text`/`redact_value`.
+- **#67-A PR #94 GPT Pro re-audit round 4:** `Popen` and post-spawn work share
+  one BaseException+`_kill_tree` region (`proc=None` then nested OSError
+  convert); result construction / final cancel check kill before return;
+  `_run_probe_argv` `killpg`s via returned `pid` before `KeyboardInterrupt`;
+  `parse_version` rejects leading zeros and enforces explicit digit/value caps
+  (ASCII `[0-9]`, typed `ProviderVersionError` — not CPython digit-guard only).
 
 ## [0.7.6] - 2026-08-06
 

@@ -170,13 +170,36 @@ def test_parse_version_requires_exact_triple_on_first_line() -> None:
 
 
 def test_parse_version_oversized_component_raises_provider_version_error() -> None:
-    """int() overflow / digit-limit ValueError must become ProviderVersionError."""
+    """Explicit digit/value caps must raise ProviderVersionError (not CPython-only)."""
     from omg_cli.providers.antigravity import parse_version
     from omg_cli.providers.errors import ProviderVersionError
 
-    huge = "1." + ("9" * 5000) + ".0"
-    with pytest.raises(ProviderVersionError, match="overflow|invalid"):
+    # Shorter than CPython's default digit guard — parser-owned cap must fire.
+    huge = "1." + ("9" * 20) + ".0"
+    with pytest.raises(ProviderVersionError, match="overflow|invalid|digits|bound"):
         parse_version(huge)
+    # Extreme input still typed (not bare ValueError / MemoryError).
+    with pytest.raises(ProviderVersionError, match="overflow|invalid|digits|bound"):
+        parse_version("1." + ("9" * 5000) + ".0")
+
+
+def test_parse_version_rejects_leading_zeros_and_zero_padded_false_green() -> None:
+    """Non-canonical / zero-padded triples must not normalize into the pin window."""
+    from omg_cli.providers.antigravity import classify_compat, parse_version
+    from omg_cli.providers.errors import ProviderVersionError
+
+    for raw in ("01.1.10", "1.01.10", "1.1.010", "01.01.010"):
+        with pytest.raises(ProviderVersionError, match="leading zero|canonical"):
+            parse_version(raw)
+    # Hundreds of leading zeros must not coerce to compatible (1, 1, 10).
+    padded = ("0" * 500) + "1.1.10"
+    with pytest.raises(ProviderVersionError, match="leading zero|digits|overflow|canonical"):
+        parse_version(padded)
+    # Lone zero components remain valid (0.0.0 is canonical).
+    zero = parse_version("0.0.0")
+    assert zero is not None
+    assert zero.as_tuple() == (0, 0, 0)
+    assert classify_compat(zero) == "too_old"
 
 
 def test_doctor_strict_rejects_impostor_agy_help(

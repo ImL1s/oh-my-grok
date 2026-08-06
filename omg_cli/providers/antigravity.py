@@ -51,10 +51,14 @@ _AG_LIMITATIONS: Final[tuple[str, ...]] = (
     "Authentication and live-call readiness are not verified hermetically.",
 )
 
-# Exact triple on the first non-empty line — never scoop a prefix from
-# prerelease / extra components / trailing child-controlled junk (pin-only
-# window must not false-green ``1.1.10-rc.1`` / ``1.1.10.1`` as ``1.1.10``).
-_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+# Exact ASCII-decimal triple on the first non-empty line — never scoop a
+# prefix from prerelease / extra components / trailing child-controlled junk
+# (pin-only window must not false-green ``1.1.10-rc.1`` / ``1.1.10.1``).
+# Use ``[0-9]`` (not ``\d``) so Unicode digits cannot match.
+_VERSION_RE = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)$")
+# Parser-owned bounds — do not rely on CPython's global int digit limit.
+_VERSION_COMPONENT_MAX_DIGITS: Final[int] = 9
+_VERSION_COMPONENT_MAX_VALUE: Final[int] = 999_999_999
 # Help identity: real agy --help begins with ``Usage of agy:``.
 _AGY_HELP_IDENTITY_RE = re.compile(r"(?im)^Usage of agy\b")
 _PROBE_TIMEOUT_S: Final[float] = DEFAULT_PROBE_TIMEOUT_S
@@ -140,13 +144,48 @@ def discover_binary(*, env: Mapping[str, str] | None = None) -> str:
     return str(resolved)
 
 
+def _parse_version_component(raw: str) -> int:
+    """Parse one MAJOR/MINOR/PATCH token with canonical ASCII-decimal rules.
+
+    Rejects leading zeros (``01``), oversized digit strings, and values above
+    :data:`_VERSION_COMPONENT_MAX_VALUE`. Raises :class:`ProviderVersionError`
+    rather than depending on CPython ``int()`` digit limits.
+    """
+    if not raw or not raw.isascii() or not raw.isdigit():
+        raise ProviderVersionError(f"version component invalid: {raw!r}")
+    if len(raw) > 1 and raw[0] == "0":
+        raise ProviderVersionError(
+            f"version component not canonical (leading zero): {raw!r}"
+        )
+    if len(raw) > _VERSION_COMPONENT_MAX_DIGITS:
+        raise ProviderVersionError(
+            f"version component exceeds {_VERSION_COMPONENT_MAX_DIGITS} digits: {raw!r}"
+        )
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ProviderVersionError(
+            f"version component overflow or invalid: {raw!r}"
+        ) from exc
+    except MemoryError as exc:
+        raise ProviderVersionError(
+            f"version component overflow or invalid: {raw!r}"
+        ) from exc
+    if value > _VERSION_COMPONENT_MAX_VALUE:
+        raise ProviderVersionError(
+            f"version component exceeds bound {_VERSION_COMPONENT_MAX_VALUE}: {raw!r}"
+        )
+    return value
+
+
 def parse_version(text: str | None) -> VersionInfo | None:
     """Parse a semver triple from ``agy --version`` text.
 
     Only the first non-empty line is considered, and that line must be an
     exact ``MAJOR.MINOR.PATCH`` (no prerelease / build / extra components).
-    Oversized components raise :class:`ProviderVersionError` (typed envelope)
-    rather than a bare ``ValueError`` from ``int()``.
+    Non-canonical forms (leading zeros, oversized components) raise
+    :class:`ProviderVersionError` rather than silently normalizing into the
+    pin window.
     """
     if not text or not str(text).strip():
         return None
@@ -162,14 +201,9 @@ def parse_version(text: str | None) -> VersionInfo | None:
     if not m:
         return None
     # Exact-line match: raw is the whole first line (no trailing fragment).
-    try:
-        major = int(m.group(1))
-        minor = int(m.group(2))
-        patch = int(m.group(3))
-    except ValueError as exc:
-        raise ProviderVersionError(
-            f"version component overflow or invalid: {m.group(0)!r}"
-        ) from exc
+    major = _parse_version_component(m.group(1))
+    minor = _parse_version_component(m.group(2))
+    patch = _parse_version_component(m.group(3))
     return VersionInfo(
         raw=m.group(0),
         major=major,
@@ -235,7 +269,14 @@ def _run_probe_argv(argv: list[str]):
 
     if cancel.is_set():
         # Preserve Ctrl-C semantics after process-group cleanup. cancel_event
-        # may be set during wait/join even when the direct child already exited.
+        # may be set during wait/join even when the direct child already exited;
+        # killpg again before raising so descendants cannot outlive the interrupt.
+        pgid = int(getattr(result, "pid", 0) or 0)
+        if os.name == "posix" and pgid > 0:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
         raise KeyboardInterrupt()
     return result
 

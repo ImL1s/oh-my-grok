@@ -342,6 +342,152 @@ while True:
         pytest.fail("grandchild still alive after earliest post-Popen OOM")
 
 
+def test_popen_shares_kill_on_baseexception_try_with_post_spawn() -> None:
+    """Popen must live inside the same try that catches BaseException + _kill_tree.
+
+    A separate OSError-only try around Popen leaves an async-exception window
+    between successful spawn and the kill-on-BaseException region.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from omg_cli.providers import process as process_mod
+
+    src = textwrap.dedent(inspect.getsource(process_mod.run_probe_process))
+    tree = ast.parse(src)
+    fn = next(
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_probe_process"
+    )
+
+    def _calls_name(node: ast.AST, name: str) -> bool:
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call):
+                func = child.func
+                if isinstance(func, ast.Attribute) and func.attr == name:
+                    return True
+                if isinstance(func, ast.Name) and func.id == name:
+                    return True
+        return False
+
+    def _is_kill_on_baseexception(handler: ast.ExceptHandler) -> bool:
+        if handler.type is None:
+            return _calls_name(handler, "_kill_tree")
+        if isinstance(handler.type, ast.Name) and handler.type.id == "BaseException":
+            return _calls_name(handler, "_kill_tree")
+        return False
+
+    found_unified = False
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Try):
+            continue
+        if not any(_is_kill_on_baseexception(h) for h in node.handlers):
+            continue
+        # Popen must appear in this try's body (possibly nested under OSError convert).
+        if _calls_name(node, "Popen"):
+            found_unified = True
+            break
+    assert found_unified, (
+        "subprocess.Popen must sit inside the BaseException+_kill_tree try "
+        "(not in a preceding OSError-only try)"
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group killpg is POSIX-only")
+def test_cancel_during_result_construction_kills_descendants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cancel_event set while building ProbeProcessResult must still killpg."""
+    from omg_cli.providers import process as process_mod
+
+    marker = tmp_path / "grandchild.alive"
+    script = tmp_path / "exit_leave_gc.py"
+    script.write_text(
+        f"""\
+import subprocess, sys, time
+from pathlib import Path
+subprocess.Popen(
+    [sys.executable, "-c",
+     "import time; from pathlib import Path; m=Path({str(marker)!r});\\n"
+     "while True:\\n"
+     " m.write_text(str(time.time()), encoding='utf-8'); time.sleep(0.05)\\n"],
+)
+time.sleep(0.2)
+""",
+        encoding="utf-8",
+    )
+
+    cancel = threading.Event()
+    real_result = process_mod.ProbeProcessResult
+    kills: list[int] = []
+    real_kill = process_mod._kill_tree
+
+    def tracking_kill(proc) -> None:
+        kills.append(getattr(proc, "pid", -1) or -1)
+        real_kill(proc)
+
+    def result_sets_cancel(*args, **kwargs):
+        # Simulate SIGINT during decode / result construction (after the
+        # final pre-return cancel check in older layouts).
+        cancel.set()
+        return real_result(*args, **kwargs)
+
+    monkeypatch.setattr(process_mod, "ProbeProcessResult", result_sets_cancel)
+    monkeypatch.setattr(process_mod, "_kill_tree", tracking_kill)
+
+    result = run_probe_process(
+        [sys.executable, str(script)],
+        env={"PATH": os.environ.get("PATH", "")},
+        timeout_s=5.0,
+        cancel_event=cancel,
+    )
+    assert result.cancelled is True
+    assert kills, "expected killpg after cancel during result construction"
+
+    deadline = time.monotonic() + 2.0
+    last = marker.read_text(encoding="utf-8") if marker.exists() else ""
+    while time.monotonic() < deadline:
+        time.sleep(0.2)
+        now = marker.read_text(encoding="utf-8") if marker.exists() else ""
+        if now == last:
+            break
+        last = now
+    else:
+        pytest.fail("grandchild still alive after cancel-during-result-construction")
+
+
+def test_antigravity_cancel_after_probe_kills_before_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_run_probe_argv must killpg before KeyboardInterrupt when cancel is set."""
+    from omg_cli.providers import antigravity as agy_mod
+    from omg_cli.providers.process import ProbeProcessResult
+
+    killed: list[int] = []
+
+    def fake_run(argv, **kwargs):  # noqa: ARG001
+        ev = kwargs.get("cancel_event")
+        assert ev is not None
+        # Child already exited; cancel flips only after run_probe_process returns.
+        ev.set()
+        return ProbeProcessResult(
+            argv=tuple(argv),
+            returncode=0,
+            stdout="1.1.10\n",
+            stderr="",
+            pid=424242,
+        )
+
+    def fake_killpg(pid, sig):  # noqa: ARG001
+        killed.append(pid)
+
+    monkeypatch.setattr(agy_mod, "run_probe_process", fake_run)
+    monkeypatch.setattr(agy_mod.os, "killpg", fake_killpg)
+    with pytest.raises(KeyboardInterrupt):
+        agy_mod._run_probe_argv(["/tmp/fake-agy", "--version"])
+    assert killed == [424242], "must killpg before raising KeyboardInterrupt"
+
+
 def test_join_readers_hung_path_kills_tree_before_pipe_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
