@@ -882,3 +882,36 @@ def test_redact_text_closes_pr94aa_bash_special_param_query_p2() -> None:
     bare = "?api_key=foo$bar&ok=visible-tail"
     assert redact_text(bare) == f"?api_key={REDACTED}&ok=visible-tail"
 
+
+def test_redact_text_closes_pr94ab_hash_special_param_query_p2() -> None:
+    """Close Pro reaudit P2: Bash ``$#`` digraph clears query before fragment ``#``.
+
+    ``$#`` is the positional-parameter count; ``_consume_value`` must not treat
+    the ``#`` as a URL fragment stop, and mid-span clear_eol must hide
+    ``&second-secret``. Ordinary ``#`` fragment / ``api#key=`` key-parity stay.
+    """
+    for source in (
+        r"curl https://x.test/?api_key=foo$#\&second-secret",
+        "curl https://x.test/?api_key=foo$#&second-secret",
+        r"?api_key=foo$#\&second-secret",
+        "?api_key=foo$#&second-secret",
+        r"curl https://x.test/?api_key=foo$#token=first\&second-secret",
+        "curl https://x.test/?api_key=foo$#token=first&second-secret",
+    ):
+        out = redact_text(source)
+        assert "second-secret" not in out, (source, out)
+        assert "first" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+    # Ordinary fragment ``#`` still clears query (pr94x/pr94y FIXED).
+    out_frag = redact_text(
+        "curl https://x.test/?api_key=foo#frag&token=Bearer first&second-secret"
+    )
+    assert "second-secret" not in out_frag and "Bearer first" not in out_frag
+    assert REDACTED in out_frag
+    # Key-parity: ``#`` inside keys must still reach is_sensitive_key.
+    assert is_sensitive_key("api#key")
+    assert "super-secret" not in redact_text("api#key=super-secret")
+    # Bare ``$bar`` must NOT clear_eol (contrast: ``$#`` above).
+    bare = "?api_key=foo$bar&ok=visible-tail"
+    assert redact_text(bare) == f"?api_key={REDACTED}&ok=visible-tail"
+

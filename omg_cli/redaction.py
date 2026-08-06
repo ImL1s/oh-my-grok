@@ -150,7 +150,14 @@ def _consume_value(
         return _line_end(text, start, limit)
 
     for idx in range(start, scan_end):
-        if text[idx] in "&#\r\n":
+        ch = text[idx]
+        if ch in "&\r\n":
+            return idx
+        if ch == "#":
+            # Bash special parameter ``$#`` is not a URL fragment delimiter —
+            # keep scanning so mid-span digraph classification can clear_eol.
+            if idx > start and text[idx - 1] == "$":
+                continue
             return idx
     return scan_end
 
@@ -178,9 +185,10 @@ def _clears_query_token(ch: str) -> bool:
 
 # Bash special-parameter / digraph second chars after ``$`` that clear query
 # mode (parity with ``$(``). Includes ``{`` / ``[`` expansions and GNU Bash
-# special parameters ``$@ $* $? $- $$ $! $0``…``$9``. A bare ``$`` followed by
-# a normal identifier letter (``$bar``) must NOT clear.
-_DOLLAR_QUERY_CLEAR_SECONDS = frozenset("{[@*?-$!0123456789")
+# special parameters ``$@ $* $? $- $$ $! $# $0``…``$9``. A bare ``$`` followed
+# by a normal identifier letter (``$bar``) must NOT clear. ``#`` is listed so
+# ``$#`` classifies as a digraph *before* bare ``#`` fragment handling.
+_DOLLAR_QUERY_CLEAR_SECONDS = frozenset("{[@*?-$!#0123456789")
 
 
 def _clears_query_at(text: str, idx: int) -> bool:
@@ -188,18 +196,20 @@ def _clears_query_at(text: str, idx: int) -> bool:
 
     Single-char clearers match :func:`_clears_query_token`. Shell expansions
     ``${…}`` / ``$[…]`` and Bash special parameters (``$@`` ``$$`` ``$*``
-    ``$?`` ``$-`` ``$!`` ``$0``…) clear as digraphs (parity with ``$(…`` via
-    ``(``) — bare ``$`` alone or ``$`` + normal identifier does **not**, so
-    legitimate keys/values with ``$`` are preserved. Opening ``{`` / ``[`` are
-    intentionally *not* global clearers here (URLs / key-brackets); only the
-    ``$``-prefixed forms qualify.
+    ``$?`` ``$-`` ``$!`` ``$#`` ``$0``…) clear as digraphs (parity with
+    ``$(…`` via ``(``) — bare ``$`` alone or ``$`` + normal identifier does
+    **not**, so legitimate keys/values with ``$`` are preserved. Digraph
+    ``$#`` is checked on ``$`` before bare ``#`` is treated as a fragment
+    clearer alone. Opening ``{`` / ``[`` are intentionally *not* global
+    clearers here (URLs / key-brackets); only the ``$``-prefixed forms qualify.
     """
     if idx < 0 or idx >= len(text):
         return False
     ch = text[idx]
-    if _clears_query_token(ch):
-        return True
+    # Digraphs first: ``$#`` must win over bare ``#`` fragment classification.
     if ch == "$" and idx + 1 < len(text) and text[idx + 1] in _DOLLAR_QUERY_CLEAR_SECONDS:
+        return True
+    if _clears_query_token(ch):
         return True
     return False
 
@@ -213,13 +223,15 @@ def _query_value_after_consume(text: str, start: int, end: int) -> str:
         Used for clean quoted values (``?prompt="…"&ok=1``) and terminal
         clearers (``foo>``) so a following ``&`` remains a real separator.
       ``"clear_eol"`` — clearer mid-span (``foo>out``, ``foo bar``, ``foo]bar``,
-        JSON quote/comma junk, ``${…}`` / ``$[…]`` / ``$@`` / ``$$``…); clear
-        query mode and fail-closed to EOL so ``&second-secret`` cannot leak as
-        a truncated tail.
+        JSON quote/comma junk, ``${…}`` / ``$[…]`` / ``$@`` / ``$$`` / ``$#``…);
+        clear query mode and fail-closed to EOL so ``&second-secret`` cannot
+        leak as a truncated tail.
 
     Whitespace / ``]`` are real clearers (``_consume_value`` may jump over them
     before the main loop can see them). Fragment ``#`` is handled by the
-    caller via :func:`_clears_query_at` when consume stops at ``#``.
+    caller via :func:`_clears_query_at` when consume stops at ``#``; ``$#``
+    is kept inside the span (not a fragment stop) so digraph mid-span
+    clear_eol can fire.
     """
 
     if start >= end:
@@ -398,9 +410,9 @@ def _redact_query_assignments(text: str) -> str:
     continuous URL/query token — whitespace / ``;`` / ``|`` / ``#`` / closing
     quotes / JSON ``,`` / grouping openers/closers (incl. ``(`` ``]``; covers
     ``$(…)``) / shell expansions ``${…}`` / ``$[…]`` / Bash special parameters
-    (``$@`` ``$$`` ``$*`` ``$?`` ``$-`` ``$!`` ``$0``…) / shell redirection
-    (``<`` ``>``) / shell ``&&`` clear ``in_query`` so a later assignment
-    cannot inherit query continuation.
+    (``$@`` ``$$`` ``$*`` ``$?`` ``$-`` ``$!`` ``$#`` ``$0``…) / shell
+    redirection (``<`` ``>``) / shell ``&&`` clear ``in_query`` so a later
+    assignment cannot inherit query continuation.
     Whitespace between a marker and the key rejects the param (``? token=`` is
     not a query assignment). Each character is visited a constant number of
     times — no per-marker suffix ``find("=")``.
@@ -810,7 +822,8 @@ def _redact_plain_assignments(text: str, *, quote_interior: bool = False) -> str
             and text[i + 1] in _DOLLAR_QUERY_CLEAR_SECONDS
         ):
             # Shell ``${…}`` / ``$[…]`` / Bash special-parameter digraphs
-            # clear query (parity with ``$(``); bare ``$`` / ``$bar`` do not.
+            # (incl. ``$#``) clear query (parity with ``$(``); bare ``$`` /
+            # ``$bar`` do not. Digraph check runs before bare ``#`` below.
             query_active = False
             url.on_other(text, i, ch)
             i += 1
