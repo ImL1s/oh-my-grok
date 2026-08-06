@@ -478,17 +478,31 @@ class _BracketFrame:
 def _redact_quote_interior(text: str) -> str:
     """Redact assignments inside a quoted object-key interior (non-opaque).
 
-    Runs the plain scanner on the interior slice. Key-brackets inside are
-    handled by the iterative stack in that call; this is not the nested
-    key-bracket hot path (``[`` * n), so a slice here is acceptable.
+    Runs the plain scanner on the interior slice with escaped quotes treated as
+    key material (parity with ``is_sensitive_key`` normalize). Key-brackets
+    inside are handled by the iterative stack in that call; this is not the
+    nested key-bracket hot path (``[`` * n), so a slice here is acceptable.
     """
 
     if not text:
         return text
-    return _redact_plain_assignments(text)
+    return _redact_plain_assignments(text, quote_interior=True)
 
 
-def _redact_plain_assignments(text: str) -> str:
+def _escaped_quote_at(text: str, i: int) -> bool:
+    """True when ``text[i]`` is a quote escaped by an odd run of backslashes."""
+
+    if i <= 0 or text[i] not in "'\"":
+        return False
+    bs = 0
+    j = i - 1
+    while j >= 0 and text[j] == "\\":
+        bs += 1
+        j -= 1
+    return bs % 2 == 1
+
+
+def _redact_plain_assignments(text: str, *, quote_interior: bool = False) -> str:
     """Scan ``key[:=]value`` in a single O(n) forward pass.
 
     Tracks the most recent structural boundary instead of walking backward from
@@ -496,15 +510,17 @@ def _redact_plain_assignments(text: str) -> str:
     applies for real bracket-**key** segments (``headers["api&key"]=``) via an
     O(n) bracket table, and for quoted object keys (``"api?key":``) so
     ``?``/``&``/``://`` inside the quotes stay key material while interiors are
-    still scanned for nested assignments. Nested key-brackets use an explicit
-    stack over original index ranges (no recursive sliced re-entry); frame-pop
-    keeps interior segments by reference so rewrite nests stay O(n). Array
-    values / malformed bracket quotes fall back to ordinary scanning.
-    Non-sensitive ``:``/``=`` inside a contiguous (no-whitespace) token do
-    **not** advance the boundary. ``?`` opens query context only for URL/query
-    shapes; whitespace / ``;`` / ``|`` / ``<`` / ``>`` / closing quotes /
-    JSON ``,`` / grouping / shell ``&&`` clear it so later assignments cannot
-    inherit query mode.
+    still scanned for nested assignments. When ``quote_interior`` is set (quoted
+    object-key interior re-scan), legal escaped quotes (``\\"``, ``\\'``) stay
+    key material so ``to\\"ken=…`` still reaches ``is_sensitive_key``. Nested
+    key-brackets use an explicit stack over original index ranges (no recursive
+    sliced re-entry); frame-pop keeps interior segments by reference so rewrite
+    nests stay O(n). Array values / malformed bracket quotes fall back to
+    ordinary scanning. Non-sensitive ``:``/``=`` inside a contiguous
+    (no-whitespace) token do **not** advance the boundary. ``?`` opens query
+    context only for URL/query shapes; whitespace / ``;`` / ``|`` / ``<`` /
+    ``>`` / closing quotes / JSON ``,`` / grouping / shell ``&&`` clear it so
+    later assignments cannot inherit query mode.
     """
 
     parts: list = []
@@ -659,6 +675,12 @@ def _redact_plain_assignments(text: str) -> str:
             i += 1
             continue
         if ch in "'\"":
+            # Quoted-key interiors: legal ``\"`` / ``\'`` are key material
+            # (``is_sensitive_key`` strips them), not quote boundaries.
+            if quote_interior and _escaped_quote_at(text, i):
+                url.on_other(text, i, ch)
+                i += 1
+                continue
             qclose = quoted_keys[i]
             if qclose >= 0:
                 # Quoted object key: scan interior (non-opaque), keep ?/&/://.

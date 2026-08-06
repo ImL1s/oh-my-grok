@@ -716,3 +716,32 @@ def test_redact_text_closes_pr94v_residual_p2_classes() -> None:
     # Small functional shape.
     assert "secret" not in redact_text("[[[token=secret]=x]=x]=x")
 
+
+def test_redact_text_closes_pr94w_escaped_quote_key_p2() -> None:
+    """P2: escaped quote inside quoted object-key must not split sensitive keys."""
+    assert is_sensitive_key('to\\"ken')
+    assert is_sensitive_key("to\\'ken")
+
+    for source in (
+        '{"to\\"ken=super-secret":"safe"}',
+        "{'to\\'ken=super-secret':'safe'}",
+        '{"api_\\"token=super-secret":"safe"}',
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+        assert REDACTED in out, (source, out)
+
+    # Prior quoted-key interior FIXED cases still redact.
+    for source in (
+        '{"token=super-secret":"safe"}',
+        '{"api_key=super-secret":"safe"}',
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+
+    # Structured value whose free-text field carries the same shape.
+    mapped = redact_value({"body": '{"to\\"ken=super-secret":"safe"}'})
+    body = json.dumps(mapped)
+    assert "super-secret" not in body
+    assert REDACTED in body
+
