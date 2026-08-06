@@ -391,6 +391,76 @@ def _launch_first_detached(
     return (parts[0], parts[1]), parts[2]
 
 
+def _discover_inside_windows_by_name(
+    *,
+    session_id: str,
+    window_name: str,
+) -> tuple[str, list[str], str | None]:
+    """Discover windows in *session_id* by exact name for orphan recovery.
+
+    Returns ``(status, window_ids, detail)`` where *status* is one of:
+    - ``found`` — exactly one matching window id
+    - ``absent`` — successful list with zero matches
+    - ``ambiguous`` — successful list with multiple matches
+    - ``unknown`` — list-windows non-zero / OSError / malformed (not absence)
+    """
+    if _TMUX_SESSION_ID.fullmatch(session_id) is None:
+        return (
+            "unknown",
+            [],
+            f"inside window discovery requires session id, got {session_id!r}",
+        )
+    if not window_name or not isinstance(window_name, str):
+        return (
+            "unknown",
+            [],
+            "inside window discovery requires a unique window name",
+        )
+    try:
+        listed = _tmux_run(
+            [
+                "list-windows",
+                "-t",
+                session_id,
+                "-F",
+                "#{window_id}\t#{window_name}\t#{session_id}",
+            ]
+        )
+    except OSError as exc:
+        return "unknown", [], f"list-windows OSError: {exc}"
+    if listed.returncode != 0:
+        err = (listed.stderr or listed.stdout or "").strip()
+        return (
+            "unknown",
+            [],
+            f"list-windows exit {listed.returncode}"
+            + (f" {err}" if err else ""),
+        )
+    matches: list[str] = []
+    valid_rows = 0
+    for line in (listed.stdout or "").splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        parts = raw.split("\t")
+        if len(parts) != 3:
+            continue
+        wid, name, sid = parts
+        if _TMUX_WINDOW_ID.fullmatch(wid) is None:
+            continue
+        valid_rows += 1
+        if name == window_name and sid == session_id:
+            matches.append(wid)
+    if matches:
+        if len(matches) > 1:
+            return "ambiguous", matches, None
+        return "found", matches, None
+    raw_content = (listed.stdout or "").strip()
+    if raw_content and valid_rows == 0:
+        return "unknown", [], "list-windows returned malformed output"
+    return "absent", [], None
+
+
 def _discover_inside_window_by_name(
     *,
     session_id: str,
@@ -398,43 +468,70 @@ def _discover_inside_window_by_name(
 ) -> str | None:
     """Find a unique window in *session_id* by exact name (orphan recovery).
 
-    Returns the window id, ``None`` if absent, or raises on ambiguity.
+    Returns the window id, ``None`` if absent, or raises on ambiguity/unknown.
     """
-    if _TMUX_SESSION_ID.fullmatch(session_id) is None:
-        raise TmuxTeamError(
-            f"inside window discovery requires session id, got {session_id!r}"
-        )
-    if not window_name or not isinstance(window_name, str):
-        raise TmuxTeamError("inside window discovery requires a unique window name")
-    listed = _tmux_run(
-        [
-            "list-windows",
-            "-t",
-            session_id,
-            "-F",
-            "#{window_id}\t#{window_name}\t#{session_id}",
-        ]
+    status, matches, detail = _discover_inside_windows_by_name(
+        session_id=session_id, window_name=window_name
     )
-    if listed.returncode != 0:
+    if status == "found":
+        return matches[0]
+    if status == "absent":
         return None
-    matches: list[str] = []
-    for line in (listed.stdout or "").splitlines():
-        parts = line.strip().split("\t")
-        if len(parts) != 3:
-            continue
-        wid, name, sid = parts
-        if (
-            name == window_name
-            and sid == session_id
-            and _TMUX_WINDOW_ID.fullmatch(wid) is not None
-        ):
-            matches.append(wid)
-    if len(matches) > 1:
+    if status == "ambiguous":
         raise TmuxTeamError(
             f"ambiguous team window name {window_name!r} in session {session_id}"
         )
-    if len(matches) == 1:
-        return matches[0]
+    raise TmuxTeamError(
+        detail
+        or f"inside window discovery unknown for {window_name!r} in {session_id}"
+    )
+
+
+def _kill_inside_windows_by_name(
+    *,
+    session_id: str,
+    window_name: str,
+) -> str | None:
+    """Best-effort kill of every window matching *window_name* in *session_id*.
+
+    Always attempts cleanup after a successful ``new-window`` whose result
+    publication failed — including when list-windows is unknown/ambiguous.
+    Returns an error detail string, or ``None`` when cleanup appears clean.
+    """
+    status, matches, detail = _discover_inside_windows_by_name(
+        session_id=session_id, window_name=window_name
+    )
+    errors: list[str] = []
+    killed_ids: list[str] = []
+    if status in ("found", "ambiguous") and matches:
+        for wid in matches:
+            err = _kill_window(wid)
+            if err:
+                errors.append(err)
+            else:
+                killed_ids.append(wid)
+    # Always also target session:name so a discovery-unknown path still
+    # attempts kill-window against the unique launch name we stamped.
+    name_target = f"{session_id}:{window_name}"
+    try:
+        by_name = _tmux_run(["kill-window", "-t", name_target])
+    except OSError as exc:
+        errors.append(f"kill-window -t {name_target!r} OSError: {exc}")
+        by_name = None
+    if by_name is not None and by_name.returncode not in (0, 1):
+        err = (by_name.stderr or by_name.stdout or "").strip()
+        errors.append(
+            f"kill-window -t {name_target!r}: exit {by_name.returncode}"
+            + (f" {err}" if err else "")
+        )
+    if status == "unknown" and detail:
+        errors.append(f"discovery {detail}")
+    if status == "ambiguous":
+        errors.append(
+            f"ambiguous name {window_name!r}; killed ids={killed_ids or matches}"
+        )
+    if errors:
+        return "; ".join(errors)
     return None
 
 
@@ -451,9 +548,9 @@ def _launch_first_inside(
     Uses ``-d`` so the client stays on the invoking leader pane. Target must be
     a window id — tmux rejects ``new-window -a -t %pane`` (CMD_FIND_WINDOW).
 
-    When ``new-window`` returns rc=0 but stdout is empty/malformed, discover the
-    unique window by *window_name* + *expected_session_id* and kill it before
-    raising so the caller never leaves an unrecepted orphan.
+    When ``new-window`` returns rc=0 but stdout is empty/malformed, always
+    attempt discover-by-name + kill-window (including name-target fallback)
+    before raising so the caller never leaves an unrecepted orphan.
     """
     if _TMUX_WINDOW_ID.fullmatch(target_window) is None:
         raise TmuxTeamError(
@@ -464,24 +561,35 @@ def _launch_first_inside(
             f"new-window requires expected session id, got {expected_session_id!r}"
         )
     first_env = tmux_env_args(list(task.get("_env_pairs") or env_pairs))
-    create = _tmux_run(
-        [
-            "new-window",
-            "-d",
-            "-P",
-            "-F",
-            "#{window_id}\t#{pane_id}",
-            "-a",
-            "-t",
-            target_window,
-            "-n",
-            window_name,
-            "-c",
-            str(task["worktree"]),
-            *first_env,
-            str(task["pane_command"]),
-        ]
-    )
+    try:
+        create = _tmux_run(
+            [
+                "new-window",
+                "-d",
+                "-P",
+                "-F",
+                "#{window_id}\t#{pane_id}",
+                "-a",
+                "-t",
+                target_window,
+                "-n",
+                window_name,
+                "-c",
+                str(task["worktree"]),
+                *first_env,
+                str(task["pane_command"]),
+            ]
+        )
+    except OSError as exc:
+        # Creation itself failed — still best-effort name cleanup in case the
+        # window was created before the client lost the reply channel.
+        cleanup = _kill_inside_windows_by_name(
+            session_id=expected_session_id, window_name=window_name
+        )
+        message = f"tmux new-window OSError: {exc}"
+        if cleanup:
+            message = f"{message}; orphan cleanup: {cleanup}"
+        raise TmuxTeamError(message) from exc
     if create.returncode != 0:
         err = (create.stderr or create.stdout or "").strip()
         raise TmuxTeamError(
@@ -495,19 +603,18 @@ def _launch_first_inside(
     ):
         return parts[0], parts[1]
 
-    # Side effect succeeded; result publication failed — recover or kill.
-    discovered = _discover_inside_window_by_name(
-        session_id=expected_session_id,
-        window_name=window_name,
+    # Side effect succeeded; result publication failed — always kill by name.
+    cleanup = _kill_inside_windows_by_name(
+        session_id=expected_session_id, window_name=window_name
     )
     message = "tmux new-window did not return window/pane ids"
-    if discovered is None:
-        raise TmuxTeamError(message)
-    cleanup = _kill_window(discovered)
     if cleanup:
-        message = f"{message}; orphan window {discovered} cleanup failed: {cleanup}"
+        message = f"{message}; orphan cleanup: {cleanup}"
     else:
-        message = f"{message}; killed orphan window {discovered}"
+        message = (
+            f"{message}; killed orphan window(s) named {window_name!r} "
+            f"in session {expected_session_id}"
+        )
     raise TmuxTeamError(message)
 
 
@@ -780,12 +887,19 @@ def _create_inside(
         )
     except (TmuxTeamError, OSError) as exc:
         # Never kill-session: only the team window / worker panes we created.
+        # When window_id was never published, still kill by the unique launch
+        # name so a failed new-window readback cannot leave an unrecepted orphan.
         cleanup_bits: list[str] = []
         if window_id:
             err = _kill_window(window_id)
             if err:
                 cleanup_bits.append(err)
         else:
+            err = _kill_inside_windows_by_name(
+                session_id=live_id, window_name=window_name
+            )
+            if err:
+                cleanup_bits.append(err)
             err = _kill_panes(created_panes)
             if err:
                 cleanup_bits.append(err)

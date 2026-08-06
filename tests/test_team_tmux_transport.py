@@ -527,7 +527,91 @@ def test_inside_new_window_malformed_stdout_kills_orphan(
             attach_mode="inside",
         )
     assert listed_windows >= 1
-    assert killed == ["@77"]
+    assert "@77" in killed
+    assert "$42:omg-team-deadbeef" in killed
+
+
+@pytest.mark.parametrize(
+    "list_windows_behavior",
+    ["nonzero", "oserror", "malformed", "ambiguous"],
+)
+def test_inside_new_window_readback_failure_modes_kill_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+    list_windows_behavior: str,
+) -> None:
+    """list-windows non-zero/OSError/malformed/ambiguous must still kill by name."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+    from omg_cli.team.tmux import TmuxTeamError
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    monkeypatch.setenv("TMUX_PANE", "%9")
+    monkeypatch.setattr(tmux_mod.secrets, "token_hex", lambda _n: "cafebabe")
+    killed: list[str] = []
+    residual_windows = {"@77", "@88"} if list_windows_behavior == "ambiguous" else {"@77"}
+
+    def fake_tmux(args: list[str]) -> SimpleNamespace:
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "display-message" and "-t" in args:
+            target = args[args.index("-t") + 1]
+            if target == "%9" and "#{pane_pid}" in joined:
+                return SimpleNamespace(
+                    returncode=0, stdout="leader\t$42\t@3\t%9\t4242\n", stderr=""
+                )
+        if cmd == "new-window":
+            return SimpleNamespace(returncode=0, stdout="garbage", stderr="")
+        if cmd == "list-windows":
+            if list_windows_behavior == "nonzero":
+                return SimpleNamespace(returncode=2, stdout="", stderr="server error")
+            if list_windows_behavior == "oserror":
+                raise OSError("tmux list-windows pipe broken")
+            if list_windows_behavior == "malformed":
+                return SimpleNamespace(
+                    returncode=0, stdout="not-a-window-row\n", stderr=""
+                )
+            # ambiguous: two windows share the unique launch name
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "@77\tomg-team-cafebabe\t$42\n"
+                    "@88\tomg-team-cafebabe\t$42\n"
+                ),
+                stderr="",
+            )
+        if cmd == "kill-window":
+            target = args[-1]
+            killed.append(target)
+            if target.startswith("@"):
+                residual_windows.discard(target)
+            elif target == "$42:omg-team-cafebabe":
+                residual_windows.clear()
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
+
+    with pytest.raises(TmuxTeamError, match="did not return window/pane ids"):
+        tmux_mod.create_split_team_session(
+            session="planned-name",
+            tasks=[
+                {
+                    "task_id": "w1",
+                    "worktree": "/tmp/w1",
+                    "pane_command": "true",
+                    "_env_pairs": [],
+                }
+            ],
+            env_pairs=[],
+            attach_mode="inside",
+        )
+
+    assert "$42:omg-team-cafebabe" in killed
+    if list_windows_behavior == "ambiguous":
+        assert "@77" in killed and "@88" in killed
+    assert not residual_windows
 
 
 def test_team_status_prefers_exact_pane_alive(
@@ -623,6 +707,76 @@ def test_team_status_prefers_exact_pane_alive(
     st = plane.team_status(tmp_path, rid)
     by_id = {t["task_id"]: t["alive"] for t in st["tasks"]}
     assert by_id == {"w1": True, "w2": False, "w3-legacy": False}
+
+
+def test_team_status_same_start_id_different_pid_is_not_alive(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pid_start collision across PIDs must not false-alive a respawn (AND gate)."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team import plane
+
+    rid = "20260806T000000Z-status-start-collide"
+    meta = {
+        "run_id": rid,
+        "session": "team-sess",
+        "launch_nonce": "nonce-abc",
+        "dry_run": False,
+        "workspace_mode": "worktree",
+        "writer": CLI_WRITER,
+        "tasks": [
+            {
+                "task_id": "w1",
+                "window_index": 0,
+                "worktree": str(tmp_path / "w1"),
+                "status": "running",
+                "pid": 1111,
+                "pid_start": "collide-start",
+                "pane_id": "%81",
+            }
+        ],
+    }
+    plane._atomic_write_json(plane.team_meta_path(tmp_path, rid), meta)
+    plane._atomic_write_json(
+        plane.team_launch_receipt_path(tmp_path, rid),
+        {
+            "writer": CLI_WRITER,
+            "session": "team-sess",
+            "session_id": "$42",
+            "launch_nonce": "nonce-abc",
+        },
+    )
+
+    def fake_probe(pane_id: str):
+        assert pane_id == "%81"
+        return {
+            "pane_id": "%81",
+            "dead": False,
+            "session_id": "$42",
+            # Respawned foreign PID that collides on start-id.
+            "pane_pid": 2222,
+        }
+
+    monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
+    monkeypatch.setattr(
+        plane,
+        "_read_tmux_launch_nonce_for_pane",
+        lambda _pane, _s, **_kw: "nonce-abc",
+    )
+    # Same start-id for any PID — models clock-resolution collision.
+    monkeypatch.setattr(plane, "_pid_start_identity", lambda _pid: "collide-start")
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+
+    st = plane.team_status(tmp_path, rid)
+    assert st["tasks"][0]["alive"] is False
+    assert plane._status_worker_alive(
+        pane_id="%81",
+        session="team-sess",
+        expected_session_id="$42",
+        launch_nonce="nonce-abc",
+        expected_pid_start="collide-start",
+        expected_pid=1111,
+    ) is False
 
 
 def test_team_status_probe_oserror_is_fail_closed(

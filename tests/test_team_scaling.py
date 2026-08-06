@@ -3810,6 +3810,155 @@ def test_resume_refuses_respawned_pane_same_id_new_pid(
     assert out["verified"] is False
 
 
+def test_resume_refuses_start_id_collision_with_different_pid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Same pane/nonce/start-id but different live PID must not resume as running."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    meta = start_team("start-id collide resume", TASKS_TWO, root=tmp_path, dry_run=True)
+    rid = meta["run_id"]
+    live = dict(load_team_meta(tmp_path, rid))
+    live["dry_run"] = False
+    live["session"] = "omg-resume-collide"
+    live["topology"] = "split"
+    live["launch_nonce"] = "a" * 32
+    live["tasks"] = [
+        {
+            **live["tasks"][0],
+            "status": STATUS_RUNNING,
+            "window_index": 0,
+            "pane_id": "%81",
+            "pid": 1111,
+            "pgid": 2111,
+            "pid_start": "collide-start",
+        }
+    ]
+    _receipt, receipt_hash = plane._persist_team_launch_receipt(
+        tmp_path,
+        rid,
+        session=live["session"],
+        session_id="$7",
+        launch_nonce="a" * 32,
+        tasks=live["tasks"],
+    )
+    live["launch_receipt_sha256"] = receipt_hash
+    live["identity_receipt_sha256"] = receipt_hash
+    _write_team_meta(tmp_path, rid, live)
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux.probe_worker_pane_identity",
+        lambda pane_id: {
+            "pane_id": "%81",
+            "dead": False,
+            "session_id": "$7",
+            "pane_pid": 9999,
+        }
+        if pane_id == "%81"
+        else None,
+    )
+    monkeypatch.setattr(
+        plane,
+        "_read_tmux_launch_nonce_for_pane",
+        lambda _pane, _session, **_kw: "a" * 32,
+    )
+    monkeypatch.setattr(plane, "_pid_start_identity", lambda _pid: "collide-start")
+    monkeypatch.setattr(scaling, "tmux_available", lambda: True)
+
+    out = resume_team(tmp_path, rid)
+    disk = load_team_meta(tmp_path, rid)
+    assert disk["tasks"][0]["status"] == STATUS_NEEDS_COLLECT
+    assert out["changes"] == 1
+
+
+def test_relaunch_treats_start_id_collision_as_dead(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Respawn with colliding start-id must not skip relaunch as alive."""
+    rid, live, _launched, respawns = _prepare_live_relaunch_team(
+        monkeypatch, tmp_path
+    )
+    # Use the real AND-gated helper instead of the prepare stub.
+    monkeypatch.setattr(
+        scaling, "_status_worker_alive", plane._status_worker_alive
+    )
+    first = live["tasks"][0]
+    second = live["tasks"][1]
+
+    def fake_probe(pane_id: str):
+        if pane_id == str(first["pane_id"]):
+            return {
+                "pane_id": pane_id,
+                "dead": False,
+                "session_id": "$7",
+                # Foreign PID sharing the receipt start-id → not alive.
+                "pane_pid": 55555,
+            }
+        if pane_id == str(second["pane_id"]):
+            return {
+                "pane_id": pane_id,
+                "dead": False,
+                "session_id": "$7",
+                "pane_pid": int(second["pid"]),
+            }
+        return None
+
+    monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
+    monkeypatch.setattr(
+        plane,
+        "_read_tmux_launch_nonce_for_pane",
+        lambda _pane, _session, **_kw: "a" * 32,
+    )
+
+    def start_for(pid: int) -> str | None:
+        if pid == 55555:
+            return str(first["pid_start"])
+        if pid == int(second["pid"]):
+            return str(second["pid_start"])
+        return f"start-{pid}"
+
+    monkeypatch.setattr(plane, "_pid_start_identity", start_for)
+    monkeypatch.setattr(scaling, "_pid_start_identity", start_for)
+
+    assert (
+        plane._status_worker_alive(
+            pane_id=str(first["pane_id"]),
+            session=str(live["session"]),
+            expected_session_id="$7",
+            launch_nonce="a" * 32,
+            expected_pid_start=str(first["pid_start"]),
+            expected_pid=int(first["pid"]),
+        )
+        is False
+    )
+    assert (
+        plane._status_worker_alive(
+            pane_id=str(second["pane_id"]),
+            session=str(live["session"]),
+            expected_session_id="$7",
+            launch_nonce="a" * 32,
+            expected_pid_start=str(second["pid_start"]),
+            expected_pid=int(second["pid"]),
+        )
+        is True
+    )
+
+    out = relaunch_dead_incomplete_workers(tmp_path, rid)
+
+    assert "alive" not in {
+        row.get("reason")
+        for row in out["skipped"]
+        if row.get("task_id") == first["task_id"]
+    }
+    assert any(
+        row.get("task_id") == second["task_id"] and row.get("reason") == "alive"
+        for row in out["skipped"]
+    )
+    assert respawns == ["t-a"]
+    assert {row["task_id"] for row in out["relaunched"]} == {"t-a"}
+
+
 # ---------------------------------------------------------------------------
 # CLI smoke (dry-run scale/resume)
 # ---------------------------------------------------------------------------

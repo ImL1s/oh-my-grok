@@ -826,10 +826,16 @@ def _tmux_identity_runner(
         elif command[0] == "show-options":
             result.stdout = expected_nonce + "\n"
         elif command[0] == "list-panes":
-            result.stdout = "".join(
-                f"{task['window_index']}\t{task['pane_id']}\t{task['pid'] + pane_pid_delta}\n"
-                for task in live["tasks"]
-            )
+            # Global absence probe uses ``list-panes -a -F #{pane_id}``.
+            if "-a" in command and "#{pane_id}" in str(command[-1]):
+                result.stdout = "".join(
+                    f"{task['pane_id']}\n" for task in live["tasks"]
+                )
+            else:
+                result.stdout = "".join(
+                    f"{task['window_index']}\t{task['pane_id']}\t{task['pid'] + pane_pid_delta}\n"
+                    for task in live["tasks"]
+                )
         elif command[0] == "kill-session":
             session_killed = True
         elif command[0] == "has-session":
@@ -1064,21 +1070,17 @@ def test_stop_refuses_when_process_group_disappearance_remains_unproved(
     )
     live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
     commands: list[list[str]] = []
-    leader_gone = False
     signals: list[tuple[int, int]] = []
 
     def getpgid(_pid: int) -> int:
-        if leader_gone:
-            raise ProcessLookupError("leader reaped")
+        # Keep exact receipt identity live so SIGKILL uses the safe
+        # resolved_kill path (not PGID-only escalation).
         return 525252
 
     def killpg(pgid: int, sig: int) -> None:
-        nonlocal leader_gone
         if sig == 0:
             return
         signals.append((pgid, int(sig)))
-        if sig == signal.SIGTERM:
-            leader_gone = True
 
     monkeypatch.setattr(plane, "tmux_available", lambda: True)
     monkeypatch.setattr(plane, "_tmux_run", _tmux_identity_runner(live, commands))
@@ -1087,7 +1089,12 @@ def test_stop_refuses_when_process_group_disappearance_remains_unproved(
     monkeypatch.setattr(
         plane,
         "_wait_process_group_disappearance",
-        lambda _pgid: (False, "process group disappearance timed out pgid=525252"),
+        lambda _pgid, **_kw: (False, "process group disappearance timed out pgid=525252"),
+    )
+    monkeypatch.setattr(
+        plane,
+        "_process_group_disappeared",
+        lambda _pgid: (False, None),
     )
 
     result = stop_team(tmp_path, meta["run_id"])
@@ -1148,13 +1155,14 @@ def test_process_group_disappearance_persistent_permission_denial_times_out(
 
 
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups")
-def test_stop_kills_same_pgid_child_after_receipt_leader_is_reaped(
+def test_stop_refuses_pgid_only_sigkill_after_leader_and_pane_gone(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """When exact pane + leader are gone, refuse SIGKILL on numeric PGID alone."""
     _init_repo(tmp_path)
     _enable_team(monkeypatch)
     meta = start_team(
-        "real group survivor", [TASKS_TWO[0]], root=tmp_path, dry_run=True
+        "real group survivor refuse", [TASKS_TWO[0]], root=tmp_path, dry_run=True
     )
     child_pid_path = tmp_path / "same-pgid-child.pid"
     script = """
@@ -1202,26 +1210,19 @@ else:
         )
         commands: list[list[str]] = []
         base_runner = _tmux_identity_runner(live, commands)
+        pane_token = str(live["tasks"][0]["pane_id"])
 
         def runner(args: Any, **kw: Any) -> Any:
-            # After SIGTERM reaps the receipt leader, report the pane gone so
-            # SIGKILL may target the still-living same-PGID survivor — without
-            # treating a respawned foreign pane_pid as rebound authority.
+            # After SIGTERM reaps the receipt leader, prove the pane is absent
+            # via list-panes -a (not display-message non-zero → "gone").
             if (
                 leader.poll() is not None
-                and list(args)[:1] == ["display-message"]
-                and "-t" in list(args)
+                and list(args)[:1] == ["list-panes"]
+                and "-a" in list(args)
             ):
                 from unittest.mock import MagicMock
 
-                command = list(args)
-                target = command[command.index("-t") + 1]
-                if isinstance(target, str) and target.startswith("%"):
-                    fmt = command[-1] if command else ""
-                    result = MagicMock(returncode=1, stdout="", stderr="")
-                    if "#{session_id}" in str(fmt):
-                        return result
-                    return result
+                return MagicMock(returncode=0, stdout="%999\n", stderr="")
             return base_runner(args, **kw)
 
         monkeypatch.setattr(plane, "tmux_available", lambda: True)
@@ -1232,28 +1233,18 @@ else:
         reaper.join(timeout=2.0)
 
         assert leader.poll() is not None
-        # SIGKILL can leave a short-lived zombie until reaped; poll until the
-        # process group is gone rather than requiring immediate ESRCH.
-        gone_deadline = time.monotonic() + 2.0
-        while time.monotonic() < gone_deadline:
-            try:
-                os.killpg(pgid, 0)
-            except ProcessLookupError:
-                break
-            time.sleep(0.02)
-        else:
-            with pytest.raises(ProcessLookupError):
-                os.killpg(pgid, 0)
-        assert result["stop_completed"] is True
-        assert result["identity_verified"] is True
-        assert any(
+        # Child may still be alive — we intentionally refuse PGID-only SIGKILL.
+        assert child_pid is not None
+        os.kill(child_pid, 0)
+        assert not any(
             action.startswith(f"killpg:SIGKILL pgid={pgid}")
             for action in result["actions"]
         )
-        assert any(command[0] == "kill-session" for command in commands)
+        assert result["stop_completed"] is False
+        assert any("refusing PGID-only kill" in e for e in (result.get("errors") or []))
         durable = load_team_meta(tmp_path, meta["run_id"])
-        assert durable["stop_state"] == "stopped"
-        assert durable["tasks"][0]["status"] == "stopped"
+        assert durable["stop_state"] == "stop_refused"
+        _ = pane_token
     finally:
         if leader.poll() is None:
             try:
@@ -1270,6 +1261,110 @@ else:
                 os.kill(child_pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+def test_stop_refuses_sigkill_when_pane_absence_probe_unknown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """list-panes -a non-zero/OSError must not authorize pane-gone SIGKILL."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team(
+        "pane probe unknown", [TASKS_TWO[0]], root=tmp_path, dry_run=True
+    )
+    live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
+    commands: list[list[str]] = []
+    leader_gone = False
+    signals: list[tuple[int, int]] = []
+
+    def getpgid(_pid: int) -> int:
+        if leader_gone:
+            raise ProcessLookupError("leader reaped")
+        return 525252
+
+    def killpg(pgid: int, sig: int) -> None:
+        nonlocal leader_gone
+        if sig == 0:
+            return
+        signals.append((pgid, int(sig)))
+        if sig == signal.SIGTERM:
+            leader_gone = True
+
+    base = _tmux_identity_runner(live, commands)
+
+    def runner(args: Any, **kw: Any) -> Any:
+        if list(args)[:1] == ["list-panes"] and "-a" in list(args):
+            from unittest.mock import MagicMock
+
+            return MagicMock(returncode=2, stdout="", stderr="server busy")
+        return base(args, **kw)
+
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+    monkeypatch.setattr(plane, "_tmux_run", runner)
+    monkeypatch.setattr(plane.os, "getpgid", getpgid)
+    monkeypatch.setattr(plane.os, "killpg", killpg)
+    monkeypatch.setattr(
+        plane,
+        "_wait_process_group_disappearance",
+        lambda _pgid, **_kw: (False, None),
+    )
+    monkeypatch.setattr(
+        plane,
+        "_process_group_disappeared",
+        lambda _pgid: (False, None),
+    )
+
+    result = stop_team(tmp_path, meta["run_id"], kill_grace_s=0)
+
+    assert signals == [(525252, int(signal.SIGTERM))]
+    assert not any(sig == int(signal.SIGKILL) for _pgid, sig in signals)
+    assert result["stop_completed"] is False
+    assert any("pane probe unknown" in e for e in (result.get("errors") or []))
+
+
+def test_pane_proven_absent_distinguishes_unknown_from_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import MagicMock
+
+    calls: list[list[str]] = []
+
+    def fake_tmux(args: Any, **_kw: Any) -> MagicMock:
+        command = list(args)
+        calls.append(command)
+        if command == ["list-panes", "-a", "-F", "#{pane_id}"]:
+            return MagicMock(returncode=0, stdout="%1\n%2\n", stderr="")
+        return MagicMock(returncode=1, stdout="", stderr="no")
+
+    monkeypatch.setattr(plane, "_tmux_run", fake_tmux)
+    assert plane._pane_proven_absent("%3") == (True, None)
+    assert plane._pane_proven_absent("%1") == (False, None)
+
+    def boom(_args: Any, **_kw: Any) -> MagicMock:
+        raise OSError("tmux gone")
+
+    monkeypatch.setattr(plane, "_tmux_run", boom)
+    absent, err = plane._pane_proven_absent("%3")
+    assert absent is None
+    assert err is not None and "OSError" in err
+
+    monkeypatch.setattr(
+        plane,
+        "_tmux_run",
+        lambda *_a, **_k: MagicMock(returncode=3, stdout="", stderr="err"),
+    )
+    absent, err = plane._pane_proven_absent("%3")
+    assert absent is None
+    assert err is not None and "exit=3" in err
+
+    monkeypatch.setattr(
+        plane,
+        "_tmux_run",
+        lambda *_a, **_k: MagicMock(returncode=0, stdout="not-a-pane\n", stderr=""),
+    )
+    absent, err = plane._pane_proven_absent("%3")
+    assert absent is None
+    assert err is not None and "malformed" in err
 
 
 def test_stop_forged_writer_and_pgid_without_launch_receipt_never_signals(

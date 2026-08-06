@@ -2641,7 +2641,13 @@ def _status_worker_alive(
     expected_pid_start: str | None,
     expected_pid: int | None,
 ) -> bool:
-    """Fail-closed status liveness using pane + session + nonce (+ PID start)."""
+    """Fail-closed status liveness using pane + session + nonce (+ PID start).
+
+    New-format receipts (``pid_start`` present) require AND identity:
+    ``live_pid == expected_pid`` **and** ``live_start == expected_pid_start``.
+    Start-id alone is insufficient (collision across different PIDs).
+    Legacy receipts with only ``pid`` keep pid-only comparison.
+    """
     if not expected_session_id or not launch_nonce or not session:
         return False
     try:
@@ -2662,11 +2668,16 @@ def _status_worker_alive(
         if not isinstance(live_pid, int) or live_pid <= 0:
             return False
         if expected_pid_start:
+            # Fail-closed: start-id present but live start unavailable → dead.
+            # When both pid and pid_start are receipted, require AND (not OR).
+            if expected_pid is not None and live_pid != expected_pid:
+                return False
             live_start = _pid_start_identity(live_pid)
             if not live_start or live_start != expected_pid_start:
                 return False
-        elif expected_pid is not None and expected_pid != live_pid:
-            return False
+            return True
+        if expected_pid is not None:
+            return live_pid == expected_pid
         return True
     except OSError:
         return False
@@ -3177,6 +3188,44 @@ def _process_group_disappeared(pgid: int) -> tuple[bool, str | None]:
     return False, None
 
 
+def _pane_proven_absent(pane_id: str) -> tuple[bool | None, str | None]:
+    """Prove pane absence only via a successful complete ``list-panes -a``.
+
+    Returns:
+      ``(True, None)`` — pane token explicitly absent from a clean global list
+      ``(False, None)`` — pane token present
+      ``(None, reason)`` — unknown (OSError / non-zero / malformed); never
+        treat unknown as gone (would authorize unsafe SIGKILL escalation)
+    """
+    if _TMUX_PANE_ID.fullmatch(pane_id) is None:
+        return None, f"invalid pane id for absence probe {pane_id!r}"
+    try:
+        listed = _tmux_run(["list-panes", "-a", "-F", "#{pane_id}"])
+    except OSError as exc:
+        return None, f"pane absence probe OSError pane={pane_id}: {exc}"
+    if listed.returncode != 0:
+        err = (listed.stderr or listed.stdout or "").strip()
+        return (
+            None,
+            f"pane absence probe failed pane={pane_id} exit={listed.returncode}"
+            + (f" {err}" if err else ""),
+        )
+    seen: set[str] = set()
+    for line in (listed.stdout or "").splitlines():
+        token = line.strip()
+        if not token:
+            continue
+        if _TMUX_PANE_ID.fullmatch(token) is None:
+            return (
+                None,
+                f"pane absence probe malformed row {token!r} pane={pane_id}",
+            )
+        seen.add(token)
+    if pane_id in seen:
+        return False, None
+    return True, None
+
+
 def _receipt_leader_pgid(
     pid: int,
 ) -> tuple[int | None, str | None]:
@@ -3469,7 +3518,8 @@ def _stop_team_locked(
             )
             if resolved is None:
                 # Worker may have already exited (claim→completed) while the
-                # owned session/nonce still match. Treat as already stopped.
+                # owned session/nonce still match. Treat as already stopped
+                # only when pane absence is *proven* (not probe-unknown).
                 session_ok = _read_tmux_session_identity(session) == (
                     session,
                     receipt.get("session_id"),
@@ -3483,33 +3533,25 @@ def _stop_team_locked(
                     else None,
                 )
                 pane_id = raw.get("pane_id")
-                pane_gone = False
+                pane_absent: bool | None = None
+                pane_probe_error: str | None = None
                 if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id):
-                    probe = _tmux_run(
-                        ["display-message", "-p", "-t", pane_id, "#{pane_pid}"]
-                    )
-                    if probe.returncode == 0:
-                        # Exact identity mismatch with a live pane is not
-                        # "already gone" — refuse rather than signal a rebound.
-                        try:
-                            live_pid = int((probe.stdout or "").strip())
-                        except ValueError:
-                            live_pid = -1
-                        if live_pid <= 0 or _pgid_for_pid(live_pid) is None:
-                            pane_gone = True
-                        else:
-                            pane_gone = False
-                    else:
-                        pane_gone = True
-                if session_ok and pane_gone:
+                    pane_absent, pane_probe_error = _pane_proven_absent(pane_id)
+                if session_ok and pane_absent is True:
                     actions.append(f"process already gone before signal task={tid}")
                     attempted_task_ids.add(str(tid))
                     continue
                 identity_verified = False
-                errors.append(
-                    f"signal identity drift refused signalling for task={tid}"
-                )
                 process_disappearance_verified = False
+                if pane_probe_error:
+                    errors.append(
+                        f"signal identity drift refused signalling for task={tid}: "
+                        f"{pane_probe_error}"
+                    )
+                else:
+                    errors.append(
+                        f"signal identity drift refused signalling for task={tid}"
+                    )
                 continue
             pid = resolved["pid"]
             pgid = resolved["pgid"]
@@ -3586,25 +3628,13 @@ def _stop_team_locked(
                     else None,
                 )
                 pane_id = resolved.get("pane_id")
-                pane_gone = False
+                pane_absent: bool | None = None
+                pane_probe_error: str | None = None
                 if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id):
-                    probe = _tmux_run(
-                        ["display-message", "-p", "-t", pane_id, "#{pane_pid}"]
-                    )
-                    if probe.returncode != 0:
-                        pane_gone = True
-                    else:
-                        try:
-                            live_pid = int((probe.stdout or "").strip())
-                        except ValueError:
-                            live_pid = -1
-                        if live_pid <= 0 or _pgid_for_pid(live_pid) is None:
-                            pane_gone = True
-                # Exact live pane identity → SIGKILL that pgid.
-                # Leader reaped + receipted pane gone + last PGID still alive →
-                # SIGKILL same-group survivors. Refuse when the %pane still
-                # hosts a foreign process (respawn/reuse) — never trust a
-                # numeric PGID alone in that case.
+                    pane_absent, pane_probe_error = _pane_proven_absent(pane_id)
+                # Exact live pane identity → SIGKILL that pgid (safe).
+                # Leader reaped + pane gone/unknown: NEVER SIGKILL solely on
+                # numeric PGID existence (reuse risk). Fail closed.
                 if resolved_kill is not None:
                     escalation_authorized = bool(
                         session_exact and leader_pgid in (None, pgid)
@@ -3612,21 +3642,36 @@ def _stop_team_locked(
                     target = int(resolved_kill["pgid"])
                     pgid = target
                     pid = int(resolved_kill["pid"])
-                elif (
-                    session_exact
-                    and leader_pgid is None
-                    and pane_gone
-                ):
-                    group_gone_now, _probe_err = _process_group_disappeared(pgid)
-                    escalation_authorized = not group_gone_now
                 else:
                     escalation_authorized = False
+                    if pane_probe_error:
+                        errors.append(
+                            f"SIGKILL refused task={tid}: pane probe unknown "
+                            f"({pane_probe_error})"
+                        )
+                    elif pane_absent is True and leader_pgid is None:
+                        errors.append(
+                            f"SIGKILL refused task={tid}: receipt pane and leader "
+                            "gone; refusing PGID-only kill (reuse risk)"
+                        )
+                    elif pane_absent is False and leader_pgid is None:
+                        errors.append(
+                            f"SIGKILL refused task={tid}: receipt pane still "
+                            "present without exact process identity"
+                        )
+                    else:
+                        errors.append(
+                            f"SIGKILL group authority drift refused signalling "
+                            f"task={tid}"
+                        )
                 if not escalation_authorized:
                     identity_verified = False
                     process_disappearance_verified = False
-                    errors.append(
-                        f"SIGKILL group authority drift refused signalling task={tid}"
-                    )
+                    if resolved_kill is not None:
+                        errors.append(
+                            f"SIGKILL group authority drift refused signalling "
+                            f"task={tid}"
+                        )
                     continue
                 try:
                     os.killpg(target, signal.SIGKILL)
