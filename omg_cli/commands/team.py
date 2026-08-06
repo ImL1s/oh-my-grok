@@ -335,6 +335,11 @@ def cmd_team(args: argparse.Namespace) -> int:
                 safe=bool(getattr(args, "safe", False)),
                 run_id=getattr(args, "run_id", None),
                 detach=bool(getattr(args, "detach", False)),
+                view_mode=(
+                    "dedicated_window"
+                    if bool(getattr(args, "dedicated_window", False))
+                    else None
+                ),
             )
             emit_data(args, "team", meta)
             hint = meta.get("attach_hint")
@@ -1062,6 +1067,15 @@ def register_team_parsers(
         dest="detach",
         action="store_true",
         help="allow detached live launch outside an interactive TTY",
+    )
+    p_t_launch.add_argument(
+        "--dedicated-window",
+        dest="dedicated_window",
+        action="store_true",
+        help=(
+            "inside tmux: place workers in a dedicated omg-team window "
+            "(default keeps leader + workers in the same window)"
+        ),
     )
     p_t_launch.set_defaults(func=cmd_team, team_action="launch")
 
