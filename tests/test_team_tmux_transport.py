@@ -2129,10 +2129,10 @@ def test_detached_success_stamps_tmux_server_on_launch_meta(
     assert meta["tmux_server_pid_start"] == FAKE_TMUX_SERVER["tmux_server_pid_start"]
 
 
-def test_sweep_clears_unbound_side_effect_when_name_and_nonce_absent(
+def test_sweep_retains_unbound_side_effect_when_nonce_publication_unacked(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """P2: mark-before-dispatch — name+intent-nonce absent on same server unwedes."""
+    """P2: unbound side_effect + nonce absent without ack must retain WAL."""
     from omg_cli.team.tmux import (
         mark_team_launch_intent_side_effect,
         require_clean_team_launch_intents,
@@ -2151,6 +2151,7 @@ def test_sweep_clears_unbound_side_effect_when_name_and_nonce_absent(
     mark_team_launch_intent_side_effect(intent)
     raw = json.loads(intent.read_text(encoding="utf-8"))
     assert raw.get("side_effect_started") is True
+    assert raw.get("nonce_published") is False
     assert "window_id" not in raw
     raw["owner_pid"] = 999999999
     raw["owner_pid_start"] = "stale-owner"
@@ -2160,16 +2161,24 @@ def test_sweep_clears_unbound_side_effect_when_name_and_nonce_absent(
         assert kwargs.get("require_durable_window_id") is True
         assert list(kwargs.get("known_window_ids") or []) == []
         assert kwargs.get("intent_nonce") == nonce
-        # Same live server + name absent + intent nonce absent → clear.
-        return None
+        assert kwargs.get("nonce_published") is False
+        # Unacked publication — refuse clear even when scans are empty.
+        return (
+            "unbound side_effect WAL: create-time nonce publication "
+            "unacknowledged — refuse clear on nonce absence alone"
+        )
 
     monkeypatch.setattr(
         "omg_cli.team.tmux._kill_inside_windows_by_name", fake_kill
     )
     results = sweep_stale_team_launch_intents(tmp_path)
-    assert results and results[0].get("ok") is True
-    assert not intent.is_file()
-    assert require_clean_team_launch_intents(tmp_path) == []
+    assert results and results[0].get("ok") is False
+    assert "unacknowledged" in str(results[0].get("error"))
+    assert intent.is_file()
+    from omg_cli.team.tmux import TmuxTeamError
+
+    with pytest.raises(TmuxTeamError, match="unacknowledged|stale team launch"):
+        require_clean_team_launch_intents(tmp_path)
 
 
 def test_kill_inside_unbound_side_effect_refuses_name_only_clear(
@@ -2273,15 +2282,15 @@ def test_kill_inside_unbound_side_effect_refuses_when_intent_nonce_present(
     assert nonce_present is True
 
 
-def test_kill_inside_unbound_side_effect_clears_when_name_and_nonce_absent(
+def test_kill_inside_unbound_refuses_nonce_absence_without_publication_ack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """P2: unbound side_effect + name and intent nonce absent → allow WAL clear."""
+    """P2: async stamp pending — nonce absence without ack must retain WAL."""
     from types import SimpleNamespace
 
     from omg_cli.team import tmux as tmux_mod
 
-    nonce = "nevercreated00000000000000000001"
+    nonce = "pendingstamp00000000000000000001"
 
     def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         cmd = args[0]
@@ -2301,14 +2310,118 @@ def test_kill_inside_unbound_side_effect_clears_when_name_and_nonce_absent(
     )
     err = tmux_mod._kill_inside_windows_by_name(
         session_id="$42",
-        window_name="omg-team-never-created",
+        window_name="omg-team-rename-before-stamp",
         known_window_ids=[],
         require_durable_window_id=True,
         intent_nonce=nonce,
+        nonce_published=False,
+        socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
+        expected_server=FAKE_TMUX_SERVER,
+    )
+    assert err is not None
+    assert "unacknowledged" in err
+    assert "nonce absence alone" in err
+
+
+def test_kill_inside_unbound_clears_when_nonce_publication_acked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2: after durable nonce_published ack, name+nonce absent may clear."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    nonce = "ackedpub000000000000000000000001"
+
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
+        cmd = args[0]
+        if cmd == "list-windows":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "if-shell" and "kill-window" in " ".join(args):
+            return SimpleNamespace(returncode=1, stdout="", stderr="can't find")
+        if cmd == "kill-window":
+            return SimpleNamespace(returncode=1, stdout="", stderr="can't find")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(
+        tmux_mod,
+        "_probe_tmux_server_identity",
+        lambda *, socket_path=None: dict(FAKE_TMUX_SERVER),
+    )
+    err = tmux_mod._kill_inside_windows_by_name(
+        session_id="$42",
+        window_name="omg-team-acked-gone",
+        known_window_ids=[],
+        require_durable_window_id=True,
+        intent_nonce=nonce,
+        nonce_published=True,
         socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
         expected_server=FAKE_TMUX_SERVER,
     )
     assert err is None
+
+
+def test_kill_inside_unbound_clears_after_observed_nonce_removed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2: positively observing then removing nonce is a happens-before for clear."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    nonce = "observedthenkill0000000000000001"
+    residual = {"@9"}
+    nonce_present = True
+
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
+        nonlocal nonce_present
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "list-windows":
+            if "@omg_intent_nonce" in joined:
+                if nonce_present:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout=f"@9\t{nonce}\t$42\n",
+                        stderr="",
+                    )
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if "-a" in args:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="".join(f"{wid}\n" for wid in sorted(residual)),
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "if-shell":
+            residual.discard("@9")
+            nonce_present = False
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "kill-window":
+            residual.discard("@9")
+            nonce_present = False
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(
+        tmux_mod,
+        "_probe_tmux_server_identity",
+        lambda *, socket_path=None: dict(FAKE_TMUX_SERVER),
+    )
+    err = tmux_mod._kill_inside_windows_by_name(
+        session_id="$42",
+        window_name="omg-team-observed-nonce",
+        known_window_ids=[],
+        require_durable_window_id=True,
+        intent_nonce=nonce,
+        nonce_published=False,
+        socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
+        expected_server=FAKE_TMUX_SERVER,
+    )
+    assert err is None
+    assert nonce_present is False
 
 
 def test_pre_side_effect_wal_may_clear_on_name_absence(
@@ -2520,9 +2633,13 @@ def test_new_window_nonzero_with_atN_stdout_binds_and_keeps_wal(
                 )
         if cmd == "if-shell" and "new-window" in joined:
             # new-window -P succeeded; later queue noise makes overall rc!=0.
-            # Pane command must self-stamp (rename-immune); no name-targeted
-            # set-option chained after new-window in the if-shell success cmd.
-            assert "tmux set-option -wq @omg_intent_nonce" in joined
+            # Server-sync stamp (current window, no -d) + pane self-stamp;
+            # no name-targeted set-option after new-window.
+            assert "new-window -d" not in joined
+            assert "set-option -wq @omg_intent_nonce" in joined
+            assert "set-option -pq @omg_intent_nonce" in joined
+            assert "select-window -t @3" in joined
+            assert "tmux set-option -wq @omg_intent_nonce" in joined  # pane prefix
             assert "set-option -w -t $42:" not in joined
             assert "set-option -p -t $42:" not in joined
             return SimpleNamespace(
@@ -2576,6 +2693,7 @@ def test_new_window_nonzero_with_atN_stdout_binds_and_keeps_wal(
     raw = json.loads(intents[0].read_text(encoding="utf-8"))
     assert raw["window_id"] == "@88"
     assert raw["side_effect_started"] is True
+    assert raw.get("nonce_published") is True
     # Post-handle @N stamp via identity-gated set-option.
     assert any("set-option -w -t @88" in " ".join(c) for c in stamps)
 
@@ -2656,6 +2774,7 @@ def test_kill_inside_refuses_clear_when_server_swaps_after_absence_proof(
         known_window_ids=[],
         require_durable_window_id=True,
         intent_nonce=nonce,
+        nonce_published=True,
         socket_path=FAKE_TMUX_SERVER["tmux_socket_path"],
         expected_server=FAKE_TMUX_SERVER,
     )
