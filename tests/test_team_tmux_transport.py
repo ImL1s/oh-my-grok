@@ -2601,7 +2601,11 @@ def test_new_window_nonzero_unmarks_side_effect_when_name_absent(
 def test_new_window_nonzero_with_atN_stdout_binds_and_keeps_wal(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """P2-1a: hook-rename stamp failure must not unmark when @N was emitted."""
+    """P2-1a: hook-rename stamp failure must not unmark when @N was emitted.
+
+    P1-NEW: create queue must not use targetless set-option; ACK requires
+    exact-handle stamp+readback after durable @N bind.
+    """
     from types import SimpleNamespace
 
     from omg_cli.team import tmux as tmux_mod
@@ -2613,6 +2617,8 @@ def test_new_window_nonzero_with_atN_stdout_binds_and_keeps_wal(
     rid = "20260806T120000Z-hookrn"
     bound: list[str] = []
     stamps: list[list[str]] = []
+    acks: list[str] = []
+    events: list[str] = []
 
     def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
         cmd = args[0]
@@ -2632,14 +2638,14 @@ def test_new_window_nonzero_with_atN_stdout_binds_and_keeps_wal(
                     returncode=0, stdout="%10\t$42\t@88\t424242\n", stderr=""
                 )
         if cmd == "if-shell" and "new-window" in joined:
-            # new-window -P succeeded; later queue noise makes overall rc!=0.
-            # Server-sync stamp (current window, no -d) + pane self-stamp;
-            # no name-targeted set-option after new-window.
-            assert "new-window -d" not in joined
-            assert "set-option -wq @omg_intent_nonce" in joined
-            assert "set-option -pq @omg_intent_nonce" in joined
-            assert "select-window -t @3" in joined
-            assert "tmux set-option -wq @omg_intent_nonce" in joined  # pane prefix
+            # Detached create only — no targetless create-queue nonce stamp.
+            assert "new-window -d" in joined
+            assert "select-window -t @3" not in joined
+            # Pane self-stamp remains inside the pane command string.
+            assert "tmux set-option -wq @omg_intent_nonce" in joined
+            # Targetless queue stamps must not appear as tmux list items.
+            assert " ; set-option -wq @omg_intent_nonce" not in joined
+            assert " ; set-option -pq @omg_intent_nonce" not in joined
             assert "set-option -w -t $42:" not in joined
             assert "set-option -p -t $42:" not in joined
             return SimpleNamespace(
@@ -2649,7 +2655,19 @@ def test_new_window_nonzero_with_atN_stdout_binds_and_keeps_wal(
             )
         if cmd == "if-shell" and "set-option" in joined:
             stamps.append(list(args))
+            events.append("stamp")
+            assert "-t @88" in joined or "-t %10" in joined
+            # Must never be targetless.
+            assert "set-option -wq @omg_intent_nonce" not in joined
+            assert "set-option -pq @omg_intent_nonce" not in joined
             return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "show-options":
+            target = args[args.index("-t") + 1]
+            assert target in ("@88", "%10")
+            events.append(f"readback:{target}")
+            return SimpleNamespace(
+                returncode=0, stdout="hookrn001\n", stderr=""
+            )
         if cmd == "select-layout":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "select-pane":
@@ -2662,12 +2680,22 @@ def test_new_window_nonzero_with_atN_stdout_binds_and_keeps_wal(
     monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
 
     real_bind = tmux_mod.bind_team_launch_intent_window_id
+    real_ack = tmux_mod.ack_team_launch_intent_nonce_published
 
     def track_bind(path, window_id):
+        events.append("bind")
         bound.append(window_id)
         return real_bind(path, window_id)
 
+    def track_ack(path):
+        events.append("ack")
+        acks.append(str(path))
+        return real_ack(path)
+
     monkeypatch.setattr(tmux_mod, "bind_team_launch_intent_window_id", track_bind)
+    monkeypatch.setattr(
+        tmux_mod, "ack_team_launch_intent_nonce_published", track_ack
+    )
 
     tasks = [
         {
@@ -2694,8 +2722,238 @@ def test_new_window_nonzero_with_atN_stdout_binds_and_keeps_wal(
     assert raw["window_id"] == "@88"
     assert raw["side_effect_started"] is True
     assert raw.get("nonce_published") is True
+    assert acks  # proven publication
+    # Bind before stamp/readback/ack — never ACK on -P parse alone.
+    assert events.index("bind") < events.index("stamp")
+    assert events.index("stamp") < events.index("readback:@88")
+    assert events.index("readback:%10") < events.index("ack")
     # Post-handle @N stamp via identity-gated set-option.
     assert any("set-option -w -t @88" in " ".join(c) for c in stamps)
+    assert any("set-option -p -t %10" in " ".join(c) for c in stamps)
+
+
+def test_nonce_ack_refused_when_readback_misses_created_handles(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """P1-NEW: -P handle alone must not ACK when stamp/readback misses worker."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+    from omg_cli.team.tmux import team_launch_intents_dir
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    monkeypatch.setenv("TMUX_PANE", "%9")
+    monkeypatch.setattr(tmux_mod.secrets, "token_hex", lambda _n: "noreadback01")
+    rid = "20260806T120000Z-noread"
+
+    def fake_tmux(args: list[str], *, socket_path: str | None = None) -> SimpleNamespace:
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "display-message" and "-t" in args:
+            target = args[args.index("-t") + 1]
+            if target == "%9" and "#{pane_pid}" in joined:
+                return SimpleNamespace(
+                    returncode=0, stdout="leader\t$42\t@3\t%9\t4242\n", stderr=""
+                )
+            if target == "@88":
+                return SimpleNamespace(
+                    returncode=0, stdout="$42\t@88\t424242\n", stderr=""
+                )
+            if target == "%10":
+                return SimpleNamespace(
+                    returncode=0, stdout="%10\t$42\t@88\t424242\n", stderr=""
+                )
+        if cmd == "if-shell" and "new-window" in joined:
+            assert " ; set-option -wq @omg_intent_nonce" not in joined
+            return SimpleNamespace(
+                returncode=0,
+                stdout="@88\t%10\t$42\t424242\n",
+                stderr="",
+            )
+        if cmd == "if-shell" and "set-option" in joined:
+            # Stamp "succeeds" client-side but readback will miss — models a
+            # retarget where options never landed on @88/%10.
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "show-options":
+            # Created handles do not carry the nonce (leader may have been
+            # stamped by a buggy targetless path — we must not ACK).
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "select-layout":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "select-pane":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "list-windows":
+            return SimpleNamespace(returncode=0, stdout="@88\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
+
+    tmux_mod.create_split_team_session(
+        session="planned-name",
+        tasks=[
+            {
+                "task_id": "w1",
+                "worktree": "/tmp/w1",
+                "pane_command": "true",
+                "_env_pairs": [],
+            }
+        ],
+        env_pairs=[],
+        attach_mode="inside",
+        root=tmp_path,
+        run_id=rid,
+    )
+    intents = list(team_launch_intents_dir(tmp_path).glob("*.json"))
+    assert len(intents) == 1
+    raw = json.loads(intents[0].read_text(encoding="utf-8"))
+    assert raw["window_id"] == "@88"
+    assert raw.get("nonce_published") is not True
+
+
+def test_split_transport_after_new_window_move_stamps_created_not_leader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1-NEW live: after-new-window move-window must not stamp the leader.
+
+    Models the Pro interleaving: create in source session, hook moves the new
+    window to a destination session (invalidating targetless queue current
+    target). Publication must land on the created ``@N``/``%pane`` only;
+    leader must never receive ``@omg_intent_nonce``, and ACK requires that
+    handle-targeted readback.
+    """
+    from omg_cli.team import tmux as tmux_mod
+
+    # tmux socket paths have a low OS length limit — avoid pytest's deep tmp.
+    sock = f"/tmp/omg-p1-move-{os.getpid()}.sock"
+    src = "omg-p1-src"
+    dst = "omg-p1-dst"
+    work = tmp_path / "wt"
+    work.mkdir()
+
+    def t(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["tmux", "-S", sock, *args],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    try:
+        # Isolated server with two sessions + an extra source window (survives
+        # if a buggy kill hit the leader alone).
+        assert (
+            t("new-session", "-d", "-s", src, "-n", "leader", "sleep", "60").returncode
+            == 0
+        )
+        assert (
+            t("new-window", "-d", "-t", src, "-n", "extra", "sleep", "60").returncode
+            == 0
+        )
+        assert (
+            t("new-session", "-d", "-s", dst, "-n", "park", "sleep", "60").returncode
+            == 0
+        )
+        # Move every newly created window into dst (invalidates source winlink).
+        # Synchronous hook (not run-shell -b): must run before the create client
+        # returns so post-handle stamp sees the moved @N.
+        assert (
+            t(
+                "set-hook", "-g", "after-new-window", f"move-window -t {dst}:"
+            ).returncode
+            == 0
+        )
+
+        leader = t(
+            "display-message",
+            "-p",
+            "-t",
+            f"{src}:leader",
+            "#{session_id}\t#{window_id}\t#{pane_id}\t#{pid}\t#{socket_path}",
+        )
+        assert leader.returncode == 0
+        sid, leader_wid, leader_pane, pid_s, sock_out = (
+            leader.stdout or ""
+        ).strip().split("\t")
+        assert sock_out == sock
+        server = tmux_mod._server_identity_from_create(
+            pid=int(pid_s), socket_path=sock
+        )
+
+        # Pin ambient identity for inside helpers that read TMUX/TMUX_PANE.
+        monkeypatch.setenv("TMUX", f"{sock},{pid_s},0")
+        monkeypatch.setenv("TMUX_PANE", leader_pane)
+
+        nonce = "movewindownonce000000000000000001"
+        rid = "20260806T120000Z-movep1"
+        intent = tmux_mod.write_team_launch_intent(
+            tmp_path,
+            run_id=rid,
+            session_id=sid,
+            window_name="omg-team-movep1",
+            nonce=nonce,
+            tmux_server=server,
+        )
+
+        window_id, pane_id = tmux_mod._launch_first_inside(
+            task={
+                "task_id": "w1",
+                "worktree": str(work),
+                "pane_command": "sleep 60",
+                "_env_pairs": [],
+            },
+            env_pairs=[],
+            window_name="omg-team-movep1",
+            target_window=leader_wid,
+            expected_session_id=sid,
+            intent_path=intent,
+            socket_path=sock,
+            expected_server=server,
+        )
+
+        raw = json.loads(intent.read_text(encoding="utf-8"))
+        assert raw["window_id"] == window_id
+        assert raw.get("nonce_published") is True
+
+        # Created worker (possibly in dst) carries the nonce.
+        win_opt = t("show-options", "-wv", "-t", window_id, "@omg_intent_nonce")
+        pane_opt = t("show-options", "-pv", "-t", pane_id, "@omg_intent_nonce")
+        assert win_opt.returncode == 0 and (win_opt.stdout or "").strip() == nonce
+        assert pane_opt.returncode == 0 and (pane_opt.stdout or "").strip() == nonce
+
+        # Leader must never have been stamped (targetless retarget failure mode).
+        leader_opt = t("show-options", "-wv", "-t", leader_wid, "@omg_intent_nonce")
+        leader_val = (
+            (leader_opt.stdout or "").strip() if leader_opt.returncode == 0 else ""
+        )
+        assert leader_val != nonce
+        assert leader_val == ""
+
+        # Worker left source session (hook move); still reachable by @N.
+        where = t(
+            "display-message",
+            "-p",
+            "-t",
+            window_id,
+            "#{session_name}\t#{window_id}",
+        )
+        assert where.returncode == 0
+        sess_name, wid_check = (where.stdout or "").strip().split("\t")
+        assert wid_check == window_id
+        assert sess_name == dst
+
+        # Source still has leader + extra — cleanup must not have killed leader.
+        src_wins = t("list-windows", "-t", src, "-F", "#{window_name}")
+        assert src_wins.returncode == 0
+        names = {(line or "").strip() for line in (src_wins.stdout or "").splitlines()}
+        assert "leader" in names
+        assert "extra" in names
+    finally:
+        t("kill-server")
+        try:
+            os.unlink(sock)
+        except OSError:
+            pass
 
 
 def test_intent_nonce_discovery_is_server_global(

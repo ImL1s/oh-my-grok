@@ -31,8 +31,9 @@ _TMUX_WINDOW_ID = re.compile(r"^@[0-9]{1,16}$")
 _SAFE_INTENT_TOKEN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 TEAM_LAUNCH_LOCK_NAME = "team-launch.lock"
 # Immutable launch-intent nonce stamped on the created window/pane (pane
-# self-stamp + post-handle ``@N`` stamp). Survives rename so sweep can find a
-# worker that crashed after create but before WAL ``@N`` bind.
+# self-stamp + post-handle exact ``@N``/``%pane`` stamp+readback). Survives
+# rename/move so sweep can find a worker that crashed after create but before
+# WAL ``@N`` bind. Never stamped via targetless create-queue ``set-option``.
 INTENT_NONCE_OPTION = "@omg_intent_nonce"
 
 
@@ -494,8 +495,9 @@ def write_team_launch_intent(
     :func:`bind_team_launch_intent_window_id` stamps the immutable ``@N``;
     ``side_effect_started`` stays false until
     :func:`mark_team_launch_intent_side_effect` runs immediately before
-    ``new-window``. ``nonce_published`` stays false until the create-queue
-    server-synchronous stamp completes (:func:`ack_team_launch_intent_nonce_published`).
+    ``new-window``. ``nonce_published`` stays false until exact-handle
+    stamp+readback proves publication on the created worker
+    (:func:`ack_team_launch_intent_nonce_published`).
     """
     from omg_cli.contracts.path_keys import (
         DATA_FILE_MODE,
@@ -633,13 +635,14 @@ def unmark_team_launch_intent_side_effect(path: Path | str) -> None:
 
 
 def ack_team_launch_intent_nonce_published(path: Path | str) -> None:
-    """Stamp ``nonce_published`` after create-queue sync publication completed.
+    """Stamp ``nonce_published`` after exact-handle publication is proven.
 
-    The create transaction publishes ``@omg_intent_nonce`` via server-side
-    ``set-option`` on the new current window/pane before the client returns.
-    Acking that completion is the happens-before recovery needs before treating
-    nonce absence as proof a create never left a renamed live window.
-    Idempotent when already true; refuses a missing/unreadable intent.
+    Callers must bind durable ``@window_id``, stamp ``@omg_intent_nonce`` onto
+    the returned ``@N``/``%pane`` handles, and read the option back from those
+    same handles before acking. A bare ``new-window -P`` handle is **not**
+    proof of publication (``after-new-window`` can retarget targetless queue
+    stamps onto the leader). Idempotent when already true; refuses a
+    missing/unreadable intent.
     """
     from omg_cli.contracts.path_keys import (
         DATA_FILE_MODE,
@@ -2313,12 +2316,12 @@ def _pane_command_with_intent_nonce_stamp(
 ) -> str:
     """Prefix *pane_command* so the new pane self-stamps intent nonce on start.
 
-    Defense in depth beside the create-queue server-synchronous stamp: runs
-    inside the created pane (window object identity), so an
-    ``after-new-window`` rename cannot defeat the stamp the way a queued
-    ``set-option -t $session:name`` can. The pane child is asynchronous —
-    recovery must not treat nonce absence as proof until publication is
-    acknowledged or positively observed.
+    Defense in depth beside the post-handle exact ``@N``/``%pane`` stamp:
+    runs inside the created pane (window object identity), so an
+    ``after-new-window`` rename/move cannot defeat the stamp the way a
+    targetless queued ``set-option`` (or ``$session:name`` target) can.
+    The pane child is asynchronous — recovery must not treat nonce absence
+    as proof until publication is acknowledged or positively observed.
     """
     nq = shlex.quote(intent_nonce)
     opt = INTENT_NONCE_OPTION
@@ -2329,40 +2332,22 @@ def _pane_command_with_intent_nonce_stamp(
     )
 
 
-def _create_queue_intent_nonce_stamp_commands(intent_nonce: str) -> list[str]:
-    """Server-synchronous nonce stamp targeting the new current window/pane.
-
-    Intended to run immediately after ``new-window`` **without** ``-d`` so the
-    newly created window is current; rename hooks do not change current-window
-    identity. Completes in the tmux command queue before the client returns.
-    """
-    return [
-        "set-option",
-        "-wq",
-        INTENT_NONCE_OPTION,
-        intent_nonce,
-        ";",
-        "set-option",
-        "-pq",
-        INTENT_NONCE_OPTION,
-        intent_nonce,
-    ]
-
-
 def _stamp_intent_nonce_on_handles(
     *,
     window_id: str,
     pane_id: str,
     intent_nonce: str,
-    expected_session_id: str,
     socket_path: str | None,
     expected_server: Mapping[str, Any] | None,
-) -> None:
-    """Best-effort stamp intent nonce onto immutable ``@N`` / ``%pane``.
+    expected_session_id: str | None = None,
+) -> bool:
+    """Stamp intent nonce onto immutable ``@N`` / ``%pane``; return success.
 
-    Used after create-handle acceptance so rename-before-name-stamp still
-    leaves a server-global recovery key. Failures are ignored — WAL ``@N``
-    bind is the durable authority.
+    Targets the create ``-P`` handles directly so an ``after-new-window``
+    ``move-window`` cannot retarget publication onto the source leader the way
+    a targetless create-queue ``set-option`` can. When *expected_session_id*
+    is omitted, the identity gate is server+``@N`` only — required after a
+    session move (P2-1b). Failures return False (no raise).
     """
     win_argv = [
         "set-option",
@@ -2384,8 +2369,8 @@ def _stamp_intent_nonce_on_handles(
         if expected_server is not None:
             server = _intent_tmux_server(expected_server)
             if server is None:
-                return
-            _tmux_run_if_identity(
+                return False
+            win = _tmux_run_if_identity(
                 win_argv,
                 target=window_id,
                 expected_server=server,
@@ -2393,7 +2378,7 @@ def _stamp_intent_nonce_on_handles(
                 window_id=window_id,
                 expected_session_id=expected_session_id,
             )
-            _tmux_run_if_identity(
+            pane = _tmux_run_if_identity(
                 pane_argv,
                 target=pane_id,
                 expected_server=server,
@@ -2401,13 +2386,87 @@ def _stamp_intent_nonce_on_handles(
                 window_id=window_id,
                 expected_session_id=expected_session_id,
             )
-        else:
-            _tmux_run(
-                [*win_argv, ";", *pane_argv],
-                socket_path=socket_path,
-            )
+            return win.returncode == 0 and pane.returncode == 0
+        stamped = _tmux_run(
+            [*win_argv, ";", *pane_argv],
+            socket_path=socket_path,
+        )
+        return stamped.returncode == 0
     except (OSError, TmuxTeamError):
-        return
+        return False
+
+
+def _readback_intent_nonce_on_handles(
+    *,
+    window_id: str,
+    pane_id: str,
+    intent_nonce: str,
+    socket_path: str | None,
+) -> bool:
+    """True only when both ``@N`` and ``%pane`` carry *intent_nonce*.
+
+    Proves publication hit the created worker handles — never the ambient
+    client current target. A valid ``new-window -P`` string alone is
+    insufficient (create-queue targetless stamps may have hit the leader).
+    """
+    try:
+        win = _tmux_run(
+            [
+                "show-options",
+                "-wv",
+                "-t",
+                window_id,
+                INTENT_NONCE_OPTION,
+            ],
+            socket_path=socket_path,
+        )
+        pane = _tmux_run(
+            [
+                "show-options",
+                "-pv",
+                "-t",
+                pane_id,
+                INTENT_NONCE_OPTION,
+            ],
+            socket_path=socket_path,
+        )
+    except OSError:
+        return False
+    if win.returncode != 0 or pane.returncode != 0:
+        return False
+    win_val = (win.stdout or "").strip()
+    pane_val = (pane.stdout or "").strip()
+    return win_val == intent_nonce and pane_val == intent_nonce
+
+
+def _publish_intent_nonce_on_created_handles(
+    *,
+    window_id: str,
+    pane_id: str,
+    intent_nonce: str,
+    socket_path: str | None,
+    expected_server: Mapping[str, Any] | None,
+) -> bool:
+    """Stamp + readback on exact create handles; True only when proven.
+
+    Session gate is omitted so an ``after-new-window`` session move still
+    stamps the moved worker ``@N`` (server-global), never the source leader.
+    """
+    if not _stamp_intent_nonce_on_handles(
+        window_id=window_id,
+        pane_id=pane_id,
+        intent_nonce=intent_nonce,
+        socket_path=socket_path,
+        expected_server=expected_server,
+        expected_session_id=None,
+    ):
+        return False
+    return _readback_intent_nonce_on_handles(
+        window_id=window_id,
+        pane_id=pane_id,
+        intent_nonce=intent_nonce,
+        socket_path=socket_path,
+    )
 
 
 def _launch_first_inside(
@@ -2440,17 +2499,15 @@ def _launch_first_inside(
     Create is authorized against the full WAL identity (pid **and** start-id)
     before mutation; successful handles must re-verify that identity before bind.
 
-    Create-time intent nonce is published **server-synchronously** in the same
-    tmux command queue as ``new-window`` (no ``-d`` so the new window is
-    current; ``set-option -wq/-pq`` then ``select-window`` back to the leader),
-    re-stamped by the pane command itself, and again via immutable ``@N`` after
-    handle acceptance — never only via mutable ``$session:name`` after
-    ``new-window`` (``after-new-window`` can rename before a queued name-
-    targeted ``set-option``). A valid ``@N`` in ``-P`` stdout is consumed even
-    when a later queue item makes the overall client non-zero; that path binds
-    WAL and must not unmark as "never created". After the create client
-    returns a handle, ``nonce_published`` is acked so crash recovery may treat
-    later nonce absence as proof.
+    Create-time intent nonce is published via exact ``@N``/``%pane`` stamp +
+    readback after the ``-P`` handle is parsed (never via targetless create-
+    queue ``set-option``, which an ``after-new-window`` ``move-window`` can
+    retarget onto the source leader). The pane command also self-stamps as
+    defense in depth. ``nonce_published`` is acked **only** after durable
+    ``@N`` bind and proven handle-targeted publication — a bare ``@N`` string
+    in ``-P`` stdout is not sufficient. A valid ``@N`` in ``-P`` stdout is
+    consumed even when a later queue item makes the overall client non-zero;
+    that path binds WAL and must not unmark as "never created".
     """
     if _TMUX_WINDOW_ID.fullmatch(target_window) is None:
         raise TmuxTeamError(
@@ -2494,12 +2551,13 @@ def _launch_first_inside(
         pane_command = _pane_command_with_intent_nonce_stamp(
             pane_command, intent_nonce
         )
-    # When publishing a create-time nonce, omit -d so the new window becomes
-    # current and the following set-option -wq/-pq stamps by window object
-    # identity (rename-immune) before select-window restores the leader.
+    # Always detach (-d): stay on the leader. Nonce publication uses exact
+    # @N/%pane after -P parse — never targetless set-option in this queue
+    # (after-new-window move-window invalidates queue current-target and
+    # would retarget targetless stamps onto the source leader).
     nw_argv = [
         "new-window",
-        *([] if intent_nonce is not None else ["-d"]),
+        "-d",
         "-P",
         "-F",
         "#{window_id}\t#{pane_id}\t#{session_id}\t#{pid}",
@@ -2514,40 +2572,15 @@ def _launch_first_inside(
         pane_command,
     ]
     create_argv: list[str] = list(nw_argv)
-    if intent_nonce is not None:
-        create_argv.extend(
-            [
-                ";",
-                *_create_queue_intent_nonce_stamp_commands(intent_nonce),
-                ";",
-                "select-window",
-                "-t",
-                target_window,
-            ]
-        )
     # if-shell success is one tmux command-string; join subcommands with
     # bare " ; " — _tmux_join_command would quote ";" and break the list.
     if_shell_success = _tmux_join_command(nw_argv)
-    if intent_nonce is not None:
-        if_shell_success = " ; ".join(
-            [
-                if_shell_success,
-                _tmux_join_command(
-                    ["set-option", "-wq", INTENT_NONCE_OPTION, intent_nonce]
-                ),
-                _tmux_join_command(
-                    ["set-option", "-pq", INTENT_NONCE_OPTION, intent_nonce]
-                ),
-                _tmux_join_command(["select-window", "-t", target_window]),
-            ]
-        )
     try:
         if server is not None:
             # Atomic server-side gate: new-window only runs when the leader
             # window still belongs to the WAL server (pid + start-id). Intent
-            # nonce is stamped in the same success queue (current window after
-            # create) and again via @N after handle acceptance — not via
-            # $session:name (after-new-window can rename before that stamp).
+            # nonce is stamped via exact @N/%pane after handle acceptance —
+            # not via targetless create-queue set-option or $session:name.
             predicate = _tmux_identity_shell_predicate(
                 expected_server=server,
                 window_id=target_window,
@@ -2650,28 +2683,25 @@ def _launch_first_inside(
         # cannot lose the exact @N for exception cleanup.
         if publish_created is not None:
             publish_created(window_id, pane_id)
-        if intent_path is not None and intent_nonce is not None:
-            # Create-queue sync stamp completed (client returned a handle).
-            # Ack before bind so a bind crash still lets recovery treat nonce
-            # absence as proof once the window is gone.
-            try:
-                ack_team_launch_intent_nonce_published(intent_path)
-            except TmuxTeamError:
-                pass
         if intent_path is not None:
-            # Durable @N before any further work — closes rename-before-
-            # discovery crash recovery that would otherwise clear on name-only
-            # absence. Bind even when overall client rc!=0 (later stamp noise).
+            # Durable @N *before* nonce ACK — closes the crash window where
+            # nonce_published=true but window_id is unbound (recovery would
+            # otherwise act on a false create-queue leader stamp). Bind even
+            # when overall client rc!=0 (later stamp noise).
             bind_team_launch_intent_window_id(intent_path, window_id)
-        if intent_nonce is not None:
-            _stamp_intent_nonce_on_handles(
+        if intent_path is not None and intent_nonce is not None:
+            # Exact-handle stamp+readback only. Never ACK on -P parse alone.
+            if _publish_intent_nonce_on_created_handles(
                 window_id=window_id,
                 pane_id=pane_id,
                 intent_nonce=intent_nonce,
-                expected_session_id=expected_session_id,
                 socket_path=socket_path,
                 expected_server=server,
-            )
+            ):
+                try:
+                    ack_team_launch_intent_nonce_published(intent_path)
+                except TmuxTeamError:
+                    pass
         return window_id, pane_id
 
     # Side effect succeeded; result publication failed — discover/bind/kill.
