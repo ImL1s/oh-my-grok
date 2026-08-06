@@ -858,12 +858,62 @@ def test_require_clean_launch_intents_refuses_when_sweep_unproven(
     assert intent.is_file()  # uncleared on failed sweep
 
 
+def _authoritative_v2_launch_receipt_fixture(
+    root: Path,
+    *,
+    run_id: str,
+    session_id: str,
+    intent_nonce: str,
+    window_name: str,
+    launch_nonce: str = "a" * 32,
+    session_name: str = "omg-workers",
+) -> dict[str, object]:
+    """Persist a real schema-v2 launch receipt + matching team.json authority."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team import plane
+
+    tasks = [
+        {
+            "task_id": "t1",
+            "window_index": 0,
+            "pane_id": "%10",
+            "pid": 10001,
+            "pgid": 20001,
+            "pid_start": "start-10001",
+            "status": "running",
+        }
+    ]
+    _receipt, receipt_hash = plane._persist_team_launch_receipt(
+        root,
+        run_id,
+        session=session_name,
+        session_id=session_id,
+        launch_nonce=launch_nonce,
+        tasks=tasks,
+        intent_nonce=intent_nonce,
+        window_name=window_name,
+    )
+    meta = {
+        "run_id": run_id,
+        "created_at": "2026-08-06T12:00:00Z",
+        "session": session_name,
+        "launch_nonce": launch_nonce,
+        "launch_receipt_sha256": receipt_hash,
+        "identity_generation": 0,
+        "identity_receipt_sha256": receipt_hash,
+        "workspace_mode": "worktree",
+        "writer": CLI_WRITER,
+        "dry_run": False,
+        "tasks": tasks,
+    }
+    plane._atomic_write_json(plane.team_meta_path(root, run_id), meta)
+    return meta
+
+
 def test_sweep_adopts_receipt_bound_intent_without_kill(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Durable receipt with matching intent identity → clear WAL, no kill."""
-    from omg_cli.evidence import CLI_WRITER
-    from omg_cli.team import plane
+    """Authoritative v2 receipt with matching intent identity → clear WAL, no kill."""
     from omg_cli.team.tmux import (
         sweep_stale_team_launch_intents,
         write_team_launch_intent,
@@ -879,18 +929,12 @@ def test_sweep_adopts_receipt_bound_intent_without_kill(
         window_name=window_name,
         nonce=nonce,
     )
-    plane._atomic_write_json(
-        plane.team_launch_receipt_path(tmp_path, rid),
-        {
-            "store_kind": "team_launch_receipt",
-            "schema_version": plane.LAUNCH_RECEIPT_SCHEMA_VERSION,
-            "writer": CLI_WRITER,
-            "run_id": rid,
-            "session_id": "$42",
-            "launch_nonce": "a" * 32,
-            "intent_nonce": nonce,
-            "window_name": window_name,
-        },
+    _authoritative_v2_launch_receipt_fixture(
+        tmp_path,
+        run_id=rid,
+        session_id="$42",
+        intent_nonce=nonce,
+        window_name=window_name,
     )
     raw = json.loads(intent.read_text(encoding="utf-8"))
     raw["owner_pid"] = 999999999
@@ -912,12 +956,69 @@ def test_sweep_adopts_receipt_bound_intent_without_kill(
     assert not intent.is_file()
 
 
+def test_sweep_refuses_forged_minimal_matching_receipt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Copyable-field stub receipt must not adopt or clear intent (no kill)."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team import plane
+    from omg_cli.team.tmux import (
+        _intent_receipt_matches,
+        sweep_stale_team_launch_intents,
+        write_team_launch_intent,
+    )
+
+    rid = "20260806T120000Z-forged"
+    nonce = "fefefefefefefefefefefefefefefefe"
+    window_name = "omg-team-worker"
+    intent = write_team_launch_intent(
+        tmp_path,
+        run_id=rid,
+        session_id="$42",
+        window_name=window_name,
+        nonce=nonce,
+    )
+    # Minimal matching stub — lacks exact key set / hash / tasks authority.
+    plane._atomic_write_json(
+        plane.team_launch_receipt_path(tmp_path, rid),
+        {
+            "store_kind": "team_launch_receipt",
+            "schema_version": plane.LAUNCH_RECEIPT_SCHEMA_VERSION,
+            "writer": CLI_WRITER,
+            "run_id": rid,
+            "session_id": "$42",
+            "launch_nonce": "a" * 32,
+            "intent_nonce": nonce,
+            "window_name": window_name,
+        },
+    )
+    raw = json.loads(intent.read_text(encoding="utf-8"))
+    raw["owner_pid"] = 999999999
+    raw["owner_pid_start"] = "stale-owner"
+    intent.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+    assert _intent_receipt_matches(tmp_path, raw) is False
+
+    kills: list[dict[str, str]] = []
+
+    def boom_kill(**kwargs):
+        kills.append(dict(kwargs))
+        return "should not kill"
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux._kill_inside_windows_by_name", boom_kill
+    )
+    results = sweep_stale_team_launch_intents(tmp_path)
+    assert results and results[0].get("ok") is False
+    assert "unbound" in str(results[0].get("error"))
+    assert kills == []
+    assert intent.is_file()
+
+
 def test_sweep_refuses_unbound_receipt_for_new_intent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Old receipt without matching intent identity must not adopt a new WAL."""
-    from omg_cli.evidence import CLI_WRITER
-    from omg_cli.team import plane
     from omg_cli.team.tmux import (
         sweep_stale_team_launch_intents,
         write_team_launch_intent,
@@ -931,18 +1032,12 @@ def test_sweep_refuses_unbound_receipt_for_new_intent(
         window_name="omg-team-new",
         nonce="dddddddddddddddddddddddddddddddd",
     )
-    plane._atomic_write_json(
-        plane.team_launch_receipt_path(tmp_path, rid),
-        {
-            "store_kind": "team_launch_receipt",
-            "schema_version": plane.LAUNCH_RECEIPT_SCHEMA_VERSION,
-            "writer": CLI_WRITER,
-            "run_id": rid,
-            "session_id": "$42",
-            "launch_nonce": "a" * 32,
-            "intent_nonce": "oldoldoldoldoldoldoldoldoldoldold",
-            "window_name": "omg-team-old",
-        },
+    _authoritative_v2_launch_receipt_fixture(
+        tmp_path,
+        run_id=rid,
+        session_id="$42",
+        intent_nonce="oldoldoldoldoldoldoldoldoldoldold",
+        window_name="omg-team-old",
     )
     raw = json.loads(intent.read_text(encoding="utf-8"))
     raw["owner_pid"] = 999999999

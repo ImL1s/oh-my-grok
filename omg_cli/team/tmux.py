@@ -293,10 +293,17 @@ def _intent_receipt_matches(root: Path, intent: Mapping[str, Any]) -> bool:
 
     Schema-v1 (#106) launch receipts omit ``intent_nonce`` / ``window_name`` and
     must never be adopted for a new launch intent — they cannot prove intent
-    identity. Only schema-v2 receipts with matching binding fields qualify.
+    identity. Only schema-v2 receipts that pass the same authority checks as
+    :func:`omg_cli.team.plane._load_team_launch_receipt` (exact key set,
+    generation, tasks continuity, canonical body hash / meta
+    ``launch_receipt_sha256``) with matching binding fields qualify.
     """
-    from omg_cli.evidence import CLI_WRITER
-    from omg_cli.team.plane import LAUNCH_RECEIPT_SCHEMA_VERSION
+    from omg_cli.team.plane import (
+        LAUNCH_RECEIPT_SCHEMA_VERSION,
+        TeamError,
+        _load_team_launch_receipt,
+        load_team_meta,
+    )
 
     intent_run = intent.get("run_id")
     intent_session = intent.get("session_id")
@@ -308,36 +315,18 @@ def _intent_receipt_matches(root: Path, intent: Mapping[str, Any]) -> bool:
         return False
     if not isinstance(intent_nonce, str) or not intent_nonce:
         return False
-    receipt = (
-        Path(root).resolve()
-        / ".omg"
-        / "state"
-        / "runs"
-        / intent_run
-        / "team"
-        / "launch-receipt.json"
-    )
     try:
-        if not receipt.is_file() or receipt.is_symlink():
-            return False
-        raw = json.loads(receipt.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return False
-    if not isinstance(raw, dict):
-        return False
-    if raw.get("store_kind") != "team_launch_receipt":
+        meta = load_team_meta(root, intent_run)
+        receipt = _load_team_launch_receipt(root, intent_run, meta)
+    except TeamError:
         return False
     # Fail-closed: legacy v1 (and any non-v2) cannot prove intent identity.
-    if raw.get("schema_version") != LAUNCH_RECEIPT_SCHEMA_VERSION:
+    if receipt.get("schema_version") != LAUNCH_RECEIPT_SCHEMA_VERSION:
         return False
-    if raw.get("writer") != CLI_WRITER:
+    if receipt.get("session_id") != intent_session:
         return False
-    if raw.get("run_id") != intent_run:
-        return False
-    if raw.get("session_id") != intent_session:
-        return False
-    receipt_intent = raw.get("intent_nonce")
-    receipt_window = raw.get("window_name")
+    receipt_intent = receipt.get("intent_nonce")
+    receipt_window = receipt.get("window_name")
     if not isinstance(receipt_intent, str) or not receipt_intent:
         return False
     if not isinstance(receipt_window, str) or not receipt_window:
