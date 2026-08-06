@@ -9,6 +9,44 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Added
+- **Partial work for issue 67 (slice A / #67-A):** typed `omg_cli/providers/`
+  Antigravity probe (discover binary, version argv probe, compat range,
+  schema-versioned capabilities envelope) plus
+  `omg provider antigravity {capabilities,doctor}`. Hermetic fake-`agy`
+  fixtures only — no ask/Team cutover, no `live_verified` claims. Issue #67
+  remains open for slices B–D.
+
+### Fixed
+- **#67-A probe fail-closed / process contract (PR #94 re-audit):** version and
+  help probes require successful exit + observed evidence (no invented
+  formats/efforts/modes); `run_probe_process` uses POSIX `start_new_session` +
+  `killpg` on timeout/cancel/overflow with bounded output; `provider` is
+  install/global-scoped; CLI routes via `ProviderAdapter`; neutral
+  `ProviderCapabilities` defaults no longer carry Antigravity-positive claims.
+- **#67-A PR #94 GPT Pro re-audit round 2:** `_parse_help_supports` is
+  fail-closed on structured flag/enum/subcommand boundaries only (colliding
+  prose like `allows`/`plan`/`low`/`--project` cannot forge evidence);
+  `run_probe_process` kills the process group on KeyboardInterrupt/BaseException
+  before joining pipe readers, and version/help probes pass `cancel_event`
+  (SIGINT-wired); `omg provider antigravity doctor --json` uses
+  `success`/`failure` envelopes (`E_PROVIDER_DOCTOR`) instead of splatting
+  `DoctorReport.ok` over `success()`. Top-level `omg doctor --strict` remains
+  out of scope for the Antigravity probe in slice A.
+- **#67-A PR #94 GPT Pro re-audit round 3:** post-`Popen` setup failures and
+  cancel/SIGINT through the wait/join/close window always `_kill_tree`; success
+  drains readers to EOF (forced stop sets truncation flags; truncated help
+  fails closed); `OMG_AGY_BIN` requires `agy` basename + `Usage of agy` help
+  identity; `parse_version` is first-line-anchored; tested compat window is
+  fixture-backed `1.1.10` only; provider JSON/doctor errors run through
+  `redact_text`/`redact_value`.
+- **#67-A PR #94 GPT Pro re-audit round 4:** `Popen` and post-spawn work share
+  one BaseException+`_kill_tree` region (`proc=None` then nested OSError
+  convert); result construction / final cancel check kill before return;
+  `_run_probe_argv` `killpg`s via returned `pid` before `KeyboardInterrupt`;
+  `parse_version` rejects leading zeros and enforces explicit digit/value caps
+  (ASCII `[0-9]`, typed `ProviderVersionError` — not CPython digit-guard only).
+
 ## [0.7.6] - 2026-08-06
 
 ### Fixed

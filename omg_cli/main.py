@@ -17,6 +17,10 @@ from omg_cli.commands.inspect import (  # #29 Phase 2+4' — inspect family
     cmd_wiki,  # noqa: F401
     register_inspect_parsers,
 )
+from omg_cli.commands.provider import (  # #67-A — provider probe
+    cmd_provider,  # noqa: F401 — re-export for tests
+    register_provider_parsers,
+)
 from omg_cli.commands.install import (  # #29 Phase 2+4' — install family
     cmd_doctor,  # noqa: F401
     cmd_install_hook,  # noqa: F401
@@ -196,6 +200,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     register_inspect_parsers(sub, common, phase="late")
 
+    register_provider_parsers(sub, common)
 
     register_workflow_parsers(sub, common, phase="late")
 
@@ -295,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
             "uninstall",
             "mcp-install",
             "version",  # not a command today; harmless
+            "provider",  # global binary/version probe (#67-A); no project root
         }
     )
     command = str(getattr(args, "command", "") or "")

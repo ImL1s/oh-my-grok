@@ -38,6 +38,7 @@ Related: [cli-contract.md](./cli-contract.md) (exit codes + JSON envelopes).
 | `wiki` | inspect | project wiki |
 | `hud` | inspect | one-line HUD |
 | `lsp` | inspect | host-owned .lsp.json inspection |
+| `provider` | inspect | provider probe (Antigravity capabilities/doctor; #67-A) |
 | `interview` | workflow | deep-interview gate |
 | `goal` | workflow | ultragoal ledger |
 | `accept` | team | acceptance + verified stamp |

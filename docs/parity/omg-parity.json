@@ -66,7 +66,11 @@
         "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
         "source_paths": ["README.md"]
       },
-      "omg_paths": ["omg_cli/ask/providers.py", "omg_cli/team/providers.py"],
+      "omg_paths": [
+        "omg_cli/providers/",
+        "omg_cli/ask/providers.py",
+        "omg_cli/team/providers.py"
+      ],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued",

@@ -50,6 +50,11 @@ COMMAND_SPECS: Final[tuple[CommandSpec, ...]] = (
     CommandSpec("wiki", "project wiki", "inspect"),
     CommandSpec("hud", "one-line HUD", "inspect"),
     CommandSpec("lsp", "host-owned .lsp.json inspection", "inspect"),
+    CommandSpec(
+        "provider",
+        "provider probe (Antigravity capabilities/doctor; #67-A)",
+        "inspect",
+    ),
     CommandSpec("interview", "deep-interview gate", "workflow"),
     CommandSpec("goal", "ultragoal ledger", "workflow"),
     CommandSpec("accept", "acceptance + verified stamp", "team"),

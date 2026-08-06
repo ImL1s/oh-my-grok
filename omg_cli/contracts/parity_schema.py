@@ -430,7 +430,12 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
     ),
     "OMG-W4": tuple(
         _paths("omg_cli/mcp/", ("__init__.py", "server.py", "tools.py"))
-        + ["omg_cli/lsp_tools.py", "omg_cli/ask/**"]
+        + [
+            "omg_cli/lsp_tools.py",
+            "omg_cli/ask/**",
+            "omg_cli/providers/**",
+            "omg_cli/commands/provider.py",
+        ]
         + _paths(
             "omg_cli/workflows/",
             (
@@ -446,12 +451,15 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             ),
         )
         + ["agents/*.md", "skills/*/SKILL.md", "scripts/generate_capabilities_lock.py"]
+        + ["tests/fixtures/antigravity/**"]
         + _paths(
             "tests/",
             (
                 "test_mcp_server.py",
                 "test_lsp_symbols.py",
                 "test_ask.py",
+                "test_antigravity_provider_probe.py",
+                "test_provider_process.py",
                 "test_roles.py",
                 "test_skill_inventory.py",
                 "test_plugin_session_discovery.py",
