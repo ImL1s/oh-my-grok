@@ -31,34 +31,27 @@ _SENSITIVE_KEY_PARTS = (
     "command",
 )
 
-# Key tokenizer: letter/underscore/%-escape, or digits glued to a letter (2fa_*);
-# never a bare digit (avoids matching value fragments like ``0 quota=``). Brackets,
-# %-escapes, and a single space between word chars ("api key") are allowed.
+# Key tokenizer aligned with ``is_sensitive_key`` / ``unquote_plus``: ``+`` (form
+# space), brackets, quoted bracket segments, %-escapes, and spaced names.
 _KEY = (
     r"(?:[A-Za-z_]|%[0-9A-Fa-f]{2}|[0-9]+[A-Za-z_])"
-    r"(?:[A-Za-z0-9_.\-\[\]]|%[0-9A-Fa-f]{2}| (?=[A-Za-z_%\[\]])){0,127}"
+    r"(?:"
+    r"[A-Za-z0-9_.\-\[\]+]|"
+    r"%[0-9A-Fa-f]{2}|"
+    r" (?=[A-Za-z_%\[+])|"
+    r"\"[^\"]{1,64}\"|"
+    r"'[^']{1,64}'"
+    r"){0,127}"
 )
-_QUOTED_VAL = (
-    r"\"(?:\\.|[^\"\\])*\"|"
-    r"'(?:\\.|[^'\\])*'"
-)
-# Unquoted values omit ``=`` so a non-sensitive outer assign cannot swallow an
-# inner ``token=secret`` before the sensitive key is considered.
-_UNQUOTED_ASSIGN_VAL = r"[^\s,;&=]+"
-_UNQUOTED_QUERY_VAL = r"[^&#\s=]+"
 
 _HEADER_RE = re.compile(
-    r"(?i)\b(authorization|proxy-authorization)\s*[:=]\s*"
-    r"(?:bearer|basic)?\s*"
-    rf"({_QUOTED_VAL}|[^\s,;]+)"
+    r"(?im)\b(authorization|proxy-authorization)\s*[:=][^\r\n]*"
 )
 _COOKIE_RE = re.compile(r"(?i)\b(cookie|set-cookie)\s*[:=]\s*([^\r\n]+)")
 _ASSIGN_KEY_RE = re.compile(
     rf"(?i)(?P<prefix>\b|(?<=[?&]))(?P<key>{_KEY})(?P<sep>\s*[:=]\s*)"
 )
 _QUERY_KEY_RE = re.compile(rf"(?i)(?P<prefix>[?&])(?P<key>{_KEY})(?P<sep>=)")
-_ASSIGN_VAL_RE = re.compile(rf"(?:{_QUOTED_VAL}|{_UNQUOTED_ASSIGN_VAL})")
-_QUERY_VAL_RE = re.compile(rf"(?:{_QUOTED_VAL}|{_UNQUOTED_QUERY_VAL})")
 
 
 def _normalized_key(value: object) -> str:
@@ -71,11 +64,47 @@ def is_sensitive_key(value: object) -> bool:
     return any(part in normalized for part in _SENSITIVE_KEY_PARTS)
 
 
+def _consume_value(text: str, start: int, *, query: bool) -> int | None:
+    """Return end index of a value starting at ``start``, or None if empty.
+
+    Quoted values consume through a matching closer. Unclosed quotes are eaten
+    conservatively to the structural end of the field (or EOF). Unquoted values
+    may contain ``=``; non-sensitive outer keys are skipped by the caller, so
+    inner ``token=secret`` remains visible to a later match.
+    """
+
+    if start >= len(text):
+        return None
+    quote = text[start]
+    if quote in "'\"":
+        i = start + 1
+        while i < len(text):
+            ch = text[i]
+            if ch == "\\" and i + 1 < len(text):
+                i += 2
+                continue
+            if ch == quote:
+                return i + 1
+            if query and ch in "&#":
+                return i
+            if not query and ch in ",;\r\n":
+                return i
+            i += 1
+        return len(text)
+    if query:
+        match = re.match(r"[^&#\s]+", text[start:])
+    else:
+        match = re.match(r"[^\s,;&]+", text[start:])
+    if match is None:
+        return None
+    return start + match.end()
+
+
 def _redact_keyed_assignments(
     text: str,
     *,
     key_re: re.Pattern[str],
-    val_re: re.Pattern[str],
+    query: bool,
 ) -> str:
     """Redact sensitive key=value forms without consuming non-sensitive keys.
 
@@ -91,15 +120,15 @@ def _redact_keyed_assignments(
             continue
         if not is_sensitive_key(key_match.group("key")):
             continue
-        val_match = val_re.match(text, key_match.end())
-        if val_match is None:
+        end = _consume_value(text, key_match.end(), query=query)
+        if end is None:
             continue
         parts.append(text[pos : key_match.start()])
         parts.append(
             f"{key_match.group('prefix')}{key_match.group('key')}"
             f"{key_match.group('sep')}{REDACTED}"
         )
-        pos = val_match.end()
+        pos = end
     parts.append(text[pos:])
     return "".join(parts)
 
@@ -109,19 +138,15 @@ def redact_text(value: str) -> str:
 
     Free-text assign/query forms use the same ``is_sensitive_key`` predicate as
     structured mapping keys (compound / encoded names included). Quoted values
-    are redacted as a whole.
+    are redacted as a whole, including truncated/unclosed quotes.
     """
 
     if not isinstance(value, str):
         raise TypeError("redact_text requires a string")
     result = _HEADER_RE.sub(lambda match: f"{match.group(1)}: {REDACTED}", value)
     result = _COOKIE_RE.sub(lambda match: f"{match.group(1)}: {REDACTED}", result)
-    result = _redact_keyed_assignments(
-        result, key_re=_QUERY_KEY_RE, val_re=_QUERY_VAL_RE
-    )
-    result = _redact_keyed_assignments(
-        result, key_re=_ASSIGN_KEY_RE, val_re=_ASSIGN_VAL_RE
-    )
+    result = _redact_keyed_assignments(result, key_re=_QUERY_KEY_RE, query=True)
+    result = _redact_keyed_assignments(result, key_re=_ASSIGN_KEY_RE, query=False)
     return result
 
 

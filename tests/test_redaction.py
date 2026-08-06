@@ -161,9 +161,52 @@ def test_redact_text_odd_key_shapes_reach_is_sensitive_key() -> None:
         "api key=secret",
         "headers[api_key]=secret",
         "api%2Ekey=secret",
+        "api+key=secret",
+        '?api+key=super-secret&ok=1',
+        'headers["api_key"]=super-secret',
+        "headers['api_key']=super-secret",
     )
     for source in cases:
         out = redact_text(source)
         assert "secret" not in out, (source, out)
         assert REDACTED in out, (source, out)
+
+
+def test_redact_text_unclosed_quotes_and_equals_in_values() -> None:
+    unclosed_q = '?prompt="first super-secret'
+    out = redact_text(unclosed_q)
+    assert "super-secret" not in out
+    assert REDACTED in out
+
+    unclosed_h = 'Authorization: Bearer "first super-secret'
+    out_h = redact_text(unclosed_h)
+    assert "super-secret" not in out_h
+    assert out_h.startswith("Authorization: [REDACTED]")
+
+    for source in (
+        "token=first=super-secret",
+        "?token=first=super-secret&ok=1",
+        "detail=token=first=super-secret",
+        "token==super-secret",
+    ):
+        out = redact_text(source)
+        assert "super-secret" not in out, (source, out)
+        assert "token=[REDACTED]" in out or "?token=[REDACTED]" in out, (source, out)
+
+
+def test_redact_text_authorization_redacts_full_header_line() -> None:
+    digest = (
+        'Authorization: Digest username="alice", response="super-secret"'
+    )
+    out = redact_text(digest)
+    assert "alice" not in out and "super-secret" not in out
+    assert out == "Authorization: [REDACTED]"
+
+    aws = (
+        "Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/x, "
+        "SignedHeaders=host, Signature=super-secret"
+    )
+    out_aws = redact_text(aws)
+    assert "AKIAEXAMPLE" not in out_aws and "super-secret" not in out_aws
+    assert out_aws == "Authorization: [REDACTED]"
 
