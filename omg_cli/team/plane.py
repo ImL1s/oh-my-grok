@@ -1247,6 +1247,39 @@ def _read_tmux_launch_nonce(session: str) -> str | None:
     return _parse_tmux_launch_nonce(r.stdout)
 
 
+def _probe_tmux_launch_nonce_for_pane(
+    pane_id: str,
+    session: str,
+    *,
+    allow_session_fallback: bool = False,
+) -> tuple[str | None, bool]:
+    """Probe pane-scoped launch nonce with an explicit ok/unknown bit.
+
+    Returns ``(nonce, True)`` only when a valid 32-hex nonce was read.
+    Returns ``(None, False)`` on OSError, non-zero tmux, malformed, or missing
+    — callers must treat that as UNKNOWN, never as a confirmed foreign nonce.
+    """
+    if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id) is not None:
+        try:
+            r = _tmux_run(
+                ["show-options", "-p", "-v", "-t", pane_id, LAUNCH_NONCE_OPTION]
+            )
+        except OSError:
+            return None, False
+        if r.returncode != 0:
+            return None, False
+        parsed = _parse_tmux_launch_nonce(r.stdout)
+        if parsed is not None:
+            return parsed, True
+        # Malformed/missing pane nonce: do not fall through unless legacy.
+        if not allow_session_fallback:
+            return None, False
+    if allow_session_fallback:
+        nonce = _read_tmux_launch_nonce(session)
+        return nonce, nonce is not None
+    return None, False
+
+
 def _read_tmux_launch_nonce_for_pane(
     pane_id: str,
     session: str,
@@ -1258,25 +1291,15 @@ def _read_tmux_launch_nonce_for_pane(
     New receipts with a valid ``pane_id`` must fail closed on OSError, non-zero
     tmux status, or malformed output — never silently adopt a shared session
     nonce (concurrent Teams in one session overwrite that option).
+
+    Note: ``None`` means probe unknown *or* absent — use
+    :func:`_probe_tmux_launch_nonce_for_pane` when UNKNOWN must not collapse
+    into DEAD_OR_FOREIGN (relaunch / side-effect paths).
     """
-    if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id) is not None:
-        try:
-            r = _tmux_run(
-                ["show-options", "-p", "-v", "-t", pane_id, LAUNCH_NONCE_OPTION]
-            )
-        except OSError:
-            return None
-        if r.returncode != 0:
-            return None
-        parsed = _parse_tmux_launch_nonce(r.stdout)
-        if parsed is not None:
-            return parsed
-        # Malformed/missing pane nonce: do not fall through unless legacy.
-        if not allow_session_fallback:
-            return None
-    if allow_session_fallback:
-        return _read_tmux_launch_nonce(session)
-    return None
+    nonce, ok = _probe_tmux_launch_nonce_for_pane(
+        pane_id, session, allow_session_fallback=allow_session_fallback
+    )
+    return nonce if ok else None
 
 
 def _read_tmux_launch_nonce_for_window(window_id: str) -> str | None:
@@ -2096,6 +2119,20 @@ def start_team(
             raise TeamError(str(exc)) from exc
         # UnknownRoleError propagates (FLOOR 2) — do not swallow.
 
+    # Launch-intent WAL recovery gate: sweep ALL project intents *before*
+    # create_run / active-run refusal so crash orphans are reachable even when
+    # an active run blocks a new start (or --force creates a different rid).
+    if not dry_run:
+        try:
+            from omg_cli.team.tmux import (
+                TmuxTeamError,
+                require_clean_team_launch_intents,
+            )
+
+            require_clean_team_launch_intents(root_path)
+        except TmuxTeamError as exc:
+            raise TeamError(str(exc)) from exc
+
     # Resolve / create run — track created_* for #17 rollback scope.
     # When --run reuses an existing run, never destroy pre-existing worktrees /
     # team dir / ownership (Codex P1 on PR #34).
@@ -2420,13 +2457,7 @@ def start_team(
 
         # Live path: create tmux session + fill pids
         launch_nonce = uuid.uuid4().hex
-        # Sweep any prior inside-launch intents for this run (crash recovery).
-        try:
-            from omg_cli.team.tmux import sweep_stale_team_launch_intents
-
-            sweep_stale_team_launch_intents(root_path, run_id=rid)
-        except Exception:
-            pass
+        # Project-wide intent sweep already ran (fail-closed) before create_run.
         transaction_paths = (
             team_launch_receipt_path(root_path, rid),
             team_meta_path(root_path, rid),
@@ -2661,13 +2692,22 @@ def _status_worker_alive(
 ) -> bool | None:
     """Fail-closed status liveness using pane + session + nonce (+ PID start).
 
-    Tri-state:
-    - ``True`` — exact receipt identity is live
-    - ``False`` — successful probe proves dead / foreign identity
-    - ``None`` — probe unknown (tmux error / malformed / unavailable)
+    Tri-state (ALIVE / DEAD_OR_FOREIGN / UNKNOWN):
+    - ``True`` — exact receipt identity is live (ALIVE)
+    - ``False`` — successful probe proves dead / foreign identity (DEAD_OR_FOREIGN)
+    - ``None`` — probe unknown (tmux error / malformed / unavailable) (UNKNOWN)
 
     Side-effect paths (resume / relaunch) must treat ``None`` as refuse/skip,
-    never as confirmed dead (avoids double-worker respawn).
+    never as confirmed dead (avoids double-worker respawn). Only ``False`` may
+    enter relaunch candidates / write relaunch WAL / call ``respawn_worker_pane``.
+
+    Layer rules:
+    - pane probe OSError / non-zero / malformed → try ``list-panes -a`` absence
+      proof; proven absent → False; otherwise → None
+    - ``pane_dead=1`` or session-id mismatch → False
+    - pane nonce OSError / non-zero / malformed / missing → None (not False)
+    - successfully read a different valid nonce → False
+    - pid-start probe unavailable → None; successful mismatch → False
 
     New-format receipts (``pid_start`` present) require AND identity:
     ``live_pid == expected_pid`` **and** ``live_start == expected_pid_start``.
@@ -2681,27 +2721,36 @@ def _status_worker_alive(
 
         probed = probe_worker_pane_identity(pane_id)
         if probed is None:
+            # display-message failed or malformed — prove absence via list-panes
+            # before treating as UNKNOWN (killed panes must be relaunchable).
+            absent, _err = _pane_proven_absent(pane_id)
+            if absent is True:
+                return False
             return None
         if probed.get("dead"):
             return False
         if probed.get("session_id") != expected_session_id:
             return False
         # Valid pane_id receipts never adopt a shared session nonce fallback.
-        live_nonce = _read_tmux_launch_nonce_for_pane(
+        live_nonce, nonce_ok = _probe_tmux_launch_nonce_for_pane(
             pane_id, session, allow_session_fallback=False
         )
+        if not nonce_ok:
+            return None
         if live_nonce != launch_nonce:
             return False
         live_pid = probed.get("pane_pid")
         if not isinstance(live_pid, int) or live_pid <= 0:
             return False
         if expected_pid_start:
-            # Fail-closed: start-id present but live start unavailable → dead.
             # When both pid and pid_start are receipted, require AND (not OR).
             if expected_pid is not None and live_pid != expected_pid:
                 return False
             live_start = _pid_start_identity(live_pid)
-            if not live_start or live_start != expected_pid_start:
+            # Unavailable start-id probe is UNKNOWN — never authorize relaunch.
+            if not live_start:
+                return None
+            if live_start != expected_pid_start:
                 return False
             return True
         if expected_pid is not None:

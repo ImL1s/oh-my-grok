@@ -784,6 +784,194 @@ def test_inside_launch_writes_and_clears_intent_on_successful_cleanup(
     assert not intent_seen[0].is_file()
 
 
+def test_require_clean_launch_intents_refuses_when_sweep_unproven(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Sweep ok=False is a launch gate — start_team must not reach new-window."""
+    import subprocess
+
+    from omg_cli.team import plane, tmux as tmux_mod
+    from omg_cli.team.tmux import (
+        require_clean_team_launch_intents,
+        write_team_launch_intent,
+    )
+
+    intent = write_team_launch_intent(
+        tmp_path,
+        run_id="20260806T120000Z-oldrun",
+        session_id="$99",
+        window_name="omg-team-orphan",
+        nonce="deadbeefdeadbeefdeadbeefdeadbeef",
+    )
+    assert intent.is_file()
+
+    monkeypatch.setattr(
+        tmux_mod,
+        "_kill_inside_windows_by_name",
+        lambda **_kw: "window still present after kill",
+    )
+    with pytest.raises(tmux_mod.TmuxTeamError, match="not proven cleaned"):
+        require_clean_team_launch_intents(tmp_path)
+
+    monkeypatch.setenv("OMG_EXPERIMENTAL_TMUX_TEAM", "1")
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+    monkeypatch.setattr(
+        "omg_cli.team.tmux.create_split_team_session",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("create_split must not run when intents unclean")
+        ),
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.plane._create_tmux_session",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("windows create must not run")
+        ),
+    )
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "README.md").write_text("x\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "README.md"], cwd=tmp_path, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "i"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    with pytest.raises(plane.TeamError, match="not proven cleaned"):
+        plane.start_team(
+            "gate",
+            [{"task_id": "t1", "title": "one", "owned_files": ["README.md"]}],
+            root=tmp_path,
+            dry_run=False,
+            detach=True,
+            check_binary=False,
+            executor="fixture",
+            topology="split",
+        )
+    assert intent.is_file()  # uncleared on failed sweep
+
+
+def test_sweep_adopts_receipt_bound_intent_without_kill(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Durable receipt → clear WAL without killing the committed worker window."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team import plane
+    from omg_cli.team.tmux import (
+        sweep_stale_team_launch_intents,
+        write_team_launch_intent,
+    )
+
+    rid = "20260806T120000Z-adopt"
+    intent = write_team_launch_intent(
+        tmp_path,
+        run_id=rid,
+        session_id="$42",
+        window_name="omg-team-worker",
+        nonce="cafebabecafebabecafebabecafebabe",
+    )
+    # Durable receipt present — sweep must adopt, not kill.
+    plane._atomic_write_json(
+        plane.team_launch_receipt_path(tmp_path, rid),
+        {
+            "writer": CLI_WRITER,
+            "run_id": rid,
+            "session_id": "$42",
+            "launch_nonce": "cafebabecafebabecafebabecafebabe",
+        },
+    )
+    kills: list[dict[str, str]] = []
+
+    def boom_kill(**kwargs):
+        kills.append(dict(kwargs))
+        return "should not kill"
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux._kill_inside_windows_by_name", boom_kill
+    )
+    results = sweep_stale_team_launch_intents(tmp_path)
+    assert results and results[0].get("ok") is True
+    assert results[0].get("adopted") is True
+    assert kills == []
+    assert not intent.is_file()
+
+
+def test_start_team_sweeps_all_run_ids_before_create(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Project-wide sweep runs before create_run (not only the new rid)."""
+    import subprocess
+
+    from omg_cli.team import plane
+    from omg_cli.team.tmux import write_team_launch_intent
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "README.md").write_text("x\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "README.md"], cwd=tmp_path, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "i"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    old = write_team_launch_intent(
+        tmp_path,
+        run_id="20260806T110000Z-prior",
+        session_id="$1",
+        window_name="omg-team-prior",
+        nonce="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+    assert old.is_file()
+
+    swept: list[dict[str, object]] = []
+
+    def capture_require(root):
+        from omg_cli.team.tmux import TmuxTeamError, sweep_stale_team_launch_intents
+
+        # Must see the prior-run intent (run_id=None scan).
+        results = sweep_stale_team_launch_intents(root, run_id=None)
+        swept.extend(results)
+        failures = [r for r in results if not r.get("ok")]
+        if failures:
+            raise TmuxTeamError("stale team launch intents not proven cleaned")
+        return results
+
+    monkeypatch.setenv("OMG_EXPERIMENTAL_TMUX_TEAM", "1")
+    monkeypatch.setattr(
+        "omg_cli.team.tmux.require_clean_team_launch_intents", capture_require
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.tmux._kill_inside_windows_by_name",
+        lambda **_kw: None,  # absence proven
+    )
+    # Stop after sweep: assert sweep saw prior-run intent.
+    monkeypatch.setattr(
+        plane,
+        "create_run",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stop after sweep")),
+    )
+
+    with pytest.raises(plane.TeamError, match="stop after sweep"):
+        plane.start_team(
+            "sweep-all",
+            [{"task_id": "t1", "title": "one", "owned_files": ["README.md"]}],
+            root=tmp_path,
+            dry_run=False,
+            detach=True,
+            check_binary=False,
+            executor="fixture",
+        )
+    assert swept
+    assert any("20260806T110000Z-prior" in str(r.get("path")) for r in swept)
+    assert not old.is_file()
+
+
 def test_team_status_prefers_exact_pane_alive(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -863,8 +1051,8 @@ def test_team_status_prefers_exact_pane_alive(
     monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
     monkeypatch.setattr(
         plane,
-        "_read_tmux_launch_nonce_for_pane",
-        lambda _pane, _s, **_kw: "nonce-abc",
+        "_probe_tmux_launch_nonce_for_pane",
+        lambda _pane, _s, **_kw: ("nonce-abc", True),
     )
     monkeypatch.setattr(
         plane,
@@ -930,8 +1118,8 @@ def test_team_status_same_start_id_different_pid_is_not_alive(
     monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
     monkeypatch.setattr(
         plane,
-        "_read_tmux_launch_nonce_for_pane",
-        lambda _pane, _s, **_kw: "nonce-abc",
+        "_probe_tmux_launch_nonce_for_pane",
+        lambda _pane, _s, **_kw: ("nonce-abc", True),
     )
     # Same start-id for any PID — models clock-resolution collision.
     monkeypatch.setattr(plane, "_pid_start_identity", lambda _pid: "collide-start")

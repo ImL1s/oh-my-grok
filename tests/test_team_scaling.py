@@ -3794,8 +3794,8 @@ def test_resume_refuses_respawned_pane_same_id_new_pid(
     monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
     monkeypatch.setattr(
         plane,
-        "_read_tmux_launch_nonce_for_pane",
-        lambda pane_id, _session, **_kw: "a" * 32,
+        "_probe_tmux_launch_nonce_for_pane",
+        lambda pane_id, _session, **_kw: ("a" * 32, True),
     )
     monkeypatch.setattr(plane, "_pid_start_identity", lambda pid: f"start-{pid}")
     # Bare pane_alive would claim both alive — must not drive resume FSM.
@@ -3860,8 +3860,8 @@ def test_resume_refuses_start_id_collision_with_different_pid(
     )
     monkeypatch.setattr(
         plane,
-        "_read_tmux_launch_nonce_for_pane",
-        lambda _pane, _session, **_kw: "a" * 32,
+        "_probe_tmux_launch_nonce_for_pane",
+        lambda _pane, _session, **_kw: ("a" * 32, True),
     )
     monkeypatch.setattr(plane, "_pid_start_identity", lambda _pid: "collide-start")
     monkeypatch.setattr(scaling, "tmux_available", lambda: True)
@@ -3907,8 +3907,8 @@ def test_relaunch_treats_start_id_collision_as_dead(
     monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
     monkeypatch.setattr(
         plane,
-        "_read_tmux_launch_nonce_for_pane",
-        lambda _pane, _session, **_kw: "a" * 32,
+        "_probe_tmux_launch_nonce_for_pane",
+        lambda _pane, _session, **_kw: ("a" * 32, True),
     )
 
     def start_for(pid: int) -> str | None:
@@ -3985,10 +3985,14 @@ def test_relaunch_skips_when_probe_unknown(
         return None
 
     monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
+    # Probe None must stay UNKNOWN unless absence is proven.
+    monkeypatch.setattr(
+        plane, "_pane_proven_absent", lambda _pane: (None, "probe unknown")
+    )
     monkeypatch.setattr(
         plane,
-        "_read_tmux_launch_nonce_for_pane",
-        lambda _pane, _session, **_kw: "a" * 32,
+        "_probe_tmux_launch_nonce_for_pane",
+        lambda _pane, _session, **_kw: ("a" * 32, True),
     )
     monkeypatch.setattr(
         plane,
@@ -4050,6 +4054,9 @@ def test_relaunch_skips_when_probe_raises_oserror(
         raise OSError("tmux display-message pipe broken")
 
     monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", boom_probe)
+    monkeypatch.setattr(
+        plane, "_pane_proven_absent", lambda _pane: (None, "probe unknown")
+    )
 
     out = relaunch_dead_incomplete_workers(tmp_path, rid)
 
@@ -4057,6 +4064,211 @@ def test_relaunch_skips_when_probe_raises_oserror(
     assert all(row.get("reason") == "probe_unknown" for row in out["skipped"]
                if row.get("task_id") == live["tasks"][0]["task_id"])
     assert out["relaunched"] == []
+
+
+def _assert_relaunch_skipped_probe_unknown(
+    *,
+    out: dict[str, Any],
+    respawns: list[str],
+    task_id: str,
+    root: Path,
+    rid: str,
+) -> None:
+    assert respawns == []
+    assert out["relaunched"] == []
+    assert any(
+        row.get("task_id") == task_id and row.get("reason") == "probe_unknown"
+        for row in out["skipped"]
+    )
+    # No relaunch WAL published for UNKNOWN skips.
+    wal = scaling._scale_wal_path(root, rid, 1)
+    assert not wal.is_file(), f"relaunch WAL must not publish on probe_unknown: {wal}"
+
+
+def _run_relaunch_nonce_probe_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    nonce_behavior: str,
+) -> None:
+    """Pane nonce OSError/nonzero/malformed/missing → UNKNOWN → no respawn."""
+    rid, live, _launched, respawns = _prepare_live_relaunch_team(
+        monkeypatch, tmp_path
+    )
+    monkeypatch.setattr(
+        scaling, "_status_worker_alive", plane._status_worker_alive
+    )
+    first = live["tasks"][0]
+    second = live["tasks"][1]
+
+    def fake_probe(pane_id: str):
+        if pane_id == str(first["pane_id"]):
+            return {
+                "pane_id": pane_id,
+                "dead": False,
+                "session_id": "$7",
+                "pane_pid": int(first["pid"]),
+            }
+        if pane_id == str(second["pane_id"]):
+            return {
+                "pane_id": pane_id,
+                "dead": False,
+                "session_id": "$7",
+                "pane_pid": int(second["pid"]),
+            }
+        return None
+
+    def fake_nonce_probe(pane_id: str, _session: str, **_kw: Any):
+        if pane_id == str(second["pane_id"]):
+            return ("a" * 32, True)
+        # All failure modes collapse to (None, False) = UNKNOWN.
+        assert nonce_behavior in {"oserror", "nonzero", "malformed", "missing"}
+        return None, False
+
+    monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
+    monkeypatch.setattr(plane, "_probe_tmux_launch_nonce_for_pane", fake_nonce_probe)
+    monkeypatch.setattr(
+        plane,
+        "_pid_start_identity",
+        lambda pid: (
+            str(first["pid_start"])
+            if pid == int(first["pid"])
+            else str(second["pid_start"])
+            if pid == int(second["pid"])
+            else f"start-{pid}"
+        ),
+    )
+    monkeypatch.setattr(
+        scaling,
+        "_pid_start_identity",
+        lambda pid: (
+            str(first["pid_start"])
+            if pid == int(first["pid"])
+            else str(second["pid_start"])
+            if pid == int(second["pid"])
+            else f"start-{pid}"
+        ),
+    )
+
+    assert (
+        plane._status_worker_alive(
+            pane_id=str(first["pane_id"]),
+            session=str(live["session"]),
+            expected_session_id="$7",
+            launch_nonce="a" * 32,
+            expected_pid_start=str(first["pid_start"]),
+            expected_pid=int(first["pid"]),
+        )
+        is None
+    )
+
+    out = relaunch_dead_incomplete_workers(tmp_path, rid)
+    _assert_relaunch_skipped_probe_unknown(
+        out=out,
+        respawns=respawns,
+        task_id=str(first["task_id"]),
+        root=tmp_path,
+        rid=rid,
+    )
+    assert any(
+        row.get("task_id") == second["task_id"] and row.get("reason") == "alive"
+        for row in out["skipped"]
+    )
+
+
+def test_relaunch_skips_when_pane_nonce_probe_oserror(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _run_relaunch_nonce_probe_unknown(monkeypatch, tmp_path, nonce_behavior="oserror")
+
+
+def test_relaunch_skips_when_pane_nonce_probe_nonzero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _run_relaunch_nonce_probe_unknown(monkeypatch, tmp_path, nonce_behavior="nonzero")
+
+
+def test_relaunch_skips_when_pane_nonce_probe_malformed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _run_relaunch_nonce_probe_unknown(
+        monkeypatch, tmp_path, nonce_behavior="malformed"
+    )
+
+
+def test_relaunch_skips_when_pane_nonce_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _run_relaunch_nonce_probe_unknown(monkeypatch, tmp_path, nonce_behavior="missing")
+
+
+def test_relaunch_skips_when_pid_start_probe_unknown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unavailable pid_start probe → UNKNOWN → no respawn (not False)."""
+    rid, live, _launched, respawns = _prepare_live_relaunch_team(
+        monkeypatch, tmp_path
+    )
+    monkeypatch.setattr(
+        scaling, "_status_worker_alive", plane._status_worker_alive
+    )
+    first = live["tasks"][0]
+    second = live["tasks"][1]
+
+    def fake_probe(pane_id: str):
+        if pane_id == str(first["pane_id"]):
+            return {
+                "pane_id": pane_id,
+                "dead": False,
+                "session_id": "$7",
+                "pane_pid": int(first["pid"]),
+            }
+        if pane_id == str(second["pane_id"]):
+            return {
+                "pane_id": pane_id,
+                "dead": False,
+                "session_id": "$7",
+                "pane_pid": int(second["pid"]),
+            }
+        return None
+
+    monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
+    monkeypatch.setattr(
+        plane,
+        "_probe_tmux_launch_nonce_for_pane",
+        lambda _pane, _session, **_kw: ("a" * 32, True),
+    )
+
+    def start_for(pid: int) -> str | None:
+        if pid == int(first["pid"]):
+            return None  # probe unavailable → UNKNOWN
+        if pid == int(second["pid"]):
+            return str(second["pid_start"])
+        return f"start-{pid}"
+
+    monkeypatch.setattr(plane, "_pid_start_identity", start_for)
+    monkeypatch.setattr(scaling, "_pid_start_identity", start_for)
+
+    assert (
+        plane._status_worker_alive(
+            pane_id=str(first["pane_id"]),
+            session=str(live["session"]),
+            expected_session_id="$7",
+            launch_nonce="a" * 32,
+            expected_pid_start=str(first["pid_start"]),
+            expected_pid=int(first["pid"]),
+        )
+        is None
+    )
+
+    out = relaunch_dead_incomplete_workers(tmp_path, rid)
+    _assert_relaunch_skipped_probe_unknown(
+        out=out,
+        respawns=respawns,
+        task_id=str(first["task_id"]),
+        root=tmp_path,
+        rid=rid,
+    )
 
 
 # ---------------------------------------------------------------------------

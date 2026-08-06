@@ -86,15 +86,66 @@ def write_team_launch_intent(
 
 
 def clear_team_launch_intent(path: Path | str | None) -> None:
-    """Remove a launch intent after receipt publish or proven cleanup."""
+    """Durably remove a launch intent after receipt publish or proven cleanup.
+
+    Unlink is fail-closed: OSError (other than already-absent) propagates so
+    callers cannot leave a stale WAL that later sweeps a receipt-bound worker.
+    Parent directory is fsync'd after unlink when the file existed.
+    """
     if path is None:
         return
     intent = Path(path)
+    from omg_cli.contracts.path_keys import (
+        ContractPathError,
+        open_existing_managed_dir_fd,
+    )
+
     try:
-        if intent.is_file():
-            intent.unlink()
+        parent_fd = open_existing_managed_dir_fd(intent.parent)
+    except (OSError, ContractPathError, FileNotFoundError, ValueError) as exc:
+        # Parent missing with no intent file is already-clean.
+        if not intent.exists():
+            return
+        raise TmuxTeamError(
+            f"launch intent clear refused (parent): {intent}: {exc}"
+        ) from exc
+    try:
+        try:
+            os.unlink(intent.name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise TmuxTeamError(
+                f"launch intent clear failed: {intent}: {exc}"
+            ) from exc
+        try:
+            os.fsync(parent_fd)
+        except OSError as exc:
+            raise TmuxTeamError(
+                f"launch intent clear fsync failed: {intent.parent}: {exc}"
+            ) from exc
+    finally:
+        os.close(parent_fd)
+
+
+def _intent_receipt_exists(root: Path, run_id: str) -> bool:
+    """True when a durable launch receipt exists for *run_id* (adopt, don't kill)."""
+    if not _SAFE_INTENT_TOKEN.fullmatch(run_id):
+        return False
+    # Avoid importing plane (circular): receipt lives under runs/<id>/team/.
+    receipt = (
+        Path(root).resolve()
+        / ".omg"
+        / "state"
+        / "runs"
+        / run_id
+        / "team"
+        / "launch-receipt.json"
+    )
+    try:
+        return receipt.is_file() and not receipt.is_symlink()
     except OSError:
-        pass
+        return False
 
 
 def sweep_stale_team_launch_intents(
@@ -103,20 +154,28 @@ def sweep_stale_team_launch_intents(
     run_id: str | None = None,
     session_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Best-effort: kill-by-name + absence proof for leftover launch intents.
+    """Kill-by-name + absence proof for leftover launch intents (fail-closed).
 
     Called at ``start_team`` entry so a prior crash after ``new-window`` cannot
     leave an unrecepted worker across CLI restarts. Clears intent only when
-    absence is proven.
+    absence is proven, or when a durable launch receipt already exists (adopt —
+    never kill a receipt-bound worker).
+
+    Each result has ``ok: bool``. Callers must treat any ``ok=False`` (or an
+    OSError from this function) as a **launch gate** — refuse ``new-window``.
+    When ``run_id`` is None, every pending intent under the project is scanned.
     """
-    intents_dir = team_launch_intents_dir(root)
+    root_path = Path(root).resolve()
+    intents_dir = team_launch_intents_dir(root_path)
     if not intents_dir.is_dir():
         return []
     results: list[dict[str, Any]] = []
     try:
         entries = sorted(intents_dir.iterdir())
-    except OSError:
-        return []
+    except OSError as exc:
+        raise TmuxTeamError(
+            f"launch intent sweep failed listing {intents_dir}: {exc}"
+        ) from exc
     for entry in entries:
         if not entry.is_file() or entry.suffix != ".json":
             continue
@@ -134,6 +193,7 @@ def sweep_stale_team_launch_intents(
                 {"path": str(entry), "ok": False, "error": "invalid intent"}
             )
             continue
+        intent_run = raw.get("run_id")
         intent_session = raw.get("session_id")
         intent_name = raw.get("window_name")
         if session_id is not None and intent_session != session_id:
@@ -143,11 +203,50 @@ def sweep_stale_team_launch_intents(
                 {"path": str(entry), "ok": False, "error": "incomplete intent"}
             )
             continue
+        # Receipt already durable → adopt/reconcile; never kill committed worker.
+        if isinstance(intent_run, str) and _intent_receipt_exists(
+            root_path, intent_run
+        ):
+            try:
+                clear_team_launch_intent(entry)
+            except TmuxTeamError as exc:
+                results.append(
+                    {
+                        "path": str(entry),
+                        "ok": False,
+                        "session_id": intent_session,
+                        "window_name": intent_name,
+                        "error": f"adopt clear failed: {exc}",
+                    }
+                )
+                continue
+            results.append(
+                {
+                    "path": str(entry),
+                    "ok": True,
+                    "adopted": True,
+                    "session_id": intent_session,
+                    "window_name": intent_name,
+                }
+            )
+            continue
         cleanup = _kill_inside_windows_by_name(
             session_id=intent_session, window_name=intent_name
         )
         if cleanup is None:
-            clear_team_launch_intent(entry)
+            try:
+                clear_team_launch_intent(entry)
+            except TmuxTeamError as exc:
+                results.append(
+                    {
+                        "path": str(entry),
+                        "ok": False,
+                        "session_id": intent_session,
+                        "window_name": intent_name,
+                        "error": f"clear after absence failed: {exc}",
+                    }
+                )
+                continue
             results.append(
                 {
                     "path": str(entry),
@@ -166,6 +265,26 @@ def sweep_stale_team_launch_intents(
                     "error": cleanup,
                 }
             )
+    return results
+
+
+def require_clean_team_launch_intents(root: Path | str) -> list[dict[str, Any]]:
+    """Sweep all project launch intents; raise if any cannot be proven clean.
+
+    Launch gate for ``start_team``: must run *before* ``create_run`` / active-run
+    refusal so crash recovery reaches orphans even when an active run blocks
+    a new start.
+    """
+    results = sweep_stale_team_launch_intents(root, run_id=None)
+    failures = [r for r in results if not r.get("ok")]
+    if failures:
+        detail = "; ".join(
+            f"{r.get('path')}: {r.get('error') or 'unproven'}" for r in failures[:5]
+        )
+        raise TmuxTeamError(
+            "stale team launch intents not proven cleaned — refusing start: "
+            + detail
+        )
     return results
 
 
