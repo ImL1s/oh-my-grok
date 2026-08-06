@@ -291,6 +291,12 @@ def test_inside_tmux_splits_current_window(monkeypatch: pytest.MonkeyPatch) -> N
                 )
             if target == "@7":
                 return SimpleNamespace(returncode=0, stdout="$42\t@7\n", stderr="")
+            if target in {"%10", "%11"} and "#{session_id}" in joined:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=f"{target}\t$42\t@7\n",
+                    stderr="",
+                )
         if cmd == "new-window":
             assert "-d" in args
             assert "-t" in args and args[args.index("-t") + 1] == "@3"
@@ -347,6 +353,63 @@ def test_inside_tmux_splits_current_window(monkeypatch: pytest.MonkeyPatch) -> N
     assert not any(
         c[0] == "display-message" and "-t" not in c for c in calls
     )
+
+
+def test_inside_commit_refuses_when_worker_pane_leaves_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Post-split pane membership mismatch must abort before stamp/meta."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+    from omg_cli.team.tmux import TmuxTeamError
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    monkeypatch.setenv("TMUX_PANE", "%9")
+    killed: list[str] = []
+
+    def fake_tmux(args: list[str]) -> SimpleNamespace:
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "display-message" and "-t" in args:
+            target = args[args.index("-t") + 1]
+            if target == "%9" and "#{pane_pid}" in joined:
+                return SimpleNamespace(
+                    returncode=0, stdout="leader\t$42\t@3\t%9\t4242\n", stderr=""
+                )
+            if target == "@7":
+                return SimpleNamespace(returncode=0, stdout="$42\t@7\n", stderr="")
+            if target == "%10" and "#{session_id}" in joined:
+                return SimpleNamespace(
+                    returncode=0, stdout="%10\t$99\t@7\n", stderr=""
+                )
+        if cmd == "new-window":
+            return SimpleNamespace(returncode=0, stdout="@7\t%10\n", stderr="")
+        if cmd == "kill-window":
+            killed.append(args[-1])
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
+
+    tasks = [
+        {
+            "task_id": "w1",
+            "worktree": "/tmp/w1",
+            "pane_command": "true",
+            "_env_pairs": [],
+        }
+    ]
+    with pytest.raises(TmuxTeamError, match="left the invoking session"):
+        tmux_mod.create_split_team_session(
+            session="planned-name",
+            tasks=tasks,
+            env_pairs=[],
+            attach_mode="inside",
+        )
+    assert killed == ["@7"]
+    assert "_tmux_launch" not in tasks[0]
 
 
 def test_resolve_invoking_pane_requires_exact_tmux_pane(

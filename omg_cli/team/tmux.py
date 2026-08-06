@@ -647,6 +647,51 @@ def _create_inside(
             raise TmuxTeamError("worker pane list incorrectly includes leader pane")
         if len(created_panes) != len(tasks):
             raise TmuxTeamError("pane count mismatch after inside split")
+        # Close the post-new-window TOCTOU: every worker pane must still sit
+        # in the snapshotted session + created window before we stamp meta.
+        for pane_id in created_panes:
+            pane_probe = _tmux_run(
+                [
+                    "display-message",
+                    "-p",
+                    "-t",
+                    pane_id,
+                    "#{pane_id}\t#{session_id}\t#{window_id}",
+                ]
+            )
+            pane_parts = (pane_probe.stdout or "").strip().split("\t")
+            if (
+                pane_probe.returncode != 0
+                or len(pane_parts) != 3
+                or pane_parts[0] != pane_id
+                or pane_parts[1] != live_id
+                or pane_parts[2] != window_id
+            ):
+                raise TmuxTeamError(
+                    "worker pane left the invoking session/window before commit "
+                    f"(pane={pane_id!r}, expected session_id={live_id!r} "
+                    f"window_id={window_id!r})"
+                )
+        win_recheck = _tmux_run(
+            [
+                "display-message",
+                "-p",
+                "-t",
+                window_id,
+                "#{session_id}\t#{window_id}",
+            ]
+        )
+        win_recheck_parts = (win_recheck.stdout or "").strip().split("\t")
+        if (
+            win_recheck.returncode != 0
+            or len(win_recheck_parts) != 2
+            or win_recheck_parts[0] != live_id
+            or win_recheck_parts[1] != window_id
+        ):
+            raise TmuxTeamError(
+                "team window left the invoking session before commit "
+                f"(expected session_id={live_id!r})"
+            )
         for task, pane_id in zip(tasks, created_panes, strict=True):
             task["pane_id"] = pane_id
         layout = _tmux_run(["select-layout", "-t", window_id, "tiled"])
