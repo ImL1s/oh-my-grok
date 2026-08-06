@@ -1188,6 +1188,248 @@ def test_create_inside_retains_wal_when_window_id_kill_unproven(
     assert intents[0].is_file()  # WAL retained — launch authority recoverable
 
 
+def test_bind_team_launch_intent_window_id_stamps_and_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    """new-window handle must be durable on the WAL before receipt."""
+    from omg_cli.team.tmux import (
+        TmuxTeamError,
+        bind_team_launch_intent_window_id,
+        write_team_launch_intent,
+    )
+
+    intent = write_team_launch_intent(
+        tmp_path,
+        run_id="20260806T120000Z-bind",
+        session_id="$7",
+        window_name="omg-team-bind",
+        nonce="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+    raw = json.loads(intent.read_text(encoding="utf-8"))
+    assert "window_id" not in raw
+    bind_team_launch_intent_window_id(intent, "@42")
+    bound = json.loads(intent.read_text(encoding="utf-8"))
+    assert bound["window_id"] == "@42"
+    bind_team_launch_intent_window_id(intent, "@42")  # idempotent
+    with pytest.raises(TmuxTeamError, match="already bound"):
+        bind_team_launch_intent_window_id(intent, "@99")
+    with pytest.raises(TmuxTeamError, match="invalid id"):
+        bind_team_launch_intent_window_id(intent, "not-an-id")
+
+
+def test_inside_new_window_stamps_window_id_on_launch_wal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Successful new-window must bind @N onto the intent WAL before return."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+    from omg_cli.team.tmux import team_launch_intents_dir
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    monkeypatch.setenv("TMUX_PANE", "%9")
+    monkeypatch.setattr(tmux_mod.secrets, "token_hex", lambda _n: "deadbeef")
+    rid = "20260806T120000Z-stamp"
+    stamped: list[dict] = []
+
+    def fake_tmux(args: list[str]) -> SimpleNamespace:
+        cmd = args[0]
+        joined = " ".join(args)
+        if cmd == "display-message" and "-t" in args:
+            target = args[args.index("-t") + 1]
+            if target == "%9" and "#{pane_pid}" in joined:
+                return SimpleNamespace(
+                    returncode=0, stdout="leader\t$42\t@3\t%9\t4242\n", stderr=""
+                )
+            if target == "@77":
+                return SimpleNamespace(returncode=0, stdout="$42\t@77\n", stderr="")
+            if target == "%10":
+                return SimpleNamespace(
+                    returncode=0, stdout="%10\t$42\t@77\n", stderr=""
+                )
+        if cmd == "new-window":
+            intents = list(team_launch_intents_dir(tmp_path).glob(f"{rid}-*.json"))
+            assert len(intents) == 1
+            # Pre-side-effect WAL must not yet have window_id.
+            pre = json.loads(intents[0].read_text(encoding="utf-8"))
+            assert "window_id" not in pre
+            return SimpleNamespace(returncode=0, stdout="@77\t%10\n", stderr="")
+        if cmd == "select-layout":
+            # After new-window returns, WAL must already carry @77.
+            intents = list(team_launch_intents_dir(tmp_path).glob(f"{rid}-*.json"))
+            assert len(intents) == 1
+            stamped.append(json.loads(intents[0].read_text(encoding="utf-8")))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "select-pane":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
+    tmux_mod.create_split_team_session(
+        session="planned-name",
+        tasks=[
+            {
+                "task_id": "w1",
+                "worktree": "/tmp/w1",
+                "pane_command": "true",
+                "_env_pairs": [],
+            }
+        ],
+        env_pairs=[],
+        attach_mode="inside",
+        root=tmp_path,
+        run_id=rid,
+    )
+    assert stamped and stamped[0].get("window_id") == "@77"
+
+
+def test_kill_inside_known_window_id_survives_rename_before_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WAL-stamped @N must be killed even when the launch name never appears."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    residual = {"@77"}
+
+    def fake_tmux(args: list[str]) -> SimpleNamespace:
+        cmd = args[0]
+        if cmd == "list-windows":
+            if "-a" in args:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="".join(f"{wid}\n" for wid in sorted(residual)),
+                    stderr="",
+                )
+            # Name already renamed away before first discovery.
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "kill-window":
+            target = args[args.index("-t") + 1]
+            if target == "@77":
+                residual.discard("@77")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            # Name target misses; id path must still succeed.
+            return SimpleNamespace(returncode=1, stdout="", stderr="can't find window")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    err = tmux_mod._kill_inside_windows_by_name(
+        session_id="$42",
+        window_name="omg-team-renamed-before-discovery",
+        known_window_ids=["@77"],
+    )
+    assert err is None
+    assert residual == set()
+
+
+def test_kill_inside_known_window_id_refuses_when_renamed_still_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Name absent + durable @N still present must not report cleanup success."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    def fake_tmux(args: list[str]) -> SimpleNamespace:
+        cmd = args[0]
+        if cmd == "list-windows":
+            if "-a" in args:
+                return SimpleNamespace(returncode=0, stdout="@77\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "kill-window":
+            return SimpleNamespace(returncode=1, stdout="", stderr="can't find window")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    err = tmux_mod._kill_inside_windows_by_name(
+        session_id="$42",
+        window_name="omg-team-gone-name",
+        known_window_ids=["@77"],
+    )
+    assert err is not None
+    assert "@77" in err
+    assert "unproven absent" in err or "still present" in err
+
+
+def test_sweep_retains_wal_when_bound_window_renamed_before_discovery(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Crash-recovery: WAL with @N + renamed window must not clear on name absence."""
+    from omg_cli.team.tmux import (
+        bind_team_launch_intent_window_id,
+        sweep_stale_team_launch_intents,
+        write_team_launch_intent,
+    )
+
+    rid = "20260806T120000Z-renamed-wal"
+    intent = write_team_launch_intent(
+        tmp_path,
+        run_id=rid,
+        session_id="$42",
+        window_name="omg-team-original",
+        nonce="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+    bind_team_launch_intent_window_id(intent, "@77")
+    raw = json.loads(intent.read_text(encoding="utf-8"))
+    raw["owner_pid"] = 999999999
+    raw["owner_pid_start"] = "stale-owner"
+    intent.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux._kill_inside_windows_by_name",
+        lambda **kwargs: (
+            "window id @77 unproven absent after name "
+            f"{kwargs['window_name']!r} gone; still present"
+            if kwargs.get("known_window_ids") == ["@77"]
+            else None  # name-only would wrongly succeed — must not be used
+        ),
+    )
+    results = sweep_stale_team_launch_intents(tmp_path)
+    assert results and results[0].get("ok") is False
+    assert intent.is_file()
+    assert "@77" in str(results[0].get("error") or "")
+
+
+def test_sweep_clears_wal_when_bound_window_id_proven_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """WAL with @N clears only after ID absence is proven (name may already be gone)."""
+    from omg_cli.team.tmux import (
+        bind_team_launch_intent_window_id,
+        sweep_stale_team_launch_intents,
+        write_team_launch_intent,
+    )
+
+    rid = "20260806T120000Z-bound-gone"
+    intent = write_team_launch_intent(
+        tmp_path,
+        run_id=rid,
+        session_id="$42",
+        window_name="omg-team-original",
+        nonce="cccccccccccccccccccccccccccccccc",
+    )
+    bind_team_launch_intent_window_id(intent, "@77")
+    raw = json.loads(intent.read_text(encoding="utf-8"))
+    raw["owner_pid"] = 999999999
+    raw["owner_pid_start"] = "stale-owner"
+    intent.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+    seen: list[list[str]] = []
+
+    def fake_kill(**kwargs):
+        seen.append(list(kwargs.get("known_window_ids") or []))
+        return None
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux._kill_inside_windows_by_name", fake_kill
+    )
+    results = sweep_stale_team_launch_intents(tmp_path)
+    assert results and results[0].get("ok") is True
+    assert seen == [["@77"]]
+    assert not intent.is_file()
+
+
 def test_clear_intent_fsync_failure_after_unlink_is_nonfatal(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -181,7 +181,12 @@ def write_team_launch_intent(
     window_name: str,
     nonce: str,
 ) -> Path:
-    """Atomically persist launch intent *before* ``new-window`` side effects."""
+    """Atomically persist launch intent *before* ``new-window`` side effects.
+
+    ``window_id`` is omitted until :func:`bind_team_launch_intent_window_id`
+    stamps the immutable ``@N`` returned by ``new-window`` — crash recovery
+    must not clear the WAL on name-only absence once that id is bound.
+    """
     from omg_cli.contracts.path_keys import (
         DATA_FILE_MODE,
         ContractPathError,
@@ -214,6 +219,67 @@ def write_team_launch_intent(
     except ContractPathError as exc:
         raise TmuxTeamError(f"launch intent write refused: {exc}") from exc
     return path
+
+
+def bind_team_launch_intent_window_id(
+    path: Path | str,
+    window_id: str,
+) -> None:
+    """Atomically stamp immutable ``@window_id`` onto an existing launch intent.
+
+    Must run as soon as ``new-window`` publishes a handle — before receipt —
+    so a crash + rename cannot leave a live worker with only a name-bound WAL.
+    Idempotent when the same id is already bound; refuses a conflicting id or
+    a missing/unreadable intent.
+    """
+    from omg_cli.contracts.path_keys import (
+        DATA_FILE_MODE,
+        ContractPathError,
+        atomic_write_bytes,
+    )
+
+    if not isinstance(window_id, str) or _TMUX_WINDOW_ID.fullmatch(window_id) is None:
+        raise TmuxTeamError(
+            f"launch intent window_id bind refused: invalid id {window_id!r}"
+        )
+    intent = Path(path)
+    try:
+        raw = json.loads(intent.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TmuxTeamError(
+            f"launch intent window_id bind refused (unreadable): {intent}: {exc}"
+        ) from exc
+    if not isinstance(raw, dict):
+        raise TmuxTeamError(
+            f"launch intent window_id bind refused (invalid): {intent}"
+        )
+    existing = raw.get("window_id")
+    if existing is not None:
+        if existing == window_id:
+            return
+        raise TmuxTeamError(
+            f"launch intent window_id bind refused: already bound to "
+            f"{existing!r}, not {window_id!r}"
+        )
+    payload = dict(raw)
+    payload["window_id"] = window_id
+    body = (
+        json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    try:
+        atomic_write_bytes(intent, body, mode=DATA_FILE_MODE, replace=True)
+    except ContractPathError as exc:
+        raise TmuxTeamError(
+            f"launch intent window_id bind refused: {exc}"
+        ) from exc
+
+
+def _intent_known_window_ids(raw: Mapping[str, Any]) -> list[str]:
+    """Return durable ``@window_id`` values stamped on a launch intent WAL."""
+    wid = raw.get("window_id")
+    if isinstance(wid, str) and _TMUX_WINDOW_ID.fullmatch(wid) is not None:
+        return [wid]
+    return []
 
 
 def clear_team_launch_intent(path: Path | str | None) -> None:
@@ -467,8 +533,11 @@ def sweep_stale_team_launch_intents(
                     }
                 )
                 continue
+        known_ids = _intent_known_window_ids(raw)
         cleanup = _kill_inside_windows_by_name(
-            session_id=intent_session, window_name=intent_name
+            session_id=intent_session,
+            window_name=intent_name,
+            known_window_ids=known_ids,
         )
         if cleanup is None:
             try:
@@ -1025,23 +1094,38 @@ def _kill_inside_windows_by_name(
     *,
     session_id: str,
     window_name: str,
+    known_window_ids: Sequence[str] | None = None,
 ) -> str | None:
     """Kill windows matching *window_name* in *session_id*; require absence proof.
 
     After kill attempts, re-runs a successful ``list-windows`` and requires the
     transaction name to be **absent**. When discovery previously returned exact
-    window IDs, each ID must also be globally absent — a rename can hide the
-    launch name while ``@N`` still lives. Bare ``kill-window`` rc 0/1 is never
-    treated as success by itself. Returns ``None`` only when absence is proven;
-    otherwise returns an error detail (unknown list / still present / OSError).
+    window IDs — or the launch WAL already stamped durable ``known_window_ids``
+    — each ID must also be globally absent. A rename can hide the launch name
+    while ``@N`` still lives; name-only absence must never authorize WAL clear
+    when a durable id is known. Bare ``kill-window`` rc 0/1 is never treated as
+    success by itself. Returns ``None`` only when absence is proven; otherwise
+    returns an error detail (unknown list / still present / OSError).
     """
+    durable_ids: list[str] = []
+    for wid in known_window_ids or ():
+        if not isinstance(wid, str) or _TMUX_WINDOW_ID.fullmatch(wid) is None:
+            return f"refused kill with non-window known id {wid!r}"
+        if wid not in durable_ids:
+            durable_ids.append(wid)
     status, matches, detail = _discover_inside_windows_by_name(
         session_id=session_id, window_name=window_name
     )
     errors: list[str] = []
     killed_ids: list[str] = []
-    if status in ("found", "ambiguous") and matches:
-        for wid in matches:
+    # Union discovery matches with WAL-stamped ids so a rename before the
+    # first name probe still targets the immutable @N.
+    targets: list[str] = []
+    for wid in list(matches) + durable_ids:
+        if wid not in targets:
+            targets.append(wid)
+    if targets:
+        for wid in targets:
             err = _kill_window(wid)
             if err:
                 errors.append(err)
@@ -1074,8 +1158,8 @@ def _kill_inside_windows_by_name(
     )
     if proof_status == "absent":
         # Name gone is not enough when we knew immutable IDs — re-prove each
-        # discovered @N is globally absent (rename / probe races).
-        for wid in matches:
+        # discovered or WAL-stamped @N is globally absent (rename / probe races).
+        for wid in targets:
             id_err = _kill_window(wid)
             if id_err:
                 return (
@@ -1111,9 +1195,12 @@ def _launch_first_inside(
     Uses ``-d`` so the client stays on the invoking leader pane. Target must be
     a window id — tmux rejects ``new-window -a -t %pane`` (CMD_FIND_WINDOW).
 
-    When ``new-window`` returns rc=0 but stdout is empty/malformed, always
-    attempt discover-by-name + kill-window with absence proof before raising
-    so the caller never leaves an unrecepted orphan silently OK.
+    When ``new-window`` returns a valid handle, the launch intent WAL is stamped
+    with that immutable ``@window_id`` *before* returning — crash recovery must
+    not rely on the mutable launch name alone. When rc=0 but stdout is
+    empty/malformed (or the reply channel raises OSError), always attempt
+    discover-by-name, bind any found id, then kill with absence proof before
+    raising so the caller never leaves an unrecepted orphan silently OK.
     """
     if _TMUX_WINDOW_ID.fullmatch(target_window) is None:
         raise TmuxTeamError(
@@ -1145,13 +1232,14 @@ def _launch_first_inside(
         )
     except OSError as exc:
         # Creation itself failed — still name cleanup in case the window was
-        # created before the client lost the reply channel.
-        cleanup = _kill_inside_windows_by_name(
-            session_id=expected_session_id, window_name=window_name
-        )
-        if cleanup is None:
-            clear_team_launch_intent(intent_path)
+        # created before the client lost the reply channel. Prefer discover →
+        # bind → ID kill so a rename cannot authorize WAL clear.
         message = f"tmux new-window OSError: {exc}"
+        cleanup = _cleanup_unreplied_inside_window(
+            session_id=expected_session_id,
+            window_name=window_name,
+            intent_path=intent_path,
+        )
         if cleanup:
             message = f"{message}; orphan cleanup: {cleanup}"
         raise TmuxTeamError(message) from exc
@@ -1166,14 +1254,20 @@ def _launch_first_inside(
         and _TMUX_WINDOW_ID.fullmatch(parts[0]) is not None
         and _TMUX_PANE_ID.fullmatch(parts[1]) is not None
     ):
+        if intent_path is not None:
+            # Durable @N before any further work — closes rename-before-
+            # discovery crash recovery that would otherwise clear on name-only
+            # absence.
+            bind_team_launch_intent_window_id(intent_path, parts[0])
         return parts[0], parts[1]
 
-    # Side effect succeeded; result publication failed — always kill by name.
-    cleanup = _kill_inside_windows_by_name(
-        session_id=expected_session_id, window_name=window_name
+    # Side effect succeeded; result publication failed — discover/bind/kill.
+    cleanup = _cleanup_unreplied_inside_window(
+        session_id=expected_session_id,
+        window_name=window_name,
+        intent_path=intent_path,
     )
     if cleanup is None:
-        clear_team_launch_intent(intent_path)
         message = (
             f"tmux new-window did not return window/pane ids; "
             f"killed orphan window(s) named {window_name!r} "
@@ -1185,6 +1279,62 @@ def _launch_first_inside(
             f"orphan cleanup: {cleanup}"
         )
     raise TmuxTeamError(message)
+
+
+def _cleanup_unreplied_inside_window(
+    *,
+    session_id: str,
+    window_name: str,
+    intent_path: Path | None,
+) -> str | None:
+    """Discover → bind durable @N → kill with ID absence proof; clear WAL iff proven.
+
+    Used when ``new-window`` may have created a window but the reply handle is
+    missing. Prefer binding any discovered id onto the intent WAL before kill
+    so a later crash+rename cannot clear on name-only absence.
+    """
+    known_ids: list[str] = []
+    if intent_path is not None:
+        try:
+            raw = json.loads(Path(intent_path).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            raw = None
+        if isinstance(raw, dict):
+            known_ids.extend(_intent_known_window_ids(raw))
+    discovered: str | None = None
+    try:
+        discovered = _discover_inside_window_by_name(
+            session_id=session_id, window_name=window_name
+        )
+    except TmuxTeamError as exc:
+        # Ambiguous / unknown discovery — still attempt kill-by-name with any
+        # already-bound ids; surface the discovery error if absence unproven.
+        cleanup = _kill_inside_windows_by_name(
+            session_id=session_id,
+            window_name=window_name,
+            known_window_ids=known_ids,
+        )
+        if cleanup is None:
+            clear_team_launch_intent(intent_path)
+            return None
+        return f"{exc}; {cleanup}"
+    if discovered is not None:
+        if discovered not in known_ids:
+            known_ids.append(discovered)
+        if intent_path is not None:
+            try:
+                bind_team_launch_intent_window_id(intent_path, discovered)
+            except TmuxTeamError:
+                # Kill with in-memory id even if WAL stamp fails.
+                pass
+    cleanup = _kill_inside_windows_by_name(
+        session_id=session_id,
+        window_name=window_name,
+        known_window_ids=known_ids,
+    )
+    if cleanup is None:
+        clear_team_launch_intent(intent_path)
+    return cleanup
 
 
 def _split_remaining(
@@ -1489,8 +1639,12 @@ def _create_inside(
             if id_err:
                 cleanup_bits.append(id_err)
             # Also require name-level absence proof when we have session+name.
+            # Pass durable @N so a rename cannot authorize WAL clear via
+            # name-only absence while the id still lives.
             name_err = _kill_inside_windows_by_name(
-                session_id=live_id, window_name=window_name
+                session_id=live_id,
+                window_name=window_name,
+                known_window_ids=[window_id],
             )
             if name_err:
                 cleanup_bits.append(name_err)
@@ -1500,8 +1654,21 @@ def _create_inside(
             if id_err is None and name_err is None:
                 cleanup_ok = True
         else:
+            # Prefer any WAL-stamped @N (discover→bind path) over name alone.
+            known_ids: list[str] = []
+            if intent_path is not None:
+                try:
+                    raw_intent = json.loads(
+                        Path(intent_path).read_text(encoding="utf-8")
+                    )
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    raw_intent = None
+                if isinstance(raw_intent, dict):
+                    known_ids.extend(_intent_known_window_ids(raw_intent))
             err = _kill_inside_windows_by_name(
-                session_id=live_id, window_name=window_name
+                session_id=live_id,
+                window_name=window_name,
+                known_window_ids=known_ids,
             )
             if err:
                 cleanup_bits.append(err)
