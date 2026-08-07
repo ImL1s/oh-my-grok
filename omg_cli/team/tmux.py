@@ -3763,6 +3763,10 @@ def _create_inside_same_window(
     live_id = str(snap["session_id"])
     leader_window = str(snap["window_id"])
     leader_pid = int(snap["pane_pid"])
+    if leader_pid <= 0:
+        raise TmuxTeamError(
+            f"same_window launch refused: non-positive leader pane pid {leader_pid}"
+        )
     intent_nonce = secrets.token_hex(8)
     # Synthetic name for WAL keying only — must never match a real window.
     window_name = f"omg-same-{intent_nonce}"
@@ -3894,6 +3898,11 @@ def _create_inside_same_window(
             socket_path=sock,
         )
         post = _assert_leader_postconditions(snap=snap, socket_path=sock)
+        if int(post["pane_pid"]) != leader_pid:
+            raise TmuxTeamError(
+                "leader pane pid drifted during same_window create "
+                f"(expected {leader_pid}, got {post['pane_pid']})"
+            )
         _stamp_launch_meta(
             tasks,
             attach_mode="inside",

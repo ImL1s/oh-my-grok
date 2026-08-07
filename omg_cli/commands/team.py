@@ -602,8 +602,6 @@ def cmd_team(args: argparse.Namespace) -> int:
             return 0 if not result.get("errors") else 1
         if action == "worker-ready":
             # Process-level readiness (pane wrapper). Env-bound identity only.
-            import os
-
             from omg_cli.team.runtime import write_worker_ready_receipt
 
             worker_id = (os.environ.get("OMG_TEAM_WORKER_ID") or "").strip()
