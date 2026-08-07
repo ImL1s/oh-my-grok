@@ -2264,6 +2264,8 @@ def test_stop_refuses_incomplete_scaled_identity_chain(
         operation="add",
         tasks_before=live["tasks"],
         tasks_after=live["tasks"],
+        topology_mode="same_window",
+        operation_intent={"operation": "add", "test": True},
     )
     live["identity_generation"] = 2
     live["identity_receipt_sha256"] = bad_head
@@ -2313,6 +2315,8 @@ def test_identity_receipt_publish_then_raise_adopts_exact_published_body(
         operation="add",
         tasks_before=[],
         tasks_after=[],
+        topology_mode="same_window",
+        operation_intent={"operation": "add", "test": True},
     )
 
     path = plane.team_identity_receipt_path(tmp_path, "run-1", 1)
@@ -2347,6 +2351,8 @@ def test_identity_receipt_v2_scale_intent_round_trip(
         tasks_before=live["tasks"],
         tasks_after=live["tasks"],
         scale_intent=intent,
+        topology_mode="same_window",
+        operation_intent={"operation": "add", "test": True},
     )
     live["identity_generation"] = 1
     live["identity_receipt_sha256"] = head
@@ -2383,6 +2389,8 @@ def test_identity_receipt_v2_rejects_scale_intent_hash_tamper(
         tasks_before=live["tasks"],
         tasks_after=live["tasks"],
         scale_intent={"operation": "add", "task_ids": ["t-c"]},
+        topology_mode="same_window",
+        operation_intent={"operation": "add", "test": True},
     )
     receipt["scale_intent"] = {"operation": "add", "task_ids": ["t-evil"]}
     body = canonical_json_bytes(receipt)
@@ -2609,6 +2617,8 @@ def test_identity_receipt_publish_then_raise_rejects_unexpected_body(
             operation="add",
             tasks_before=[],
             tasks_after=[],
+        topology_mode="same_window",
+        operation_intent={"operation": "add", "test": True},
         )
 
     path = plane.team_identity_receipt_path(tmp_path, "run-1", 1)
@@ -2659,6 +2669,8 @@ def test_identity_receipt_publish_then_raise_propagates_durability_retry_failure
             operation="add",
             tasks_before=[],
             tasks_after=[],
+        topology_mode="same_window",
+        operation_intent={"operation": "add", "test": True},
         )
 
     path = plane.team_identity_receipt_path(tmp_path, "run-1", 1)
@@ -2685,6 +2697,8 @@ def test_stop_after_scale_validates_chain_and_signals_only_current_worker(
         operation="remove",
         tasks_before=before,
         tasks_after=after,
+        topology_mode="same_window",
+        operation_intent={"operation": "remove", "test": True},
     )
     live["tasks"][1]["status"] = "scaled_down"
     live["tasks"][1]["pid"] = None

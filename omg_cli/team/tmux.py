@@ -23,6 +23,7 @@ import shlex
 import subprocess
 import sys
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
@@ -2174,8 +2175,8 @@ def _launch_first_detached(
     session: str,
     task: dict[str, Any],
     env_pairs: list[tuple[str, str]],
-) -> tuple[tuple[str, str], str, dict[str, Any]]:
-    """Create detached session; return handle, first pane, and server identity."""
+) -> tuple[tuple[str, str], str, str, dict[str, Any]]:
+    """Create detached session; return handle, window_id, first pane, server."""
     first_env = tmux_env_args(list(task.get("_env_pairs") or env_pairs))
     create = _tmux_run(
         [
@@ -2183,7 +2184,7 @@ def _launch_first_detached(
             "-d",
             "-P",
             "-F",
-            "#{session_name}\t#{session_id}\t#{pane_id}\t#{pid}\t#{socket_path}",
+            "#{session_name}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pid}\t#{socket_path}",
             "-s",
             session,
             "-n",
@@ -2202,21 +2203,22 @@ def _launch_first_detached(
         )
     parts = (create.stdout or "").strip().split("\t")
     if (
-        len(parts) != 5
+        len(parts) != 6
         or parts[0] != session
         or _TMUX_SESSION_ID.fullmatch(parts[1]) is None
-        or _TMUX_PANE_ID.fullmatch(parts[2]) is None
-        or not parts[3].isdigit()
-        or not parts[4]
+        or _TMUX_WINDOW_ID.fullmatch(parts[2]) is None
+        or _TMUX_PANE_ID.fullmatch(parts[3]) is None
+        or not parts[4].isdigit()
+        or not parts[5]
     ):
         cleanup = _cleanup_session((session, session))
-        message = "tmux create did not return an exact session/pane/server handle"
+        message = "tmux create did not return an exact session/window/pane/server handle"
         if cleanup:
             message += f"; {cleanup}"
         raise TmuxTeamError(message)
     try:
         server = _server_identity_from_create(
-            pid=int(parts[3]), socket_path=parts[4].strip()
+            pid=int(parts[4]), socket_path=parts[5].strip()
         )
     except TmuxTeamError as exc:
         cleanup = _cleanup_session((parts[0], parts[1]))
@@ -2224,7 +2226,7 @@ def _launch_first_detached(
         if cleanup:
             message += f"; {cleanup}"
         raise TmuxTeamError(message) from exc
-    return (parts[0], parts[1]), parts[2], server
+    return (parts[0], parts[1]), parts[2], parts[3], server
 
 
 def _discover_inside_windows_by_name(
@@ -3641,7 +3643,7 @@ def _create_detached(
 ) -> tuple[str, str]:
     from omg_cli.team.topology import LAYOUT_TILED, VIEW_MODE_DETACHED_SESSION
 
-    handle, first_pane, server = _launch_first_detached(
+    handle, window_id, first_pane, server = _launch_first_detached(
         session=session, task=tasks[0], env_pairs=env_pairs
     )
     sock = str(server["tmux_socket_path"])
@@ -3679,7 +3681,7 @@ def _create_detached(
             attach_mode="detached",
             session_owned=True,
             leader_pane_id=None,
-            window_id=None,
+            window_id=window_id,
             attach_hint=f"tmux attach -t {handle[0]}",
             session_id=handle[1],
             tmux_server=server,
@@ -4229,3 +4231,503 @@ def _create_inside_dedicated_window(
             raise TmuxTeamError(f"{exc}; " + "; ".join(cleanup_bits)) from exc
         raise
     return live_name, live_id
+
+
+# ---------------------------------------------------------------------------
+# #102 lifecycle primitives — topology-aware spawn / bind / layout reconcile
+# ---------------------------------------------------------------------------
+
+WORKER_PANE_NONCE_OPTION = "@omg_worker_nonce"
+
+
+@dataclass(frozen=True)
+class SpawnedWorkerPane:
+    """Exact pane identity returned by a topology-aware spawn."""
+
+    session_id: str
+    window_id: str
+    pane_id: str
+    pane_pid: int
+    pane_owner_nonce: str
+
+
+@dataclass(frozen=True)
+class LayoutReconcileResult:
+    """Outcome of post-commit layout projection (never process authority)."""
+
+    status: str  # clean | repair_needed
+    last_error_code: str | None = None
+    layout_name: str | None = None
+
+
+def bind_worker_pane_owner(
+    *,
+    pane_id: str,
+    pane_owner_nonce: str,
+    expected_server: Mapping[str, Any],
+    expected_session_id: str,
+    expected_window_id: str,
+    launch_nonce: str | None = None,
+    socket_path: str | None = None,
+) -> None:
+    """Stamp per-attempt ``@omg_worker_nonce`` and strict-read it back."""
+    if _TMUX_PANE_ID.fullmatch(pane_id) is None:
+        raise TmuxTeamError(f"bind_worker_pane_owner: invalid pane id {pane_id!r}")
+    if not isinstance(pane_owner_nonce, str) or not pane_owner_nonce:
+        raise TmuxTeamError("bind_worker_pane_owner: pane_owner_nonce required")
+    server = _intent_tmux_server(expected_server)
+    if server is None:
+        raise TmuxTeamError("bind_worker_pane_owner: durable tmux server required")
+    sock = socket_path or str(server["tmux_socket_path"])
+    set_argv = [
+        "set-option",
+        "-p",
+        "-t",
+        pane_id,
+        WORKER_PANE_NONCE_OPTION,
+        pane_owner_nonce,
+    ]
+    set_r = _tmux_run_if_identity(
+        set_argv,
+        target=pane_id,
+        expected_server=server,
+        socket_path=sock,
+        window_id=expected_window_id,
+        expected_session_id=expected_session_id,
+        pane_id=pane_id,
+    )
+    if set_r.returncode != 0:
+        err = (set_r.stderr or set_r.stdout or "").strip()[:400]
+        raise TmuxTeamError(f"failed to stamp worker pane owner nonce: {err}")
+    show = _tmux_run(
+        ["show-options", "-p", "-v", "-t", pane_id, WORKER_PANE_NONCE_OPTION],
+        socket_path=sock,
+    )
+    if show.returncode != 0 or (show.stdout or "").strip() != pane_owner_nonce:
+        raise TmuxTeamError("worker pane owner nonce readback failed")
+    probe = _tmux_run(
+        [
+            "display-message",
+            "-p",
+            "-t",
+            pane_id,
+            "#{pane_id}\t#{window_id}\t#{session_id}\t"
+            f"#{{{WORKER_PANE_NONCE_OPTION}}}"
+            + (
+                "\t#{@omg_launch_nonce}"
+                if launch_nonce is not None
+                else ""
+            ),
+        ],
+        socket_path=sock,
+    )
+    parts = (probe.stdout or "").strip().split("\t")
+    expected_len = 4 if launch_nonce is None else 5
+    if (
+        probe.returncode != 0
+        or len(parts) != expected_len
+        or parts[0] != pane_id
+        or parts[1] != expected_window_id
+        or parts[2] != expected_session_id
+        or parts[3] != pane_owner_nonce
+        or (launch_nonce is not None and parts[4] != launch_nonce)
+    ):
+        raise TmuxTeamError("worker pane owner identity readback mismatch")
+
+
+def read_exact_worker_pane_identity(
+    *,
+    pane_id: str,
+    expected_session_id: str,
+    expected_window_id: str,
+    pane_owner_nonce: str,
+    socket_path: str | None = None,
+) -> int:
+    """Return pane PID when session/window/owner nonce still match exactly."""
+    if _TMUX_PANE_ID.fullmatch(pane_id) is None:
+        raise TmuxTeamError(f"invalid pane id {pane_id!r}")
+    probe = _tmux_run(
+        [
+            "display-message",
+            "-p",
+            "-t",
+            pane_id,
+            "#{pane_id}\t#{window_id}\t#{session_id}\t#{pane_pid}\t"
+            f"#{{{WORKER_PANE_NONCE_OPTION}}}\t#{{pane_dead}}",
+        ],
+        socket_path=socket_path,
+    )
+    parts = (probe.stdout or "").strip().split("\t")
+    if (
+        probe.returncode != 0
+        or len(parts) != 6
+        or parts[0] != pane_id
+        or parts[1] != expected_window_id
+        or parts[2] != expected_session_id
+        or parts[4] != pane_owner_nonce
+        or parts[5] != "0"
+    ):
+        raise TmuxTeamError(
+            f"exact worker pane identity drift pane={pane_id!r}"
+        )
+    try:
+        pid = int(parts[3])
+    except ValueError as exc:
+        raise TmuxTeamError(f"invalid pane pid {parts[3]!r}") from exc
+    if pid <= 0:
+        raise TmuxTeamError(f"non-positive pane pid {pid}")
+    return pid
+
+
+def discover_worker_pane_by_owner_nonce(
+    *,
+    session_id: str,
+    window_id: str,
+    pane_owner_nonce: str,
+    socket_path: str | None = None,
+) -> str | None:
+    """Find the unique pane in *window_id* stamped with *pane_owner_nonce*."""
+    listed = _tmux_run(
+        [
+            "list-panes",
+            "-t",
+            window_id,
+            "-F",
+            "#{pane_id}\t#{session_id}\t#{window_id}\t"
+            f"#{{{WORKER_PANE_NONCE_OPTION}}}",
+        ],
+        socket_path=socket_path,
+    )
+    if listed.returncode != 0:
+        raise TmuxTeamError("failed to enumerate panes for owner-nonce discovery")
+    matches: list[str] = []
+    for line in (listed.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) != 4:
+            raise TmuxTeamError("malformed pane discovery row")
+        pane_id, row_session, row_window, marker = parts
+        if (
+            row_session != session_id
+            or row_window != window_id
+            or _TMUX_PANE_ID.fullmatch(pane_id) is None
+        ):
+            raise TmuxTeamError("pane discovery identity malformed")
+        if marker == pane_owner_nonce:
+            matches.append(pane_id)
+    if len(matches) > 1:
+        raise TmuxTeamError(
+            f"ambiguous worker pane owner nonce {pane_owner_nonce!r}"
+        )
+    return matches[0] if matches else None
+
+
+def _spawn_worker_split_pane(
+    *,
+    target_pane_id: str | None,
+    target_window_id: str,
+    worktree: str,
+    pane_command: str,
+    env_pairs: Sequence[tuple[str, str]] | None,
+    horizontal: bool,
+    expected_server: Mapping[str, Any],
+    expected_session_id: str,
+    pane_owner_nonce: str,
+    launch_nonce: str | None = None,
+    leader_pane_id: str | None = None,
+    socket_path: str | None = None,
+) -> SpawnedWorkerPane:
+    """Identity-gated detached split into an exact Team window."""
+    server = _intent_tmux_server(expected_server)
+    if server is None:
+        raise TmuxTeamError("spawn split requires durable tmux server identity")
+    sock = socket_path or str(server["tmux_socket_path"])
+    split_target = target_pane_id or target_window_id
+    if leader_pane_id is not None and split_target == leader_pane_id and not horizontal:
+        # Vertical split against leader is refused — callers must use -h first.
+        raise TmuxTeamError("refusing vertical split against leader pane")
+    task_env = tmux_env_args(list(env_pairs or []))
+    split_argv = [
+        "split-window",
+        "-h" if horizontal else "-v",
+        "-d",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        split_target,
+        "-c",
+        str(worktree),
+        *task_env,
+        str(pane_command),
+    ]
+    split = _tmux_run_if_identity(
+        split_argv,
+        target=split_target,
+        expected_server=server,
+        socket_path=sock,
+        window_id=target_window_id,
+        expected_session_id=expected_session_id,
+        pane_id=target_pane_id if target_pane_id else None,
+    )
+    if split.returncode != 0:
+        # Lost-stdout recovery via owner nonce is impossible pre-bind; surface.
+        err = (split.stderr or split.stdout or "").strip()[:400]
+        # Try orphan discovery only if a previous attempt already bound nonce.
+        orphan = discover_worker_pane_by_owner_nonce(
+            session_id=expected_session_id,
+            window_id=target_window_id,
+            pane_owner_nonce=pane_owner_nonce,
+            socket_path=sock,
+        )
+        if orphan is None:
+            raise TmuxTeamError(f"split-window failed: {err}")
+        pane_id = orphan
+    else:
+        pane_id = (split.stdout or "").strip()
+        if _TMUX_PANE_ID.fullmatch(pane_id) is None:
+            orphan = discover_worker_pane_by_owner_nonce(
+                session_id=expected_session_id,
+                window_id=target_window_id,
+                pane_owner_nonce=pane_owner_nonce,
+                socket_path=sock,
+            )
+            if orphan is None:
+                raise TmuxTeamError("split-window did not return pane id")
+            pane_id = orphan
+    if leader_pane_id is not None and pane_id == leader_pane_id:
+        raise TmuxTeamError("spawn produced leader pane id")
+    _verify_worker_pane_membership(
+        pane_id=pane_id,
+        leader_pane=leader_pane_id or "",
+        expected_session_id=expected_session_id,
+        expected_window_id=target_window_id,
+        expected_server=server,
+        socket_path=sock,
+    )
+    bind_worker_pane_owner(
+        pane_id=pane_id,
+        pane_owner_nonce=pane_owner_nonce,
+        expected_server=server,
+        expected_session_id=expected_session_id,
+        expected_window_id=target_window_id,
+        launch_nonce=launch_nonce,
+        socket_path=sock,
+    )
+    pid = read_exact_worker_pane_identity(
+        pane_id=pane_id,
+        expected_session_id=expected_session_id,
+        expected_window_id=target_window_id,
+        pane_owner_nonce=pane_owner_nonce,
+        socket_path=sock,
+    )
+    return SpawnedWorkerPane(
+        session_id=expected_session_id,
+        window_id=target_window_id,
+        pane_id=pane_id,
+        pane_pid=pid,
+        pane_owner_nonce=pane_owner_nonce,
+    )
+
+
+def spawn_worker_same_window(
+    *,
+    target_pane_id: str,
+    team_window_id: str,
+    worktree: str,
+    pane_command: str,
+    env_pairs: Sequence[tuple[str, str]] | None,
+    horizontal: bool,
+    expected_server: Mapping[str, Any],
+    expected_session_id: str,
+    pane_owner_nonce: str,
+    launch_nonce: str | None = None,
+    leader_pane_id: str | None = None,
+    socket_path: str | None = None,
+) -> SpawnedWorkerPane:
+    """Spawn into the shared leader window (never ``new-window``)."""
+    return _spawn_worker_split_pane(
+        target_pane_id=target_pane_id,
+        target_window_id=team_window_id,
+        worktree=worktree,
+        pane_command=pane_command,
+        env_pairs=env_pairs,
+        horizontal=horizontal,
+        expected_server=expected_server,
+        expected_session_id=expected_session_id,
+        pane_owner_nonce=pane_owner_nonce,
+        launch_nonce=launch_nonce,
+        leader_pane_id=leader_pane_id,
+        socket_path=socket_path,
+    )
+
+
+def spawn_worker_dedicated_window(
+    *,
+    team_window_id: str,
+    target_pane_id: str | None,
+    worktree: str,
+    pane_command: str,
+    env_pairs: Sequence[tuple[str, str]] | None,
+    expected_server: Mapping[str, Any],
+    expected_session_id: str,
+    pane_owner_nonce: str,
+    launch_nonce: str | None = None,
+    horizontal: bool = False,
+    socket_path: str | None = None,
+) -> SpawnedWorkerPane:
+    """Spawn into the exact dedicated Team window (never a second Team window)."""
+    return _spawn_worker_split_pane(
+        target_pane_id=target_pane_id,
+        target_window_id=team_window_id,
+        worktree=worktree,
+        pane_command=pane_command,
+        env_pairs=env_pairs,
+        horizontal=horizontal,
+        expected_server=expected_server,
+        expected_session_id=expected_session_id,
+        pane_owner_nonce=pane_owner_nonce,
+        launch_nonce=launch_nonce,
+        leader_pane_id=None,
+        socket_path=socket_path,
+    )
+
+
+def spawn_worker_detached_session(
+    *,
+    team_window_id: str,
+    target_pane_id: str | None,
+    worktree: str,
+    pane_command: str,
+    env_pairs: Sequence[tuple[str, str]] | None,
+    expected_server: Mapping[str, Any],
+    expected_session_id: str,
+    pane_owner_nonce: str,
+    launch_nonce: str | None = None,
+    horizontal: bool = False,
+    socket_path: str | None = None,
+) -> SpawnedWorkerPane:
+    """Spawn into the Team-owned detached session window (no attach)."""
+    return _spawn_worker_split_pane(
+        target_pane_id=target_pane_id,
+        target_window_id=team_window_id,
+        worktree=worktree,
+        pane_command=pane_command,
+        env_pairs=env_pairs,
+        horizontal=horizontal,
+        expected_server=expected_server,
+        expected_session_id=expected_session_id,
+        pane_owner_nonce=pane_owner_nonce,
+        launch_nonce=launch_nonce,
+        leader_pane_id=None,
+        socket_path=socket_path,
+    )
+
+
+def kill_exact_worker_pane(
+    *,
+    pane_id: str,
+    expected_server: Mapping[str, Any] | None,
+    expected_session_id: str | None,
+    expected_window_id: str | None,
+    intent_or_launch_nonce: str | None = None,
+    leader_pane_id: str | None = None,
+    socket_path: str | None = None,
+) -> str | None:
+    """Kill one exact worker pane; never the leader. Returns error or None."""
+    if leader_pane_id is not None and pane_id == leader_pane_id:
+        return f"refused kill of leader pane {pane_id}"
+    return _kill_panes_scoped(
+        [pane_id],
+        expected_server=expected_server,
+        expected_session_id=expected_session_id,
+        expected_window_id=expected_window_id,
+        intent_or_launch_nonce=intent_or_launch_nonce,
+        leader_pane_id=leader_pane_id,
+        socket_path=socket_path,
+    )
+
+
+def reconcile_layout(
+    *,
+    mode: str,
+    team_window_id: str,
+    leader_pane_id: str | None,
+    leader_pane_pid: int | None,
+    session_id: str,
+    worker_count: int,
+    expected_server: Mapping[str, Any] | None = None,
+    socket_path: str | None = None,
+    layout_name: str | None = None,
+) -> LayoutReconcileResult:
+    """Reapply visual layout after a lifecycle commit.
+
+    Layout failure is never process authority — callers must not roll back
+    committed identity when this returns ``repair_needed``.
+    """
+    from omg_cli.team.topology import (
+        LAYOUT_MAIN_VERTICAL,
+        LAYOUT_STATUS_CLEAN,
+        LAYOUT_STATUS_REPAIR_NEEDED,
+        LAYOUT_TILED,
+        VIEW_MODE_SAME_WINDOW,
+        layout_for_view_mode,
+    )
+
+    resolved_layout = layout_name or layout_for_view_mode(mode)
+    try:
+        server = (
+            _intent_tmux_server(expected_server)
+            if expected_server is not None
+            else None
+        )
+        sock = socket_path
+        if sock is None and server is not None:
+            sock = str(server["tmux_socket_path"])
+        if mode == VIEW_MODE_SAME_WINDOW:
+            if not isinstance(leader_pane_id, str) or not leader_pane_id:
+                raise TmuxTeamError("same_window layout requires leader_pane_id")
+            if leader_pane_pid is None:
+                raise TmuxTeamError("same_window layout requires leader_pane_pid")
+            _apply_same_window_layout(
+                window_id=team_window_id,
+                leader_pane=leader_pane_id,
+                worker_count=max(1, worker_count),
+                socket_path=sock,
+            )
+            _assert_leader_postconditions(
+                snap={
+                    "pane_id": leader_pane_id,
+                    "pane_pid": leader_pane_pid,
+                    "session_id": session_id,
+                    "window_id": team_window_id,
+                },
+                socket_path=sock,
+            )
+        else:
+            # dedicated / detached: tiled (or persisted) without client navigation.
+            layout = _tmux_run(
+                [
+                    "select-layout",
+                    "-t",
+                    team_window_id,
+                    resolved_layout if resolved_layout else LAYOUT_TILED,
+                ],
+                socket_path=sock,
+            )
+            if layout.returncode != 0:
+                err = (layout.stderr or layout.stdout or "").strip()[:200]
+                raise TmuxTeamError(f"select-layout failed: {err}")
+        return LayoutReconcileResult(
+            status=LAYOUT_STATUS_CLEAN,
+            last_error_code=None,
+            layout_name=resolved_layout or LAYOUT_MAIN_VERTICAL,
+        )
+    except (TmuxTeamError, OSError) as exc:
+        code = "select_layout_failed"
+        if "leader" in str(exc).lower():
+            code = "leader_postcondition_failed"
+        return LayoutReconcileResult(
+            status=LAYOUT_STATUS_REPAIR_NEEDED,
+            last_error_code=code,
+            layout_name=resolved_layout,
+        )

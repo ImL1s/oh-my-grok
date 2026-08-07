@@ -395,7 +395,7 @@ def _require_control_plane(root: Path, run_id: str) -> dict[str, Any]:
             f"team.json run_id mismatch (file={meta.get('run_id')!r} path={run_id!r})",
             details={"error": "team_not_found", "run_id": run_id},
         )
-    if meta.get("schema_version") != 1:
+    if meta.get("schema_version") not in (1, 2):
         raise TeamApiError(
             "E_TEAM_API_FAILED",
             f"team.json schema_version unsupported: {meta.get('schema_version')!r}",

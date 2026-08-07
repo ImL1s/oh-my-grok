@@ -1537,7 +1537,13 @@ def _prepare_live_relaunch_team(
 ) -> tuple[str, dict[str, Any], dict[str, str], list[str]]:
     rid, live = _prepare_live_scale_team(monkeypatch, tmp_path)
     live["topology"] = "split"
+    live["view_mode"] = "same_window"
+    live["attach_mode"] = "inside"
+    live["session_owned"] = False
+    live["session_id"] = "$7"
     live["window_id"] = "@7"
+    live["leader_pane_id"] = "%1"
+    live["leader_pane_pid"] = 1
     live["tmux_socket_path"] = "/tmp/omg-test-tmux.sock"
     live["tmux_server_pid"] = 424242
     live["tmux_server_pid_start"] = "ps:omg-test-server"
@@ -1550,6 +1556,9 @@ def _prepare_live_relaunch_team(
         lambda _session: (live["session"], "$7"),
     )
     monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
+    monkeypatch.setattr(
+        plane, "_read_tmux_launch_nonce_for_window", lambda _window: "a" * 32
+    )
     monkeypatch.setattr(scaling, "_session_alive", lambda _session: True)
     monkeypatch.setattr(scaling, "_resolve_relaunch_target", lambda *_args, **_kwargs: "@7")
     monkeypatch.setattr(
@@ -1594,7 +1603,7 @@ def _prepare_live_relaunch_team(
 
     def respawn(**kwargs: Any) -> str:
         task_id = next(
-            tid for tid in dead_ids if tid in str(kwargs["pane_command"])
+            tid for tid in dead_ids if tid in str(kwargs.get("pane_command") or "")
         )
         respawns.append(task_id)
         pane_id = f"%{80 + len(respawns)}"
@@ -1603,7 +1612,9 @@ def _prepare_live_relaunch_team(
 
     monkeypatch.setattr(scaling, "_discover_relaunch_pane", discover)
     monkeypatch.setattr(scaling, "_wait_for_relaunch_pane", discover)
-    monkeypatch.setattr("omg_cli.team.tmux.respawn_worker_pane", respawn)
+    # #102: relaunch uses topology-aware spawn (not undetached respawn_worker_pane).
+    monkeypatch.setattr(scaling, "_spawn_relaunch_worker_via_topology", respawn)
+    monkeypatch.setattr("omg_cli.team.scaling._spawn_relaunch_worker_via_topology", respawn)
     monkeypatch.setattr(
         scaling,
         "_read_exact_relaunch_pane",
@@ -1769,6 +1780,8 @@ def test_scale_identity_chain_refuses_team_meta_window_handle_drift(
         operation="add",
         tasks_before=before,
         tasks_after=after,
+        topology_mode="same_window",
+        operation_intent={"operation": "add", "test": True},
     )
     drifted = dict(live)
     drifted["tasks"] = [dict(task) for task in after]
@@ -1949,6 +1962,8 @@ def test_future_identity_receipt_blocks_scale_down_and_raw_resume(
         operation="add",
         tasks_before=live["tasks"],
         tasks_after=live["tasks"],
+        topology_mode="same_window",
+        operation_intent={"operation": "add", "test": True},
     )
 
     before = load_team_meta(tmp_path, rid)
@@ -2586,6 +2601,8 @@ def test_scale_up_pending_receipt_without_retry_intent_fails_closed(
         operation="add",
         tasks_before=live["tasks"],
         tasks_after=[*live["tasks"], pending],
+        topology_mode="same_window",
+        operation_intent={"operation": "add", "test": True},
     )
 
     def refuse_side_effect(*_args: Any, **_kwargs: Any) -> None:
@@ -3187,11 +3204,13 @@ def test_relaunch_wal_precedes_respawn_and_commits_generation(
         assert wal["store_kind"] == "team_relaunch_wal"
         assert wal["writer_contract"] == "relaunch-wal-v1"
         assert wal["target_window_id"] == "@7"
-        # P2-NEW: relaunch split must carry WAL socket + server + session + @window.
+        assert wal["request"]["view_mode"] == "same_window"
+        # #102: topology-aware spawn carries socket + server + session + owner nonce.
         assert kwargs.get("socket_path") == "/tmp/omg-test-tmux.sock"
         assert kwargs.get("expected_server", {}).get("tmux_server_pid") == 424242
         assert kwargs.get("expected_session_id") == "$7"
-        assert kwargs.get("expected_window_id") == "@7"
+        assert kwargs.get("placement").window_id == "@7"
+        assert kwargs.get("pane_owner_nonce")
         task_id = next(
             tid for tid in ("t-a", "t-b") if tid in str(kwargs["pane_command"])
         )
@@ -3200,7 +3219,7 @@ def test_relaunch_wal_precedes_respawn_and_commits_generation(
         launched[task_id] = pane_id
         return pane_id
 
-    monkeypatch.setattr("omg_cli.team.tmux.respawn_worker_pane", assert_wal_first)
+    monkeypatch.setattr("omg_cli.team.scaling._spawn_relaunch_worker_via_topology", assert_wal_first)
     out = relaunch_dead_incomplete_workers(tmp_path, rid)
 
     assert respawns == ["t-a"]
@@ -3208,9 +3227,12 @@ def test_relaunch_wal_precedes_respawn_and_commits_generation(
     disk = load_team_meta(tmp_path, rid)
     assert disk["identity_generation"] == 1
     assert pending_identity_wal_operation(tmp_path, rid, disk) is None
+    relaunched = next(row for row in disk["tasks"] if row["task_id"] == "t-a")
+    assert relaunched["attempt"] == 2  # prev default 1 + 1
     receipt = json.loads(plane.team_identity_receipt_path(tmp_path, rid, 1).read_bytes())
     assert receipt["operation"] == "relaunch"
     assert receipt["scale_intent"]["relaunch_wal_sha256"]
+    assert receipt["topology_mode"] == "same_window"
 
 
 def test_legacy_future_receipt_blocks_relaunch_before_wal_or_spawn(
@@ -3230,6 +3252,8 @@ def test_legacy_future_receipt_blocks_relaunch_before_wal_or_spawn(
         operation="add",
         tasks_before=live["tasks"],
         tasks_after=live["tasks"],
+        topology_mode="same_window",
+        operation_intent={"operation": "add", "test": True},
     )
 
     wal_path = plane.team_dir(tmp_path, rid) / "scale-wal" / "1.json"
@@ -3284,13 +3308,10 @@ def test_relaunch_retry_recovers_pending_receipt_without_respawn(
     )
     mutate = scaling.mutate_team_meta
     calls = 0
-
-    def renumber(_session: str, tasks: Any) -> None:
-        for row in tasks:
-            if row.get("task_id") == "t-b":
-                row["window_index"] = 9
-
-    monkeypatch.setattr(scaling, "_resync_window_indices", renumber)
+    before = load_team_meta(tmp_path, rid)
+    preserved_index = next(
+        row for row in before["tasks"] if row["task_id"] == "t-b"
+    )["window_index"]
 
     def fail_before_meta(*args: Any, **kwargs: Any) -> Any:
         nonlocal calls
@@ -3309,9 +3330,10 @@ def test_relaunch_retry_recovers_pending_receipt_without_respawn(
     assert out["identity_generation"] == 1
     disk = load_team_meta(tmp_path, rid)
     assert disk["identity_generation"] == 1
+    # #102: relaunch must not rewrite logical window_index from live pane_index.
     assert next(row for row in disk["tasks"] if row["task_id"] == "t-b")[
         "window_index"
-    ] == 9
+    ] == preserved_index
 
 
 def test_relaunch_receipt_recovery_rejects_tasks_before_tamper(
@@ -3394,7 +3416,7 @@ def test_relaunch_partial_retry_launches_each_task_once(
                 "simulated second-task crash"
             )
         assert kwargs.get("expected_server", {}).get("tmux_server_pid") == 424242
-        assert kwargs.get("expected_window_id") == "@7"
+        assert kwargs.get("placement").window_id == "@7"
         task_id = next(
             tid for tid in ("t-a", "t-b") if tid in str(kwargs["pane_command"])
         )
@@ -3403,7 +3425,7 @@ def test_relaunch_partial_retry_launches_each_task_once(
         launched[task_id] = pane_id
         return pane_id
 
-    monkeypatch.setattr("omg_cli.team.tmux.respawn_worker_pane", fail_second_once)
+    monkeypatch.setattr("omg_cli.team.scaling._spawn_relaunch_worker_via_topology", fail_second_once)
     with pytest.raises(TeamError, match="second-task crash"):
         relaunch_dead_incomplete_workers(tmp_path, rid)
     assert launched == {"t-a": "%81"}

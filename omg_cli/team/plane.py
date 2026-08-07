@@ -112,7 +112,11 @@ SPAWN_DENY_API_MARKERS: tuple[str, ...] = (
     "OMG_SPAWNED_WORKER",
 )
 WORKSPACE_MODE = "worktree"
-SCHEMA_VERSION = 1
+# Team.json schema: v1 = pre-#102; v2 adds tmux_topology / logical worker slots.
+LEGACY_TEAM_META_SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+# Linked Ralph state remains schema 1 (independent of team.json bumps).
+RALPH_SCHEMA_VERSION = 1
 LAUNCH_RECEIPT_SCHEMA_VERSION = 3
 # #108-era receipts: intent binding without topology (#96 view_mode).
 V2_LAUNCH_RECEIPT_SCHEMA_VERSION = 2
@@ -121,8 +125,12 @@ V2_LAUNCH_RECEIPT_SCHEMA_VERSION = 2
 LEGACY_LAUNCH_RECEIPT_SCHEMA_VERSION = 1
 # Legacy identity receipts reused schema_version=1 before scale_intent fields.
 LEGACY_IDENTITY_RECEIPT_SCHEMA_VERSION = 1
-IDENTITY_RECEIPT_SCHEMA_VERSION = 2
+# #98-era identity receipts with window_id / window_nonce / scale_intent.
+V2_IDENTITY_RECEIPT_SCHEMA_VERSION = 2
+# #102 identity receipts: logical_worker_index / attempt / pane owner / topology.
+IDENTITY_RECEIPT_SCHEMA_VERSION = 3
 LAUNCH_NONCE_OPTION = "@omg_launch_nonce"
+WORKER_PANE_NONCE_OPTION = "@omg_worker_nonce"
 _TMUX_SESSION_ID = re.compile(r"^\$[0-9]{1,16}$")
 _TMUX_PANE_ID = re.compile(r"^%[0-9]{1,16}$")
 _TMUX_WINDOW_ID = re.compile(r"^@[0-9]{1,16}$")
@@ -265,6 +273,15 @@ _TEAM_META_IMMUTABLE_FIELDS: tuple[str, ...] = (
     "launch_receipt_sha256",
     "workspace_mode",
     "session",
+    "view_mode",
+    "session_owned",
+    "session_id",
+    "window_id",
+    "leader_pane_id",
+    "leader_pane_pid",
+    "tmux_socket_path",
+    "tmux_server_pid",
+    "tmux_server_pid_start",
 )
 
 
@@ -398,6 +415,56 @@ def _assert_immutable_team_meta(
                 f"team.json immutable field {key!r} changed under mutate "
                 f"({before.get(key)!r} -> {after.get(key)!r})"
             )
+    # #102: nested tmux_topology.anchor is launch-immutable when present.
+    before_topo = before.get("tmux_topology")
+    after_topo = after.get("tmux_topology")
+    if isinstance(before_topo, Mapping):
+        before_anchor = before_topo.get("anchor")
+        if isinstance(before_anchor, Mapping) and before_anchor:
+            if not isinstance(after_topo, Mapping):
+                raise TeamError("team.json tmux_topology.anchor removed under mutate")
+            after_anchor = after_topo.get("anchor")
+            if after_anchor != before_anchor:
+                raise TeamError(
+                    "team.json tmux_topology.anchor changed under mutate"
+                )
+
+
+def _build_launch_tmux_topology(
+    meta: Mapping[str, Any],
+    *,
+    launch_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the nested tmux_topology object for a fresh launch meta write."""
+    from omg_cli.team.topology import (
+        LAYOUT_STATUS_CLEAN,
+        build_topology_snapshot,
+        TopologyError,
+    )
+
+    try:
+        snap = build_topology_snapshot(meta, receipt=launch_receipt)
+    except TopologyError:
+        # Dry-run / incomplete authority: omit nested object rather than fail launch.
+        # Live path always has session_id + launch_nonce before this helper runs.
+        return {
+            "schema_version": 1,
+            "anchor": None,
+            "identity_generation": int(meta.get("identity_generation") or 0),
+            "identity_receipt_sha256": meta.get("identity_receipt_sha256")
+            or meta.get("launch_receipt_sha256"),
+            "active_workers": [],
+            "placement": {"strategy": "right_stack", "right_stack_root_pane_id": None},
+            "layout": {
+                "name": meta.get("layout") or "tiled",
+                "leader_width_policy": "clamped_half",
+                "status": LAYOUT_STATUS_CLEAN,
+                "last_error_code": None,
+            },
+        }
+    body = snap.to_tmux_topology_dict()
+    body["layout"]["status"] = LAYOUT_STATUS_CLEAN
+    return body
 
 
 def mutate_team_meta(
@@ -2157,19 +2224,43 @@ _LEGACY_IDENTITY_ROW_KEYS = frozenset(
         "pid_start",
     }
 )
-_IDENTITY_ROW_KEYS = _LEGACY_IDENTITY_ROW_KEYS | {
+_V2_IDENTITY_ROW_KEYS = _LEGACY_IDENTITY_ROW_KEYS | {
     "window_id",
     "window_nonce",
 }
+# Back-compat alias used by older call sites / tests.
+_IDENTITY_ROW_KEYS = _V2_IDENTITY_ROW_KEYS
+_V3_IDENTITY_ROW_KEYS = frozenset(
+    {
+        "task_id",
+        "logical_worker_index",
+        "attempt",
+        "window_index",  # dual-write alias of logical index for locked consumers
+        "window_id",
+        "window_nonce",  # dual-write alias of window_owner_nonce
+        "window_owner_nonce",
+        "pane_id",
+        "pane_owner_kind",
+        "pane_owner_nonce",
+        "pid",
+        "pgid",
+        "pid_start",
+    }
+)
 
 
-def _identity_rows(tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _identity_rows_v2(tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Project the #98 v2 identity row shape (window_id / window_nonce)."""
     return [
         {
             "task_id": raw.get("task_id"),
-            "window_index": raw.get("window_index"),
+            "window_index": raw.get(
+                "window_index", raw.get("logical_worker_index")
+            ),
             "window_id": raw.get("window_id"),
-            "window_nonce": raw.get("window_nonce"),
+            "window_nonce": raw.get(
+                "window_nonce", raw.get("window_owner_nonce")
+            ),
             "pane_id": raw.get("pane_id"),
             "pid": raw.get("pid"),
             "pgid": raw.get("pgid"),
@@ -2177,6 +2268,87 @@ def _identity_rows(tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         }
         for raw in tasks
     ]
+
+
+def _identity_rows(tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Default identity projection for new writers (#102 → v3)."""
+    return _identity_rows_v3(tasks)
+
+
+def _identity_rows_v3(tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Project the #102 v3 identity row (logical slot + pane owner evidence)."""
+    return [_normalize_identity_row(raw) for raw in tasks]
+
+
+def _normalize_identity_row(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize any receipt/task row into the in-memory v3 shape.
+
+    Never writes back to disk. v1/v2 rows map:
+    - logical_worker_index ← window_index
+    - attempt ← explicit attempt or 1
+    - window_owner_nonce ← window_nonce
+    - pane_owner_nonce ← pane_owner_nonce / window_nonce / relaunch nonce
+    Dual-writes window_nonce and window_index for locked scale consumers.
+    """
+    tid = raw.get("task_id")
+    logical = raw.get("logical_worker_index")
+    if logical is None:
+        logical = raw.get("window_index")
+    # Preserve explicit window_index when present (legacy live index dual-write);
+    # logical_worker_index is the #102 authority for ordering.
+    window_index = raw.get("window_index")
+    if window_index is None:
+        window_index = logical
+    attempt = raw.get("attempt", 1)
+    if (
+        isinstance(attempt, bool)
+        or not isinstance(attempt, int)
+        or attempt < 1
+    ):
+        attempt = 1
+    window_nonce = raw.get("window_owner_nonce", raw.get("window_nonce"))
+    pane_owner_nonce = raw.get("pane_owner_nonce")
+    if pane_owner_nonce is None:
+        pane_owner_nonce = raw.get("relaunch_nonce") or window_nonce
+    pane_owner_kind = raw.get("pane_owner_kind")
+    if not isinstance(pane_owner_kind, str) or not pane_owner_kind:
+        if raw.get("relaunch_nonce"):
+            pane_owner_kind = "relaunch_nonce"
+        elif window_nonce:
+            pane_owner_kind = "window_nonce"
+        else:
+            pane_owner_kind = "launch_nonce"
+    return {
+        "task_id": tid,
+        "logical_worker_index": logical,
+        "attempt": attempt,
+        "window_index": window_index,
+        "window_id": raw.get("window_id"),
+        "window_nonce": window_nonce,
+        "window_owner_nonce": window_nonce,
+        "pane_id": raw.get("pane_id"),
+        "pane_owner_kind": pane_owner_kind,
+        "pane_owner_nonce": pane_owner_nonce,
+        "pid": raw.get("pid"),
+        "pgid": raw.get("pgid"),
+        "pid_start": raw.get("pid_start"),
+    }
+
+
+def _normalize_identity_receipt(parsed: Mapping[str, Any]) -> dict[str, Any]:
+    """In-memory normalize of a persisted identity receipt (any schema)."""
+    out = dict(parsed)
+    out["tasks_before"] = [
+        _normalize_identity_row(row)
+        for row in (parsed.get("tasks_before") or [])
+        if isinstance(row, Mapping)
+    ]
+    out["tasks_after"] = [
+        _normalize_identity_row(row)
+        for row in (parsed.get("tasks_after") or [])
+        if isinstance(row, Mapping)
+    ]
+    return out
 
 
 def _persist_team_identity_receipt(
@@ -2192,6 +2364,10 @@ def _persist_team_identity_receipt(
     tasks_before: Sequence[Mapping[str, Any]],
     tasks_after: Sequence[Mapping[str, Any]],
     scale_intent: Mapping[str, Any] | None = None,
+    topology_mode: str | None = None,
+    topology_before_sha256: str | None = None,
+    topology_after_sha256: str | None = None,
+    operation_intent: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Append one immutable scale generation to the launch identity chain."""
     from omg_cli.contracts.path_keys import (
@@ -2208,9 +2384,14 @@ def _persist_team_identity_receipt(
     require_sha256(previous_receipt_sha256, label="previous_receipt_sha256")
     if operation not in {"add", "remove", "relaunch"}:
         raise TeamError("scaled identity receipt operation mismatch")
+    if not isinstance(topology_mode, str) or not topology_mode:
+        raise TeamError("v3 identity receipt requires topology_mode")
+    if operation_intent is None:
+        raise TeamError("v3 identity receipt requires operation_intent")
     scale_intent_body = (
         canonical_json_bytes(scale_intent) if scale_intent is not None else None
     )
+    operation_intent_body = canonical_json_bytes(operation_intent)
     receipt = {
         "store_kind": "team_identity_receipt",
         "schema_version": IDENTITY_RECEIPT_SCHEMA_VERSION,
@@ -2223,11 +2404,22 @@ def _persist_team_identity_receipt(
         "previous_receipt_sha256": previous_receipt_sha256,
         "operation": operation,
         "receipt_nonce": uuid.uuid4().hex,
-        "tasks_before": _identity_rows(tasks_before),
-        "tasks_after": _identity_rows(tasks_after),
+        "tasks_before": _identity_rows_v3(tasks_before),
+        "tasks_after": _identity_rows_v3(tasks_after),
         "scale_intent": dict(scale_intent) if scale_intent is not None else None,
         "scale_intent_sha256": (
             sha256_hex(scale_intent_body) if scale_intent_body is not None else None
+        ),
+        "topology_mode": topology_mode,
+        "topology_before_sha256": topology_before_sha256,
+        "topology_after_sha256": topology_after_sha256,
+        "operation_intent": (
+            dict(operation_intent) if operation_intent is not None else None
+        ),
+        "operation_intent_sha256": (
+            sha256_hex(operation_intent_body)
+            if operation_intent_body is not None
+            else None
         ),
     }
     body = canonical_json_bytes(receipt)
@@ -2314,7 +2506,7 @@ def _load_team_identity_chain(
     # Generation-zero launch receipts predate immutable scaled-window handles.
     # Normalize their rows so an upgraded writer can append the stronger shape
     # without invalidating the existing receipt hash.
-    previous_rows = _identity_rows(launch["tasks"])
+    previous_rows = [_normalize_identity_row(row) for row in launch["tasks"]]
     previous_hash = str(meta.get("launch_receipt_sha256") or "")
     require_sha256(previous_hash, label="launch_receipt_sha256")
     generation = meta.get("identity_generation", 0)
@@ -2354,6 +2546,13 @@ def _load_team_identity_chain(
             "scale_intent",
             "scale_intent_sha256",
         }
+        v3_required = v2_required | {
+            "topology_mode",
+            "topology_before_sha256",
+            "topology_after_sha256",
+            "operation_intent",
+            "operation_intent_sha256",
+        }
         schema_version = parsed.get("schema_version")
         if (
             (
@@ -2361,12 +2560,17 @@ def _load_team_identity_chain(
                 and set(parsed) != legacy_required
             )
             or (
-                schema_version == IDENTITY_RECEIPT_SCHEMA_VERSION
+                schema_version == V2_IDENTITY_RECEIPT_SCHEMA_VERSION
                 and set(parsed) != v2_required
+            )
+            or (
+                schema_version == IDENTITY_RECEIPT_SCHEMA_VERSION
+                and set(parsed) != v3_required
             )
             or schema_version
             not in {
                 LEGACY_IDENTITY_RECEIPT_SCHEMA_VERSION,
+                V2_IDENTITY_RECEIPT_SCHEMA_VERSION,
                 IDENTITY_RECEIPT_SCHEMA_VERSION,
             }
         ):
@@ -2387,7 +2591,10 @@ def _load_team_identity_chain(
             or not isinstance(parsed["tasks_after"], list)
         ):
             raise TeamError("team identity receipt chain mismatch")
-        if schema_version == IDENTITY_RECEIPT_SCHEMA_VERSION:
+        if schema_version in {
+            V2_IDENTITY_RECEIPT_SCHEMA_VERSION,
+            IDENTITY_RECEIPT_SCHEMA_VERSION,
+        }:
             scale_intent = parsed["scale_intent"]
             scale_intent_sha256 = parsed["scale_intent_sha256"]
             if scale_intent is None or scale_intent_sha256 is None:
@@ -2407,15 +2614,46 @@ def _load_team_identity_chain(
                     != scale_intent_sha256
                 ):
                     raise TeamError("team identity receipt scale intent mismatch")
+        if schema_version == IDENTITY_RECEIPT_SCHEMA_VERSION:
+            op_intent = parsed.get("operation_intent")
+            op_hash = parsed.get("operation_intent_sha256")
+            if op_intent is None or op_hash is None:
+                raise TeamError(
+                    "team identity receipt v3 requires operation_intent"
+                )
+            if not isinstance(op_intent, Mapping):
+                raise TeamError("team identity receipt operation intent mismatch")
+            try:
+                require_sha256(op_hash, label="operation_intent_sha256")
+            except ValueError as exc:
+                raise TeamError(
+                    "team identity receipt operation intent mismatch"
+                ) from exc
+            if sha256_hex(canonical_json_bytes(op_intent)) != op_hash:
+                raise TeamError("team identity receipt operation intent mismatch")
+            topo_mode = parsed.get("topology_mode")
+            if not isinstance(topo_mode, str) or not topo_mode:
+                raise TeamError(
+                    "team identity receipt v3 requires topology_mode"
+                )
         normalized_rows: dict[str, list[dict[str, Any]]] = {}
         for field in ("tasks_before", "tasks_after"):
             for row in parsed[field]:
-                if not isinstance(row, Mapping) or set(row) not in {
-                    _LEGACY_IDENTITY_ROW_KEYS,
-                    _IDENTITY_ROW_KEYS,
-                }:
+                if not isinstance(row, Mapping):
                     raise TeamError("team identity receipt task row mismatch")
-            normalized_rows[field] = _identity_rows(parsed[field])
+                keys = set(row)
+                if schema_version == LEGACY_IDENTITY_RECEIPT_SCHEMA_VERSION:
+                    if keys != _LEGACY_IDENTITY_ROW_KEYS:
+                        raise TeamError("team identity receipt task row mismatch")
+                elif schema_version == V2_IDENTITY_RECEIPT_SCHEMA_VERSION:
+                    if keys not in {_LEGACY_IDENTITY_ROW_KEYS, _V2_IDENTITY_ROW_KEYS}:
+                        raise TeamError("team identity receipt task row mismatch")
+                else:
+                    if keys != _V3_IDENTITY_ROW_KEYS:
+                        raise TeamError("team identity receipt task row mismatch")
+            normalized_rows[field] = [
+                _normalize_identity_row(row) for row in parsed[field]
+            ]
         if normalized_rows["tasks_before"] != previous_rows:
             raise TeamError("team identity receipt task continuity mismatch")
         previous_hash = sha256_hex(canonical_json_bytes(parsed))
@@ -2431,7 +2669,7 @@ def _load_team_identity_chain(
         for task in meta.get("tasks") or []
         if isinstance(task, Mapping) and task.get("status") != "scaled_down"
     ]
-    if _identity_rows(expected_active) != previous_rows:
+    if [_normalize_identity_row(t) for t in expected_active] != previous_rows:
         raise TeamError("team.json active identities differ from receipt chain")
     return chain
 
@@ -2945,6 +3183,7 @@ def start_team(
                     "goal": goal,
                     "task_count": n,
                     "next_worker_index": n,
+                    "next_logical_worker_index": n,
                     "created_at": _utc_now(),
                     "tasks": _public_tasks(),
                     "multi_cli": multi_cli,
@@ -3214,6 +3453,7 @@ def start_team(
                     "goal": goal,
                     "task_count": n,
                     "next_worker_index": n,
+                    "next_logical_worker_index": n,
                     "created_at": _utc_now(),
                     "tasks": _public_tasks(),
                     "multi_cli": multi_cli,
@@ -3242,6 +3482,16 @@ def start_team(
                         )
                     ),
                 }
+                # Stamp logical worker slots + tmux_topology projection (#102).
+                for idx, task in enumerate(meta["tasks"]):
+                    if isinstance(task, dict):
+                        task.setdefault(
+                            "logical_worker_index", task.get("window_index", idx)
+                        )
+                        task.setdefault("attempt", 1)
+                meta["tmux_topology"] = _build_launch_tmux_topology(
+                    meta, launch_receipt=_receipt
+                )
                 # Persist WAL tmux server/session scope for stop/rollback kills.
                 launch_sid = tmux_launch.get("session_id")
                 if isinstance(launch_sid, str) and launch_sid:
@@ -3779,7 +4029,7 @@ def _load_linked_ralph_state(
     linked_team = parsed.get("linked_team")
     if (
         parsed.get("writer") != CLI_WRITER
-        or parsed.get("schema_version") != SCHEMA_VERSION
+        or parsed.get("schema_version") != RALPH_SCHEMA_VERSION
         or parsed.get("run_id") != run_id
         or parsed.get("mode") != "team-ralph"
         or not isinstance(parsed.get("status"), str)
