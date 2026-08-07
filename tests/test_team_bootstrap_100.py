@@ -247,13 +247,16 @@ def test_supervisor_cli_silent_success_no_warning_no_json(
 
     combined = (stdout_buf or "") + (stderr_buf or "")
     assert "shadows ancestor" not in combined
-    assert "ready_path" not in combined
-    assert '"ok"' not in combined or "PROVIDER_TUI" in combined
-    # Bootstrap must not dump JSON envelope above provider.
-    assert "team.worker-ready" not in combined
     assert "nearest .omg" not in combined
-    # First meaningful provider line should be present when tee works;
-    # at minimum bootstrap must not own the only output.
+    assert "ready_path" not in combined
+    assert "team.worker-ready" not in combined
+    # No OMG CLI JSON envelope on success (provider TUI may print freely).
+    assert '"schema_version"' not in combined
+    assert '"command"' not in combined
+    assert '"ready_written"' not in combined
+    # Bootstrap diagnostics stay out of pane streams.
+    assert "BOOTSTRAP_BEGIN" not in combined
+    assert "ROOT_VALIDATED" not in combined
     boot = worker_bootstrap_path(
         leader, run_id="run-silent", team_id="team", worker_id="w1"
     )
@@ -342,6 +345,80 @@ def test_bootstrap_log_redacts_and_bounds(tmp_path: Path) -> None:
     assert "present" in summary
     # No absolute path in descriptor.
     assert str(leader) not in json.dumps(summary)
+
+
+def test_bootstrap_summary_redacts_absolute_home_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.bootstrap import sanitize_bootstrap_summary
+
+    home = tmp_path / "homeuser"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    leader = _leader_root(tmp_path / "proj")
+    leaked = (
+        f"PermissionError: [Errno 13] denied: '{home}/.omg/state/runs/x/ready.json'"
+    )
+    append_bootstrap_log(
+        leader,
+        run_id="run-home",
+        team_id="team",
+        worker_id="w1",
+        phase="READY_WRITE_FAIL",
+        code="PERMISSION",
+        summary=leaked,
+    )
+    text = worker_bootstrap_path(
+        leader, run_id="run-home", team_id="team", worker_id="w1"
+    ).read_text(encoding="utf-8")
+    assert str(home) not in text
+    assert "<home>" in text
+    # Generic /Users and /home shapes.
+    cleaned = sanitize_bootstrap_summary(
+        "failed under /Users/alice/secret/path and /home/bob/x"
+    )
+    assert cleaned is not None
+    assert "/Users/alice" not in cleaned
+    assert "/home/bob" not in cleaned
+    assert "/Users/<user>" in cleaned
+    assert "/home/<user>" in cleaned
+
+
+def test_early_identity_fail_emits_one_pane_line(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Spawn/identity fail-closed paths must not leave a blank pane (#100)."""
+    from omg_cli.team import supervisor as sup
+    from omg_cli.team.bootstrap import pane_failure_line
+    from omg_cli.team.supervisor import run_supervisor
+
+    leader = _leader_root(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, worker_id="w9", run_id="run-idfail")
+    desc = write_provider_descriptor(
+        leader / "bad.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "import time; time.sleep(30)"],
+    )
+
+    def _unresolved(*_a: object, **_k: object) -> tuple[None, str]:
+        return None, "needs_pty: provider child identity unresolved"
+
+    monkeypatch.setattr(sup, "resolve_provider_child_pid", _unresolved)
+    rc = run_supervisor(descriptor_path=desc, ready_timeout_s=2.0)
+    assert rc == 1
+    err = capsys.readouterr().err
+    expected = pane_failure_line(worker_id="w9", run_id="run-idfail")
+    lines = [ln for ln in err.splitlines() if ln.strip()]
+    assert lines == [expected]
+    assert "Traceback" not in err
+    assert str(leader) not in err
+    boot = worker_bootstrap_path(
+        leader, run_id="run-idfail", team_id="team", worker_id="w9"
+    )
+    assert boot.is_file()
+    assert "BOOTSTRAP_FAIL" in boot.read_text(encoding="utf-8")
 
 
 def test_symlink_state_root_rejected(tmp_path: Path) -> None:

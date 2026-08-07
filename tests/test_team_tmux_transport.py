@@ -253,6 +253,27 @@ def test_split_transport_two_panes_and_acks(
         assert len(acks) == 2, f"expected 2 ACK messages, got {acks!r}"
         senders = {str(m.get("sender_id") or "") for m in acks}
         assert senders == {"w1", "w2"}
+
+        # #100: pane scrollback must not show bootstrap JSON / nested-.omg noise.
+        # Capture each pane; first meaningful content belongs to the fixture.
+        panes = _tmux("list-panes", "-t", session, "-F", "#{pane_id}")
+        assert panes.returncode == 0
+        pane_ids = [p for p in (panes.stdout or "").splitlines() if p.strip()]
+        assert len(pane_ids) == 2
+        for pane_id in pane_ids:
+            cap = _tmux("capture-pane", "-p", "-t", pane_id)
+            assert cap.returncode == 0, cap.stderr
+            scroll = cap.stdout or ""
+            assert "shadows ancestor" not in scroll
+            assert "nearest .omg" not in scroll
+            assert "ready_path" not in scroll
+            assert "team.worker-ready" not in scroll
+            assert '"schema_version"' not in scroll
+            # Strip blank lines; remaining should not start with OMG bootstrap.
+            visible = [ln for ln in scroll.splitlines() if ln.strip()]
+            if visible:
+                assert not visible[0].startswith("OMG worker ")
+                assert "BOOTSTRAP_" not in visible[0]
     finally:
         if run_id:
             try:

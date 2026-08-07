@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -45,6 +46,14 @@ BOOTSTRAP_SCHEMA = 1
 _MAX_BOOTSTRAP_LINES = 64
 _MAX_SUMMARY = 240
 _MAX_FILE_BYTES = 65_536
+
+# Absolute home-shaped prefixes (never persist raw /Users/… or /home/…).
+_HOME_PATH_RE = re.compile(
+    r"(?P<prefix>(?:/Users|/home)/)(?P<user>[^/\s\"']+)"
+)
+_WIN_HOME_RE = re.compile(
+    r"(?P<prefix>(?i:[A-Z]:\\Users\\))(?P<user>[^\\\s\"']+)"
+)
 
 
 class BootstrapErrorCode(str, Enum):
@@ -88,7 +97,7 @@ class BootstrapResult:
         if self.code:
             out["code"] = self.code
         if self.reason:
-            out["reason"] = redact_text(str(self.reason))[:_MAX_SUMMARY]
+            out["reason"] = sanitize_bootstrap_summary(self.reason)
         # Never expose absolute ready_path on the public/pane surface.
         if self.ready_path is not None:
             out["ready_written"] = True
@@ -124,6 +133,42 @@ def pane_failure_line(
         f"OMG worker {wid} failed to initialize; "
         "see `omg team status <run> --full`."
     )
+
+
+def sanitize_bootstrap_summary(text: str | None) -> str | None:
+    """Redact secrets and absolute home paths before persisting summaries.
+
+    Never store raw ``str(exc)`` path leakage under ``/Users/…`` / ``/home/…``
+    or ``$HOME`` prefixes. Shared ``redact_text`` handles credentials first.
+    """
+    if text is None:
+        return None
+    raw = str(text).replace("\x00", "")
+    cleaned = redact_text(raw)
+    # Explicit $HOME / Path.home() prefix (longest first).
+    homes: list[str] = []
+    for candidate in (
+        (os.environ.get("HOME") or "").strip(),
+        str(Path.home()),
+    ):
+        if not candidate:
+            continue
+        try:
+            homes.append(str(Path(candidate).expanduser().resolve()))
+        except OSError:
+            homes.append(candidate)
+        homes.append(candidate)
+    # Deduplicate while preferring longer prefixes.
+    seen: set[str] = set()
+    for home in sorted(homes, key=len, reverse=True):
+        if not home or home in seen:
+            continue
+        seen.add(home)
+        if home in cleaned:
+            cleaned = cleaned.replace(home, "<home>")
+    cleaned = _HOME_PATH_RE.sub(r"\g<prefix><user>", cleaned)
+    cleaned = _WIN_HOME_RE.sub(r"\g<prefix><user>", cleaned)
+    return cleaned[:_MAX_SUMMARY]
 
 
 def classify_bootstrap_exception(exc: BaseException) -> BootstrapErrorCode:
@@ -301,9 +346,7 @@ def append_bootstrap_log(
         "ts": _utc_now(),
         "phase": redact_text(str(phase or "UNKNOWN"))[:64],
         "code": redact_text(str(code))[:64] if code else None,
-        "summary": (
-            redact_text(str(summary))[:_MAX_SUMMARY] if summary else None
-        ),
+        "summary": sanitize_bootstrap_summary(summary),
     }
     # Drop nulls for stable compact lines.
     compact = {k: v for k, v in record.items() if v is not None}
@@ -413,7 +456,7 @@ def read_bootstrap_summary(
             last_code = parsed.get("code")
             raw_sum = parsed.get("summary")
             if isinstance(raw_sum, str):
-                last_summary = redact_text(raw_sum)[:_MAX_SUMMARY]
+                last_summary = sanitize_bootstrap_summary(raw_sum)
     except (json.JSONDecodeError, TypeError, ValueError):
         last_phase = "UNPARSEABLE"
     return {
@@ -519,6 +562,7 @@ __all__ = [
     "pane_failure_line",
     "read_bootstrap_summary",
     "resolve_supervisor_project_root",
+    "sanitize_bootstrap_summary",
     "team_supervisor_context_present",
     "validate_canonical_leader_root",
     "worker_bootstrap_path",
