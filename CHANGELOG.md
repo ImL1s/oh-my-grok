@@ -10,6 +10,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#104 real-tmux Team UX regression suite:** hermetic Layer B coverage
+  (`tests/test_team_real_tmux_ux.py` + `tests/support/team_tmux_harness.py`)
+  on an isolated `tmux -S` socket with fake providers under
+  `tests/fixtures/providers/`. Protects same-window leader visibility/focus,
+  invocation race fail-closed, one-worker death, provider-ready/blocked/exit,
+  bootstrap scrollback cleanliness, operator exact-pane I/O, scale topology,
+  resume reconcile-only, and stop/rollback survivors. CI jobs
+  `team-real-tmux-linux` / `team-real-tmux-macos` run `-m tmux_real`.
+  `live_team_smoke.py --interactive-ux` emits `interactive_evidence_v1` +
+  `LIVE_TEAM_INTERACTIVE_UX_OK` (optional; fail-closed without tmux).
 - **#103 Team resume/view attach semantics:** `omg team resume` stays
   reconcile-only by default (never attaches because stdout is a TTY).
   Explicit `resume --view` / `omg team view` restore the exact Team
@@ -59,6 +69,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remains open for slices B–D.
 
 ### Fixed
+- **#104 misleading dedicated-window unit test name:** renamed
+  `test_inside_tmux_splits_current_window` →
+  `test_inside_dedicated_window_uses_new_window` so it no longer reads as
+  locking the buggy new-window default (same-window default remains
+  `test_inside_same_window_default_never_calls_new_window`).
 - **#67-A probe fail-closed / process contract (PR #94 re-audit):** version and
   help probes require successful exit + observed evidence (no invented
   formats/efforts/modes); `run_probe_process` uses POSIX `start_new_session` +

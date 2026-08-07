@@ -345,10 +345,14 @@ def test_resolve_attach_mode_inside_detached_and_fail_closed(
         resolve_attach_mode(detach=False, env={}, isatty=lambda: False)
 
 
-def test_inside_tmux_splits_current_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When TMUX is set, create uses new-window + split-window (not new-session).
+def test_inside_dedicated_window_uses_new_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit dedicated_window path: new-window + split (not same_window).
 
-    Launch binds TMUX_PANE, creates workers with -d, and restores leader focus.
+    #104: formerly named ``test_inside_tmux_splits_current_window`` — that name
+    locked the wrong default. Same-window default is covered by
+    ``test_inside_same_window_default_never_calls_new_window``.
     """
     from types import SimpleNamespace
 
@@ -434,6 +438,7 @@ def test_inside_tmux_splits_current_window(monkeypatch: pytest.MonkeyPatch) -> N
     assert tasks[0]["_tmux_launch"]["window_id"] == "@7"
     assert tasks[0]["_tmux_launch"]["session_id"] == "$42"
     assert tasks[0]["_tmux_launch"]["attach_hint"] == "tmux select-pane -t %9"
+    assert tasks[0]["_tmux_launch"]["view_mode"] == "dedicated_window"
     assert tasks[0]["_tmux_launch"]["tmux_server_pid"] == FAKE_TMUX_SERVER[
         "tmux_server_pid"
     ]

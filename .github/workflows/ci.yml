@@ -60,6 +60,34 @@ jobs:
           OMG_E2E: "1"
           OMG_SMOKE_STRICT: "0"
 
+  # #104: required hermetic real-tmux UX regression (fake providers; no grok).
+  team-real-tmux-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Real-tmux UX regression
+        run: python -m pytest -q -m tmux_real --tb=short
+      - name: Upload tmux failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: team-real-tmux-linux-artifacts
+          path: /tmp/omg104-artifacts-*
+          if-no-files-found: ignore
+          retention-days: 7
+
   # Early #25 / P3A-25-MACOS-EARLY: one focused macOS job (not a full matrix).
   # Validates OS-sensitive FS/lock/symlink/install contracts on a real host.
   macos-platform:
@@ -90,3 +118,31 @@ jobs:
           GIT_AUTHOR_EMAIL: omg-platform-ci@example.com
           GIT_COMMITTER_NAME: omg-platform-ci
           GIT_COMMITTER_EMAIL: omg-platform-ci@example.com
+
+  # #104: macOS real-tmux UX (process-group / PTY differs from Linux).
+  team-real-tmux-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Install tmux
+        run: brew install tmux
+      - name: Real-tmux UX regression
+        run: python -m pytest -q -m tmux_real --tb=short
+      - name: Upload tmux failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: team-real-tmux-macos-artifacts
+          path: /tmp/omg104-artifacts-*
+          if-no-files-found: ignore
+          retention-days: 7
