@@ -1461,7 +1461,11 @@ def _identity_topology_receipt_fields(
     tasks_after: Sequence[Mapping[str, Any]],
     operation: str,
 ) -> dict[str, Any]:
-    """Build v3 topology_mode / hashes / operation_intent for identity receipts."""
+    """Build v3 topology_mode / hashes / operation_intent for identity receipts.
+
+    Fail-closed on topology authority errors — never mint ``topology_mode`` from
+    a raw conflicting ``view_mode`` (e.g. ``windows`` + ``same_window``).
+    """
     from omg_cli.team.topology import (
         build_topology_snapshot,
         topology_sha256,
@@ -1474,8 +1478,11 @@ def _identity_topology_receipt_fields(
     after_hash: str | None = None
     try:
         mode = resolve_persisted_view_mode(meta)
-    except TopologyError:
-        mode = meta.get("view_mode") if isinstance(meta.get("view_mode"), str) else None
+    except TopologyError as exc:
+        raise TeamError(
+            f"identity receipt refused: invalid persisted topology for "
+            f"operation={operation!r} ({exc})"
+        ) from exc
 
     before_meta = dict(meta)
     before_meta["tasks"] = [dict(t) for t in tasks_before if isinstance(t, Mapping)]
@@ -1486,6 +1493,8 @@ def _identity_topology_receipt_fields(
         mode = snap_b.mode
         before_hash = topology_sha256(snap_b)
     except TopologyError:
+        # Mode already fail-closed from resolve; hashes optional when snapshot
+        # lacks dry-run / incomplete session_id authority.
         pass
     try:
         snap_a = build_topology_snapshot(after_meta)

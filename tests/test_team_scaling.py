@@ -3227,9 +3227,12 @@ def test_relaunch_wal_precedes_respawn_and_commits_generation(
     disk = load_team_meta(tmp_path, rid)
     assert disk["identity_generation"] == 1
     assert pending_identity_wal_operation(tmp_path, rid, disk) is None
+    relaunched = next(row for row in disk["tasks"] if row["task_id"] == "t-a")
+    assert relaunched["attempt"] == 2  # prev default 1 + 1
     receipt = json.loads(plane.team_identity_receipt_path(tmp_path, rid, 1).read_bytes())
     assert receipt["operation"] == "relaunch"
     assert receipt["scale_intent"]["relaunch_wal_sha256"]
+    assert receipt["topology_mode"] == "same_window"
 
 
 def test_legacy_future_receipt_blocks_relaunch_before_wal_or_spawn(

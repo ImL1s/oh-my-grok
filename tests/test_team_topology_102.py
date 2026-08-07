@@ -70,6 +70,14 @@ def test_corrupt_windows_plus_same_window_view_mode_fail_closed() -> None:
             safe=False,
             extra=None,
         )
+    # Scale-down / receipt path must not mint topology_mode=same_window via fallback.
+    with pytest.raises(TeamError, match="invalid persisted topology"):
+        scaling._identity_topology_receipt_fields(
+            corrupt,
+            tasks_before=[],
+            tasks_after=[],
+            operation="remove",
+        )
 
 
 def test_normalize_same_window_snapshot_from_receipt_and_meta() -> None:
