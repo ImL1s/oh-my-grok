@@ -787,6 +787,34 @@ def test_run_doctor_json_legacy_blocking_honest(monkeypatch, tmp_path, capsys):
     assert host["gates"]["session_close"]["state"] == "BLOCKED"
 
 
+def test_run_doctor_json_scrubs_home_in_project_root(monkeypatch, tmp_path, capsys):
+    home = tmp_path / "Users" / "alice"
+    home.mkdir(parents=True)
+    proj = home / "proj"
+    proj.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(
+        doctor,
+        "run_checks",
+        lambda: [("grok on PATH", True, "fake")],
+    )
+    monkeypatch.setattr(
+        doctor,
+        "run_soft_checks",
+        lambda **_k: [("plugin trust/inventory", "ok", "ok")],
+    )
+    monkeypatch.setattr(doctor, "_canonical_host_probe", _fake_host_report)
+    rc = doctor.run_doctor(strict=False, project_root=proj, json_output=True)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    path = payload["project_root"]["path"]
+    assert "/Users/alice" not in path
+    assert "REDACTED_PATH" in path or "alice" not in path
+    # Host block still free of home paths.
+    host_blob = json.dumps(payload["host"])
+    assert "/Users/" not in host_blob
+
+
 def test_check_installed_release_identity_corrupt_pointer_is_hard_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     grok_home = tmp_path / "grok"

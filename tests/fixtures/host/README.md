@@ -11,3 +11,7 @@ No real `grok` binary and no network.
 | `malformed.json` | Non-object advertisement/inspect → fail closed |
 | `version-lies.json` | Claims 0.2.121 but behavior/inspect deny resume |
 | `advertisement-beats-version.json` | 0.2.120 advertises resume → resume true |
+| `partial-advertisement.json` | Only `session/resume` advertised; close must not version-fill |
+| `empty-methods.json` | `methods: []` authoritative empty (no version fill) |
+| `inspect-partial.json` | Inspect resumes only; omitted caps fail-closed |
+| `version-only-0.2.121.json` | No ad/inspect → version fallback still works |

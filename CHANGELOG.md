@@ -89,6 +89,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remains open for slices B–D.
 
 ### Fixed
+- **#105 PR2 doctor probe:** when ACP advertisement or inspect is present,
+  omitted capability keys fail closed (no version fill). Partial
+  `methods: ["session/resume"]` and empty `methods: []` no longer false-green
+  `session_close` via semver. Doctor JSON scrubs home prefixes in
+  `project_root.path`; docs clarify fixture/env injection vs live ACP.
 - **#104 B1 leader operator visibility:** `_restore_leader_focus` now
   `select-window -t %pane` then `select-pane` so session `window_active`
   flips (select-pane alone is window-local). Postconditions require

@@ -21,13 +21,32 @@ to require v0.2.121.
 
 Highest priority first:
 
-1. **Behavior probe** (observed support / denial)
+1. **Behavior map** (explicit support / denial for named caps)
 2. **ACP capability advertisement**
 3. **CLI inspect JSON**
 4. **Version fallback** (last resort)
 
-A host that *claims* `0.2.121` but whose behavior/inspect deny `session/resume`
-is reported as **no resume** — version never false-greens.
+Rules that prevent version false-greens:
+
+- If an **advertisement** object is present, only explicitly advertised methods
+  count. Missing methods (including `methods: []`) are **not available** —
+  version must not fill them.
+- If **inspect** is present (and no advertisement layer), omitted capability
+  keys are fail-closed the same way.
+- Version fallback runs only when neither advertisement nor inspect was
+  provided (and layers were not malformed).
+
+A host that *claims* `0.2.121` but whose behavior/inspect/ad deny or omit
+`session/resume` is reported as **no resume**.
+
+### Probe honesty (current scope)
+
+Live collection today uses `grok version` / `grok --version` / `grok inspect`
+when available. **Behavior** and **ACP advertisement** layers accept hermetic
+fixtures and optional env injection (`OMG_HOST_BEHAVIOR_JSON`,
+`OMG_HOST_ACP_ADVERTISEMENT_JSON`) for tests and break-glass. A real ACP
+handshake / live behavior probe is later work (#105 sequence E+) — doctor does
+not claim one exists yet.
 
 ## Feature gates (three states)
 
@@ -55,13 +74,14 @@ always `BLOCKED` with an actionable `next_action`.
 omg doctor --json
 ```
 
-Emits the existing schema_version-1 envelope with a `host` object:
+Emits the existing schema_version-1 envelope with:
 
-- `version`, `tested_min`, `tested_max`, `compatibility`
-- `capabilities` (booleans)
-- `capability_sources` / `gates` / `observations`
-
-Never includes session ids, auth tokens, transcripts, cwd, or home paths.
+- `host` — version, tested range, compatibility, capability booleans, sources,
+  gates, observations. The **host** block never includes session ids, auth
+  tokens, transcripts, cwd, or home paths.
+- `project_root` — selected project root for this doctor run (`path` + optional
+  `source`). Home-directory prefixes in `path` are scrubbed to
+  `[REDACTED_PATH]` in JSON (human tables still show the real path).
 
 ## Legacy path
 

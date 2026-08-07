@@ -1370,6 +1370,14 @@ def run_doctor(
         soft_warns += 1
 
     if json_output:
+        from omg_cli.host_probe import scrub_path_for_json
+
+        # Keep real path for compat scan above; scrub only the emitted envelope.
+        json_project_root = dict(project_root_meta)
+        if isinstance(json_project_root.get("path"), str):
+            json_project_root["path"] = scrub_path_for_json(
+                str(json_project_root["path"])
+            )
         hard = [
             {"name": n, "ok": ok, "detail": d} for n, ok, d in results
         ]
@@ -1381,7 +1389,7 @@ def run_doctor(
             "strict": strict,
             "failed": failed,
             "soft_warns": soft_warns,
-            "project_root": project_root_meta,
+            "project_root": json_project_root,
             "host": host_block,
             "checks": hard,
             "soft_checks": soft,

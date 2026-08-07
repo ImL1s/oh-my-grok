@@ -188,6 +188,11 @@ def format_version(ver: tuple[int, int, int] | None) -> str | None:
     return f"{ver[0]}.{ver[1]}.{ver[2]}"
 
 
+def scrub_path_for_json(path: str) -> str:
+    """Redact home-directory prefixes from a filesystem path for JSON output."""
+    return _scrub_observation(path)
+
+
 def _scrub_observation(text: str) -> str:
     """Redact home paths and credential-like substrings from observations."""
     scrubbed = _HOME_PATH_RE.sub("[REDACTED_PATH]", text)
@@ -332,17 +337,32 @@ def _merge_capability(
     key: str,
     behavior: Mapping[str, bool] | None,
     advertisement: Mapping[str, bool],
+    advertisement_present: bool,
     inspect: Mapping[str, bool],
+    inspect_present: bool,
     version_caps: Mapping[str, bool],
+    allow_version_fallback: bool,
 ) -> tuple[bool, CapabilityTruthSource]:
-    """Resolve one capability with truth priority."""
+    """Resolve one capability with truth priority.
+
+    When an ACP advertisement or inspect layer is present, keys not
+    explicitly observed in that layer are fail-closed (false) and must
+    **not** fall through to version fallback. Empty ``methods: []`` is an
+    authoritative empty set. Version is last resort only when neither
+    advertisement nor inspect layer was provided (and not malformed).
+    """
     if behavior is not None and key in behavior:
         return bool(behavior[key]), "behavior"
-    if key in advertisement:
-        return bool(advertisement[key]), "advertisement"
-    if key in inspect:
-        return bool(inspect[key]), "inspect"
-    if key in version_caps:
+    if advertisement_present:
+        if key in advertisement:
+            return bool(advertisement[key]), "advertisement"
+        # Omission under advertisement = not available (no version fill).
+        return False, "advertisement"
+    if inspect_present:
+        if key in inspect:
+            return bool(inspect[key]), "inspect"
+        return False, "inspect"
+    if allow_version_fallback and key in version_caps:
         return bool(version_caps[key]), "version"
     return False, "none"
 
@@ -541,41 +561,60 @@ def probe_host(
         behavior_map = {
             k: bool(v) for k, v in src.behavior.items() if k in CAPABILITY_KEYS
         }
-        observations.append("behavior probe layer present")
+        observations.append(
+            "behavior layer present (fixture/env injection; not a live ACP handshake)"
+        )
 
+    advertisement_present = isinstance(src.acp_advertisement, Mapping)
     advertisement = _extract_caps_from_mapping(
-        src.acp_advertisement if isinstance(src.acp_advertisement, Mapping) else None
+        src.acp_advertisement if advertisement_present else None
     )
-    if advertisement:
-        observations.append("ACP capability advertisement layer present")
+    if advertisement_present:
+        observations.append(
+            "ACP advertisement layer present "
+            f"({len(advertisement)} explicit cap(s); omissions fail-closed)"
+        )
 
+    inspect_present = isinstance(src.inspect_json, Mapping)
     inspect_caps = _extract_caps_from_mapping(
-        src.inspect_json if isinstance(src.inspect_json, Mapping) else None
+        src.inspect_json if inspect_present else None
     )
     malformed_layer = False
-    if src.inspect_json is not None and not isinstance(src.inspect_json, Mapping):
+    if src.inspect_json is not None and not inspect_present:
         observations.append("inspect JSON malformed; ignored (fail-closed)")
         malformed_layer = True
         inspect_caps = {}
-    elif inspect_caps:
-        observations.append("CLI inspect capability layer present")
-    elif src.inspect_json is not None:
-        # Present but no recognized keys — still note inspect was attempted.
-        observations.append("CLI inspect present without recognized capabilities")
+        inspect_present = False
+    elif inspect_present:
+        observations.append(
+            "CLI inspect layer present "
+            f"({len(inspect_caps)} explicit cap(s); omissions fail-closed)"
+        )
 
     # Malformed advertisement: non-mapping → fail closed (no caps from it).
-    if src.acp_advertisement is not None and not isinstance(
-        src.acp_advertisement, Mapping
-    ):
+    if src.acp_advertisement is not None and not advertisement_present:
         observations.append("ACP advertisement malformed; ignored (fail-closed)")
         advertisement = {}
+        advertisement_present = False
         malformed_layer = True
 
-    # Malformed higher layers poison version fallback (never false-green).
+    # Version fallback only when no ad/inspect layer was provided at all.
+    # Malformed higher layers also suppress version (never false-green).
+    allow_version = (
+        not malformed_layer
+        and not advertisement_present
+        and not inspect_present
+    )
     if malformed_layer:
         version_caps = {k: False for k in CAPABILITY_KEYS}
         observations.append(
             "version fallback suppressed after malformed capability layer"
+        )
+    elif not allow_version:
+        version_caps = {k: False for k in CAPABILITY_KEYS}
+        observations.append(
+            "version fallback suppressed "
+            "(advertisement and/or inspect layer is authoritative)"
         )
     else:
         version_caps = _version_fallback_caps(ver)
@@ -591,8 +630,11 @@ def probe_host(
             key=key,
             behavior=behavior_map,
             advertisement=advertisement,
+            advertisement_present=advertisement_present,
             inspect=inspect_caps,
+            inspect_present=inspect_present,
             version_caps=version_caps,
+            allow_version_fallback=allow_version,
         )
         resolved[key] = value
         sources[key] = source
@@ -667,4 +709,5 @@ __all__ = [
     "parse_host_version",
     "probe_host",
     "probe_host_from_fixture",
+    "scrub_path_for_json",
 ]

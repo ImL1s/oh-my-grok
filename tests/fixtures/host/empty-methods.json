@@ -1,0 +1,12 @@
+{
+  "binary": "grok",
+  "binary_found": true,
+  "version_text": "grok 0.2.121",
+  "version_json": {"currentVersion": "0.2.121"},
+  "inspect_json": null,
+  "acp_advertisement": {
+    "methods": []
+  },
+  "behavior": null,
+  "observations": ["fixture: empty methods authoritative empty set"]
+}

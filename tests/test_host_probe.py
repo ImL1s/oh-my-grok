@@ -156,3 +156,50 @@ def test_capability_keys_stable(key: str):
     report = probe_host_from_fixture(_fixture("0.2.121.json"))
     assert key in report.capabilities.to_dict()
     assert key in host_report_for_doctor(report)["capabilities"]
+
+
+def test_partial_advertisement_does_not_version_fill_close():
+    """methods: [session/resume] must not make session_close AVAILABLE via version."""
+    report = probe_host_from_fixture(_fixture("partial-advertisement.json"))
+    assert report.version == "0.2.121"
+    assert report.capabilities.session_resume is True
+    assert report.capabilities.source_for("session_resume") == "advertisement"
+    assert report.capabilities.session_close is False
+    assert report.capabilities.source_for("session_close") == "advertisement"
+    assert report.capabilities.restore_code_explicit is False
+    assert report.capabilities.uuid_search is False
+    gates = {g.capability: g.state for g in report.gates}
+    assert gates["session_resume"] == "AVAILABLE"
+    assert gates["session_close"] == "BLOCKED"
+    assert gates["session_close"] != "AVAILABLE"
+
+
+def test_empty_methods_authoritative_no_version_fill():
+    report = probe_host_from_fixture(_fixture("empty-methods.json"))
+    assert report.version == "0.2.121"
+    assert report.capabilities.session_resume is False
+    assert report.capabilities.session_close is False
+    assert report.capabilities.restore_code_explicit is False
+    assert report.capabilities.uuid_search is False
+    assert report.capabilities.source_for("session_resume") == "advertisement"
+    assert all(g.state != "AVAILABLE" for g in report.gates)
+
+
+def test_inspect_present_omission_fail_closed():
+    report = probe_host_from_fixture(_fixture("inspect-partial.json"))
+    assert report.version == "0.2.121"
+    assert report.capabilities.session_resume is True
+    assert report.capabilities.source_for("session_resume") == "inspect"
+    assert report.capabilities.session_close is False
+    assert report.capabilities.source_for("session_close") == "inspect"
+    gates = {g.capability: g.state for g in report.gates}
+    assert gates["session_resume"] == "AVAILABLE"
+    assert gates["session_close"] == "BLOCKED"
+
+
+def test_version_only_fallback_still_works_without_ad_or_inspect():
+    report = probe_host_from_fixture(_fixture("version-only-0.2.121.json"))
+    assert report.capabilities.session_resume is True
+    assert report.capabilities.session_close is True
+    assert report.capabilities.source_for("session_resume") == "version"
+    assert all(g.state == "AVAILABLE" for g in report.gates)
