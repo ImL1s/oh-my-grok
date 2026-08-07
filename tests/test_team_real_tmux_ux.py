@@ -614,6 +614,18 @@ def test_scale_up_preserves_same_window_and_leader(
     meta = launch_team_inside(root=repo, leader=leader, workers=2)
     try:
         assert meta.get("startup_status") == "running"
+        assert meta.get("view_mode") == "same_window" or (
+            (meta.get("tmux_topology") or {}).get("view_mode") == "same_window"
+        )
+        # Re-pin geometry after launch layout (CI macOS flake: too-small
+        # window → scale split "no space" / missing 4th pane).
+        leader.ensure_window_geometry(before.window_id, width=160, height=48)
+        before_topo = leader.capture_topology()
+        before_panes = {
+            p.pane_id for p in before_topo.panes if p.window_id == before.window_id
+        }
+        assert len(before_panes) == 3, before_topo.pane_ids
+
         scaled = scale_team(
             repo,
             run_id=str(meta["run_id"]),
@@ -621,6 +633,27 @@ def test_scale_up_preserves_same_window_and_leader(
             env={EXPERIMENTAL_ENV: "1", **leader.tmux_env()},
         )
         assert isinstance(scaled, dict)
+        assert scaled.get("op") == "add", scaled
+        assert scaled.get("added") == 1, scaled
+        assert scaled.get("dry_run") is not True, scaled
+        assert int(scaled.get("active_panes") or 0) == 3, scaled
+        tasks_added = scaled.get("tasks_added") or []
+        assert len(tasks_added) == 1, scaled
+        new_pane = str(tasks_added[0].get("pane_id") or "")
+        assert new_pane and new_pane not in before_panes, (
+            new_pane,
+            before_panes,
+            tasks_added,
+        )
+
+        def _four_panes() -> bool:
+            topo_now = leader.capture_topology()
+            return (
+                sum(1 for p in topo_now.panes if p.window_id == before.window_id) == 4
+                and new_pane in {p.pane_id for p in topo_now.panes}
+            )
+
+        wait_until(_four_panes, timeout_s=8.0, label="scale-up 4th pane live")
         topo = leader.capture_topology()
         leader_window_panes = [
             p for p in topo.panes if p.window_id == before.window_id
@@ -628,6 +661,7 @@ def test_scale_up_preserves_same_window_and_leader(
         # leader + 2 original workers + 1 scaled worker
         assert len(leader_window_panes) == 4, topo.pane_ids
         assert before.pane_id in {p.pane_id for p in leader_window_panes}
+        assert new_pane in {p.pane_id for p in leader_window_panes}
         live = next(p for p in leader_window_panes if p.pane_id == before.pane_id)
         assert live.pane_pid == before.pane_pid
         assert len({p.window_id for p in leader_window_panes}) == 1

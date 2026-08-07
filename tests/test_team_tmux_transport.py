@@ -401,6 +401,8 @@ def test_inside_dedicated_window_uses_new_window(
         if cmd == "select-window":
             assert args[-1] == "%9"
             return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "resize-window":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "select-pane":
             assert args[-1] == "%9"
             return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -496,6 +498,8 @@ def test_inside_same_window_default_never_calls_new_window(
                     stdout="leader\t$42\t@3\t%9\t4242\n",
                     stderr="",
                 )
+            if target == "@3" and "window_width" in fmt and "window_height" in fmt:
+                return SimpleNamespace(returncode=0, stdout="120\t40\n", stderr="")
             if target == "@3" and "window_width" in fmt:
                 return SimpleNamespace(returncode=0, stdout="120\n", stderr="")
             if target in ("%10", "%11"):
@@ -524,7 +528,7 @@ def test_inside_same_window_default_never_calls_new_window(
         if cmd == "select-layout":
             assert "main-vertical" in joined
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd in ("select-window", "select-pane"):
+        if cmd in ("select-window", "select-pane", "resize-window"):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "set-option":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -597,6 +601,8 @@ def test_inside_same_window_preserves_exact_leader_identity_and_selection(
                 return SimpleNamespace(
                     returncode=0, stdout="leader\t$42\t@3\t%9\t777\n", stderr=""
                 )
+            if target == "@3" and "window_width" in fmt and "window_height" in fmt:
+                return SimpleNamespace(returncode=0, stdout="80\t40\n", stderr="")
             if target == "@3" and "window_width" in fmt:
                 return SimpleNamespace(returncode=0, stdout="80\n", stderr="")
             if target == "%10":
@@ -665,6 +671,8 @@ def test_inside_same_window_layout_main_vertical_with_clamped_width(
                 return SimpleNamespace(
                     returncode=0, stdout="leader\t$42\t@3\t%9\t4242\n", stderr=""
                 )
+            if target == "@3" and "window_width" in fmt and "window_height" in fmt:
+                return SimpleNamespace(returncode=0, stdout="80\t40\n", stderr="")
             if target == "@3" and "window_width" in fmt:
                 return SimpleNamespace(returncode=0, stdout="80\n", stderr="")
             if target in ("%10", "%11"):
@@ -688,7 +696,7 @@ def test_inside_same_window_layout_main_vertical_with_clamped_width(
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "select-layout":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd in ("select-window", "select-pane", "set-option", "show-options"):
+        if cmd in ("select-window", "select-pane", "resize-window", "set-option", "show-options"):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd in ("new-window", "kill-window"):
             raise AssertionError(f"forbidden on same_window layout path: {argv}")
@@ -837,7 +845,7 @@ def test_inside_dedicated_window_opt_in_preserves_window_wal(
             return SimpleNamespace(returncode=0, stdout="%11\n", stderr="")
         if cmd == "split-window":
             raise AssertionError(f"bare split-window forbidden: {args}")
-        if cmd in ("select-layout", "select-window", "select-pane", "set-option"):
+        if cmd in ("select-layout", "select-window", "select-pane", "resize-window", "set-option"):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
 
@@ -2168,7 +2176,7 @@ def test_inside_new_window_stamps_window_id_on_launch_wal(
             assert len(intents) == 1
             stamped.append(json.loads(intents[0].read_text(encoding="utf-8")))
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd in ("select-window", "select-pane"):
+        if cmd in ("select-window", "select-pane", "resize-window"):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
 
@@ -2632,7 +2640,7 @@ def test_new_window_gated_by_wal_server_identity(
             )
         if cmd == "select-layout":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd in ("select-window", "select-pane"):
+        if cmd in ("select-window", "select-pane", "resize-window"):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
 
@@ -3280,7 +3288,7 @@ def test_bind_failure_still_publishes_window_id_for_cleanup(
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "select-layout":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd in ("select-window", "select-pane"):
+        if cmd in ("select-window", "select-pane", "resize-window"):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
 
@@ -3443,7 +3451,7 @@ def test_new_window_nonzero_with_atN_stdout_binds_and_keeps_wal(
             )
         if cmd == "select-layout":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd in ("select-window", "select-pane"):
+        if cmd in ("select-window", "select-pane", "resize-window"):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "list-windows":
             return SimpleNamespace(returncode=0, stdout="@88\n", stderr="")
@@ -3554,7 +3562,7 @@ def test_nonce_ack_refused_when_readback_misses_created_handles(
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "select-layout":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd in ("select-window", "select-pane"):
+        if cmd in ("select-window", "select-pane", "resize-window"):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "list-windows":
             return SimpleNamespace(returncode=0, stdout="@88\n", stderr="")

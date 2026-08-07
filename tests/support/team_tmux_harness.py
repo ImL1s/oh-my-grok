@@ -441,7 +441,49 @@ class LeaderSession:
             pane_pid=int(pid_s),
             socket_path=sock,
         )
+        # Detached CI runners (esp. macOS GHA) can present a tiny default
+        # geometry; same_window scale/split then fails with "no space for a
+        # new pane" or hollow-succeeds depending on path. Pin a roomy size.
+        self.ensure_window_geometry(wid, width=160, height=48)
         return self.leader
+
+    def ensure_window_geometry(
+        self,
+        window_id: str | None = None,
+        *,
+        width: int = 160,
+        height: int = 48,
+    ) -> None:
+        """Resize *window_id* (default: leader) to at least width x height."""
+        if self.leader is None:
+            raise RuntimeError("leader not created")
+        wid = window_id or self.leader.window_id
+        probe = self.server.require_ok(
+            "display-message",
+            "-p",
+            "-t",
+            wid,
+            "#{window_width}\t#{window_height}",
+        )
+        parts = (probe.stdout or "").strip().split("\t")
+        try:
+            cur_w = int(parts[0]) if len(parts) == 2 else 0
+            cur_h = int(parts[1]) if len(parts) == 2 else 0
+        except ValueError:
+            cur_w, cur_h = 0, 0
+        target_w = max(cur_w, int(width))
+        target_h = max(cur_h, int(height))
+        if cur_w == target_w and cur_h == target_h and cur_w > 0 and cur_h > 0:
+            return
+        self.server.require_ok(
+            "resize-window",
+            "-t",
+            wid,
+            "-x",
+            str(target_w),
+            "-y",
+            str(target_h),
+        )
 
     def tmux_env(self) -> dict[str, str]:
         if self.leader is None:

@@ -4439,6 +4439,59 @@ def discover_worker_pane_by_owner_nonce(
     return matches[0] if matches else None
 
 
+def _ensure_window_split_capacity(
+    window_id: str,
+    *,
+    socket_path: str | None,
+    min_width: int = 120,
+    min_height: int = 36,
+) -> None:
+    """Grow a Team window so ``split-window`` has geometric room.
+
+    Headless/CI tmux defaults can be too small after main-vertical packing;
+    ``split-window`` then fails with ``no space for a new pane`` (seen on
+    macOS GHA for same_window scale-up). Never shrinks. If the geometry
+    probe fails, leave the window unchanged — the subsequent split still
+    fails closed with the real tmux error.
+    """
+    if _TMUX_WINDOW_ID.fullmatch(window_id) is None:
+        return
+    probe = _tmux_run(
+        [
+            "display-message",
+            "-p",
+            "-t",
+            window_id,
+            "#{window_width}\t#{window_height}",
+        ],
+        socket_path=socket_path,
+    )
+    parts = (probe.stdout or "").strip().split("\t")
+    try:
+        width = int(parts[0]) if len(parts) == 2 else 0
+        height = int(parts[1]) if len(parts) == 2 else 0
+    except ValueError:
+        return
+    if probe.returncode != 0 or width <= 0 or height <= 0:
+        return
+    target_w = max(width, int(min_width))
+    target_h = max(height, int(min_height))
+    if target_w == width and target_h == height:
+        return
+    _tmux_run(
+        [
+            "resize-window",
+            "-t",
+            window_id,
+            "-x",
+            str(target_w),
+            "-y",
+            str(target_h),
+        ],
+        socket_path=socket_path,
+    )
+
+
 def _spawn_worker_split_pane(
     *,
     target_pane_id: str | None,
@@ -4463,6 +4516,7 @@ def _spawn_worker_split_pane(
     if leader_pane_id is not None and split_target == leader_pane_id and not horizontal:
         # Vertical split against leader is refused — callers must use -h first.
         raise TmuxTeamError("refusing vertical split against leader pane")
+    _ensure_window_split_capacity(target_window_id, socket_path=sock)
     task_env = tmux_env_args(list(env_pairs or []))
     split_argv = [
         "split-window",

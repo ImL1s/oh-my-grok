@@ -78,6 +78,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   hollow window-local `pane_active` check. Hermetic CI excludes
   `tmux_real` (`not live and not tmux_real`); dedicated artifact upload
   uses `if-no-files-found: error`.
+- **#104 same_window scale-up geometry:** grow Team window before
+  `split-window` when headless defaults leave no space for another pane
+  (macOS GHA flake: scale returned with only leader+2 panes). Harness
+  pins 160x48; scale UX test asserts distinct new `pane_id` + live count.
 - **#104 misleading dedicated-window unit test name:** renamed
   `test_inside_tmux_splits_current_window` →
   `test_inside_dedicated_window_uses_new_window` so it no longer reads as
