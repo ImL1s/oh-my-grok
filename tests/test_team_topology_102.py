@@ -155,7 +155,7 @@ def test_identity_receipt_v1_v2_raw_bytes_unchanged_on_read(
     # Minimal v2 identity receipt fixture (exact key set).
     v2_receipt: dict[str, Any] = {
         "store_kind": "team_identity_receipt",
-        "schema_version": plane.IDENTITY_RECEIPT_SCHEMA_VERSION,
+        "schema_version": plane.V2_IDENTITY_RECEIPT_SCHEMA_VERSION,
         "writer": plane.CLI_WRITER,
         "run_id": run_id,
         "session_name": "omg-workers",

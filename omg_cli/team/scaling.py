@@ -4035,6 +4035,11 @@ def _scale_down(
             "tasks_after",
             "scale_intent",
             "scale_intent_sha256",
+            "topology_mode",
+            "topology_before_sha256",
+            "topology_after_sha256",
+            "operation_intent",
+            "operation_intent_sha256",
         }
         if (
             set(_scale_receipt) != receipt_keys
