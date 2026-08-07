@@ -81,11 +81,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `split-window` when headless defaults leave no space for another pane
   (macOS GHA flake: scale returned with only leader+2 panes). Harness
   pins 160x48; scale UX test asserts distinct new `pane_id` + live count.
-- **#104 scale inherits ``executor=fixture``:** scale-up pane records now
-  use ``build_fixture_pane_command`` when team meta has
-  ``executor=fixture``. Previously scale always built grok argv; on CI
-  without ``grok`` the pane exited and tmux destroyed it while the API
-  still returned ``added=1`` (TimeoutError waiting for 4th pane).
+- **#104 scale inherits `executor=fixture`:** scale-up pane records now
+  use `build_fixture_pane_command` when team meta has
+  `executor=fixture`. Previously scale always built grok argv; on CI
+  without `grok` the pane exited and tmux destroyed it while the API
+  still returned `added=1` (TimeoutError waiting for 4th pane).
 - **#104 misleading dedicated-window unit test name:** renamed
   `test_inside_tmux_splits_current_window` →
   `test_inside_dedicated_window_uses_new_window` so it no longer reads as
