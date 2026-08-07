@@ -208,7 +208,12 @@ def _exe_basename(pid: int) -> str | None:
 def provider_binary_identity_matches(
     pid: int, expected_basenames: set[str] | Sequence[str]
 ) -> bool:
-    """True when live cmdline/exe basename matches an expected provider binary."""
+    """True when exe basename and/or argv[0] basename matches expected.
+
+    Later cmdline tokens are ignored — ``python -c 'sleep(30)' grok`` must
+    not false-green as provider ``grok`` (#99 / Grok MERGE nit).
+    Descriptor ``identity_basenames`` still supplies the expected set.
+    """
     expected = {
         str(x).strip().lower()
         for x in expected_basenames
@@ -219,9 +224,10 @@ def provider_binary_identity_matches(
     exe = _exe_basename(pid)
     if exe and Path(exe).name.lower() in expected:
         return True
-    for tok in _cmdline_tokens(pid):
-        base = Path(tok).name.lower()
-        if base in expected:
+    tokens = _cmdline_tokens(pid)
+    if tokens:
+        argv0 = Path(tokens[0]).name.lower()
+        if argv0 in expected:
             return True
     return False
 

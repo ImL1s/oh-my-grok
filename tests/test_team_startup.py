@@ -55,6 +55,39 @@ def _hold_script(path: Path, *, seconds: float = 30.0) -> Path:
     return path
 
 
+def _compiled_sleeper(path: Path) -> Path:
+    """Build a real binary at *path* so argv[0]/exe basename match identity."""
+    import shutil
+    import tempfile
+
+    src = Path(
+        tempfile.mkdtemp(prefix="omg99-sleeper-")
+    ) / "sleeper.c"
+    src.write_text(
+        "#include <stdlib.h>\n"
+        "#include <unistd.h>\n"
+        "int main(int argc, char **argv) {\n"
+        "  unsigned long n = 30;\n"
+        "  if (argc > 1) n = strtoul(argv[1], 0, 10);\n"
+        "  sleep((unsigned int)n);\n"
+        "  return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cc = shutil.which("cc") or shutil.which("clang") or shutil.which("gcc")
+    assert cc, "C compiler required for provider identity fixture"
+    subprocess.run(
+        [cc, "-o", str(path), str(src)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    path.chmod(0o755)
+    return path
+
+
 def _exit_script(path: Path, *, code: int = 0) -> Path:
     path.write_text(
         f"import sys\nsys.exit({code})\n",
@@ -1290,24 +1323,38 @@ def test_provider_ready_then_dies_before_wait_returns(
             proc.wait(timeout=2)
 
 
+def test_trailing_grok_cmdline_token_does_not_match_identity() -> None:
+    """argv[N>0] basename ``grok`` must not satisfy identity (exe/argv[0] only)."""
+    from omg_cli.team.supervisor import provider_binary_identity_matches
+
+    hold = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)", "grok"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        time.sleep(0.05)
+        assert provider_binary_identity_matches(hold.pid, {"grok"}) is False
+    finally:
+        hold.terminate()
+        try:
+            hold.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            hold.kill()
+            hold.wait(timeout=1)
+
+
 def test_process_stable_with_matching_binary_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Real provider basename may still use process_stable after identity match."""
     _bind_env(monkeypatch, tmp_path, run_id="run-real-identity")
     monkeypatch.setenv("OMG_TEAM_POST_STABLE_OBSERVE_S", "0.5")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake_grok = bin_dir / "grok"
-    fake_grok.write_text(
-        "#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n",
-        encoding="utf-8",
-    )
-    fake_grok.chmod(0o755)
+    fake_grok = _compiled_sleeper(tmp_path / "bin" / "grok")
     desc = write_provider_descriptor(
         tmp_path / "desc.json",
         provider="grok",
-        argv=[str(fake_grok)],
+        argv=[str(fake_grok), "30"],
     )
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
@@ -1372,18 +1419,11 @@ def test_needs_pty_records_real_child_not_wrapper(
     """B3/B4: needs_pty provider_pid must be the real child, not pty.spawn wrapper."""
     _bind_env(monkeypatch, tmp_path, run_id="run-pty-child")
     monkeypatch.setenv("OMG_TEAM_POST_STABLE_OBSERVE_S", "0.5")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake_agy = bin_dir / "agy"
-    fake_agy.write_text(
-        "#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n",
-        encoding="utf-8",
-    )
-    fake_agy.chmod(0o755)
+    fake_agy = _compiled_sleeper(tmp_path / "bin" / "agy")
     desc = write_provider_descriptor(
         tmp_path / "desc.json",
         provider="agy",
-        argv=[str(fake_agy)],
+        argv=[str(fake_agy), "30"],
         needs_pty=True,
     )
     env = os.environ.copy()
