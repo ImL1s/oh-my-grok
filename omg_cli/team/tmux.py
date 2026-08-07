@@ -4731,3 +4731,190 @@ def reconcile_layout(
             last_error_code=code,
             layout_name=resolved_layout,
         )
+
+
+# ---------------------------------------------------------------------------
+# #101 identity-fenced operator effects (capture / focus / literal / key)
+# ---------------------------------------------------------------------------
+
+MAX_OPERATOR_CAPTURE_BYTES = 16_384
+MAX_OPERATOR_INPUT_BYTES = 4_096
+MAX_OPERATOR_CAPTURE_LINES = 2_000
+
+ALLOWED_OPERATOR_KEYS: frozenset[str] = frozenset(
+    {
+        "Enter",
+        "Escape",
+        "Tab",
+        "BTab",
+        "Up",
+        "Down",
+        "Left",
+        "Right",
+        "PageUp",
+        "PageDown",
+        "Home",
+        "End",
+        "Backspace",
+        "Delete",
+        "BSpace",
+        "DC",
+        "C-c",
+        "C-d",
+        "C-z",
+        "C-l",
+        "C-a",
+        "C-e",
+        "C-u",
+        "C-k",
+        "C-w",
+    }
+)
+
+
+def _require_exact_pane_id(pane_id: str) -> str:
+    if not isinstance(pane_id, str) or _TMUX_PANE_ID.fullmatch(pane_id) is None:
+        raise TmuxTeamError(f"refused non-exact pane id {pane_id!r}")
+    return pane_id
+
+
+def capture_pane(
+    pane_id: str,
+    *,
+    lines: int = 200,
+    raw: bool = False,
+    socket_path: str | None = None,
+) -> str:
+    """Bounded ``capture-pane -p`` against an exact ``%N`` pane id.
+
+    Always enforces line + byte caps. ``raw=True`` skips join/escape normalize
+    but never removes size bounds. Callers must still redact.
+    """
+    if not tmux_available():
+        raise TmuxTeamError("tmux is required for pane capture")
+    target = _require_exact_pane_id(pane_id)
+    if isinstance(lines, bool) or not isinstance(lines, int) or lines < 1:
+        raise TmuxTeamError("capture lines must be a positive int")
+    bound = min(int(lines), MAX_OPERATOR_CAPTURE_LINES)
+    argv = [
+        "capture-pane",
+        "-p",
+        "-t",
+        target,
+        "-S",
+        f"-{bound}",
+    ]
+    if not raw:
+        # Join wrapped lines for readable operator output.
+        argv.append("-J")
+    result = _tmux_run(argv, socket_path=socket_path)
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()[:200]
+        raise TmuxTeamError(f"capture-pane failed: {err}")
+    text = result.stdout or ""
+    encoded = text.encode("utf-8")
+    if len(encoded) > MAX_OPERATOR_CAPTURE_BYTES:
+        text = encoded[:MAX_OPERATOR_CAPTURE_BYTES].decode("utf-8", errors="ignore")
+    return text
+
+
+def focus_pane(
+    pane_id: str,
+    *,
+    socket_path: str | None = None,
+) -> None:
+    """Select an exact pane (``select-pane -t %N``). No session kill/create."""
+    if not tmux_available():
+        raise TmuxTeamError("tmux is required for pane focus")
+    target = _require_exact_pane_id(pane_id)
+    result = _tmux_run(["select-pane", "-t", target], socket_path=socket_path)
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()[:200]
+        raise TmuxTeamError(f"select-pane failed: {err}")
+
+
+def send_literal(
+    pane_id: str,
+    text: str,
+    *,
+    socket_path: str | None = None,
+) -> None:
+    """Send literal text via ``send-keys -l`` (never interprets key names)."""
+    if not tmux_available():
+        raise TmuxTeamError("tmux is required for pane input")
+    target = _require_exact_pane_id(pane_id)
+    if not isinstance(text, str):
+        raise TmuxTeamError("literal input must be a string")
+    if "\0" in text:
+        raise TmuxTeamError("literal input refuses NUL")
+    encoded = text.encode("utf-8")
+    if len(encoded) > MAX_OPERATOR_INPUT_BYTES:
+        raise TmuxTeamError(
+            f"literal input exceeds {MAX_OPERATOR_INPUT_BYTES} UTF-8 bytes"
+        )
+    # ``--`` ends option parsing so text cannot smuggle tmux flags.
+    result = _tmux_run(
+        ["send-keys", "-l", "-t", target, "--", text],
+        socket_path=socket_path,
+    )
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()[:200]
+        raise TmuxTeamError(f"send-keys -l failed: {err}")
+
+
+def send_key(
+    pane_id: str,
+    key: str,
+    *,
+    socket_path: str | None = None,
+) -> None:
+    """Send one allowlisted key name via argv ``send-keys`` (shell=False)."""
+    if not tmux_available():
+        raise TmuxTeamError("tmux is required for pane key delivery")
+    target = _require_exact_pane_id(pane_id)
+    if not isinstance(key, str) or key not in ALLOWED_OPERATOR_KEYS:
+        raise TmuxTeamError(f"key not allowlisted: {key!r}")
+    if any(ch.isspace() for ch in key) or ";" in key:
+        raise TmuxTeamError(f"key injection refused: {key!r}")
+    result = _tmux_run(
+        ["send-keys", "-t", target, key],
+        socket_path=socket_path,
+    )
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()[:200]
+        raise TmuxTeamError(f"send-keys failed: {err}")
+
+
+def attach_argv_for_target(
+    *,
+    session: str,
+    pane_id: str,
+    window_id: str | None = None,
+) -> list[str]:
+    """Return a safe argv hint for attaching then selecting a proved pane.
+
+    tmux parses ``;`` itself (no shell). ``window_id`` is validated when present
+    but targeting always uses the exact ``%N`` pane id.
+    """
+    _require_exact_pane_id(pane_id)
+    if (
+        not isinstance(session, str)
+        or not session
+        or "\0" in session
+        or any(ch.isspace() for ch in session)
+    ):
+        raise TmuxTeamError(f"refused unsafe session name {session!r}")
+    if window_id is not None:
+        if not isinstance(window_id, str) or _TMUX_WINDOW_ID.fullmatch(window_id) is None:
+            raise TmuxTeamError(f"refused non-exact window id {window_id!r}")
+    # Command separator is a tmux client token, not a shell metacharacter.
+    return [
+        "tmux",
+        "attach-session",
+        "-t",
+        session,
+        ";",
+        "select-pane",
+        "-t",
+        pane_id,
+    ]

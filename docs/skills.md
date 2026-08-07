@@ -167,7 +167,7 @@ omg accept --yes
 | **When** | Multi-pane ULW with real worktrees; hermetic dry-run / fixture smoke for tests |
 | **Gate** | **Default on.** Kill switch `OMG_DISABLE_TMUX_TEAM=1` (legacy `OMG_EXPERIMENTAL_TMUX_TEAM=0` also disables) |
 | **Skill** | `omg-team` — in-session slash **`/oh-my-grok:omg-team` only**; natural `team N …` |
-| **CLI** | `omg team launch` (argv shorthand `N`/`N:role`+goal → launch); also `start\|run\|scale\|resume\|status\|collect\|stop\|api\|supervisor` |
+| **CLI** | `omg team launch` (argv shorthand `N`/`N:role`+goal → launch); also `start\|run\|scale\|resume\|status\|collect\|stop\|api\|supervisor\|panes\|capture\|focus\|key\|input\|watch` |
 | **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` / `scale` / `resume` never set `verified`. Scaling/resume/ralph are **lifecycle extensions** of the same team plane (no new isolation claims). Shorthand uses **split-pane** topology + seeds team API (P0′ surface, not full OMX 33-op). Live promotion proof: `scripts/live_team_smoke.py --live` → `LIVE_TEAM_SMOKE_OK` (2026-07-30 local; not CI-required). **No bare `/team` slash alias** — 2026-07-25 host probe (`grok inspect` / plugin skill docs): skills are `/name` or `/plugin:name`; no frontmatter to register an unnamespaced `/team` for `omg-team`, and other plugins already expose `team` skills. |
 
 **Canonical shorthand (OMX-like):** `omg team` accepts `N` / `N:role` before the
@@ -206,6 +206,14 @@ omg team launch --workers 2 --role executor --goal "map A and B" --dry-run
 omg team status --run RUN --json
 omg team status --run RUN --full
 omg team status TEAM_NAME
+# Identity-fenced operator pane control (#101). Prefer durable mailbox/task
+# API for automation; pane input is operator recovery / steering only.
+omg team panes --run RUN --json
+omg team capture --run RUN --worker w1 --lines 200 --json
+omg team focus --run RUN --worker w1
+omg team key --run RUN --worker w1 --key Enter
+omg team input --run RUN --worker w1 --text 'continue' --submit --operator-override
+omg team watch --run RUN --worker w1 --interval 1
 omg team stop --run RUN
 ```
 

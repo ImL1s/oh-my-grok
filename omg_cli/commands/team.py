@@ -764,6 +764,147 @@ def cmd_team(args: argparse.Namespace) -> int:
             code, envelope = execute_team_api(op, payload, root=api_root)
             emit_data(args, "team", envelope)
             return code
+
+        # --- #101 identity-fenced operator pane control -------------------
+        if action in {"panes", "capture", "focus", "key", "input", "watch"}:
+            from omg_cli.team.operator import (
+                OperatorError,
+                capture_worker,
+                focus_worker,
+                input_worker,
+                key_worker,
+                list_panes,
+                watch_worker,
+            )
+
+            identity = getattr(args, "team_identity", None) or getattr(
+                args, "run_id", None
+            )
+            as_json = bool(
+                getattr(args, "as_json", False)
+                or getattr(args, "json_output", False)
+            )
+            try:
+                if action == "panes":
+                    result = list_panes(root, identity, probe=True)
+                    emit_data(args, "team.panes", result)
+                    return 0
+                worker = getattr(args, "worker_id", None)
+                if action != "watch" and not worker:
+                    print(
+                        f"omg team {action}: --worker required",
+                        file=sys.stderr,
+                    )
+                    return 2
+                if action == "capture":
+                    result = capture_worker(
+                        root,
+                        identity,
+                        str(worker),
+                        lines=getattr(args, "capture_lines", None),
+                        raw=bool(getattr(args, "capture_raw", False)),
+                    )
+                    if as_json:
+                        emit_data(args, "team.capture", result)
+                    elif not result.get("ok"):
+                        print(
+                            f"omg team capture: status={result.get('status')}",
+                            file=sys.stderr,
+                        )
+                    else:
+                        text = result.get("text") or ""
+                        sys.stdout.write(text)
+                        if text and not str(text).endswith("\n"):
+                            sys.stdout.write("\n")
+                    if not result.get("ok"):
+                        status = str(result.get("status") or "")
+                        return 2 if status == "identity_mismatch" else 1
+                    return 0
+                if action == "focus":
+                    result = focus_worker(
+                        root,
+                        identity,
+                        str(worker),
+                        as_json=as_json,
+                        execute=bool(getattr(args, "focus_execute", False)),
+                    )
+                    if as_json:
+                        emit_data(args, "team.focus", result)
+                    elif not result.get("focused"):
+                        hint = result.get("attach_hint")
+                        if hint:
+                            print(hint)
+                    return 0
+                if action == "key":
+                    result = key_worker(
+                        root,
+                        identity,
+                        str(worker),
+                        str(getattr(args, "key_name", "") or ""),
+                        as_json=as_json,
+                    )
+                    emit_data(args, "team.key", result)
+                    return 0
+                if action == "input":
+                    result = input_worker(
+                        root,
+                        identity,
+                        str(worker),
+                        str(getattr(args, "input_text", "") or ""),
+                        submit=bool(getattr(args, "input_submit", False)),
+                        as_json=as_json,
+                        operator_override=bool(
+                            getattr(args, "operator_override", False)
+                        ),
+                    )
+                    emit_data(args, "team.input", result)
+                    return 0
+                # watch
+                interval = getattr(args, "watch_interval", 1.0)
+                try:
+                    interval_f = float(interval)
+                except (TypeError, ValueError):
+                    print(
+                        "omg team watch: --interval must be a number of seconds",
+                        file=sys.stderr,
+                    )
+                    return 2
+                result = watch_worker(
+                    root,
+                    identity,
+                    str(worker) if worker else None,
+                    interval_s=interval_f,
+                    lines=getattr(args, "capture_lines", None),
+                    as_json=as_json,
+                    max_iterations=int(
+                        getattr(args, "watch_max_iterations", 3600) or 3600
+                    ),
+                )
+                if not as_json:
+                    emit_data(args, "team.watch", result)
+                return 0 if result.get("ok") else 1
+            except OperatorError as exc:
+                emit_data(
+                    args,
+                    f"team.{action}",
+                    {
+                        "ok": False,
+                        "error": {
+                            "code": exc.code,
+                            "message": str(exc),
+                            **({"status": exc.status} if exc.status else {}),
+                            **(
+                                {"details": exc.details}
+                                if exc.details
+                                else {}
+                            ),
+                        },
+                    },
+                )
+                if not as_json:
+                    print(f"omg team {action}: {exc}", file=sys.stderr)
+                return int(exc.exit_code)
+
         print(f"omg team: unknown action {action!r}", file=sys.stderr)
         return 2
     except TeamGateError as exc:
@@ -1525,6 +1666,161 @@ def register_team_parsers(
         help="bounded provider readiness wait (default: OMG_TEAM_SUPERVISOR_READY_S or 30)",
     )
     p_t_sup.set_defaults(func=cmd_team, team_action="supervisor")
+
+    # --- #101 identity-fenced operator pane control -----------------------
+    def _add_team_identity_args(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "team_identity",
+            nargs="?",
+            default=None,
+            help="team name or run_id (optional; default active / --run)",
+        )
+        parser.add_argument(
+            "--run", dest="run_id", default=None, help="run_id (default: active)"
+        )
+
+    def _add_worker_arg(parser: argparse.ArgumentParser, *, required: bool) -> None:
+        parser.add_argument(
+            "--worker",
+            dest="worker_id",
+            required=required,
+            help="worker / task id (exact Team worker)",
+        )
+
+    p_t_panes = team_sub.add_parser(
+        "panes",
+        parents=[common],
+        help=(
+            "list exact live Team worker panes with authorization flags (#101); "
+            "no argv/prompt/env/tokens"
+        ),
+    )
+    _add_team_identity_args(p_t_panes)
+    p_t_panes.set_defaults(func=cmd_team, team_action="panes")
+
+    p_t_capture = team_sub.add_parser(
+        "capture",
+        parents=[common],
+        help=(
+            "bounded identity-fenced pane capture (#101); redacted; "
+            "status live|gone|identity_mismatch|unknown"
+        ),
+    )
+    _add_team_identity_args(p_t_capture)
+    _add_worker_arg(p_t_capture, required=True)
+    p_t_capture.add_argument(
+        "--lines",
+        dest="capture_lines",
+        type=int,
+        default=200,
+        help="max history lines (default 200, hard cap 2000)",
+    )
+    p_t_capture.add_argument(
+        "--raw",
+        dest="capture_raw",
+        action="store_true",
+        help="skip ANSI strip / line-join normalize (still bounded + redacted)",
+    )
+    p_t_capture.set_defaults(func=cmd_team, team_action="capture")
+
+    p_t_focus = team_sub.add_parser(
+        "focus",
+        parents=[common],
+        help=(
+            "focus exact worker pane (#101); --json never focuses; "
+            "outside tmux prints attach argv (use --execute to attach)"
+        ),
+    )
+    _add_team_identity_args(p_t_focus)
+    _add_worker_arg(p_t_focus, required=True)
+    p_t_focus.add_argument(
+        "--execute",
+        dest="focus_execute",
+        action="store_true",
+        help="outside tmux: actually run attach argv (TTY required)",
+    )
+    p_t_focus.set_defaults(func=cmd_team, team_action="focus")
+
+    p_t_key = team_sub.add_parser(
+        "key",
+        parents=[common],
+        help=(
+            "send one allowlisted key to an exact worker pane (#101); "
+            "--json never delivers"
+        ),
+    )
+    _add_team_identity_args(p_t_key)
+    _add_worker_arg(p_t_key, required=True)
+    p_t_key.add_argument(
+        "--key",
+        dest="key_name",
+        required=True,
+        help="allowlisted key (Enter, Escape, Tab, arrows, C-c, …)",
+    )
+    p_t_key.set_defaults(func=cmd_team, team_action="key")
+
+    p_t_input = team_sub.add_parser(
+        "input",
+        parents=[common],
+        help=(
+            "send bounded literal text via send-keys -l (#101); "
+            "audit stores length/hash only; prefer team api for automation"
+        ),
+    )
+    _add_team_identity_args(p_t_input)
+    _add_worker_arg(p_t_input, required=True)
+    p_t_input.add_argument(
+        "--text",
+        dest="input_text",
+        required=True,
+        help="literal UTF-8 text (no key-name interpretation)",
+    )
+    p_t_input.add_argument(
+        "--submit",
+        dest="input_submit",
+        action="store_true",
+        help="also send Enter after the literal text",
+    )
+    p_t_input.add_argument(
+        "--operator-override",
+        dest="operator_override",
+        action="store_true",
+        help="allow non-TTY operator input (still audited; not for agents)",
+    )
+    p_t_input.set_defaults(func=cmd_team, team_action="input")
+
+    p_t_watch = team_sub.add_parser(
+        "watch",
+        parents=[common],
+        help=(
+            "poll bounded capture for a worker (#101); observation only — "
+            "never auto-input/focus/execute"
+        ),
+    )
+    _add_team_identity_args(p_t_watch)
+    _add_worker_arg(p_t_watch, required=False)
+    p_t_watch.add_argument(
+        "--interval",
+        dest="watch_interval",
+        type=float,
+        default=1.0,
+        help="poll interval seconds (default 1; min 0.5; max 60)",
+    )
+    p_t_watch.add_argument(
+        "--lines",
+        dest="capture_lines",
+        type=int,
+        default=200,
+        help="capture lines per poll (default 200)",
+    )
+    p_t_watch.add_argument(
+        "--max-iterations",
+        dest="watch_max_iterations",
+        type=int,
+        default=3600,
+        help="stop after N polls (default 3600)",
+    )
+    p_t_watch.set_defaults(func=cmd_team, team_action="watch")
 
     p_t_api = team_sub.add_parser(
         "api",
