@@ -466,6 +466,7 @@ def _build_pane_record(
     yolo: bool,
     safe: bool,
     extra: Sequence[str] | None,
+    executor: str | None = None,
 ) -> dict[str, Any]:
     from omg_cli.contracts.path_keys import (
         DATA_FILE_MODE,
@@ -480,6 +481,11 @@ def _build_pane_record(
     tdir = team_dir(root, run_id)
     tdir.mkdir(parents=True, exist_ok=True)
     artifact_paths: list[Path] = []
+    executor_norm = (executor or "").strip().lower() or None
+    if executor_norm is not None and executor_norm != "fixture":
+        raise TeamError(
+            f"unsupported scale executor {executor!r} (supported: None / 'fixture')"
+        )
 
     prompt = build_team_task_prompt(
         goal,
@@ -501,6 +507,7 @@ def _build_pane_record(
     )
     prompt_dir = wt / ".omg" / "team-prompt"
     prompt_path = prompt_dir / f"{tid}.prompt.md"
+    last_prompt_path = prompt_dir / "last_prompt.md"
 
     if multi_cli and resolved is not None:
         route = resolved.for_role(role)
@@ -530,6 +537,27 @@ def _build_pane_record(
             needs_pty=needs_pty,
             cwd=wt,
         )
+    elif executor_norm == "fixture":
+        # Inherit launch executor=fixture so hermetic teams do not spawn grok
+        # on scale-up (GHA has no grok; pane exits and tmux destroys it).
+        import sys
+
+        from omg_cli.team.plane import build_fixture_pane_command
+
+        desc_path = tdir / f"{tid}.provider.json"
+        pane_cmd = build_fixture_pane_command(descriptor_path=desc_path)
+        provider = "fixture"
+        posture = "read-write"
+        needs_pty = False
+        prompt_delivery = PROMPT_DELIVERY_PROMPT_FILE
+        fixture = (
+            Path(__file__).resolve().parents[2]
+            / "tests"
+            / "fixtures"
+            / "team_worker_fixture.py"
+        )
+        argv = [sys.executable, str(fixture)]
+        artifact_paths.extend([last_prompt_path, prompt_path])
     else:
         from omg_cli.team.plane import materialize_supervisor_pane_command
 
@@ -545,7 +573,6 @@ def _build_pane_record(
             prompt=prompt,
             disallow_shell=False,
         )
-        last_prompt_path = prompt_dir / "last_prompt.md"
         try:
             prompt_index = argv.index("-p")
         except ValueError:
@@ -633,6 +660,7 @@ def _reuse_prepared_pane_record(
     yolo: bool,
     safe: bool,
     extra: Sequence[str] | None,
+    executor: str | None = None,
 ) -> dict[str, Any] | None:
     """Strictly reuse a complete deterministic prompt/argv preparation set."""
     from omg_cli.contracts.path_keys import (
@@ -652,6 +680,11 @@ def _reuse_prepared_pane_record(
     candidates = [argv_path, task_prompt_path]
     if not multi_cli:
         candidates.append(last_prompt_path)
+    executor_norm = (executor or "").strip().lower() or None
+    if executor_norm is not None and executor_norm != "fixture":
+        raise TeamError(
+            f"unsupported scale executor {executor!r} (supported: None / 'fixture')"
+        )
 
     if multi_cli:
         if resolved is None:
@@ -692,6 +725,33 @@ def _reuse_prepared_pane_record(
             needs_pty=needs_pty,
             cwd=worktree,
         )
+    elif executor_norm == "fixture":
+        import sys
+
+        from omg_cli.team.plane import build_fixture_pane_command
+
+        provider = "fixture"
+        posture = "read-write"
+        needs_pty = False
+        prompt_delivery = PROMPT_DELIVERY_PROMPT_FILE
+        prompt = build_team_task_prompt(
+            goal,
+            run_id=run_id,
+            task_id=task_id,
+            task_index=task_index,
+            task_count=task_count,
+            owned_files=owned,
+            worktree=worktree,
+        )
+        fixture = (
+            Path(__file__).resolve().parents[2]
+            / "tests"
+            / "fixtures"
+            / "team_worker_fixture.py"
+        )
+        expected_argv = [sys.executable, str(fixture)]
+        desc_path = team_dir(root, run_id) / f"{task_id}.provider.json"
+        pane_cmd = build_fixture_pane_command(descriptor_path=desc_path)
     else:
         provider = "grok"
         posture = "read-write"
@@ -3898,6 +3958,11 @@ def _scale_up(
             resolved = _resolve_routing_from_meta(meta, roles) if multi_cli else None
             goal = str(meta.get("goal") or "(no goal)")
             total_after = len(active) + n
+            executor = (
+                str(meta["executor"])
+                if isinstance(meta.get("executor"), str) and meta.get("executor")
+                else None
+            )
             for i, spec in enumerate(new_task_specs):
                 pane_kwargs = dict(
                     root=root,
@@ -3913,6 +3978,7 @@ def _scale_up(
                     yolo=yolo,
                     safe=safe,
                     extra=extra,
+                    executor=executor,
                 )
                 rec = None
                 if not effective_dry:

@@ -614,15 +614,17 @@ def test_scale_up_preserves_same_window_and_leader(
     meta = launch_team_inside(root=repo, leader=leader, workers=2)
     try:
         assert meta.get("startup_status") == "running"
+        assert meta.get("executor") == "fixture"
         assert meta.get("view_mode") == "same_window" or (
             (meta.get("tmux_topology") or {}).get("view_mode") == "same_window"
         )
-        # Re-pin geometry after launch layout (CI macOS flake: too-small
-        # window → scale split "no space" / missing 4th pane).
-        leader.ensure_window_geometry(before.window_id, width=160, height=48)
+        team_window = str(meta.get("window_id") or before.window_id)
+        assert team_window == before.window_id, (team_window, before.window_id)
+        # Re-pin geometry after launch layout (CI macOS: tiny windows).
+        leader.ensure_window_geometry(team_window, width=160, height=48)
         before_topo = leader.capture_topology()
         before_panes = {
-            p.pane_id for p in before_topo.panes if p.window_id == before.window_id
+            p.pane_id for p in before_topo.panes if p.window_id == team_window
         }
         assert len(before_panes) == 3, before_topo.pane_ids
 
@@ -639,32 +641,61 @@ def test_scale_up_preserves_same_window_and_leader(
         assert int(scaled.get("active_panes") or 0) == 3, scaled
         tasks_added = scaled.get("tasks_added") or []
         assert len(tasks_added) == 1, scaled
-        new_pane = str(tasks_added[0].get("pane_id") or "")
+        added = tasks_added[0]
+        assert added.get("provider") == "fixture", added
+        new_pane = str(added.get("pane_id") or "")
         assert new_pane and new_pane not in before_panes, (
             new_pane,
             before_panes,
             tasks_added,
         )
+        # Immediate live proof (not only meta): pane must exist in Team window.
+        # If this fails, dump scale result + topology for CI diagnosis.
+        topo_now = leader.capture_topology()
+        size = tmux_server.tmux(
+            "display-message",
+            "-p",
+            "-t",
+            team_window,
+            "#{window_width}x#{window_height}",
+        )
+        diag = {
+            "scaled": {
+                "op": scaled.get("op"),
+                "added": scaled.get("added"),
+                "active_panes": scaled.get("active_panes"),
+                "tasks_added": [
+                    {
+                        "task_id": t.get("task_id"),
+                        "pane_id": t.get("pane_id"),
+                        "window_id": t.get("window_id"),
+                        "provider": t.get("provider"),
+                        "status": t.get("status"),
+                        "pid": t.get("pid"),
+                    }
+                    for t in tasks_added
+                    if isinstance(t, dict)
+                ],
+            },
+            "team_window": team_window,
+            "window_size": (size.stdout or "").strip(),
+            "pane_rows": [
+                {
+                    "pane_id": p.pane_id,
+                    "window_id": p.window_id,
+                    "dead": p.pane_dead,
+                    "pid": p.pane_pid,
+                }
+                for p in topo_now.panes
+            ],
+        }
+        live_ids = {p.pane_id for p in topo_now.panes if p.window_id == team_window}
+        assert new_pane in live_ids, diag
+        assert len(live_ids) == 4, diag
 
-        def _four_panes() -> bool:
-            topo_now = leader.capture_topology()
-            return (
-                sum(1 for p in topo_now.panes if p.window_id == before.window_id) == 4
-                and new_pane in {p.pane_id for p in topo_now.panes}
-            )
-
-        wait_until(_four_panes, timeout_s=8.0, label="scale-up 4th pane live")
-        topo = leader.capture_topology()
-        leader_window_panes = [
-            p for p in topo.panes if p.window_id == before.window_id
-        ]
-        # leader + 2 original workers + 1 scaled worker
-        assert len(leader_window_panes) == 4, topo.pane_ids
-        assert before.pane_id in {p.pane_id for p in leader_window_panes}
-        assert new_pane in {p.pane_id for p in leader_window_panes}
-        live = next(p for p in leader_window_panes if p.pane_id == before.pane_id)
+        live = next(p for p in topo_now.panes if p.pane_id == before.pane_id)
         assert live.pane_pid == before.pane_pid
-        assert len({p.window_id for p in leader_window_panes}) == 1
+        assert live.window_id == team_window
     finally:
         stop_team(repo, meta["run_id"])
 
