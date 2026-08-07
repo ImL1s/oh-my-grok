@@ -67,7 +67,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   Antigravity probe (discover binary, version argv probe, compat range,
   schema-versioned capabilities envelope) plus
   `omg provider antigravity {capabilities,doctor}`. Hermetic fake-`agy`
-  fixtures only — no ask/Team cutover, no `live_verified` claims. Issue #67
+  fixtures only — no ask/Team cutover, no fabricated live-evidence verification claims. Issue #67
   remains open for slices B–D.
 
 ### Fixed
