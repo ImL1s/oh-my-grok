@@ -221,3 +221,44 @@ def test_ask_agy_records_advisor_route(tmp_path: Path) -> None:
     assert result.advisor_route is not None
     assert result.advisor_route["provider"] == "agy"
     assert result.advisor_route["authoritative"] is False
+
+
+def test_ask_agy_propagates_broker_child_env(
+    fake_agy_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live adapter path must pass OMG_ALLOW_EXTERNAL_CLI / OMG_ASK_BROKER.
+
+    Dry-run already prints child_env_keys; live must feed the same markers
+    through ProviderRunRequest.env into the bounded child process.
+    """
+    from omg_cli.providers import antigravity as agy_mod
+
+    # Parent must not already carry the allow key (broker sets it only on child).
+    monkeypatch.delenv("OMG_ALLOW_EXTERNAL_CLI", raising=False)
+    monkeypatch.delenv("OMG_ASK_BROKER", raising=False)
+    monkeypatch.setenv(
+        "FAKE_AGY_ECHO_ENV", "OMG_ALLOW_EXTERNAL_CLI,OMG_ASK_BROKER"
+    )
+
+    seen: list[object] = []
+    real_run = agy_mod.AntigravityProvider.run
+
+    def tracking_run(self, request):  # noqa: ANN001
+        seen.append(request)
+        return real_run(self, request)
+
+    monkeypatch.setattr(agy_mod.AntigravityProvider, "run", tracking_run)
+
+    result = run_ask("agy", "env-probe", root=tmp_path, timeout=5.0)
+    assert result.exit_code == 0
+    assert seen, "adapter.run must be called"
+    req = seen[0]
+    assert req.env is not None
+    assert req.env.get("OMG_ALLOW_EXTERNAL_CLI") == "1"
+    assert req.env.get("OMG_ASK_BROKER") == "1"
+    # Markers must reach the fake child (bounded allowlist), not stay request-only.
+    assert "env.OMG_ALLOW_EXTERNAL_CLI=1" in result.artifact.read_text(encoding="utf-8")
+    assert "env.OMG_ASK_BROKER=1" in result.artifact.read_text(encoding="utf-8")
+    # Parent unchanged.
+    assert "OMG_ALLOW_EXTERNAL_CLI" not in os.environ
+    assert "OMG_ASK_BROKER" not in os.environ

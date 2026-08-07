@@ -637,9 +637,12 @@ def _run_ask_agy_adapter(
     meta_path = artifact.parent / (artifact.stem + ".meta.json") if write_json else None
 
     parent_had_allow = os.environ.get("OMG_ALLOW_EXTERNAL_CLI")
+    # Same child env contract as legacy Popen ask: allow/broker markers only
+    # on the child request (never parent os.environ).
+    child_env = child_env_for_ask()
 
     if dry_run:
-        child_keys = sorted(child_env_for_ask().keys())
+        child_keys = sorted(child_env.keys())
         print("omg ask dry-run provider=agy")
         print(f"argv: {json.dumps(argv, ensure_ascii=False)}")
         print(f"prompt_mode: {prompt_mode}")
@@ -707,6 +710,7 @@ def _run_ask_agy_adapter(
         prompt=req_prompt,
         prompt_file=req_prompt_file,
         cwd=str(cwd_path),
+        env=child_env,
         timeout_s=eff_timeout,
         output_format=output_format,  # type: ignore[arg-type]
         model=model,

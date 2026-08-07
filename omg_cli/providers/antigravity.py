@@ -120,6 +120,10 @@ _BOUNDED_ENV_KEYS: Final[frozenset[str]] = frozenset(
         "FAKE_AGY_RUN_TRUNCATE_STREAM",
         "FAKE_AGY_ECHO_CWD",
         "FAKE_AGY_ECHO_ENV",
+        # Ask broker child markers (#67-C) — set only via ProviderRunRequest.env,
+        # never claimed from ambient parent os.environ for headless probes alone.
+        "OMG_ALLOW_EXTERNAL_CLI",
+        "OMG_ASK_BROKER",
         ENV_BIN_OVERRIDE,
     }
 )
