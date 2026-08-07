@@ -150,34 +150,21 @@ def meets_gate(
 ) -> bool:
     """True when *phase* is at or beyond the required production gate.
 
-    Rank alone is insufficient: ``task_dispatched`` / ``mailbox_ack`` also
-    require prior ``provider_spawned`` and ``provider_ready`` in *phases*
-    (blocks skip-to-dispatched forged receipts).
+    Rank alone is insufficient: any gate/phase at or beyond ``provider_ready``
+    requires both ``provider_spawned`` and ``provider_ready`` in *phases*
+    (blocks skip-to-ready / skip-to-dispatched forged receipts).
     """
     if not phase or is_terminal_phase(phase):
         return False
     required = gate or DEFAULT_GATE_PHASE
     if phase_rank(phase) < phase_rank(required):
         return False
-    # Any gate at or beyond provider_ready needs a real spawn+ready history
-    # when the current phase claims dispatch-or-later.
     history = [str(p) for p in (phases or ()) if str(p).strip()]
-    needs_history = (
-        phase_rank(phase) >= phase_rank(StartupPhase.TASK_DISPATCHED.value)
-        or required
-        in (
-            StartupPhase.TASK_DISPATCHED.value,
-            StartupPhase.MAILBOX_ACK.value,
-        )
-    )
-    if needs_history:
+    ready_rank = phase_rank(StartupPhase.PROVIDER_READY.value)
+    if phase_rank(phase) >= ready_rank or phase_rank(required) >= ready_rank:
         if StartupPhase.PROVIDER_SPAWNED.value not in history:
             return False
         if StartupPhase.PROVIDER_READY.value not in history:
-            return False
-    elif phase_rank(required) >= phase_rank(StartupPhase.PROVIDER_READY.value):
-        # Gate is provider_ready: still require spawned in history.
-        if StartupPhase.PROVIDER_SPAWNED.value not in history:
             return False
     return True
 

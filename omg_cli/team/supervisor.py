@@ -35,9 +35,24 @@ DESCRIPTOR_KIND = "team_provider_descriptor"
 DEFAULT_READY_WAIT_S = 30.0
 # After process_stable provisional ready, keep watching for delayed auth/trust.
 DEFAULT_POST_STABLE_OBSERVE_S = 2.0
+MIN_POST_STABLE_OBSERVE_S = 0.5
 POST_STABLE_OBSERVE_ENV = "OMG_TEAM_POST_STABLE_OBSERVE_S"
 _CAPTURE_MAX_LINES = 48
 _CAPTURE_MAX_BYTES = 16_384
+
+
+def _resolve_post_stable_observe_s(env: Mapping[str, str]) -> float:
+    """Positive floor for post-stable observe; ``<=0`` / junk → default."""
+    raw = env.get(POST_STABLE_OBSERVE_ENV)
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_POST_STABLE_OBSERVE_S
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_POST_STABLE_OBSERVE_S
+    if value <= 0:
+        return DEFAULT_POST_STABLE_OBSERVE_S
+    return max(value, MIN_POST_STABLE_OBSERVE_S)
 
 
 class SupervisorError(RuntimeError):
@@ -274,11 +289,7 @@ def run_supervisor(
         if ready_timeout_s is not None
         else float(source.get("OMG_TEAM_SUPERVISOR_READY_S") or DEFAULT_READY_WAIT_S)
     )
-    post_stable_s = float(
-        source.get(POST_STABLE_OBSERVE_ENV) or DEFAULT_POST_STABLE_OBSERVE_S
-    )
-    if post_stable_s < 0:
-        post_stable_s = DEFAULT_POST_STABLE_OBSERVE_S
+    post_stable_s = _resolve_post_stable_observe_s(source)
 
     supervisor_pid = os.getpid()
     write_startup_phase(
@@ -508,7 +519,7 @@ def run_supervisor(
                 break
             time.sleep(max(0.05, float(poll_s)))
         else:
-            # Timeout path.
+            # Timeout path — final drain/observe before any provisional finalize.
             append_startup_diagnostics(
                 root,
                 run_id=run_id,
@@ -516,33 +527,77 @@ def run_supervisor(
                 worker_id=worker_id,
                 lines=capture[-16:],
             )
-            if _child_alive(proc) and provisional_since is not None and not reached_ready:
-                # Timed out while provisional but still clean — finalize if
-                # post-stable window already elapsed; else fail closed.
-                if time.monotonic() - provisional_since >= post_stable_s:
-                    _finalize_ready(
-                        evidence=provisional_evidence
-                        or EvidenceCode.PROCESS_STABLE.value
-                    )
-                else:
-                    write_startup_phase(
-                        root,
-                        run_id=run_id,
-                        team_id=team_id,
-                        worker_id=worker_id,
-                        phase=StartupPhase.FAILED,
-                        provider=provider,
-                        supervisor_pid=supervisor_pid,
-                        provider_pid=provider_pid,
-                        provider_pgid=provider_pgid,
-                        provider_pid_start=provider_start,
-                        evidence_code=EvidenceCode.TIMEOUT,
-                        failure_reason=(
-                            f"provider readiness timed out after {timeout_s}s "
-                            "(post-stable window incomplete)"
-                        ),
-                    )
-            elif _child_alive(proc):
+            _drain_capture(proc, capture)
+            alive = _child_alive(proc)
+            final_obs = strategy.observe(
+                provider_pid=provider_pid or 0,
+                alive=alive,
+                capture_lines=capture,
+                elapsed_s=time.monotonic() - started,
+                env=source,
+            )
+            if final_obs.status == "blocked" and not reached_ready:
+                write_startup_phase(
+                    root,
+                    run_id=run_id,
+                    team_id=team_id,
+                    worker_id=worker_id,
+                    phase=StartupPhase.BLOCKED,
+                    provider=provider,
+                    supervisor_pid=supervisor_pid,
+                    provider_pid=provider_pid,
+                    provider_pgid=provider_pgid,
+                    provider_pid_start=provider_start,
+                    evidence_code=final_obs.evidence_code,
+                    blocked_reason=final_obs.blocked_reason,
+                    failure_reason=final_obs.detail,
+                )
+            elif final_obs.status == "failed" and not reached_ready:
+                write_startup_phase(
+                    root,
+                    run_id=run_id,
+                    team_id=team_id,
+                    worker_id=worker_id,
+                    phase=StartupPhase.FAILED,
+                    provider=provider,
+                    supervisor_pid=supervisor_pid,
+                    provider_pid=provider_pid,
+                    provider_pgid=provider_pgid,
+                    provider_pid_start=provider_start,
+                    evidence_code=final_obs.evidence_code,
+                    failure_reason=final_obs.failure_reason or final_obs.detail,
+                )
+            elif (
+                alive
+                and provisional_since is not None
+                and not reached_ready
+                and time.monotonic() - provisional_since >= post_stable_s
+                and final_obs.status in ("provisional", "ready", "pending")
+            ):
+                # Post-stable window complete and final observe still clean.
+                _finalize_ready(
+                    evidence=provisional_evidence
+                    or EvidenceCode.PROCESS_STABLE.value
+                )
+            elif alive and provisional_since is not None and not reached_ready:
+                write_startup_phase(
+                    root,
+                    run_id=run_id,
+                    team_id=team_id,
+                    worker_id=worker_id,
+                    phase=StartupPhase.FAILED,
+                    provider=provider,
+                    supervisor_pid=supervisor_pid,
+                    provider_pid=provider_pid,
+                    provider_pgid=provider_pgid,
+                    provider_pid_start=provider_start,
+                    evidence_code=EvidenceCode.TIMEOUT,
+                    failure_reason=(
+                        f"provider readiness timed out after {timeout_s}s "
+                        "(post-stable window incomplete)"
+                    ),
+                )
+            elif alive and not reached_ready:
                 write_startup_phase(
                     root,
                     run_id=run_id,
@@ -557,7 +612,7 @@ def run_supervisor(
                     evidence_code=EvidenceCode.TIMEOUT,
                     failure_reason=f"provider readiness timed out after {timeout_s}s",
                 )
-            else:
+            elif not reached_ready:
                 write_startup_phase(
                     root,
                     run_id=run_id,

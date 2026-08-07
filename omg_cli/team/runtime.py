@@ -295,6 +295,7 @@ def collect_process_ready_workers(
     run_id: str,
     team_id: str,
     expected_workers: Sequence[str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> set[str]:
     """Return worker ids with a valid schema-v2 gate-satisfying startup receipt.
 
@@ -313,7 +314,7 @@ def collect_process_ready_workers(
     expected = [
         str(w).strip() for w in (expected_workers or ()) if str(w).strip()
     ]
-    gate = resolve_gate_phase()
+    gate = resolve_gate_phase(env)
     ready: set[str] = set()
     for wid in expected:
         data = read_startup_record(
@@ -367,6 +368,7 @@ def collect_worker_startup_snapshots(
     run_id: str,
     team_id: str,
     expected_workers: Sequence[str],
+    env: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Deterministic per-worker startup snapshot for JSON/human output."""
     from omg_cli.team.startup import (
@@ -378,7 +380,7 @@ def collect_worker_startup_snapshots(
         resolve_gate_phase,
     )
 
-    gate = resolve_gate_phase()
+    gate = resolve_gate_phase(env)
     rows: list[dict[str, Any]] = []
     for wid in expected_workers:
         data = read_startup_record(
@@ -542,6 +544,7 @@ def wait_for_startup_acks(
                     run_id=run_id,
                     team_id=team_id,
                     expected_workers=[wid],
+                    env=env,
                 )
             ):
                 try:
@@ -562,10 +565,15 @@ def wait_for_startup_acks(
             run_id=run_id,
             team_id=team_id,
             expected_workers=expected,
+            env=env,
         )
         process_ready &= expected_set
         workers_snap = collect_worker_startup_snapshots(
-            root, run_id=run_id, team_id=team_id, expected_workers=expected
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            expected_workers=expected,
+            env=env,
         )
 
         # Early stop: all ready, or all terminal (failed/blocked), or timeout.
@@ -593,12 +601,17 @@ def wait_for_startup_acks(
         run_id=run_id,
         team_id=team_id,
         expected_workers=expected,
+        env=env,
     )
     process_ready &= expected_set
     acked = collect_startup_ack_workers(root, run_id=run_id, team_id=team_id)
     acked &= expected_set
     workers_snap = collect_worker_startup_snapshots(
-        root, run_id=run_id, team_id=team_id, expected_workers=expected
+        root,
+        run_id=run_id,
+        team_id=team_id,
+        expected_workers=expected,
+        env=env,
     )
 
     ordered_ready = [w for w in expected if w in process_ready]
