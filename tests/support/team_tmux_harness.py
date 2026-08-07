@@ -25,7 +25,8 @@ _PANE_ID_RE = re.compile(r"^%[0-9]{1,16}$")
 _WINDOW_ID_RE = re.compile(r"^@[0-9]{1,16}$")
 _SESSION_ID_RE = re.compile(r"^\$[0-9]{1,16}$")
 
-# Named failpoints for FailureInjector (monkeypatch targets).
+# Named failpoints actually installed by FailureInjector.install().
+# Keep this list equal to wired hooks — do not advertise unwired phases.
 FAILPOINTS = (
     "invocation_snapshot",
     "pre_side_effect",
@@ -33,16 +34,15 @@ FAILPOINTS = (
     "later_worker_split",
     "nonce_publish",
     "pane_identity",
-    "provider_spawn",
-    "provider_ready",
     "receipt",
     "team_json",
     "layout",
     "focus_restore",
-    "scale_wal",
-    "relaunch",
-    "stop",
-    "attach",
+)
+
+# Stable CI upload root (subdirs per dump). Override with OMG104_ARTIFACT_DIR.
+ARTIFACT_ROOT = Path(
+    os.environ.get("OMG104_ARTIFACT_DIR") or "/tmp/omg104-artifacts"
 )
 
 
@@ -312,23 +312,48 @@ class IsolatedTmuxServer:
         self.kill()
 
     def dump_artifacts(self, *, reason: str, dest: Path | None = None) -> Path:
-        base = dest or Path(f"/tmp/omg104-artifacts-{uuid.uuid4().hex[:8]}")
+        """Write bounded redacted diagnostics under ARTIFACT_ROOT/<stamp>/."""
+        if dest is None:
+            ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
+            stamp = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{uuid.uuid4().hex[:6]}"
+            base = ARTIFACT_ROOT / stamp
+        else:
+            base = dest
         base.mkdir(parents=True, exist_ok=True)
         self.artifact_dir = base
         (base / "reason.txt").write_text(reason[:500] + "\n", encoding="utf-8")
         (base / "socket.txt").write_text(self.socket_path + "\n", encoding="utf-8")
         for name, argv in (
-            ("layout.txt", ("list-windows", "-a", "-F", "#{session_name}:#{window_id} #{window_layout}")),
-            ("panes.txt", ("list-panes", "-a", "-F", "#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_active}\t#{pane_current_path}")),
+            (
+                "layout.txt",
+                (
+                    "list-windows",
+                    "-a",
+                    "-F",
+                    "#{session_name}:#{window_id} #{window_layout}",
+                ),
+            ),
+            (
+                "panes.txt",
+                (
+                    "list-panes",
+                    "-a",
+                    "-F",
+                    "#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t"
+                    "#{pane_dead}\t#{pane_active}\t#{pane_current_path}",
+                ),
+            ),
             ("clients.txt", ("list-clients", "-F", "#{client_tty}\t#{session_name}")),
             ("sessions.txt", ("list-sessions", "-F", "#{session_id}\t#{session_name}")),
         ):
             proc = self.tmux(*argv)
             body = (proc.stdout or "") + (proc.stderr or "")
-            # Bound + light redaction of home paths.
             home = str(Path.home())
             body = body.replace(home, "$HOME")[:50_000]
-            (base / name).write_text(body, encoding="utf-8")
+            # Always create the file (even empty) so CI upload finds the tree.
+            (base / name).write_text(body if body else f"(empty rc={proc.returncode})\n", encoding="utf-8")
+        # Marker so upload-artifact never sees an empty directory.
+        (base / "DUMP_OK").write_text("1\n", encoding="utf-8")
         return base
 
 
@@ -769,6 +794,7 @@ def poll_json(path: Path, *, timeout_s: float = 15.0) -> dict[str, Any]:
 
 
 __all__ = [
+    "ARTIFACT_ROOT",
     "FAILPOINTS",
     "FailpointError",
     "FailureInjector",
@@ -782,6 +808,7 @@ __all__ = [
     "REPO_ROOT",
     "TopologySnapshot",
     "capture_topology",
+    "failpoint_in_chain",
     "init_git_repo",
     "install_fixture_provider",
     "launch_team_inside",
@@ -790,3 +817,16 @@ __all__ = [
     "run_omg_team_launch",
     "wait_until",
 ]
+
+
+def failpoint_in_chain(exc: BaseException, phase: str) -> bool:
+    """True if FailpointError(phase) appears in cause/context chain."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, FailpointError) and cur.phase == phase:
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+

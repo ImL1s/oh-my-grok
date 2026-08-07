@@ -60,7 +60,9 @@ jobs:
           OMG_E2E: "1"
           OMG_SMOKE_STRICT: "0"
 
-  # #104: required hermetic real-tmux UX regression (fake providers; no grok).
+  # #104: hermetic real-tmux UX regression (fake providers; no grok).
+  # These jobs must pass on this PR; whether they are GitHub "required checks"
+  # depends on branch protection and is not claimed here.
   team-real-tmux-linux:
     runs-on: ubuntu-latest
     steps:
@@ -77,15 +79,19 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Prepare artifact dir
+        run: mkdir -p /tmp/omg104-artifacts
       - name: Real-tmux UX regression
         run: python -m pytest -q -m tmux_real --tb=short
+        env:
+          OMG104_ARTIFACT_DIR: /tmp/omg104-artifacts
       - name: Upload tmux failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: team-real-tmux-linux-artifacts
-          path: /tmp/omg104-artifacts-*
-          if-no-files-found: ignore
+          path: /tmp/omg104-artifacts/
+          if-no-files-found: warn
           retention-days: 7
 
   # Early #25 / P3A-25-MACOS-EARLY: one focused macOS job (not a full matrix).
@@ -120,6 +126,7 @@ jobs:
           GIT_COMMITTER_EMAIL: omg-platform-ci@example.com
 
   # #104: macOS real-tmux UX (process-group / PTY differs from Linux).
+  # Must pass on this PR (branch-protection "required" is optional/admin-owned).
   team-real-tmux-macos:
     runs-on: macos-latest
     steps:
@@ -136,13 +143,17 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Install tmux
         run: brew install tmux
+      - name: Prepare artifact dir
+        run: mkdir -p /tmp/omg104-artifacts
       - name: Real-tmux UX regression
         run: python -m pytest -q -m tmux_real --tb=short
+        env:
+          OMG104_ARTIFACT_DIR: /tmp/omg104-artifacts
       - name: Upload tmux failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: team-real-tmux-macos-artifacts
-          path: /tmp/omg104-artifacts-*
-          if-no-files-found: ignore
+          path: /tmp/omg104-artifacts/
+          if-no-files-found: warn
           retention-days: 7

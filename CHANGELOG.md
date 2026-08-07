@@ -17,7 +17,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   invocation race fail-closed, one-worker death, provider-ready/blocked/exit,
   bootstrap scrollback cleanliness, operator exact-pane I/O, scale topology,
   resume reconcile-only, and stop/rollback survivors. CI jobs
-  `team-real-tmux-linux` / `team-real-tmux-macos` run `-m tmux_real`.
+  `team-real-tmux-linux` / `team-real-tmux-macos` run `-m tmux_real` and
+  must pass on this PR (GitHub branch-protection “required checks” are
+  admin-owned and not claimed here).
   `live_team_smoke.py --interactive-ux` emits `interactive_evidence_v1` +
   `LIVE_TEAM_INTERACTIVE_UX_OK` (optional; fail-closed without tmux).
 - **#103 Team resume/view attach semantics:** `omg team resume` stays

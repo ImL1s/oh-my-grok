@@ -16,12 +16,14 @@ from typing import Any
 import pytest
 
 from omg_cli.madmax import tmux_available
-from omg_cli.team.plane import EXPERIMENTAL_ENV, stop_team, team_status
+from omg_cli.team.plane import EXPERIMENTAL_ENV, TeamError, stop_team, team_status
 from tests.support.team_tmux_harness import (
+    ARTIFACT_ROOT,
+    FailpointError,
     FailureInjector,
     IsolatedTmuxServer,
     LeaderSession,
-    FailpointError,
+    failpoint_in_chain,
     init_git_repo,
     install_fixture_provider,
     launch_team_inside,
@@ -39,9 +41,17 @@ def _require_real_tmux() -> None:
 
 
 @pytest.fixture
-def tmux_server():
+def tmux_server(request: pytest.FixtureRequest):
     with IsolatedTmuxServer(prefix="omg104") as server:
-        yield server
+        try:
+            yield server
+        finally:
+            # Pytest does not re-raise test failures into the fixture after
+            # yield, so dump unconditionally (bounded) for CI upload-artifact.
+            try:
+                server.dump_artifacts(reason=f"teardown:{request.node.name}")
+            except Exception:
+                pass
 
 
 @pytest.fixture
@@ -65,6 +75,39 @@ def _bind_leader(monkeypatch: pytest.MonkeyPatch, leader: LeaderSession) -> None
     monkeypatch.setenv("OMG_TEAM_FIXTURE_HOLD_S", "25")
     monkeypatch.setenv("OMG_TEAM_READY_TIMEOUT_MS", "25000")
     monkeypatch.setenv("OMG_TEAM_PROVIDER_HOLD_S", "25")
+
+
+def _assert_no_running_team(repo: Path) -> None:
+    for path in repo.joinpath(".omg").rglob("team.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            assert data.get("startup_status") != "running", path
+
+
+# ---------------------------------------------------------------------------
+# Harness self-check (artifact upload contract)
+# ---------------------------------------------------------------------------
+
+
+def test_artifact_dump_writes_nonempty_tree(
+    tmux_server: IsolatedTmuxServer,
+) -> None:
+    """Prove dump_artifacts populates ARTIFACT_ROOT for CI upload-artifact."""
+    leader = _leader(tmux_server)
+    assert leader.leader is not None
+    dest = ARTIFACT_ROOT / f"selfcheck-{os.getpid()}"
+    out = tmux_server.dump_artifacts(reason="selfcheck", dest=dest)
+    assert out == dest
+    assert (dest / "DUMP_OK").is_file()
+    assert (dest / "reason.txt").read_text(encoding="utf-8").startswith("selfcheck")
+    assert (dest / "sessions.txt").stat().st_size > 0
+    assert (dest / "panes.txt").stat().st_size > 0
+    assert leader.leader.session_name in (dest / "sessions.txt").read_text(
+        encoding="utf-8"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -91,18 +134,13 @@ def test_same_window_launch_keeps_leader_visible_and_focused(
             (meta.get("tasks") or [{}])[0].get("view_mode") == "same_window"
             or meta.get("tmux_topology", {}).get("view_mode") == "same_window"
         )
-        # Prefer launch annotations on team.json / meta.
         topo = leader.capture_topology()
         leader_panes = [p for p in topo.panes if p.window_id == before.window_id]
-        assert len(leader_panes) == 3, topo.pane_ids  # leader + 2 workers
-        # Leader pane id + pid unchanged.
+        assert len(leader_panes) == 3, topo.pane_ids
         live_leader = next(p for p in leader_panes if p.pane_id == before.pane_id)
         assert live_leader.pane_pid == before.pane_pid
         assert live_leader.pane_dead is False
-        # Focus restored to leader (query the leader window — pane_active is
-        # per-window, so session-wide list-panes can report multiple actives).
         assert leader.capture_focus(before.window_id) == before.pane_id
-        # Foreign window untouched.
         foreign_alive = tmux_server.tmux(
             "display-message",
             "-p",
@@ -122,7 +160,7 @@ def test_same_window_cli_launch_from_leader_tmux_env(
     tmux_server: IsolatedTmuxServer,
     repo: Path,
 ) -> None:
-    """CLI path with controlled TMUX/TMUX_PANE (default fixture executor)."""
+    """Out-of-process launch_team driver with controlled TMUX/TMUX_PANE."""
     from tests.support.team_tmux_harness import run_omg_team_launch
 
     leader = _leader(tmux_server)
@@ -181,18 +219,15 @@ def test_foreign_client_window_switch_does_not_redirect_launch(
     _bind_leader(monkeypatch, leader)
     install_fixture_provider(monkeypatch, provider_script("ready_provider.py"))
 
-    # Switch visible window away from leader before/during launch.
     leader.select_window(foreign.window_id)
     meta = launch_team_inside(root=repo, leader=leader, workers=2)
     try:
         topo = leader.capture_topology()
-        # Workers still land on the original leader window (TMUX_PANE binding).
         leader_window_panes = [
             p for p in topo.panes if p.window_id == before.window_id
         ]
         assert len(leader_window_panes) == 3
         assert before.pane_id in {p.pane_id for p in leader_window_panes}
-        # Foreign window still has exactly one pane.
         foreign_panes = [p for p in topo.panes if p.window_id == foreign.window_id]
         assert len(foreign_panes) == 1
         assert foreign_panes[0].pane_id == foreign.pane_id
@@ -216,18 +251,21 @@ def test_pre_side_effect_failpoint_creates_zero_workers(
     inj.arm("pre_side_effect")
     inj.install(monkeypatch)
 
-    with pytest.raises((FailpointError, Exception)):
+    with pytest.raises((FailpointError, TeamError)) as ei:
         launch_team_inside(root=repo, leader=leader, workers=2)
+
+    assert "pre_side_effect" in inj.fired
+    assert failpoint_in_chain(ei.value, "pre_side_effect") or isinstance(
+        ei.value, FailpointError
+    )
 
     topo = leader.capture_topology()
     assert topo.pane_ids == (before.pane_id,)
-    # Foreign session survives.
     alive = tmux_server.tmux(
         "display-message", "-p", "-t", foreign.pane_id, "#{pane_dead}"
     )
     assert alive.returncode == 0
     assert (alive.stdout or "").strip() == "0"
-    assert "pre_side_effect" in inj.fired
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +288,8 @@ def test_one_worker_death_does_not_kill_sibling_or_leader(
     try:
         tasks = list(meta.get("tasks") or [])
         assert len(tasks) == 2
+        victim_id = str(tasks[0]["task_id"])
+        sibling_id = str(tasks[1]["task_id"])
         victim = str(tasks[0]["pane_id"])
         sibling = str(tasks[1]["pane_id"])
         leader.kill_pane(victim)
@@ -265,11 +305,9 @@ def test_one_worker_death_does_not_kill_sibling_or_leader(
             if proc.returncode != 0:
                 return True
             out = (proc.stdout or "").strip()
-            # remain-on-exit may leave a dead pane id
             return out.endswith("\t1") or not out.startswith(victim)
 
         wait_until(_victim_gone, timeout_s=5.0, label="victim pane gone")
-        # Sibling + leader remain.
         sib = tmux_server.tmux(
             "display-message",
             "-p",
@@ -293,8 +331,14 @@ def test_one_worker_death_does_not_kill_sibling_or_leader(
         assert parts[2] == "0"
 
         status = team_status(repo, meta["run_id"])
-        assert isinstance(status, dict)
-        assert "run_id" in status or status.get("ok") is not None or bool(status)
+        by_id = {
+            str(t["task_id"]): t
+            for t in (status.get("tasks") or [])
+            if isinstance(t, dict)
+        }
+        assert victim_id in by_id and sibling_id in by_id
+        assert by_id[victim_id]["alive"] is False
+        assert by_id[sibling_id]["alive"] is True
     finally:
         stop_team(repo, meta["run_id"])
 
@@ -349,19 +393,49 @@ def test_immediate_exit_provider_fails_start(
     repo: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Provider exits before ready → fail-closed (never ``running``).
+
+    On macOS the worker pane can vanish before post-split identity snapshot,
+    so ``launch_team`` may raise TeamError instead of returning meta. Both
+    outcomes are fail-closed; do not probe mid-kill pane identity.
+    """
     leader = _leader(tmux_server)
+    before = leader.leader
+    assert before is not None
     _bind_leader(monkeypatch, leader)
-    monkeypatch.setenv("OMG_TEAM_READY_TIMEOUT_MS", "8000")
+    monkeypatch.setenv("OMG_TEAM_READY_TIMEOUT_MS", "5000")
     monkeypatch.setenv("OMG_TEAM_PROVIDER_EXIT_CODE", "1")
     install_fixture_provider(monkeypatch, provider_script("immediate_exit.py"))
-    meta = launch_team_inside(root=repo, leader=leader, workers=1)
+
+    meta: dict[str, Any] | None = None
     try:
-        assert meta.get("startup_status") in {
-            "failed_start",
-            "degraded",
-            "unverified_start",
-        }, meta
+        meta = launch_team_inside(root=repo, leader=leader, workers=1)
+    except TeamError as exc:
+        msg = str(exc).lower()
+        assert (
+            "missing worker pane" in msg
+            or "cleanup unproven" in msg
+            or "identity" in msg
+            or "failed_start" in msg
+            or "transaction failed" in msg
+        ), exc
+        _assert_no_running_team(repo)
+        # Leader pane must survive the aborted launch.
+        lead = tmux_server.tmux(
+            "display-message",
+            "-p",
+            "-t",
+            before.pane_id,
+            "#{pane_id}\t#{pane_dead}",
+        )
+        assert lead.returncode == 0
+        assert (lead.stdout or "").startswith(f"{before.pane_id}\t0")
+        return
+
+    try:
+        assert meta.get("startup_status") == "failed_start", meta
         assert meta.get("startup_status") != "running"
+        assert int(meta.get("startup_process_ready") or 0) == 0
     finally:
         stop_team(repo, meta["run_id"])
 
@@ -415,7 +489,6 @@ def test_pane_scrollback_starts_with_provider_not_bootstrap_json(
         assert '"schema_version"' not in scroll
         visible = [ln for ln in scroll.splitlines() if ln.strip()]
         assert visible, scroll
-        # First meaningful line belongs to provider / supervisor — not bootstrap JSON.
         assert not visible[0].startswith("{")
         assert "BOOTSTRAP_" not in visible[0]
     finally:
@@ -444,18 +517,15 @@ def test_operator_capture_and_input_hit_exact_worker_pane(
         assert meta.get("startup_status") == "running"
         task = (meta.get("tasks") or [{}])[0]
         worker_id = str(task.get("task_id") or "w1")
-        # Capture via operator surface when available; else direct pane proof.
-        try:
-            out = operator.capture_worker(
-                repo,
-                str(meta["run_id"]),
-                worker_id,
-            )
-            text = str(out.get("text") or "")
-        except Exception:
+        out = operator.capture_worker(
+            repo,
+            str(meta["run_id"]),
+            worker_id,
+        )
+        text = str(out.get("text") or "")
+        if "TEAM_PROVIDER_READY_OK" not in text:
             text = leader.capture_pane(str(task["pane_id"]))
         assert "TEAM_PROVIDER_READY_OK" in text
-        # Literal input round-trip via send-keys -l to exact pane.
         pane_id = str(task["pane_id"])
         marker = f"omg104-marker-{os.getpid()}"
         tmux_server.require_ok(
@@ -502,7 +572,8 @@ def test_scale_up_preserves_same_window_and_leader(
         leader_window_panes = [
             p for p in topo.panes if p.window_id == before.window_id
         ]
-        assert len(leader_window_panes) >= 3
+        # leader + 2 original workers + 1 scaled worker
+        assert len(leader_window_panes) == 4, topo.pane_ids
         assert before.pane_id in {p.pane_id for p in leader_window_panes}
         live = next(p for p in leader_window_panes if p.pane_id == before.pane_id)
         assert live.pane_pid == before.pane_pid
@@ -532,10 +603,9 @@ def test_resume_reconcile_does_not_move_focus(
     meta = launch_team_inside(root=repo, leader=leader, workers=1)
     try:
         leader.select_window(foreign.window_id)
-        focus_before = leader.capture_focus()
+        focus_before = leader.capture_focus(foreign.window_id)
         resume_team(repo, run_id=str(meta["run_id"]))
-        focus_after = leader.capture_focus()
-        # Reconcile-only must not force-select the Team window/leader.
+        focus_after = leader.capture_focus(foreign.window_id)
         assert focus_after == focus_before
         lead = tmux_server.tmux(
             "display-message",
@@ -571,17 +641,14 @@ def test_stop_removes_workers_preserves_leader_and_foreign(
     worker_panes = [str(t["pane_id"]) for t in (meta.get("tasks") or [])]
     assert len(worker_panes) == 2
     stop_team(repo, meta["run_id"])
-    # Workers gone (or dead); leader + foreign survive.
     for wid in worker_panes:
         proc = tmux_server.tmux(
             "display-message", "-p", "-t", wid, "#{pane_id}\t#{pane_dead}"
         )
         out = (proc.stdout or "").strip()
         if proc.returncode == 0 and out:
-            # remain-on-exit: id may linger as dead
             assert out.endswith("\t1") or not out.startswith(wid)
         else:
-            # Pane target gone entirely — success.
             assert proc.returncode != 0 or not out
     lead = tmux_server.tmux(
         "display-message",
@@ -618,16 +685,19 @@ def test_first_split_failpoint_rolls_back_workers(
     inj.arm("first_worker_split")
     inj.install(monkeypatch)
 
-    with pytest.raises((FailpointError, Exception)):
+    with pytest.raises((FailpointError, TeamError)) as ei:
         launch_team_inside(root=repo, leader=leader, workers=2)
+
+    assert "first_worker_split" in inj.fired
+    assert failpoint_in_chain(ei.value, "first_worker_split") or isinstance(
+        ei.value, FailpointError
+    )
 
     topo = leader.capture_topology()
     assert before.pane_id in topo.pane_ids
-    # No durable worker panes on the leader window beyond the leader itself.
     leader_window = [p for p in topo.panes if p.window_id == before.window_id]
     assert len(leader_window) == 1
     alive = tmux_server.tmux(
         "display-message", "-p", "-t", foreign.pane_id, "#{pane_dead}"
     )
     assert (alive.stdout or "").strip() == "0"
-
