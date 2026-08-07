@@ -12,7 +12,7 @@ Inventory status: **bootstrapping**.
 | `gap.team.v3` | P0 | open | #69 | `team.plane_v3` | Team plane v3 not implemented; depends on #67/#68 |
 | `gap.omo.todo_continuation` | P1 | open | #78 | `omo.goal.todo_continuation` | OmO todo-continuation inject is host_impossible on Grok (no session.prompt API) |
 | `gap.parity.platform_live_evidence` | P1 | open | #78 | `antigravity.platform.version_matrix` | Platform/runtime live-evidence gate shipped (#78-C); completeness promotion still manual |
-| `gap.antigravity.headless_execution` | P2 | open | #67, #78 | `antigravity.headless.structured_execution`, `antigravity.runtime.model_effort_mode_perms` | Headless ProviderAdapter.run exists; ask/Team not routed; typed runtime controls unclaimed |
+| `gap.antigravity.headless_execution` | P2 | open | #67, #78 | `antigravity.headless.structured_execution`, `antigravity.runtime.model_effort_mode_perms` | Ask+Team routed (#67-C/D); typed runtime model/effort/mode controls still unclaimed |
 | `gap.omo.edit_and_hygiene` | P2 | open | #78 | `omo.edit.hash_anchored`, `omo.quality.comment_hygiene` | OmO hash-anchored edit and comment-hygiene quality surfaces unclaimed |
 | `gap.omx.research.modes` | P2 | open | #78 | `omx.research.modes` | OMX-style dedicated research/autoresearch mode surface unclaimed |
 
