@@ -1117,10 +1117,22 @@ def status_for_identity(
         st["team_id"] = meta.get("team_id")
         st["launch_mode"] = meta.get("launch_mode")
         st["topology"] = meta.get("topology")
+        st["view_mode"] = meta.get("view_mode")
         st["startup_acks"] = meta.get("startup_acks")
         st["startup_ack_workers"] = meta.get("startup_ack_workers")
         st["startup_status"] = meta.get("startup_status")
         st["startup_expected"] = meta.get("startup_expected")
+        topo = meta.get("tmux_topology")
+        if isinstance(topo, Mapping):
+            st["topology_generation"] = topo.get("identity_generation")
+            layout = topo.get("layout")
+            if isinstance(layout, Mapping):
+                st["layout_status"] = layout.get("status")
+            else:
+                st["layout_status"] = None
+        else:
+            st["topology_generation"] = meta.get("identity_generation")
+            st["layout_status"] = None
         if meta.get("team_id"):
             team_id = str(meta["team_id"])
         worktrees: list[dict[str, Any]] = []
@@ -1137,11 +1149,25 @@ def status_for_identity(
                     "worktree": wt,
                     "status": raw.get("status"),
                     "window_index": raw.get("window_index"),
+                    "logical_worker_index": raw.get(
+                        "logical_worker_index", raw.get("window_index")
+                    ),
+                    "attempt": raw.get("attempt", 1),
                 }
             )
         st["worktrees"] = worktrees
+        # Full-status workers annotation (#102) — not part of locked schema.
+        st["workers"] = [
+            {
+                "task_id": w.get("task_id"),
+                "logical_worker_index": w.get("logical_worker_index"),
+                "attempt": w.get("attempt"),
+            }
+            for w in worktrees
+        ]
     except TeamError:
         st.setdefault("worktrees", [])
+        st.setdefault("workers", [])
 
     api_env = {EXPERIMENTAL_ENV: "1"}
     code, envelope = execute_team_api(
@@ -1252,4 +1278,24 @@ def resume_for_identity(
         out["note"] = (
             f"{reconciled.get('note')}; {relaunch.get('note')}"
         ).strip("; ")
+    # #102: retry cosmetic layout repair without bumping identity generation.
+    try:
+        from omg_cli.team.scaling import _reconcile_lifecycle_layout
+
+        meta_after = load_team_meta(root_path, run_id)
+        layout_info = _reconcile_lifecycle_layout(
+            meta_after,
+            active_count=len(
+                [
+                    t
+                    for t in (meta_after.get("tasks") or [])
+                    if isinstance(t, Mapping) and t.get("status") != "scaled_down"
+                ]
+            ),
+        )
+        out["layout_status"] = layout_info.get("layout_status")
+        out["layout_repair_needed"] = bool(layout_info.get("layout_repair_needed"))
+        out["view_mode"] = meta_after.get("view_mode")
+    except TeamError:
+        out.setdefault("layout_repair_needed", False)
     return out

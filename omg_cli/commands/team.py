@@ -572,6 +572,13 @@ def cmd_team(args: argparse.Namespace) -> int:
                 tasks_json=getattr(args, "tasks_json", None),
             )
             emit_data(args, "team", result)
+            if result.get("layout_repair_needed"):
+                print(
+                    "warning: team scale committed but layout_repair_needed=true "
+                    f"(status={result.get('layout_status')!r}); "
+                    "retry omg team resume to repair projection",
+                    file=sys.stderr,
+                )
             return 0
         if action == "resume":
             from omg_cli.team.runtime import resume_for_identity
@@ -582,7 +589,14 @@ def cmd_team(args: argparse.Namespace) -> int:
             result = resume_for_identity(root, identity)
             # Always JSON (operator machine-readable); --json kept for symmetry.
             emit_data(args, "team", result)
+            if result.get("layout_repair_needed"):
+                print(
+                    "warning: resume completed with layout_repair_needed=true "
+                    f"(status={result.get('layout_status')!r})",
+                    file=sys.stderr,
+                )
             return 0
+
         if action == "status":
             from omg_cli.team.runtime import status_for_identity
 
