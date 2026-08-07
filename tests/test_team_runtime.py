@@ -173,8 +173,7 @@ def test_wait_for_startup_acks_full_partial_zero(
 
     run_id = "run-ack-wait"
     team_id = "team"
-    # Seed empty mailbox via first send is enough once control plane exists —
-    # wait_for_startup_acks reads mailbox ACK + process ready receipts.
+    # #99: mailbox ACK alone cannot satisfy the provider-ready gate.
     monkeypatch.setenv("OMG_TEAM_READY_TIMEOUT_MS", "200")
 
     # Zero signals → failed_start
@@ -209,9 +208,11 @@ def test_wait_for_startup_acks_full_partial_zero(
         timeout_ms=50,
         poll_s=0.01,
     )
-    assert partial["startup_status"] == "degraded"
+    # ACK-only is still failed_start (not degraded) — ACK cannot elevate.
+    assert partial["startup_status"] == "failed_start"
     assert partial["startup_acks"] == 1
     assert partial["startup_ack_workers"] == ["w1"]
+    assert partial["startup_process_ready"] == 0
 
     send_message(
         tmp_path,
@@ -232,15 +233,16 @@ def test_wait_for_startup_acks_full_partial_zero(
         timeout_ms=200,
         poll_s=0.01,
     )
-    assert full["startup_status"] == "running"
+    assert full["startup_status"] == "failed_start"
     assert full["startup_acks"] == 2
+    assert full["startup_process_ready"] == 0
     assert full["startup_ack_workers"] == ["w1", "w2"]
 
 
 def test_process_ready_alone_makes_running(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Process-level ready receipts satisfy readiness without mailbox ACK."""
+    """Legacy v1 helper receipts must NOT satisfy readiness (#99)."""
     from omg_cli.team.runtime import (
         wait_for_startup_acks,
         write_worker_ready_receipt,
@@ -263,13 +265,14 @@ def test_process_ready_alone_makes_running(
         timeout_ms=100,
         poll_s=0.01,
     )
-    assert out["startup_status"] == "running"
+    assert out["startup_status"] == "failed_start"
     assert out["startup_acks"] == 0
-    assert out["startup_process_ready"] == 2
-    assert out["startup_ready_workers"] == ["w1", "w2"]
+    assert out["startup_process_ready"] == 0
+    assert out["startup_ready_workers"] == []
 
 
 def test_wrap_pane_with_worker_ready_prefixes_command() -> None:
+    """Legacy wrap still exists but new launches use supervisor (#99)."""
     from omg_cli.team.plane import wrap_pane_with_worker_ready
 
     wrapped = wrap_pane_with_worker_ready("echo hi")

@@ -13,10 +13,23 @@ Launch **real tmux worker panes** coordinated by the `omg` CLI. This is **not**
 only (worktree + seal) — not an execution sandbox. Do not claim full OMX
 `$team` 33-op parity.
 
-Launch readiness is **process-level** (`omg team worker-ready` receipt) before
-the agent binary; mailbox `ACK` is optional enrichment. Timeout:
-`OMG_TEAM_READY_TIMEOUT_MS` (default 45000). Partial/zero readiness exits
-non-zero and leaves state for diagnosis — never silent dry-run/ULW fallback.
+Launch readiness is **provider-aware** (#99): the pane supervisor spawns the
+provider child, records exact provider PID/PGID/start identity, and advances
+monotonic phases (`pane_created` → `provider_spawned` → `provider_ready` →
+`task_dispatched`; optional `mailbox_ack`). Only workers that reach the
+configured gate (default `task_dispatched`) with a **live** provider identity
+contribute to `startup_status=running`. `process_stable` also requires the
+live cmdline/exe basename to match the expected provider binary (or an
+explicit descriptor allowlist) — a mislabeled silent process cannot green.
+Provisional ready keeps a bounded post-stable observe window for delayed
+auth/trust (TUI idle uses a longer floor); auth *after* that finalize window
+is out of scope (not an infinite watch). Legacy `omg team worker-ready` v1
+receipts are `wrapper_ready_legacy` only and **cannot** false-green a new
+launch. Mailbox `ACK` is optional enrichment and cannot elevate a dead or
+unspawned provider. Auth/trust prompts → `blocked_start`. Timeout:
+`OMG_TEAM_READY_TIMEOUT_MS` (default 45000). Partial/zero/blocked readiness
+exits non-zero and leaves state for diagnosis — never silent dry-run/ULW
+fallback. Explicit `--no-wait` → `unverified_start` only.
 
 ## HARD RULES
 - Launch authority is **only** the `omg team …` CLI. Do not fake team with

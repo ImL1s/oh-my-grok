@@ -29,7 +29,7 @@ Each command family must document whether empty/missing state is exit `0` or `1`
 | `omg lsp check\|symbols\|diagnostics` | never | always `E_LSP_HOST_OWNED` | — |
 | `omg autopilot run` | terminal `verified`, or intentional pause (`await`/`interview`/`stall`) | `blocked`/`cancelled`/launch fail/`max_stall_relaunches` | bad argv |
 | `omg team start --plan-only` | plan JSON printed; no mutation | parse/plan errors | missing `--tasks-json` |
-| `omg team start` (live) | `startup_status=running` | `failed_start`/`degraded` | missing required flags |
+| `omg team start` (live) | `startup_status=running` | `failed_start`/`degraded`/`blocked_start` | missing required flags |
 
 ---
 

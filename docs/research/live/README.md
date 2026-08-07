@@ -12,7 +12,8 @@ PYTHONPATH=. python3 scripts/live_team_smoke.py --fixture-executor \
 # FIXTURE_TEAM_SMOKE_OK
 ```
 
-Proves: split panes, process-level `worker-ready`, mailbox ACK, stop.
+Proves: split panes, schema-v2 provider-ready supervisor (#99), mailbox ACK
+enrichment, stop. Legacy `worker-ready` v1 receipts are not sufficient.
 
 ## Live Grok promotion smoke (quota)
 
@@ -30,4 +31,5 @@ only — do not treat it as full multi-CLI or Grok model parity.
 
 | When | Result | Notes |
 |------|--------|--------|
-| 2026-07-30 | **`LIVE_TEAM_SMOKE_OK`** | process-ready gate; `startup_status=running` (process=2); stop identity/session teardown verified. Machine JSON gitignored under this dir. |
+| 2026-07-30 | **`LIVE_TEAM_SMOKE_OK`** | historical process-ready gate (pre-#99). |
+| 2026-08-07 | **#99 provider-ready** | Supervisor schema-v2 phases; v1 `worker-ready` cannot claim `running`. Re-run smoke after merge. |

@@ -42,7 +42,6 @@ from typing import Any, Collection, Literal, Mapping, Sequence
 from omg_cli.evidence import CLI_WRITER, safe_supervised_child_env
 from omg_cli.fanout import max_workers_cap
 from omg_cli.madmax import (
-    build_pane_command,
     forwarded_env,
     session_name_for_cwd,
     tmux_available,
@@ -607,11 +606,13 @@ def build_team_task_prompt(
             "",
             "## Coordination (CLI-first)",
             f"- Your worker id is `{task_id}` (also in `OMG_TEAM_WORKER_ID`).",
-            "- Process readiness is already recorded by the pane wrapper "
-            "(`omg team worker-ready`) before this model session starts.",
+            "- Provider readiness is owned by the pane supervisor (#99): "
+            "phases through `provider_ready` / `task_dispatched` with live "
+            "provider identity — not a pre-provider helper receipt.",
             "- Read your inbox under the team api worker dir when present.",
-            "- If your tools allow shell, optionally enrich readiness with a "
-            "mailbox ACK (not required for launch success):",
+            "- If your tools allow shell, optionally enrich with a mailbox "
+            "ACK (never required for launch success; cannot override failed "
+            "provider evidence):",
             "  `OMG_EXPERIMENTAL_TMUX_TEAM=1 omg team api send-message --input "
             f'\'{{"run_id":"{run_id}","team_id":"team","from_worker":"{task_id}",'
             '"to_worker":"leader-fixed","body":"ACK"}\'`',
@@ -857,11 +858,41 @@ def _pane_env_pairs(
     return sorted(merged.items(), key=lambda kv: kv[0])
 
 
-def build_worker_ready_prefix() -> str:
-    """Shell fragment: write process-level ready receipt, then continue pane.
+def build_supervisor_prefix(descriptor_path: Path | str) -> str:
+    """Shell fragment: run ``team supervisor`` with a vetted argv descriptor.
 
     Pins ``PYTHONPATH`` to the repo that contains ``omg_cli`` so detached tmux
-    panes (no parent env) can still import the package.
+    panes (no parent env) can still import the package. The supervisor spawns
+    the provider child — never ``worker-ready && provider`` (#99).
+    """
+    import shlex
+    import sys
+
+    repo_root = Path(__file__).resolve().parents[2]
+    py_path = shlex.quote(str(repo_root))
+    desc = shlex.quote(str(Path(descriptor_path).resolve()))
+    supervisor = shlex.join(
+        [
+            sys.executable,
+            "-m",
+            "omg_cli.main",
+            "team",
+            "supervisor",
+            "--descriptor",
+            str(Path(descriptor_path).resolve()),
+        ]
+    )
+    # Portable env prefix (dash/sh/bash/zsh) — avoid bash-only ${var:+…}.
+    # ``desc`` is already embedded via shlex.join; keep py_path explicit.
+    _ = desc  # path validated via resolve above
+    return f"PYTHONPATH={py_path}:$PYTHONPATH {supervisor}"
+
+
+def build_worker_ready_prefix() -> str:
+    """Deprecated legacy helper (#99).
+
+    Kept for import compatibility; new launches must use
+    :func:`build_supervisor_prefix`. A v1 receipt alone cannot prove ready.
     """
     import shlex
     import sys
@@ -869,31 +900,69 @@ def build_worker_ready_prefix() -> str:
     repo_root = Path(__file__).resolve().parents[2]
     py_path = shlex.quote(str(repo_root))
     ready = shlex.join([sys.executable, "-m", "omg_cli.main", "team", "worker-ready"])
-    # Portable env prefix (dash/sh/bash/zsh) — avoid bash-only ${var:+…}.
     return f"PYTHONPATH={py_path}:$PYTHONPATH {ready}"
 
 
-def wrap_pane_with_worker_ready(pane_command: str) -> str:
-    """Prefix *pane_command* with process-level ``team worker-ready``.
+def wrap_pane_with_supervisor(descriptor_path: Path | str) -> str:
+    """Pane command that runs the provider-aware supervisor (#99).
 
-    Fail-closed: if ready fails, the worker binary is not started.
+    The supervisor owns spawn + readiness receipts. Fail-closed on missing
+    descriptor path.
+    """
+    path = Path(descriptor_path)
+    if not str(path):
+        raise TeamError("wrap_pane_with_supervisor requires a descriptor path")
+    return build_supervisor_prefix(path)
+
+
+def wrap_pane_with_worker_ready(pane_command: str) -> str:
+    """Deprecated: pre-provider helper wrap (#99 false-green path).
+
+    Retained only so old call sites/tests can detect the legacy pattern.
+    New Team launches must use :func:`wrap_pane_with_supervisor`.
     """
     prefix = build_worker_ready_prefix()
     cmd = str(pane_command or "").strip()
     if not cmd:
         raise TeamError("wrap_pane_with_worker_ready requires a non-empty command")
-    # Compound via && so readiness is a hard gate before the model/agent runs.
     return f"{prefix} && {cmd}"
 
 
-def build_fixture_pane_command() -> str:
+def materialize_supervisor_pane_command(
+    *,
+    descriptor_path: Path | str,
+    provider: str,
+    argv: Sequence[str],
+    prompt_delivery: str = "prompt-file",
+    prompt_file: Path | str | None = None,
+    needs_pty: bool = False,
+    cwd: Path | str | None = None,
+) -> str:
+    """Write provider descriptor and return supervisor pane command."""
+    from omg_cli.team.supervisor import write_provider_descriptor
+
+    write_provider_descriptor(
+        descriptor_path,
+        provider=provider,
+        argv=argv,
+        prompt_delivery=prompt_delivery,
+        prompt_file=prompt_file,
+        needs_pty=needs_pty,
+        cwd=cwd,
+    )
+    return wrap_pane_with_supervisor(descriptor_path)
+
+
+def build_fixture_pane_command(
+    *,
+    descriptor_path: Path | str | None = None,
+) -> str:
     """Pane command for hermetic transport smoke (ACK fixture; no grok).
 
     Resolves ``tests/fixtures/team_worker_fixture.py`` relative to the repo
-    checkout that contains ``omg_cli/``. Production grok path is unchanged when
-    ``executor`` is omitted. Always wrapped with process-level worker-ready.
+    checkout that contains ``omg_cli/``. Uses the #99 supervisor with provider
+    ``fixture`` so readiness is process-proven, not a pre-provider helper.
     """
-    import shlex
     import sys
 
     fixture = (
@@ -906,8 +975,19 @@ def build_fixture_pane_command() -> str:
         raise TeamError(
             f"fixture executor requested but missing fixture script: {fixture}"
         )
-    return wrap_pane_with_worker_ready(shlex.join([sys.executable, str(fixture)]))
-
+    if descriptor_path is None:
+        # Shared fallback descriptor under /tmp is avoided — callers in
+        # start_team pass a per-task path. Hermetic unit tests may omit it.
+        raise TeamError(
+            "build_fixture_pane_command requires descriptor_path (#99)"
+        )
+    return materialize_supervisor_pane_command(
+        descriptor_path=descriptor_path,
+        provider="fixture",
+        argv=[sys.executable, str(fixture)],
+        prompt_delivery="prompt-file",
+        needs_pty=False,
+    )
 
 # ---------------------------------------------------------------------------
 # tmux helpers (live path only — never called from dry_run)
@@ -2507,9 +2587,7 @@ def start_team(
         )
     tid_plane = (team_id or "team").strip() or "team"
     token = owner_token or uuid.uuid4().hex
-    fixture_pane_cmd = (
-        build_fixture_pane_command() if executor_norm == "fixture" else None
-    )
+    use_fixture_executor = executor_norm == "fixture"
 
     multi_cli = routing is not None
     resolved: ResolvedRouting | None = None
@@ -2736,13 +2814,15 @@ def start_team(
                     provider = inv.provider
                     posture = inv.posture
                     prompt_delivery = inv.prompt_delivery
-                    pane_cmd = wrap_pane_with_worker_ready(
-                        build_executor_pane_command(
-                            argv,
-                            needs_pty=needs_pty,
-                            prompt_delivery=prompt_delivery,
-                            prompt_file=prompt_path,
-                        )
+                    desc_path = tdir / f"{tid}.provider.json"
+                    pane_cmd = materialize_supervisor_pane_command(
+                        descriptor_path=desc_path,
+                        provider=provider,
+                        argv=argv,
+                        prompt_delivery=prompt_delivery,
+                        prompt_file=prompt_path,
+                        needs_pty=needs_pty,
+                        cwd=wt,
                     )
                 else:
                     # D1 zero-config path — identical to pre-D3 behavior.
@@ -2762,14 +2842,29 @@ def start_team(
                     provider = "grok"
                     posture = "read-write"  # executor default; D1 does not route roles
                     prompt_delivery = PROMPT_DELIVERY_PROMPT_FILE
-                    pane_cmd = wrap_pane_with_worker_ready(
-                        build_pane_command(_grok_args_for_pane(argv))
+                    # Extract prompt-file path from argv when present.
+                    prompt_path_d1: Path | None = None
+                    try:
+                        pidx = argv.index("--prompt-file")
+                        if pidx + 1 < len(argv):
+                            prompt_path_d1 = Path(argv[pidx + 1])
+                    except ValueError:
+                        prompt_path_d1 = None
+                    desc_path = tdir / f"{tid}.provider.json"
+                    pane_cmd = materialize_supervisor_pane_command(
+                        descriptor_path=desc_path,
+                        provider=provider,
+                        argv=list(argv),
+                        prompt_delivery=prompt_delivery,
+                        prompt_file=prompt_path_d1,
+                        needs_pty=False,
+                        cwd=wt,
                     )
 
-                if fixture_pane_cmd is not None:
+                if use_fixture_executor:
                     # Hermetic transport override — keep argv record for diagnostics.
-                    # fixture builder already includes worker-ready wrap.
-                    pane_cmd = fixture_pane_cmd
+                    desc_path = tdir / f"{tid}.provider.json"
+                    pane_cmd = build_fixture_pane_command(descriptor_path=desc_path)
                     provider = "fixture"
 
                 # Persist per-task argv under team/ (mirrors fanout workers/*.argv.json)
@@ -6041,7 +6136,10 @@ __all__ = [
     "WORKSPACE_MODE",
     "build_executor_pane_command",
     "build_fixture_pane_command",
+    "build_supervisor_prefix",
     "build_worker_ready_prefix",
+    "materialize_supervisor_pane_command",
+    "wrap_pane_with_supervisor",
     "wrap_pane_with_worker_ready",
     "build_team_task_prompt",
     "collect_team",

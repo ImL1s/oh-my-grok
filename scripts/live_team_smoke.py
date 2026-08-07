@@ -5,11 +5,11 @@ Default is **dry-run** proof of shorthand + state seed. Pass ``--live`` only whe
 ``OMG_EXPERIMENTAL_TMUX_TEAM=1``, tmux, and grok credentials are available.
 
 ``--live`` is the promotion gate: it prints ``LIVE_TEAM_SMOKE_OK`` **only** when
-all hard assertions pass (real grok panes, worktrees, process-ready or mailbox
-ACKs, claim→completed, stop clears the owned session). Process-level
-``worker-ready`` receipts satisfy startup readiness; mailbox ACK remains
-enrichment. Missing credentials / quota / timeouts exit non-zero without that
-line — never claim promotion from a soft skip.
+all hard assertions pass (real grok panes, worktrees, schema-v2 provider-ready
+startup with live provider identity, claim→completed, stop clears the owned
+session). Legacy ``worker-ready`` v1 receipts are **not** sufficient (#99).
+Mailbox ACK remains optional enrichment. Missing credentials / quota / timeouts
+exit non-zero without that line — never claim promotion from a soft skip.
 
 ``--fixture-executor`` runs the hermetic ACK fixture in split panes (tmux
 required; no grok). That path proves transport only — never Grok live parity.
@@ -214,8 +214,13 @@ def _assert_live_gate(
     for rec in tasks:
         assert isinstance(rec, dict), rec
         cmd = str(rec.get("pane_command") or "")
-        assert "grok" in cmd, f"pane_command missing grok: {cmd[:120]!r}"
+        # #99: pane command is the supervisor; grok lives in provider descriptor.
+        assert "supervisor" in cmd, f"pane_command missing supervisor: {cmd[:120]!r}"
+        assert "worker-ready" not in cmd, f"legacy worker-ready wrap refused: {cmd[:120]!r}"
         assert "team_worker_fixture" not in cmd, f"fixture pane refused: {cmd[:120]!r}"
+        assert rec.get("provider") in (None, "grok") or str(rec.get("provider")) == "grok"
+        argv = rec.get("argv") or []
+        assert isinstance(argv, list) and argv and argv[0] == "grok", argv
 
     wt_n = _git_worktree_omg_count(cwd)
     assert wt_n == workers, (
@@ -224,23 +229,27 @@ def _assert_live_gate(
 
     run_id = str(meta["run_id"])
     team_id = str(meta.get("team_id") or "team")
-    # P0-1: process-level worker-ready is sufficient for launch readiness.
-    # Mailbox ACKs remain useful enrichment but are not required when process
-    # receipts already prove panes started.
+    # #99: provider-ready gate requires schema-v2 process readiness with live
+    # provider identity. Mailbox ACKs are enrichment only — never sufficient.
     process_ready = meta.get("startup_process_ready")
-    startup_acks = meta.get("startup_acks")
+    startup_status = meta.get("startup_status")
     process_ok = process_ready is not None and int(process_ready) >= workers
-    ack_meta_ok = startup_acks is not None and int(startup_acks) >= workers
-    assert process_ok or ack_meta_ok, (
-        f"startup not ready: process_ready={process_ready!r} "
-        f"startup_acks={startup_acks!r} expected >= {workers}"
+    assert startup_status == "running", (
+        f"startup_status={startup_status!r} expected running "
+        f"(process_ready={process_ready!r})"
     )
+    assert process_ok, (
+        f"startup not provider-ready: process_ready={process_ready!r} "
+        f"expected >= {workers} (mailbox ACK alone is not enough)"
+    )
+    for row in meta.get("startup_workers") or []:
+        assert row.get("gate_ok") is True, row
+        assert row.get("provider_alive") is True, row
+        assert row.get("legacy") is False, row
+        assert row.get("identity_ok") is not False, row
+    # Optional enrichment: mailbox ACKs may arrive later.
     ack_n = _leader_ack_count(cwd, run_id=run_id, team_id=team_id)
-    if not process_ok:
-        assert ack_n >= workers, (
-            f"ACK count={ack_n} expected >= {workers} "
-            f"(no process_ready fallback)"
-        )
+    _ = ack_n  # enrichment only; do not gate on ACK
 
     # claim → completed: poll API board until all tasks completed (and saw claims).
     deadline = time.monotonic() + timeout_s

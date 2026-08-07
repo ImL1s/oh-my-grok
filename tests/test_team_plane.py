@@ -296,7 +296,8 @@ def test_dry_run_writes_team_json_no_tmux_no_subprocess(
         assert "XAI_API_KEY" not in rec["pane_command"]
         # Process-ready wrap may pin PYTHONPATH; forbid secret exports only.
         assert "XAI_API_KEY=" not in rec["pane_command"]
-        assert "worker-ready" in rec["pane_command"]
+        assert "supervisor" in rec["pane_command"]
+        assert "worker-ready" not in rec["pane_command"]
         wt = Path(rec["worktree"])
         assert wt.is_dir()
         assert wt == worktree_dir(tmp_path, rid, rec["task_id"])
@@ -2789,18 +2790,28 @@ def test_dry_run_multi_cli_codex_argv(
     assert rec["needs_pty"] is False
     assert rec["prompt_delivery"] == PROMPT_DELIVERY_STDIN
     assert rec["pid"] is None
-    # pane command embeds codex, not only grok
-    assert "codex" in rec["pane_command"]
-    # stdin delivery: redirect prompt file into codex's trailing `-`
+    # #99: pane command is supervisor; delivery lives in provider descriptor.
+    assert "supervisor" in rec["pane_command"]
+    assert "worker-ready" not in rec["pane_command"]
     assert rec["argv"][-1] == "-"
-    # shell fragment ends with: ... - < '<promptfile>'
-    assert " < " in rec["pane_command"]
+    desc_path = (
+        tmp_path
+        / ".omg"
+        / "state"
+        / "runs"
+        / meta["run_id"]
+        / "team"
+        / "t1.provider.json"
+    )
+    assert desc_path.is_file()
+    desc = json.loads(desc_path.read_text(encoding="utf-8"))
+    assert desc["provider"] == "codex"
+    assert desc["prompt_delivery"] == PROMPT_DELIVERY_STDIN
+    assert desc["argv"][0] == "codex"
+    assert desc["argv"][-1] == "-"
     prompt_path = Path(rec["worktree"]) / ".omg" / "team-prompt" / "t1.prompt.md"
     assert prompt_path.is_file()
-    assert (
-        str(prompt_path) in rec["pane_command"]
-        or prompt_path.name in rec["pane_command"]
-    )
+    assert desc.get("prompt_file") == str(prompt_path)
     # Body must NOT appear in recorded argv (stays out of ps for stdin mode).
     body = prompt_path.read_text(encoding="utf-8")
     assert body not in rec["argv"]
@@ -2831,18 +2842,29 @@ def test_dry_run_agy_records_needs_pty(
     assert rec["needs_pty"] is True
     assert rec["argv"][0] == "agy"
     assert rec["prompt_delivery"] == PROMPT_DELIVERY_POSITIONAL_TEXT
-    assert "pty" in rec["pane_command"] or "python3" in rec["pane_command"]
+    assert "supervisor" in rec["pane_command"]
     assert meta["routing"]["by_role"]["executor"]["needs_pty"] is True
-    # positional-text: prompt BODY (not path alone) must reach the pty payload
-    # (JSON-escaped inside python3 -c payload, so match a distinctive line).
+    # #99: positional-text body substitution happens inside the supervisor at
+    # spawn time; descriptor keeps the path placeholder (not the prompt body).
     prompt_path = Path(rec["worktree"]) / ".omg" / "team-prompt" / "t-agy.prompt.md"
     body = prompt_path.read_text(encoding="utf-8")
     assert "agy pane" in body
-    assert "agy pane" in rec["pane_command"]
-    # path placeholder must not remain as the sole -p value in the pane payload
-    # once body is substituted (argv record still has the path).
+    assert "agy pane" not in rec["pane_command"]
     assert str(prompt_path) in rec["argv"]
-    assert str(prompt_path) not in rec["pane_command"]
+    desc_path = (
+        tmp_path
+        / ".omg"
+        / "state"
+        / "runs"
+        / meta["run_id"]
+        / "team"
+        / "t-agy.provider.json"
+    )
+    desc = json.loads(desc_path.read_text(encoding="utf-8"))
+    assert desc["needs_pty"] is True
+    assert desc["prompt_delivery"] == PROMPT_DELIVERY_POSITIONAL_TEXT
+    assert desc.get("prompt_file") == str(prompt_path)
+    assert "agy pane" not in json.dumps(desc)
 
 
 def test_build_executor_pane_command_codex_stdin_redirect(tmp_path: Path) -> None:

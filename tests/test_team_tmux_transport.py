@@ -206,10 +206,26 @@ def test_split_transport_two_panes_and_acks(
         assert meta.get("session_owned") is True
         assert meta.get("task_count") == 2
         # Honesty: fixture path must not look like a grok live claim.
+        # #99: pane command is the supervisor; fixture argv lives in descriptor.
         for task in meta.get("tasks") or []:
             cmd = str(task.get("pane_command") or "")
-            assert "team_worker_fixture" in cmd
+            assert "supervisor" in cmd
+            assert "worker-ready" not in cmd
             assert "grok" not in cmd.split()
+            tid = str(task.get("task_id") or "")
+            desc = (
+                tmp_path
+                / ".omg"
+                / "state"
+                / "runs"
+                / str(meta["run_id"])
+                / "team"
+                / f"{tid}.provider.json"
+            )
+            assert desc.is_file(), desc
+            payload = json.loads(desc.read_text(encoding="utf-8"))
+            assert payload.get("provider") == "fixture"
+            assert any("team_worker_fixture" in str(x) for x in payload.get("argv") or [])
 
         session = str(meta.get("session") or "")
         run_id = str(meta["run_id"])
@@ -220,14 +236,15 @@ def test_split_transport_two_panes_and_acks(
         }
         assert _pane_current_paths(session) == expected_worktrees
         assert meta.get("startup_status") == "running"
-        # Process-level ready is primary; mailbox ACK remains enrichment.
+        # #99: provider-ready gate is primary; mailbox ACK is enrichment only.
         proc_ready = int(meta.get("startup_process_ready") or 0)
-        acks_n = int(meta.get("startup_acks") or 0)
-        assert proc_ready == 2 or acks_n == 2, meta
+        assert proc_ready == 2, meta
         ready_workers = set(meta.get("startup_ready_workers") or [])
-        if not ready_workers:
-            ready_workers = set(meta.get("startup_ack_workers") or [])
         assert ready_workers == {"w1", "w2"}
+        for row in meta.get("startup_workers") or []:
+            assert row.get("gate_ok") is True
+            assert row.get("provider_alive") is True
+            assert row.get("legacy") is False
 
         acks = _wait_acks(
             tmp_path, run_id=run_id, team_id=TEAM_ID, expected=2, timeout_s=5.0

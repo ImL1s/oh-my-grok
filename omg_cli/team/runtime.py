@@ -39,8 +39,9 @@ from omg_cli.team.roles import normalize_role, role_meta
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 # Bounded wait for worker readiness before reporting launch as running.
-# Process-level ready receipts (``team worker-ready``) count as ready; mailbox
-# body=ACK remains an optional model-level enrichment (# production P0-1).
+# Schema-v2 provider-ready receipts (#99) are the primary gate; mailbox
+# body=ACK remains optional enrichment and cannot elevate a dead/unspawned
+# provider. Legacy v1 helper receipts are wrapper_ready_legacy only.
 READY_TIMEOUT_ENV = "OMG_TEAM_READY_TIMEOUT_MS"
 DEFAULT_READY_TIMEOUT_MS = 45_000
 _LEADER_ID = "leader-fixed"
@@ -237,21 +238,11 @@ def ready_timeout_ms(env: Mapping[str, str] | None = None) -> int:
 def worker_ready_path(
     root: Path | str, *, run_id: str, team_id: str, worker_id: str
 ) -> Path:
-    """Per-worker process-level readiness receipt path."""
-    rid = require_safe_id(run_id, label="run_id")
-    tid = require_safe_id(team_id, label="team_id")
-    wid = require_safe_id(worker_id, label="worker_id")
-    return (
-        Path(root).resolve()
-        / ".omg"
-        / "state"
-        / "runs"
-        / rid
-        / "team"
-        / safe_path_key(tid, namespace="team")
-        / "workers"
-        / safe_path_key(wid, namespace="worker")
-        / _READY_FILENAME
+    """Per-worker readiness receipt path (v1 legacy or v2 startup)."""
+    from omg_cli.team.startup import worker_startup_path
+
+    return worker_startup_path(
+        root, run_id=run_id, team_id=team_id, worker_id=worker_id
     )
 
 
@@ -263,10 +254,11 @@ def write_worker_ready_receipt(
     worker_id: str,
     source: str = "process",
 ) -> Path:
-    """Write CLI-stamped process readiness receipt (pane wrapper / fixture).
+    """Write legacy v1 process readiness receipt (pane helper).
 
-    Does **not** require mailbox or shell inside the worker model — used as the
-    primary readiness signal so read-only posture panes can still go ``running``.
+    **#99:** v1 receipts are classified as ``wrapper_ready_legacy`` and must
+    **not** satisfy the production gate for ``startup_status=running``. Prefer
+    :func:`omg_cli.team.startup.write_startup_phase` via the supervisor.
     """
     from datetime import datetime, timezone
 
@@ -288,6 +280,7 @@ def write_worker_ready_receipt(
         .isoformat()
         .replace("+00:00", "Z"),
         "pid": os.getpid(),
+        "note": "legacy v1 helper receipt; not provider-ready (#99)",
     }
     body = (
         json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
@@ -302,32 +295,149 @@ def collect_process_ready_workers(
     run_id: str,
     team_id: str,
     expected_workers: Sequence[str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> set[str]:
-    """Return worker ids that have a valid process-level ready receipt."""
+    """Return worker ids with a valid schema-v2 gate-satisfying startup receipt.
+
+    Legacy v1 helper receipts are intentionally excluded (#99 false-green kill).
+    Requires distinct live provider identity and phase history.
+    """
+    from omg_cli.team.startup import (
+        classify_startup_payload,
+        meets_gate,
+        provider_identity_distinct,
+        provider_process_alive,
+        read_startup_record,
+        resolve_gate_phase,
+    )
+
     expected = [
         str(w).strip() for w in (expected_workers or ()) if str(w).strip()
     ]
+    gate = resolve_gate_phase(env)
     ready: set[str] = set()
     for wid in expected:
-        path = worker_ready_path(
+        data = read_startup_record(
             root, run_id=run_id, team_id=team_id, worker_id=wid
         )
-        if not path.is_file():
+        classified = classify_startup_payload(data)
+        if classified.get("legacy") or not classified.get("phase"):
             continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        phases = classified.get("phases") or []
+        if not isinstance(phases, list):
+            phases = []
+        if not meets_gate(
+            classified.get("phase"),
+            gate=gate,
+            phases=[str(p) for p in phases],
+        ):
             continue
-        if not isinstance(data, dict):
+        if not provider_identity_distinct(
+            provider_pid=classified.get("provider_pid")
+            if isinstance(classified.get("provider_pid"), int)
+            else None,
+            supervisor_pid=classified.get("supervisor_pid")
+            if isinstance(classified.get("supervisor_pid"), int)
+            else None,
+            provider_pid_start=(
+                str(classified["provider_pid_start"])
+                if isinstance(classified.get("provider_pid_start"), str)
+                else None
+            ),
+        ):
             continue
-        if data.get("writer") != CLI_WRITER:
-            continue
-        if data.get("kind") != "worker_ready":
-            continue
-        if str(data.get("worker_id") or "").strip() != wid:
+        # Exact live provider identity required for gate satisfaction.
+        if not provider_process_alive(
+            provider_pid=classified.get("provider_pid")
+            if isinstance(classified.get("provider_pid"), int)
+            else None,
+            provider_pid_start=(
+                str(classified["provider_pid_start"])
+                if isinstance(classified.get("provider_pid_start"), str)
+                else None
+            ),
+        ):
             continue
         ready.add(wid)
     return ready
+
+
+def collect_worker_startup_snapshots(
+    root: Path | str,
+    *,
+    run_id: str,
+    team_id: str,
+    expected_workers: Sequence[str],
+    env: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Deterministic per-worker startup snapshot for JSON/human output."""
+    from omg_cli.team.startup import (
+        classify_startup_payload,
+        meets_gate,
+        provider_identity_distinct,
+        provider_process_alive,
+        read_startup_record,
+        resolve_gate_phase,
+    )
+
+    gate = resolve_gate_phase(env)
+    rows: list[dict[str, Any]] = []
+    for wid in expected_workers:
+        data = read_startup_record(
+            root, run_id=run_id, team_id=team_id, worker_id=wid
+        )
+        classified = classify_startup_payload(data)
+        phase = classified.get("phase")
+        phases = classified.get("phases") or []
+        if not isinstance(phases, list):
+            phases = []
+        alive = False
+        if isinstance(classified.get("provider_pid"), int) and isinstance(
+            classified.get("provider_pid_start"), str
+        ):
+            alive = provider_process_alive(
+                provider_pid=classified["provider_pid"],
+                provider_pid_start=classified["provider_pid_start"],
+            )
+        identity_ok = provider_identity_distinct(
+            provider_pid=classified.get("provider_pid")
+            if isinstance(classified.get("provider_pid"), int)
+            else None,
+            supervisor_pid=classified.get("supervisor_pid")
+            if isinstance(classified.get("supervisor_pid"), int)
+            else None,
+            provider_pid_start=(
+                str(classified["provider_pid_start"])
+                if isinstance(classified.get("provider_pid_start"), str)
+                else None
+            ),
+        )
+        gate_ok = bool(
+            meets_gate(
+                phase if isinstance(phase, str) else None,
+                gate=gate,
+                phases=[str(p) for p in phases],
+            )
+            and identity_ok
+            and alive
+        )
+        rows.append(
+            {
+                "worker_id": wid,
+                "phase": phase,
+                "evidence_code": classified.get("evidence_code"),
+                "blocked_reason": classified.get("blocked_reason"),
+                "failure_reason": classified.get("failure_reason"),
+                "provider": classified.get("provider"),
+                "provider_pid": classified.get("provider_pid"),
+                "supervisor_pid": classified.get("supervisor_pid"),
+                "provider_alive": alive,
+                "identity_ok": identity_ok,
+                "legacy": bool(classified.get("legacy")),
+                "gate_ok": gate_ok,
+            }
+        )
+    return rows
 
 
 def collect_startup_ack_workers(
@@ -381,68 +491,162 @@ def wait_for_startup_acks(
     env: Mapping[str, str] | None = None,
     poll_s: float = _ACK_POLL_S,
 ) -> dict[str, Any]:
-    """Poll until every expected worker is process-ready and/or mailbox-ACK.
+    """Poll until every expected worker reaches the provider-ready gate (#99).
 
-    Process-level ``ready.json`` (from ``omg team worker-ready``) is the primary
-    gate so read-only posture panes can start without shell. Mailbox ``ACK`` is
-    still counted separately for diagnostics / enrichment.
+    Schema-v2 startup records with live provider identity are the primary
+    gate. Mailbox ``ACK`` is enrichment only — it cannot elevate an
+    unspawned/dead/legacy-wrapper worker to ready.
 
     Returns:
-    - ``running`` — every expected worker process-ready **or** ACKed
-    - ``degraded`` — some but not all ready
-    - ``failed_start`` — zero ready signals
+    - ``running`` — every expected worker met the gate with live provider
+    - ``degraded`` — some but not all
+    - ``failed_start`` — zero gate-ready workers (and none blocked)
+    - ``blocked_start`` — at least one worker blocked and none gate-ready
     """
+    from omg_cli.team.startup import (
+        StartupPhase,
+        classify_startup_payload,
+        read_startup_record,
+        resolve_gate_phase,
+        write_startup_phase,
+    )
+
     expected = [str(w).strip() for w in expected_workers if str(w).strip()]
     expected_set = set(expected)
     ms = ready_timeout_ms(env) if timeout_ms is None else int(timeout_ms)
     if ms < 0:
         raise TeamGateError("ready timeout_ms must be >= 0")
+    gate = resolve_gate_phase(env)
     deadline = time.monotonic() + (ms / 1000.0)
     acked: set[str] = set()
     process_ready: set[str] = set()
+    workers_snap: list[dict[str, Any]] = []
+
     while True:
         acked = collect_startup_ack_workers(root, run_id=run_id, team_id=team_id)
         acked &= expected_set
+        # Optional enrichment: record mailbox_ack only when already gate-ready.
+        for wid in sorted(acked):
+            data = read_startup_record(
+                root, run_id=run_id, team_id=team_id, worker_id=wid
+            )
+            classified = classify_startup_payload(data)
+            phase = classified.get("phase")
+            if (
+                isinstance(phase, str)
+                and phase
+                in (
+                    StartupPhase.TASK_DISPATCHED.value,
+                    StartupPhase.PROVIDER_READY.value,
+                )
+                and wid in collect_process_ready_workers(
+                    root,
+                    run_id=run_id,
+                    team_id=team_id,
+                    expected_workers=[wid],
+                    env=env,
+                )
+            ):
+                try:
+                    write_startup_phase(
+                        root,
+                        run_id=run_id,
+                        team_id=team_id,
+                        worker_id=wid,
+                        phase=StartupPhase.MAILBOX_ACK,
+                        provider=str(classified.get("provider") or "unknown"),
+                        evidence_code="mailbox_ack",
+                    )
+                except Exception:
+                    pass
+
         process_ready = collect_process_ready_workers(
             root,
             run_id=run_id,
             team_id=team_id,
             expected_workers=expected,
+            env=env,
         )
         process_ready &= expected_set
-        ready = acked | process_ready
-        if expected_set and ready >= expected_set:
+        workers_snap = collect_worker_startup_snapshots(
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            expected_workers=expected,
+            env=env,
+        )
+
+        # Early stop: all ready, or all terminal (failed/blocked), or timeout.
+        if expected_set and process_ready >= expected_set:
             break
         if not expected:
+            break
+        terminal_n = 0
+        for row in workers_snap:
+            phase = row.get("phase")
+            if phase in (
+                StartupPhase.FAILED.value,
+                StartupPhase.BLOCKED.value,
+            ):
+                terminal_n += 1
+        if expected and terminal_n == len(expected) and not process_ready:
             break
         if time.monotonic() >= deadline:
             break
         time.sleep(max(0.05, float(poll_s)))
 
-    ready = acked | process_ready
-    ordered_ready = [w for w in expected if w in ready]
+    # Final snapshot (mailbox ACK never substitutes for process_ready).
+    process_ready = collect_process_ready_workers(
+        root,
+        run_id=run_id,
+        team_id=team_id,
+        expected_workers=expected,
+        env=env,
+    )
+    process_ready &= expected_set
+    acked = collect_startup_ack_workers(root, run_id=run_id, team_id=team_id)
+    acked &= expected_set
+    workers_snap = collect_worker_startup_snapshots(
+        root,
+        run_id=run_id,
+        team_id=team_id,
+        expected_workers=expected,
+        env=env,
+    )
+
+    ordered_ready = [w for w in expected if w in process_ready]
     ordered_ack = [w for w in expected if w in acked]
-    ordered_proc = [w for w in expected if w in process_ready]
-    missing = [w for w in expected if w not in ready]
+    ordered_proc = list(ordered_ready)
+    missing = [w for w in expected if w not in process_ready]
+    blocked = [
+        w["worker_id"]
+        for w in workers_snap
+        if w.get("phase") == StartupPhase.BLOCKED.value
+    ]
     count = len(ordered_ready)
     if not expected:
-        status = "running"
+        # Vacuous "success" with zero workers is a false claim — fail closed.
+        status = "failed_start"
     elif count == len(expected):
         status = "running"
+    elif count == 0 and blocked:
+        status = "blocked_start"
     elif count == 0:
         status = "failed_start"
     else:
         status = "degraded"
     return {
-        # Mailbox ACK count (backward-compatible field name)
         "startup_acks": len(ordered_ack),
         "startup_ack_workers": ordered_ack,
         "startup_process_ready": len(ordered_proc),
         "startup_process_ready_workers": ordered_proc,
         "startup_ready_workers": ordered_ready,
         "startup_missing_workers": missing,
+        "startup_blocked_workers": blocked,
+        "startup_workers": workers_snap,
         "startup_status": status,
         "startup_expected": len(expected),
+        "startup_gate_phase": gate,
         "ready_timeout_ms": ms,
     }
 
@@ -459,11 +663,11 @@ def startup_readiness_payload(
     env: Mapping[str, str] | None = None,
     poll_s: float = _ACK_POLL_S,
 ) -> dict[str, Any]:
-    """Shared readiness contract for ``team launch`` and ``team start`` (#20).
+    """Shared readiness contract for ``team launch`` and ``team start`` (#20/#99).
 
     Status vocabulary:
-    - ``running`` — all expected workers ACKed
-    - ``degraded`` / ``failed_start`` — partial / zero ACKs (non-zero CLI exit)
+    - ``running`` — all expected workers reached provider gate with live identity
+    - ``degraded`` / ``failed_start`` / ``blocked_start`` — partial / zero / blocked
     - ``unverified_start`` — explicit ``--no-wait`` (no readiness proof)
     - dry-run: ``startup_status=None`` with a skip note (not a live success claim)
     """
@@ -473,6 +677,7 @@ def startup_readiness_payload(
             "startup_acks": None,
             "startup_ack_workers": None,
             "startup_missing_workers": None,
+            "startup_workers": None,
             "startup_status": None,
             "startup_expected": len(expected),
             "ready_timeout_ms": None,
@@ -485,6 +690,7 @@ def startup_readiness_payload(
             "startup_acks": None,
             "startup_ack_workers": None,
             "startup_missing_workers": list(expected),
+            "startup_workers": None,
             "startup_status": "unverified_start",
             "startup_expected": len(expected),
             "ready_timeout_ms": None,
@@ -505,24 +711,31 @@ def startup_readiness_payload(
     proc_n = int(startup.get("startup_process_ready") or 0)
     ack_n = int(startup.get("startup_acks") or 0)
     ready_n = len(startup.get("startup_ready_workers") or [])
+    gate = startup.get("startup_gate_phase")
     if status == "running":
         startup["startup_note"] = (
-            f"all {ready_n} workers ready "
-            f"(process={proc_n}, mailbox_ack={ack_n}) within "
+            f"all {ready_n} workers provider-ready "
+            f"(gate={gate}, process={proc_n}, mailbox_ack={ack_n}) within "
             f"{startup['ready_timeout_ms']}ms"
         )
     elif status == "degraded":
         startup["startup_note"] = (
-            f"partial ready {ready_n}/"
+            f"partial provider-ready {ready_n}/"
             f"{startup['startup_expected']} "
-            f"(process={proc_n}, mailbox_ack={ack_n}) within "
+            f"(gate={gate}, process={proc_n}, mailbox_ack={ack_n}) within "
             f"{startup['ready_timeout_ms']}ms "
             f"(knob {READY_TIMEOUT_ENV}); state left for diagnosis"
         )
+    elif status == "blocked_start":
+        blocked = startup.get("startup_blocked_workers") or []
+        startup["startup_note"] = (
+            f"blocked_start: workers={blocked} require human action "
+            f"(auth/trust); gate={gate}"
+        )
     else:
         startup["startup_note"] = (
-            f"zero readiness signals within {startup['ready_timeout_ms']}ms "
-            f"(process/mailbox; knob {READY_TIMEOUT_ENV}); "
+            f"zero provider-ready signals within {startup['ready_timeout_ms']}ms "
+            f"(gate={gate}; knob {READY_TIMEOUT_ENV}); "
             "state left for diagnosis"
         )
     return startup
@@ -594,8 +807,11 @@ def apply_start_readiness(
         "startup_process_ready_workers",
         "startup_ready_workers",
         "startup_missing_workers",
+        "startup_blocked_workers",
+        "startup_workers",
         "startup_status",
         "startup_expected",
+        "startup_gate_phase",
         "ready_timeout_ms",
         "startup_note",
         "team_id",
