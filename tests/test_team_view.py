@@ -83,6 +83,51 @@ def test_planner_outside_tty_attach_no_detach() -> None:
     assert plan.action == ACTION_ATTACH
     assert "attach-session" in plan.argv
     assert "-d" not in plan.argv
+    # Attach targets exact $session_id — never mutable session name.
+    t_idx = plan.argv.index("-t")
+    assert plan.argv[t_idx + 1] == "$42"
+    assert "omg-team-sess" not in plan.argv
+
+
+def test_planner_attach_argv_targets_session_id_not_name() -> None:
+    """Regression: name-reuse TOCTOU — attach must use proved $id."""
+    plan = plan_team_view(
+        _req(
+            inside_tmux=False,
+            is_tty=True,
+            target_session_id="$77",
+            target_session_name="reused-name",
+        )
+    )
+    assert plan.action == ACTION_ATTACH
+    assert plan.argv[plan.argv.index("-t") + 1] == "$77"
+    assert "reused-name" not in plan.argv
+    # print / json hint paths likewise.
+    printed = plan_team_view(
+        _req(
+            mode=MODE_PRINT,
+            inside_tmux=False,
+            is_tty=True,
+            target_session_id="$77",
+            target_session_name="reused-name",
+        )
+    )
+    assert printed.argv[printed.argv.index("-t") + 1] == "$77"
+    assert "reused-name" not in printed.argv
+
+
+def test_attach_argv_for_target_requires_session_id() -> None:
+    from omg_cli.team.tmux import attach_argv_for_target, TmuxTeamError
+
+    argv = attach_argv_for_target(
+        session_id="$42",
+        pane_id="%1",
+        window_id="@9",
+    )
+    assert argv[argv.index("-t") + 1] == "$42"
+    assert "@9" in argv
+    with pytest.raises(TmuxTeamError, match="session_id"):
+        attach_argv_for_target(session_id="named-session", pane_id="%1")
 
 
 def test_planner_takeover_adds_detach() -> None:
@@ -366,6 +411,9 @@ def test_view_print_no_tmux_effect(
     assert out["view"]["status"] == "print"
     assert out["print_hint"]
     assert "attach-session" in out["print_hint"]
+    # Attach hint targets $session_id, not mutable session name.
+    assert live["session_id"] in out["print_hint"]
+    assert f"-t {live['session']}" not in out["print_hint"]
     # No client-changing ops.
     assert not any(
         c and c[0] in {"select-pane", "select-window", "switch-client", "attach-session"}
@@ -396,10 +444,41 @@ def test_view_json_never_executes(
     )
     assert out["view"]["status"] == "none"
     assert out["view"]["executed"] is False
+    assert out["ok"] is True
     assert not any(
         c and c[0] in {"select-pane", "switch-client", "attach-session"}
         for c in effects
     )
+
+
+def test_view_json_auth_failure_surfaces_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--json must not report ok:true / drop error when authorize fails."""
+    _enable_team(monkeypatch)
+    _init_repo(tmp_path)
+    meta = plane.start_team(
+        "view json refuse",
+        TASKS_ONE,
+        root=tmp_path,
+        dry_run=True,
+    )
+    live = _write_live_team(tmp_path, meta, monkeypatch)
+    _install_view_tmux(monkeypatch, live, nonce="d" * 32)  # stale nonce
+    out = view_team(
+        tmp_path,
+        str(meta["run_id"]),
+        as_json=True,
+        is_tty=True,
+    )
+    assert out["ok"] is False
+    assert out["view"]["status"] == "refused"
+    assert out["error"]["code"] == "E_VIEW_AUTHORIZE"
+    assert out["view"].get("error")
+    # Hint argv still targets $session_id when present.
+    argv = (out.get("plan") or {}).get("argv") or []
+    if "-t" in argv:
+        assert argv[argv.index("-t") + 1] == live["session_id"]
 
 
 def test_view_same_session_selects_leader(

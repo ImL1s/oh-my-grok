@@ -709,9 +709,14 @@ def cmd_team(args: argparse.Namespace) -> int:
                 return exc.exit_code
             if as_json:
                 emit_data(args, "team.view", result)
-                return 0 if result.get("ok", True) or print_only else 2
+                if not result.get("ok", True):
+                    view = result.get("view") or {}
+                    return 2 if view.get("status") == "refused" else 1
+                return 0
             if print_only and result.get("print_hint"):
                 print(result["print_hint"])
+                if not result.get("ok", True):
+                    return 2
                 return 0
             emit_data(args, "team.view", result)
             if not result.get("ok", True):

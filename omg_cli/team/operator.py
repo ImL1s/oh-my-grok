@@ -504,6 +504,7 @@ class TeamViewProof:
     leader_pane_pid: int | None
     generation: int
     owner_token_sha256: str | None = None
+    tmux_socket_path: str | None = None
 
 
 def resolve_team_view_target(
@@ -572,6 +573,9 @@ def resolve_team_view_target(
         )
 
     team_id = str(meta.get("team_id") or "team")
+    sock = meta.get("tmux_socket_path")
+    if not isinstance(sock, str) or not sock or "\0" in sock:
+        sock = None
     return TeamViewProof(
         run_id=run_id,
         team_id=team_id,
@@ -585,6 +589,7 @@ def resolve_team_view_target(
         leader_pane_pid=target.leader_pane_pid,
         generation=generation,
         owner_token_sha256=target.owner_token_sha256,
+        tmux_socket_path=sock,
     )
 
 
@@ -607,6 +612,7 @@ def authorize_team_view(proof: TeamViewProof) -> TeamViewProof:
             # Leader shell PID is advisory; exact pane + session + launch
             # nonce (+ window) is the authorization gate for view restore.
             expected_pid=None,
+            socket_path=proof.tmux_socket_path,
         )
     except TmuxTeamError as exc:
         raise OperatorError(
@@ -688,7 +694,9 @@ def plan_and_execute_team_view(
         authorize_team_view(proof)
     except OperatorError as exc:
         auth_error = exc
-        # --print / --json may still emit a structured hint; live effects refuse.
+        # Live (non-print) effects raise immediately when not --json.
+        # --json / --print continue so callers get a structured refuse + hint,
+        # but ok must remain false (never drop the error for automation).
         if mode not in {MODE_PRINT, MODE_NONE} and not as_json:
             raise
 
@@ -697,7 +705,10 @@ def plan_and_execute_team_view(
     current_sid: str | None = None
     if inside:
         pane_env = str(os.environ.get("TMUX_PANE") or "").strip() or None
-        current_sid = probe_current_session_id(pane_id=pane_env)
+        current_sid = probe_current_session_id(
+            pane_id=pane_env,
+            socket_path=proof.tmux_socket_path,
+        )
 
     if as_json or mode == MODE_NONE:
         req_mode = MODE_NONE
@@ -706,7 +717,7 @@ def plan_and_execute_team_view(
     elif takeover:
         req_mode = MODE_TAKEOVER
     else:
-        req_mode = MODE_VIEW if mode == MODE_VIEW else MODE_VIEW
+        req_mode = MODE_VIEW
 
     request = ViewRequest(
         mode=req_mode,
@@ -719,27 +730,26 @@ def plan_and_execute_team_view(
         target_pane_id=proof.leader_pane_id,
         as_json=as_json,
         takeover=takeover,
+        socket_path=proof.tmux_socket_path,
     )
     plan = plan_team_view(request)
     requested = mode != MODE_NONE or takeover
 
-    if auth_error is not None and plan.action in {
-        ACTION_SELECT,
-        ACTION_SWITCH_CLIENT,
-        ACTION_ATTACH,
-    }:
+    if auth_error is not None:
         return {
             "ok": False,
             "command": "team.view",
             "run_id": proof.run_id,
             "view": view_result_dict(
                 plan,
-                requested=requested,
+                requested=requested or as_json,
                 status="refused",
                 mode=proof.mode,
                 executed=False,
                 error=str(auth_error),
             ),
+            "plan": plan.to_dict(),
+            "print_hint": plan.hint if mode == MODE_PRINT else None,
             "error": {
                 "code": auth_error.code,
                 "message": str(auth_error),
@@ -800,6 +810,7 @@ def plan_and_execute_team_view(
                 pane_id=proof.leader_pane_id,
                 expected_pid=None,
                 takeover=takeover or plan.detach_others,
+                socket_path=proof.tmux_socket_path,
             )
             executed = bool(effect.get("executed"))
             status = {
@@ -1053,7 +1064,7 @@ def focus_worker(
     tty = sys.stdin.isatty() if is_tty is None else bool(is_tty)
     inside_tmux = bool(os.environ.get("TMUX"))
     attach_argv = attach_argv_for_target(
-        session=proof.session,
+        session_id=proof.session_id,
         pane_id=proof.pane_id,
         window_id=proof.window_id,
     )

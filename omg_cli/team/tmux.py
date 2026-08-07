@@ -4887,32 +4887,35 @@ def send_key(
 
 def attach_argv_for_target(
     *,
-    session: str,
     pane_id: str,
+    session_id: str,
     window_id: str | None = None,
     takeover: bool = False,
+    socket_path: str | None = None,
 ) -> list[str]:
     """Return a safe argv hint for attaching then selecting a proved pane.
 
-    tmux parses ``;`` itself (no shell). ``window_id`` is validated when present
-    but targeting always uses the exact ``%N`` pane id. ``takeover=True`` adds
-    ``attach-session -d`` (explicit only — never the default).
+    Always targets exact ``session_id`` (``$N``) — never a mutable session
+    name (name-reuse TOCTOU). ``takeover=True`` adds ``attach-session -d``.
+    Optional ``socket_path`` pins ``tmux -S`` for non-default servers.
     """
     _require_exact_pane_id(pane_id)
-    if (
-        not isinstance(session, str)
-        or not session
-        or "\0" in session
-        or any(ch.isspace() for ch in session)
-    ):
-        raise TmuxTeamError(f"refused unsafe session name {session!r}")
+    if not isinstance(session_id, str) or _TMUX_SESSION_ID.fullmatch(session_id) is None:
+        raise TmuxTeamError(f"refused attach without exact session_id {session_id!r}")
     if window_id is not None:
         if not isinstance(window_id, str) or _TMUX_WINDOW_ID.fullmatch(window_id) is None:
             raise TmuxTeamError(f"refused non-exact window id {window_id!r}")
-    argv: list[str] = ["tmux", "attach-session"]
+    argv: list[str] = ["tmux"]
+    if (
+        isinstance(socket_path, str)
+        and socket_path
+        and "\0" not in socket_path
+    ):
+        argv.extend(["-S", socket_path])
+    argv.append("attach-session")
     if takeover:
         argv.append("-d")
-    argv.extend(["-t", session, ";"])
+    argv.extend(["-t", session_id, ";"])
     if isinstance(window_id, str) and window_id:
         argv.extend(["select-window", "-t", window_id, ";"])
     argv.extend(["select-pane", "-t", pane_id])
@@ -5159,10 +5162,11 @@ def execute_authorized_view(
 
     if action_u == "ATTACH":
         argv = attach_argv_for_target(
-            session=session_name,
+            session_id=session_id,
             pane_id=pane_id,
             window_id=window_id,
             takeover=takeover,
+            socket_path=socket_path,
         )
         # Final re-probe immediately before attach handoff.
         prove_view_target_live(

@@ -49,6 +49,7 @@ class ViewRequest:
     target_pane_id: str
     as_json: bool = False
     takeover: bool = False
+    socket_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -90,16 +91,29 @@ def _safe_session_name(name: str) -> bool:
 
 def _attach_argv(
     *,
-    session_name: str,
+    session_id: str,
     pane_id: str,
     window_id: str | None,
     takeover: bool,
+    socket_path: str | None = None,
 ) -> tuple[str, ...]:
-    """Build argv-only attach chain (tmux client ``;`` separator, no shell)."""
-    argv: list[str] = ["tmux", "attach-session"]
+    """Build argv-only attach chain targeting exact ``$session_id`` (not name).
+
+    Session names are mutable and reusable — attach must use the proved
+    ``$N`` id (same authority as switch-client) to avoid name-reuse TOCTOU.
+    """
+    argv: list[str] = ["tmux"]
+    if (
+        isinstance(socket_path, str)
+        and socket_path
+        and "\0" not in socket_path
+        and not any(ch.isspace() for ch in socket_path)
+    ):
+        argv.extend(["-S", socket_path])
+    argv.append("attach-session")
     if takeover:
         argv.append("-d")
-    argv.extend(["-t", session_name, ";"])
+    argv.extend(["-t", session_id, ";"])
     if isinstance(window_id, str) and window_id:
         argv.extend(["select-window", "-t", window_id, ";"])
     argv.extend(["select-pane", "-t", pane_id])
@@ -193,10 +207,11 @@ def plan_team_view(request: ViewRequest) -> ViewPlan:
             action=ACTION_NONE,
             reason="view not requested" if mode == MODE_NONE else "json disables view effect",
             argv=_attach_argv(
-                session_name=target_name,
+                session_id=target_sid,
                 pane_id=pane_id,
                 window_id=window_id,
                 takeover=False,
+                socket_path=request.socket_path,
             ),
             hint="pass --view (without --json) to restore the Team pane",
             session_id=target_sid,
@@ -206,10 +221,11 @@ def plan_team_view(request: ViewRequest) -> ViewPlan:
         )
 
     attach_argv = _attach_argv(
-        session_name=target_name,
+        session_id=target_sid,
         pane_id=pane_id,
         window_id=window_id,
         takeover=mode == MODE_TAKEOVER,
+        socket_path=request.socket_path,
     )
     select_argv = _select_argv(window_id=window_id, pane_id=pane_id)
     switch_argv = _switch_argv(
