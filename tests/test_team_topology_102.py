@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from omg_cli.team import plane, topology
+from omg_cli.team import topology
 from omg_cli.team.topology import (
     TopologyError,
     VIEW_MODE_DEDICATED_WINDOW,
