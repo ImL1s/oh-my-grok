@@ -605,11 +605,13 @@ def cmd_team(args: argparse.Namespace) -> int:
             session_resume_gate = None
             if want_provider:
                 # CLI owns probe → gate; runtime must not re-parse versions.
+                # required=False so absent session_resume yields LEGACY (safe
+                # conversation-load path), not BLOCKED — #105 host-compat.
                 host_report = probe_host()
                 session_resume_gate = evaluate_feature_gate(
                     "session_resume",
                     host_report.capabilities,
-                    required=True,
+                    required=False,
                 )
             if print_only and not want_view:
                 # resume --print implies view print without reconcile? No —
@@ -1801,8 +1803,8 @@ def register_team_parsers(
         action="store_true",
         help=(
             "request host ACP provider-session resume gated by host_probe "
-            "(independent of --view; BLOCKED+required fails closed; "
-            "does not imply tmux attach success)"
+            "(independent of --view; missing cap → LEGACY next_action; "
+            "BLOCKED fails closed; does not imply tmux attach success)"
         ),
     )
     # --json inherited from common → json_output (handler maps to as_json)

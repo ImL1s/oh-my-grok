@@ -223,6 +223,17 @@ def test_provider_session_result_gate_states() -> None:
     assert bl["required"] is True
     assert bl["next_action"] == "upgrade grok"
 
+    wrong = FeatureGateResult(
+        capability="session_close",
+        state="AVAILABLE",
+        reason="wrong cap",
+        required=False,
+    )
+    bad = provider_session_result(requested=True, gate=wrong)
+    assert bad["status"] == "blocked"
+    assert "session_resume" in bad["reason"]
+    assert bad["capability"] == "session_close"
+
 
 def test_provider_session_stub_separates_outcomes() -> None:
     """Deprecated stub: not_requested vs blocked (no silent unsupported)."""
@@ -912,10 +923,90 @@ def test_cli_registers_view_and_resume_flags() -> None:
     assert view.view_takeover is True
 
 
+def test_cli_provider_session_legacy_reachable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI path uses evaluate_feature_gate(required=False) → LEGACY when cap absent."""
+    import argparse
+    import json
+
+    from omg_cli.commands.team import cmd_team
+    from omg_cli.host_models import HostCapabilitySet, HostProbeReport
+    from omg_cli.host_probe import evaluate_feature_gate
+    from omg_cli.team import runtime as runtime_mod
+
+    _enable_team(monkeypatch)
+    _init_repo(tmp_path)
+    monkeypatch.setattr(
+        "omg_cli.commands.team.project_root",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        runtime_mod,
+        "resume_for_identity",
+        lambda *a, **k: {
+            "run_id": "run-legacy",
+            "note": "ok",
+            "relaunched": [],
+            "blocked": [],
+        },
+    )
+
+    caps = HostCapabilitySet(session_resume=False)
+    # Same call shape as CLI (required=False) — LEGACY must be reachable.
+    assert (
+        evaluate_feature_gate("session_resume", caps, required=False).state == "LEGACY"
+    )
+    report = HostProbeReport(
+        binary="grok",
+        version="0.2.107",
+        version_tuple=(0, 2, 107),
+        tested_min="0.2.107",
+        tested_max="0.2.121",
+        compatibility="legacy",
+        capabilities=caps,
+        binary_found=True,
+    )
+    monkeypatch.setattr(
+        "omg_cli.host_probe.probe_host",
+        lambda *a, **k: report,
+    )
+
+    args = argparse.Namespace(
+        team_action="resume",
+        team_identity=None,
+        run_id="run-legacy",
+        as_json=True,
+        json_output=True,
+        resume_view=False,
+        view_print=False,
+        view_takeover=False,
+        worker_id=None,
+        provider_session=True,
+    )
+    code = cmd_team(args)
+    assert code == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    # emit_data may wrap; find provider_session
+    body = payload.get("data") or payload.get("team") or payload
+    if isinstance(body, dict) and "provider_session" not in body:
+        # walk one level for envelope wrappers
+        for v in body.values():
+            if isinstance(v, dict) and "provider_session" in v:
+                body = v
+                break
+    ps = body.get("provider_session") or {}
+    assert ps.get("status") == "legacy"
+    assert ps.get("next_action")
+    assert ps.get("status") != "available"
+    assert body.get("ok") is True
+
+
 def test_cli_provider_session_blocked_exit_nonzero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """BLOCKED+required → nonzero exit; not warning-only."""
+    """Wrong capability / explicit BLOCKED → nonzero exit; not warning-only."""
     import argparse
 
     from omg_cli.commands.team import cmd_team
@@ -954,6 +1045,18 @@ def test_cli_provider_session_blocked_exit_nonzero(
         "omg_cli.host_probe.probe_host",
         lambda *a, **k: report,
     )
+    # Force a BLOCKED gate (capability fence / explicit refuse path).
+    blocked = FeatureGateResult(
+        capability="session_resume",
+        state="BLOCKED",
+        reason="explicit refuse",
+        next_action="upgrade grok",
+        required=True,
+    )
+    monkeypatch.setattr(
+        "omg_cli.host_probe.evaluate_feature_gate",
+        lambda *a, **k: blocked,
+    )
 
     args = argparse.Namespace(
         team_action="resume",
@@ -969,11 +1072,6 @@ def test_cli_provider_session_blocked_exit_nonzero(
     )
     code = cmd_team(args)
     assert code == 1
-    from omg_cli.host_probe import evaluate_feature_gate
-
-    gate = evaluate_feature_gate("session_resume", caps, required=True)
-    assert isinstance(gate, FeatureGateResult)
-    assert gate.state == "BLOCKED"
 
 
 def test_normalize_topology_feeds_view_target(

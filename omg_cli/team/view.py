@@ -379,6 +379,20 @@ def provider_session_result(
         base["required"] = True
         return base
 
+    if gate.capability != "session_resume":
+        base["status"] = "blocked"
+        base["reason"] = (
+            f"provider_session_result requires capability 'session_resume', "
+            f"got {gate.capability!r}"
+        )
+        base["next_action"] = (
+            "Inject evaluate_feature_gate('session_resume', …) only"
+        )
+        base["capability"] = gate.capability
+        base["gate"] = gate.to_dict()
+        base["required"] = True
+        return base
+
     base["gate"] = gate.to_dict()
     base["capability"] = gate.capability
     base["required"] = bool(gate.required)
