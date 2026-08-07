@@ -1,17 +1,36 @@
-"""Typed, JSON-serializable provider probe models (#67-A).
+"""Typed, JSON-serializable provider models (#67-A probe + #67-B run).
 
 Provider-neutral defaults are empty / false / unknown — never Antigravity-positive
 claims. Per-provider adapters must fill observed fields explicitly.
+
+Run contracts are provider-neutral execution metadata only — no Team state,
+receipts, pane ownership, or worker mapping.
 """
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 CompatStatus = Literal["compatible", "too_old", "too_new", "unknown"]
 
+ProviderOutputFormat = Literal["text", "json", "stream-json"]
+
+ProviderExitClass = Literal[
+    "success",
+    "nonzero",
+    "timeout",
+    "cancelled",
+    "parse_error",
+    "spawn_error",
+    "overflow",
+    "auth_blocked",
+    "unknown",
+]
+
 CAPABILITIES_SCHEMA = "omg-provider-capabilities/v1"
+RUN_RESULT_SCHEMA = "omg-provider-run-result/v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,10 +151,175 @@ class DoctorReport:
         return out
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderArtifactRef:
+    """Descriptor for large prompt/result content stored outside argv."""
+
+    path: str
+    kind: str = "prompt"  # prompt | result | other
+    media_type: str = "text/plain"
+    sha256: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "kind": self.kind,
+            "media_type": self.media_type,
+            "sha256": self.sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderUsage:
+    """Token / cost usage when the provider emits it."""
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.total_tokens,
+        }
+        if self.extra:
+            out["extra"] = dict(self.extra)
+        return out
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderRunEvent:
+    """One ordered structured event (stream-json line or json payload)."""
+
+    type: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    raw: str = ""
+    index: int = 0
+    malformed: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": self.type,
+            "payload": dict(self.payload),
+            "raw": self.raw,
+            "index": self.index,
+            "malformed": self.malformed,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderRunRequest:
+    """Provider-neutral headless execution request (no Team coupling)."""
+
+    prompt: str = ""
+    prompt_file: str | None = None
+    cwd: str | None = None
+    env: Mapping[str, str] | None = None
+    timeout_s: float = 120.0
+    cancel_event: threading.Event | None = None
+    output_format: ProviderOutputFormat = "text"
+    session_id: str | None = None
+    resume_id: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    mode: str | None = None
+    artifacts: tuple[ProviderArtifactRef, ...] = ()
+    max_output_bytes: int | None = None
+    binary: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize request metadata (prompt truncated; no cancel_event)."""
+        prompt = self.prompt or ""
+        return {
+            "prompt_len": len(prompt),
+            "prompt_preview": prompt[:120],
+            "prompt_file": self.prompt_file,
+            "cwd": self.cwd,
+            "timeout_s": self.timeout_s,
+            "output_format": self.output_format,
+            "session_id": self.session_id,
+            "resume_id": self.resume_id,
+            "model": self.model,
+            "effort": self.effort,
+            "mode": self.mode,
+            "artifacts": [a.to_dict() for a in self.artifacts],
+            "max_output_bytes": self.max_output_bytes,
+            "binary": self.binary,
+            "has_cancel_event": self.cancel_event is not None,
+            "env_keys": sorted(self.env.keys()) if self.env else [],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderRunResult:
+    """Normalized headless run outcome; preserves partial output on timeout/cancel."""
+
+    ok: bool
+    exit_class: ProviderExitClass
+    returncode: int
+    output: str
+    events: tuple[ProviderRunEvent, ...] = ()
+    usage: ProviderUsage | None = None
+    argv: tuple[str, ...] = ()
+    stdout: str = ""
+    stderr: str = ""
+    timed_out: bool = False
+    cancelled: bool = False
+    partial_output: bool = False
+    retryable: bool = False
+    session_id: str | None = None
+    resume_token: str | None = None
+    resume_supported: bool = False
+    overflow: bool = False
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+    error_message: str = ""
+    artifacts: tuple[ProviderArtifactRef, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "schema": RUN_RESULT_SCHEMA,
+            "ok": self.ok,
+            "exit_class": self.exit_class,
+            "returncode": self.returncode,
+            "output": self.output,
+            "events": [e.to_dict() for e in self.events],
+            "usage": self.usage.to_dict() if self.usage is not None else None,
+            "argv": list(self.argv),
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+            "timed_out": self.timed_out,
+            "cancelled": self.cancelled,
+            "partial_output": self.partial_output,
+            "retryable": self.retryable,
+            "session": {
+                "session_id": self.session_id,
+                "resume_token": self.resume_token,
+                "resume_supported": self.resume_supported,
+            },
+            "overflow": self.overflow,
+            "stdout_truncated": self.stdout_truncated,
+            "stderr_truncated": self.stderr_truncated,
+            "error_message": self.error_message,
+            "artifacts": [a.to_dict() for a in self.artifacts],
+        }
+        return out
+
+
 __all__ = [
     "CAPABILITIES_SCHEMA",
     "CompatStatus",
     "DoctorReport",
+    "ProviderArtifactRef",
     "ProviderCapabilities",
+    "ProviderExitClass",
+    "ProviderOutputFormat",
+    "ProviderRunEvent",
+    "ProviderRunRequest",
+    "ProviderRunResult",
+    "ProviderUsage",
+    "RUN_RESULT_SCHEMA",
     "VersionInfo",
 ]

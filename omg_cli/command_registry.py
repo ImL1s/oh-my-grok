@@ -52,7 +52,7 @@ COMMAND_SPECS: Final[tuple[CommandSpec, ...]] = (
     CommandSpec("lsp", "host-owned .lsp.json inspection", "inspect"),
     CommandSpec(
         "provider",
-        "provider probe (Antigravity capabilities/doctor; #67-A)",
+        "provider probe/run (Antigravity capabilities/doctor/run; #67)",
         "inspect",
     ),
     CommandSpec("interview", "deep-interview gate", "workflow"),
