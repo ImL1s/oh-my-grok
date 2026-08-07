@@ -11,7 +11,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from omg_cli.evidence import CLI_WRITER
 from omg_cli.main import build_parser
 from omg_cli.team import operator, plane, tmux
 from omg_cli.team.operator import (
@@ -19,7 +18,6 @@ from omg_cli.team.operator import (
     STATUS_GONE,
     STATUS_LIVE,
     STATUS_MISMATCH,
-    STATUS_UNKNOWN,
     authorize_key,
     capture_worker,
     focus_worker,
@@ -334,7 +332,6 @@ def test_capture_gone_when_pane_absent(
     live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = live_team["root"]
-    live = live_team["live"]
     commands: list[list[str]] = []
 
     def run(args: Any, **_kw: Any) -> MagicMock:
