@@ -10,6 +10,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#101 identity-fenced live pane inspect/operator input:** `omg team
+  panes|capture|focus|key|input|watch` resolve Team identity → receipt
+  chain → exact-pane proof (#98) → authorize → tmux effect (`shell=False`).
+  Bounded/redacted capture; key allowlist; literal `send-keys -l`; audit
+  stores length/hash only; `--json` never focuses or delivers input.
+  Prefer durable `omg team api` for automation.
 - **#102 preserve Team tmux topology across scale/relaunch:** persisted
   `view_mode` (same_window / dedicated_window / detached_session /
   legacy_windows) is the authority for scale-up, scale-down, resume, and

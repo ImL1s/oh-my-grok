@@ -1299,3 +1299,172 @@ def resume_for_identity(
     except TeamError:
         out.setdefault("layout_repair_needed", False)
     return out
+
+
+def worker_pane_descriptors(
+    root: Path | str,
+    run_id: str,
+    *,
+    probe: bool = True,
+) -> list[dict[str, Any]]:
+    """Bounded worker descriptors for ``omg team panes`` (#101).
+
+    Never includes argv, prompt, env, tokens, or unredacted secrets.
+    Authorization flags use the same #102/#98 exact-pane classifier as
+    operator capture/key/input.
+    """
+    from omg_cli.redaction import redact_text
+    from omg_cli.team.operator import classify_exact_pane_live
+    from omg_cli.team.plane import (
+        _TMUX_PANE_ID,
+        _load_team_launch_receipt,
+        _normalize_identity_row,
+        team_launch_receipt_path,
+    )
+    from omg_cli.team.tmux import tmux_available
+
+    root_path = Path(root).resolve()
+    meta = load_team_meta(root_path, run_id)
+    dry = bool(meta.get("dry_run"))
+    generation = meta.get("identity_generation", 0)
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 0
+    ):
+        generation = 0
+
+    session = str(meta.get("session") or "")
+    session_id = meta.get("session_id")
+    launch_nonce = meta.get("launch_nonce")
+    leader_pane_id = meta.get("leader_pane_id")
+    if team_launch_receipt_path(root_path, run_id).is_file():
+        try:
+            receipt = _load_team_launch_receipt(root_path, run_id, meta)
+            if isinstance(receipt.get("session_id"), str):
+                session_id = receipt["session_id"]
+            if isinstance(receipt.get("launch_nonce"), str):
+                launch_nonce = receipt["launch_nonce"]
+            if isinstance(receipt.get("session_name"), str) and not session:
+                session = str(receipt["session_name"])
+            if leader_pane_id is None and isinstance(
+                receipt.get("leader_pane_id"), str
+            ):
+                leader_pane_id = receipt["leader_pane_id"]
+        except TeamError:
+            pass
+
+    expected_session_id = (
+        str(session_id) if isinstance(session_id, str) and session_id else None
+    )
+    expected_nonce = (
+        str(launch_nonce) if isinstance(launch_nonce, str) and launch_nonce else None
+    )
+
+    rows: list[dict[str, Any]] = []
+    for raw in meta.get("tasks") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        tid = str(raw.get("task_id") or "")
+        if not tid:
+            continue
+        pane_id = raw.get("pane_id")
+        exact_pane = (
+            isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id) is not None
+        )
+        is_leader = (
+            isinstance(leader_pane_id, str)
+            and exact_pane
+            and pane_id == leader_pane_id
+        )
+        attempt_raw = raw.get("attempt", 1)
+        attempt = (
+            int(attempt_raw)
+            if isinstance(attempt_raw, int) and not isinstance(attempt_raw, bool)
+            else 1
+        )
+        status_label = "unknown"
+        capture_allowed = False
+        focus_allowed = False
+        input_allowed = False
+        key_allowed = False
+        window_id = (
+            raw.get("window_id")
+            if isinstance(raw.get("window_id"), str)
+            else meta.get("window_id")
+        )
+        if not isinstance(window_id, str):
+            window_id = None
+        normalized = _normalize_identity_row(raw)
+        pane_owner_nonce = normalized.get("pane_owner_nonce")
+        if not isinstance(pane_owner_nonce, str) or not pane_owner_nonce:
+            pane_owner_nonce = None
+        if dry or raw.get("status") == "dry_run":
+            status_label = "gone"
+        elif is_leader:
+            status_label = "identity_mismatch"
+        elif not exact_pane:
+            status_label = "gone"
+        elif not probe or not tmux_available():
+            status_label = "unknown"
+        elif not expected_session_id or not expected_nonce:
+            status_label = "unknown"
+        else:
+            status_label = classify_exact_pane_live(
+                pane_id=str(pane_id),
+                session=session,
+                session_id=expected_session_id,
+                launch_nonce=expected_nonce,
+                expected_pid_start=raw.get("pid_start")
+                if isinstance(raw.get("pid_start"), str)
+                else None,
+                expected_pid=raw.get("pid")
+                if isinstance(raw.get("pid"), int)
+                else None,
+                window_id=window_id,
+                pane_owner_nonce=pane_owner_nonce,
+            )
+            if status_label == "live":
+                capture_allowed = True
+                focus_allowed = True
+                input_allowed = True
+                key_allowed = True
+
+        worktree = raw.get("worktree")
+        safe_worktree = None
+        if isinstance(worktree, str) and worktree:
+            # Basename only — never leak full home paths.
+            safe_worktree = Path(worktree).name
+
+        cmd_base = None
+        pane_command = raw.get("pane_command")
+        if isinstance(pane_command, str) and pane_command.strip():
+            # First token basename only.
+            first = pane_command.strip().split()[0]
+            cmd_base = Path(first).name
+            cmd_base = redact_text(cmd_base)[:64]
+
+        rows.append(
+            {
+                "worker_id": tid,
+                "task_id": tid,
+                "provider": raw.get("provider"),
+                "role": raw.get("role"),
+                "posture": raw.get("posture"),
+                "attempt": attempt,
+                "generation": generation,
+                "state": raw.get("status"),
+                "ready": None,
+                "pane_id": pane_id if exact_pane and not is_leader else None,
+                "window_id": window_id,
+                "pane_owner_bound": bool(pane_owner_nonce),
+                "worktree": safe_worktree,
+                "command_basename": cmd_base,
+                "liveness": status_label,
+                "capture_allowed": capture_allowed,
+                "focus_allowed": focus_allowed,
+                "input_allowed": input_allowed,
+                "key_allowed": key_allowed,
+            }
+        )
+    return rows
