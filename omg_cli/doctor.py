@@ -70,24 +70,9 @@ _GROK_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 def parse_grok_version(text: str) -> tuple[int, int, int] | None:
     """Parse a grok semver from CLI text or JSON (currentVersion/version keys)."""
-    if not text or not text.strip():
-        return None
-    stripped = text.strip()
-    if stripped.startswith("{"):
-        try:
-            data = json.loads(stripped)
-        except json.JSONDecodeError:
-            data = None
-        if isinstance(data, dict):
-            raw = data.get("currentVersion") or data.get("version")
-            if raw is not None:
-                nested = parse_grok_version(str(raw))
-                if nested is not None:
-                    return nested
-    m = _GROK_VERSION_RE.search(stripped)
-    if not m:
-        return None
-    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    from omg_cli.host_probe import parse_host_version
+
+    return parse_host_version(text)
 
 
 def _probe_grok_version() -> tuple[int, int, int] | None:
@@ -133,6 +118,49 @@ def check_grok_version() -> tuple[str, bool, str]:
             f"Stop gate requires grok ≥0.2.107; installed {installed}",
         )
     return _check(name, True, f"{installed} (≥0.2.107 for Stop gate)")
+
+
+def check_host_capabilities(
+    report: Any | None = None,
+) -> SoftResult:
+    """Soft: report active Grok host capability set from canonical probe."""
+    from omg_cli.host_models import HostProbeReport
+    from omg_cli.host_probe import host_report_for_doctor, probe_host
+
+    name = "grok host capabilities"
+    try:
+        host_report: HostProbeReport
+        if isinstance(report, HostProbeReport):
+            host_report = report
+        else:
+            host_report = probe_host()
+    except Exception as exc:  # pragma: no cover - fail-open soft check
+        return (name, "warn", f"host probe failed ({type(exc).__name__})")
+    host = host_report_for_doctor(host_report)
+    caps = host.get("capabilities") or {}
+    bits = [
+        f"version={host.get('version') or 'unknown'}",
+        f"compat={host.get('compatibility')}",
+        f"tested={host.get('tested_min')}..{host.get('tested_max')}",
+        (
+            "caps="
+            f"resume={caps.get('session_resume')},"
+            f"close={caps.get('session_close')},"
+            f"restore_code={caps.get('restore_code_explicit')},"
+            f"uuid={caps.get('uuid_search')}"
+        ),
+    ]
+    level = "ok"
+    if not host_report.binary_found:
+        level = "warn"
+        bits.append("grok binary missing")
+    elif host_report.compatibility in {"too_old", "unknown"}:
+        level = "warn"
+    blocked = [g.capability for g in host_report.gates if g.state == "BLOCKED"]
+    if blocked:
+        level = "warn"
+        bits.append("blocked=" + ",".join(blocked))
+    return (name, level, "; ".join(bits))
 
 
 def check_plugin_json() -> tuple[str, bool, str]:
@@ -1218,9 +1246,13 @@ def check_team_plane() -> SoftResult:
         return (name, "warn", f"team plane probe failed ({type(exc).__name__})")
 
 
-def run_soft_checks() -> list[SoftResult]:
+def run_soft_checks(
+    *,
+    host_report: Any | None = None,
+) -> list[SoftResult]:
     """Soft/best-effort checks (WARN by default; FAIL under --strict)."""
     return [
+        check_host_capabilities(host_report),
         check_plugin_trust(),
         check_effective_discovery_foreign(),
         check_global_rules(),
@@ -1243,17 +1275,31 @@ def _format_soft_tag(level: str, *, strict: bool) -> str:
     return "WARN"
 
 
+def _canonical_host_probe():
+    """Indirection so tests can monkeypatch without racing live imports."""
+    from omg_cli.host_probe import host_report_for_doctor, probe_host
+
+    report = probe_host()
+    return report, host_report_for_doctor(report)
+
+
 def run_doctor(
     *,
     strict: bool = False,
     project_root: Path | None = None,
+    json_output: bool = False,
 ) -> int:
     """Run hard checks + soft trust inventory + compat.claude isolation scan.
 
     Hard check failures always exit 1.
     Soft trust + compat risks are WARN by default (exit 0 if only warns);
     with ``strict=True`` any soft/compat risk becomes FAIL (exit 1).
+
+    When ``json_output`` is True, emit a schema_version-1 CLI envelope on
+    stdout (including the canonical ``host`` capability block) instead of
+    human tables.
     """
+    from omg_cli.cli_envelope import emit_json, failure, success
     from omg_cli.compat import (
         compat_exit_should_fail,
         format_compat_lines,
@@ -1262,16 +1308,106 @@ def run_doctor(
     )
 
     results = run_checks()
+    # Host probe once for JSON + soft check + human summary.
+    try:
+        host_report, host_block = _canonical_host_probe()
+    except Exception as exc:  # pragma: no cover
+        host_report = None
+        host_block = {
+            "binary": "grok",
+            "version": None,
+            "compatibility": "unknown",
+            "capabilities": {
+                "session_resume": False,
+                "session_close": False,
+                "restore_code_explicit": False,
+                "uuid_search": False,
+            },
+            "observations": [f"host probe failed ({type(exc).__name__})"],
+        }
+    soft_results = run_soft_checks(host_report=host_report)
     failed = 0
     soft_warns = 0
-    print("oh-my-grok doctor")
-    print("-" * 48)
-    # #22: surface selected project root (explicit / env / .omg / git / cwd).
+
     root_for_display = (
         Path(project_root).resolve()
         if project_root is not None
         else Path.cwd().resolve()
     )
+    project_root_meta: dict[str, Any] = {"path": str(root_for_display)}
+    try:
+        from omg_cli.project_root import get_resolved_project_root
+
+        res = get_resolved_project_root()
+        if res is not None:
+            project_root_meta = {
+                "path": str(res.root),
+                "source": res.source,
+            }
+            if res.note:
+                project_root_meta["note"] = res.note
+    except Exception:
+        pass
+
+    root = (
+        Path(project_root_meta["path"]).resolve()
+        if project_root_meta.get("path")
+        else root_for_display
+    )
+    report = scan_compat(project_root=root)
+
+    for _name, ok, _detail in results:
+        if not ok:
+            failed += 1
+    for _name, level, _detail in soft_results:
+        if level == "fail" or (strict and level == "warn"):
+            failed += 1
+        elif level == "warn":
+            soft_warns += 1
+    if compat_exit_should_fail(report, strict=strict):
+        failed += 1
+    elif report.has_risks:
+        soft_warns += 1
+
+    if json_output:
+        hard = [
+            {"name": n, "ok": ok, "detail": d} for n, ok, d in results
+        ]
+        soft = [
+            {"name": n, "level": lvl, "detail": d} for n, lvl, d in soft_results
+        ]
+        payload_ok = failed == 0
+        body = {
+            "strict": strict,
+            "failed": failed,
+            "soft_warns": soft_warns,
+            "project_root": project_root_meta,
+            "host": host_block,
+            "checks": hard,
+            "soft_checks": soft,
+            "compat": {
+                "has_risks": bool(report.has_risks),
+                "strict_fail": bool(compat_exit_should_fail(report, strict=strict)),
+            },
+            "note": SOFT_GATE_FOOTER,
+        }
+        if payload_ok:
+            emit_json(success("doctor", **body))
+        else:
+            emit_json(
+                failure(
+                    "doctor",
+                    "E_DOCTOR_FAILED",
+                    f"{failed} check(s) failed",
+                    details=body,
+                    next_action="Fix FAIL rows; use omg doctor without --json for tables",
+                )
+            )
+        return 0 if payload_ok else 1
+
+    print("oh-my-grok doctor")
+    print("-" * 48)
+    # #22: surface selected project root (explicit / env / .omg / git / cwd).
     try:
         from omg_cli.project_root import get_resolved_project_root
 
@@ -1286,36 +1422,31 @@ def run_doctor(
             print(f"project_root: {root_for_display}")
     except Exception:
         print(f"project_root: {root_for_display}")
+    if host_report is not None:
+        print(
+            f"host: grok {host_report.version or 'unknown'} "
+            f"compat={host_report.compatibility} "
+            f"tested={host_report.tested_min}..{host_report.tested_max}"
+        )
     print("-" * 48)
     for name, ok, detail in results:
         tag = "OK  " if ok else "FAIL"
         print(f"[{tag}] {name}: {detail}")
-        if not ok:
-            failed += 1
 
     # Soft trust / inventory (best-effort)
     print("-" * 48)
     print("plugin trust / inventory (best-effort)")
-    for name, level, detail in run_soft_checks():
+    for name, level, detail in soft_results:
         tag = _format_soft_tag(level, strict=strict)
         print(f"[{tag}] {name}: {detail}")
-        if level == "fail" or (strict and level == "warn"):
-            failed += 1
-        elif level == "warn":
-            soft_warns += 1
 
     # compat.claude isolation scan (always runs)
     print("-" * 48)
     print("compat.claude isolation")
-    root = root_for_display
-    report = scan_compat(project_root=root)
     for line in format_compat_lines(report, strict=strict):
         print(line)
     if compat_exit_should_fail(report, strict=strict):
-        failed += 1
         print("[FAIL] compat.claude: risks present under --strict")
-    elif report.has_risks:
-        soft_warns += 1
 
     print("-" * 48)
     print(format_isolation_banner())

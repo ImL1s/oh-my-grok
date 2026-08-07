@@ -1,0 +1,25 @@
+{
+  "binary": "grok",
+  "binary_found": true,
+  "version_text": "grok 0.2.121",
+  "version_json": {"currentVersion": "0.2.121"},
+  "inspect_json": {
+    "version": "0.2.121",
+    "capabilities": {
+      "session_resume": false,
+      "session_close": false,
+      "restore_code_explicit": false,
+      "uuid_search": false
+    }
+  },
+  "acp_advertisement": {
+    "methods": []
+  },
+  "behavior": {
+    "session_resume": false,
+    "session_close": false,
+    "restore_code_explicit": false,
+    "uuid_search": false
+  },
+  "observations": ["fixture: version-lies claims 0.2.121 without resume"]
+}
