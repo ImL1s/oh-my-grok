@@ -10,6 +10,15 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#102 preserve Team tmux topology across scale/relaunch:** persisted
+  `view_mode` (same_window / dedicated_window / detached_session /
+  legacy_windows) is the authority for scale-up, scale-down, resume, and
+  relaunch. Non-legacy scale-up splits into the exact Team window (never
+  `new-window`); logical_worker_index is separated from live pane/window
+  coordinates; identity receipt schema v3 + team meta schema v2 carry
+  topology fingerprints; post-commit `reconcile_layout` is cosmetic
+  (`layout_repair_needed` does not roll back identity). Legacy
+  window-per-worker adapters remain for pre-#96 runs.
 - **#99 provider-ready Team startup:** schema-v2 monotonic phases
   (`pane_created` → `provider_spawned` → `provider_ready` → `task_dispatched`;
   optional `mailbox_ack`), pane `team supervisor` consuming vetted argv
