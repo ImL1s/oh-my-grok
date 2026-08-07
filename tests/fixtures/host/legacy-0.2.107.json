@@ -1,0 +1,20 @@
+{
+  "binary": "grok",
+  "binary_found": true,
+  "version_text": "grok 0.2.107",
+  "version_json": {"currentVersion": "0.2.107"},
+  "inspect_json": {
+    "version": "0.2.107",
+    "capabilities": {}
+  },
+  "acp_advertisement": {
+    "methods": []
+  },
+  "behavior": {
+    "session_resume": false,
+    "session_close": false,
+    "restore_code_explicit": false,
+    "uuid_search": false
+  },
+  "observations": ["fixture: legacy-0.2.107"]
+}

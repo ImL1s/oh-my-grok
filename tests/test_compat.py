@@ -251,7 +251,29 @@ def test_doctor_compat_warn_default_and_strict_fail(monkeypatch, tmp_path):
     monkeypatch.setattr(
         doctor,
         "run_soft_checks",
-        lambda: [("plugin trust/inventory", "ok", "trusted=True (test)")],
+        lambda **_k: [("plugin trust/inventory", "ok", "trusted=True (test)")],
+    )
+    monkeypatch.setattr(
+        "omg_cli.doctor._canonical_host_probe",
+        lambda: (
+            __import__(
+                "omg_cli.host_probe", fromlist=["probe_host_from_fixture"]
+            ).probe_host_from_fixture(
+                Path(__file__).resolve().parents[1]
+                / "tests/fixtures/host/0.2.121.json"
+            ),
+            {
+                "binary": "grok",
+                "version": "0.2.121",
+                "compatibility": "compatible",
+                "capabilities": {
+                    "session_resume": True,
+                    "session_close": True,
+                    "restore_code_explicit": True,
+                    "uuid_search": True,
+                },
+            },
+        ),
     )
 
     rc_default = doctor.run_doctor(strict=False, project_root=tmp_path)

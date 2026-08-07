@@ -476,6 +476,11 @@ def test_run_soft_checks_includes_capabilities_lock(
 ) -> None:
     monkeypatch.setattr(
         doctor,
+        "check_host_capabilities",
+        lambda *_a, **_k: ("grok host capabilities", "ok", "stub"),
+    )
+    monkeypatch.setattr(
+        doctor,
         "check_plugin_trust",
         lambda: ("plugin trust/inventory", "ok", "stub"),
     )

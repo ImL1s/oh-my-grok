@@ -1,0 +1,29 @@
+{
+  "binary": "grok",
+  "binary_found": true,
+  "version_text": "grok 0.2.121",
+  "version_json": {"currentVersion": "0.2.121"},
+  "inspect_json": {
+    "version": "0.2.121",
+    "capabilities": {
+      "session_resume": true,
+      "session_close": true,
+      "restore_code_explicit": true,
+      "uuid_search": true
+    }
+  },
+  "acp_advertisement": {
+    "methods": ["session/resume", "session/close"],
+    "features": {
+      "restore_code_explicit": true,
+      "uuid_cross_directory_search": true
+    }
+  },
+  "behavior": {
+    "session_resume": true,
+    "session_close": true,
+    "restore_code_explicit": true,
+    "uuid_search": true
+  },
+  "observations": ["fixture: 0.2.121 modern"]
+}

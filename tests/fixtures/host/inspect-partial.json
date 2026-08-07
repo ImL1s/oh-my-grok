@@ -1,0 +1,14 @@
+{
+  "binary": "grok",
+  "binary_found": true,
+  "version_text": "grok 0.2.121",
+  "version_json": {"currentVersion": "0.2.121"},
+  "inspect_json": {
+    "capabilities": {
+      "session_resume": true
+    }
+  },
+  "acp_advertisement": null,
+  "behavior": null,
+  "observations": ["fixture: inspect present — resume only; omit close"]
+}

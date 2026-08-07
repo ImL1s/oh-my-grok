@@ -131,6 +131,13 @@ def test_check_plugin_trust_list_missing_plugin(monkeypatch):
     assert "not listed" in detail.lower()
 
 
+def _fake_host_report(name: str = "0.2.121.json"):
+    from omg_cli.host_probe import host_report_for_doctor, probe_host_from_fixture
+
+    report = probe_host_from_fixture(ROOT / "tests/fixtures/host" / name)
+    return report, host_report_for_doctor(report)
+
+
 def test_run_doctor_prints_soft_gate_footer(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
@@ -149,8 +156,9 @@ def test_run_doctor_prints_soft_gate_footer(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         doctor,
         "run_soft_checks",
-        lambda: [("plugin trust/inventory", "warn", "inspect unavailable (test)")],
+        lambda **_k: [("plugin trust/inventory", "warn", "inspect unavailable (test)")],
     )
+    monkeypatch.setattr(doctor, "_canonical_host_probe", _fake_host_report)
 
     rc = doctor.run_doctor(strict=False, project_root=tmp_path)
     assert rc == 0
@@ -158,6 +166,7 @@ def test_run_doctor_prints_soft_gate_footer(monkeypatch, tmp_path, capsys):
     assert doctor.SOFT_GATE_FOOTER in out
     assert "inspect unavailable" in out
     assert "[WARN]" in out
+    assert "host: grok" in out
 
 
 def test_run_doctor_strict_soft_warn_fails(monkeypatch, tmp_path, capsys):
@@ -178,8 +187,9 @@ def test_run_doctor_strict_soft_warn_fails(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         doctor,
         "run_soft_checks",
-        lambda: [("plugin trust/inventory", "warn", "inspect unavailable (test)")],
+        lambda **_k: [("plugin trust/inventory", "warn", "inspect unavailable (test)")],
     )
+    monkeypatch.setattr(doctor, "_canonical_host_probe", _fake_host_report)
 
     rc = doctor.run_doctor(strict=True, project_root=tmp_path)
     assert rc == 1
@@ -211,8 +221,9 @@ def test_run_doctor_strict_with_fake_home_compat(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         doctor,
         "run_soft_checks",
-        lambda: [("plugin trust/inventory", "ok", "trusted=True")],
+        lambda **_k: [("plugin trust/inventory", "ok", "trusted=True")],
     )
+    monkeypatch.setattr(doctor, "_canonical_host_probe", _fake_host_report)
 
     rc = doctor.run_doctor(strict=True, project_root=tmp_path)
     assert rc == 1
@@ -641,6 +652,11 @@ def test_check_stop_gate_timeout_ok():
 def test_run_soft_checks_includes_stop_gate_timeout(monkeypatch):
     monkeypatch.setattr(
         doctor,
+        "check_host_capabilities",
+        lambda *_a, **_k: ("grok host capabilities", "ok", "stub"),
+    )
+    monkeypatch.setattr(
+        doctor,
         "check_plugin_trust",
         lambda: ("plugin trust/inventory", "ok", "stub"),
     )
@@ -684,10 +700,119 @@ def test_run_soft_checks_includes_stop_gate_timeout(monkeypatch):
         "check_installed_release_identity",
         lambda: ("immutable install identity", "ok", "stub"),
     )
+    monkeypatch.setattr(
+        doctor,
+        "check_team_plane",
+        lambda: ("team plane", "ok", "stub"),
+    )
     soft = doctor.run_soft_checks()
     names = [n for n, _, _ in soft]
+    assert names[0] == "grok host capabilities"
     assert "stop gate timeout" in names
     assert names.index("stop gate timeout") > names.index("plugin version drift")
+
+
+def test_check_host_capabilities_from_fixture(monkeypatch):
+    from omg_cli.host_probe import probe_host_from_fixture
+
+    report = probe_host_from_fixture(ROOT / "tests/fixtures/host/legacy-0.2.107.json")
+    name, level, detail = doctor.check_host_capabilities(report)
+    assert name == "grok host capabilities"
+    assert level == "warn"
+    assert "resume=False" in detail
+    assert "blocked=" in detail
+
+
+def test_run_doctor_json_includes_host_capabilities(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        doctor,
+        "run_checks",
+        lambda: [
+            ("grok on PATH", True, "fake"),
+            ("plugin.json", True, "ok"),
+            ("hooks scripts", True, "ok"),
+            ("PreToolUse hook", True, "ok"),
+            ("skills omg-*", True, "ok"),
+            ("agents", True, "ok"),
+            ("deny module", True, "ok"),
+        ],
+    )
+    monkeypatch.setattr(
+        doctor,
+        "run_soft_checks",
+        lambda **_k: [("plugin trust/inventory", "ok", "trusted=True")],
+    )
+    monkeypatch.setattr(doctor, "_canonical_host_probe", _fake_host_report)
+    rc = doctor.run_doctor(strict=False, project_root=tmp_path, json_output=True)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["command"] == "doctor"
+    assert payload["schema_version"] == 1
+    host = payload["host"]
+    assert host["version"] == "0.2.121"
+    assert host["tested_min"] == "0.2.107"
+    assert host["tested_max"] == "0.2.121"
+    assert host["capabilities"]["session_resume"] is True
+    assert host["capabilities"]["session_close"] is True
+    blob = json.dumps(payload)
+    for banned in ("authorization", "transcript", "session_id", "/Users/"):
+        assert banned not in blob
+
+
+def test_run_doctor_json_legacy_blocking_honest(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        doctor,
+        "run_checks",
+        lambda: [("grok on PATH", True, "fake")],
+    )
+    monkeypatch.setattr(
+        doctor,
+        "run_soft_checks",
+        lambda **_k: [("grok host capabilities", "warn", "blocked=session_close")],
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_canonical_host_probe",
+        lambda: _fake_host_report("legacy-0.2.107.json"),
+    )
+    rc = doctor.run_doctor(strict=False, project_root=tmp_path, json_output=True)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    host = payload["host"]
+    assert host["capabilities"]["session_resume"] is False
+    assert host["gates"]["session_resume"]["state"] == "LEGACY"
+    assert host["gates"]["session_close"]["state"] == "BLOCKED"
+
+
+def test_run_doctor_json_scrubs_home_in_project_root(monkeypatch, tmp_path, capsys):
+    home = tmp_path / "Users" / "alice"
+    home.mkdir(parents=True)
+    proj = home / "proj"
+    proj.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(
+        doctor,
+        "run_checks",
+        lambda: [("grok on PATH", True, "fake")],
+    )
+    monkeypatch.setattr(
+        doctor,
+        "run_soft_checks",
+        lambda **_k: [("plugin trust/inventory", "ok", "ok")],
+    )
+    monkeypatch.setattr(doctor, "_canonical_host_probe", _fake_host_report)
+    rc = doctor.run_doctor(strict=False, project_root=proj, json_output=True)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    path = payload["project_root"]["path"]
+    assert "/Users/alice" not in path
+    assert "REDACTED_PATH" in path or "alice" not in path
+    # Host block still free of home paths.
+    host_blob = json.dumps(payload["host"])
+    assert "/Users/" not in host_blob
 
 
 def test_check_installed_release_identity_corrupt_pointer_is_hard_failure(tmp_path, monkeypatch):

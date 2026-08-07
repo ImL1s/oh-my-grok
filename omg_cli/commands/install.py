@@ -28,11 +28,13 @@ def cmd_install_hook(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
+    from omg_cli.cli_envelope import wants_json
     from omg_cli.doctor import run_doctor
 
     return run_doctor(
         strict=bool(getattr(args, "strict", False)),
         project_root=project_root(),
+        json_output=wants_json(args),
     )
 
 

@@ -1,0 +1,15 @@
+{
+  "binary": "grok",
+  "binary_found": true,
+  "version_text": "grok 0.2.110",
+  "version_json": {"version": "0.2.110"},
+  "inspect_json": {
+    "capabilities": {
+      "session_resume": false,
+      "session_close": false
+    }
+  },
+  "acp_advertisement": null,
+  "behavior": null,
+  "observations": ["fixture: legacy-no-resume"]
+}

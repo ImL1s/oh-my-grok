@@ -1,0 +1,10 @@
+{
+  "binary": "grok",
+  "binary_found": true,
+  "version_text": "grok 0.2.121",
+  "version_json": {"currentVersion": "0.2.121"},
+  "inspect_json": "not-an-object",
+  "acp_advertisement": ["session/resume"],
+  "behavior": null,
+  "observations": ["fixture: malformed advertisement/inspect"]
+}

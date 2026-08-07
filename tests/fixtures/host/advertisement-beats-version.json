@@ -1,0 +1,18 @@
+{
+  "binary": "grok",
+  "binary_found": true,
+  "version_text": "grok 0.2.120",
+  "version_json": {"currentVersion": "0.2.120"},
+  "inspect_json": {
+    "version": "0.2.120"
+  },
+  "acp_advertisement": {
+    "methods": ["session/resume", "session/close"],
+    "features": {
+      "restore_code_explicit": true,
+      "uuid_search": true
+    }
+  },
+  "behavior": null,
+  "observations": ["fixture: advertisement beats version (0.2.120)"]
+}
