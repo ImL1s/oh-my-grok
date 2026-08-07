@@ -7,8 +7,8 @@
 
 | Capability | Category | Classification | Maturity | Marker | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `antigravity.provider.adapter` | antigravity | antigravity_native | antigravity=catalogued, grok=catalogued | catalogued | Probe + headless run + ask cutover (#67-A/B/C); Team cutover deferred (#67-D). |
-| `antigravity.headless.structured_execution` | antigravity | optional_unclaimed | antigravity=catalogued, grok=catalogued | optional_unclaimed | #67-C landed omg ask agy via ProviderAdapter.run; Team panes still use argv builders (#67-D). |
+| `antigravity.provider.adapter` | antigravity | antigravity_native | antigravity=catalogued, grok=catalogued | catalogued | Probe + headless run + ask + Team launch envelope (#67-A/B/C/D). |
+| `antigravity.headless.structured_execution` | antigravity | optional_unclaimed | antigravity=catalogued, grok=catalogued | optional_unclaimed | #67-D: Team AGY panes use adapter build_launch_envelope; supervisor still owns PTY/PID/readiness. |
 | `antigravity.agents.markdown_custom` | agents_routing | omg_native | antigravity=catalogued, grok=catalogued | catalogued | Grok plugin markdown agents exist; Antigravity-native agent catalog wiring remains under #67/#78. |
 | `antigravity.skills.hooks_subagents_plugins_mcp` | skills | omg_native | antigravity=catalogued, grok=catalogued | catalogued | OMG skills/hooks/agents/MCP exist on Grok; Antigravity host plugin/MCP parity is not claimed (#67/#78). |
 | `antigravity.jobs.background_tasks` | jobs | optional_unclaimed | antigravity=catalogued, grok=catalogued | optional_unclaimed | No Antigravity background-task plane; durable jobs tracked under #68 (jobs.durable_background). |

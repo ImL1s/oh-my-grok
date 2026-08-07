@@ -536,6 +536,9 @@ def _build_pane_record(
             prompt_file=prompt_path,
             needs_pty=needs_pty,
             cwd=wt,
+            identity_basenames=inv.identity_basenames or None,
+            provider_strategy=inv.provider_strategy or None,
+            startup_strategy=inv.startup_strategy or None,
         )
     elif executor_norm == "fixture":
         # Inherit launch executor=fixture so hermetic teams do not spawn grok
@@ -724,6 +727,9 @@ def _reuse_prepared_pane_record(
             prompt_file=task_prompt_path,
             needs_pty=needs_pty,
             cwd=worktree,
+            identity_basenames=inv.identity_basenames or None,
+            provider_strategy=inv.provider_strategy or None,
+            startup_strategy=inv.startup_strategy or None,
         )
     elif executor_norm == "fixture":
         import sys

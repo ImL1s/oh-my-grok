@@ -1,10 +1,12 @@
-"""Antigravity (`agy`) provider — discovery, capabilities, headless run (#67-A/B/C).
+"""Antigravity (`agy`) provider — discovery, capabilities, run, launch (#67-A–D).
 
 Ask cutover (#67-C): ``omg ask agy`` routes through :meth:`ProviderAdapter.run`.
-Team pane cutover remains deferred (#67-D). No live network. Subprocess uses
-argv arrays only (``shell=False``) via :mod:`omg_cli.providers.process` with
-process-group cleanup and a bounded environment. Headless ``run`` reuses the
-same process stack as probes (no second runner).
+Team panes (#67-D): :meth:`ProviderAdapter.build_launch_envelope` generates
+argv/env for the Team supervisor — never :meth:`run` / ``run_provider_process``
+for interactive PTY workers. No live network. Subprocess uses argv arrays only
+(``shell=False``) via :mod:`omg_cli.providers.process` with process-group
+cleanup and a bounded environment. Headless ``run`` reuses the same process
+stack as probes (no second runner).
 """
 
 from __future__ import annotations
@@ -28,6 +30,8 @@ from omg_cli.providers.models import (
     DoctorReport,
     ProviderCapabilities,
     ProviderExitClass,
+    ProviderLaunchEnvelope,
+    ProviderLaunchRequest,
     ProviderOutputFormat,
     ProviderRunEvent,
     ProviderRunRequest,
@@ -61,9 +65,17 @@ TESTED_MIN_STR: Final[str] = "1.1.10"
 TESTED_MAX_STR: Final[str] = "1.1.10"
 
 _AG_LIMITATIONS: Final[tuple[str, ...]] = (
-    "Slice C: omg ask agy routes via ProviderAdapter.run; Team cutover deferred (#67-D).",
+    "Slice D: Team panes use build_launch_envelope (supervisor owns PTY/PID/"
+    "readiness); headless ask/run stays on ProviderAdapter.run.",
     "Authentication and live-call readiness are not verified hermetically.",
 )
+
+# Team interactive launch metadata (#67-D) — supervisor owns spawn/readiness.
+_TEAM_PROMPT_DELIVERY: Final[str] = "positional-text"
+_TEAM_STARTUP_STRATEGY: Final[str] = "supervisor"
+_TEAM_PROVIDER_STRATEGY: Final[str] = "antigravity-team-interactive"
+_TEAM_IDENTITY_BASENAMES: Final[tuple[str, ...]] = (BINARY_NAME, f"{BINARY_NAME}.exe")
+_TEAM_POSTURES: Final[frozenset[str]] = frozenset({"read-only", "read-write"})
 
 # Exact ASCII-decimal triple on the first non-empty line — never scoop a
 # prefix from prerelease / extra components / trailing child-controlled junk
@@ -726,6 +738,128 @@ def build_run_argv(
     return argv
 
 
+def build_team_argv(
+    binary: str,
+    prompt_file: str,
+    *,
+    posture: str,
+    model: str | None = None,
+) -> list[str]:
+    """Assemble Team interactive ``agy`` argv (list only; never a shell string).
+
+    Preserves the existing Team executor contract (D0 / plane):
+
+    ``agy -p <prompt_file_placeholder> [--model M] --dangerously-skip-permissions
+    [--sandbox]``
+
+    * ``-p`` value is a **path placeholder**; pane/supervisor substitutes the
+      prompt body (``prompt_delivery=positional-text``). This differs from
+      headless :func:`build_run_argv`, which uses ``--print … -- <prompt>``.
+    * ``--dangerously-skip-permissions`` remains part of the Team contract
+      (intentional; headless run stays least-permissive and does **not** add
+      this flag).
+    * Read-only posture → ``--sandbox``; read-write → no sandbox flag.
+    * No ``--cwd`` — Antigravity has none; supervisor/PTY sets cwd.
+    """
+    if posture not in _TEAM_POSTURES:
+        raise ProviderRunError(
+            f"unsupported team posture: {posture!r} "
+            f"(expected one of {sorted(_TEAM_POSTURES)})"
+        )
+    pf = (prompt_file or "").strip()
+    if not pf:
+        raise ProviderRunError("team launch requires non-empty prompt_file")
+    if pf.startswith("-"):
+        raise ProviderRunError(
+            f"invalid prompt_file {prompt_file!r}: leading '-' rejected"
+        )
+    if any(ch in pf for ch in ("\n", "\r", "\x00")):
+        raise ProviderRunError("invalid prompt_file: control characters rejected")
+
+    argv: list[str] = [binary, "-p", pf]
+    if model:
+        m = model.strip()
+        if not m:
+            raise ProviderRunError("empty model rejected")
+        if m.startswith("-"):
+            raise ProviderRunError(
+                f"invalid model {model!r}: leading '-' rejected (injection floor)"
+            )
+        if any(ch.isspace() for ch in m) or "\x00" in m:
+            raise ProviderRunError(
+                f"invalid model {model!r}: whitespace/NUL rejected"
+            )
+        argv.extend(["--model", m])
+    # Team executor contract (unchanged from pre-#67-D _build_agy).
+    argv.append("--dangerously-skip-permissions")
+    if posture == "read-only":
+        argv.append("--sandbox")
+    return argv
+
+
+def build_launch_envelope(request: ProviderLaunchRequest) -> ProviderLaunchEnvelope:
+    """Generate a Team-compatible launch envelope (no process spawn).
+
+    Does **not** call :func:`run_provider_process` or :func:`run`. Supervisor
+    remains the sole owner of PTY spawn, PID/PGID, readiness, and pane nonce.
+    """
+    if not isinstance(request, ProviderLaunchRequest):
+        raise ProviderRunError("request must be ProviderLaunchRequest")
+    if request.launch_kind != "team":
+        raise ProviderRunError(
+            f"unsupported launch_kind: {request.launch_kind!r} "
+            "(only 'team' is implemented in #67-D)"
+        )
+    posture = (request.posture or "read-write").strip()
+    if posture not in _TEAM_POSTURES:
+        raise ProviderRunError(
+            f"unsupported team posture: {posture!r} "
+            f"(expected one of {sorted(_TEAM_POSTURES)})"
+        )
+    prompt_file = request.prompt_file
+    if not prompt_file:
+        # Allow a prompt artifact path when prompt_file is omitted.
+        for art in request.artifacts:
+            if art.kind == "prompt" and art.path:
+                prompt_file = art.path
+                break
+    if not prompt_file:
+        raise ProviderRunError("team launch requires prompt_file or prompt artifact")
+
+    binary = (request.binary or BINARY_NAME).strip() or BINARY_NAME
+    # Basename gate even for relative/override paths (identity floor).
+    _require_agy_basename(Path(binary), source="binary")
+
+    # needs_pty: Team AGY contract is always True (agy -p is silent without TTY).
+    if not bool(request.needs_pty):
+        raise ProviderRunError(
+            "antigravity team launch requires needs_pty=True "
+            "(agy -p is silent without a TTY)"
+        )
+
+    argv = build_team_argv(
+        binary,
+        str(prompt_file),
+        posture=posture,
+        model=request.model,
+    )
+    env = _bounded_env(request.env)
+    cwd = str(request.cwd) if request.cwd else None
+    return ProviderLaunchEnvelope(
+        provider=PROVIDER_NAME,
+        argv=tuple(argv),
+        needs_pty=True,
+        prompt_delivery=_TEAM_PROMPT_DELIVERY,
+        cwd=cwd,
+        env=env,
+        identity_basenames=_TEAM_IDENTITY_BASENAMES,
+        startup_strategy=_TEAM_STARTUP_STRATEGY,
+        provider_strategy=_TEAM_PROVIDER_STRATEGY,
+        posture=posture,
+        binary=binary,
+    )
+
+
 def assert_flags_before_prompt(argv: Sequence[str], prompt: str) -> None:
     """Require ``… -- <prompt>`` with no flags after end-of-options.
 
@@ -1171,6 +1305,11 @@ class AntigravityProvider:
     def run(self, request: ProviderRunRequest) -> ProviderRunResult:
         return run(request)
 
+    def build_launch_envelope(
+        self, request: ProviderLaunchRequest
+    ) -> ProviderLaunchEnvelope:
+        return build_launch_envelope(request)
+
 
 def get_adapter() -> AntigravityProvider:
     """Return the Antigravity :class:`ProviderAdapter` implementation."""
@@ -1187,8 +1326,10 @@ __all__ = [
     "TESTED_MIN",
     "TESTED_MIN_STR",
     "AntigravityProvider",
-    "build_run_argv",
     "assert_flags_before_prompt",
+    "build_launch_envelope",
+    "build_run_argv",
+    "build_team_argv",
     "classify_compat",
     "discover_binary",
     "doctor",
