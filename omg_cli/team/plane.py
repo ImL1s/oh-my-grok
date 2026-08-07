@@ -2291,7 +2291,14 @@ def _normalize_identity_row(raw: Mapping[str, Any]) -> dict[str, Any]:
     Dual-writes window_nonce and window_index for locked scale consumers.
     """
     tid = raw.get("task_id")
-    logical = raw.get("logical_worker_index", raw.get("window_index"))
+    logical = raw.get("logical_worker_index")
+    if logical is None:
+        logical = raw.get("window_index")
+    # Preserve explicit window_index when present (legacy live index dual-write);
+    # logical_worker_index is the #102 authority for ordering.
+    window_index = raw.get("window_index")
+    if window_index is None:
+        window_index = logical
     attempt = raw.get("attempt", 1)
     if (
         isinstance(attempt, bool)
@@ -2315,7 +2322,7 @@ def _normalize_identity_row(raw: Mapping[str, Any]) -> dict[str, Any]:
         "task_id": tid,
         "logical_worker_index": logical,
         "attempt": attempt,
-        "window_index": logical,
+        "window_index": window_index,
         "window_id": raw.get("window_id"),
         "window_nonce": window_nonce,
         "window_owner_nonce": window_nonce,

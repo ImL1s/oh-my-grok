@@ -42,7 +42,6 @@ from omg_cli.team.plane import (
     TeamError,
     TeamGateError,
     _identity_rows,
-    _list_pane_identities,
     _load_team_identity_chain,
     _pane_env_pairs,
     _pane_proven_absent,
@@ -135,8 +134,11 @@ _SCALE_INTENT_RECORD_KEYS = frozenset(
     {
         "task_id",
         "window_index",
+        "logical_worker_index",
+        "attempt",
         "window_id",
         "window_nonce",
+        "pane_owner_nonce",
         "pane_id",
         "worktree",
         "argv_path",
@@ -1247,10 +1249,20 @@ def _apply_scale_wal_plan(
 
 
 def _public_scale_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Project the locked scale-intent record shape (dual-write #102 fields)."""
     public = {key: value for key, value in record.items() if not key.startswith("_")}
-    if set(public) != _SCALE_INTENT_RECORD_KEYS:
+    # Dual-write defaults so v2-shaped builders still publish intent.
+    if "logical_worker_index" not in public:
+        public["logical_worker_index"] = public.get("window_index")
+    if "attempt" not in public:
+        public["attempt"] = 1
+    if "pane_owner_nonce" not in public:
+        public["pane_owner_nonce"] = public.get("window_nonce")
+    # Drop unknown extras so locked consumers stay exact.
+    trimmed = {key: public.get(key) for key in _SCALE_INTENT_RECORD_KEYS}
+    if set(trimmed) != _SCALE_INTENT_RECORD_KEYS:
         raise TeamError("scale-up intent record keys mismatch")
-    return public
+    return trimmed
 
 
 def _scale_artifact_rows(
@@ -1357,6 +1369,8 @@ def _same_window_stack_pane(meta: Mapping[str, Any]) -> str | None:
     for rec in tasks:
         if not isinstance(rec, Mapping):
             continue
+        if rec.get("status") == STATUS_SCALED_DOWN:
+            continue
         pane = rec.get("pane_id")
         if not isinstance(pane, str) or _TMUX_PANE_ID.fullmatch(pane) is None:
             continue
@@ -1366,21 +1380,75 @@ def _same_window_stack_pane(meta: Mapping[str, Any]) -> str | None:
     return candidates[-1] if candidates else None
 
 
-def _add_tmux_panes_same_window(
+def _resolve_scale_view_mode(
+    meta: Mapping[str, Any],
+    *,
+    view_mode: str | None = None,
+    session_owned: bool = True,
+    window_id: str | None = None,
+) -> str:
+    """Resolve persisted topology mode for scale mutations (#102)."""
+    from omg_cli.team.topology import (
+        VIEW_MODE_LEGACY_WINDOWS,
+        normalize_persisted_topology,
+        resolve_persisted_view_mode,
+        TopologyError,
+    )
+
+    if isinstance(view_mode, str) and view_mode:
+        return view_mode
+    try:
+        snap = normalize_persisted_topology(meta)
+        return snap.mode
+    except TopologyError:
+        pass
+    try:
+        return resolve_persisted_view_mode(
+            {
+                "view_mode": meta.get("view_mode"),
+                "session_owned": session_owned,
+                "window_id": window_id or meta.get("window_id"),
+                "attach_mode": meta.get("attach_mode"),
+                "topology": meta.get("topology"),
+                "window_name": meta.get("window_name"),
+            }
+        )
+    except TopologyError:
+        if meta.get("topology") == "windows":
+            return VIEW_MODE_LEGACY_WINDOWS
+        raise TeamError(
+            "scale refused: cannot resolve persisted view_mode / topology"
+        )
+
+
+def _add_tmux_panes_split_topology(
     *,
     session: str,
     records: Sequence[dict[str, Any]],
     window_id: str | None,
     leader_pane_id: str | None,
     split_target_pane_id: str | None,
+    view_mode: str,
     expected_server: Mapping[str, Any] | None = None,
     expected_session_id: str | None = None,
     launch_nonce: str | None = None,
+    horizontal_first: bool = False,
 ) -> None:
-    """Scale-up workers via vertical splits into the shared leader window (#96)."""
+    """Scale-up workers via detached splits into the exact Team window (#102).
+
+    Covers ``same_window``, ``dedicated_window``, and ``detached_session``.
+    Never calls ``new-window``.
+    """
     from omg_cli.team.tmux import (
-        _intent_tmux_server,
-        _tmux_run_if_identity,
+        spawn_worker_dedicated_window,
+        spawn_worker_detached_session,
+        spawn_worker_same_window,
+        TmuxTeamError,
+    )
+    from omg_cli.team.topology import (
+        VIEW_MODE_DEDICATED_WINDOW,
+        VIEW_MODE_DETACHED_SESSION,
+        VIEW_MODE_SAME_WINDOW,
     )
 
     if not tmux_available():
@@ -1394,23 +1462,36 @@ def _add_tmux_panes_same_window(
             "Use omg team resume / restart the team first."
         )
     if not isinstance(window_id, str) or _TMUX_WINDOW_ID.fullmatch(window_id) is None:
-        raise TeamError("same_window scale-up requires exact team window_id")
-    stack = split_target_pane_id
-    if not isinstance(stack, str) or _TMUX_PANE_ID.fullmatch(stack) is None:
-        raise TeamError(
-            "same_window scale-up requires exact worker-stack pane_id "
-            "(split_target_pane_id)"
-        )
-    if isinstance(leader_pane_id, str) and stack == leader_pane_id:
-        raise TeamError("same_window scale-up refuses to target the leader pane")
-    server = _intent_tmux_server(expected_server) if expected_server is not None else None
-    if server is None:
-        raise TeamError(
-            "same_window scale-up requires durable tmux server identity"
-        )
+        raise TeamError(f"{view_mode} scale-up requires exact team window_id")
     if not isinstance(expected_session_id, str) or not expected_session_id:
-        raise TeamError("same_window scale-up requires exact session_id")
-    sock = str(server["tmux_socket_path"])
+        raise TeamError(f"{view_mode} scale-up requires exact session_id")
+    if expected_server is None:
+        raise TeamError(
+            f"{view_mode} scale-up requires durable tmux server identity"
+        )
+
+    stack = split_target_pane_id
+    use_horizontal = bool(horizontal_first)
+    if view_mode == VIEW_MODE_SAME_WINDOW:
+        if not isinstance(stack, str) or _TMUX_PANE_ID.fullmatch(stack) is None:
+            if isinstance(leader_pane_id, str) and _TMUX_PANE_ID.fullmatch(
+                leader_pane_id
+            ):
+                stack = leader_pane_id
+                use_horizontal = True
+            else:
+                raise TeamError(
+                    "same_window scale-up requires exact worker-stack or leader pane"
+                )
+        if (
+            isinstance(leader_pane_id, str)
+            and stack == leader_pane_id
+            and not use_horizontal
+        ):
+            raise TeamError(
+                "same_window scale-up refuses vertical split against the leader pane"
+            )
+
     created: list[dict[str, Any]] = []
     try:
         for rec in records:
@@ -1418,89 +1499,121 @@ def _add_tmux_panes_same_window(
             wt = str(rec.get("worktree") or "")
             if not cmd or not wt:
                 raise TeamError(
-                    f"same_window scale-up missing pane_command/worktree for "
+                    f"{view_mode} scale-up missing pane_command/worktree for "
                     f"{rec.get('task_id')!r}"
                 )
             env_pairs = rec.get("_env_pairs") or []
             if not isinstance(env_pairs, list):
                 env_pairs = []
-            task_env = tmux_env_args([(str(k), str(v)) for k, v in env_pairs])
-            split_argv = [
-                "split-window",
-                "-v",
-                "-d",
-                "-P",
-                "-F",
-                "#{pane_id}",
-                "-t",
-                stack,
-                "-c",
-                wt,
-                *task_env,
-                cmd,
-            ]
-            split = _tmux_run_if_identity(
-                split_argv,
-                target=stack,
-                expected_server=server,
-                socket_path=sock,
-                window_id=window_id,
-                expected_session_id=expected_session_id,
-                pane_id=stack,
-            )
-            if split.returncode != 0:
-                err = (split.stderr or split.stdout or "").strip()[:400]
+            owner_nonce = rec.get("pane_owner_nonce") or rec.get("window_nonce")
+            if not isinstance(owner_nonce, str) or _TMUX_NONCE.fullmatch(owner_nonce) is None:
+                owner_nonce = secrets.token_hex(16)
+            rec["pane_owner_nonce"] = owner_nonce
+            rec["window_nonce"] = owner_nonce  # dual-write for legacy readers
+            pairs = [(str(k), str(v)) for k, v in env_pairs]
+            try:
+                if view_mode == VIEW_MODE_SAME_WINDOW:
+                    assert isinstance(stack, str)
+                    spawned = spawn_worker_same_window(
+                        target_pane_id=stack,
+                        team_window_id=window_id,
+                        worktree=wt,
+                        pane_command=cmd,
+                        env_pairs=pairs,
+                        horizontal=use_horizontal,
+                        expected_server=expected_server,
+                        expected_session_id=expected_session_id,
+                        pane_owner_nonce=owner_nonce,
+                        launch_nonce=launch_nonce,
+                        leader_pane_id=leader_pane_id
+                        if isinstance(leader_pane_id, str)
+                        else None,
+                    )
+                elif view_mode == VIEW_MODE_DEDICATED_WINDOW:
+                    spawned = spawn_worker_dedicated_window(
+                        team_window_id=window_id,
+                        target_pane_id=stack
+                        if isinstance(stack, str)
+                        else None,
+                        worktree=wt,
+                        pane_command=cmd,
+                        env_pairs=pairs,
+                        expected_server=expected_server,
+                        expected_session_id=expected_session_id,
+                        pane_owner_nonce=owner_nonce,
+                        launch_nonce=launch_nonce,
+                        horizontal=use_horizontal and stack is None,
+                    )
+                elif view_mode == VIEW_MODE_DETACHED_SESSION:
+                    spawned = spawn_worker_detached_session(
+                        team_window_id=window_id,
+                        target_pane_id=stack
+                        if isinstance(stack, str)
+                        else None,
+                        worktree=wt,
+                        pane_command=cmd,
+                        env_pairs=pairs,
+                        expected_server=expected_server,
+                        expected_session_id=expected_session_id,
+                        pane_owner_nonce=owner_nonce,
+                        launch_nonce=launch_nonce,
+                        horizontal=False,
+                    )
+                else:
+                    raise TeamError(f"unsupported split view_mode {view_mode!r}")
+            except TmuxTeamError as exc:
                 raise TeamError(
-                    f"same_window scale-up split failed for "
-                    f"{rec.get('task_id')!r}: {err}"
-                )
-            pane_id = (split.stdout or "").strip()
-            if _TMUX_PANE_ID.fullmatch(pane_id) is None:
-                raise TeamError(
-                    f"same_window scale-up did not return pane id for "
-                    f"{rec.get('task_id')!r}"
-                )
-            if isinstance(leader_pane_id, str) and pane_id == leader_pane_id:
-                raise TeamError("same_window scale-up produced leader pane id")
-            probe = _tmux_run(
-                [
-                    "display-message",
-                    "-p",
-                    "-t",
-                    pane_id,
-                    "#{pane_id}\t#{window_id}\t#{session_id}",
-                ],
-                socket_path=sock,
-            )
-            parts = (probe.stdout or "").strip().split("\t")
-            if (
-                probe.returncode != 0
-                or len(parts) != 3
-                or parts[0] != pane_id
-                or parts[1] != window_id
-                or parts[2] != expected_session_id
-            ):
-                raise TeamError(
-                    f"same_window scale-up pane left team window "
-                    f"(pane={pane_id!r} expected window={window_id!r} "
-                    f"session={expected_session_id!r})"
-                )
-            rec["pane_id"] = pane_id
-            rec["window_id"] = window_id
+                    f"{view_mode} scale-up split failed for "
+                    f"{rec.get('task_id')!r}: {exc}"
+                ) from exc
+            rec["pane_id"] = spawned.pane_id
+            rec["window_id"] = spawned.window_id
+            rec["pid"] = spawned.pane_pid
             rec["_session_name"] = session
             rec["_session_id"] = expected_session_id
             if isinstance(launch_nonce, str) and launch_nonce:
                 rec["_launch_nonce"] = launch_nonce
             if isinstance(leader_pane_id, str):
                 rec["_leader_pane_id"] = leader_pane_id
-            rec["_tmux_socket_path"] = server["tmux_socket_path"]
-            rec["_tmux_server_pid"] = server["tmux_server_pid"]
-            rec["_tmux_server_pid_start"] = server["tmux_server_pid_start"]
+            rec["_tmux_socket_path"] = expected_server.get("tmux_socket_path")
+            rec["_tmux_server_pid"] = expected_server.get("tmux_server_pid")
+            rec["_tmux_server_pid_start"] = expected_server.get(
+                "tmux_server_pid_start"
+            )
             created.append(rec)
-            stack = pane_id
+            stack = spawned.pane_id
+            use_horizontal = False  # subsequent workers always vertical
     except Exception:
-        _rollback_created_tmux_windows(created, view_mode="same_window")
+        _rollback_created_tmux_windows(created, view_mode=view_mode)
         raise
+
+
+def _add_tmux_panes_same_window(
+    *,
+    session: str,
+    records: Sequence[dict[str, Any]],
+    window_id: str | None,
+    leader_pane_id: str | None,
+    split_target_pane_id: str | None,
+    expected_server: Mapping[str, Any] | None = None,
+    expected_session_id: str | None = None,
+    launch_nonce: str | None = None,
+) -> None:
+    """Back-compat wrapper — delegates to split topology spawn (#102)."""
+    from omg_cli.team.topology import VIEW_MODE_SAME_WINDOW
+
+    _add_tmux_panes_split_topology(
+        session=session,
+        records=records,
+        window_id=window_id,
+        leader_pane_id=leader_pane_id,
+        split_target_pane_id=split_target_pane_id,
+        view_mode=VIEW_MODE_SAME_WINDOW,
+        expected_server=expected_server,
+        expected_session_id=expected_session_id,
+        launch_nonce=launch_nonce,
+        horizontal_first=False,
+    )
 
 
 def _add_tmux_windows(
@@ -1515,6 +1628,7 @@ def _add_tmux_windows(
     expected_server: Mapping[str, Any] | None = None,
     expected_session_id: str | None = None,
     launch_nonce: str | None = None,
+    meta: Mapping[str, Any] | None = None,
 ) -> None:
     """Adopt an exact WAL-planned orphan, or launch it exactly once.
 
@@ -1523,40 +1637,78 @@ def _add_tmux_windows(
     inside Teams in one tmux session would otherwise clobber each other's
     stamp. Authority instead gates on the Team's own ``window_id``.
 
-    ``view_mode=same_window`` (#96): split vertically into the shared leader
-    window against an exact worker-stack pane — never ``new-window``.
+    Non-legacy modes (#102): split into the exact Team window — never
+    ``new-window``. Only ``legacy_windows`` uses the one-window-per-worker path.
     """
     from omg_cli.team.topology import (
+        VIEW_MODE_DEDICATED_WINDOW,
+        VIEW_MODE_DETACHED_SESSION,
+        VIEW_MODE_LEGACY_WINDOWS,
         VIEW_MODE_SAME_WINDOW,
-        resolve_persisted_view_mode,
+        placement_target_for_add,
+        normalize_persisted_topology,
         TopologyError,
     )
 
     resolved_mode = view_mode
-    if resolved_mode is None:
+    horizontal_first = False
+    if meta is not None:
         try:
-            resolved_mode = resolve_persisted_view_mode(
-                {
-                    "view_mode": view_mode,
-                    "session_owned": session_owned,
-                    "window_id": window_id,
-                    "attach_mode": "inside" if not session_owned else "detached",
-                }
-            )
+            snap = normalize_persisted_topology(meta)
+            resolved_mode = snap.mode
+            if resolved_mode != VIEW_MODE_LEGACY_WINDOWS:
+                target = placement_target_for_add(snap)
+                if split_target_pane_id is None:
+                    split_target_pane_id = target.split_target_pane_id
+                if window_id is None:
+                    window_id = target.window_id
+                if leader_pane_id is None:
+                    leader_pane_id = target.leader_pane_id
+                horizontal_first = target.horizontal_first
         except TopologyError:
-            resolved_mode = None
-    if resolved_mode == VIEW_MODE_SAME_WINDOW:
-        _add_tmux_panes_same_window(
+            resolved_mode = _resolve_scale_view_mode(
+                meta,
+                view_mode=view_mode,
+                session_owned=session_owned,
+                window_id=window_id,
+            )
+    elif view_mode is None:
+        # Hermetic / legacy adapter surface: bare calls without view_mode or
+        # team meta keep the one-window-per-worker path (#102 fail-closed:
+        # never invent same_window from session_owned alone).
+        resolved_mode = VIEW_MODE_LEGACY_WINDOWS
+    elif resolved_mode is None:
+        resolved_mode = _resolve_scale_view_mode(
+            {
+                "view_mode": view_mode,
+                "session_owned": session_owned,
+                "window_id": window_id,
+                "attach_mode": "inside" if not session_owned else "detached",
+            },
+            view_mode=view_mode,
+            session_owned=session_owned,
+            window_id=window_id,
+        )
+
+    if resolved_mode in {
+        VIEW_MODE_SAME_WINDOW,
+        VIEW_MODE_DEDICATED_WINDOW,
+        VIEW_MODE_DETACHED_SESSION,
+    }:
+        _add_tmux_panes_split_topology(
             session=session,
             records=records,
             window_id=window_id,
             leader_pane_id=leader_pane_id,
             split_target_pane_id=split_target_pane_id,
+            view_mode=resolved_mode,
             expected_server=expected_server,
             expected_session_id=expected_session_id,
             launch_nonce=launch_nonce,
+            horizontal_first=horizontal_first,
         )
         return
+    # --- legacy_windows adapter below (new-window) ---
     if not tmux_available():
         raise TeamError(
             "tmux is required for omg team scale --add (non-dry-run).\n"
@@ -2022,14 +2174,22 @@ def _rollback_created_tmux_windows(
 ) -> list[str]:
     """Best-effort rollback of windows/panes created by this scale attempt.
 
-    ``same_window`` only kills owned worker panes — never the shared leader
-    window. Uses identity-gated scoped kill (same as create), not bare
-    ``kill-pane``.
+    Split modes only kill owned worker panes — never the shared leader
+    window or Team session. Uses identity-gated scoped kill (same as create),
+    not bare ``kill-pane``.
     """
     from omg_cli.team.tmux import _intent_tmux_server, _kill_panes_scoped
-    from omg_cli.team.topology import VIEW_MODE_SAME_WINDOW
+    from omg_cli.team.topology import (
+        VIEW_MODE_DEDICATED_WINDOW,
+        VIEW_MODE_DETACHED_SESSION,
+        VIEW_MODE_SAME_WINDOW,
+    )
 
-    if view_mode == VIEW_MODE_SAME_WINDOW:
+    if view_mode in {
+        VIEW_MODE_SAME_WINDOW,
+        VIEW_MODE_DEDICATED_WINDOW,
+        VIEW_MODE_DETACHED_SESSION,
+    }:
         errors: list[str] = []
         pane_ids: list[str] = []
         leader: str | None = None
@@ -2041,13 +2201,15 @@ def _rollback_created_tmux_windows(
             pane_id = rec.get("pane_id")
             if not isinstance(pane_id, str) or _TMUX_PANE_ID.fullmatch(pane_id) is None:
                 errors.append(
-                    f"missing pane id for same_window rollback "
+                    f"missing pane id for {view_mode} rollback "
                     f"task={rec.get('task_id')}"
                 )
                 continue
             rec_leader = rec.get("_leader_pane_id")
             if isinstance(rec_leader, str) and pane_id == rec_leader:
-                errors.append(f"refused same_window rollback of leader pane {pane_id}")
+                errors.append(
+                    f"refused {view_mode} rollback of leader pane {pane_id}"
+                )
                 continue
             pane_ids.append(pane_id)
             if leader is None and isinstance(rec_leader, str):
@@ -2802,19 +2964,63 @@ def _read_scaled_pane_pid(
     session_id: str,
     record: Mapping[str, Any],
 ) -> int | None:
-    """Rebind a scaled pane only when every immutable tmux field still agrees."""
+    """Rebind a scaled pane only when every immutable tmux field still agrees.
+
+    Split topology (#102): match pane_id + window_id + session_id + owner nonce
+    without requiring live ``window_index`` equality (logical slot ≠ tmux index).
+    Legacy windows: still require window_index + ``@omg_scale_nonce``.
+    """
     window_index = record.get("window_index")
     window_id = record.get("window_id")
     pane_id = record.get("pane_id")
+    window_nonce = record.get("window_nonce") or record.get("pane_owner_nonce")
+    if (
+        not isinstance(window_id, str)
+        or _TMUX_WINDOW_ID.fullmatch(window_id) is None
+        or not isinstance(pane_id, str)
+        or _TMUX_PANE_ID.fullmatch(pane_id) is None
+    ):
+        return None
+
+    # Prefer pane-owner nonce readback only when explicitly stamped (#102).
+    # Do not treat legacy window_nonce alone as a split-mode owner nonce —
+    # that would skip the window_index corroboration legacy tests lock.
+    owner = record.get("pane_owner_nonce")
+    if isinstance(owner, str) and _TMUX_NONCE.fullmatch(owner) is not None:
+        observed = _tmux_run(
+            [
+                "display-message",
+                "-p",
+                "-t",
+                pane_id,
+                "-F",
+                "#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t"
+                "#{@omg_worker_nonce}\t#{@omg_scale_nonce}\t#{pane_dead}",
+            ]
+        )
+        lines = (observed.stdout or "").splitlines()
+        parts = lines[0].split("\t") if len(lines) == 1 else []
+        if (
+            observed.returncode == 0
+            and len(parts) == 7
+            and parts[0] == session_id
+            and parts[1] == window_id
+            and parts[2] == pane_id
+            and parts[6] == "0"
+            and (parts[4] == owner or parts[5] == owner)
+        ):
+            try:
+                pid = int(parts[3])
+            except ValueError:
+                return None
+            return pid if pid > 0 else None
+
+    # Legacy windows path: window_index + @omg_scale_nonce.
     window_nonce = record.get("window_nonce")
     if (
         not isinstance(window_index, int)
         or isinstance(window_index, bool)
         or window_index < 0
-        or not isinstance(window_id, str)
-        or _TMUX_WINDOW_ID.fullmatch(window_id) is None
-        or not isinstance(pane_id, str)
-        or _TMUX_PANE_ID.fullmatch(pane_id) is None
         or not isinstance(window_nonce, str)
         or _TMUX_NONCE.fullmatch(window_nonce) is None
     ):
@@ -3543,6 +3749,8 @@ def _scale_up(
                     )
                 if rec is None:
                     rec = _build_pane_record(**pane_kwargs)
+                rec["logical_worker_index"] = int(rec.get("window_index", start_idx + i))
+                rec.setdefault("attempt", 1)
                 if not effective_dry:
                     rec["_env_pairs"] = _pane_env_pairs(
                         run_id=run_id,
@@ -3600,11 +3808,15 @@ def _scale_up(
                     ),
                     expected_session_id=str(authority["session_id"]),
                     launch_nonce=str(authority["launch_nonce"]),
+                    meta=meta,
                 )
                 windows_created = True
                 session_id = str(authority["session_id"])
                 for rec in new_records:
-                    pid = _read_scaled_pane_pid(session_id=session_id, record=rec)
+                    # Split spawn already bound pane PID; prefer it, else re-read.
+                    pid = rec.get("pid")
+                    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+                        pid = _read_scaled_pane_pid(session_id=session_id, record=rec)
                     if pid is not None:
                         rec["pid"] = pid
                         rec["pgid"] = _pgid_for_pid(pid)
@@ -3856,15 +4068,65 @@ def _scale_up(
         # Non-fatal for dry-run legacy status maps
         pass
 
+    layout_info = {
+        "layout_repair_needed": False,
+        "layout_status": "clean",
+        "layout_last_error_code": None,
+    }
+    if not effective_dry:
+        layout_info = _reconcile_lifecycle_layout(
+            updated, active_count=int(updated.get("task_count") or 0)
+        )
+        # Persist layout status without bumping identity generation.
+        if layout_info.get("layout_status"):
+            topo = updated.get("tmux_topology")
+            if isinstance(topo, dict):
+                layout = dict(topo.get("layout") or {})
+                layout["status"] = layout_info["layout_status"]
+                layout["last_error_code"] = layout_info.get("layout_last_error_code")
+                topo = dict(topo)
+                topo["layout"] = layout
+
+                def _apply_layout(current: dict[str, Any]) -> dict[str, Any]:
+                    out = dict(current)
+                    nested = dict(out.get("tmux_topology") or {})
+                    nested["layout"] = layout
+                    out["tmux_topology"] = nested
+                    return out
+
+                try:
+                    updated = mutate_team_meta(root, run_id, _apply_layout)
+                except TeamError:
+                    pass
+
+    logical_indices = [
+        int(
+            r.get(
+                "logical_worker_index",
+                r.get("window_index", -1),
+            )
+        )
+        for r in new_records
+    ]
+    # Deprecated window_indices: prefer live window_index when legacy path
+    # rewrote it (adopted tmux index); otherwise the logical alias.
+    window_indices_out = [int(r.get("window_index", -1)) for r in new_records]
     return {
         "writer": CLI_WRITER,
         "run_id": run_id,
         "op": "add",
         "added": n,
         "task_ids": [r["task_id"] for r in new_records],
-        "window_indices": [r["window_index"] for r in new_records],
+        "window_indices": window_indices_out,
+        "logical_worker_indices": logical_indices,
+        "view_mode": updated.get("view_mode") or meta.get("view_mode"),
+        "layout_status": layout_info.get("layout_status"),
+        "layout_repair_needed": bool(layout_info.get("layout_repair_needed")),
         "active_panes": updated["task_count"],
         "next_worker_index": updated["next_worker_index"],
+        "next_logical_worker_index": updated.get(
+            "next_logical_worker_index", updated.get("next_worker_index")
+        ),
         "dry_run": effective_dry,
         "cap": cap,
         "verified": False,
@@ -4665,13 +4927,73 @@ def _bind_pane_process(rec: dict[str, Any], pane_id: str) -> None:
 
 
 def _resync_window_indices(session: str, tasks: Sequence[dict[str, Any]]) -> None:
-    """Align logical window_index slots with live pane_index after respawn."""
-    observed = _list_pane_identities(session)
-    by_pane = {pane_id: idx for idx, (pane_id, _pid) in observed.items()}
-    for rec in tasks:
-        pane_id = rec.get("pane_id")
-        if isinstance(pane_id, str) and pane_id in by_pane:
-            rec["window_index"] = by_pane[pane_id]
+    """Deprecated no-op (#102).
+
+    Logical worker ordering must not be rewritten from live pane_index.
+    Kept as a stub so accidental callers do not resurrect the old binding.
+    """
+    _ = (session, tasks)
+    return None
+
+
+def _reconcile_lifecycle_layout(
+    meta: Mapping[str, Any],
+    *,
+    active_count: int,
+) -> dict[str, Any]:
+    """Run post-commit layout reconcile; never raises for cosmetic failure."""
+    from omg_cli.team.tmux import reconcile_layout
+    from omg_cli.team.topology import (
+        LAYOUT_STATUS_CLEAN,
+        LAYOUT_STATUS_REPAIR_NEEDED,
+        normalize_persisted_topology,
+        TopologyError,
+        VIEW_MODE_LEGACY_WINDOWS,
+    )
+
+    try:
+        snap = normalize_persisted_topology(meta)
+    except TopologyError:
+        return {
+            "layout_repair_needed": False,
+            "layout_status": LAYOUT_STATUS_CLEAN,
+            "layout_last_error_code": None,
+        }
+    if snap.mode == VIEW_MODE_LEGACY_WINDOWS:
+        return {
+            "layout_repair_needed": False,
+            "layout_status": LAYOUT_STATUS_CLEAN,
+            "layout_last_error_code": None,
+        }
+    window_id = snap.anchor.team_window_id
+    if not isinstance(window_id, str):
+        return {
+            "layout_repair_needed": True,
+            "layout_status": LAYOUT_STATUS_REPAIR_NEEDED,
+            "layout_last_error_code": "missing_team_window",
+        }
+    server = None
+    if meta.get("tmux_socket_path") is not None:
+        server = {
+            "tmux_socket_path": meta.get("tmux_socket_path"),
+            "tmux_server_pid": meta.get("tmux_server_pid"),
+            "tmux_server_pid_start": meta.get("tmux_server_pid_start"),
+        }
+    result = reconcile_layout(
+        mode=snap.mode,
+        team_window_id=window_id,
+        leader_pane_id=snap.anchor.leader_pane_id,
+        leader_pane_pid=snap.anchor.leader_pane_pid,
+        session_id=snap.anchor.session_id,
+        worker_count=max(1, active_count),
+        expected_server=server,
+        layout_name=snap.layout_name,
+    )
+    return {
+        "layout_repair_needed": result.status == LAYOUT_STATUS_REPAIR_NEEDED,
+        "layout_status": result.status,
+        "layout_last_error_code": result.last_error_code,
+    }
 
 
 def _relaunch_bootstrap_command(
@@ -5771,7 +6093,7 @@ def _relaunch_dead_incomplete_workers_locked(
                 }
             )
 
-        _resync_window_indices(session, tasks_all)
+        # #102: never rewrite logical worker indices from live pane_index.
         intent = {
             "request_sha256": request_sha256,
             "relaunch_wal_sha256": wal_sha256,

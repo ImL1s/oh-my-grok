@@ -220,66 +220,62 @@ def test_identity_receipt_v1_v2_raw_bytes_unchanged_on_read(
     assert parsed["schema_version"] == 2
     assert path.read_bytes() == before
 
-    # plane._identity_rows still projects the v2 row shape.
-    rows = plane._identity_rows(v2_receipt["tasks_after"])
+    # v2 projection must not invent v3-only keys.
+    rows = plane._identity_rows_v2(v2_receipt["tasks_after"])
     assert rows[0]["window_index"] == 0
-    assert "logical_worker_index" not in rows[0]
+    assert set(rows[0]) == {
+        "task_id",
+        "window_index",
+        "window_id",
+        "window_nonce",
+        "pane_id",
+        "pid",
+        "pgid",
+        "pid_start",
+    }
 
-
-def test_resync_window_indices_still_present_pre_102_removal() -> None:
-    """Characterization: #102 must delete this helper; assert current baseline."""
+def test_resync_window_indices_is_noop_after_102() -> None:
+    """#102: logical ordering must not be rewritten from live pane_index."""
     from omg_cli.team import scaling
 
     assert hasattr(scaling, "_resync_window_indices")
-    assert callable(scaling._resync_window_indices)
+    tasks = [{"pane_id": "%1", "window_index": 7, "logical_worker_index": 7}]
+    scaling._resync_window_indices("omg", tasks)
+    assert tasks[0]["window_index"] == 7
+    assert tasks[0]["logical_worker_index"] == 7
 
 
 def test_add_tmux_windows_same_window_uses_split_not_new_window(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """#96 floor already routes same_window to split; lock it for #102."""
+    """#96/#102 floor: same_window scale routes to split primitives."""
     from omg_cli.team import scaling
-    from omg_cli.team.tmux import _tmux_run_if_identity
+    from omg_cli.team.tmux import SpawnedWorkerPane
 
-    calls: list[list[str]] = []
+    calls: list[str] = []
 
-    def fake_identity(argv: Any, **_kwargs: Any) -> Any:
-        calls.append(list(argv))
-        from unittest.mock import MagicMock
-
-        return MagicMock(returncode=0, stdout="%42\n", stderr="")
-
-    def fake_tmux_run(args: Any, **_kwargs: Any) -> Any:
-        command = list(args)
-        calls.append(command)
-        from unittest.mock import MagicMock
-
-        if command[0] == "display-message":
-            return MagicMock(
-                returncode=0, stdout="%42\t@12\t$7\n", stderr=""
-            )
-        return MagicMock(returncode=0, stdout="", stderr="")
+    def fake_spawn(**kwargs: Any) -> SpawnedWorkerPane:
+        calls.append("spawn_same_window")
+        assert kwargs["team_window_id"] == "@12"
+        assert "new-window" not in str(kwargs)
+        return SpawnedWorkerPane(
+            session_id="$7",
+            window_id="@12",
+            pane_id="%42",
+            pane_pid=4242,
+            pane_owner_nonce=kwargs["pane_owner_nonce"],
+        )
 
     monkeypatch.setattr(scaling, "tmux_available", lambda: True)
     monkeypatch.setattr(scaling, "_session_alive", lambda _s: True)
-    monkeypatch.setattr(scaling, "_tmux_run", fake_tmux_run)
     monkeypatch.setattr(
-        "omg_cli.team.tmux._tmux_run_if_identity", fake_identity
-    )
-    monkeypatch.setattr(
-        "omg_cli.team.tmux._intent_tmux_server",
-        lambda raw: {
-            "tmux_socket_path": "/tmp/tmux-sock",
-            "tmux_server_pid": 99,
-            "tmux_server_pid_start": "proc:99",
-        }
-        if isinstance(raw, dict) or raw is not None
-        else None,
+        "omg_cli.team.tmux.spawn_worker_same_window", fake_spawn
     )
 
     record = {
         "task_id": "scale-2",
         "window_index": 2,
+        "window_nonce": "a" * 32,
         "worktree": str(tmp_path / "wt"),
         "pane_command": "run-me",
         "_env_pairs": [],
@@ -300,7 +296,54 @@ def test_add_tmux_windows_same_window_uses_split_not_new_window(
         expected_session_id="$7",
         launch_nonce="a" * 32,
     )
-    assert not any(c and c[0] == "new-window" for c in calls)
-    assert any(c and c[0] == "split-window" for c in calls)
+    assert calls == ["spawn_same_window"]
     assert record["pane_id"] == "%42"
     assert record["window_id"] == "@12"
+    assert record["pid"] == 4242
+
+
+def test_add_tmux_windows_dedicated_never_new_window(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.team import scaling
+    from omg_cli.team.tmux import SpawnedWorkerPane
+
+    def fake_spawn(**kwargs: Any) -> SpawnedWorkerPane:
+        assert kwargs["team_window_id"] == "@99"
+        return SpawnedWorkerPane(
+            session_id="$7",
+            window_id="@99",
+            pane_id="%50",
+            pane_pid=5000,
+            pane_owner_nonce=kwargs["pane_owner_nonce"],
+        )
+
+    monkeypatch.setattr(scaling, "tmux_available", lambda: True)
+    monkeypatch.setattr(scaling, "_session_alive", lambda _s: True)
+    monkeypatch.setattr(
+        "omg_cli.team.tmux.spawn_worker_dedicated_window", fake_spawn
+    )
+    record = {
+        "task_id": "scale-3",
+        "window_index": 3,
+        "window_nonce": "b" * 32,
+        "worktree": str(tmp_path / "wt"),
+        "pane_command": "run",
+        "_env_pairs": [],
+    }
+    scaling._add_tmux_windows(
+        session="omg-workers",
+        records=[record],
+        session_owned=False,
+        window_id="@99",
+        view_mode=VIEW_MODE_DEDICATED_WINDOW,
+        expected_server={
+            "tmux_socket_path": "/tmp/tmux-sock",
+            "tmux_server_pid": 99,
+            "tmux_server_pid_start": "proc:99",
+        },
+        expected_session_id="$7",
+        launch_nonce="c" * 32,
+    )
+    assert record["pane_id"] == "%50"
+    assert record["window_id"] == "@99"

@@ -3284,13 +3284,10 @@ def test_relaunch_retry_recovers_pending_receipt_without_respawn(
     )
     mutate = scaling.mutate_team_meta
     calls = 0
-
-    def renumber(_session: str, tasks: Any) -> None:
-        for row in tasks:
-            if row.get("task_id") == "t-b":
-                row["window_index"] = 9
-
-    monkeypatch.setattr(scaling, "_resync_window_indices", renumber)
+    before = load_team_meta(tmp_path, rid)
+    preserved_index = next(
+        row for row in before["tasks"] if row["task_id"] == "t-b"
+    )["window_index"]
 
     def fail_before_meta(*args: Any, **kwargs: Any) -> Any:
         nonlocal calls
@@ -3309,9 +3306,10 @@ def test_relaunch_retry_recovers_pending_receipt_without_respawn(
     assert out["identity_generation"] == 1
     disk = load_team_meta(tmp_path, rid)
     assert disk["identity_generation"] == 1
+    # #102: relaunch must not rewrite logical window_index from live pane_index.
     assert next(row for row in disk["tasks"] if row["task_id"] == "t-b")[
         "window_index"
-    ] == 9
+    ] == preserved_index
 
 
 def test_relaunch_receipt_recovery_rejects_tasks_before_tamper(
