@@ -165,14 +165,6 @@ def plan_team_view(request: ViewRequest) -> ViewPlan:
     window_id = request.target_window_id
     pane_id = request.target_pane_id
 
-    base = ViewPlan(
-        action=ACTION_REFUSE,
-        session_id=target_sid,
-        session_name=target_name,
-        window_id=window_id,
-        pane_id=pane_id,
-    )
-
     if not _safe_session_name(target_name):
         return ViewPlan(
             action=ACTION_REFUSE,
