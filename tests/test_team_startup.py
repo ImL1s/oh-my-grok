@@ -1324,7 +1324,7 @@ def test_provider_ready_then_dies_before_wait_returns(
 
 
 def test_trailing_grok_cmdline_token_does_not_match_identity() -> None:
-    """argv[N>0] basename ``grok`` must not satisfy identity (exe/argv[0] only)."""
+    """argv[2+] basename ``grok`` must not satisfy identity (trailing-token closed)."""
     from omg_cli.team.supervisor import provider_binary_identity_matches
 
     hold = subprocess.Popen(
@@ -1344,10 +1344,155 @@ def test_trailing_grok_cmdline_token_does_not_match_identity() -> None:
             hold.wait(timeout=1)
 
 
+def test_interpreter_script_basename_matches_identity() -> None:
+    """Production shape: python|node argv0 + script argv1 basename ``grok``."""
+    import tempfile
+
+    from omg_cli.team.supervisor import provider_binary_identity_matches
+
+    td = Path(tempfile.mkdtemp(prefix="omg99-interp-"))
+    script = td / "grok"
+    script.write_text(
+        "import time\ntime.sleep(30)\n",
+        encoding="utf-8",
+    )
+    hold = subprocess.Popen(
+        [sys.executable, str(script)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        time.sleep(0.05)
+        assert provider_binary_identity_matches(hold.pid, {"grok"}) is True
+        assert provider_binary_identity_matches(hold.pid, {"not-grok"}) is False
+    finally:
+        hold.terminate()
+        try:
+            hold.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            hold.kill()
+            hold.wait(timeout=1)
+
+
+def test_process_stable_with_interpreter_script_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interpreter+script launcher can still process_stable (production shape)."""
+    _bind_env(monkeypatch, tmp_path, run_id="run-interp-stable")
+    monkeypatch.setenv("OMG_TEAM_POST_STABLE_OBSERVE_S", "0.5")
+    script = tmp_path / "bin" / "grok"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "import time\ntime.sleep(30)\n",
+        encoding="utf-8",
+    )
+    desc = write_provider_descriptor(
+        tmp_path / "desc.json",
+        provider="grok",
+        argv=[sys.executable, str(script)],
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    env["OMG_TEAM_POST_STABLE_OBSERVE_S"] = "0.5"
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "omg_cli.main",
+            "team",
+            "supervisor",
+            "--descriptor",
+            str(desc),
+            "--ready-timeout",
+            "5",
+        ],
+        cwd=str(tmp_path),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 8.0
+        record = None
+        while time.monotonic() < deadline:
+            record = read_startup_record(
+                tmp_path, run_id="run-interp-stable", team_id="team", worker_id="w1"
+            )
+            if record and record.get("phase") in (
+                StartupPhase.TASK_DISPATCHED.value,
+                StartupPhase.FAILED.value,
+                StartupPhase.BLOCKED.value,
+            ):
+                break
+            time.sleep(0.05)
+        assert record is not None
+        assert record["phase"] == StartupPhase.TASK_DISPATCHED.value, record
+        out = wait_for_startup_acks(
+            tmp_path,
+            run_id="run-interp-stable",
+            team_id="team",
+            expected_workers=["w1"],
+            timeout_ms=200,
+            poll_s=0.02,
+        )
+        assert out["startup_status"] == "running"
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+
+
+def test_env_interpreter_script_identity_matches() -> None:
+    """``env python script`` / ``env script`` forms; flags stay fail-closed."""
+    from omg_cli.team.supervisor import provider_binary_identity_matches
+    import tempfile
+
+    td = Path(tempfile.mkdtemp(prefix="omg99-env-"))
+    script = td / "grok"
+    script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    # env <interpreter> <script>
+    hold = subprocess.Popen(
+        ["/usr/bin/env", sys.executable, str(script)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        time.sleep(0.05)
+        assert provider_binary_identity_matches(hold.pid, {"grok"}) is True
+    finally:
+        hold.terminate()
+        try:
+            hold.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            hold.kill()
+            hold.wait(timeout=1)
+    # env with flags must not open a hole via skipping into argv[2+]
+    hold2 = subprocess.Popen(
+        ["/usr/bin/env", "-i", sys.executable, "-c", "import time; time.sleep(30)", "grok"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        time.sleep(0.05)
+        assert provider_binary_identity_matches(hold2.pid, {"grok"}) is False
+    finally:
+        hold2.terminate()
+        try:
+            hold2.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            hold2.kill()
+            hold2.wait(timeout=1)
+
+
 def test_process_stable_with_matching_binary_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Real provider basename may still use process_stable after identity match."""
+    """Compiled provider basename may still use process_stable after identity match."""
     _bind_env(monkeypatch, tmp_path, run_id="run-real-identity")
     monkeypatch.setenv("OMG_TEAM_POST_STABLE_OBSERVE_S", "0.5")
     fake_grok = _compiled_sleeper(tmp_path / "bin" / "grok")

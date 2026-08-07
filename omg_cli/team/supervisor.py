@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -205,13 +206,55 @@ def _exe_basename(pid: int) -> str | None:
     return Path(value).name if value else None
 
 
+# Interpreters that may wrap a real provider script (npm/shebang CLIs).
+_INTERPRETER_BASENAMES = frozenset(
+    {
+        "node",
+        "nodejs",
+        "python",
+        "python3",
+        "ruby",
+        "perl",
+        "bash",
+        "sh",
+        "zsh",
+        "deno",
+        "bun",
+    }
+)
+_PYTHON_VER_RE = re.compile(r"^python3?(?:\.\d+)*$")
+
+
+def _is_interpreter_basename(name: str) -> bool:
+    n = str(name or "").strip().lower()
+    if not n:
+        return False
+    if n in _INTERPRETER_BASENAMES:
+        return True
+    # python3.11 / python3.14 / python2.7-style versioned binaries
+    return bool(_PYTHON_VER_RE.match(n))
+
+
+def _token_looks_like_option(token: str) -> bool:
+    return str(token).startswith("-")
+
+
 def provider_binary_identity_matches(
     pid: int, expected_basenames: set[str] | Sequence[str]
 ) -> bool:
-    """True when exe basename and/or argv[0] basename matches expected.
+    """True when provider identity matches expected basenames fail-closed.
 
-    Later cmdline tokens are ignored — ``python -c 'sleep(30)' grok`` must
-    not false-green as provider ``grok`` (#99 / Grok MERGE nit).
+    Accepts any of:
+      1. exe basename ∈ expected
+      2. argv[0] basename ∈ expected
+      3. interpreter form: argv[0] is a known interpreter and argv[1]
+         basename ∈ expected (production node/python shebang CLIs)
+      4. ``env`` form: ``env <script>`` or ``env <interpreter> <script>``
+         (script basename ∈ expected); options after ``env`` are skipped
+         conservatively
+
+    argv[2+] (or argv[3+] under ``env <interpreter>``) is never scanned for
+    the expected name — ``python -c 'sleep(30)' grok`` stays closed (#99).
     Descriptor ``identity_basenames`` still supplies the expected set.
     """
     expected = {
@@ -225,9 +268,34 @@ def provider_binary_identity_matches(
     if exe and Path(exe).name.lower() in expected:
         return True
     tokens = _cmdline_tokens(pid)
-    if tokens:
-        argv0 = Path(tokens[0]).name.lower()
-        if argv0 in expected:
+    if not tokens:
+        return False
+    argv0 = Path(tokens[0]).name.lower()
+    if argv0 in expected:
+        return True
+
+    def _script_basename_matches(token: str) -> bool:
+        if _token_looks_like_option(token):
+            return False
+        return Path(token).name.lower() in expected
+
+    # node|python|… /path/to/grok
+    if _is_interpreter_basename(argv0) and len(tokens) >= 2:
+        if _script_basename_matches(tokens[1]):
+            return True
+
+    # /usr/bin/env grok  OR  /usr/bin/env node /path/to/grok
+    # Refuse ``env`` with flags (fail closed) to avoid option-skipping holes.
+    if argv0 == "env" and len(tokens) >= 2:
+        if _token_looks_like_option(tokens[1]):
+            return False
+        if _script_basename_matches(tokens[1]):
+            return True
+        if (
+            _is_interpreter_basename(Path(tokens[1]).name)
+            and len(tokens) >= 3
+            and _script_basename_matches(tokens[2])
+        ):
             return True
     return False
 
