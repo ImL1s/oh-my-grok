@@ -352,8 +352,13 @@ def cmd_team(args: argparse.Namespace) -> int:
     from omg_cli.team.routing import RoutingError, parse_routing_json
     from omg_cli.team.scaling import scale_team
 
-    root = project_root()
     action = getattr(args, "team_action", None)
+    # #100: supervisor must not trigger generic project-root discovery via
+    # project_root(); it consumes the validated leader root from env only.
+    if action == "supervisor":
+        root = None
+    else:
+        root = project_root()
 
     try:
         if action == "launch":
@@ -658,7 +663,11 @@ def cmd_team(args: argparse.Namespace) -> int:
         if action == "worker-ready":
             # Legacy v1 helper (#99). Writes wrapper_ready_legacy only — does
             # NOT prove provider readiness for new Team launches.
-            from omg_cli.team.runtime import write_worker_ready_receipt
+            # Public CLI still emits JSON (#100); internal path is silent.
+            from omg_cli.team.bootstrap import (
+                pane_failure_line,
+                worker_ready_internal,
+            )
 
             worker_id = (os.environ.get("OMG_TEAM_WORKER_ID") or "").strip()
             run_id = (os.environ.get("OMG_TEAM_RUN_ID") or "").strip()
@@ -676,13 +685,19 @@ def cmd_team(args: argparse.Namespace) -> int:
                 )
                 return 2
             ready_root = Path(leader).resolve() if leader else root
-            path = write_worker_ready_receipt(
+            result = worker_ready_internal(
                 ready_root,
                 run_id=run_id,
                 team_id=team_id,
                 worker_id=worker_id,
                 source="process",
             )
+            if not result.ok:
+                print(
+                    pane_failure_line(worker_id=worker_id, run_id=run_id),
+                    file=sys.stderr,
+                )
+                return 1
             emit_data(
                 args,
                 "team.worker-ready",
@@ -692,7 +707,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                     "worker_id": worker_id,
                     "run_id": run_id,
                     "team_id": team_id,
-                    "ready_path": str(path),
+                    "ready_written": True,
                     "note": (
                         "v1 wrapper receipt only; cannot prove provider_ready (#99)"
                     ),
@@ -700,16 +715,44 @@ def cmd_team(args: argparse.Namespace) -> int:
             )
             return 0
         if action == "supervisor":
+            from omg_cli.team.bootstrap import (
+                BootstrapError,
+                append_bootstrap_log,
+                bootstrap_env_identity,
+                classify_bootstrap_exception,
+                pane_failure_line,
+            )
             from omg_cli.team.supervisor import SupervisorError, run_supervisor
 
             desc = getattr(args, "supervisor_descriptor", None)
             if not desc:
+                # Missing descriptor is a CLI usage error (not a pane bootstrap).
                 print(
                     "omg team supervisor: --descriptor PATH required",
                     file=sys.stderr,
                 )
                 return 2
+            worker_id: str | None = None
+            run_id: str | None = None
             try:
+                run_id, team_id, worker_id, leader = bootstrap_env_identity()
+                append_bootstrap_log(
+                    leader,
+                    run_id=run_id,
+                    team_id=team_id,
+                    worker_id=worker_id,
+                    phase="BOOTSTRAP_BEGIN",
+                    code="SUPERVISOR",
+                )
+                append_bootstrap_log(
+                    leader,
+                    run_id=run_id,
+                    team_id=team_id,
+                    worker_id=worker_id,
+                    phase="ROOT_VALIDATED",
+                    code="SUPERVISOR",
+                )
+                # run_supervisor owns pane-facing failure lines for its errors.
                 return int(
                     run_supervisor(
                         descriptor_path=desc,
@@ -718,9 +761,35 @@ def cmd_team(args: argparse.Namespace) -> int:
                         ),
                     )
                 )
-            except SupervisorError as exc:
-                print(f"omg team supervisor: {exc}", file=sys.stderr)
-                return 1
+            except (BootstrapError, SupervisorError) as exc:
+                code = classify_bootstrap_exception(exc)
+                if run_id and worker_id:
+                    try:
+                        leader_root = (
+                            os.environ.get("OMG_TEAM_LEADER_ROOT")
+                            or os.environ.get("OMG_PROJECT_ROOT")
+                            or ""
+                        ).strip()
+                        if leader_root:
+                            append_bootstrap_log(
+                                Path(leader_root),
+                                run_id=run_id,
+                                team_id=(
+                                    os.environ.get("OMG_TEAM_ID") or "team"
+                                ).strip()
+                                or "team",
+                                worker_id=worker_id,
+                                phase="BOOTSTRAP_FAIL",
+                                code=code.value,
+                                summary=str(exc),
+                            )
+                    except Exception:  # noqa: BLE001 — never poison pane
+                        pass
+                print(
+                    pane_failure_line(worker_id=worker_id, run_id=run_id),
+                    file=sys.stderr,
+                )
+                return int(getattr(exc, "exit_code", 1) or 1)
         if action == "api":
             from omg_cli.team.api import (
                 TeamApiError,

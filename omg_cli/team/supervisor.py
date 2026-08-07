@@ -425,23 +425,51 @@ def resolve_provider_child_pid(
 
 
 def _env_identity() -> tuple[str, str, str, Path]:
-    worker_id = (os.environ.get("OMG_TEAM_WORKER_ID") or "").strip()
-    run_id = (os.environ.get("OMG_TEAM_RUN_ID") or "").strip()
-    team_id = (os.environ.get("OMG_TEAM_ID") or "team").strip() or "team"
-    leader = (
-        os.environ.get("OMG_TEAM_LEADER_ROOT")
-        or os.environ.get("OMG_PROJECT_ROOT")
-        or ""
-    ).strip()
-    if not worker_id or not run_id:
-        raise SupervisorError(
-            "team supervisor requires OMG_TEAM_WORKER_ID and OMG_TEAM_RUN_ID"
-        )
-    if not leader:
-        raise SupervisorError(
-            "team supervisor requires OMG_TEAM_LEADER_ROOT or OMG_PROJECT_ROOT"
-        )
-    return run_id, team_id, worker_id, Path(leader).resolve()
+    """Resolve worker identity + validated canonical leader root (#100).
+
+    Never walks nested worktree ``.omg`` ancestors — leader root comes from
+    the supervisor environment that the leader already validated.
+    """
+    from omg_cli.team.bootstrap import BootstrapError, bootstrap_env_identity
+
+    try:
+        return bootstrap_env_identity()
+    except BootstrapError as exc:
+        raise SupervisorError(str(exc)) from exc
+
+
+def _emit_pane_failure(*, worker_id: str | None, run_id: str | None) -> None:
+    """One safe stderr line for pane-facing bootstrap/supervisor failure."""
+    from omg_cli.team.bootstrap import pane_failure_line
+
+    try:
+        sys.stderr.write(pane_failure_line(worker_id=worker_id, run_id=run_id) + "\n")
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001 — never crash the pane wrapper
+        pass
+
+
+def _log_bootstrap(
+    root: Path,
+    *,
+    run_id: str,
+    team_id: str,
+    worker_id: str,
+    phase: str,
+    code: str | None = None,
+    summary: str | None = None,
+) -> None:
+    from omg_cli.team.bootstrap import append_bootstrap_log
+
+    append_bootstrap_log(
+        root,
+        run_id=run_id,
+        team_id=team_id,
+        worker_id=worker_id,
+        phase=phase,
+        code=code,
+        summary=summary,
+    )
 
 
 def _pid_start(pid: int) -> str | None:
@@ -1127,20 +1155,37 @@ def run_supervisor(
             )
         return int(rc if rc is not None else 1)
     except SupervisorError as exc:
-        write_startup_phase(
-            root,
-            run_id=run_id,
-            team_id=team_id,
-            worker_id=worker_id,
-            phase=StartupPhase.FAILED,
-            provider=provider,
-            supervisor_pid=supervisor_pid,
-            provider_pid=provider_pid,
-            provider_pgid=provider_pgid,
-            provider_pid_start=provider_start,
-            evidence_code=EvidenceCode.MALFORMED,
-            failure_reason=str(exc),
-        )
+        from omg_cli.team.bootstrap import classify_bootstrap_exception
+
+        try:
+            _log_bootstrap(
+                root,
+                run_id=run_id,
+                team_id=team_id,
+                worker_id=worker_id,
+                phase="BOOTSTRAP_FAIL",
+                code=classify_bootstrap_exception(exc).value,
+                summary=str(exc),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            write_startup_phase(
+                root,
+                run_id=run_id,
+                team_id=team_id,
+                worker_id=worker_id,
+                phase=StartupPhase.FAILED,
+                provider=provider,
+                supervisor_pid=supervisor_pid,
+                provider_pid=provider_pid,
+                provider_pgid=provider_pgid,
+                provider_pid_start=provider_start,
+                evidence_code=EvidenceCode.MALFORMED,
+                failure_reason=str(exc),
+            )
+        except Exception:  # noqa: BLE001 — receipt best-effort on fail path
+            pass
         if proc is not None and _child_alive(proc, provider_pid=provider_pid):
             try:
                 if provider_pgid:
@@ -1164,9 +1209,24 @@ def run_supervisor(
                         proc.kill()
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
+        _emit_pane_failure(worker_id=worker_id, run_id=run_id)
         return 1
     except StartupError as exc:
-        sys.stderr.write(f"team supervisor startup error: {exc}\n")
+        from omg_cli.team.bootstrap import classify_bootstrap_exception
+
+        try:
+            _log_bootstrap(
+                root,
+                run_id=run_id,
+                team_id=team_id,
+                worker_id=worker_id,
+                phase="BOOTSTRAP_FAIL",
+                code=classify_bootstrap_exception(exc).value,
+                summary=str(exc),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        _emit_pane_failure(worker_id=worker_id, run_id=run_id)
         return 1
     finally:
         if proc is not None and proc.stdout is not None:

@@ -913,7 +913,13 @@ def _pane_env_pairs(
     if worker_id:
         out.append((TEAM_WORKER_ID_ENV, str(worker_id)))
     if leader_root is not None:
-        out.append((TEAM_LEADER_ROOT_ENV, str(Path(leader_root).resolve())))
+        leader_resolved = str(Path(leader_root).resolve())
+        out.append((TEAM_LEADER_ROOT_ENV, leader_resolved))
+        # #100: pin OMG_PROJECT_ROOT to the validated leader so any incidental
+        # CLI import inside the pane skips nested worktree .omg discovery.
+        # Provider cwd remains the worktree (descriptor); this is control-plane
+        # root only.
+        out.append(("OMG_PROJECT_ROOT", leader_resolved))
     if state_root is not None:
         out.append((TEAM_STATE_ROOT_ENV, str(Path(state_root).resolve())))
     if owner_token:

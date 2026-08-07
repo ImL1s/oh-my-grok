@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -304,30 +305,54 @@ def main(argv: list[str] | None = None) -> int:
         }
     )
     command = str(getattr(args, "command", "") or "")
+    team_action = getattr(args, "team_action", None)
     clear_resolved_project_root()
     root_path: Path | None = None
     if command not in _INSTALL_SCOPED:
-        try:
-            resolution = resolve_project_root(
-                explicit=getattr(args, "project_root", None),
-                here=bool(getattr(args, "setup_here", False)),
+        # #100: pane supervisor must use the validated leader root and must
+        # NOT walk ancestors from the worktree (avoids nested-.omg warnings
+        # and keeps bootstrap silent). Public CLI discovery is unchanged.
+        if command == "team" and team_action == "supervisor":
+            from omg_cli.team.bootstrap import (
+                BootstrapError,
+                pane_failure_line,
+                resolve_supervisor_project_root,
             )
-        except ProjectRootError as exc:
-            print(f"omg: {exc}", file=sys.stderr)
-            return int(getattr(exc, "exit_code", 2) or 2)
-        set_resolved_project_root(resolution)
-        root_path = resolution.root
-        worker_team_api = False
-        if command == "team" and getattr(args, "team_action", None) == "api":
-            from omg_cli.team.api import team_api_worker_context_present
 
-            worker_team_api = team_api_worker_context_present()
-        if (
-            resolution.note
-            and resolution.shadowed_omg_ancestors
-            and not worker_team_api
-        ):
-            print(f"omg: warning: {resolution.note}", file=sys.stderr)
+            try:
+                resolution = resolve_supervisor_project_root()
+            except BootstrapError as exc:
+                worker_id = (os.environ.get("OMG_TEAM_WORKER_ID") or "").strip() or None
+                run_id = (os.environ.get("OMG_TEAM_RUN_ID") or "").strip() or None
+                print(
+                    pane_failure_line(worker_id=worker_id, run_id=run_id),
+                    file=sys.stderr,
+                )
+                return int(getattr(exc, "exit_code", 1) or 1)
+            set_resolved_project_root(resolution)
+            root_path = resolution.root
+        else:
+            try:
+                resolution = resolve_project_root(
+                    explicit=getattr(args, "project_root", None),
+                    here=bool(getattr(args, "setup_here", False)),
+                )
+            except ProjectRootError as exc:
+                print(f"omg: {exc}", file=sys.stderr)
+                return int(getattr(exc, "exit_code", 2) or 2)
+            set_resolved_project_root(resolution)
+            root_path = resolution.root
+            worker_team_api = False
+            if command == "team" and team_action == "api":
+                from omg_cli.team.api import team_api_worker_context_present
+
+                worker_team_api = team_api_worker_context_present()
+            if (
+                resolution.note
+                and resolution.shadowed_omg_ancestors
+                and not worker_team_api
+            ):
+                print(f"omg: warning: {resolution.note}", file=sys.stderr)
 
     from omg_cli.command_context import attach_command_context
 

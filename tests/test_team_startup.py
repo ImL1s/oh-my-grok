@@ -113,10 +113,13 @@ def _bind_env(
     worker_id: str = "w1",
     run_id: str = "run-sup",
 ) -> None:
+    (tmp_path / ".omg").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".omg" / "state").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("OMG_TEAM_WORKER_ID", worker_id)
     monkeypatch.setenv("OMG_TEAM_RUN_ID", run_id)
     monkeypatch.setenv("OMG_TEAM_ID", "team")
     monkeypatch.setenv("OMG_TEAM_LEADER_ROOT", str(tmp_path))
+    monkeypatch.setenv("OMG_TEAM_STATE_ROOT", str(tmp_path / ".omg" / "state"))
     monkeypatch.setenv("OMG_TEAM_SUPERVISOR_READY_S", "5")
 
 

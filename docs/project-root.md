@@ -21,6 +21,18 @@ state. Nested working directories no longer invent a second tree by default.
 | Nested `.omg` under a parent `.omg` | Nearest wins; stderr **warning** lists shadowed ancestors (no auto-merge/delete). |
 | Install / `install-hook` / global rules | Install-scoped; not driven by project-root discovery for their install target. |
 | Host launch (`omg --madmax`, interactive) | Uses the same discovery from cwd (no argv flag until parse). |
+| Team pane supervisor (`omg team supervisor`) | Uses the validated `OMG_TEAM_LEADER_ROOT` (and matching state root). **Skips** ancestor discovery so nested worktree `.omg` directories do **not** print shadow warnings into the pane (#100). Ordinary interactive CLI outside that path still warns. |
+
+## Team bootstrap diagnostics (#100)
+
+Worker pane bootstrap is silent on success. Failures print one redacted line in the
+pane and write a bounded `bootstrap.log` under:
+
+```text
+.omg/state/runs/<run>/team/<team-key>/workers/<worker-key>/bootstrap.log
+```
+
+Inspect via `omg team status <run> --full` (descriptor only — not pane scrollback).
 
 ## Diagnostics
 
