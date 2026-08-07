@@ -120,19 +120,30 @@ def test_headless_nonzero(fake_agy_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert result.retryable is True
 
 
-def _install_hang_agy(bin_dir: Path, *, stdout: str = "partial-out\n", stderr: str = "") -> Path:
+def _install_hang_agy(
+    bin_dir: Path,
+    *,
+    stdout: str = "partial-out\n",
+    stderr: str = "",
+    marker: Path | None = None,
+) -> Path:
     """Minimal agy that writes immediately then sleeps (timeout/cancel tests)."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     target = bin_dir / "agy"
     py = sys.executable
+    marker_expr = repr(str(marker)) if marker is not None else "None"
     script = f"""\
 #!{py}
 import sys, time
+from pathlib import Path
 sys.stdout.write({stdout!r})
 sys.stdout.flush()
 if {stderr!r}:
     sys.stderr.write({stderr!r})
     sys.stderr.flush()
+marker = {marker_expr}
+if marker:
+    Path(marker).write_text("ready", encoding="utf-8")
 time.sleep(30)
 """
     target.write_text(script, encoding="utf-8")
@@ -148,8 +159,8 @@ def test_timeout_preserves_partial_stdout(
 
     path = _install_hang_agy(tmp_path / "bin", stdout="partial-out\n")
     monkeypatch.setenv("OMG_AGY_BIN", str(path))
-    monkeypatch.setenv("PATH", str(path.parent))
-    result = run(ProviderRunRequest(prompt="slow", timeout_s=0.8))
+    monkeypatch.setenv("PATH", str(path.parent) + os.pathsep + os.environ.get("PATH", ""))
+    result = run(ProviderRunRequest(prompt="slow", timeout_s=2.0))
     assert result.timed_out
     assert result.exit_class == "timeout"
     assert result.partial_output
@@ -163,13 +174,22 @@ def test_cancellation_preserves_partial(
     from omg_cli.providers.antigravity import run
     from omg_cli.providers.models import ProviderRunRequest
 
-    path = _install_hang_agy(tmp_path / "bin", stdout="cancel-partial\n")
+    marker = tmp_path / "wrote.ready"
+    path = _install_hang_agy(
+        tmp_path / "bin", stdout="cancel-partial\n", marker=marker
+    )
     monkeypatch.setenv("OMG_AGY_BIN", str(path))
     monkeypatch.setenv("PATH", str(path.parent))
     cancel = threading.Event()
 
     def _flip() -> None:
-        time.sleep(0.25)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if marker.exists():
+                break
+            time.sleep(0.02)
+        # Small grace so pipe readers observe the write before killpg.
+        time.sleep(0.05)
         cancel.set()
 
     threading.Thread(target=_flip, daemon=True).start()
