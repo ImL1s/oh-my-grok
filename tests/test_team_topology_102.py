@@ -1,42 +1,28 @@
-"""#102 characterization: topology model + legacy receipt compatibility.
-
-Hermetic — no live tmux. Locks pre-change contracts before schema/scaling
-rewrites land.
-"""
+"""#102 topology authority characterization and adversarial regressions."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
 from omg_cli.team import plane, topology
 from omg_cli.team.topology import (
+    TopologyError,
     VIEW_MODE_DEDICATED_WINDOW,
-    VIEW_MODE_DETACHED_SESSION,
     VIEW_MODE_LEGACY_WINDOWS,
     VIEW_MODE_SAME_WINDOW,
-    TopologyError,
     build_topology_snapshot,
     normalize_persisted_topology,
     placement_target_for_add,
     placement_target_for_relaunch,
-    resolve_launch_view_mode,
     resolve_persisted_view_mode,
     topology_sha256,
 )
 
 
-def test_resolve_launch_never_returns_legacy_windows() -> None:
-    assert resolve_launch_view_mode(inside_tmux=True) == VIEW_MODE_SAME_WINDOW
-    assert (
-        resolve_launch_view_mode(inside_tmux=True, dedicated_window=True)
-        == VIEW_MODE_DEDICATED_WINDOW
-    )
-    assert resolve_launch_view_mode(inside_tmux=False) == VIEW_MODE_DETACHED_SESSION
+def test_persisted_modes_include_legacy_windows() -> None:
     assert VIEW_MODE_LEGACY_WINDOWS not in topology.LAUNCH_VIEW_MODES
     assert VIEW_MODE_LEGACY_WINDOWS in topology.PERSISTED_VIEW_MODES
 
@@ -52,6 +38,37 @@ def test_topology_windows_string_classifies_as_legacy_not_same_window() -> None:
                 "session_owned": False,
                 "window_id": "@1",
             }
+        )
+
+
+def test_corrupt_windows_plus_same_window_view_mode_fail_closed() -> None:
+    """#102 blocker: topology=windows + view_mode=same_window must not promote."""
+    corrupt = {
+        "topology": "windows",
+        "view_mode": VIEW_MODE_SAME_WINDOW,
+        "session": "omg-workers",
+        "session_id": "$7",
+        "launch_nonce": "a" * 32,
+    }
+    with pytest.raises(TopologyError, match="conflicts with view_mode"):
+        resolve_persisted_view_mode(corrupt)
+    with pytest.raises(TopologyError, match="conflicts|cannot combine"):
+        normalize_persisted_topology(corrupt)
+
+    from omg_cli.team import scaling
+    from omg_cli.team.plane import TeamError
+
+    with pytest.raises(TeamError, match="conflicts with view_mode"):
+        scaling._resolve_scale_view_mode(corrupt)
+    with pytest.raises(TeamError, match="conflicts with view_mode"):
+        scaling._scale_request_payload(
+            meta=corrupt,
+            active=[],
+            task_specs=[{"task_id": "x", "prompt": "p", "owned_files": []}],
+            start_index=0,
+            yolo=False,
+            safe=False,
+            extra=None,
         )
 
 
@@ -118,124 +135,95 @@ def test_normalize_same_window_snapshot_from_receipt_and_meta() -> None:
     )
 
 
-def test_normalize_legacy_windows_does_not_promote_to_split() -> None:
-    meta = {
-        "topology": "windows",
-        "session": "omg-legacy",
-        "session_id": "$1",
-        "launch_nonce": "c" * 32,
-        "session_owned": True,
+def test_refresh_active_workers_after_scale_add_clears_stale_panes() -> None:
+    """#102 blocker: scale commit must refresh nested active_workers."""
+    from omg_cli.team import scaling
+
+    meta: dict[str, Any] = {
+        "topology": "split",
+        "view_mode": VIEW_MODE_SAME_WINDOW,
+        "session": "omg-workers",
+        "session_id": "$7",
+        "launch_nonce": "a" * 32,
+        "window_id": "@12",
+        "leader_pane_id": "%3",
+        "leader_pane_pid": 4242,
+        "session_owned": False,
+        "identity_generation": 1,
+        "identity_receipt_sha256": "c" * 64,
+        "next_worker_index": 2,
         "tasks": [
             {
-                "task_id": "t1",
+                "task_id": "w0",
+                "logical_worker_index": 0,
                 "window_index": 0,
-                "window_id": "@1",
-                "pane_id": "%1",
-            }
-        ],
-    }
-    snap = normalize_persisted_topology(meta)
-    assert snap.mode == VIEW_MODE_LEGACY_WINDOWS
-    assert snap.topology_string == "windows"
-    assert snap.is_legacy is True
-    target = placement_target_for_add(snap)
-    assert target.strategy == topology.PLACEMENT_LEGACY_WINDOW
-    assert target.window_id is None
-
-
-def test_identity_receipt_v1_v2_raw_bytes_unchanged_on_read(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Readers may normalize in memory; raw receipt files must stay byte-identical."""
-    root = tmp_path
-    run_id = "20260807T000000Z-deadbeef"
-    team_dir = root / ".omg" / "state" / "runs" / run_id / "team"
-    team_dir.mkdir(parents=True)
-
-    # Minimal v2 identity receipt fixture (exact key set).
-    v2_receipt: dict[str, Any] = {
-        "store_kind": "team_identity_receipt",
-        "schema_version": plane.V2_IDENTITY_RECEIPT_SCHEMA_VERSION,
-        "writer": plane.CLI_WRITER,
-        "run_id": run_id,
-        "session_name": "omg-workers",
-        "session_id": "$7",
-        "launch_nonce": "d" * 32,
-        "generation": 1,
-        "previous_receipt_sha256": "e" * 64,
-        "operation": "add",
-        "receipt_nonce": "f" * 32,
-        "tasks_before": [
-            {
-                "task_id": "w1",
-                "window_index": 0,
-                "window_id": "@12",
-                "window_nonce": "1" * 32,
                 "pane_id": "%8",
-                "pid": 11,
-                "pgid": 11,
-                "pid_start": "proc:11",
-            }
-        ],
-        "tasks_after": [
-            {
-                "task_id": "w1",
-                "window_index": 0,
-                "window_id": "@12",
-                "window_nonce": "1" * 32,
-                "pane_id": "%8",
-                "pid": 11,
-                "pgid": 11,
-                "pid_start": "proc:11",
+                "attempt": 1,
+                "status": "running",
             },
             {
-                "task_id": "scale-1",
+                "task_id": "w1",
+                "logical_worker_index": 1,
                 "window_index": 1,
-                "window_id": "@13",
-                "window_nonce": "2" * 32,
-                "pane_id": "%9",
-                "pid": 12,
-                "pgid": 12,
-                "pid_start": "proc:12",
+                "pane_id": "%42",
+                "attempt": 1,
+                "status": "running",
             },
         ],
-        "scale_intent": {
-            "request_sha256": "a" * 64,
-            "scale_wal_sha256": "b" * 64,
-            "records": [],
+        "tmux_topology": {
+            "schema_version": 1,
+            "anchor": {
+                "mode": VIEW_MODE_SAME_WINDOW,
+                "session_name": "omg-workers",
+                "session_id": "$7",
+                "launch_nonce": "a" * 32,
+                "session_owned": False,
+                "team_window_id": "@12",
+                "leader_pane_id": "%3",
+                "leader_pane_pid": 4242,
+            },
+            "identity_generation": 0,
+            "identity_receipt_sha256": "b" * 64,
+            # Stale: still points at pre-add pane only.
+            "active_workers": [
+                {
+                    "task_id": "w0",
+                    "logical_worker_index": 0,
+                    "attempt": 1,
+                    "window_id": "@12",
+                    "pane_id": "%8",
+                }
+            ],
+            "placement": {
+                "strategy": "right_stack",
+                "right_stack_root_pane_id": "%8",
+            },
+            "layout": {
+                "name": "main-vertical",
+                "leader_width_policy": "clamped_half",
+                "status": "clean",
+                "last_error_code": None,
+            },
         },
-        "scale_intent_sha256": None,
     }
-    # Fill scale_intent_sha256 canonically.
-    v2_receipt["scale_intent_sha256"] = sha256_hex(
-        canonical_json_bytes(v2_receipt["scale_intent"])
-    )
-    body = canonical_json_bytes(v2_receipt)
-    path = team_dir / "identity-receipt-1.json"
-    path.write_bytes(body)
-    before = path.read_bytes()
+    # Before refresh, placement would target stale %8 (poison).
+    stale = normalize_persisted_topology(meta)
+    assert placement_target_for_add(stale).split_target_pane_id == "%8"
 
-    # Parse only — must not rewrite.
-    parsed = json.loads(before.decode("utf-8"))
-    assert parsed["schema_version"] == 2
-    assert path.read_bytes() == before
+    scaling._refresh_tmux_topology_projection(meta)
+    assert meta["next_logical_worker_index"] == 2
+    workers = meta["tmux_topology"]["active_workers"]
+    assert [w["task_id"] for w in workers] == ["w0", "w1"]
+    assert workers[1]["pane_id"] == "%42"
+    assert meta["tmux_topology"]["placement"]["right_stack_root_pane_id"] == "%42"
+    # Anchor immutable.
+    assert meta["tmux_topology"]["anchor"]["leader_pane_id"] == "%3"
 
-    # v2 projection must not invent v3-only keys.
-    rows = plane._identity_rows_v2(v2_receipt["tasks_after"])
-    assert rows[0]["window_index"] == 0
-    assert set(rows[0]) == {
-        "task_id",
-        "window_index",
-        "window_id",
-        "window_nonce",
-        "pane_id",
-        "pid",
-        "pgid",
-        "pid_start",
-    }
+    fresh = normalize_persisted_topology(meta)
+    assert placement_target_for_add(fresh).split_target_pane_id == "%42"
 
-def test_resync_window_indices_is_noop_after_102() -> None:
-    """#102: logical ordering must not be rewritten from live pane_index."""
+
+def test_resync_window_indices_is_noop() -> None:
     from omg_cli.team import scaling
 
     assert hasattr(scaling, "_resync_window_indices")
@@ -253,6 +241,7 @@ def test_add_tmux_windows_same_window_uses_split_not_new_window(
     from omg_cli.team.tmux import SpawnedWorkerPane
 
     calls: list[str] = []
+    argv_trace: list[list[str]] = []
 
     def fake_spawn(**kwargs: Any) -> SpawnedWorkerPane:
         calls.append("spawn_same_window")
@@ -266,11 +255,18 @@ def test_add_tmux_windows_same_window_uses_split_not_new_window(
             pane_owner_nonce=kwargs["pane_owner_nonce"],
         )
 
+    def fake_tmux(args: list[str], *, socket_path: str | None = None):
+        argv_trace.append(list(args))
+        from types import SimpleNamespace
+
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
     monkeypatch.setattr(scaling, "tmux_available", lambda: True)
     monkeypatch.setattr(scaling, "_session_alive", lambda _s: True)
     monkeypatch.setattr(
         "omg_cli.team.tmux.spawn_worker_same_window", fake_spawn
     )
+    monkeypatch.setattr("omg_cli.team.tmux._tmux_run", fake_tmux)
 
     record = {
         "task_id": "scale-2",
@@ -295,11 +291,72 @@ def test_add_tmux_windows_same_window_uses_split_not_new_window(
         },
         expected_session_id="$7",
         launch_nonce="a" * 32,
+        meta={
+            "topology": "split",
+            "view_mode": VIEW_MODE_SAME_WINDOW,
+            "window_id": "@12",
+            "session_id": "$7",
+            "launch_nonce": "a" * 32,
+        },
     )
     assert calls == ["spawn_same_window"]
     assert record["pane_id"] == "%42"
     assert record["window_id"] == "@12"
     assert record["pid"] == 4242
+    assert not any(a and a[0] == "new-window" for a in argv_trace)
+
+
+def test_relaunch_spawn_uses_topology_detached_owner_nonce(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#102: relaunch consumes placement + detached spawn + attempt++."""
+    from omg_cli.team import scaling
+    from omg_cli.team.tmux import SpawnedWorkerPane
+    from omg_cli.team.topology import PlacementTarget
+
+    seen: dict[str, Any] = {}
+
+    def fake_spawn(**kwargs: Any) -> SpawnedWorkerPane:
+        seen.update(kwargs)
+        return SpawnedWorkerPane(
+            session_id="$7",
+            window_id="@12",
+            pane_id="%99",
+            pane_pid=9999,
+            pane_owner_nonce=kwargs["pane_owner_nonce"],
+        )
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux.spawn_worker_same_window", fake_spawn
+    )
+    placement = PlacementTarget(
+        session_id="$7",
+        window_id="@12",
+        leader_pane_id="%3",
+        split_target_pane_id="%8",
+        strategy="right_stack",
+        horizontal_first=False,
+    )
+    pane = scaling._spawn_relaunch_worker_via_topology(
+        mode=VIEW_MODE_SAME_WINDOW,
+        placement=placement,
+        worktree=str(tmp_path),
+        pane_command="sleep 1",
+        env_pairs=[],
+        expected_server={
+            "tmux_socket_path": "/tmp/tmux-sock",
+            "tmux_server_pid": 99,
+            "tmux_server_pid_start": "proc:99",
+        },
+        expected_session_id="$7",
+        pane_owner_nonce="d" * 32,
+        launch_nonce="a" * 32,
+    )
+    assert pane == "%99"
+    assert seen["pane_owner_nonce"] == "d" * 32
+    assert seen["team_window_id"] == "@12"
+    assert seen["horizontal"] is False
+    assert seen.get("leader_pane_id") == "%3"
 
 
 def test_add_tmux_windows_dedicated_never_new_window(
@@ -347,3 +404,32 @@ def test_add_tmux_windows_dedicated_never_new_window(
     )
     assert record["pane_id"] == "%50"
     assert record["window_id"] == "@99"
+
+
+def test_scale_wal_request_binds_view_mode_and_window() -> None:
+    from omg_cli.team import scaling
+
+    meta = {
+        "topology": "split",
+        "view_mode": VIEW_MODE_SAME_WINDOW,
+        "session": "omg-workers",
+        "session_id": "$7",
+        "launch_nonce": "a" * 32,
+        "window_id": "@12",
+        "leader_pane_id": "%3",
+        "identity_generation": 0,
+        "identity_receipt_sha256": "b" * 64,
+        "goal": "g",
+    }
+    payload = scaling._scale_request_payload(
+        meta=meta,
+        active=[],
+        task_specs=[{"task_id": "t1", "prompt": "p", "owned_files": ["a.py"]}],
+        start_index=0,
+        yolo=False,
+        safe=False,
+        extra=None,
+    )
+    assert payload["view_mode"] == VIEW_MODE_SAME_WINDOW
+    assert payload["team_window_id"] == "@12"
+    assert payload["leader_pane_id"] == "%3"

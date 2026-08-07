@@ -224,6 +224,9 @@ def resolve_persisted_view_mode(
     - top-level ``topology == "windows"`` → ``legacy_windows`` (#102)
     - inside + ``window_id`` alone (leader-window shape) → fail closed
     Never invent ``same_window`` from counts or a bare window id.
+
+    ``topology == "windows"`` is absolute: an explicit non-legacy ``view_mode``
+    fails closed (never silently promotes to split/same_window scale).
     """
     sources: list[Mapping[str, Any]] = []
     if isinstance(receipt, Mapping):
@@ -231,27 +234,40 @@ def resolve_persisted_view_mode(
     if isinstance(meta, Mapping):
         sources.append(meta)
 
-    for src in sources:
-        raw = src.get("view_mode")
-        if isinstance(raw, str) and raw in PERSISTED_VIEW_MODES:
-            return raw
-        if raw is not None and raw != "":
-            raise TopologyError(f"unsupported persisted view_mode {raw!r}")
-
-    # Legacy inference across receipt then meta (first source wins fields,
-    # but scan all sources for unambiguous dedicated window_name).
     merged: dict[str, Any] = {}
     for src in reversed(sources):
         merged.update(dict(src))
+    topology = merged.get("topology")
+
+    explicit_mode: str | None = None
+    for src in sources:
+        raw = src.get("view_mode")
+        if isinstance(raw, str) and raw in PERSISTED_VIEW_MODES:
+            explicit_mode = raw
+            break
+        if raw is not None and raw != "":
+            raise TopologyError(f"unsupported persisted view_mode {raw!r}")
+
+    # Explicit legacy windows topology string — never promote to same_window.
+    if topology == "windows":
+        if (
+            explicit_mode is not None
+            and explicit_mode != VIEW_MODE_LEGACY_WINDOWS
+        ):
+            raise TopologyError(
+                f"topology 'windows' conflicts with view_mode {explicit_mode!r}; "
+                "refuse silent split/same_window promotion"
+            )
+        return VIEW_MODE_LEGACY_WINDOWS
+
+    if explicit_mode is not None:
+        return explicit_mode
+
+    # Legacy inference across receipt then meta.
     attach = merged.get("attach_mode")
     session_owned = merged.get("session_owned")
     window_id = merged.get("window_id")
     window_name = merged.get("window_name")
-    topology = merged.get("topology")
-
-    # Explicit legacy windows topology string — never promote to same_window.
-    if topology == "windows":
-        return VIEW_MODE_LEGACY_WINDOWS
 
     if attach == "detached" or session_owned is True:
         return VIEW_MODE_DETACHED_SESSION

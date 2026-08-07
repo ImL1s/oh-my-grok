@@ -2384,14 +2384,14 @@ def _persist_team_identity_receipt(
     require_sha256(previous_receipt_sha256, label="previous_receipt_sha256")
     if operation not in {"add", "remove", "relaunch"}:
         raise TeamError("scaled identity receipt operation mismatch")
+    if not isinstance(topology_mode, str) or not topology_mode:
+        raise TeamError("v3 identity receipt requires topology_mode")
+    if operation_intent is None:
+        raise TeamError("v3 identity receipt requires operation_intent")
     scale_intent_body = (
         canonical_json_bytes(scale_intent) if scale_intent is not None else None
     )
-    operation_intent_body = (
-        canonical_json_bytes(operation_intent)
-        if operation_intent is not None
-        else None
-    )
+    operation_intent_body = canonical_json_bytes(operation_intent)
     receipt = {
         "store_kind": "team_identity_receipt",
         "schema_version": IDENTITY_RECEIPT_SCHEMA_VERSION,
@@ -2618,24 +2618,24 @@ def _load_team_identity_chain(
             op_intent = parsed.get("operation_intent")
             op_hash = parsed.get("operation_intent_sha256")
             if op_intent is None or op_hash is None:
-                if op_intent is not None or op_hash is not None:
-                    raise TeamError("team identity receipt operation intent mismatch")
-            else:
-                if not isinstance(op_intent, Mapping):
-                    raise TeamError("team identity receipt operation intent mismatch")
-                try:
-                    require_sha256(op_hash, label="operation_intent_sha256")
-                except ValueError as exc:
-                    raise TeamError(
-                        "team identity receipt operation intent mismatch"
-                    ) from exc
-                if sha256_hex(canonical_json_bytes(op_intent)) != op_hash:
-                    raise TeamError("team identity receipt operation intent mismatch")
+                raise TeamError(
+                    "team identity receipt v3 requires operation_intent"
+                )
+            if not isinstance(op_intent, Mapping):
+                raise TeamError("team identity receipt operation intent mismatch")
+            try:
+                require_sha256(op_hash, label="operation_intent_sha256")
+            except ValueError as exc:
+                raise TeamError(
+                    "team identity receipt operation intent mismatch"
+                ) from exc
+            if sha256_hex(canonical_json_bytes(op_intent)) != op_hash:
+                raise TeamError("team identity receipt operation intent mismatch")
             topo_mode = parsed.get("topology_mode")
-            if topo_mode is not None and (
-                not isinstance(topo_mode, str) or not topo_mode
-            ):
-                raise TeamError("team identity receipt topology_mode mismatch")
+            if not isinstance(topo_mode, str) or not topo_mode:
+                raise TeamError(
+                    "team identity receipt v3 requires topology_mode"
+                )
         normalized_rows: dict[str, list[dict[str, Any]]] = {}
         for field in ("tasks_before", "tasks_after"):
             for row in parsed[field]:
