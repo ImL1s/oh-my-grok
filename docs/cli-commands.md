@@ -44,7 +44,7 @@ Related: [cli-contract.md](./cli-contract.md) (exit codes + JSON envelopes).
 | `accept` | team | acceptance + verified stamp |
 | `integrate` | team | worktree integrate |
 | `worker` | team | ULW worker ownership |
-| `team` | team | tmux team plane (default on; kill-switch OMG_DISABLE_TMUX_TEAM) |
+| `team` | team | tmux team plane (default on; kill-switch OMG_DISABLE_TMUX_TEAM); inside default `same_window` (#96), `--dedicated-window`, outside `detached_session` |
 | `review` | modes | structured dual review |
 | `qa` | modes | ultraqa freeze/run |
 | `autopilot` | modes | strict phase FSM |

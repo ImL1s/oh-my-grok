@@ -384,6 +384,7 @@ def test_inside_tmux_splits_current_window(monkeypatch: pytest.MonkeyPatch) -> N
         tasks=tasks,
         env_pairs=[],
         attach_mode="inside",
+        view_mode="dedicated_window",
     )
     assert handle == ("leader", "$42")
     assert tasks[0]["pane_id"] == "%10"
@@ -413,6 +414,357 @@ def test_inside_tmux_splits_current_window(monkeypatch: pytest.MonkeyPatch) -> N
     assert not any(
         c[0] == "display-message" and "-t" not in c for c in calls
     )
+
+
+def test_inside_same_window_default_never_calls_new_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#96 default inside path: split beside leader; never new-window."""
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    monkeypatch.setenv("TMUX_PANE", "%9")
+    calls: list[list[str]] = []
+
+    def fake_tmux(args, *, socket_path=None):
+        argv = list(args)
+        calls.append(argv)
+        cmd = argv[0] if argv else ""
+        joined = " ".join(argv)
+        if cmd == "display-message":
+            target = argv[argv.index("-t") + 1] if "-t" in argv else ""
+            fmt = argv[-1]
+            if target == "%9" and "pane_active" in fmt:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="$42\t@3\t%9\t4242\t1\n",
+                    stderr="",
+                )
+            if target == "%9":
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="leader\t$42\t@3\t%9\t4242\n",
+                    stderr="",
+                )
+            if target == "@3" and "window_width" in fmt:
+                return SimpleNamespace(returncode=0, stdout="120\n", stderr="")
+            if target in ("%10", "%11"):
+                if "pane_dead" in fmt or "@omg_intent_nonce" in fmt:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout=f"{target}\t$42\t@3\t424242\t0\tnonce\n",
+                        stderr="",
+                    )
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=f"{target}\t$42\t@3\t424242\n",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "if-shell" and "split-window" in joined and "-h" in joined:
+            assert "-d" in joined
+            assert "-t %9" in joined or "%9" in joined
+            return SimpleNamespace(returncode=0, stdout="%10\n", stderr="")
+        if cmd == "if-shell" and "split-window" in joined and "-v" in joined:
+            assert "-d" in joined
+            assert "%10" in joined
+            return SimpleNamespace(returncode=0, stdout="%11\n", stderr="")
+        if cmd == "set-window-option" and "main-pane-width" in joined:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "select-layout":
+            assert "main-vertical" in joined
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "select-pane":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "set-option":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "show-options":
+            return SimpleNamespace(returncode=0, stdout="nonce\n", stderr="")
+        if cmd == "new-window":
+            raise AssertionError("same_window must not call new-window")
+        if cmd == "kill-window":
+            raise AssertionError("same_window must not call kill-window")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
+    monkeypatch.setattr(
+        tmux_mod,
+        "_publish_intent_nonce_on_pane",
+        lambda **kw: True,
+    )
+
+    tasks = [
+        {"task_id": "w1", "worktree": "/tmp/w1", "pane_command": "true", "_env_pairs": []},
+        {"task_id": "w2", "worktree": "/tmp/w2", "pane_command": "true", "_env_pairs": []},
+    ]
+    handle = tmux_mod.create_split_team_session(
+        session="planned",
+        tasks=tasks,
+        env_pairs=[],
+        attach_mode="inside",
+    )
+    assert handle == ("leader", "$42")
+    launch = tasks[0]["_tmux_launch"]
+    assert launch["view_mode"] == "same_window"
+    assert launch["layout"] == "main-vertical"
+    assert launch["window_id"] == "@3"
+    assert launch["leader_pane_id"] == "%9"
+    assert launch["leader_pane_pid"] == 4242
+    assert tasks[0]["pane_id"] == "%10"
+    assert tasks[1]["pane_id"] == "%11"
+    assert not any(c[0] == "new-window" for c in calls)
+    assert not any(c[0] == "kill-window" for c in calls)
+    assert any("main-vertical" in " ".join(c) for c in calls)
+    joined_all = [" ".join(c) for c in calls]
+    assert any("split-window" in j and " -h " in f" {j} " for j in joined_all)
+    assert any("split-window" in j and " -v " in f" {j} " for j in joined_all)
+
+
+def test_inside_same_window_preserves_exact_leader_identity_and_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    monkeypatch.setenv("TMUX_PANE", "%9")
+    select_targets: list[str] = []
+
+    def fake_tmux(args, *, socket_path=None):
+        argv = list(args)
+        cmd = argv[0] if argv else ""
+        joined = " ".join(argv)
+        if cmd == "display-message":
+            target = argv[argv.index("-t") + 1] if "-t" in argv else ""
+            fmt = argv[-1]
+            if "pane_active" in fmt:
+                return SimpleNamespace(
+                    returncode=0, stdout="$42\t@3\t%9\t777\t1\n", stderr=""
+                )
+            if target == "%9":
+                return SimpleNamespace(
+                    returncode=0, stdout="leader\t$42\t@3\t%9\t777\n", stderr=""
+                )
+            if target == "@3" and "window_width" in fmt:
+                return SimpleNamespace(returncode=0, stdout="80\n", stderr="")
+            if target == "%10":
+                return SimpleNamespace(
+                    returncode=0, stdout="%10\t$42\t@3\t424242\n", stderr=""
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "if-shell" and "split-window" in joined:
+            return SimpleNamespace(returncode=0, stdout="%10\n", stderr="")
+        if cmd == "set-window-option":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "select-layout":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "select-pane":
+            select_targets.append(argv[-1])
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd in ("set-option", "show-options"):
+            return SimpleNamespace(returncode=0, stdout="x\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
+    monkeypatch.setattr(tmux_mod, "_publish_intent_nonce_on_pane", lambda **kw: True)
+
+    tasks = [
+        {"task_id": "w1", "worktree": "/tmp/w1", "pane_command": "true", "_env_pairs": []},
+    ]
+    tmux_mod.create_split_team_session(
+        session="s", tasks=tasks, env_pairs=[], attach_mode="inside"
+    )
+    assert select_targets[-1] == "%9"
+    assert tasks[0]["_tmux_launch"]["leader_pane_pid"] == 777
+
+
+def test_inside_same_window_layout_main_vertical_with_clamped_width() -> None:
+    from omg_cli.team.topology import clamp_main_vertical_leader_width
+
+    assert clamp_main_vertical_leader_width(40, worker_count=1) == 20
+    assert clamp_main_vertical_leader_width(100, worker_count=2) == 50
+    assert clamp_main_vertical_leader_width(30, worker_count=3) == 10
+
+
+def test_inside_same_window_failure_after_split_kills_only_created_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+    from omg_cli.team.tmux import TmuxTeamError
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    monkeypatch.setenv("TMUX_PANE", "%9")
+    killed: list[str] = []
+
+    def fake_tmux(args, *, socket_path=None):
+        argv = list(args)
+        cmd = argv[0] if argv else ""
+        joined = " ".join(argv)
+        if cmd == "display-message":
+            target = argv[argv.index("-t") + 1] if "-t" in argv else ""
+            if target == "%9":
+                return SimpleNamespace(
+                    returncode=0, stdout="leader\t$42\t@3\t%9\t4242\n", stderr=""
+                )
+            if target == "%10":
+                fmt = argv[-1]
+                if "pane_dead" in fmt or "@omg_intent_nonce" in fmt:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout="%10\t$42\t@3\t424242\t0\t\n",
+                        stderr="",
+                    )
+                return SimpleNamespace(
+                    returncode=0, stdout="%10\t$42\t@3\t424242\n", stderr=""
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "if-shell" and "split-window" in joined and "-h" in joined:
+            return SimpleNamespace(returncode=0, stdout="%10\n", stderr="")
+        if cmd == "if-shell" and "split-window" in joined and "-v" in joined:
+            return SimpleNamespace(returncode=1, stdout="", stderr="boom")
+        if cmd == "if-shell" and "kill-pane" in joined:
+            # extract -t %N from kill-pane command string
+            if "%10" in joined:
+                killed.append("%10")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "list-panes":
+            return SimpleNamespace(returncode=0, stdout="%9\n", stderr="")
+        if cmd == "kill-window":
+            raise AssertionError("must not kill-window on same_window rollback")
+        if cmd == "set-option":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
+    monkeypatch.setattr(tmux_mod, "_publish_intent_nonce_on_pane", lambda **kw: True)
+    monkeypatch.setattr(
+        tmux_mod, "_verify_worker_pane_membership", lambda **kw: None
+    )
+
+    tasks = [
+        {"task_id": "w1", "worktree": "/tmp/w1", "pane_command": "true", "_env_pairs": []},
+        {"task_id": "w2", "worktree": "/tmp/w2", "pane_command": "true", "_env_pairs": []},
+    ]
+    with pytest.raises(TmuxTeamError, match="failed to split pane"):
+        tmux_mod.create_split_team_session(
+            session="s", tasks=tasks, env_pairs=[], attach_mode="inside"
+        )
+    assert "%10" in killed
+
+
+def test_inside_dedicated_window_opt_in_preserves_window_wal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Opt-in dedicated path still uses new-window + window WAL."""
+    # Reuse the dedicated coverage in test_inside_tmux_splits_current_window
+    # by asserting view_mode stamp when dedicated is requested via the helper
+    # already pinned above. This test documents the contract name.
+    from omg_cli.team.topology import (
+        VIEW_MODE_DEDICATED_WINDOW,
+        resolve_launch_view_mode,
+    )
+
+    assert (
+        resolve_launch_view_mode(inside_tmux=True, dedicated_window=True)
+        == VIEW_MODE_DEDICATED_WINDOW
+    )
+
+
+def test_detached_session_records_explicit_view_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from omg_cli.team import tmux as tmux_mod
+
+    def fake_tmux(args, *, socket_path=None):
+        argv = list(args)
+        cmd = argv[0] if argv else ""
+        if cmd == "new-session":
+            return SimpleNamespace(
+                returncode=0,
+                stdout="team\t$1\t%1\t424242\t/tmp/omg-test-tmux.sock\n",
+                stderr="",
+            )
+        if cmd == "split-window" or (
+            cmd == "if-shell" and "split-window" in " ".join(argv)
+        ):
+            return SimpleNamespace(returncode=0, stdout="%2\n", stderr="")
+        if cmd in ("select-layout", "set-option"):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
+    monkeypatch.setattr(
+        tmux_mod,
+        "_launch_first_detached",
+        lambda **kw: (
+            ("team", "$1"),
+            "%1",
+            dict(FAKE_TMUX_SERVER),
+        ),
+    )
+    monkeypatch.setattr(tmux_mod, "_split_remaining", lambda **kw: ["%2"])
+    monkeypatch.setattr(
+        tmux_mod, "_require_tmux_server", lambda *a, **k: dict(FAKE_TMUX_SERVER)
+    )
+
+    tasks = [
+        {"task_id": "w1", "worktree": "/tmp/w1", "pane_command": "true", "_env_pairs": []},
+        {"task_id": "w2", "worktree": "/tmp/w2", "pane_command": "true", "_env_pairs": []},
+    ]
+    tmux_mod.create_split_team_session(
+        session="team", tasks=tasks, env_pairs=[], attach_mode="detached"
+    )
+    assert tasks[0]["_tmux_launch"]["view_mode"] == "detached_session"
+
+
+def test_resolve_launch_view_mode_contract() -> None:
+    from omg_cli.team.topology import TopologyError, resolve_launch_view_mode
+
+    assert resolve_launch_view_mode(inside_tmux=True) == "same_window"
+    assert (
+        resolve_launch_view_mode(inside_tmux=True, dedicated_window=True)
+        == "dedicated_window"
+    )
+    assert resolve_launch_view_mode(inside_tmux=False) == "detached_session"
+    with pytest.raises(TopologyError):
+        resolve_launch_view_mode(inside_tmux=False, dedicated_window=True)
+    with pytest.raises(TopologyError):
+        resolve_launch_view_mode(
+            inside_tmux=True, dedicated_window=True, detach=True
+        )
+
+
+def test_resolve_persisted_view_mode_legacy_dedicated() -> None:
+    from omg_cli.team.topology import resolve_persisted_view_mode
+
+    assert (
+        resolve_persisted_view_mode(
+            {"attach_mode": "inside", "session_owned": False, "window_id": "@1"}
+        )
+        == "dedicated_window"
+    )
+    assert (
+        resolve_persisted_view_mode({"attach_mode": "detached", "session_owned": True})
+        == "detached_session"
+    )
+    assert (
+        resolve_persisted_view_mode({"view_mode": "same_window", "window_id": "@9"})
+        == "same_window"
+    )
+
+
+# --- end same_window unit coverage ---
 
 
 def test_inside_commit_refuses_when_worker_pane_leaves_session(
@@ -502,6 +854,7 @@ def test_inside_commit_refuses_when_worker_pane_leaves_session(
             tasks=tasks,
             env_pairs=[],
             attach_mode="inside",
+            view_mode="dedicated_window",
         )
     assert "@7" in killed
     assert "_tmux_launch" not in tasks[0]
@@ -559,6 +912,7 @@ def test_inside_launch_refuses_identity_drift(
             ],
             env_pairs=[],
             attach_mode="inside",
+            view_mode="dedicated_window",
         )
     assert not any(c[0] == "new-window" for c in calls)
 
@@ -640,6 +994,7 @@ def test_inside_new_window_malformed_stdout_kills_orphan(
             ],
             env_pairs=[],
             attach_mode="inside",
+            view_mode="dedicated_window",
         )
     assert listed_windows >= 2  # discover + absence proof
     assert "@77" in killed
@@ -756,6 +1111,7 @@ def test_inside_new_window_readback_failure_modes_kill_by_name(
             ],
             env_pairs=[],
             attach_mode="inside",
+            view_mode="dedicated_window",
         )
 
     assert "$42:omg-team-cafebabe" in killed
@@ -936,6 +1292,7 @@ def test_inside_launch_writes_and_clears_intent_on_successful_cleanup(
             attach_mode="inside",
             root=tmp_path,
             run_id=rid,
+            view_mode="dedicated_window",
         )
     assert intent_seen
     assert not intent_seen[0].is_file()
@@ -1336,6 +1693,7 @@ def test_create_inside_retains_wal_when_window_id_kill_unproven(
             attach_mode="inside",
             root=tmp_path,
             run_id=rid,
+            view_mode="dedicated_window",
         )
     assert cleared == []  # must not clear on unproven ID kill
     intents = list(team_launch_intents_dir(tmp_path).glob(f"{rid}-*.json"))
@@ -1447,6 +1805,7 @@ def test_inside_new_window_stamps_window_id_on_launch_wal(
         attach_mode="inside",
         root=tmp_path,
         run_id=rid,
+        view_mode="dedicated_window",
     )
     assert stamped and stamped[0].get("window_id") == "@77"
 
@@ -1911,6 +2270,7 @@ def test_new_window_gated_by_wal_server_identity(
         attach_mode="inside",
         root=tmp_path,
         run_id=rid,
+        view_mode="dedicated_window",
     )
     assert any(c[0] == "if-shell" and "new-window" in " ".join(c) for c in calls)
     assert not any(c[0] == "new-window" for c in calls)
@@ -2563,6 +2923,7 @@ def test_bind_failure_still_publishes_window_id_for_cleanup(
             attach_mode="inside",
             root=tmp_path,
             run_id=rid,
+            view_mode="dedicated_window",
         )
     assert "@88" in killed_ids
 
@@ -2619,6 +2980,7 @@ def test_new_window_nonzero_unmarks_side_effect_when_name_absent(
             attach_mode="inside",
             root=tmp_path,
             run_id=rid,
+            view_mode="dedicated_window",
         )
     # WAL cleared after unmark + proven name absence (not permanently wedged).
     intents = list(team_launch_intents_dir(tmp_path).glob("*.json"))
@@ -2739,6 +3101,7 @@ def test_new_window_nonzero_with_atN_stdout_binds_and_keeps_wal(
         attach_mode="inside",
         root=tmp_path,
         run_id=rid,
+        view_mode="dedicated_window",
     )
     assert bound == ["@88"]
     assert tasks[0]["pane_id"] == "%10"
@@ -2830,6 +3193,7 @@ def test_nonce_ack_refused_when_readback_misses_created_handles(
         attach_mode="inside",
         root=tmp_path,
         run_id=rid,
+        view_mode="dedicated_window",
     )
     intents = list(team_launch_intents_dir(tmp_path).glob("*.json"))
     assert len(intents) == 1
@@ -3180,6 +3544,7 @@ def test_split_transport_create_inside_recovers_bound_moved_after_ack(
                 attach_mode="inside",
                 root=tmp_path,
                 run_id=rid,
+                view_mode="dedicated_window",
             )
 
         # WAL cleared — must not permanently block later starts.

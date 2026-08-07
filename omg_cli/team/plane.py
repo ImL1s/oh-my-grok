@@ -2353,6 +2353,7 @@ def start_team(
     owner_token: str | None = None,
     executor: str | None = None,
     detach: bool = False,
+    view_mode: str | None = None,
 ) -> dict[str, Any]:
     """Create ownership + worktrees + team.json (+ live tmux unless dry_run).
 
@@ -2377,16 +2378,30 @@ def start_team(
         When ``\"fixture\"``, replace every pane_command with the hermetic
         ACK fixture (transport smoke only — not Grok live parity). Default
         ``None`` keeps the production grok / routing pane path.
+    view_mode:
+        For ``topology=split``: ``same_window`` / ``dedicated_window`` /
+        ``detached_session``. Resolved by the CLI when omitted. Non-split
+        topologies refuse an explicit view_mode.
 
     Returns the written team.json payload.
     """
+    from omg_cli.team.topology import VIEW_MODES, layout_for_view_mode
+
     root_path = Path(root) if root is not None else Path.cwd().resolve()
     root_path = root_path.resolve()
     goal = (goal or "").strip() or "(no goal)"
     tasks = _parse_tasks_json(tasks_json)
     n = _assert_start_gates(tasks, env=env)
     if topology not in ("windows", "split"):
-        raise TeamError(f"unsupported team topology {topology!r}")
+        raise TeamError(f"unsupported topology {topology!r}")
+    resolved_view_mode = view_mode
+    if resolved_view_mode is not None:
+        if topology != "split":
+            raise TeamError(
+                f"view_mode requires topology='split' (got {topology!r})"
+            )
+        if resolved_view_mode not in VIEW_MODES:
+            raise TeamError(f"unsupported view_mode {resolved_view_mode!r}")
     executor_norm = (executor or "").strip().lower() or None
     if executor_norm is not None and executor_norm != "fixture":
         raise TeamError(
@@ -2721,6 +2736,11 @@ def start_team(
                     if multi_cli
                     else "grok-only pane argv recorded"
                 )
+                dry_view = resolved_view_mode
+                if topology == "split" and dry_view is None:
+                    dry_view = (
+                        "detached_session" if detach else "same_window"
+                    )
                 meta = {
                     "writer": CLI_WRITER,
                     "schema_version": SCHEMA_VERSION,
@@ -2741,6 +2761,12 @@ def start_team(
                     "team_id": tid_plane,
                     "owner_token": token,
                     "executor": executor_norm,
+                    "view_mode": dry_view if topology == "split" else None,
+                    "layout": (
+                        layout_for_view_mode(dry_view)
+                        if topology == "split" and dry_view
+                        else None
+                    ),
                     "note": note,
                 }
                 _atomic_write_json(team_meta_path(root_path, rid), meta)
@@ -2774,6 +2800,9 @@ def start_team(
                 "leader_pane_id": None,
                 "window_id": None,
                 "attach_hint": None,
+                "view_mode": None,
+                "layout": None,
+                "leader_pane_pid": None,
             }
             launch_intent_path: str | None = None
             intent_wal_cleared = False
@@ -2790,6 +2819,7 @@ def start_team(
                             env=env,
                             root=root_path,
                             run_id=rid,
+                            view_mode=resolved_view_mode,
                         )
                     except TmuxTeamError as exc:
                         raise TeamError(str(exc)) from exc
@@ -2973,6 +3003,9 @@ def start_team(
                     "leader_pane_id": tmux_launch.get("leader_pane_id"),
                     "window_id": tmux_launch.get("window_id"),
                     "attach_hint": tmux_launch.get("attach_hint"),
+                    "view_mode": tmux_launch.get("view_mode"),
+                    "layout": tmux_launch.get("layout"),
+                    "leader_pane_pid": tmux_launch.get("leader_pane_pid"),
                     "note": (
                         "experimental fixture tmux team; hermetic ACK transport "
                         "(not Grok live parity); stop via immutable launch identity"
@@ -3062,20 +3095,63 @@ def start_team(
                         from omg_cli.team.tmux import (
                             _intent_tmux_server,
                             _kill_panes,
+                            _kill_panes_scoped,
                             _kill_window,
                         )
+                        from omg_cli.team.topology import (
+                            VIEW_MODE_DEDICATED_WINDOW,
+                            VIEW_MODE_SAME_WINDOW,
+                            TopologyError,
+                            resolve_persisted_view_mode,
+                        )
 
-                        window_id = tmux_launch.get("window_id")
-                        if isinstance(window_id, str) and window_id:
-                            expected_server = _intent_tmux_server(tmux_launch)
-                            sock = (
-                                str(expected_server["tmux_socket_path"])
-                                if expected_server is not None
-                                else None
+                        try:
+                            vm = resolve_persisted_view_mode(tmux_launch)
+                        except TopologyError:
+                            vm = tmux_launch.get("view_mode") or (
+                                VIEW_MODE_DEDICATED_WINDOW
+                                if isinstance(tmux_launch.get("window_id"), str)
+                                and tmux_launch.get("window_id")
+                                else VIEW_MODE_SAME_WINDOW
                             )
-                            expected_session = tmux_launch.get("session_id")
-                            if not isinstance(expected_session, str):
-                                expected_session = created_handle[1]
+                        window_id = tmux_launch.get("window_id")
+                        expected_server = _intent_tmux_server(tmux_launch)
+                        sock = (
+                            str(expected_server["tmux_socket_path"])
+                            if expected_server is not None
+                            else None
+                        )
+                        expected_session = tmux_launch.get("session_id")
+                        if not isinstance(expected_session, str):
+                            expected_session = created_handle[1]
+                        pane_ids = [
+                            str(rec.get("pane_id"))
+                            for rec in task_records
+                            if isinstance(rec.get("pane_id"), str)
+                        ]
+                        if vm == VIEW_MODE_SAME_WINDOW:
+                            cleanup_error = _kill_panes_scoped(
+                                pane_ids,
+                                expected_server=expected_server,
+                                expected_session_id=expected_session,
+                                expected_window_id=(
+                                    window_id if isinstance(window_id, str) else None
+                                ),
+                                intent_or_launch_nonce=None,
+                                leader_pane_id=(
+                                    str(tmux_launch["leader_pane_id"])
+                                    if isinstance(
+                                        tmux_launch.get("leader_pane_id"), str
+                                    )
+                                    else None
+                                ),
+                                socket_path=sock,
+                            )
+                        elif (
+                            vm == VIEW_MODE_DEDICATED_WINDOW
+                            and isinstance(window_id, str)
+                            and window_id
+                        ):
                             cleanup_error = _kill_window(
                                 window_id,
                                 socket_path=sock,
@@ -3083,11 +3159,6 @@ def start_team(
                                 expected_server=expected_server,
                             )
                         else:
-                            pane_ids = [
-                                str(rec.get("pane_id"))
-                                for rec in task_records
-                                if isinstance(rec.get("pane_id"), str)
-                            ]
                             cleanup_error = _kill_panes(pane_ids)
                     else:
                         cleanup_sock, cleanup_server = _tmux_scope_from_launch(
@@ -4363,20 +4434,41 @@ def _stop_team_locked(
                                 f"{probe.returncode}"
                             )
                 else:
-                    # Shared session: remove only the team window (or panes).
+                    # Shared session: remove only owned team transport.
+                    # same_window: kill worker panes only (never leader window).
+                    # dedicated_window / legacy missing view_mode: kill-window ok.
                     from omg_cli.team.tmux import (
                         _intent_tmux_server,
                         _kill_panes,
+                        _kill_panes_scoped,
                         _kill_window,
                     )
+                    from omg_cli.team.topology import (
+                        VIEW_MODE_DEDICATED_WINDOW,
+                        VIEW_MODE_SAME_WINDOW,
+                        TopologyError,
+                        resolve_persisted_view_mode,
+                    )
 
-                    if isinstance(window_id, str) and window_id:
-                        expected_server = _intent_tmux_server(meta)
-                        sock = (
-                            str(expected_server["tmux_socket_path"])
-                            if expected_server is not None
-                            else None
+                    try:
+                        stop_view = resolve_persisted_view_mode(
+                            meta, receipt=receipt
                         )
+                    except TopologyError:
+                        stop_view = (
+                            meta.get("view_mode") or VIEW_MODE_DEDICATED_WINDOW
+                        )
+                    expected_server = _intent_tmux_server(meta)
+                    sock = (
+                        str(expected_server["tmux_socket_path"])
+                        if expected_server is not None
+                        else None
+                    )
+                    if (
+                        stop_view == VIEW_MODE_DEDICATED_WINDOW
+                        and isinstance(window_id, str)
+                        and window_id
+                    ):
                         win_err = _kill_window(
                             window_id,
                             socket_path=sock,
@@ -4393,6 +4485,27 @@ def _stop_team_locked(
                         if isinstance(rec, Mapping)
                         and isinstance(rec.get("pane_id"), str)
                     ]
+                    if stop_view == VIEW_MODE_SAME_WINDOW:
+                        leader = meta.get("leader_pane_id")
+                        scoped_err = _kill_panes_scoped(
+                            pane_ids,
+                            expected_server=expected_server,
+                            expected_session_id=session_id,
+                            expected_window_id=(
+                                window_id if isinstance(window_id, str) else None
+                            ),
+                            intent_or_launch_nonce=(
+                                str(meta.get("launch_nonce"))
+                                if isinstance(meta.get("launch_nonce"), str)
+                                else None
+                            ),
+                            leader_pane_id=(
+                                str(leader) if isinstance(leader, str) else None
+                            ),
+                            socket_path=sock,
+                        )
+                        if scoped_err:
+                            errors.append(scoped_err)
                     # Prove worker panes are gone (session may still exist).
                     remaining = []
                     for pane_id in pane_ids:
@@ -4404,7 +4517,11 @@ def _stop_team_locked(
                             and (probe.stdout or "").strip() == pane_id
                         ):
                             remaining.append(pane_id)
-                    if remaining and not (isinstance(window_id, str) and window_id):
+                    if (
+                        remaining
+                        and stop_view != VIEW_MODE_SAME_WINDOW
+                        and not (isinstance(window_id, str) and window_id)
+                    ):
                         pane_err = _kill_panes(remaining)
                         if pane_err:
                             errors.append(pane_err)

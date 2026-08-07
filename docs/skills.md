@@ -172,6 +172,11 @@ omg accept --yes
 
 **Canonical shorthand (OMX-like):** `omg team` accepts `N` / `N:role` before the
 goal and normalizes to `launch` (not a separate argparse choice named `3`).
+Inside tmux, launch defaults to **same-window** (`view_mode=same_window`: leader
+left, workers stacked right; detached splits + `main-vertical`). Use
+`--dedicated-window` for a dedicated Team window; outside tmux / `--detach`
+records `detached_session`. `stop` never kills the shared leader window for
+same_window runs. Plan-only / dry-run / live JSON expose `view_mode`.
 
 ```bash
 omg team launch --workers 3 --role executor --goal "fix flaky tests"
