@@ -1327,6 +1327,16 @@ def _reconcile_envelope(reconcile: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _provider_session_ok(provider_session: Mapping[str, Any]) -> bool:
+    """Provider blocked+required fails closed; view/tmux must not override."""
+    if not provider_session.get("requested"):
+        return True
+    status = str(provider_session.get("status") or "")
+    if status == "blocked":
+        return False
+    return True
+
+
 def view_team(
     root: Path | str,
     identity: str | None = None,
@@ -1337,10 +1347,16 @@ def view_team(
     worker_id: str | None = None,
     is_tty: bool | None = None,
     execute_effects: bool = True,
+    request_provider_session: bool = False,
+    session_resume_gate: Any | None = None,
+    provider_resume: Any | None = None,
 ) -> dict[str, Any]:
-    """Restore Team interactive view without reconcile/relaunch (#103)."""
+    """Restore Team interactive view without reconcile/relaunch (#103).
+
+    Provider-session outcome is independent of tmux view (gate injected by CLI).
+    """
     from omg_cli.team.operator import plan_and_execute_team_view
-    from omg_cli.team.view import MODE_PRINT, MODE_VIEW, provider_session_stub
+    from omg_cli.team.view import MODE_PRINT, MODE_VIEW, provider_session_result
 
     mode = MODE_PRINT if print_only else MODE_VIEW
     view_out = plan_and_execute_team_view(
@@ -1354,6 +1370,12 @@ def view_team(
         execute_effects=execute_effects and not print_only,
     )
     run_id = view_out.get("run_id") or resolve_team_ref(root, identity)
+    provider_session = provider_session_result(
+        requested=bool(request_provider_session),
+        gate=session_resume_gate,
+        provider_resume=provider_resume,
+    )
+    view_ok = bool(view_out.get("ok"))
     return {
         "run_id": run_id,
         "reconcile": {
@@ -1362,9 +1384,10 @@ def view_team(
             "blocked": [],
             "note": "team view does not reconcile or relaunch",
         },
-        "provider_session": provider_session_stub(requested=False),
+        "provider_session": provider_session,
         "view": view_out.get("view") or {},
-        "ok": bool(view_out.get("ok")),
+        # View success never implies provider resume; blocked provider fails closed.
+        "ok": view_ok and _provider_session_ok(provider_session),
         "command": "team.view",
         "plan": view_out.get("plan"),
         "print_hint": view_out.get("print_hint"),
@@ -1387,26 +1410,33 @@ def resume_with_view(
     is_tty: bool | None = None,
     env: Mapping[str, str] | None = None,
     request_provider_session: bool = False,
+    session_resume_gate: Any | None = None,
+    provider_resume: Any | None = None,
 ) -> dict[str, Any]:
-    """Reconcile under lifecycle lock, then optionally restore view (#103).
+    """Reconcile under lifecycle lock, then optionally restore view (#103/#105).
 
     View/attach never runs while the scale lock is held.
+    ``session_resume_gate`` must be injected by the CLI (or tests) — this
+    function does not probe the host or re-parse versions.
     """
     from omg_cli.team.operator import plan_and_execute_team_view
     from omg_cli.team.view import (
         MODE_PRINT,
         MODE_VIEW,
-        provider_session_stub,
+        provider_session_result,
     )
 
     reconcile = resume_for_identity(root, identity, env=env)
     run_id = str(reconcile.get("run_id") or resolve_team_ref(root, identity))
+    provider_session = provider_session_result(
+        requested=bool(request_provider_session),
+        gate=session_resume_gate,
+        provider_resume=provider_resume,
+    )
     envelope: dict[str, Any] = {
         "run_id": run_id,
         "reconcile": _reconcile_envelope(reconcile),
-        "provider_session": provider_session_stub(
-            requested=bool(request_provider_session)
-        ),
+        "provider_session": provider_session,
         # Preserve legacy flat fields for callers that read resume_for_identity shape.
         **{k: v for k, v in reconcile.items() if k != "run_id"},
     }
@@ -1420,7 +1450,8 @@ def resume_with_view(
             "hint": None,
             "executed": False,
         }
-        envelope["ok"] = True
+        # Reconcile-only / --json: still fail closed on blocked provider gate.
+        envelope["ok"] = _provider_session_ok(provider_session)
         return envelope
 
     mode = MODE_PRINT if print_only else MODE_VIEW
@@ -1440,8 +1471,11 @@ def resume_with_view(
     envelope["effect"] = view_out.get("effect")
     if view_out.get("error"):
         envelope["view_error"] = view_out["error"]
-    # Partial success: reconcile may be ok while view fails.
-    envelope["ok"] = bool(view_out.get("ok"))
+    # Partial outcomes: reconcile/view/provider stay independent; blocked
+    # provider must not become overall ok because tmux attached.
+    envelope["ok"] = bool(view_out.get("ok")) and _provider_session_ok(
+        provider_session
+    )
     return envelope
 
 

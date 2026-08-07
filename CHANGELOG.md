@@ -10,6 +10,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#105 Team resume consumes host gates (PR3 / seq E first slice):**
+  `provider_session_result` replaces the fixed ACP stub in Team resume/view
+  envelopes. CLI `omg team resume --provider-session` probes via
+  `probe_host` → `evaluate_feature_gate(session_resume, required=True)` and
+  injects the `FeatureGateResult` into `resume_with_view` (runtime does not
+  re-parse versions). Outcomes stay independent: reconcile / provider_session
+  (`available`|`legacy`|`blocked`) / tmux view — attach success never implies
+  provider resume. BLOCKED+required fails closed (nonzero / `ok=false`);
+  LEGACY returns actionable `next_action` (not AVAILABLE). No ACP transport,
+  no `live_verified`. See `docs/host-compat.md`.
 - **#105 host doctor/capability probe (PR2):** canonical
   `omg_cli/host_probe.py` + `host_models.py` report active Grok version,
   tested range (`0.2.107`…`0.2.121`), compatibility, and a bounded capability
