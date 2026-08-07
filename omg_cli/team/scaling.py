@@ -70,7 +70,8 @@ from omg_cli.team.plane import (
     team_launch_receipt_path,
     team_meta_path,
     plugin_root,
-    wrap_pane_with_worker_ready,
+    wrap_pane_with_supervisor,
+    materialize_supervisor_pane_command,
 )
 from omg_cli.team.providers import PROMPT_DELIVERY_PROMPT_FILE, build_executor_argv
 from omg_cli.team.routing import ResolvedRouting, RoutingError, resolve_routing
@@ -515,18 +516,20 @@ def _build_pane_record(
         provider = inv.provider
         posture = inv.posture
         prompt_delivery = inv.prompt_delivery
-        from omg_cli.team.plane import wrap_pane_with_worker_ready
+        from omg_cli.team.plane import materialize_supervisor_pane_command
 
-        pane_cmd = wrap_pane_with_worker_ready(
-            build_executor_pane_command(
-                argv,
-                needs_pty=needs_pty,
-                prompt_delivery=prompt_delivery,
-                prompt_file=prompt_path,
-            )
+        desc_path = tdir / f"{tid}.provider.json"
+        pane_cmd = materialize_supervisor_pane_command(
+            descriptor_path=desc_path,
+            provider=provider,
+            argv=argv,
+            prompt_delivery=prompt_delivery,
+            prompt_file=prompt_path,
+            needs_pty=needs_pty,
+            cwd=wt,
         )
     else:
-        from omg_cli.team.plane import wrap_pane_with_worker_ready
+        from omg_cli.team.plane import materialize_supervisor_pane_command
 
         argv = build_grok_argv(
             mode="ulw",
@@ -555,8 +558,15 @@ def _build_pane_record(
         provider = "grok"
         posture = "read-write"
         prompt_delivery = PROMPT_DELIVERY_PROMPT_FILE
-        pane_cmd = wrap_pane_with_worker_ready(
-            build_pane_command(_grok_args_for_pane(argv))
+        desc_path = tdir / f"{tid}.provider.json"
+        pane_cmd = materialize_supervisor_pane_command(
+            descriptor_path=desc_path,
+            provider=provider,
+            argv=list(argv),
+            prompt_delivery=prompt_delivery,
+            prompt_file=last_prompt_path,
+            needs_pty=False,
+            cwd=wt,
         )
         artifact_paths.extend([last_prompt_path, prompt_path])
 
@@ -670,11 +680,15 @@ def _reuse_prepared_pane_record(
         expected_argv = list(inv.argv)
         needs_pty = bool(inv.needs_pty)
         prompt_delivery = inv.prompt_delivery
-        pane_cmd = build_executor_pane_command(
-            expected_argv,
-            needs_pty=needs_pty,
+        desc_path = team_dir(root, run_id) / f"{task_id}.provider.json"
+        pane_cmd = materialize_supervisor_pane_command(
+            descriptor_path=desc_path,
+            provider=provider,
+            argv=expected_argv,
             prompt_delivery=prompt_delivery,
             prompt_file=task_prompt_path,
+            needs_pty=needs_pty,
+            cwd=worktree,
         )
     else:
         provider = "grok"
@@ -712,8 +726,15 @@ def _reuse_prepared_pane_record(
             "--prompt-file",
             str(last_prompt_path),
         ]
-        pane_cmd = wrap_pane_with_worker_ready(
-            build_pane_command(_grok_args_for_pane(expected_argv))
+        desc_path = team_dir(root, run_id) / f"{task_id}.provider.json"
+        pane_cmd = materialize_supervisor_pane_command(
+            descriptor_path=desc_path,
+            provider=provider,
+            argv=list(expected_argv),
+            prompt_delivery=prompt_delivery,
+            prompt_file=last_prompt_path,
+            needs_pty=False,
+            cwd=worktree,
         )
 
     expected_bodies = {
@@ -769,9 +790,7 @@ def _reuse_prepared_pane_record(
         "window_index": window_index,
         "worktree": str(worktree),
         "argv_path": str(argv_path.relative_to(_run_dir(root, run_id))),
-        "pane_command": wrap_pane_with_worker_ready(pane_cmd)
-        if multi_cli
-        else pane_cmd,
+        "pane_command": pane_cmd,
         "argv": expected_argv,
         "role": role,
         "provider": provider,

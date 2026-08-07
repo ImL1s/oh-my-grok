@@ -24,14 +24,14 @@
     "skills/omg-pipeline/SKILL.md": "cebeac3f1c8af94286af5c0ecde336ab02feca476f9ce5a8af915614796bc223",
     "skills/omg-ralph/SKILL.md": "6beb5510a2fa35c31d4d974e46b96bf4eae2bb984662f3686c17046ccc7a57ea",
     "skills/omg-ralplan/SKILL.md": "c11c5de0b4705565976a0da85c90d957578bdab83aa33cf1b3ad634bb035f727",
-    "skills/omg-team/SKILL.md": "f1303b677a4f711924330491643d1186634f3f158564bcd841cc8643ef5ddfec",
+    "skills/omg-team/SKILL.md": "2ee6c33adc7ce98d657eb967655aa585ccd905fe2969d1010618f3f55d71921f",
     "skills/omg-ultragoal/SKILL.md": "0f5849da19d50bc85556d5ed5eb785268b5a9b3a7ab001f146b551a11f1927e1",
     "skills/omg-ultraqa/SKILL.md": "8e2c3cd4c9f8f40685e9ca278a9837cfe8aff12e46dca00c60ea598e5f957748",
     "skills/omg-ultrawork/SKILL.md": "31ad59fd89d01fcdddadcb2eb8c6d62cc1ddc836cf64f1eeded2f10fd66fc123",
     "skills/omg-using/SKILL.md": "304eb43595340e4897c72b2529d02b36a28ce17c860bfaa2ac03af76f7465e0e",
     "skills/omg-wiki/SKILL.md": "bd8f8f4fd809ffc1bde337ab4ec81c5d81eb90adea9dd4dfb83861afa79c6ac9"
   },
-  "aggregate": "7a9a3584f308095d5d7151ed052b15a4b6cc38ee2000e1385ae07472555c1716",
+  "aggregate": "69c793971b99eb1df1b8adfd472718e2a066f3236ed298200b6ff403d2dcad6b",
   "session_surface": {
     "schema": "omg-plugin-session-surface/v1",
     "skills": [
@@ -98,7 +98,7 @@
       {
         "name": "omg-team",
         "path": "skills/omg-team/SKILL.md",
-        "sha256": "f1303b677a4f711924330491643d1186634f3f158564bcd841cc8643ef5ddfec",
+        "sha256": "2ee6c33adc7ce98d657eb967655aa585ccd905fe2969d1010618f3f55d71921f",
         "metadata_status": "valid"
       },
       {
@@ -375,5 +375,5 @@
     },
     "issues": []
   },
-  "session_surface_aggregate": "13aec13f30cc1d643e628691d40a2dcecf7828a139d21c764a23e35987bb8f57"
+  "session_surface_aggregate": "f8c639e9880db63bdad0b0b3f2be7db01ef476cdfa14fc4e1798079e096702b3"
 }

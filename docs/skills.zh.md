@@ -161,7 +161,13 @@ omg accept --yes
 | **何时** | 多 pane ULW + 真实 worktree；测试用 hermetic dry-run / fixture smoke |
 | **闸门** | **默认开启。** 关闭：`OMG_DISABLE_TMUX_TEAM=1`（旧 `OMG_EXPERIMENTAL_TMUX_TEAM=0` 也会关） |
 | **Skill** | `omg-team` — session slash **仅** `/oh-my-grok:omg-team`；自然语言 `team N …` |
-| **CLI** | `omg team launch`（argv 简写 `N`/`N:role`+goal → launch）；亦 `start\|run\|scale\|resume\|status\|collect\|stop\|api` |
+| **CLI** | `omg team launch`（argv 简写 `N`/`N:role`+goal → launch）；亦 `start\|run\|scale\|resume\|status\|collect\|stop\|api\|supervisor` |
+
+**启动就绪（#99）：** pane supervisor 证明 provider 真的可用（`pane_created` →
+`provider_spawned` → `provider_ready` → `task_dispatched`；可选 `mailbox_ack`）。
+旧版 `worker-ready` v1 收据仅为 `wrapper_ready_legacy`，不能产生
+`startup_status=running`。认证/信任提示 → `blocked_start`。`--no-wait` →
+`unverified_start`。
 | **诚实范围** | 零设定 = grok panes；`--routing` 启 multi-CLI（含角色地板）。**整合**隔离（ownership + seal + integrate）— **不是**执行沙箱。`collect` / `run` / `scale` / `resume` 永不写 `verified`。scale/resume/ralph 是**同一** team plane 的生命周期延伸（无新隔离宣称）。Live 升格证据：`scripts/live_team_smoke.py --live` → `LIVE_TEAM_SMOKE_OK`（2026-07-30 本地；不进 CI）。**无裸 `/team` slash alias** — 2026-07-25 host 探测：plugin skill 为 `/name` 或 `/plugin:name`，无 frontmatter 可为 `omg-team` 注册 unnamespaced `/team`；其他 plugin 已占用 `team` skill 名。 |
 
 **窗口拓扑（#96）：** 既有 tmux pane 内启动默认 `view_mode=same_window`（leader 左、workers 右堆叠；detached split + `main-vertical`）。`--dedicated-window` 使用独立 Team window；tmux 外 / `--detach` 为 `detached_session`。same_window 的 `stop`/失败回滚只清 worker panes，不杀 shared leader window。plan-only / dry-run / live JSON 皆带 `view_mode`；缺 mode 的旧 run 维持 dedicated/detached 行为。

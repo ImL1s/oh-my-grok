@@ -10,6 +10,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#99 provider-ready Team startup:** schema-v2 monotonic phases
+  (`pane_created` → `provider_spawned` → `provider_ready` → `task_dispatched`;
+  optional `mailbox_ack`), pane `team supervisor` consuming vetted argv
+  descriptors, provider readiness adapters, and Team statuses
+  `running` / `degraded` / `failed_start` / `blocked_start` /
+  `unverified_start`. Legacy v1 `worker-ready` receipts are
+  `wrapper_ready_legacy` only and cannot false-green `startup_status=running`.
 - **Partial work for issue 67 (slice A / #67-A):** typed `omg_cli/providers/`
   Antigravity probe (discover binary, version argv probe, compat range,
   schema-versioned capabilities envelope) plus

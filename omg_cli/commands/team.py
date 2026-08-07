@@ -265,6 +265,70 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     return 1
 
 
+def _format_startup_worker_lines(meta: object) -> list[str]:
+    """Human-readable per-worker startup lines for stderr (#99)."""
+    lines: list[str] = []
+    if not isinstance(meta, dict):
+        return lines
+    workers = meta.get("startup_workers")
+    if not isinstance(workers, list):
+        return lines
+    for row in workers:
+        if not isinstance(row, dict):
+            continue
+        wid = row.get("worker_id") or "?"
+        phase = row.get("phase") or "missing"
+        provider = row.get("provider") or ""
+        blocked = row.get("blocked_reason")
+        failure = row.get("failure_reason")
+        if phase == "blocked" or blocked:
+            detail = blocked or failure or "blocked"
+            lines.append(f"{wid} blocked_start ({detail})")
+        elif row.get("gate_ok"):
+            suffix = f" ({provider})" if provider else ""
+            lines.append(f"{wid} {phase}{suffix}")
+        elif row.get("legacy"):
+            lines.append(f"{wid} wrapper_ready_legacy (not provider-ready)")
+        else:
+            detail = failure or blocked or phase
+            lines.append(f"{wid} {phase}: {detail}")
+    return lines
+
+
+def _emit_startup_human(meta: object, *, command: str) -> int | None:
+    """Print startup summary; return 1 when start failed/degraded/blocked."""
+    if not isinstance(meta, dict):
+        return None
+    for line in _format_startup_worker_lines(meta):
+        print(line, file=sys.stderr)
+    startup = meta.get("startup_status")
+    ready_n = len(meta.get("startup_ready_workers") or [])
+    expected = meta.get("startup_expected")
+    if startup in ("failed_start", "degraded", "blocked_start"):
+        print(
+            f"Team startup {startup}: {ready_n}/{expected} ready",
+            file=sys.stderr,
+        )
+        print(
+            f"omg team {command}: startup {startup} "
+            f"(provider_ready={meta.get('startup_process_ready')}/"
+            f"{expected}; "
+            f"mailbox_ack={meta.get('startup_acks')}; "
+            f"missing={meta.get('startup_missing_workers')})",
+            file=sys.stderr,
+        )
+        return 1
+    if startup == "unverified_start":
+        print(
+            "Team startup unverified_start (--no-wait; not proven)",
+            file=sys.stderr,
+        )
+        return None
+    if startup == "running":
+        print("Team started", file=sys.stderr)
+    return None
+
+
 def cmd_team(args: argparse.Namespace) -> int:
     """Experimental tmux team plane (D1/D3) + staged pipeline (D2) + scale/resume/ralph (D4).
 
@@ -373,25 +437,18 @@ def cmd_team(args: argparse.Namespace) -> int:
                 print("omg team launch: " + " ".join(bits), file=sys.stderr)
             if hint and not meta.get("dry_run"):
                 print(f"omg team launch: {hint}", file=sys.stderr)
-            # Bounded ACK wait: partial/zero ACKs leave state for diagnosis
-            # but must not report success (no silent dry-run / ULW fallback).
-            startup = meta.get("startup_status")
-            if startup in ("failed_start", "degraded"):
-                print(
-                    f"omg team launch: startup {startup} "
-                    f"(acks={meta.get('startup_acks')}/"
-                    f"{meta.get('startup_expected')})",
-                    file=sys.stderr,
-                )
-                return 1
-            if startup == "running":
-                print("Team started", file=sys.stderr)
-            elif meta.get("dry_run") or dry_run:
-                print(
-                    "Team materialized (dry-run/materialize-only: no live workers; "
-                    "not started)",
-                    file=sys.stderr,
-                )
+            # Provider-ready gate (#99): partial/zero/blocked leave state for
+            # diagnosis but must not report success.
+            code = _emit_startup_human(meta, command="launch")
+            if code is not None:
+                return code
+            if meta.get("dry_run") or dry_run:
+                if meta.get("startup_status") is None:
+                    print(
+                        "Team materialized (dry-run/materialize-only: no live workers; "
+                        "not started)",
+                        file=sys.stderr,
+                    )
             return 0
         if action == "start":
             from omg_cli.team.runtime import apply_start_readiness
@@ -455,26 +512,10 @@ def cmd_team(args: argparse.Namespace) -> int:
                 no_wait=no_wait,
             )
             emit_data(args, "team", meta)
-            startup = meta.get("startup_status")
-            if startup in ("failed_start", "degraded"):
-                print(
-                    f"omg team start: startup {startup} "
-                    f"(acks={meta.get('startup_acks')}/"
-                    f"{meta.get('startup_expected')}; "
-                    f"missing={meta.get('startup_missing_workers')})",
-                    file=sys.stderr,
-                )
-                return 1
-            if startup == "unverified_start":
-                print(
-                    "omg team start: unverified_start (--no-wait); "
-                    "readiness not proven",
-                    file=sys.stderr,
-                )
-                return 0
-            if startup == "running":
-                print("Team started", file=sys.stderr)
-            elif dry_run:
+            code = _emit_startup_human(meta, command="start")
+            if code is not None:
+                return code
+            if dry_run and meta.get("startup_status") is None:
                 print(
                     "Team materialized (dry-run/materialize-only: no live workers; "
                     "not started)",
@@ -601,7 +642,8 @@ def cmd_team(args: argparse.Namespace) -> int:
             emit_data(args, "team", result)
             return 0 if not result.get("errors") else 1
         if action == "worker-ready":
-            # Process-level readiness (pane wrapper). Env-bound identity only.
+            # Legacy v1 helper (#99). Writes wrapper_ready_legacy only — does
+            # NOT prove provider readiness for new Team launches.
             from omg_cli.team.runtime import write_worker_ready_receipt
 
             worker_id = (os.environ.get("OMG_TEAM_WORKER_ID") or "").strip()
@@ -632,13 +674,39 @@ def cmd_team(args: argparse.Namespace) -> int:
                 "team.worker-ready",
                 {
                     "ok": True,
+                    "legacy": True,
                     "worker_id": worker_id,
                     "run_id": run_id,
                     "team_id": team_id,
                     "ready_path": str(path),
+                    "note": (
+                        "v1 wrapper receipt only; cannot prove provider_ready (#99)"
+                    ),
                 },
             )
             return 0
+        if action == "supervisor":
+            from omg_cli.team.supervisor import SupervisorError, run_supervisor
+
+            desc = getattr(args, "supervisor_descriptor", None)
+            if not desc:
+                print(
+                    "omg team supervisor: --descriptor PATH required",
+                    file=sys.stderr,
+                )
+                return 2
+            try:
+                return int(
+                    run_supervisor(
+                        descriptor_path=desc,
+                        ready_timeout_s=getattr(
+                            args, "supervisor_ready_timeout_s", None
+                        ),
+                    )
+                )
+            except SupervisorError as exc:
+                print(f"omg team supervisor: {exc}", file=sys.stderr)
+                return 1
         if action == "api":
             from omg_cli.team.api import (
                 TeamApiError,
@@ -1014,7 +1082,7 @@ def register_team_parsers(
         help=(
             'experimental tmux team: omg team [N[:role]] "<goal>" '
             "(default on; OMG_DISABLE_TMUX_TEAM=1 kill-switch); "
-            "also start|run|api|worker-ready|…"
+            "also start|run|api|supervisor|worker-ready|…"
         ),
     )
     team_sub = p_team.add_subparsers(dest="team_action")
@@ -1414,11 +1482,35 @@ def register_team_parsers(
         "worker-ready",
         parents=[common],
         help=(
-            "process-level readiness receipt for a pane wrapper "
-            "(reads OMG_TEAM_* env; primary launch gate)"
+            "legacy v1 wrapper receipt only (#99); cannot prove provider_ready "
+            "(reads OMG_TEAM_* env)"
         ),
     )
     p_t_ready.set_defaults(func=cmd_team, team_action="worker-ready")
+
+    p_t_sup = team_sub.add_parser(
+        "supervisor",
+        parents=[common],
+        help=(
+            "pane supervisor: spawn provider from vetted --descriptor JSON and "
+            "write schema-v2 startup phases (#99)"
+        ),
+    )
+    p_t_sup.add_argument(
+        "--descriptor",
+        dest="supervisor_descriptor",
+        required=True,
+        help="path to provider argv descriptor JSON (schema_version=1)",
+    )
+    p_t_sup.add_argument(
+        "--ready-timeout",
+        dest="supervisor_ready_timeout_s",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="bounded provider readiness wait (default: OMG_TEAM_SUPERVISOR_READY_S or 30)",
+    )
+    p_t_sup.set_defaults(func=cmd_team, team_action="supervisor")
 
     p_t_api = team_sub.add_parser(
         "api",
