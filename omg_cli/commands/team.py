@@ -586,6 +586,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 )
             return 0
         if action == "resume":
+            from omg_cli.host_probe import evaluate_feature_gate, probe_host
             from omg_cli.team.operator import OperatorError
             from omg_cli.team.runtime import resume_for_identity, resume_with_view
 
@@ -600,6 +601,18 @@ def cmd_team(args: argparse.Namespace) -> int:
             print_only = bool(getattr(args, "view_print", False))
             takeover = bool(getattr(args, "view_takeover", False))
             worker = getattr(args, "worker_id", None)
+            want_provider = bool(getattr(args, "provider_session", False))
+            session_resume_gate = None
+            if want_provider:
+                # CLI owns probe → gate; runtime must not re-parse versions.
+                # required=False so absent session_resume yields LEGACY (safe
+                # conversation-load path), not BLOCKED — #105 host-compat.
+                host_report = probe_host()
+                session_resume_gate = evaluate_feature_gate(
+                    "session_resume",
+                    host_report.capabilities,
+                    required=False,
+                )
             if print_only and not want_view:
                 # resume --print implies view print without reconcile? No —
                 # --print on resume only makes sense with --view.
@@ -616,7 +629,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 )
                 return 2
             try:
-                if want_view or print_only:
+                if want_view or print_only or want_provider:
                     result = resume_with_view(
                         root,
                         identity,
@@ -625,6 +638,8 @@ def cmd_team(args: argparse.Namespace) -> int:
                         takeover=takeover,
                         as_json=as_json,
                         worker_id=str(worker) if worker else None,
+                        request_provider_session=want_provider,
+                        session_resume_gate=session_resume_gate,
                     )
                 else:
                     # Default: reconcile-only; never touches tmux clients.
@@ -659,16 +674,25 @@ def cmd_team(args: argparse.Namespace) -> int:
                     f"(status={layout_status!r})",
                     file=sys.stderr,
                 )
+            provider = result.get("provider_session") or {}
+            if (
+                isinstance(provider, dict)
+                and provider.get("requested")
+                and provider.get("status") == "blocked"
+            ):
+                # Fail closed: required provider resume refused by host gate.
+                # tmux view success must not flip this to success.
+                return 1
             if want_view or print_only:
                 view = result.get("view") or {}
                 if print_only and result.get("print_hint"):
                     print(result["print_hint"])
                 if as_json:
-                    # --json never attaches; exit 0 if reconcile ok.
-                    return 0
+                    # --json never attaches; still honor provider fail-closed above.
+                    return 0 if result.get("ok", True) else 1
                 if not result.get("ok", True):
                     return 2 if view.get("status") == "refused" else 1
-            return 0
+            return 0 if result.get("ok", True) else 1
 
         if action == "view":
             from omg_cli.team.operator import OperatorError
@@ -1772,6 +1796,16 @@ def register_team_parsers(
         dest="worker_id",
         default=None,
         help="with --view: focus exact worker pane via #101 instead of leader",
+    )
+    p_t_resume.add_argument(
+        "--provider-session",
+        dest="provider_session",
+        action="store_true",
+        help=(
+            "request host ACP provider-session resume gated by host_probe "
+            "(independent of --view; missing cap → LEGACY next_action; "
+            "BLOCKED fails closed; does not imply tmux attach success)"
+        ),
     )
     # --json inherited from common → json_output (handler maps to as_json)
     p_t_resume.set_defaults(func=cmd_team, team_action="resume")

@@ -95,3 +95,27 @@ Hosts in the tested window below `0.2.121` are `compatibility=legacy`:
 Upgrade to ≥0.2.121 (or any host that **advertises** the needed methods) to
 unlock the modern gates. See issue #105 for catalogue rows and downstream
 adoption (`#103`, `#74`, …) — this document does not claim live verification.
+
+## Team resume consumer (#105 PR3)
+
+`omg team resume --provider-session` is the first OMG consumer of
+`FeatureGateResult`:
+
+- CLI runs `probe_host()` → `evaluate_feature_gate("session_resume", …,
+  required=False)` and **injects** the gate into `resume_with_view`.
+  `required=False` keeps the documented LEGACY path reachable when the host
+  lacks ACP resume (missing cap is not forced to BLOCKED).
+- Runtime / view planner never re-parse host versions.
+  `provider_session_result` accepts only `capability=session_resume`
+  (wrong id → blocked).
+- JSON outcomes stay three-way: `reconcile` / `provider_session` / `view`.
+  A successful tmux attach or select is **not** provider-session success.
+- `provider_session.status`: `not_requested` | `available` | `legacy` |
+  `blocked`. LEGACY keeps an actionable `next_action` and must not be
+  reported as AVAILABLE. BLOCKED (wrong capability / explicit refuse) →
+  fail closed (`ok=false` / nonzero).
+- Real ACP `session/resume` transport is still unwired (`transport_wired:
+  false` when AVAILABLE); this slice only consumes the gate.
+
+Related trackers `#103` / `#68` / `#69` / `#74` **consume** host gates here
+but are **not** completed by this PR.

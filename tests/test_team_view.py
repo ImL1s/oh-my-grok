@@ -32,6 +32,7 @@ from omg_cli.team.view import (
     MODE_VIEW,
     ViewRequest,
     plan_team_view,
+    provider_session_result,
     provider_session_stub,
 )
 
@@ -164,13 +165,84 @@ def test_planner_refuses_bad_session_id() -> None:
     assert plan.action == ACTION_REFUSE
 
 
+def test_provider_session_result_gate_states() -> None:
+    from omg_cli.host_models import FeatureGateResult
+
+    idle = provider_session_result(requested=False)
+    assert idle["status"] == "not_requested"
+    assert idle["no_replay"] is True
+    assert idle["restore_code"] is False
+
+    missing = provider_session_result(requested=True, gate=None)
+    assert missing["status"] == "blocked"
+    assert missing["required"] is True
+    assert "next_action" in missing
+
+    available = FeatureGateResult(
+        capability="session_resume",
+        state="AVAILABLE",
+        reason="observed",
+        required=True,
+    )
+    called: list[str] = []
+
+    def _helper(gate: FeatureGateResult) -> dict[str, Any]:
+        called.append(gate.state)
+        return {"invoked": True, "transport_wired": False}
+
+    av = provider_session_result(
+        requested=True, gate=available, provider_resume=_helper
+    )
+    assert av["status"] == "available"
+    assert av["invoked"] is True
+    assert called == ["AVAILABLE"]
+    assert av["status"] != "legacy"
+
+    legacy = FeatureGateResult(
+        capability="session_resume",
+        state="LEGACY",
+        reason="old host",
+        next_action="upgrade or use legacy load",
+        required=False,
+    )
+    lg = provider_session_result(requested=True, gate=legacy)
+    assert lg["status"] == "legacy"
+    assert lg["next_action"] == "upgrade or use legacy load"
+    assert lg["status"] != "available"
+    assert "invoked" not in lg
+
+    blocked = FeatureGateResult(
+        capability="session_resume",
+        state="BLOCKED",
+        reason="required missing",
+        next_action="upgrade grok",
+        required=True,
+    )
+    bl = provider_session_result(requested=True, gate=blocked)
+    assert bl["status"] == "blocked"
+    assert bl["required"] is True
+    assert bl["next_action"] == "upgrade grok"
+
+    wrong = FeatureGateResult(
+        capability="session_close",
+        state="AVAILABLE",
+        reason="wrong cap",
+        required=False,
+    )
+    bad = provider_session_result(requested=True, gate=wrong)
+    assert bad["status"] == "blocked"
+    assert "session_resume" in bad["reason"]
+    assert bad["capability"] == "session_close"
+
+
 def test_provider_session_stub_separates_outcomes() -> None:
+    """Deprecated stub: not_requested vs blocked (no silent unsupported)."""
     idle = provider_session_stub(requested=False)
     assert idle["status"] == "not_requested"
     assert idle["no_replay"] is True
     assert idle["restore_code"] is False
     blocked = provider_session_stub(requested=True)
-    assert blocked["status"] == "unsupported"
+    assert blocked["status"] == "blocked"
     assert blocked["no_replay"] is True
 
 
@@ -602,6 +674,8 @@ def test_view_stale_nonce_refuses(
 def test_resume_with_view_separates_reconcile_and_view(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from omg_cli.host_models import FeatureGateResult
+
     _enable_team(monkeypatch)
     _init_repo(tmp_path)
     meta = plane.start_team(
@@ -629,6 +703,13 @@ def test_resume_with_view_separates_reconcile_and_view(
         },
     )
     monkeypatch.delenv("TMUX", raising=False)
+    blocked_gate = FeatureGateResult(
+        capability="session_resume",
+        state="BLOCKED",
+        reason="required missing",
+        next_action="upgrade grok",
+        required=True,
+    )
     out = resume_with_view(
         tmp_path,
         str(meta["run_id"]),
@@ -636,16 +717,64 @@ def test_resume_with_view_separates_reconcile_and_view(
         as_json=False,
         is_tty=True,
         request_provider_session=True,
+        session_resume_gate=blocked_gate,
     )
     assert out["reconcile"]["status"] == "ok"
     assert out["reconcile"]["relaunched"] == ["w1"]
     assert out["provider_session"]["requested"] is True
-    assert out["provider_session"]["status"] == "unsupported"
+    assert out["provider_session"]["status"] == "blocked"
     assert out["provider_session"]["no_replay"] is True
     assert out["provider_session"]["restore_code"] is False
     assert out["view"]["requested"] is True
     # View may succeed or fail independently; envelope keeps both.
     assert "status" in out["view"]
+    # BLOCKED provider must not be overall ok even if view selected/attached.
+    assert out["ok"] is False
+
+
+def test_resume_provider_available_invokes_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.host_models import FeatureGateResult
+    from omg_cli.team import runtime as runtime_mod
+
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(
+        runtime_mod,
+        "resume_for_identity",
+        lambda *a, **k: {
+            "run_id": "run-av",
+            "note": "ok",
+            "relaunched": [],
+            "blocked": [],
+        },
+    )
+    gate = FeatureGateResult(
+        capability="session_resume",
+        state="AVAILABLE",
+        reason="advertised",
+        required=True,
+    )
+    calls: list[str] = []
+
+    def _helper(g: Any) -> dict[str, Any]:
+        calls.append(g.capability)
+        return {"invoked": True, "transport_wired": False}
+
+    out = resume_with_view(
+        tmp_path,
+        "run-av",
+        view=False,
+        as_json=True,
+        request_provider_session=True,
+        session_resume_gate=gate,
+        provider_resume=_helper,
+    )
+    assert out["provider_session"]["status"] == "available"
+    assert out["provider_session"]["invoked"] is True
+    assert calls == ["session_resume"]
+    assert out["view"]["status"] == "none"
+    assert out["ok"] is True
 
 
 def test_resume_json_skips_view_effect(
@@ -676,17 +805,273 @@ def test_resume_json_skips_view_effect(
     assert out["ok"] is True
 
 
+def test_resume_provider_legacy_not_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.host_models import FeatureGateResult
+    from omg_cli.team import runtime as runtime_mod
+
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(
+        runtime_mod,
+        "resume_for_identity",
+        lambda *a, **k: {
+            "run_id": "run-lg",
+            "note": "ok",
+            "relaunched": [],
+            "blocked": [],
+        },
+    )
+    gate = FeatureGateResult(
+        capability="session_resume",
+        state="LEGACY",
+        reason="legacy host",
+        next_action="use legacy load; see docs/host-compat.md",
+        required=False,
+    )
+    out = resume_with_view(
+        tmp_path,
+        "run-lg",
+        view=False,
+        as_json=True,
+        request_provider_session=True,
+        session_resume_gate=gate,
+    )
+    assert out["provider_session"]["status"] == "legacy"
+    assert out["provider_session"]["next_action"]
+    assert out["provider_session"]["status"] != "available"
+    assert out["ok"] is True  # legacy is actionable, not fail-closed
+
+
+def test_resume_view_success_independent_of_provider_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """tmux view selected/attached must never imply provider resume success."""
+    from omg_cli.host_models import FeatureGateResult
+    from omg_cli.team import runtime as runtime_mod
+
+    _enable_team(monkeypatch)
+    _init_repo(tmp_path)
+    meta = plane.start_team(
+        "view vs provider",
+        TASKS_ONE,
+        root=tmp_path,
+        dry_run=True,
+    )
+    live = _write_live_team(tmp_path, meta, monkeypatch)
+    _install_view_tmux(monkeypatch, live)
+    monkeypatch.setattr(
+        runtime_mod,
+        "resume_for_identity",
+        lambda *a, **k: {
+            "run_id": str(meta["run_id"]),
+            "note": "ok",
+            "relaunched": [],
+            "blocked": [],
+            "view_mode": "detached_session",
+        },
+    )
+    monkeypatch.delenv("TMUX", raising=False)
+    gate = FeatureGateResult(
+        capability="session_resume",
+        state="BLOCKED",
+        reason="required missing",
+        next_action="upgrade",
+        required=True,
+    )
+    out = resume_with_view(
+        tmp_path,
+        str(meta["run_id"]),
+        view=True,
+        as_json=False,
+        is_tty=True,
+        request_provider_session=True,
+        session_resume_gate=gate,
+    )
+    assert out["reconcile"]["status"] == "ok"
+    assert out["provider_session"]["status"] == "blocked"
+    assert out["view"]["requested"] is True
+    assert out["view"]["status"] in {"selected", "attached", "switched", "refused", "ok"} or (
+        out["view"].get("action") in {"select", "attach", "switch_client", "refuse"}
+        or out["view"].get("status") is not None
+    )
+    # Even when view effect succeeds, overall ok is false.
+    if out["view"].get("status") not in {"refused", "error", "failed"}:
+        assert out["ok"] is False
+
+
 def test_cli_registers_view_and_resume_flags() -> None:
     parser = build_parser()
     resume = parser.parse_args(
-        ["team", "resume", "--run", "r1", "--view", "--print", "--json"]
+        [
+            "team",
+            "resume",
+            "--run",
+            "r1",
+            "--view",
+            "--print",
+            "--json",
+            "--provider-session",
+        ]
     )
     assert resume.team_action == "resume"
     assert resume.resume_view is True
     assert resume.view_print is True
+    assert resume.provider_session is True
     view = parser.parse_args(["team", "view", "--run", "r1", "--takeover"])
     assert view.team_action == "view"
     assert view.view_takeover is True
+
+
+def test_cli_provider_session_legacy_reachable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI path uses evaluate_feature_gate(required=False) → LEGACY when cap absent."""
+    import argparse
+    import json
+
+    from omg_cli.commands.team import cmd_team
+    from omg_cli.host_models import HostCapabilitySet, HostProbeReport
+    from omg_cli.host_probe import evaluate_feature_gate
+    from omg_cli.team import runtime as runtime_mod
+
+    _enable_team(monkeypatch)
+    _init_repo(tmp_path)
+    monkeypatch.setattr(
+        "omg_cli.commands.team.project_root",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        runtime_mod,
+        "resume_for_identity",
+        lambda *a, **k: {
+            "run_id": "run-legacy",
+            "note": "ok",
+            "relaunched": [],
+            "blocked": [],
+        },
+    )
+
+    caps = HostCapabilitySet(session_resume=False)
+    # Same call shape as CLI (required=False) — LEGACY must be reachable.
+    assert (
+        evaluate_feature_gate("session_resume", caps, required=False).state == "LEGACY"
+    )
+    report = HostProbeReport(
+        binary="grok",
+        version="0.2.107",
+        version_tuple=(0, 2, 107),
+        tested_min="0.2.107",
+        tested_max="0.2.121",
+        compatibility="legacy",
+        capabilities=caps,
+        binary_found=True,
+    )
+    monkeypatch.setattr(
+        "omg_cli.host_probe.probe_host",
+        lambda *a, **k: report,
+    )
+
+    args = argparse.Namespace(
+        team_action="resume",
+        team_identity=None,
+        run_id="run-legacy",
+        as_json=True,
+        json_output=True,
+        resume_view=False,
+        view_print=False,
+        view_takeover=False,
+        worker_id=None,
+        provider_session=True,
+    )
+    code = cmd_team(args)
+    assert code == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    # emit_data may wrap; find provider_session
+    body = payload.get("data") or payload.get("team") or payload
+    if isinstance(body, dict) and "provider_session" not in body:
+        # walk one level for envelope wrappers
+        for v in body.values():
+            if isinstance(v, dict) and "provider_session" in v:
+                body = v
+                break
+    ps = body.get("provider_session") or {}
+    assert ps.get("status") == "legacy"
+    assert ps.get("next_action")
+    assert ps.get("status") != "available"
+    assert body.get("ok") is True
+
+
+def test_cli_provider_session_blocked_exit_nonzero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wrong capability / explicit BLOCKED → nonzero exit; not warning-only."""
+    import argparse
+
+    from omg_cli.commands.team import cmd_team
+    from omg_cli.host_models import FeatureGateResult, HostCapabilitySet, HostProbeReport
+    from omg_cli.team import runtime as runtime_mod
+
+    _enable_team(monkeypatch)
+    _init_repo(tmp_path)
+    monkeypatch.setattr(
+        "omg_cli.commands.team.project_root",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        runtime_mod,
+        "resume_for_identity",
+        lambda *a, **k: {
+            "run_id": "run-cli",
+            "note": "ok",
+            "relaunched": [],
+            "blocked": [],
+        },
+    )
+
+    caps = HostCapabilitySet(session_resume=False)
+    report = HostProbeReport(
+        binary="grok",
+        version="0.2.100",
+        version_tuple=(0, 2, 100),
+        tested_min="0.2.107",
+        tested_max="0.2.121",
+        compatibility="too_old",
+        capabilities=caps,
+        binary_found=True,
+    )
+    monkeypatch.setattr(
+        "omg_cli.host_probe.probe_host",
+        lambda *a, **k: report,
+    )
+    # Force a BLOCKED gate (capability fence / explicit refuse path).
+    blocked = FeatureGateResult(
+        capability="session_resume",
+        state="BLOCKED",
+        reason="explicit refuse",
+        next_action="upgrade grok",
+        required=True,
+    )
+    monkeypatch.setattr(
+        "omg_cli.host_probe.evaluate_feature_gate",
+        lambda *a, **k: blocked,
+    )
+
+    args = argparse.Namespace(
+        team_action="resume",
+        team_identity=None,
+        run_id="run-cli",
+        as_json=True,
+        json_output=True,
+        resume_view=False,
+        view_print=False,
+        view_takeover=False,
+        worker_id=None,
+        provider_session=True,
+    )
+    code = cmd_team(args)
+    assert code == 1
 
 
 def test_normalize_topology_feeds_view_target(
