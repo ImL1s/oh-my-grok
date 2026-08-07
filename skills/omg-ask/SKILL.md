@@ -1,11 +1,11 @@
 ---
 name: omg-ask
-description: Human-only broker for external advisor CLIs (codex/claude/gemini). Use when user wants a second opinion via omg ask. Never shell external CLIs as workers.
+description: Human-only broker for external advisor CLIs (codex/claude/gemini/agy). Use when user wants a second opinion via omg ask. Never shell external CLIs as workers.
 ---
 
 # omg-ask — External advisors (user-invoked only)
 
-`omg ask` is a **trusted human broker** for Codex / Claude (fable) / optional Gemini. It is **not** a product executor and **not** a default worker path.
+`omg ask` is a **trusted human broker** for Codex / Claude (fable) / optional Gemini / Antigravity (`agy`). It is **not** a product executor and **not** a default worker path.
 
 ## HARD RULES (non-negotiable)
 
@@ -17,6 +17,7 @@ description: Human-only broker for external advisor CLIs (codex/claude/gemini). 
 omg ask codex "your question"
 omg ask claude "your question"   # fable alias
 omg ask gemini "your question"   # optional; may be missing
+omg ask agy "your question"      # Antigravity via ProviderAdapter (#67-C)
 ```
 
 - Output is **advisory** under `.omg/artifacts/ask-*.md`.

@@ -16,6 +16,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   fail-closes on non-`session_resume` gate capability ids.
 
 ### Added
+- **Partial work for issue 67 (slice C / #67-C):** `omg ask agy` routes
+  through `ProviderAdapter.run` (Antigravity headless adapter). `agy` is a
+  first-class ask provider — **not** aliased to `gemini`. Legacy
+  codex/claude/gemini ask paths unchanged. Artifacts / exit codes / dry-run /
+  timeout (exit 4) / missing-binary (exit 3) / auth-blocked failure preserved.
+  Hermetic fake-`agy` coverage in `tests/test_ask_agy.py`. Team/tmux cutover
+  remains **slice D** — issue #67 stays open.
 - **Partial work for issue 67 (slice B / #67-B):** headless Antigravity
   execution on `ProviderAdapter.run` — provider-neutral
   `ProviderRunRequest`/`ProviderRunResult` (+ events/usage/exit_class),
@@ -23,8 +30,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   subprocess stack), `json`/`stream-json` parsers with partial-output
   preservation on timeout/cancel, session/resume *metadata* without Team
   coupling, and `omg provider antigravity run`. Hermetic fake-`agy` only —
-  no ask/Team cutover, no live-network CI. Issue #67 remains open for
-  slices C–D.
+  no Team cutover, no live-network CI. Issue #67 remains open for slice D
+  (ask cutover landed as #67-C).
 - **#105 Team resume consumes host gates (PR3 / seq E first slice):**
   `provider_session_result` replaces the fixed ACP stub in Team resume/view
   envelopes. CLI `omg team resume --provider-session` probes via

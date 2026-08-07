@@ -1,9 +1,10 @@
-"""Antigravity (`agy`) provider — discovery, capabilities, headless run (#67-A/B).
+"""Antigravity (`agy`) provider — discovery, capabilities, headless run (#67-A/B/C).
 
-No ask/Team cutover. No live network. Subprocess uses argv arrays only
-(``shell=False``) via :mod:`omg_cli.providers.process` with process-group
-cleanup and a bounded environment. Headless ``run`` reuses the same process
-stack as probes (no second runner).
+Ask cutover (#67-C): ``omg ask agy`` routes through :meth:`ProviderAdapter.run`.
+Team pane cutover remains deferred (#67-D). No live network. Subprocess uses
+argv arrays only (``shell=False``) via :mod:`omg_cli.providers.process` with
+process-group cleanup and a bounded environment. Headless ``run`` reuses the
+same process stack as probes (no second runner).
 """
 
 from __future__ import annotations
@@ -60,7 +61,7 @@ TESTED_MIN_STR: Final[str] = "1.1.10"
 TESTED_MAX_STR: Final[str] = "1.1.10"
 
 _AG_LIMITATIONS: Final[tuple[str, ...]] = (
-    "Slice B headless run available via ProviderAdapter.run; ask/Team cutover deferred (#67-C/D).",
+    "Slice C: omg ask agy routes via ProviderAdapter.run; Team cutover deferred (#67-D).",
     "Authentication and live-call readiness are not verified hermetically.",
 )
 

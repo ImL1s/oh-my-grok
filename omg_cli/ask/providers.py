@@ -16,15 +16,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
-# Providers supported in v0.2.1
-PROVIDERS = frozenset({"codex", "claude", "gemini"})
+# Providers supported by omg ask (agy routes via ProviderAdapter — #67-C).
+PROVIDERS = frozenset({"codex", "claude", "gemini", "agy"})
 STRUCTURED_VERDICT_PROVIDERS = frozenset({"codex", "claude"})
 ADVISOR_SKILLS = frozenset({"omg-ask", "omg-dual-review", "omg-ralplan"})
 ALIASES: dict[str, str] = {
     "fable": "claude",
-    # Intentionally NO "agy" → gemini: agy is Antigravity (different binary,
-    # needs PTY). Advisor path is synchronous foreground — out of scope.
-    # `omg ask agy` must fail closed, not silently run gemini.
+    # Intentionally NO "agy" → gemini: agy is Antigravity (different binary).
+    # `omg ask agy` is first-class and routes through ProviderAdapter.run (#67-C).
 }
 
 PromptMode = Literal["stdin", "argv", "file"]
@@ -98,6 +97,7 @@ SPECS: dict[str, ProviderSpec] = {
     "codex": ProviderSpec(name="codex", binary="codex", optional=False),
     "claude": ProviderSpec(name="claude", binary="claude", optional=False),
     "gemini": ProviderSpec(name="gemini", binary="gemini", optional=True),
+    "agy": ProviderSpec(name="agy", binary="agy", optional=True),
 }
 
 
@@ -365,6 +365,12 @@ def build_provider_argv(
     if check_binary:
         resolve_binary(canon)
     mode = prompt_mode or default_prompt_mode()
+    # agy is not a legacy argv-builder provider — broker uses ProviderAdapter.run.
+    if canon == "agy":
+        raise AskProviderError(
+            "provider 'agy' uses ProviderAdapter.run (not legacy argv builder); "
+            "call omg ask agy / run_ask('agy', …)"
+        )
     kwargs = dict(model=model, extra=extra, prompt_mode=mode, prompt_file=prompt_file)
     if canon == "codex":
         return argv_codex(prompt, **kwargs)  # type: ignore[arg-type]

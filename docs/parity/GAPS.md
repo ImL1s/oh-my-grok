@@ -6,7 +6,7 @@ Inventory status: **bootstrapping**.
 
 | Gap ID | Priority | Status | Issues | Capabilities | Summary |
 | --- | --- | --- | --- | --- | --- |
-| `gap.antigravity.provider` | P0 | open | #67 | `antigravity.provider.adapter` | Probe+run landed (#67-A/B); ask/Team cutover still open (#67-C/D) |
+| `gap.antigravity.provider` | P0 | open | #67 | `antigravity.provider.adapter` | Probe+run+ask landed (#67-A/B/C); Team cutover still open (#67-D) |
 | `gap.jobs.durable` | P0 | open | #68 | `jobs.durable_background` | Durable background jobs plane not implemented |
 | `gap.parity.governance.remaining` | P0 | open | #78 | `parity.inventory.governance` | #78-B inventory landed; #78-C refresh+claim gate landed; completeness promotion still manual |
 | `gap.team.v3` | P0 | open | #69 | `team.plane_v3` | Team plane v3 not implemented; depends on #67/#68 |
@@ -18,7 +18,7 @@ Inventory status: **bootstrapping**.
 
 ## Open P0
 
-- `gap.antigravity.provider` (#67): Probe+run landed (#67-A/B); ask/Team cutover still open (#67-C/D)
+- `gap.antigravity.provider` (#67): Probe+run+ask landed (#67-A/B/C); Team cutover still open (#67-D)
 - `gap.jobs.durable` (#68): Durable background jobs plane not implemented
 - `gap.parity.governance.remaining` (#78): #78-B inventory landed; #78-C refresh+claim gate landed; completeness promotion still manual
 - `gap.team.v3` (#69): Team plane v3 not implemented; depends on #67/#68
