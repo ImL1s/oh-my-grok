@@ -32,7 +32,7 @@ from typing import Any, Iterator, Literal, Mapping, Sequence
 from omg_cli.contracts.path_keys import ContractPathError
 from omg_cli.evidence import CLI_WRITER
 from omg_cli.fanout import max_workers_cap
-from omg_cli.madmax import build_pane_command, tmux_available, tmux_env_args
+from omg_cli.madmax import tmux_available, tmux_env_args
 from omg_cli.state import _run_dir, load_active_run, load_run, write_status
 from omg_cli.team.plane import (
     EXPERIMENTAL_ENV,
@@ -41,7 +41,6 @@ from omg_cli.team.plane import (
     TEAM_WORKER_ENV,
     TeamError,
     TeamGateError,
-    _grok_args_for_pane,
     _identity_rows,
     _list_pane_identities,
     _load_team_identity_chain,
@@ -61,7 +60,6 @@ from omg_cli.team.plane import (
     _window_alive,
     _worker_pane_liveness,
     build_team_task_prompt,
-    build_executor_pane_command,
     experimental_enabled,
     in_spawned_worker_context,
     load_team_meta,
@@ -70,7 +68,6 @@ from omg_cli.team.plane import (
     team_launch_receipt_path,
     team_meta_path,
     plugin_root,
-    wrap_pane_with_supervisor,
     materialize_supervisor_pane_command,
 )
 from omg_cli.team.providers import PROMPT_DELIVERY_PROMPT_FILE, build_executor_argv

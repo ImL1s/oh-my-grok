@@ -42,7 +42,6 @@ from typing import Any, Collection, Literal, Mapping, Sequence
 from omg_cli.evidence import CLI_WRITER, safe_supervised_child_env
 from omg_cli.fanout import max_workers_cap
 from omg_cli.madmax import (
-    build_pane_command,
     forwarded_env,
     session_name_for_cwd,
     tmux_available,
