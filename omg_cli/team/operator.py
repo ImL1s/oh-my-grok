@@ -29,10 +29,9 @@ from omg_cli.contracts.path_keys import (
 )
 from omg_cli.evidence import CLI_WRITER
 from omg_cli.redaction import redact_text
+from omg_cli.team import plane as plane_mod
 from omg_cli.team.plane import (
     TeamError,
-    _load_team_identity_chain,
-    _worker_pane_liveness,
     load_team_meta,
     team_dir,
 )
@@ -45,6 +44,7 @@ from omg_cli.team.tmux import (
     attach_argv_for_target,
     capture_pane,
     focus_pane,
+    read_exact_worker_pane_identity,
     send_key,
     send_literal,
     tmux_available,
@@ -108,6 +108,7 @@ class ExactPaneProof:
     window_id: str | None
     expected_pid: int
     expected_pid_start: str | None
+    pane_owner_nonce: str | None
     owner_token_sha256: str | None
     leader_pane_id: str | None
     role: str | None
@@ -255,7 +256,7 @@ def resolve_live_worker(
         )
 
     try:
-        chain = _load_team_identity_chain(root_path, run_id, meta)
+        chain = plane_mod._load_team_identity_chain(root_path, run_id, meta)
     except TeamError as exc:
         raise OperatorError(
             f"identity receipt chain refused: {exc}",
@@ -343,6 +344,19 @@ def resolve_live_worker(
     if pid_start is not None and not isinstance(pid_start, str):
         pid_start = None
 
+    # #102 pane-owner nonce from task / identity-row normalization.
+    normalized = plane_mod._normalize_identity_row(task)
+    pane_owner_nonce = normalized.get("pane_owner_nonce")
+    if pane_owner_nonce is not None and not isinstance(pane_owner_nonce, str):
+        pane_owner_nonce = None
+    if isinstance(pane_owner_nonce, str) and not pane_owner_nonce:
+        pane_owner_nonce = None
+    # Strong path requires an exact window id when a nonce is bound.
+    if pane_owner_nonce and not window_id:
+        norm_window = normalized.get("window_id")
+        if isinstance(norm_window, str) and norm_window:
+            window_id = norm_window
+
     team_id = str(meta.get("team_id") or "team")
     return ExactPaneProof(
         run_id=run_id,
@@ -357,6 +371,7 @@ def resolve_live_worker(
         window_id=window_id,
         expected_pid=pid,
         expected_pid_start=pid_start,
+        pane_owner_nonce=pane_owner_nonce,
         owner_token_sha256=_owner_token_sha256(meta),
         leader_pane_id=leader_pane_id if isinstance(leader_pane_id, str) else None,
         role=str(task["role"]) if task.get("role") else None,
@@ -368,19 +383,82 @@ def resolve_live_worker(
     )
 
 
-def probe_exact_worker(proof: ExactPaneProof) -> str:
-    """Run #98 exact-pane liveness; return live|gone|identity_mismatch|unknown."""
+def classify_exact_pane_live(
+    *,
+    pane_id: str,
+    session: str,
+    session_id: str,
+    launch_nonce: str,
+    expected_pid: int | None,
+    expected_pid_start: str | None,
+    window_id: str | None,
+    pane_owner_nonce: str | None,
+) -> str:
+    """Classify pane liveness using #102 owner-nonce when present, else #98.
+
+    When ``pane_owner_nonce`` is bound on the worker record, authorization
+    **requires** :func:`read_exact_worker_pane_identity` (session + window +
+    owner nonce). Legacy teams without a nonce keep the #98 launch-nonce /
+    pid-start probe. Never invent a third identity system.
+    """
     if not tmux_available():
         return STATUS_UNKNOWN
-    state = _worker_pane_liveness(
-        pane_id=proof.pane_id,
-        session=proof.session,
-        expected_session_id=proof.session_id,
-        launch_nonce=proof.launch_nonce,
-        expected_pid_start=proof.expected_pid_start,
-        expected_pid=proof.expected_pid,
+
+    if isinstance(pane_owner_nonce, str) and pane_owner_nonce:
+        if not isinstance(window_id, str) or not window_id:
+            # Receipt claims an owner nonce but lacks window binding — refuse.
+            return STATUS_UNKNOWN
+        try:
+            live_pid = read_exact_worker_pane_identity(
+                pane_id=pane_id,
+                expected_session_id=session_id,
+                expected_window_id=window_id,
+                pane_owner_nonce=pane_owner_nonce,
+            )
+        except TmuxTeamError:
+            return STATUS_MISMATCH
+        if expected_pid is not None and live_pid != expected_pid:
+            return STATUS_MISMATCH
+        if expected_pid_start:
+            live_start = plane_mod._pid_start_identity(live_pid)
+            if not live_start:
+                return STATUS_UNKNOWN
+            if live_start != expected_pid_start:
+                return STATUS_MISMATCH
+        # Defense in depth: launch nonce must still match on the exact pane.
+        live_nonce, nonce_ok = plane_mod._probe_tmux_launch_nonce_for_pane(
+            pane_id, session, allow_session_fallback=False
+        )
+        if not nonce_ok:
+            return STATUS_UNKNOWN
+        if live_nonce != launch_nonce:
+            return STATUS_MISMATCH
+        return STATUS_LIVE
+
+    # Legacy / gen-0 teams without pane-owner nonce → #98 exact liveness.
+    state = plane_mod._worker_pane_liveness(
+        pane_id=pane_id,
+        session=session,
+        expected_session_id=session_id,
+        launch_nonce=launch_nonce,
+        expected_pid_start=expected_pid_start,
+        expected_pid=expected_pid,
     )
     return _liveness_status(state)
+
+
+def probe_exact_worker(proof: ExactPaneProof) -> str:
+    """Exact-pane probe: #102 owner-nonce path when present, else #98."""
+    return classify_exact_pane_live(
+        pane_id=proof.pane_id,
+        session=proof.session,
+        session_id=proof.session_id,
+        launch_nonce=proof.launch_nonce,
+        expected_pid=proof.expected_pid,
+        expected_pid_start=proof.expected_pid_start,
+        window_id=proof.window_id,
+        pane_owner_nonce=proof.pane_owner_nonce,
+    )
 
 
 def authorize_capture(proof: ExactPaneProof, *, status: str | None = None) -> str:
@@ -490,7 +568,8 @@ def audit_operator_event(
         "session_id": proof.session_id,
         "identity_sha256": _sha256_text(
             f"{proof.session_id}|{proof.launch_nonce}|{proof.pane_id}|"
-            f"{proof.expected_pid}|{proof.expected_pid_start or ''}"
+            f"{proof.expected_pid}|{proof.expected_pid_start or ''}|"
+            f"{proof.pane_owner_nonce or ''}|{proof.window_id or ''}"
         ),
         "key_name": key_name,
         "text_length": text_length,
@@ -1087,6 +1166,7 @@ __all__ = [
     "authorize_input",
     "authorize_key",
     "capture_worker",
+    "classify_exact_pane_live",
     "focus_worker",
     "input_worker",
     "key_worker",

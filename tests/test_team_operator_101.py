@@ -152,6 +152,7 @@ def _install_live_tmux(
     pane_pid_override: dict[str, int] | None = None,
     dead_panes: set[str] | None = None,
     foreign_session: str | None = None,
+    pane_owner_override: dict[str, str] | None = None,
     capture_text: str = "hello secret=TOKEN\n",
     effects: list[list[str]] | None = None,
 ) -> list[list[str]]:
@@ -159,6 +160,7 @@ def _install_live_tmux(
     commands = effects if effects is not None else []
     dead = dead_panes or set()
     pid_override = pane_pid_override or {}
+    owner_override = pane_owner_override or {}
 
     def run(args: Any, **_kw: Any) -> MagicMock:
         command = list(args)
@@ -183,7 +185,25 @@ def _install_live_tmux(
                 pid = pid_override.get(str(target), int(task["pid"]))
                 dead_flag = "1" if target in dead else "0"
                 sid = foreign_session or session_id
-                if "#{pane_dead}" in str(fmt):
+                fmt_s = str(fmt)
+                # #102 read_exact_worker_pane_identity format
+                if "#{pane_dead}" in fmt_s and (
+                    "#{window_id}" in fmt_s or "omg_worker_nonce" in fmt_s
+                ):
+                    window_id = (
+                        task.get("window_id")
+                        or live.get("window_id")
+                        or "@9"
+                    )
+                    owner = owner_override.get(
+                        str(target),
+                        str(task.get("pane_owner_nonce") or ""),
+                    )
+                    result.stdout = (
+                        f"{target}\t{window_id}\t{sid}\t{pid}\t{owner}\t{dead_flag}\n"
+                    )
+                elif "#{pane_dead}" in fmt_s:
+                    # #98 probe_worker_pane_identity
                     result.stdout = f"{target}\t{dead_flag}\t{sid}\t{pid}\n"
                 else:
                     result.stdout = f"{target}\t{pid}\n"
@@ -191,7 +211,25 @@ def _install_live_tmux(
                 result.returncode = 1
                 result.stderr = "can't find pane"
         elif op == "show-options":
-            result.stdout = expected_nonce + "\n"
+            option = command[-1] if command else ""
+            target = None
+            if "-t" in command:
+                target = command[command.index("-t") + 1]
+            if "omg_worker_nonce" in str(option):
+                task = next(
+                    (t for t in live["tasks"] if t.get("pane_id") == target),
+                    None,
+                )
+                if task is not None:
+                    owner = owner_override.get(
+                        str(target),
+                        str(task.get("pane_owner_nonce") or ""),
+                    )
+                    result.stdout = owner + "\n"
+                else:
+                    result.returncode = 1
+            else:
+                result.stdout = expected_nonce + "\n"
         elif op == "list-panes":
             result.stdout = "\n".join(
                 str(t["pane_id"]) for t in live["tasks"] if t.get("pane_id")
@@ -369,7 +407,7 @@ def test_leader_pane_refused_as_worker(
     live["tasks"][0]["pane_id"] = live["leader_pane_id"]
     # Bypass receipt continuity by stubbing the chain loader.
     monkeypatch.setattr(
-        operator,
+        plane,
         "_load_team_identity_chain",
         lambda *_a, **_k: [
             {
@@ -732,6 +770,110 @@ def test_foreign_session_is_mismatch(
     _install_live_tmux(monkeypatch, live, foreign_session="$999")
     out = capture_worker(root, live_team["run_id"], "w1")
     assert out["status"] == STATUS_MISMATCH
+
+
+def _bind_owner_nonce_on_worker(
+    root: Path,
+    live: dict[str, Any],
+    *,
+    owner_nonce: str = "d" * 32,
+    window_id: str = "@9",
+) -> dict[str, Any]:
+    """Attach #102 pane-owner nonce + window id without rewriting launch receipt.
+
+    Receipt chain compare uses gen-0 launch rows (no owner nonce). Stub the
+    chain loader so resolve can proceed with the strengthened meta task row.
+    """
+    live = dict(live)
+    live["tasks"] = [dict(t) for t in live["tasks"]]
+    live["tasks"][0]["pane_owner_nonce"] = owner_nonce
+    live["tasks"][0]["window_id"] = window_id
+    live["window_id"] = window_id
+    plane._atomic_write_json(team_meta_path(root, str(live["run_id"])), live)
+    return live
+
+
+def test_owner_nonce_proof_live_allows_capture(
+    live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = live_team["root"]
+    live = _bind_owner_nonce_on_worker(root, live_team["live"])
+    monkeypatch.setattr(
+        plane,
+        "_load_team_identity_chain",
+        lambda *_a, **_k: [
+            {
+                "session_name": live["session"],
+                "session_id": live["session_id"],
+                "launch_nonce": live["launch_nonce"],
+                "tasks": [],
+            }
+        ],
+    )
+    _install_live_tmux(monkeypatch, live)
+    proof = resolve_live_worker(root, live_team["run_id"], "w1")
+    assert proof.pane_owner_nonce == "d" * 32
+    assert proof.window_id == "@9"
+    assert probe_exact_worker(proof) == STATUS_LIVE
+    out = capture_worker(root, live_team["run_id"], "w1")
+    assert out["ok"] is True
+    assert out["status"] == STATUS_LIVE
+
+
+def test_foreign_owner_nonce_fails_closed_for_capture_key_input(
+    live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stale/foreign @omg_worker_nonce must refuse capture/key/input."""
+    root = live_team["root"]
+    owner = "e" * 32
+    live = _bind_owner_nonce_on_worker(root, live_team["live"], owner_nonce=owner)
+    monkeypatch.setattr(
+        plane,
+        "_load_team_identity_chain",
+        lambda *_a, **_k: [
+            {
+                "session_name": live["session"],
+                "session_id": live["session_id"],
+                "launch_nonce": live["launch_nonce"],
+                "tasks": [],
+            }
+        ],
+    )
+    # Live pane carries a different owner nonce than the receipt/meta expects.
+    _install_live_tmux(
+        monkeypatch,
+        live,
+        pane_owner_override={"%10": "f" * 32},
+    )
+    proof = resolve_live_worker(root, live_team["run_id"], "w1")
+    assert proof.pane_owner_nonce == owner
+    assert probe_exact_worker(proof) == STATUS_MISMATCH
+
+    cap = capture_worker(root, live_team["run_id"], "w1")
+    assert cap["ok"] is False
+    assert cap["status"] == STATUS_MISMATCH
+
+    with pytest.raises(OperatorError) as key_exc:
+        key_worker(
+            root,
+            live_team["run_id"],
+            "w1",
+            "Enter",
+            operator_override=True,
+            is_tty=False,
+        )
+    assert key_exc.value.status == STATUS_MISMATCH
+
+    with pytest.raises(OperatorError) as input_exc:
+        input_worker(
+            root,
+            live_team["run_id"],
+            "w1",
+            "hi",
+            operator_override=True,
+            is_tty=True,
+        )
+    assert input_exc.value.status == STATUS_MISMATCH
 
 
 def test_cli_normalize_reserves_operator_actions() -> None:

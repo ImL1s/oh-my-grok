@@ -1310,13 +1310,15 @@ def worker_pane_descriptors(
     """Bounded worker descriptors for ``omg team panes`` (#101).
 
     Never includes argv, prompt, env, tokens, or unredacted secrets.
-    Authorization flags reflect current exact-pane proof (#98) only.
+    Authorization flags use the same #102/#98 exact-pane classifier as
+    operator capture/key/input.
     """
     from omg_cli.redaction import redact_text
+    from omg_cli.team.operator import classify_exact_pane_live
     from omg_cli.team.plane import (
         _TMUX_PANE_ID,
         _load_team_launch_receipt,
-        _worker_pane_liveness,
+        _normalize_identity_row,
         team_launch_receipt_path,
     )
     from omg_cli.team.tmux import tmux_available
@@ -1386,6 +1388,17 @@ def worker_pane_descriptors(
         focus_allowed = False
         input_allowed = False
         key_allowed = False
+        window_id = (
+            raw.get("window_id")
+            if isinstance(raw.get("window_id"), str)
+            else meta.get("window_id")
+        )
+        if not isinstance(window_id, str):
+            window_id = None
+        normalized = _normalize_identity_row(raw)
+        pane_owner_nonce = normalized.get("pane_owner_nonce")
+        if not isinstance(pane_owner_nonce, str) or not pane_owner_nonce:
+            pane_owner_nonce = None
         if dry or raw.get("status") == "dry_run":
             status_label = "gone"
         elif is_leader:
@@ -1394,11 +1407,13 @@ def worker_pane_descriptors(
             status_label = "gone"
         elif not probe or not tmux_available():
             status_label = "unknown"
+        elif not expected_session_id or not expected_nonce:
+            status_label = "unknown"
         else:
-            live = _worker_pane_liveness(
+            status_label = classify_exact_pane_live(
                 pane_id=str(pane_id),
                 session=session,
-                expected_session_id=expected_session_id,
+                session_id=expected_session_id,
                 launch_nonce=expected_nonce,
                 expected_pid_start=raw.get("pid_start")
                 if isinstance(raw.get("pid_start"), str)
@@ -1406,13 +1421,9 @@ def worker_pane_descriptors(
                 expected_pid=raw.get("pid")
                 if isinstance(raw.get("pid"), int)
                 else None,
+                window_id=window_id,
+                pane_owner_nonce=pane_owner_nonce,
             )
-            status_label = {
-                "alive": "live",
-                "proven_absent": "gone",
-                "present_foreign": "identity_mismatch",
-                "unknown": "unknown",
-            }.get(live, "unknown")
             if status_label == "live":
                 capture_allowed = True
                 focus_allowed = True
@@ -1445,9 +1456,8 @@ def worker_pane_descriptors(
                 "state": raw.get("status"),
                 "ready": None,
                 "pane_id": pane_id if exact_pane and not is_leader else None,
-                "window_id": raw.get("window_id")
-                if isinstance(raw.get("window_id"), str)
-                else meta.get("window_id"),
+                "window_id": window_id,
+                "pane_owner_bound": bool(pane_owner_nonce),
                 "worktree": safe_worktree,
                 "command_basename": cmd_base,
                 "liveness": status_label,
