@@ -607,6 +607,123 @@ def test_delayed_auth_after_process_stable_is_blocked(
             proc.wait(timeout=2)
 
 
+@pytest.mark.parametrize(
+    "idle_line,run_id",
+    [
+        (">", "run-tui-gt"),
+        ("grok>", "run-tui-grokgt"),
+    ],
+)
+def test_delayed_auth_after_tui_idle_is_blocked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    idle_line: str,
+    run_id: str,
+) -> None:
+    """Weak TUI idle must not skip post-stable; delayed auth → blocked (#99)."""
+    _bind_env(monkeypatch, tmp_path, run_id=run_id)
+    monkeypatch.setenv("OMG_TEAM_PROVIDER_STRATEGY", "grok")
+    monkeypatch.setenv("OMG_TEAM_POST_STABLE_OBSERVE_S", "3")
+    script = tmp_path / "tui_idle_auth.py"
+    script.write_text(
+        "import time\n"
+        f"print({idle_line!r}, flush=True)\n"
+        "time.sleep(1.0)\n"
+        "print('authentication required: please log in', flush=True)\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    desc = write_provider_descriptor(
+        tmp_path / "desc.json",
+        provider="grok",
+        argv=[sys.executable, str(script)],
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    env["OMG_TEAM_POST_STABLE_OBSERVE_S"] = "3"
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "omg_cli.main",
+            "team",
+            "supervisor",
+            "--descriptor",
+            str(desc),
+            "--ready-timeout",
+            "8",
+        ],
+        cwd=str(tmp_path),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 10.0
+        record = None
+        while time.monotonic() < deadline:
+            record = read_startup_record(
+                tmp_path, run_id=run_id, team_id="team", worker_id="w1"
+            )
+            if record and record.get("phase") in (
+                StartupPhase.BLOCKED.value,
+                StartupPhase.TASK_DISPATCHED.value,
+                StartupPhase.FAILED.value,
+            ):
+                break
+            time.sleep(0.05)
+        assert record is not None
+        assert record["phase"] != StartupPhase.TASK_DISPATCHED.value, record
+        assert record["phase"] == StartupPhase.BLOCKED.value, record
+        out = wait_for_startup_acks(
+            tmp_path,
+            run_id=run_id,
+            team_id="team",
+            expected_workers=["w1"],
+            timeout_ms=100,
+            poll_s=0.01,
+        )
+        assert out["startup_status"] == "blocked_start"
+        assert out["startup_status"] != "running"
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+
+
+def test_grok_tui_idle_markers_are_provisional() -> None:
+    from omg_cli.team.provider_ready import GrokStrategy
+
+    for line in (">", "grok>", "  >  "):
+        obs = GrokStrategy().observe(
+            provider_pid=1,
+            alive=True,
+            capture_lines=[line],
+            elapsed_s=0.1,
+        )
+        assert obs.status == "provisional", line
+        assert obs.evidence_code == EvidenceCode.TUI_IDLE_PROMPT.value
+
+
+def test_post_stable_rejects_nan_inf() -> None:
+    from omg_cli.team.supervisor import (
+        DEFAULT_POST_STABLE_OBSERVE_S,
+        POST_STABLE_OBSERVE_ENV,
+        _resolve_post_stable_observe_s,
+    )
+
+    for raw in ("nan", "NaN", "inf", "+inf", "-inf", "Infinity"):
+        assert (
+            _resolve_post_stable_observe_s({POST_STABLE_OBSERVE_ENV: raw})
+            == DEFAULT_POST_STABLE_OBSERVE_S
+        ), raw
+
+
 def test_redaction_strips_secrets() -> None:
     line = "Authorization: Bearer super-secret-token api_key=abc123"
     out = redact_diagnostics_line(line)

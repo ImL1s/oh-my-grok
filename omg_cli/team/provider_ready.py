@@ -20,8 +20,8 @@ class ReadinessObservation:
     """Result of one observe() poll.
 
     status:
-      ready — definitive (idle prompt / fixture / fake); finalize immediately
-      provisional — process_stable only; supervisor must keep observing
+      ready — definitive (fixture / fake / explicit marker); finalize now
+      provisional — process_stable or weak TUI idle; post-stable observe required
       blocked / failed / pending / unknown — as before
     """
 
@@ -115,10 +115,13 @@ class _BaseStrategy:
                 failure_reason="provider emitted fatal/error output before ready",
             )
         if self.idle_re is not None and self.idle_re.search(text):
+            # Weak TUI idle markers (including ``>`` / ``grok>``) are only
+            # provisional — delayed auth/trust often prints after a prompt
+            # glyph (#99 re-review). Never finalize immediately on these.
             return ReadinessObservation(
-                status="ready",
+                status="provisional",
                 evidence_code=EvidenceCode.TUI_IDLE_PROMPT.value,
-                detail="idle/input-ready marker observed",
+                detail="idle/input-ready marker observed; post-stable observe required",
             )
         # Known providers: process-alive through a stability interval is only
         # *provisional* — supervisor must keep observing for delayed auth/trust

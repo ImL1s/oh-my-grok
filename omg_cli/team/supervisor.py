@@ -8,6 +8,7 @@ readiness so read-only workers do not need mailbox ACK.
 from __future__ import annotations
 
 import json
+import math
 import os
 import signal
 import subprocess
@@ -33,7 +34,8 @@ from omg_cli.team.startup import (
 DESCRIPTOR_SCHEMA_VERSION = 1
 DESCRIPTOR_KIND = "team_provider_descriptor"
 DEFAULT_READY_WAIT_S = 30.0
-# After process_stable provisional ready, keep watching for delayed auth/trust.
+# After provisional ready (process_stable or weak TUI idle), keep watching
+# for delayed auth/trust before finalizing provider_ready.
 DEFAULT_POST_STABLE_OBSERVE_S = 2.0
 MIN_POST_STABLE_OBSERVE_S = 0.5
 POST_STABLE_OBSERVE_ENV = "OMG_TEAM_POST_STABLE_OBSERVE_S"
@@ -42,7 +44,7 @@ _CAPTURE_MAX_BYTES = 16_384
 
 
 def _resolve_post_stable_observe_s(env: Mapping[str, str]) -> float:
-    """Positive floor for post-stable observe; ``<=0`` / junk → default."""
+    """Positive floor for post-stable observe; ``<=0`` / nan / inf / junk → default."""
     raw = env.get(POST_STABLE_OBSERVE_ENV)
     if raw is None or str(raw).strip() == "":
         return DEFAULT_POST_STABLE_OBSERVE_S
@@ -50,7 +52,7 @@ def _resolve_post_stable_observe_s(env: Mapping[str, str]) -> float:
         value = float(str(raw).strip())
     except (TypeError, ValueError):
         return DEFAULT_POST_STABLE_OBSERVE_S
-    if value <= 0:
+    if not math.isfinite(value) or value <= 0:
         return DEFAULT_POST_STABLE_OBSERVE_S
     return max(value, MIN_POST_STABLE_OBSERVE_S)
 
@@ -483,12 +485,27 @@ def run_supervisor(
             if obs.status == "unknown":
                 # Stay pending until timeout — never optimistic ready.
                 pass
-            elif obs.status == "ready" and not reached_ready:
-                # Definitive ready (idle / fixture / fake) — finalize now.
+            elif (
+                obs.status == "ready"
+                and not reached_ready
+                and obs.evidence_code != EvidenceCode.TUI_IDLE_PROMPT.value
+            ):
+                # Definitive ready (fixture / fake only) — finalize now.
+                # TUI idle must never take this path (#99 re-review).
                 _finalize_ready(evidence=obs.evidence_code)
                 break
-            elif obs.status == "provisional" and not reached_ready:
-                # process_stable: keep observing for delayed auth/trust.
+            elif (
+                (
+                    obs.status == "provisional"
+                    or (
+                        obs.status == "ready"
+                        and obs.evidence_code == EvidenceCode.TUI_IDLE_PROMPT.value
+                    )
+                )
+                and not reached_ready
+            ):
+                # process_stable or weak TUI idle: keep observing for delayed
+                # auth/trust through the post-stable window.
                 if provisional_since is None:
                     provisional_since = time.monotonic()
                     provisional_evidence = obs.evidence_code
