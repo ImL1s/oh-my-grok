@@ -84,6 +84,9 @@ from omg_cli.workers import (
     worktree_dir,
 )
 
+# Re-export for hermetic tests that monkeypatch scaling._list_pane_identities.
+from omg_cli.team.plane import _list_pane_identities as _list_pane_identities
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
