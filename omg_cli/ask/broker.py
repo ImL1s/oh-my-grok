@@ -24,11 +24,15 @@ from omg_cli.ask.providers import (
     build_provider_argv,
     default_prompt_mode,
     resolve_advisor_route,
+    validate_extra,
     write_prompt_temp,
 )
 
 DEFAULT_TIMEOUT: float = 600.0
 DEFAULT_MAX_BYTES: int = 512 * 1024
+
+# Ask providers that execute via ProviderAdapter.run (not legacy Popen argv).
+_ADAPTER_ASK_PROVIDERS = frozenset({"agy"})
 
 
 @dataclass
@@ -244,11 +248,15 @@ def run_ask(
     prompt_mode: str | None = None,
     skill: str = "omg-ask",
     requested_role: str | None = None,
+    output_format: str | None = None,
 ) -> AskResult:
     """User-invoked trusted broker. Sets OMG_ALLOW_EXTERNAL_CLI only in child env.
 
     Default ``prompt_mode`` is stdin (``OMG_ASK_STDIN=1``): prompt body is not
     placed in process argv. Parent ``os.environ`` never gains allow key.
+
+    ``agy`` routes through :meth:`ProviderAdapter.run` (#67-C); other providers
+    keep the legacy fixed-argv Popen path.
 
     Returns AskResult. Raises AskProviderError (usage), AskProviderMissing (binary).
     Does not set verified. Does not mutate parent os.environ for allow key.
@@ -282,6 +290,26 @@ def run_ask(
     mode = prompt_mode or default_prompt_mode()
     if mode not in ("stdin", "argv", "file"):
         raise AskProviderError(f"invalid prompt_mode {mode!r}")
+
+    # --- #67-C: agy → ProviderAdapter.run (no legacy argv builder) ---
+    if canon in _ADAPTER_ASK_PROVIDERS:
+        return _run_ask_agy_adapter(
+            prompt=prompt,
+            root_path=root_path,
+            cwd_path=cwd_path,
+            timeout=timeout,
+            max_bytes=max_bytes,
+            out=out,
+            run_id=run_id,
+            dry_run=dry_run,
+            model=model,
+            extra=extra,
+            write_json=write_json,
+            check_binary=bool(check_binary),
+            prompt_mode=mode,
+            route_payload=route_payload,
+            output_format=(output_format or "text"),
+        )
 
     prompt_file: Path | None = None
     if mode == "file":
@@ -512,6 +540,272 @@ def ask_exit_code(result: AskResult) -> int:
     if result.exit_code == 0:
         return 0
     return 1
+
+
+def _adapter_ask_exit_code(provider_result: Any) -> int:
+    """Map ProviderRunResult → AskResult.exit_code (ask contract)."""
+    # Timeout always → 4 (matches legacy broker / ask_exit_code).
+    if getattr(provider_result, "timed_out", False) or (
+        getattr(provider_result, "exit_class", "") == "timeout"
+    ):
+        return 4
+    if getattr(provider_result, "ok", False) and (
+        getattr(provider_result, "exit_class", "") == "success"
+    ):
+        return 0
+    # auth_blocked / parse_error / nonzero / cancelled → non-success ask exit.
+    # Prefer 1 over raw returncode so ask_exit_code stays stable (auth may be 0).
+    return 1
+
+
+def _run_ask_agy_adapter(
+    *,
+    prompt: str,
+    root_path: Path,
+    cwd_path: Path,
+    timeout: float | None,
+    max_bytes: int,
+    out: Path | str | None,
+    run_id: str | None,
+    dry_run: bool,
+    model: str | None,
+    extra: Sequence[str] | None,
+    write_json: bool,
+    check_binary: bool,
+    prompt_mode: str,
+    route_payload: dict[str, Any],
+    output_format: str,
+) -> AskResult:
+    """Route ``omg ask agy`` through :meth:`ProviderAdapter.run` (#67-C)."""
+    from omg_cli.providers.antigravity import (
+        build_run_argv,
+        get_adapter,
+    )
+    from omg_cli.providers.errors import ProviderBinaryMissing, ProviderRunError
+    from omg_cli.providers.models import ProviderRunRequest
+
+    # Freeform extras are not mapped onto the typed adapter request.
+    if extra:
+        validate_extra(extra)
+        raise AskProviderError(
+            "provider 'agy' does not accept --extra via ask; "
+            "use model= or omg provider antigravity run for advanced flags"
+        )
+
+    if output_format not in ("text", "json", "stream-json"):
+        raise AskProviderError(
+            f"invalid output_format {output_format!r}; "
+            "expected text|json|stream-json"
+        )
+
+    binary_path: str | None = None
+    if check_binary:
+        from omg_cli.providers.antigravity import discover_binary
+
+        try:
+            binary_path = discover_binary()
+        except ProviderBinaryMissing as exc:
+            raise AskProviderMissing(str(exc)) from exc
+
+    # Prefer prompt_file when ask mode=file; otherwise pass prompt text.
+    # Adapter places the resolved prompt after ``--`` (agy Go flag contract;
+    # no stdin feed). Legacy codex/claude stdin "prompt not in argv" is unchanged.
+    prompt_file: Path | None = None
+    req_prompt = prompt
+    req_prompt_file: str | None = None
+    if prompt_mode == "file":
+        prompt_file = write_prompt_temp(prompt, root=root_path)
+        req_prompt = ""
+        req_prompt_file = str(prompt_file)
+
+    # Dry-run argv preview (no exec). Use basename when binary unchecked.
+    preview_bin = binary_path or "agy"
+    try:
+        argv = build_run_argv(
+            preview_bin,
+            prompt,
+            output_format=output_format,  # type: ignore[arg-type]
+            model=model,
+        )
+    except ProviderRunError as exc:
+        raise AskProviderError(str(exc)) from exc
+
+    ts = _utc_ts_slug()
+    artifact = (
+        Path(out) if out is not None else default_artifact_path(root_path, "agy", ts)
+    )
+    meta_path = artifact.parent / (artifact.stem + ".meta.json") if write_json else None
+
+    parent_had_allow = os.environ.get("OMG_ALLOW_EXTERNAL_CLI")
+    # Same child env contract as legacy Popen ask: allow/broker markers only
+    # on the child request (never parent os.environ).
+    child_env = child_env_for_ask()
+
+    if dry_run:
+        child_keys = sorted(child_env.keys())
+        print("omg ask dry-run provider=agy")
+        print(f"argv: {json.dumps(argv, ensure_ascii=False)}")
+        print(f"prompt_mode: {prompt_mode}")
+        print(f"output_format: {output_format}")
+        print(f"out: {artifact}")
+        print(f"cwd: {cwd_path}")
+        print(f"child_env_keys: {json.dumps(child_keys)}")
+        print("note: agy routes via ProviderAdapter.run (not legacy Popen)")
+        write_ask_artifact(
+            artifact,
+            provider="agy",
+            prompt=prompt,
+            response="(dry-run: provider not executed)",
+            argv=argv,
+            cwd=cwd_path,
+            exit_code=0,
+            duration_s=0.0,
+            run_id=run_id,
+            truncated=False,
+            dry_run=True,
+            advisor_route=route_payload,
+        )
+        if meta_path is not None:
+            write_ask_meta(
+                meta_path,
+                provider="agy",
+                argv=argv,
+                cwd=cwd_path,
+                exit_code=0,
+                duration_s=0.0,
+                artifact=artifact,
+                run_id=run_id,
+                truncated=False,
+                bytes_captured=0,
+                dry_run=True,
+                advisor_route=route_payload,
+            )
+        if os.environ.get("OMG_ALLOW_EXTERNAL_CLI") != parent_had_allow:
+            if parent_had_allow is None:
+                os.environ.pop("OMG_ALLOW_EXTERNAL_CLI", None)
+            else:
+                os.environ["OMG_ALLOW_EXTERNAL_CLI"] = parent_had_allow
+        return AskResult(
+            provider="agy",
+            exit_code=0,
+            artifact=artifact,
+            meta=meta_path,
+            duration_s=0.0,
+            argv=argv,
+            truncated=False,
+            dry_run=True,
+            advisor_route=route_payload,
+        )
+
+    # Resolve timeout: None → DEFAULT; 0 → unlimited (adapter requires >0).
+    if timeout is None:
+        eff_timeout = float(DEFAULT_TIMEOUT)
+    elif timeout == 0 or timeout == 0.0:
+        # Adapter rejects non-positive timeout; use a large finite stand-in.
+        eff_timeout = 86400.0 * 365.0
+    else:
+        eff_timeout = float(timeout)
+
+    request = ProviderRunRequest(
+        prompt=req_prompt,
+        prompt_file=req_prompt_file,
+        cwd=str(cwd_path),
+        env=child_env,
+        timeout_s=eff_timeout,
+        output_format=output_format,  # type: ignore[arg-type]
+        model=model,
+        max_output_bytes=int(max_bytes),
+        binary=binary_path,
+    )
+
+    t0 = time.monotonic()
+    try:
+        provider_result = get_adapter().run(request)
+    except ProviderBinaryMissing as exc:
+        raise AskProviderMissing(str(exc)) from exc
+    except ProviderRunError as exc:
+        msg = str(exc)
+        low = msg.lower()
+        if "not found" in low or "missing" in low or "basename" in low:
+            raise AskProviderMissing(msg) from exc
+        raise AskProviderError(msg) from exc
+    duration_s = time.monotonic() - t0
+
+    if os.environ.get("OMG_ALLOW_EXTERNAL_CLI") != parent_had_allow:
+        if parent_had_allow is None:
+            os.environ.pop("OMG_ALLOW_EXTERNAL_CLI", None)
+        else:
+            os.environ["OMG_ALLOW_EXTERNAL_CLI"] = parent_had_allow
+
+    exit_code = _adapter_ask_exit_code(provider_result)
+    argv = list(provider_result.argv) if provider_result.argv else argv
+
+    # Prefer normalized adapter output (parsed json/stream-json text).
+    response = provider_result.output or ""
+    if provider_result.exit_class == "auth_blocked":
+        # Fail closed: never present auth block as success content alone.
+        banner = (provider_result.stderr or provider_result.stdout or "").strip()
+        note = "(broker: auth_blocked — headless login/permission prompt)"
+        response = f"{banner}\n\n{note}\n" if banner else f"{note}\n"
+    elif provider_result.timed_out:
+        response = (
+            response + "\n\n(broker: timed out; process group killed)\n"
+        ).lstrip()
+    elif provider_result.error_message and not provider_result.ok:
+        if not response.strip():
+            response = provider_result.error_message
+
+    # Truncate to ask max_bytes for artifact body (adapter may already cap).
+    raw_bytes = response.encode("utf-8", errors="replace")
+    response_text, truncated = _truncate(raw_bytes, int(max_bytes))
+    if provider_result.stdout_truncated or provider_result.partial_output:
+        truncated = True
+
+    write_ask_artifact(
+        artifact,
+        provider="agy",
+        prompt=prompt,
+        response=response_text,
+        argv=argv,
+        cwd=cwd_path,
+        exit_code=exit_code,
+        duration_s=duration_s,
+        run_id=run_id,
+        truncated=truncated,
+        dry_run=False,
+        advisor_route=route_payload,
+    )
+    if meta_path is not None:
+        write_ask_meta(
+            meta_path,
+            provider="agy",
+            argv=argv,
+            cwd=cwd_path,
+            exit_code=exit_code,
+            duration_s=duration_s,
+            artifact=artifact,
+            run_id=run_id,
+            truncated=truncated,
+            bytes_captured=len(raw_bytes),
+            dry_run=False,
+            advisor_route=route_payload,
+        )
+
+    if run_id:
+        _link_into_run(root_path, run_id, artifact, meta_path)
+
+    print(f"omg ask: provider=agy exit={exit_code} artifact={artifact}")
+    return AskResult(
+        provider="agy",
+        exit_code=exit_code,
+        artifact=artifact,
+        meta=meta_path,
+        duration_s=duration_s,
+        argv=argv,
+        truncated=truncated,
+        dry_run=False,
+        advisor_route=route_payload,
+    )
 
 
 def run_ask_cli(

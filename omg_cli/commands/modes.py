@@ -645,11 +645,11 @@ def register_modes_parsers(
     p_ask = sub.add_parser(
         "ask",
         parents=[common],
-        help="trusted user broker for external advisors (codex/claude/gemini)",
+        help="trusted user broker for external advisors (codex/claude/gemini/agy)",
     )
     p_ask.add_argument(
         "provider",
-        help="provider: codex | claude (fable) | gemini (optional)",
+        help="provider: codex | claude (fable) | gemini (optional) | agy (Antigravity adapter)",
     )
     p_ask.add_argument("prompt", nargs="*", help="prompt text")
     p_ask.add_argument(

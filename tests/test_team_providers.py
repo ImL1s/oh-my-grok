@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from omg_cli.ask.providers import AskProviderError, normalize_provider
+from omg_cli.ask.providers import normalize_provider
 from omg_cli.contracts.state_schemas import ContractValidationError
 from omg_cli.contracts.tracker_contract import make_role_receipt
 from omg_cli.team.providers import (
@@ -355,8 +355,9 @@ def test_model_optional_omitted() -> None:
 
 
 def test_ask_agy_no_longer_aliases_to_gemini() -> None:
-    with pytest.raises(AskProviderError, match="unknown provider"):
-        normalize_provider("agy")
+    # #67-C: agy is a first-class ask provider (ProviderAdapter), never gemini.
+    assert normalize_provider("agy") == "agy"
+    assert normalize_provider("agy") != "gemini"
 
 
 def test_ask_fable_still_aliases_to_claude() -> None:

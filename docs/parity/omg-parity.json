@@ -86,7 +86,7 @@
         "live": []
       },
       "issues": ["#67"],
-      "gap": "Probe + headless run surfaces (#67-A/B); ask/Team cutover deferred (#67-C/D)."
+      "gap": "Probe + headless run + ask cutover (#67-A/B/C); Team cutover deferred (#67-D)."
     },
     {
       "id": "jobs.durable_background",
@@ -830,7 +830,7 @@
         "live": []
       },
       "issues": ["#67", "#78"],
-      "gap": "#67-B landed ProviderAdapter.run + json/stream-json hermetic path; ask/Team still use argv builders (#67-C/D)."
+      "gap": "#67-C landed omg ask agy via ProviderAdapter.run; Team panes still use argv builders (#67-D)."
     },
     {
       "id": "antigravity.agents.markdown_custom",
@@ -984,7 +984,7 @@
       "status": "open",
       "issues": ["#67"],
       "capability_ids": ["antigravity.provider.adapter"],
-      "summary": "Probe+run landed (#67-A/B); ask/Team cutover still open (#67-C/D)"
+      "summary": "Probe+run+ask landed (#67-A/B/C); Team cutover still open (#67-D)"
     },
     {
       "id": "gap.jobs.durable",

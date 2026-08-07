@@ -820,13 +820,12 @@ def test_no_shell_in_version_probe(fake_agy_path: Path, monkeypatch: pytest.Monk
         assert all(isinstance(x, str) for x in argv)
 
 
-def test_ask_agy_still_fail_closed() -> None:
-    """#67-A must not cut over ask."""
-    from omg_cli.ask.providers import AskProviderError, normalize_provider
+def test_ask_agy_is_first_class_not_gemini_alias() -> None:
+    """#67-C: agy is a first-class ask provider; never silently maps to gemini."""
+    from omg_cli.ask.providers import normalize_provider
 
-    with pytest.raises(AskProviderError):
-        normalize_provider("agy")
-
+    assert normalize_provider("agy") == "agy"
+    assert normalize_provider("agy") != "gemini"
 
 def test_registry_lists_provider() -> None:
     from omg_cli.command_registry import KNOWN_SUBCOMMANDS

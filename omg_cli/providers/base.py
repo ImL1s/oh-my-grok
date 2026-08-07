@@ -1,7 +1,8 @@
-"""Provider adapter Protocol — probe + headless run (#67-A/B).
+"""Provider adapter Protocol — probe + headless run (#67-A/B/C).
 
-Ask / Team routing still lands in later slices; all future consumers must
-call :meth:`ProviderAdapter.run` rather than inventing parallel launchers.
+Ask routes ``agy`` through :meth:`ProviderAdapter.run` (#67-C). Team routing
+still lands in #67-D; all Antigravity launches must call this surface rather
+than inventing parallel launchers.
 """
 
 from __future__ import annotations
