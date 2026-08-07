@@ -13,23 +13,33 @@ from pathlib import Path
 from typing import Any
 
 from omg_cli.contracts.parity_schema import (
+    FROZEN_PINS,
+    HOST_BASELINE_GENERATED_RELATIVE,
+    HOST_BASELINE_PIN_ID,
+    HOST_BASELINE_SNAPSHOT_RELATIVE,
     SOURCE_STATUS_IDS,
     inventory_completion_claims_allowed,
     load_json_object,
     maturity_rank,
     max_runtime_maturity,
+    validate_host_baseline_snapshot,
     validate_parity_inventory,
 )
 from omg_cli.contracts.state_schemas import ContractValidationError
 from omg_cli.parity_refresh import (
+    build_host_baseline_refresh_plan,
     build_refresh_plan,
     canonical_changes_digest,
     committed_review_path,
+    generated_docs_content_hash,
+    host_snapshot_content_hash,
     validate_upstream_catalog,
 )
 
-# Required upstream catalogue seeds for --release (GROK_BUILD is a pin, not a snapshot).
+# Required upstream catalogue seeds for --release.
+# GROK_BUILD uses the independent host-baseline snapshot (not SOURCE_STATUS).
 REQUIRED_UPSTREAM_SNAPSHOT_SOURCES = tuple(SOURCE_STATUS_IDS)
+HOST_BASELINE_SNAPSHOT_FILENAME = "grok-build.json"
 
 _DOC_SCAN_RELATIVE = (
     "README.md",
@@ -445,6 +455,321 @@ def _git_show_inventory_if_present(
 
 
 _CATALOG_GIT_PATH_TMPL = "docs/parity/upstream-snapshots/{source}.json"
+_HOST_SNAPSHOT_GIT_PATH = HOST_BASELINE_SNAPSHOT_RELATIVE
+
+
+def _host_snapshot_path(repo_root: Path) -> Path:
+    return Path(repo_root) / HOST_BASELINE_SNAPSHOT_RELATIVE
+
+
+def _assert_regular_nonsymlink_file(repo_root: Path, relative: str, *, label: str) -> Path:
+    """Fail closed on missing / symlink / non-regular host baseline artifacts."""
+    root = Path(repo_root)
+    current = root
+    for part in relative.split("/"):
+        if not part or part == ".":
+            continue
+        current = current / part
+        try:
+            st = current.lstat()
+        except OSError as exc:
+            raise ContractValidationError(f"{label} missing: {relative}") from exc
+        if stat.S_ISLNK(st.st_mode):
+            raise ContractValidationError(f"{label} must not be a symlink: {relative}")
+    path = root / relative
+    try:
+        st = path.lstat()
+    except OSError as exc:
+        raise ContractValidationError(f"{label} missing: {relative}") from exc
+    if stat.S_ISLNK(st.st_mode):
+        raise ContractValidationError(f"{label} must not be a symlink: {relative}")
+    if not stat.S_ISREG(st.st_mode):
+        raise ContractValidationError(f"{label} must be a regular file: {relative}")
+    return path
+
+
+def load_host_baseline_snapshot(repo_root: Path) -> dict[str, Any]:
+    """Load + validate host-baseline snapshot; rejects symlinks / malformed JSON."""
+    path = _assert_regular_nonsymlink_file(
+        repo_root,
+        HOST_BASELINE_SNAPSHOT_RELATIVE,
+        label="host baseline snapshot",
+    )
+    try:
+        raw = load_json_object(path)
+    except ContractValidationError as exc:
+        raise ContractValidationError(
+            f"malformed host baseline snapshot {HOST_BASELINE_SNAPSHOT_RELATIVE}: {exc}"
+        ) from exc
+    try:
+        return validate_host_baseline_snapshot(raw)
+    except ContractValidationError as exc:
+        raise ContractValidationError(
+            f"invalid host baseline snapshot schema: {exc}"
+        ) from exc
+
+
+def assert_host_baseline_matches_inventory(
+    *,
+    inventory: Mapping[str, Any],
+    host_snapshot: Mapping[str, Any],
+) -> None:
+    """Bind host snapshot public_commit to inventory + FROZEN_PINS."""
+    pins = inventory.get("upstream_pins")
+    if not isinstance(pins, dict) or HOST_BASELINE_PIN_ID not in pins:
+        raise ContractValidationError(
+            f"inventory missing upstream_pins.{HOST_BASELINE_PIN_ID}"
+        )
+    entry = pins[HOST_BASELINE_PIN_ID]
+    if not isinstance(entry, dict):
+        raise ContractValidationError(
+            f"upstream_pins[{HOST_BASELINE_PIN_ID!r}] must be an object"
+        )
+    revision = entry.get("revision")
+    if not isinstance(revision, str):
+        raise ContractValidationError(
+            f"upstream_pins[{HOST_BASELINE_PIN_ID!r}].revision must be a string"
+        )
+    public_commit = host_snapshot.get("public_commit")
+    if public_commit != revision:
+        raise ContractValidationError(
+            f"stale host baseline snapshot: public_commit {public_commit!r} != "
+            f"inventory upstream_pins[{HOST_BASELINE_PIN_ID!r}].revision {revision!r}"
+        )
+    frozen = FROZEN_PINS.get(HOST_BASELINE_PIN_ID)
+    if frozen != revision:
+        raise ContractValidationError(
+            f"FROZEN_PINS[{HOST_BASELINE_PIN_ID!r}] {frozen!r} != "
+            f"inventory upstream_pins revision {revision!r}"
+        )
+
+
+def assert_host_generated_docs_consistent(
+    *,
+    repo_root: Path,
+    host_snapshot: Mapping[str, Any],
+) -> str:
+    """Ensure generated host docs exist, are non-symlink, and hash is computable."""
+    generated = host_snapshot.get("generated")
+    if not isinstance(generated, dict):
+        raise ContractValidationError("host snapshot missing generated docs list")
+    docs = generated.get("docs")
+    if not isinstance(docs, list) or not docs:
+        raise ContractValidationError("host snapshot generated.docs must be non-empty")
+    rel_docs = [str(item) for item in docs]
+    expected = list(HOST_BASELINE_GENERATED_RELATIVE)
+    if sorted(rel_docs) != sorted(expected):
+        raise ContractValidationError(
+            "host snapshot generated.docs must be exactly "
+            + ",".join(expected)
+            + f" (got {rel_docs})"
+        )
+    for relative in rel_docs:
+        _assert_regular_nonsymlink_file(
+            repo_root, relative, label="generated host baseline doc"
+        )
+    return generated_docs_content_hash(repo_root, rel_docs)
+
+
+def _git_show_host_snapshot_if_present(
+    repo_root: Path, git_ref: str
+) -> dict[str, Any] | None:
+    object_spec = f"{git_ref}:{_HOST_SNAPSHOT_GIT_PATH}"
+    proc = _run_git(repo_root, "show", object_spec, label=f"show {object_spec}")
+    if proc.returncode != 0:
+        return None
+    text = proc.stdout
+    if not text.strip():
+        raise ContractValidationError(f"empty host snapshot blob at {object_spec}")
+    try:
+        return validate_host_baseline_snapshot(json_loads_object(text))
+    except (ContractValidationError, ValueError) as exc:
+        raise ContractValidationError(
+            f"invalid host snapshot JSON at {object_spec}: {exc}"
+        ) from exc
+
+
+def _git_show_host_snapshot_strict(repo_root: Path, git_ref: str) -> dict[str, Any]:
+    loaded = _git_show_host_snapshot_if_present(repo_root, git_ref)
+    if loaded is None:
+        raise ContractValidationError(
+            f"missing host baseline snapshot at {git_ref}:{_HOST_SNAPSHOT_GIT_PATH}"
+        )
+    return loaded
+
+
+def _require_host_pin_transition_review(
+    *,
+    root: Path,
+    from_inventory: dict[str, Any],
+    to_inventory: dict[str, Any],
+    to_ref: str | None,
+    host_snapshot_fallback: Mapping[str, Any] | None,
+    missing: list[str],
+) -> None:
+    from_revision = _pin_revision(from_inventory, HOST_BASELINE_PIN_ID)
+    to_revision = _pin_revision(to_inventory, HOST_BASELINE_PIN_ID)
+    if from_revision == to_revision:
+        return
+    previous: dict[str, Any] | None = None
+    if to_ref:
+        snapshot = _git_show_host_snapshot_strict(root, to_ref)
+        parent_proc = _run_git(
+            root, "rev-parse", f"{to_ref}^", label=f"rev-parse {to_ref}^"
+        )
+        if parent_proc.returncode == 0:
+            previous = _git_show_host_snapshot_if_present(
+                root, parent_proc.stdout.strip()
+            )
+    else:
+        if host_snapshot_fallback is None:
+            raise ContractValidationError(
+                "missing host baseline snapshot for GROK_BUILD pin transition"
+            )
+        snapshot = validate_host_baseline_snapshot(dict(host_snapshot_fallback))
+    if snapshot["public_commit"] != to_revision:
+        raise ContractValidationError(
+            f"stale host baseline snapshot at pin transition: "
+            f"public_commit {snapshot['public_commit']!r} != to_revision {to_revision!r}"
+        )
+    docs_hash = ""
+    docs_required = to_ref is None
+    if docs_required:
+        docs_hash = assert_host_generated_docs_consistent(
+            repo_root=root, host_snapshot=snapshot
+        )
+    else:
+        try:
+            docs_hash = assert_host_generated_docs_consistent(
+                repo_root=root, host_snapshot=snapshot
+            )
+        except ContractValidationError:
+            docs_hash = ""
+    plan = build_host_baseline_refresh_plan(
+        from_revision=from_revision,
+        to_revision=to_revision,
+        host_snapshot=snapshot,
+        previous_snapshot=previous,
+        snapshot_hash=host_snapshot_content_hash(snapshot),
+        generated_docs_hash=docs_hash,
+    )
+    digest = canonical_changes_digest(
+        [c for c in plan.get("changes", []) if isinstance(c, dict)]
+    )
+    path = committed_review_path(
+        root,
+        source=HOST_BASELINE_PIN_ID,
+        from_revision=from_revision,
+        to_revision=to_revision,
+        change_digest=digest,
+    )
+    try:
+        path.lstat()
+    except OSError:
+        try:
+            missing.append(_lexical_repo_relative(root, path))
+        except ContractValidationError:
+            missing.append(str(path))
+        return
+    _assert_review_blob_committed(root, path)
+    review = load_json_object(path)
+    if not _review_binds_drift_context(
+        review,
+        source=HOST_BASELINE_PIN_ID,
+        from_revision=from_revision,
+        to_revision=to_revision,
+    ):
+        raise ContractValidationError(
+            f"committed host baseline review context mismatch: {path.name}"
+        )
+    review_digest = review.get("change_digest")
+    if review_digest != digest:
+        raise ContractValidationError(
+            f"committed host baseline review change_digest mismatch: "
+            f"expected {digest}, got {review_digest!r}"
+        )
+    host_meta = review.get("host_baseline")
+    if not isinstance(host_meta, dict):
+        raise ContractValidationError(
+            f"committed host baseline review missing host_baseline block: {path.name}"
+        )
+    if host_meta.get("snapshot_hash") != plan["host_baseline"]["snapshot_hash"]:
+        raise ContractValidationError(
+            "committed host baseline review snapshot_hash mismatch"
+        )
+    if host_meta.get("reviewed_pin") != to_revision:
+        raise ContractValidationError(
+            "committed host baseline review reviewed_pin mismatch"
+        )
+    review_docs_hash = host_meta.get("generated_docs_hash")
+    if docs_required:
+        if review_docs_hash != docs_hash:
+            raise ContractValidationError(
+                "committed host baseline review generated_docs_hash mismatch"
+            )
+    elif docs_hash and review_docs_hash not in (None, "", docs_hash):
+        raise ContractValidationError(
+            "committed host baseline review generated_docs_hash mismatch"
+        )
+    for change in plan.get("changes", []):
+        if not isinstance(change, dict):
+            continue
+        if change.get("change_kind") not in _DRIFT_CHANGE_KINDS:
+            continue
+        if not _is_change_acknowledged(
+            change,
+            review,
+            source=HOST_BASELINE_PIN_ID,
+            from_revision=from_revision,
+            to_revision=to_revision,
+        ):
+            raise ContractValidationError(
+                f"committed host baseline review missing acknowledgment for {change}"
+            )
+
+
+def assert_host_baseline_gate(
+    *,
+    inventory: dict[str, Any],
+    repo_root: Path,
+    base_inventory: dict[str, Any] | None = None,
+    base_ref: str | None = None,
+) -> dict[str, Any]:
+    """Fail-closed host-baseline presence, freshness, and pin-transition review."""
+    root = Path(repo_root)
+    snapshot = load_host_baseline_snapshot(root)
+    assert_host_baseline_matches_inventory(inventory=inventory, host_snapshot=snapshot)
+    docs_hash = assert_host_generated_docs_consistent(
+        repo_root=root, host_snapshot=snapshot
+    )
+    missing: list[str] = []
+    if base_inventory is not None:
+        for from_inventory, to_inventory, to_ref in _iter_pin_transition_pairs(
+            repo_root=root,
+            base_inventory=base_inventory,
+            candidate_inventory=inventory,
+            base_ref=base_ref,
+        ):
+            _require_host_pin_transition_review(
+                root=root,
+                from_inventory=from_inventory,
+                to_inventory=to_inventory,
+                to_ref=to_ref,
+                host_snapshot_fallback=snapshot,
+                missing=missing,
+            )
+    if missing:
+        raise ContractValidationError(
+            "GROK_BUILD pin transition missing committed host baseline review(s): "
+            + ", ".join(missing)
+        )
+    return {
+        "ok": True,
+        "public_commit": snapshot["public_commit"],
+        "release": snapshot["release"],
+        "generated_docs_hash": docs_hash,
+        "capability_count": len(snapshot["capabilities"]),
+    }
 
 
 def _git_show_catalog_strict(
@@ -1071,6 +1396,13 @@ def check_parity_release_claims(
         base_ref=resolved_ref,
     )
 
+    host_baseline = assert_host_baseline_gate(
+        inventory=inventory,
+        repo_root=root,
+        base_inventory=base_payload,
+        base_ref=resolved_ref,
+    )
+
     try:
         relative = path.resolve().relative_to(root.resolve()).as_posix()
     except ValueError:
@@ -1084,5 +1416,7 @@ def check_parity_release_claims(
         "upstream_drift_checked": True,
         "upstream_drift_resolved": True,
         "pin_transitions_reviewed": True,
+        "host_baseline_checked": True,
+        "host_baseline": host_baseline,
         "inventory_path": relative,
     }

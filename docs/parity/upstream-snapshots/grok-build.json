@@ -1,0 +1,783 @@
+{
+  "store_kind": "host_baseline_snapshot",
+  "schema_version": 1,
+  "host_id": "GROK_BUILD",
+  "repository": "https://github.com/xai-org/grok-build",
+  "public_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+  "source_revision": "4d6d11372ab8f73026a78c45a7b7e7b1310eb39f",
+  "release": "0.2.121",
+  "observed_version": "0.2.121",
+  "platform": "catalogued-from-public-release-notes (darwin/linux live probe deferred)",
+  "capabilities": [
+    {
+      "id": "grok.dashboard.previous_turn_summary",
+      "category": "dashboard",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Dashboard rows show a short previous-turn summary",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host TUI dashboard summary; do not clone in OMG."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.extensions.grouped_skills",
+      "category": "extensions",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Extensions modal grouping, alphabetical ordering, and collapsible Skills sections",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host Extensions/Skills UI ownership."
+      },
+      "downstream_issues": [
+        "#70"
+      ]
+    },
+    {
+      "id": "grok.feedback.report_box",
+      "category": "feedback",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "/feedback dedicated report box and composer-mode preservation",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host feedback UX only."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.tools.voice_finance_icons",
+      "category": "tools",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Voice/Finance tool-card icons and localized labels",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host tool-card chrome."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.tmux.auto_theme",
+      "category": "tmux",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Automatic theme detection over SSH and inside tmux",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host terminal theme detection; not OMG topology."
+      },
+      "downstream_issues": [
+        "#95",
+        "#104"
+      ]
+    },
+    {
+      "id": "grok.tui.narrow_table_reflow",
+      "category": "terminal",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Narrow-pane Markdown table in-cell reflow",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host Markdown table reflow."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.permissions.full_script_expandable",
+      "category": "permissions",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Full-script permission display and Ctrl-F expansion for long Bash commands",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host permission card UX."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.dashboard.shortcut_cleanup",
+      "category": "dashboard",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Dashboard single-agent shortcut cleanup, /new navigation, exit/quit, and /delete return behavior",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host dashboard navigation shortcuts."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.tui.pinned_header_mouse",
+      "category": "terminal",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Pinned-header mouse selection",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host TUI mouse selection."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.tui.blocking_card_tab_esc",
+      "category": "terminal",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Consistent Tab/Esc behavior on blocking cards",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host blocking-card keybindings."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.tui.cjk_selection_edge",
+      "category": "terminal",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "CJK selection-edge correctness",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host CJK selection edge fixes."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.tui.wrapped_diff_highlight",
+      "category": "terminal",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Wrapped diff syntax highlighting",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host wrapped diff highlighting."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.tui.wrapped_btw_errors",
+      "category": "terminal",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Wrapped /btw errors",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host /btw error wrapping."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.slash.menu_enter_behavior",
+      "category": "slash",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Slash-command menu Enter behavior and dashboard-only command guidance",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host slash menu UX."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.tui.clean_api_error_banners",
+      "category": "terminal",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Clean API-error banners",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host API error presentation."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.tui.minimal_mode_reset",
+      "category": "terminal",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Minimal-mode terminal reset",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host minimal-mode terminal reset."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.tui.mode_indication_after_resume",
+      "category": "terminal",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Actual plan/agent/ask mode indication after resume/transitions",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host mode indicator honesty after resume."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.dashboard.auto_recap_idle_only",
+      "category": "dashboard",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Auto-recap placement while idle only",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host idle-only auto-recap placement."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.session.acp_resume_no_replay",
+      "category": "session",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "ACP session/resume attaches without transcript replay",
+      "evidence": {
+        "source_commit": "ed6d543643628663873c5de28298e022ed634238",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "session/resume is no-replay attach; not code restore."
+      },
+      "downstream_issues": [
+        "#103",
+        "#74"
+      ]
+    },
+    {
+      "id": "grok.session.acp_close",
+      "category": "session",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "ACP clients can explicitly close sessions via session/close",
+      "evidence": {
+        "source_commit": "ed6d543643628663873c5de28298e022ed634238",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Explicit session lifecycle close."
+      },
+      "downstream_issues": [
+        "#103",
+        "#74"
+      ]
+    },
+    {
+      "id": "grok.session.child_restore_registration",
+      "category": "session",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Restored child sessions are registered so resume after remote-parent restore does not 404",
+      "evidence": {
+        "source_commit": "ed6d543643628663873c5de28298e022ed634238",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Child session registration on restore."
+      },
+      "downstream_issues": [
+        "#103",
+        "#74"
+      ]
+    },
+    {
+      "id": "grok.session.restore_code_explicit",
+      "category": "session",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Remote resume restores conversation only unless code restoration is explicitly requested; session/load may restore code",
+      "evidence": {
+        "source_commit": "ed6d543643628663873c5de28298e022ed634238",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Conversation resume != code restore."
+      },
+      "downstream_issues": [
+        "#103",
+        "#74"
+      ]
+    },
+    {
+      "id": "grok.session.uuid_cross_directory_search",
+      "category": "session",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Resume search finds a session UUID across directories",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Cross-directory UUID resume search."
+      },
+      "downstream_issues": [
+        "#74"
+      ]
+    },
+    {
+      "id": "grok.session.codebase_restore_no_hang",
+      "category": "session",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Codebase restore no longer hangs on large or shallow repositories",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host restore hang fix."
+      },
+      "downstream_issues": [
+        "#74"
+      ]
+    },
+    {
+      "id": "grok.session.plan_mode_after_resume",
+      "category": "session",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Plan-mode state and controls remain usable/correct after resume",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Plan mode survives resume."
+      },
+      "downstream_issues": [
+        "#74"
+      ]
+    },
+    {
+      "id": "grok.subagent.parent_continue_reminder",
+      "category": "subagent",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "After a background subagent starts, the parent is reminded to continue its original work",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Parent-continue reminder; does not replace OMG jobs."
+      },
+      "downstream_issues": [
+        "#68",
+        "#69"
+      ]
+    },
+    {
+      "id": "grok.subagent.cancel_no_restart",
+      "category": "subagent",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Esc/stop prevents cancelled background work from restarting the model",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Cancel must not restart model turn."
+      },
+      "downstream_issues": [
+        "#68",
+        "#69"
+      ]
+    },
+    {
+      "id": "grok.workflow.parallel_child_cap",
+      "category": "workflow",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Live workflow parallel() fan-out is capped instead of launching hundreds of children",
+      "evidence": {
+        "source_commit": "ed6d543643628663873c5de28298e022ed634238",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host parallel child cap; OMG still owns admission."
+      },
+      "downstream_issues": [
+        "#68",
+        "#69"
+      ]
+    },
+    {
+      "id": "grok.prompt_queue.lossless_ordered",
+      "category": "queue",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Rapid send-now and messages queued while waiting on subagents preserve earlier entries",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Lossless ordered queue under wait."
+      },
+      "downstream_issues": [
+        "#68",
+        "#69"
+      ]
+    },
+    {
+      "id": "grok.prompt_queue.visible_while_waiting",
+      "category": "queue",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Plain queued prompts remain visible/reachable while waiting",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Queue visibility while waiting on subagents."
+      },
+      "downstream_issues": [
+        "#68",
+        "#69"
+      ]
+    },
+    {
+      "id": "grok.prompt_queue.reorderable",
+      "category": "queue",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Queued prompts, slash commands, and images can be reordered",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host queue reorder UX/contract."
+      },
+      "downstream_issues": [
+        "#68",
+        "#69"
+      ]
+    },
+    {
+      "id": "grok.dashboard.auto_recap_no_interleave",
+      "category": "dashboard",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Auto recaps do not interleave with a busy/new turn",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Recap must not interleave busy turns."
+      },
+      "downstream_issues": [
+        "#68"
+      ]
+    },
+    {
+      "id": "grok.mcp.image_before_truncation",
+      "category": "mcp",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "MCP image outputs are extracted before large-output truncation",
+      "evidence": {
+        "source_commit": "ed6d543643628663873c5de28298e022ed634238",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Preserve image descriptors before truncation."
+      },
+      "downstream_issues": [
+        "#73",
+        "#75"
+      ]
+    },
+    {
+      "id": "grok.mcp.disabled_servers_visible",
+      "category": "mcp",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Disabled-but-re-enableable MCP servers remain visible",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host MCP server list visibility."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.workspace.default_branch_without_origin_head",
+      "category": "workspace",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Hand-initialized repos without origin/HEAD get correct default-branch detection",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Default branch probing without origin/HEAD."
+      },
+      "downstream_issues": [
+        "#77"
+      ]
+    },
+    {
+      "id": "grok.auth.invalid_key_no_skip_login",
+      "category": "auth",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Invalid first-party API keys no longer skip login",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Invalid key remains auth failure."
+      },
+      "downstream_issues": [
+        "#77"
+      ]
+    },
+    {
+      "id": "grok.reliability.server_5xx_retry",
+      "category": "reliability",
+      "classification": "host_owned",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "More server/Cloudflare 5xx failures are retried",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Host HTTP 5xx retry policy."
+      },
+      "downstream_issues": []
+    },
+    {
+      "id": "grok.workspace.non_project_no_picker",
+      "category": "workspace",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Non-project/home-directory launch no longer asks for a project directory",
+      "evidence": {
+        "source_commit": "e5478eff1e4050558e12e1328b85e6616632efb6",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Hardened non-project startup; no directory picker."
+      },
+      "downstream_issues": [
+        "#77"
+      ]
+    },
+    {
+      "id": "grok.release.public_sync_a5589e9",
+      "category": "reliability",
+      "classification": "irrelevant",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Public sync commit packaging for v0.2.121 release line",
+      "evidence": {
+        "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Release packaging meta; no OMG product action beyond pin."
+      },
+      "downstream_issues": []
+    }
+  ],
+  "review": {
+    "status": "catalogued",
+    "reviewed_pin": "a5589e958437d79e13db026eedcb1720bffd4063",
+    "notes": "PR1 host-baseline catalogue for v0.2.121; no live_verified promotion."
+  },
+  "generated": {
+    "docs": [
+      "docs/parity/generated/host-baseline.md",
+      "docs/parity/generated/host-capability-matrix.md"
+    ]
+  },
+  "issues": [
+    "#105",
+    "#78"
+  ],
+  "maturity_floor": "catalogued"
+}
