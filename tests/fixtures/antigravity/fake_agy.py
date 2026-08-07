@@ -68,12 +68,13 @@ def _float_env(name: str, default: float = 0.0) -> float:
 def _flag_value(args: list[str], *names: str) -> str | None:
     """Return the argv value following the first matching flag name.
 
-    Stops at the first non-flag positional (Go semantics: flags after the
-    prompt positional are ignored / invalid for our contract).
+    Stops at end-of-options ``--`` or the first non-flag positional.
     """
     i = 0
     while i < len(args):
         tok = args[i]
+        if tok == "--":
+            break
         if not tok.startswith("-"):
             break
         if tok in names and i + 1 < len(args):
@@ -105,6 +106,8 @@ def _flag_value(args: list[str], *names: str) -> str | None:
 
 def _has_flag(args: list[str], *names: str) -> bool:
     for tok in args:
+        if tok == "--":
+            break
         if not tok.startswith("-"):
             break
         if tok in names or any(tok.startswith(n + "=") for n in names):
@@ -113,18 +116,34 @@ def _has_flag(args: list[str], *names: str) -> bool:
 
 
 def _prompt_positional(args: list[str]) -> str | None:
-    """Return the trailing prompt positional; enforce flags-before-prompt."""
+    """Return the prompt after ``--`` (preferred) or the trailing positional.
+
+    Enforces flags-before-prompt / end-of-options: after ``--``, the next
+    token is the prompt even when it starts with ``-``.
+    """
     i = 0
     while i < len(args):
         tok = args[i]
+        if tok == "--":
+            if i + 1 >= len(args):
+                sys.stderr.write("fake_agy: missing prompt after end-of-options '--'\n")
+                return None
+            prompt = args[i + 1]
+            if len(args) != i + 2:
+                extra = args[i + 2 :]
+                sys.stderr.write(
+                    f"fake_agy: extra args after prompt {extra!r} "
+                    f"(only one positional after '--')\n"
+                )
+                return None
+            return prompt
         if not tok.startswith("-"):
             prompt = tok
-            # Any later --flag is a contract violation (Go would ignore it).
             for later in args[i + 1 :]:
                 if later.startswith("-"):
                     sys.stderr.write(
                         f"fake_agy: flag {later!r} after prompt positional "
-                        f"(flags must precede prompt)\n"
+                        f"(flags must precede prompt; use '--' for dash prompts)\n"
                     )
                     return None
             return prompt
@@ -145,6 +164,7 @@ def _prompt_positional(args: list[str]) -> str | None:
             continue
         # --print / -p / --prompt are boolean mode flags (prompt is positional).
         i += 1
+    sys.stderr.write("fake_agy: missing prompt positional after flags\n")
     return None
 
 

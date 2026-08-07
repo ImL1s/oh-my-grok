@@ -377,7 +377,7 @@ def test_argv_injection_stays_single_element(fake_agy_path: Path) -> None:
 
 
 def test_flags_before_prompt_positional(fake_agy_path: Path) -> None:
-    """Go flag semantics: no --flag may appear after the prompt positional."""
+    """Go flag semantics: flags before ``--``; prompt is the sole token after."""
     from omg_cli.providers.antigravity import (
         assert_flags_before_prompt,
         build_run_argv,
@@ -395,10 +395,9 @@ def test_flags_before_prompt_positional(fake_agy_path: Path) -> None:
         mode="plan",
         resume_id="conv-9",
     )
-    # All flags precede the trailing prompt.
-    assert argv[-1] == "prompt-text"
+    assert argv[-2:] == ["--", "prompt-text"]
     assert_flags_before_prompt(argv, "prompt-text")
-    prompt_idx = len(argv) - 1
+    ddash = argv.index("--")
     for flag in (
         "--print",
         "--output-format",
@@ -408,10 +407,10 @@ def test_flags_before_prompt_positional(fake_agy_path: Path) -> None:
         "--conversation",
     ):
         assert flag in argv
-        assert argv.index(flag) < prompt_idx
-    # Negative: flag after prompt must fail the guard.
+        assert argv.index(flag) < ddash
+    # Negative: flag after prompt (no end-of-options) must fail the guard.
     bad = [str(fake_agy_path), "--print", "prompt-text", "--output-format", "json"]
-    with pytest.raises(ProviderRunError, match="final argv positional|after prompt"):
+    with pytest.raises(ProviderRunError, match="end-of-options|final argv positional"):
         assert_flags_before_prompt(bad, "prompt-text")
 
     result = run(
@@ -423,10 +422,30 @@ def test_flags_before_prompt_positional(fake_agy_path: Path) -> None:
         )
     )
     assert result.ok
-    assert result.argv[-1] == "prompt-text"
+    assert result.argv[-2:] == ("--", "prompt-text")
     assert "--output-format" in result.argv
-    assert result.argv.index("--output-format") < len(result.argv) - 1
-    assert result.argv.index("--output-format") < result.argv.index(result.argv[-1])
+    assert result.argv.index("--output-format") < result.argv.index("--")
+
+
+def test_leading_dash_prompt_via_end_of_options(fake_agy_path: Path) -> None:
+    """Prompts starting with ``-`` must not be parsed as flags (``--`` guard)."""
+    from omg_cli.providers.antigravity import assert_flags_before_prompt, build_run_argv, run
+    from omg_cli.providers.models import ProviderRunRequest
+
+    for prompt in (
+        "--help",
+        "--dangerously-skip-permissions",
+        "-p",
+        "--output-format",
+    ):
+        argv = build_run_argv(str(fake_agy_path), prompt, output_format="text")
+        assert argv[-2:] == ["--", prompt]
+        assert_flags_before_prompt(argv, prompt)
+        result = run(ProviderRunRequest(prompt=prompt, timeout_s=5.0))
+        assert result.ok, (prompt, result.exit_class, result.error_message)
+        assert prompt in result.output
+        assert result.argv[-1] == prompt
+        assert result.argv[-2] == "--"
 
 
 def test_cjk_prompt_preserved(fake_agy_path: Path) -> None:
@@ -663,6 +682,44 @@ def test_auth_prompt_in_stdout_json_exit0(
     assert result.returncode == 0
     assert not result.ok
     assert result.exit_class == "auth_blocked"
+
+
+def test_prose_mentioning_login_is_not_auth_blocked(
+    fake_agy_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Normal answers that merely mention login must not false-block."""
+    from omg_cli.providers.antigravity import run
+    from omg_cli.providers.models import ProviderRunRequest
+
+    prose = (
+        "To reset banking credentials, please log in to the portal and "
+        "authenticate with MFA — this is instructional prose.\n"
+    )
+    monkeypatch.setenv("FAKE_AGY_RUN_STDOUT", prose)
+    monkeypatch.setenv("FAKE_AGY_RUN_RC", "0")
+    text_result = run(ProviderRunRequest(prompt="prose", timeout_s=5.0))
+    assert text_result.ok
+    assert text_result.exit_class == "success"
+    assert "please log in" in text_result.output.lower()
+
+    import json as _json
+
+    payload = _json.dumps(
+        {
+            "type": "result",
+            "result": "Users should please log in before changing passwords.",
+            "session_id": "sess-prose",
+            "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+        },
+        ensure_ascii=False,
+    )
+    monkeypatch.setenv("FAKE_AGY_RUN_STDOUT", payload + "\n")
+    json_result = run(
+        ProviderRunRequest(prompt="prose-json", output_format="json", timeout_s=5.0)
+    )
+    assert json_result.ok
+    assert json_result.exit_class == "success"
+    assert "please log in" in json_result.output.lower()
 
 
 def test_prompt_file(

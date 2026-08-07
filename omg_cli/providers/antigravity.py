@@ -644,9 +644,15 @@ def doctor(*, strict: bool = False, binary: str | None = None) -> DoctorReport:
 
 
 _OUTPUT_FORMATS: Final[frozenset[str]] = frozenset({"text", "json", "stream-json"})
-_AUTH_HINT_RE = re.compile(
-    r"(sign[\s-]?in|log[\s-]?in|authenticate|authorization required|"
-    r"auth required|please login)",
+# Standalone CLI auth/login *banner* lines — not prose that merely mentions login.
+_AUTH_BANNER_LINE_RE = re.compile(
+    r"^(?:"
+    r"please\s+(?:sign|log)[\s-]?in(?:\s+to\s+continue)?(?:\s*\([^)]*\))?"
+    r"|(?:sign|log)[\s-]?in\s+to\s+continue(?:\s*\([^)]*\))?"
+    r"|authentication(?:\s+is)?\s+required(?:\s*\([^)]*\))?"
+    r"|auth(?:entication)?\s+required(?:\s*\([^)]*\))?"
+    r"|please\s+login(?:\s+to\s+continue)?(?:\s*\([^)]*\))?"
+    r")\.?$",
     re.IGNORECASE,
 )
 
@@ -688,8 +694,10 @@ def build_run_argv(
 ) -> list[str]:
     """Assemble headless ``agy`` argv (list only; never a shell string).
 
-    Go flag semantics: once the first positional (prompt) appears, later
-    ``--flags`` are ignored. Therefore **every** flag must precede the prompt.
+    Go flag semantics: flags after the first positional are ignored, and a
+    prompt that itself starts with ``-`` would be parsed as a flag. Therefore
+    every flag precedes ``--``, and the prompt is the sole token after
+    end-of-options: ``agy --print [flags...] -- <prompt>``.
 
     Least-permissive by default: no ``--dangerously-skip-permissions``.
     ``session_id`` is execution metadata and is not injected into argv;
@@ -697,8 +705,6 @@ def build_run_argv(
     """
     if output_format not in _OUTPUT_FORMATS:
         raise ProviderRunError(f"unsupported output_format: {output_format!r}")
-    # Flags first; prompt is the sole trailing positional (one argv element —
-    # shell metacharacters / CJK stay literal).
     argv: list[str] = [binary, "--print"]
     if output_format != "text":
         argv.extend(["--output-format", output_format])
@@ -710,31 +716,44 @@ def build_run_argv(
         argv.extend(["--mode", mode])
     if resume_id:
         argv.extend(["--conversation", resume_id])
-    argv.append(prompt)
+    # End-of-options so leading-dash prompts cannot be parsed as flags.
+    argv.extend(["--", prompt])
     return argv
 
 
 def assert_flags_before_prompt(argv: Sequence[str], prompt: str) -> None:
-    """Fail closed if any ``--flag`` (or ``-x``) appears after the prompt positional.
+    """Require ``… -- <prompt>`` with no flags after end-of-options.
 
-    The prompt is the trailing positional (last matching token). Go flag
-    semantics ignore flags after the first positional — this guard keeps our
-    argv contract honest in hermetic tests and before spawn.
+    The prompt is the final argv token and must be immediately preceded by
+    ``--``. This keeps Go flag parsing from treating ``--help``-shaped prompts
+    as options and rejects flags after the first positional.
     """
-    positions = [i for i, tok in enumerate(argv) if tok == prompt]
-    if not positions:
-        raise ProviderRunError("prompt missing from argv")
-    idx = positions[-1]
-    if idx != len(argv) - 1:
+    if len(argv) < 3:
+        raise ProviderRunError("argv too short for --print … -- <prompt>")
+    if argv[-1] != prompt:
         raise ProviderRunError(
             "prompt must be the final argv positional "
-            f"(tail={list(argv[idx:])!r})"
+            f"(tail={list(argv[-3:])!r})"
         )
-    # Vacuous when prompt is last; still scan for clarity / future edits.
-    for tok in argv[idx + 1 :]:
+    if argv[-2] != "--":
+        raise ProviderRunError(
+            "expected end-of-options '--' immediately before prompt "
+            f"(tail={list(argv[-3:])!r})"
+        )
+    # Nothing may appear after the prompt; nothing but the prompt after '--'.
+    try:
+        ddash = list(argv).index("--")
+    except ValueError as exc:
+        raise ProviderRunError("missing end-of-options '--' before prompt") from exc
+    if ddash != len(argv) - 2:
+        raise ProviderRunError(
+            "only the prompt may follow end-of-options '--' "
+            f"(after={list(argv[ddash + 1 :])!r})"
+        )
+    for tok in argv[ddash + 1 : -1]:
         if tok.startswith("-"):
             raise ProviderRunError(
-                f"flag {tok!r} appears after prompt positional (Go flag order)"
+                f"flag {tok!r} appears after end-of-options (Go flag order)"
             )
 
 
@@ -891,11 +910,34 @@ def parse_stream_json(
     return output, tuple(events), usage, meta, had_malformed
 
 
-def _looks_auth_blocked(stdout: str, stderr: str, returncode: int = 0) -> bool:
-    """True when auth/login prompts appear — including exit 0 false-greens."""
-    del returncode  # auth cues are content-based; exit code must not clear them
-    blob = f"{stdout}\n{stderr}"
-    return bool(_AUTH_HINT_RE.search(blob))
+def _line_is_auth_banner(line: str) -> bool:
+    return bool(_AUTH_BANNER_LINE_RE.match((line or "").strip()))
+
+
+def _looks_auth_blocked(
+    stdout: str,
+    stderr: str,
+    *,
+    has_valid_structured_result: bool = False,
+    returncode: int = 0,
+) -> bool:
+    """True for CLI auth/login *banners*, not prose that mentions signing in.
+
+    Prefer stderr banners (typical CLI auth path). Stdout banners only count
+    when there is no valid structured result — so a successful json/text answer
+    that says "please log in to your bank" is not false-blocked.
+    """
+    del returncode
+    for line in (stderr or "").splitlines():
+        if _line_is_auth_banner(line):
+            return True
+    if has_valid_structured_result:
+        return False
+    non_empty = [ln for ln in (stdout or "").splitlines() if ln.strip()]
+    if not non_empty:
+        return False
+    # Standalone banner: every non-empty stdout line is an auth prompt shape.
+    return all(_line_is_auth_banner(ln) for ln in non_empty)
 
 
 def _classify_exit(
@@ -979,7 +1021,6 @@ def run(request: ProviderRunRequest) -> ProviderRunResult:
         or proc.stdout_truncated
         or proc.stderr_truncated
     )
-    auth_blocked = _looks_auth_blocked(stdout, stderr, proc.returncode)
 
     events: tuple[ProviderRunEvent, ...] = ()
     usage: ProviderUsage | None = None
@@ -1041,6 +1082,19 @@ def run(request: ProviderRunRequest) -> ProviderRunResult:
                 error_message = "malformed stream-json event(s)"
     elif fmt == "text":
         output = stdout
+
+    has_valid_structured_result = (
+        fmt in {"json", "stream-json"}
+        and not parse_error
+        and bool(events)
+        and not any(e.malformed for e in events)
+    )
+    auth_blocked = _looks_auth_blocked(
+        stdout,
+        stderr,
+        has_valid_structured_result=has_valid_structured_result,
+        returncode=proc.returncode,
+    )
 
     exit_class = _classify_exit(
         proc=proc, parse_error=parse_error, auth_blocked=auth_blocked
