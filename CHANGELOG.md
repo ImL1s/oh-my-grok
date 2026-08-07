@@ -32,8 +32,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   client effects). Reconcile, provider-session (ACP stub:
   `no_replay=true`, `restore_code=false`), and tmux-view outcomes are
   reported separately. `--worker` delegates to #101 focus.
-- **#101 identity-fenced live pane inspect/operator input:** `omg team
-  panes|capture|focus|key|input|watch` resolve Team identity → receipt
+- **#101 identity-fenced live pane inspect/operator input:** `omg team panes|capture|focus|key|input|watch` resolve Team identity → receipt
   chain → exact-pane proof (#98) → authorize → tmux effect (`shell=False`).
   Bounded/redacted capture; key allowlist; literal `send-keys -l`; audit
   stores length/hash only; `--json` never focuses or delivers input.
