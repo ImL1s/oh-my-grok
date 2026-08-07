@@ -2175,8 +2175,8 @@ def _launch_first_detached(
     session: str,
     task: dict[str, Any],
     env_pairs: list[tuple[str, str]],
-) -> tuple[tuple[str, str], str, dict[str, Any]]:
-    """Create detached session; return handle, first pane, and server identity."""
+) -> tuple[tuple[str, str], str, str, dict[str, Any]]:
+    """Create detached session; return handle, window_id, first pane, server."""
     first_env = tmux_env_args(list(task.get("_env_pairs") or env_pairs))
     create = _tmux_run(
         [
@@ -2184,7 +2184,7 @@ def _launch_first_detached(
             "-d",
             "-P",
             "-F",
-            "#{session_name}\t#{session_id}\t#{pane_id}\t#{pid}\t#{socket_path}",
+            "#{session_name}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pid}\t#{socket_path}",
             "-s",
             session,
             "-n",
@@ -2203,21 +2203,22 @@ def _launch_first_detached(
         )
     parts = (create.stdout or "").strip().split("\t")
     if (
-        len(parts) != 5
+        len(parts) != 6
         or parts[0] != session
         or _TMUX_SESSION_ID.fullmatch(parts[1]) is None
-        or _TMUX_PANE_ID.fullmatch(parts[2]) is None
-        or not parts[3].isdigit()
-        or not parts[4]
+        or _TMUX_WINDOW_ID.fullmatch(parts[2]) is None
+        or _TMUX_PANE_ID.fullmatch(parts[3]) is None
+        or not parts[4].isdigit()
+        or not parts[5]
     ):
         cleanup = _cleanup_session((session, session))
-        message = "tmux create did not return an exact session/pane/server handle"
+        message = "tmux create did not return an exact session/window/pane/server handle"
         if cleanup:
             message += f"; {cleanup}"
         raise TmuxTeamError(message)
     try:
         server = _server_identity_from_create(
-            pid=int(parts[3]), socket_path=parts[4].strip()
+            pid=int(parts[4]), socket_path=parts[5].strip()
         )
     except TmuxTeamError as exc:
         cleanup = _cleanup_session((parts[0], parts[1]))
@@ -2225,7 +2226,7 @@ def _launch_first_detached(
         if cleanup:
             message += f"; {cleanup}"
         raise TmuxTeamError(message) from exc
-    return (parts[0], parts[1]), parts[2], server
+    return (parts[0], parts[1]), parts[2], parts[3], server
 
 
 def _discover_inside_windows_by_name(
@@ -3642,7 +3643,7 @@ def _create_detached(
 ) -> tuple[str, str]:
     from omg_cli.team.topology import LAYOUT_TILED, VIEW_MODE_DETACHED_SESSION
 
-    handle, first_pane, server = _launch_first_detached(
+    handle, window_id, first_pane, server = _launch_first_detached(
         session=session, task=tasks[0], env_pairs=env_pairs
     )
     sock = str(server["tmux_socket_path"])
@@ -3680,7 +3681,7 @@ def _create_detached(
             attach_mode="detached",
             session_owned=True,
             leader_pane_id=None,
-            window_id=None,
+            window_id=window_id,
             attach_hint=f"tmux attach -t {handle[0]}",
             session_id=handle[1],
             tmux_server=server,

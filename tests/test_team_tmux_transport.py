@@ -853,7 +853,7 @@ def test_detached_session_records_explicit_view_mode(
         if cmd == "new-session":
             return SimpleNamespace(
                 returncode=0,
-                stdout="team\t$1\t%1\t424242\t/tmp/omg-test-tmux.sock\n",
+                stdout="team\t$1\t@1\t%1\t424242\t/tmp/omg-test-tmux.sock\n",
                 stderr="",
             )
         if cmd == "split-window" or (
@@ -871,6 +871,7 @@ def test_detached_session_records_explicit_view_mode(
         "_launch_first_detached",
         lambda **kw: (
             ("team", "$1"),
+            "@1",
             "%1",
             dict(FAKE_TMUX_SERVER),
         ),
@@ -888,6 +889,7 @@ def test_detached_session_records_explicit_view_mode(
         session="team", tasks=tasks, env_pairs=[], attach_mode="detached"
     )
     assert tasks[0]["_tmux_launch"]["view_mode"] == "detached_session"
+    assert tasks[0]["_tmux_launch"]["window_id"] == "@1"
 
 
 def test_resolve_launch_view_mode_contract() -> None:
@@ -2765,7 +2767,7 @@ def test_detached_create_stamps_and_scopes_cleanup_to_server(
             return SimpleNamespace(
                 returncode=0,
                 stdout=(
-                    f"team-sess\t$9\t%10\t{FAKE_TMUX_SERVER['tmux_server_pid']}\t"
+                    f"team-sess\t$9\t@9\t%10\t{FAKE_TMUX_SERVER['tmux_server_pid']}\t"
                     f"{FAKE_TMUX_SERVER['tmux_socket_path']}\n"
                 ),
                 stderr="",
@@ -2831,7 +2833,7 @@ def test_detached_success_stamps_tmux_server_on_launch_meta(
             return SimpleNamespace(
                 returncode=0,
                 stdout=(
-                    f"team-ok\t$5\t%10\t{FAKE_TMUX_SERVER['tmux_server_pid']}\t"
+                    f"team-ok\t$5\t@5\t%10\t{FAKE_TMUX_SERVER['tmux_server_pid']}\t"
                     f"{FAKE_TMUX_SERVER['tmux_socket_path']}\n"
                 ),
                 stderr="",
@@ -2861,6 +2863,7 @@ def test_detached_success_stamps_tmux_server_on_launch_meta(
     assert handle == ("team-ok", "$5")
     meta = tasks[0]["_tmux_launch"]
     assert meta["session_owned"] is True
+    assert meta["window_id"] == "@5"
     assert meta["tmux_socket_path"] == FAKE_TMUX_SERVER["tmux_socket_path"]
     assert meta["tmux_server_pid"] == FAKE_TMUX_SERVER["tmux_server_pid"]
     assert meta["tmux_server_pid_start"] == FAKE_TMUX_SERVER["tmux_server_pid_start"]

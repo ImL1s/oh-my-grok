@@ -5198,9 +5198,11 @@ def _spawn_relaunch_worker_via_topology(
     pane_owner_nonce: str,
     launch_nonce: str,
     socket_path: str | None = None,
+    avoid_pane_ids: Sequence[str] | None = None,
 ) -> str:
     """Detached topology-aware relaunch spawn; never undetached focus-stealing."""
     from omg_cli.team.tmux import (
+        pane_alive,
         spawn_worker_dedicated_window,
         spawn_worker_detached_session,
         spawn_worker_same_window,
@@ -5214,12 +5216,30 @@ def _spawn_relaunch_worker_via_topology(
     window_id = placement.window_id
     if not isinstance(window_id, str) or not window_id:
         raise TeamError("relaunch spawn requires exact team window_id")
+    avoid = {
+        p for p in (avoid_pane_ids or ()) if isinstance(p, str) and p
+    }
     split_target = placement.split_target_pane_id
     leader = placement.leader_pane_id
     horizontal = bool(placement.horizontal_first)
+    # Never identity-gate a split against a pane we are replacing, or (on the
+    # live relaunch path) a pane that is already absent/dead. Fall back to the
+    # Team window (or same_window leader). Unit callers that omit
+    # avoid_pane_ids keep placement as-is (no tmux probe).
+    if isinstance(split_target, str) and split_target:
+        stale = split_target in avoid
+        if not stale and avoid_pane_ids is not None:
+            stale = pane_alive(split_target) is not True
+        if stale:
+            split_target = None
+            horizontal = False
     if mode == VIEW_MODE_SAME_WINDOW:
         if not isinstance(split_target, str) or not split_target:
             if isinstance(leader, str) and leader:
+                if avoid_pane_ids is not None and pane_alive(leader) is not True:
+                    raise TeamError(
+                        "same_window relaunch requires split target or leader pane"
+                    )
                 split_target = leader
                 horizontal = True
             else:
@@ -6334,6 +6354,11 @@ def _relaunch_dead_incomplete_workers_locked(
                         pane_owner_nonce=relaunch_nonce,
                         launch_nonce=launch_nonce,
                         socket_path=relaunch_socket,
+                        avoid_pane_ids=[
+                            str(r.get("pane_id"))
+                            for r in to_relaunch
+                            if isinstance(r.get("pane_id"), str)
+                        ],
                     )
                 except TmuxTeamError as exc:
                     adopted = _wait_for_relaunch_pane(
