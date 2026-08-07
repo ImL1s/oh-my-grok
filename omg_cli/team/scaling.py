@@ -1357,8 +1357,15 @@ def _add_tmux_panes_same_window(
     window_id: str | None,
     leader_pane_id: str | None,
     split_target_pane_id: str | None,
+    expected_server: Mapping[str, Any] | None = None,
+    expected_session_id: str | None = None,
+    launch_nonce: str | None = None,
 ) -> None:
     """Scale-up workers via vertical splits into the shared leader window (#96)."""
+    from omg_cli.team.tmux import (
+        _intent_tmux_server,
+        _tmux_run_if_identity,
+    )
 
     if not tmux_available():
         raise TeamError(
@@ -1380,6 +1387,14 @@ def _add_tmux_panes_same_window(
         )
     if isinstance(leader_pane_id, str) and stack == leader_pane_id:
         raise TeamError("same_window scale-up refuses to target the leader pane")
+    server = _intent_tmux_server(expected_server) if expected_server is not None else None
+    if server is None:
+        raise TeamError(
+            "same_window scale-up requires durable tmux server identity"
+        )
+    if not isinstance(expected_session_id, str) or not expected_session_id:
+        raise TeamError("same_window scale-up requires exact session_id")
+    sock = str(server["tmux_socket_path"])
     created: list[dict[str, Any]] = []
     try:
         for rec in records:
@@ -1394,21 +1409,28 @@ def _add_tmux_panes_same_window(
             if not isinstance(env_pairs, list):
                 env_pairs = []
             task_env = tmux_env_args([(str(k), str(v)) for k, v in env_pairs])
-            split = _tmux_run(
-                [
-                    "split-window",
-                    "-v",
-                    "-d",
-                    "-P",
-                    "-F",
-                    "#{pane_id}",
-                    "-t",
-                    stack,
-                    "-c",
-                    wt,
-                    *task_env,
-                    cmd,
-                ]
+            split_argv = [
+                "split-window",
+                "-v",
+                "-d",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "-t",
+                stack,
+                "-c",
+                wt,
+                *task_env,
+                cmd,
+            ]
+            split = _tmux_run_if_identity(
+                split_argv,
+                target=stack,
+                expected_server=server,
+                socket_path=sock,
+                window_id=window_id,
+                expected_session_id=expected_session_id,
+                pane_id=stack,
             )
             if split.returncode != 0:
                 err = (split.stderr or split.stdout or "").strip()[:400]
@@ -1430,25 +1452,34 @@ def _add_tmux_panes_same_window(
                     "-p",
                     "-t",
                     pane_id,
-                    "#{pane_id}\t#{window_id}",
-                ]
+                    "#{pane_id}\t#{window_id}\t#{session_id}",
+                ],
+                socket_path=sock,
             )
             parts = (probe.stdout or "").strip().split("\t")
             if (
                 probe.returncode != 0
-                or len(parts) != 2
+                or len(parts) != 3
                 or parts[0] != pane_id
                 or parts[1] != window_id
+                or parts[2] != expected_session_id
             ):
                 raise TeamError(
                     f"same_window scale-up pane left team window "
-                    f"(pane={pane_id!r} expected window={window_id!r})"
+                    f"(pane={pane_id!r} expected window={window_id!r} "
+                    f"session={expected_session_id!r})"
                 )
             rec["pane_id"] = pane_id
             rec["window_id"] = window_id
             rec["_session_name"] = session
+            rec["_session_id"] = expected_session_id
+            if isinstance(launch_nonce, str) and launch_nonce:
+                rec["_launch_nonce"] = launch_nonce
             if isinstance(leader_pane_id, str):
                 rec["_leader_pane_id"] = leader_pane_id
+            rec["_tmux_socket_path"] = server["tmux_socket_path"]
+            rec["_tmux_server_pid"] = server["tmux_server_pid"]
+            rec["_tmux_server_pid_start"] = server["tmux_server_pid_start"]
             created.append(rec)
             stack = pane_id
     except Exception:
@@ -1465,6 +1496,9 @@ def _add_tmux_windows(
     view_mode: str | None = None,
     leader_pane_id: str | None = None,
     split_target_pane_id: str | None = None,
+    expected_server: Mapping[str, Any] | None = None,
+    expected_session_id: str | None = None,
+    launch_nonce: str | None = None,
 ) -> None:
     """Adopt an exact WAL-planned orphan, or launch it exactly once.
 
@@ -1502,6 +1536,9 @@ def _add_tmux_windows(
             window_id=window_id,
             leader_pane_id=leader_pane_id,
             split_target_pane_id=split_target_pane_id,
+            expected_server=expected_server,
+            expected_session_id=expected_session_id,
+            launch_nonce=launch_nonce,
         )
         return
     if not tmux_available():
@@ -1526,13 +1563,10 @@ def _add_tmux_windows(
     session_id = (
         str(records[0].get("_session_id"))
         if records and records[0].get("_session_id")
-        else None
+        else expected_session_id
     )
-    launch_nonce = (
-        str(records[0].get("_launch_nonce"))
-        if records and records[0].get("_launch_nonce")
-        else None
-    )
+    if launch_nonce is None and records and records[0].get("_launch_nonce"):
+        launch_nonce = str(records[0].get("_launch_nonce"))
     if session_id is not None and launch_nonce is not None:
         if (
             _read_tmux_session_identity(session) != (session, session_id)
@@ -1973,25 +2007,66 @@ def _rollback_created_tmux_windows(
     """Best-effort rollback of windows/panes created by this scale attempt.
 
     ``same_window`` only kills owned worker panes — never the shared leader
-    window.
+    window. Uses identity-gated scoped kill (same as create), not bare
+    ``kill-pane``.
     """
+    from omg_cli.team.tmux import _intent_tmux_server, _kill_panes_scoped
     from omg_cli.team.topology import VIEW_MODE_SAME_WINDOW
 
     if view_mode == VIEW_MODE_SAME_WINDOW:
         errors: list[str] = []
+        pane_ids: list[str] = []
+        leader: str | None = None
+        window_id: str | None = None
+        session_id: str | None = None
+        launch_nonce: str | None = None
+        expected_server: Mapping[str, Any] | None = None
         for rec in reversed(records):
             pane_id = rec.get("pane_id")
-            leader = rec.get("_leader_pane_id")
             if not isinstance(pane_id, str) or _TMUX_PANE_ID.fullmatch(pane_id) is None:
-                errors.append(f"missing pane id for same_window rollback task={rec.get('task_id')}")
+                errors.append(
+                    f"missing pane id for same_window rollback "
+                    f"task={rec.get('task_id')}"
+                )
                 continue
-            if isinstance(leader, str) and pane_id == leader:
+            rec_leader = rec.get("_leader_pane_id")
+            if isinstance(rec_leader, str) and pane_id == rec_leader:
                 errors.append(f"refused same_window rollback of leader pane {pane_id}")
                 continue
-            killed = _tmux_run(["kill-pane", "-t", pane_id])
-            if killed.returncode not in (0, 1):
-                err = (killed.stderr or killed.stdout or "").strip()[:400]
-                errors.append(f"kill-pane {pane_id}: {err}")
+            pane_ids.append(pane_id)
+            if leader is None and isinstance(rec_leader, str):
+                leader = rec_leader
+            if window_id is None and isinstance(rec.get("window_id"), str):
+                window_id = str(rec["window_id"])
+            if session_id is None and isinstance(rec.get("_session_id"), str):
+                session_id = str(rec["_session_id"])
+            if launch_nonce is None and isinstance(rec.get("_launch_nonce"), str):
+                launch_nonce = str(rec["_launch_nonce"])
+            if expected_server is None:
+                expected_server = _intent_tmux_server(
+                    {
+                        "tmux_socket_path": rec.get("_tmux_socket_path"),
+                        "tmux_server_pid": rec.get("_tmux_server_pid"),
+                        "tmux_server_pid_start": rec.get("_tmux_server_pid_start"),
+                    }
+                )
+        if pane_ids:
+            sock = (
+                str(expected_server["tmux_socket_path"])
+                if expected_server is not None
+                else None
+            )
+            scoped_err = _kill_panes_scoped(
+                pane_ids,
+                expected_server=expected_server,
+                expected_session_id=session_id,
+                expected_window_id=window_id,
+                intent_or_launch_nonce=launch_nonce,
+                leader_pane_id=leader,
+                socket_path=sock,
+            )
+            if scoped_err:
+                errors.append(scoped_err)
         return errors
     errors = []
     for rec in reversed(records):
@@ -3496,6 +3571,19 @@ def _scale_up(
                         else None
                     ),
                     split_target_pane_id=_same_window_stack_pane(meta),
+                    expected_server=(
+                        {
+                            "tmux_socket_path": meta.get("tmux_socket_path"),
+                            "tmux_server_pid": meta.get("tmux_server_pid"),
+                            "tmux_server_pid_start": meta.get(
+                                "tmux_server_pid_start"
+                            ),
+                        }
+                        if meta.get("tmux_socket_path") is not None
+                        else None
+                    ),
+                    expected_session_id=str(authority["session_id"]),
+                    launch_nonce=str(authority["launch_nonce"]),
                 )
                 windows_created = True
                 session_id = str(authority["session_id"])

@@ -5,8 +5,10 @@ Canonical modes:
 - ``dedicated_window`` — inside tmux ``--dedicated-window`` / legacy inside
 - ``detached_session`` — outside tmux or ``--detach``
 
-Legacy metadata without ``view_mode`` resolves read-only to dedicated/detached
-behavior — never guess ``same_window`` from pane counts.
+Legacy metadata without ``view_mode`` must not invent ``same_window`` from
+pane counts, and must not invent ``dedicated_window`` for shapes that also
+match same-window (shared session + leader ``window_id``). Prefer explicit
+mode; legacy dedicated only when window naming evidence is unambiguous.
 """
 
 from __future__ import annotations
@@ -28,6 +30,10 @@ VIEW_MODES = frozenset(
 
 LAYOUT_MAIN_VERTICAL = "main-vertical"
 LAYOUT_TILED = "tiled"
+
+# Dedicated inside windows are named ``omg-team-<nonce>``; same_window WAL
+# uses a synthetic ``omg-same-<nonce>`` key that must never imply dedicated.
+_DEDICATED_WINDOW_NAME_PREFIX = "omg-team-"
 
 
 class TopologyError(ValueError):
@@ -65,9 +71,10 @@ def resolve_persisted_view_mode(
     """Resolve view_mode from receipt-bound / team.json metadata.
 
     Prefer receipt when present; otherwise team.json. Legacy missing mode:
-    - inside shared session (``session_owned=False``) → ``dedicated_window``
     - owned / detached session → ``detached_session``
-    Fail closed when evidence is insufficient.
+    - inside + dedicated window name (``omg-team-*``) → ``dedicated_window``
+    - inside + ``window_id`` alone (leader-window shape) → fail closed
+    Never invent ``same_window`` from counts or a bare window id.
     """
     sources: list[Mapping[str, Any]] = []
     if isinstance(receipt, Mapping):
@@ -82,20 +89,32 @@ def resolve_persisted_view_mode(
         if raw is not None and raw != "":
             raise TopologyError(f"unsupported persisted view_mode {raw!r}")
 
-    # Legacy inference — never invent same_window.
-    src = sources[0] if sources else {}
-    attach = src.get("attach_mode")
-    session_owned = src.get("session_owned")
-    window_id = src.get("window_id")
-    if attach == "inside" or session_owned is False:
-        if isinstance(window_id, str) and window_id:
-            return VIEW_MODE_DEDICATED_WINDOW
-        raise TopologyError(
-            "legacy team metadata missing view_mode and insufficient "
-            "inside/window evidence — refuse cleanup guess"
-        )
+    # Legacy inference across receipt then meta (first source wins fields,
+    # but scan all sources for unambiguous dedicated window_name).
+    merged: dict[str, Any] = {}
+    for src in reversed(sources):
+        merged.update(dict(src))
+    attach = merged.get("attach_mode")
+    session_owned = merged.get("session_owned")
+    window_id = merged.get("window_id")
+    window_name = merged.get("window_name")
+
     if attach == "detached" or session_owned is True:
         return VIEW_MODE_DETACHED_SESSION
+
+    if attach == "inside" or session_owned is False:
+        # Unambiguous pre-#96 / opt-in dedicated: named omg-team-* window.
+        if (
+            isinstance(window_name, str)
+            and window_name.startswith(_DEDICATED_WINDOW_NAME_PREFIX)
+            and isinstance(window_id, str)
+            and window_id
+        ):
+            return VIEW_MODE_DEDICATED_WINDOW
+        raise TopologyError(
+            "legacy team metadata missing view_mode — refuse inside "
+            "dedicated/same_window guess (ambiguous leader-window shape)"
+        )
     raise TopologyError(
         "team metadata missing view_mode — refuse topology guess"
     )

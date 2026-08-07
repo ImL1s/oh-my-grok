@@ -114,7 +114,9 @@ SPAWN_DENY_API_MARKERS: tuple[str, ...] = (
 )
 WORKSPACE_MODE = "worktree"
 SCHEMA_VERSION = 1
-LAUNCH_RECEIPT_SCHEMA_VERSION = 2
+LAUNCH_RECEIPT_SCHEMA_VERSION = 3
+# #108-era receipts: intent binding without topology (#96 view_mode).
+V2_LAUNCH_RECEIPT_SCHEMA_VERSION = 2
 # #106-era immutable launch receipts (no intent_nonce / window_name).
 # Readable only for existing-Team identity-chain ops (stop/scale/relaunch).
 LEGACY_LAUNCH_RECEIPT_SCHEMA_VERSION = 1
@@ -1626,10 +1628,18 @@ def _persist_team_launch_receipt(
     tasks: Sequence[Mapping[str, Any]],
     intent_nonce: str | None = None,
     window_name: str | None = None,
+    view_mode: str | None = None,
+    layout: str | None = None,
+    leader_pane_id: str | None = None,
+    leader_pane_pid: int | None = None,
+    window_id: str | None = None,
+    session_owned: bool | None = None,
+    attach_mode: str | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Persist the immutable process identity used by ``team stop``."""
     from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes
     from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
+    from omg_cli.team.topology import VIEW_MODES
 
     if intent_nonce is not None and (
         not isinstance(intent_nonce, str) or not intent_nonce
@@ -1643,6 +1653,33 @@ def _persist_team_launch_receipt(
         raise TeamError(
             "launch receipt intent_nonce and window_name must both be set or both null"
         )
+    if view_mode is not None and (
+        not isinstance(view_mode, str) or view_mode not in VIEW_MODES
+    ):
+        raise TeamError(f"launch receipt view_mode unsupported: {view_mode!r}")
+    if layout is not None and (not isinstance(layout, str) or not layout):
+        raise TeamError("launch receipt layout must be a non-empty string")
+    if leader_pane_id is not None and (
+        not isinstance(leader_pane_id, str)
+        or _TMUX_PANE_ID.fullmatch(leader_pane_id) is None
+    ):
+        raise TeamError("launch receipt leader_pane_id must be an exact pane id")
+    if leader_pane_pid is not None and (
+        isinstance(leader_pane_pid, bool)
+        or not isinstance(leader_pane_pid, int)
+        or leader_pane_pid <= 0
+    ):
+        raise TeamError("launch receipt leader_pane_pid must be a positive int")
+    if window_id is not None and (
+        not isinstance(window_id, str) or _TMUX_WINDOW_ID.fullmatch(window_id) is None
+    ):
+        raise TeamError("launch receipt window_id must be an exact window id")
+    if session_owned is not None and not isinstance(session_owned, bool):
+        raise TeamError("launch receipt session_owned must be a bool")
+    if attach_mode is not None and (
+        not isinstance(attach_mode, str) or attach_mode not in {"inside", "detached"}
+    ):
+        raise TeamError(f"launch receipt attach_mode unsupported: {attach_mode!r}")
     rows: list[dict[str, Any]] = []
     for raw in tasks:
         rows.append(
@@ -1665,6 +1702,13 @@ def _persist_team_launch_receipt(
         "launch_nonce": launch_nonce,
         "intent_nonce": intent_nonce,
         "window_name": window_name,
+        "view_mode": view_mode,
+        "layout": layout,
+        "leader_pane_id": leader_pane_id,
+        "leader_pane_pid": leader_pane_pid,
+        "window_id": window_id,
+        "session_owned": session_owned,
+        "attach_mode": attach_mode,
         "generation": 0,
         "previous_receipt_sha256": None,
         "tasks": rows,
@@ -1873,7 +1917,8 @@ def _load_team_launch_receipt(
     parsed = parse_canonical_json_bytes(body)
     if not isinstance(parsed, dict):
         raise TeamError("team launch receipt must be an object")
-    # Exact key sets: v1 (#106) lacked intent binding fields; v2 includes them.
+    # Exact key sets: v1 (#106) lacked intent binding; v2 adds intent fields;
+    # v3 (#96) binds view_mode / leader-window topology for stop.
     legacy_required = {
         "store_kind",
         "schema_version",
@@ -1890,6 +1935,15 @@ def _load_team_launch_receipt(
         "intent_nonce",
         "window_name",
     }
+    v3_required = v2_required | {
+        "view_mode",
+        "layout",
+        "leader_pane_id",
+        "leader_pane_pid",
+        "window_id",
+        "session_owned",
+        "attach_mode",
+    }
     schema_version = parsed.get("schema_version")
     if (
         (
@@ -1897,17 +1951,25 @@ def _load_team_launch_receipt(
             and set(parsed) != legacy_required
         )
         or (
-            schema_version == LAUNCH_RECEIPT_SCHEMA_VERSION
+            schema_version == V2_LAUNCH_RECEIPT_SCHEMA_VERSION
             and set(parsed) != v2_required
+        )
+        or (
+            schema_version == LAUNCH_RECEIPT_SCHEMA_VERSION
+            and set(parsed) != v3_required
         )
         or schema_version
         not in {
             LEGACY_LAUNCH_RECEIPT_SCHEMA_VERSION,
+            V2_LAUNCH_RECEIPT_SCHEMA_VERSION,
             LAUNCH_RECEIPT_SCHEMA_VERSION,
         }
     ):
         raise TeamError("team launch receipt keys mismatch")
-    if schema_version == LAUNCH_RECEIPT_SCHEMA_VERSION:
+    if schema_version in {
+        V2_LAUNCH_RECEIPT_SCHEMA_VERSION,
+        LAUNCH_RECEIPT_SCHEMA_VERSION,
+    }:
         intent_nonce = parsed.get("intent_nonce")
         window_name = parsed.get("window_name")
         if (intent_nonce is None) != (window_name is None):
@@ -1918,6 +1980,42 @@ def _load_team_launch_receipt(
             or not isinstance(window_name, str)
             or not window_name
         ):
+            raise TeamError("team launch receipt identity mismatch")
+    if schema_version == LAUNCH_RECEIPT_SCHEMA_VERSION:
+        from omg_cli.team.topology import VIEW_MODES
+
+        view_mode = parsed.get("view_mode")
+        if view_mode is not None and (
+            not isinstance(view_mode, str) or view_mode not in VIEW_MODES
+        ):
+            raise TeamError("team launch receipt identity mismatch")
+        layout = parsed.get("layout")
+        if layout is not None and (not isinstance(layout, str) or not layout):
+            raise TeamError("team launch receipt identity mismatch")
+        leader_pane_id = parsed.get("leader_pane_id")
+        if leader_pane_id is not None and (
+            not isinstance(leader_pane_id, str)
+            or _TMUX_PANE_ID.fullmatch(leader_pane_id) is None
+        ):
+            raise TeamError("team launch receipt identity mismatch")
+        leader_pane_pid = parsed.get("leader_pane_pid")
+        if leader_pane_pid is not None and (
+            isinstance(leader_pane_pid, bool)
+            or not isinstance(leader_pane_pid, int)
+            or leader_pane_pid <= 0
+        ):
+            raise TeamError("team launch receipt identity mismatch")
+        window_id = parsed.get("window_id")
+        if window_id is not None and (
+            not isinstance(window_id, str)
+            or _TMUX_WINDOW_ID.fullmatch(window_id) is None
+        ):
+            raise TeamError("team launch receipt identity mismatch")
+        session_owned = parsed.get("session_owned")
+        if session_owned is not None and not isinstance(session_owned, bool):
+            raise TeamError("team launch receipt identity mismatch")
+        attach_mode = parsed.get("attach_mode")
+        if attach_mode is not None and attach_mode not in {"inside", "detached"}:
             raise TeamError("team launch receipt identity mismatch")
     if (
         parsed["store_kind"] != "team_launch_receipt"
@@ -2972,6 +3070,38 @@ def start_team(
                     tasks=task_records,
                     intent_nonce=intent_nonce,
                     window_name=intent_window_name,
+                    view_mode=(
+                        str(tmux_launch["view_mode"])
+                        if isinstance(tmux_launch.get("view_mode"), str)
+                        else None
+                    ),
+                    layout=(
+                        str(tmux_launch["layout"])
+                        if isinstance(tmux_launch.get("layout"), str)
+                        else None
+                    ),
+                    leader_pane_id=(
+                        str(tmux_launch["leader_pane_id"])
+                        if isinstance(tmux_launch.get("leader_pane_id"), str)
+                        else None
+                    ),
+                    leader_pane_pid=(
+                        int(tmux_launch["leader_pane_pid"])
+                        if isinstance(tmux_launch.get("leader_pane_pid"), int)
+                        and not isinstance(tmux_launch.get("leader_pane_pid"), bool)
+                        else None
+                    ),
+                    window_id=(
+                        str(tmux_launch["window_id"])
+                        if isinstance(tmux_launch.get("window_id"), str)
+                        else None
+                    ),
+                    session_owned=bool(tmux_launch.get("session_owned", True)),
+                    attach_mode=(
+                        str(tmux_launch["attach_mode"])
+                        if isinstance(tmux_launch.get("attach_mode"), str)
+                        else None
+                    ),
                 )
 
                 meta = {
@@ -3094,7 +3224,6 @@ def start_team(
                     ):
                         from omg_cli.team.tmux import (
                             _intent_tmux_server,
-                            _kill_panes,
                             _kill_panes_scoped,
                             _kill_window,
                         )
@@ -3108,12 +3237,10 @@ def start_team(
                         try:
                             vm = resolve_persisted_view_mode(tmux_launch)
                         except TopologyError:
-                            vm = tmux_launch.get("view_mode") or (
-                                VIEW_MODE_DEDICATED_WINDOW
-                                if isinstance(tmux_launch.get("window_id"), str)
-                                and tmux_launch.get("window_id")
-                                else VIEW_MODE_SAME_WINDOW
-                            )
+                            # Never default to dedicated_window+kill-window —
+                            # leader window_id under same_window would wipe the
+                            # invoking window. Pane-scoped cleanup only.
+                            vm = VIEW_MODE_SAME_WINDOW
                         window_id = tmux_launch.get("window_id")
                         expected_server = _intent_tmux_server(tmux_launch)
                         sock = (
@@ -3129,7 +3256,17 @@ def start_team(
                             for rec in task_records
                             if isinstance(rec.get("pane_id"), str)
                         ]
-                        if vm == VIEW_MODE_SAME_WINDOW:
+                        if vm == VIEW_MODE_DEDICATED_WINDOW and isinstance(
+                            window_id, str
+                        ) and window_id:
+                            cleanup_error = _kill_window(
+                                window_id,
+                                socket_path=sock,
+                                expected_session_id=expected_session,
+                                expected_server=expected_server,
+                            )
+                        else:
+                            # same_window / unknown: never kill-window.
                             cleanup_error = _kill_panes_scoped(
                                 pane_ids,
                                 expected_server=expected_server,
@@ -3147,19 +3284,6 @@ def start_team(
                                 ),
                                 socket_path=sock,
                             )
-                        elif (
-                            vm == VIEW_MODE_DEDICATED_WINDOW
-                            and isinstance(window_id, str)
-                            and window_id
-                        ):
-                            cleanup_error = _kill_window(
-                                window_id,
-                                socket_path=sock,
-                                expected_session_id=expected_session,
-                                expected_server=expected_server,
-                            )
-                        else:
-                            cleanup_error = _kill_panes(pane_ids)
                     else:
                         cleanup_sock, cleanup_server = _tmux_scope_from_launch(
                             tmux_launch
@@ -4060,10 +4184,32 @@ def _stop_team_locked(
         if isinstance(window_id, str) and _TMUX_WINDOW_ID.fullmatch(window_id)
         else None
     )
+    leader_pane_id_str: str | None = (
+        str(meta["leader_pane_id"])
+        if isinstance(meta.get("leader_pane_id"), str)
+        and _TMUX_PANE_ID.fullmatch(str(meta.get("leader_pane_id")))
+        else None
+    )
     if session and not dry:
         try:
             chain = _load_team_identity_chain(root_path, run_id, meta)
             receipt = chain[0]
+            # Prefer receipt-bound topology when schema v3 stamped it.
+            if isinstance(receipt.get("session_owned"), bool):
+                session_owned = bool(receipt["session_owned"])
+            receipt_window = receipt.get("window_id")
+            if (
+                isinstance(receipt_window, str)
+                and _TMUX_WINDOW_ID.fullmatch(receipt_window) is not None
+            ):
+                window_id = receipt_window
+                window_id_str = receipt_window
+            receipt_leader = receipt.get("leader_pane_id")
+            if (
+                isinstance(receipt_leader, str)
+                and _TMUX_PANE_ID.fullmatch(receipt_leader) is not None
+            ):
+                leader_pane_id_str = receipt_leader
             current_rows = (
                 receipt["tasks"] if len(chain) == 1 else chain[-1]["tasks_after"]
             )
@@ -4436,7 +4582,8 @@ def _stop_team_locked(
                 else:
                     # Shared session: remove only owned team transport.
                     # same_window: kill worker panes only (never leader window).
-                    # dedicated_window / legacy missing view_mode: kill-window ok.
+                    # dedicated_window: kill-window only with explicit mode.
+                    # Ambiguous / missing mode: pane-scoped fail-closed.
                     from omg_cli.team.tmux import (
                         _intent_tmux_server,
                         _kill_panes,
@@ -4454,11 +4601,17 @@ def _stop_team_locked(
                         stop_view = resolve_persisted_view_mode(
                             meta, receipt=receipt
                         )
-                    except TopologyError:
-                        stop_view = (
-                            meta.get("view_mode") or VIEW_MODE_DEDICATED_WINDOW
+                    except TopologyError as topo_exc:
+                        # NEVER default to dedicated_window + kill-window —
+                        # same_window runs store the leader window_id.
+                        errors.append(
+                            f"view_mode unresolved — pane-scoped cleanup only "
+                            f"(refuse kill-window): {topo_exc}"
                         )
+                        stop_view = VIEW_MODE_SAME_WINDOW
                     expected_server = _intent_tmux_server(meta)
+                    if expected_server is None and receipt is not None:
+                        expected_server = _intent_tmux_server(receipt)
                     sock = (
                         str(expected_server["tmux_socket_path"])
                         if expected_server is not None
@@ -4486,7 +4639,7 @@ def _stop_team_locked(
                         and isinstance(rec.get("pane_id"), str)
                     ]
                     if stop_view == VIEW_MODE_SAME_WINDOW:
-                        leader = meta.get("leader_pane_id")
+                        leader = leader_pane_id_str or meta.get("leader_pane_id")
                         scoped_err = _kill_panes_scoped(
                             pane_ids,
                             expected_server=expected_server,
