@@ -218,6 +218,12 @@ omg team focus --run RUN --worker w1
 omg team key --run RUN --worker w1 --key Enter
 omg team input --run RUN --worker w1 --text 'continue' --submit --operator-override
 omg team watch --run RUN --worker w1 --interval 1
+# #103: restore exact Team window/leader (or --worker via #101). Default
+# resume never attaches; --json never changes the tmux client.
+omg team resume --run RUN                # reconcile only
+omg team resume --run RUN --view         # reconcile + restore view
+omg team view --run RUN                  # view only (no relaunch)
+omg team view --run RUN --print          # print attach/switch argv only
 omg team stop --run RUN
 ```
 
@@ -235,7 +241,7 @@ omg team stop --run RUN
 **Lifecycle (D4):**
 
 - **`omg team scale --run ID --add N|--remove N [--dry-run]`** — dynamic panes under a run-dir **scale lock**. Live scale-up publishes an immutable generation-scoped **WAL** before side effects, then binds windows with `@omg_scale_nonce` + rename and **fail-closed ownership readback** (exact `display-message`; never trust mutable `session:index` alone). Pending scale-up WAL or future **identity-receipt** generations block dry-run add, remove, resume/relaunch, collect/join/integrate, and stop until the original op is recovered. `--add` respects `max_workers_cap()` and monotonic window indices; `--remove` graceful drain (idle/newest) on first attempt, **receipt-bound victims** on recovery (wrong `--remove N` fails closed with generation + task ids), kills only recorded pgids + authenticated panes (**not** the session; **no** `pkill -f`), marks `scaled_down`, preserves worktrees; never below 1 active pane. Meta commit result-loss classifies committed / not_committed / unknown via identity readback (not volatile `last_scale.actions` alone). **Not** an execution sandbox — see `docs/security-model.md`.
-- **`omg team resume --run ID`** — re-read `team.json` under the same scale lock; if a relaunch WAL is pending, exact relaunch recovery runs before raw liveness reconciliation; otherwise reconcile pane liveness after leader restart (idempotent status writes). Remain-on-exit dead panes that still match receipt identity may clean then commit as `needs_collect` when the process is absent.
+- **`omg team resume --run ID`** — re-read `team.json` under the same scale lock; if a relaunch WAL is pending, exact relaunch recovery runs before raw liveness reconciliation; otherwise reconcile pane liveness after leader restart (idempotent status writes). Remain-on-exit dead panes that still match receipt identity may clean then commit as `needs_collect` when the process is absent. **Default never attaches or changes the tmux client** (script-safe). Pass `--view` to restore the exact Team window/leader pane after the lifecycle lock is released (same-session `select-*`, cross-session `switch-client`, outside-TTY `attach-session`; `--takeover` adds `-d`; `--json` never executes view effects). `omg team view` restores the view without reconcile/relaunch; `--print` prints argv only. Reconcile / provider-session / tmux-view outcomes are reported separately.
 
 ```bash
 omg team start --goal "parallelize A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --plan-only
@@ -249,6 +255,8 @@ omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]'
 omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --ralph --max-iter 2 --dry-run
 omg team scale --run RUN --add 2 --dry-run
 omg team resume --run RUN
+omg team resume --run RUN --view
+omg team view --run RUN --print
 omg team status --run RUN --json
 omg team collect --run RUN   # seal_all_tasks + integrate; never verified
 omg team stop --run RUN      # kill recorded session + pgids only (no pkill -f)

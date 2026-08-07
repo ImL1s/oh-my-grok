@@ -1308,6 +1308,143 @@ def resume_for_identity(
     return out
 
 
+def _reconcile_envelope(reconcile: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize resume_for_identity output into the #103 reconcile object."""
+    status = "ok"
+    if reconcile.get("layout_repair_needed"):
+        status = "ok_layout_repair_needed"
+    return {
+        "status": status,
+        "relaunched": list(reconcile.get("relaunched") or []),
+        "blocked": list(reconcile.get("blocked") or []),
+        "skipped": list(reconcile.get("skipped") or []),
+        "note": reconcile.get("note"),
+        "layout_status": reconcile.get("layout_status"),
+        "layout_repair_needed": bool(reconcile.get("layout_repair_needed")),
+        "view_mode": reconcile.get("view_mode"),
+        "identity_generation": reconcile.get("identity_generation"),
+        "raw": dict(reconcile),
+    }
+
+
+def view_team(
+    root: Path | str,
+    identity: str | None = None,
+    *,
+    print_only: bool = False,
+    takeover: bool = False,
+    as_json: bool = False,
+    worker_id: str | None = None,
+    is_tty: bool | None = None,
+    execute_effects: bool = True,
+) -> dict[str, Any]:
+    """Restore Team interactive view without reconcile/relaunch (#103)."""
+    from omg_cli.team.operator import plan_and_execute_team_view
+    from omg_cli.team.view import MODE_PRINT, MODE_VIEW, provider_session_stub
+
+    mode = MODE_PRINT if print_only else MODE_VIEW
+    view_out = plan_and_execute_team_view(
+        root,
+        identity,
+        mode=mode,
+        as_json=as_json,
+        takeover=takeover,
+        is_tty=is_tty,
+        worker_id=worker_id,
+        execute_effects=execute_effects and not print_only,
+    )
+    run_id = view_out.get("run_id") or resolve_team_ref(root, identity)
+    return {
+        "run_id": run_id,
+        "reconcile": {
+            "status": "skipped",
+            "relaunched": [],
+            "blocked": [],
+            "note": "team view does not reconcile or relaunch",
+        },
+        "provider_session": provider_session_stub(requested=False),
+        "view": view_out.get("view") or {},
+        "ok": bool(view_out.get("ok")),
+        "command": "team.view",
+        "plan": view_out.get("plan"),
+        "print_hint": view_out.get("print_hint"),
+        "error": view_out.get("error"),
+        "delegated": view_out.get("delegated"),
+        "focus": view_out.get("focus"),
+        "effect": view_out.get("effect"),
+    }
+
+
+def resume_with_view(
+    root: Path | str,
+    identity: str | None = None,
+    *,
+    view: bool = False,
+    print_only: bool = False,
+    takeover: bool = False,
+    as_json: bool = False,
+    worker_id: str | None = None,
+    is_tty: bool | None = None,
+    env: Mapping[str, str] | None = None,
+    request_provider_session: bool = False,
+) -> dict[str, Any]:
+    """Reconcile under lifecycle lock, then optionally restore view (#103).
+
+    View/attach never runs while the scale lock is held.
+    """
+    from omg_cli.team.operator import plan_and_execute_team_view
+    from omg_cli.team.view import (
+        MODE_PRINT,
+        MODE_VIEW,
+        provider_session_stub,
+    )
+
+    reconcile = resume_for_identity(root, identity, env=env)
+    run_id = str(reconcile.get("run_id") or resolve_team_ref(root, identity))
+    envelope: dict[str, Any] = {
+        "run_id": run_id,
+        "reconcile": _reconcile_envelope(reconcile),
+        "provider_session": provider_session_stub(
+            requested=bool(request_provider_session)
+        ),
+        # Preserve legacy flat fields for callers that read resume_for_identity shape.
+        **{k: v for k, v in reconcile.items() if k != "run_id"},
+    }
+
+    if as_json or (not view and not print_only):
+        envelope["view"] = {
+            "requested": False,
+            "status": "none",
+            "mode": reconcile.get("view_mode"),
+            "action": "none",
+            "hint": None,
+            "executed": False,
+        }
+        envelope["ok"] = True
+        return envelope
+
+    mode = MODE_PRINT if print_only else MODE_VIEW
+    view_out = plan_and_execute_team_view(
+        root,
+        identity,
+        mode=mode,
+        as_json=False,
+        takeover=takeover,
+        is_tty=is_tty,
+        worker_id=worker_id,
+        execute_effects=not print_only,
+    )
+    envelope["view"] = view_out.get("view") or {}
+    envelope["plan"] = view_out.get("plan")
+    envelope["print_hint"] = view_out.get("print_hint")
+    envelope["effect"] = view_out.get("effect")
+    if view_out.get("error"):
+        envelope["view_error"] = view_out["error"]
+    # Partial success: reconcile may be ok while view fails.
+    envelope["ok"] = bool(view_out.get("ok"))
+    return envelope
+
+
 def worker_pane_descriptors(
     root: Path | str,
     run_id: str,

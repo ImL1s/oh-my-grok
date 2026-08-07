@@ -10,6 +10,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#103 Team resume/view attach semantics:** `omg team resume` stays
+  reconcile-only by default (never attaches because stdout is a TTY).
+  Explicit `resume --view` / `omg team view` restore the exact Team
+  window/leader via a pure view planner + #102 topology target +
+  identity re-probe before `select-*` / `switch-client` /
+  `attach-session` (no lifecycle lock across interactive attach;
+  `--takeover` required for `-d`; `--print` / `--json` never execute
+  client effects). Reconcile, provider-session (ACP stub:
+  `no_replay=true`, `restore_code=false`), and tmux-view outcomes are
+  reported separately. `--worker` delegates to #101 focus.
 - **#101 identity-fenced live pane inspect/operator input:** `omg team
   panes|capture|focus|key|input|watch` resolve Team identity → receipt
   chain → exact-pane proof (#98) → authorize → tmux effect (`shell=False`).

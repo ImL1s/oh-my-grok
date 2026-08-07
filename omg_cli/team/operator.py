@@ -43,7 +43,10 @@ from omg_cli.team.tmux import (
     TmuxTeamError,
     attach_argv_for_target,
     capture_pane,
+    execute_authorized_view,
     focus_pane,
+    probe_current_session_id,
+    prove_view_target_live,
     read_exact_worker_pane_identity,
     send_key,
     send_literal,
@@ -485,6 +488,376 @@ def authorize_focus(proof: ExactPaneProof, *, status: str | None = None) -> str:
     return live
 
 
+@dataclass(frozen=True)
+class TeamViewProof:
+    """Exact Team leader/window authority for view/attach (#103)."""
+
+    run_id: str
+    team_id: str
+    mode: str
+    session: str
+    session_id: str
+    launch_nonce: str
+    session_owned: bool
+    window_id: str | None
+    leader_pane_id: str
+    leader_pane_pid: int | None
+    generation: int
+    owner_token_sha256: str | None = None
+    tmux_socket_path: str | None = None
+
+
+def resolve_team_view_target(
+    root: Path | str,
+    identity: str | None,
+) -> TeamViewProof:
+    """Resolve Team → identity chain → topology → exact leader view target.
+
+    Reuses #96/#101/#102 resolvers only — never invents a second identity path.
+    """
+    from omg_cli.team.topology import (
+        TopologyError,
+        normalize_persisted_topology,
+        resolve_view_target,
+    )
+
+    root_path = Path(root).resolve()
+    run_id = resolve_team_ref(root_path, identity)
+    meta = load_team_meta(root_path, run_id)
+    if meta.get("writer") != CLI_WRITER:
+        raise OperatorError(
+            "team meta lacks CLI writer authority",
+            code="E_VIEW_WRITER",
+            exit_code=2,
+        )
+    if bool(meta.get("dry_run")):
+        raise OperatorError(
+            "dry_run team has no live view target",
+            code="E_VIEW_DRY_RUN",
+            exit_code=2,
+            status=STATUS_GONE,
+        )
+
+    try:
+        chain = plane_mod._load_team_identity_chain(root_path, run_id, meta)
+    except TeamError as exc:
+        raise OperatorError(
+            f"identity receipt chain refused: {exc}",
+            code="E_VIEW_RECEIPT",
+            exit_code=2,
+        ) from exc
+    launch = chain[0]
+    receipt = launch if isinstance(launch, Mapping) else None
+
+    try:
+        snap = normalize_persisted_topology(meta, receipt=receipt)
+        target = resolve_view_target(snap)
+    except TopologyError as exc:
+        raise OperatorError(
+            f"view topology refused: {exc}",
+            code="E_VIEW_TOPOLOGY",
+            exit_code=2,
+            status=STATUS_UNKNOWN,
+        ) from exc
+
+    generation = meta.get("identity_generation", 0)
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 0
+    ):
+        raise OperatorError(
+            "invalid identity_generation",
+            code="E_VIEW_GENERATION",
+            exit_code=2,
+        )
+
+    team_id = str(meta.get("team_id") or "team")
+    sock = meta.get("tmux_socket_path")
+    if not isinstance(sock, str) or not sock or "\0" in sock:
+        sock = None
+    return TeamViewProof(
+        run_id=run_id,
+        team_id=team_id,
+        mode=target.mode,
+        session=target.session_name,
+        session_id=target.session_id,
+        launch_nonce=target.launch_nonce,
+        session_owned=target.session_owned,
+        window_id=target.window_id,
+        leader_pane_id=target.leader_pane_id,
+        leader_pane_pid=target.leader_pane_pid,
+        generation=generation,
+        owner_token_sha256=target.owner_token_sha256,
+        tmux_socket_path=sock,
+    )
+
+
+def authorize_team_view(proof: TeamViewProof) -> TeamViewProof:
+    """Prove exact session/window/leader pane + launch nonce before effects."""
+    if not tmux_available():
+        raise OperatorError(
+            "tmux is required for team view",
+            code="E_VIEW_TMUX",
+            exit_code=1,
+            status=STATUS_UNKNOWN,
+        )
+    try:
+        prove_view_target_live(
+            session_id=proof.session_id,
+            session_name=proof.session,
+            launch_nonce=proof.launch_nonce,
+            window_id=proof.window_id,
+            pane_id=proof.leader_pane_id,
+            # Leader shell PID is advisory; exact pane + session + launch
+            # nonce (+ window) is the authorization gate for view restore.
+            expected_pid=None,
+            socket_path=proof.tmux_socket_path,
+        )
+    except TmuxTeamError as exc:
+        raise OperatorError(
+            f"view authorize refused: {exc}",
+            code="E_VIEW_AUTHORIZE",
+            exit_code=2,
+            status=STATUS_MISMATCH,
+            details={
+                "session_id": proof.session_id,
+                "window_id": proof.window_id,
+                "leader_pane_id": proof.leader_pane_id,
+            },
+        ) from exc
+    return proof
+
+
+def plan_and_execute_team_view(
+    root: Path | str,
+    identity: str | None,
+    *,
+    mode: str,
+    as_json: bool = False,
+    takeover: bool = False,
+    is_tty: bool | None = None,
+    worker_id: str | None = None,
+    execute_effects: bool = True,
+) -> dict[str, Any]:
+    """Authorize + plan (+ optionally execute) Team view restoration (#103).
+
+    When *worker_id* is set, delegates to :func:`focus_worker` (#101).
+    Lifecycle locks must not be held across this call's attach path.
+    """
+    from omg_cli.team.view import (
+        ACTION_ATTACH,
+        ACTION_NONE,
+        ACTION_PRINT,
+        ACTION_REFUSE,
+        ACTION_SELECT,
+        ACTION_SWITCH_CLIENT,
+        MODE_NONE,
+        MODE_PRINT,
+        MODE_TAKEOVER,
+        MODE_VIEW,
+        ViewRequest,
+        plan_team_view,
+        view_result_dict,
+    )
+
+    if worker_id:
+        focus = focus_worker(
+            root,
+            identity,
+            worker_id,
+            as_json=as_json,
+            execute=execute_effects and not as_json and mode != MODE_PRINT,
+            is_tty=is_tty,
+        )
+        return {
+            "ok": bool(focus.get("ok", True)),
+            "command": "team.view",
+            "delegated": "team.focus",
+            "view": {
+                "requested": mode != MODE_NONE,
+                "status": "delegated_focus",
+                "worker_id": worker_id,
+                "action": focus.get("mode") or "focus",
+                "pane_id": focus.get("pane_id"),
+                "focused": focus.get("focused"),
+                "attach_hint": focus.get("attach_hint"),
+                "attach_argv": focus.get("attach_argv"),
+            },
+            "focus": focus,
+            "run_id": focus.get("run_id"),
+        }
+
+    proof = resolve_team_view_target(root, identity)
+    auth_error: OperatorError | None = None
+    try:
+        authorize_team_view(proof)
+    except OperatorError as exc:
+        auth_error = exc
+        # Live (non-print) effects raise immediately when not --json.
+        # --json / --print continue so callers get a structured refuse + hint,
+        # but ok must remain false (never drop the error for automation).
+        if mode not in {MODE_PRINT, MODE_NONE} and not as_json:
+            raise
+
+    tty = sys.stdin.isatty() if is_tty is None else bool(is_tty)
+    inside = bool(os.environ.get("TMUX"))
+    current_sid: str | None = None
+    if inside:
+        pane_env = str(os.environ.get("TMUX_PANE") or "").strip() or None
+        current_sid = probe_current_session_id(
+            pane_id=pane_env,
+            socket_path=proof.tmux_socket_path,
+        )
+
+    if as_json or mode == MODE_NONE:
+        req_mode = MODE_NONE
+    elif mode == MODE_PRINT:
+        req_mode = MODE_PRINT
+    elif takeover:
+        req_mode = MODE_TAKEOVER
+    else:
+        req_mode = MODE_VIEW
+
+    request = ViewRequest(
+        mode=req_mode,
+        inside_tmux=inside,
+        is_tty=tty,
+        current_session_id=current_sid,
+        target_session_id=proof.session_id,
+        target_session_name=proof.session,
+        target_window_id=proof.window_id,
+        target_pane_id=proof.leader_pane_id,
+        as_json=as_json,
+        takeover=takeover,
+        socket_path=proof.tmux_socket_path,
+    )
+    plan = plan_team_view(request)
+    requested = mode != MODE_NONE or takeover
+
+    if auth_error is not None:
+        return {
+            "ok": False,
+            "command": "team.view",
+            "run_id": proof.run_id,
+            "view": view_result_dict(
+                plan,
+                requested=requested or as_json,
+                status="refused",
+                mode=proof.mode,
+                executed=False,
+                error=str(auth_error),
+            ),
+            "plan": plan.to_dict(),
+            "print_hint": plan.hint if mode == MODE_PRINT else None,
+            "error": {
+                "code": auth_error.code,
+                "message": str(auth_error),
+                "status": auth_error.status,
+            },
+        }
+
+    # Re-authorize immediately before effect (TOCTOU).
+    if (
+        execute_effects
+        and plan.action in {ACTION_SELECT, ACTION_SWITCH_CLIENT, ACTION_ATTACH}
+    ):
+        try:
+            authorize_team_view(proof)
+        except OperatorError as exc:
+            return {
+                "ok": False,
+                "command": "team.view",
+                "run_id": proof.run_id,
+                "view": view_result_dict(
+                    plan,
+                    requested=requested,
+                    status="refused",
+                    mode=proof.mode,
+                    executed=False,
+                    error=str(exc),
+                ),
+                "error": {
+                    "code": exc.code,
+                    "message": str(exc),
+                    "status": exc.status,
+                },
+            }
+
+    executed = False
+    status = "planned"
+    error: str | None = None
+    effect: dict[str, Any] | None = None
+
+    if plan.action == ACTION_NONE:
+        status = "none"
+    elif plan.action == ACTION_PRINT:
+        status = "print"
+    elif plan.action == ACTION_REFUSE:
+        status = "refused"
+    elif execute_effects and plan.action in {
+        ACTION_SELECT,
+        ACTION_SWITCH_CLIENT,
+        ACTION_ATTACH,
+    }:
+        try:
+            effect = execute_authorized_view(
+                action=plan.action,
+                session_id=proof.session_id,
+                session_name=proof.session,
+                launch_nonce=proof.launch_nonce,
+                window_id=proof.window_id,
+                pane_id=proof.leader_pane_id,
+                expected_pid=None,
+                takeover=takeover or plan.detach_others,
+                socket_path=proof.tmux_socket_path,
+            )
+            executed = bool(effect.get("executed"))
+            status = {
+                ACTION_SELECT: "selected",
+                ACTION_SWITCH_CLIENT: "switched",
+                ACTION_ATTACH: "attached",
+            }.get(plan.action, "ok")
+        except TmuxTeamError as exc:
+            status = "failed"
+            error = str(exc)
+            executed = False
+
+    ok = status not in {"refused", "failed"}
+    if plan.action == ACTION_REFUSE and requested and mode != MODE_PRINT:
+        ok = False
+
+    result: dict[str, Any] = {
+        "ok": ok,
+        "command": "team.view",
+        "run_id": proof.run_id,
+        "team_id": proof.team_id,
+        "generation": proof.generation,
+        "view": view_result_dict(
+            plan,
+            requested=requested,
+            status=status,
+            mode=proof.mode,
+            executed=executed,
+            error=error,
+            extra={"session_owned": proof.session_owned},
+        ),
+        "plan": plan.to_dict(),
+    }
+    if effect is not None:
+        result["effect"] = effect
+    if plan.action == ACTION_PRINT and plan.hint:
+        result["print_hint"] = plan.hint
+    if not ok and error:
+        result["error"] = {"code": "E_VIEW_EFFECT", "message": error}
+    elif not ok and plan.action == ACTION_REFUSE:
+        result["error"] = {
+            "code": "E_VIEW_REFUSED",
+            "message": plan.reason or "view refused",
+        }
+    return result
+
+
 def authorize_key(
     proof: ExactPaneProof,
     key: str,
@@ -691,7 +1064,7 @@ def focus_worker(
     tty = sys.stdin.isatty() if is_tty is None else bool(is_tty)
     inside_tmux = bool(os.environ.get("TMUX"))
     attach_argv = attach_argv_for_target(
-        session=proof.session,
+        session_id=proof.session_id,
         pane_id=proof.pane_id,
         window_id=proof.window_id,
     )
@@ -1160,18 +1533,22 @@ __all__ = [
     "STATUS_LIVE",
     "STATUS_MISMATCH",
     "STATUS_UNKNOWN",
+    "TeamViewProof",
     "audit_operator_event",
     "authorize_capture",
     "authorize_focus",
     "authorize_input",
     "authorize_key",
+    "authorize_team_view",
     "capture_worker",
     "classify_exact_pane_live",
     "focus_worker",
     "input_worker",
     "key_worker",
     "list_panes",
+    "plan_and_execute_team_view",
     "probe_exact_worker",
     "resolve_live_worker",
+    "resolve_team_view_target",
     "watch_worker",
 ]
