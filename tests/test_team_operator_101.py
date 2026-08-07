@@ -40,6 +40,17 @@ TASKS_ONE = [
     }
 ]
 
+TASKS_TWO = [
+    {
+        "task_id": "w1",
+        "owned_files": ["lane_a/"],
+    },
+    {
+        "task_id": "w2",
+        "owned_files": ["lane_b/"],
+    },
+]
+
 
 def _git(cwd: Path, *args: str) -> None:
     subprocess.run(
@@ -424,7 +435,15 @@ def test_key_and_input_audit_no_raw_text(
     effects: list[list[str]] = []
     _install_live_tmux(monkeypatch, live, effects=effects)
 
-    key_worker(root, live_team["run_id"], "w1", "Enter", as_json=False)
+    key_worker(
+        root,
+        live_team["run_id"],
+        "w1",
+        "Enter",
+        as_json=False,
+        operator_override=True,
+        is_tty=False,
+    )
     secret = "continue-with-api-key-ABCDEF"
     out = input_worker(
         root,
@@ -447,6 +466,35 @@ def test_key_and_input_audit_no_raw_text(
     assert "text_sha256" in body
     # send-keys effects present
     assert any(cmd[:1] == ["send-keys"] for cmd in effects)
+
+
+def test_key_requires_tty_or_operator_override(
+    live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = live_team["root"]
+    live = live_team["live"]
+    _install_live_tmux(monkeypatch, live)
+    with pytest.raises(OperatorError) as exc:
+        key_worker(
+            root,
+            live_team["run_id"],
+            "w1",
+            "Enter",
+            is_tty=False,
+            operator_override=False,
+        )
+    assert exc.value.code == "E_OPERATOR_KEY_POLICY"
+    # Override path still delivers.
+    out = key_worker(
+        root,
+        live_team["run_id"],
+        "w1",
+        "Tab",
+        is_tty=False,
+        operator_override=True,
+    )
+    assert out["delivered"] is True
+    assert out["key"] == "Tab"
 
 
 def test_json_refuses_key_and_input(
@@ -505,6 +553,7 @@ def test_toctou_blocks_input_when_identity_flips(
     proof = resolve_live_worker(root, live_team["run_id"], "w1")
     assert probe_exact_worker(proof) == STATUS_LIVE
 
+    # authorize probe LIVE, then mutating re-proof MISMATCH
     states = iter([STATUS_LIVE, STATUS_MISMATCH])
 
     monkeypatch.setattr(
@@ -523,6 +572,105 @@ def test_toctou_blocks_input_when_identity_flips(
         )
     assert exc.value.code == "E_OPERATOR_TOCTOU"
     assert exc.value.status == STATUS_MISMATCH
+
+
+def test_submit_reprobes_before_enter(
+    live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--submit must re-prove identity before Enter; flip after literal blocks it."""
+    root = live_team["root"]
+    live = live_team["live"]
+    effects: list[list[str]] = []
+    _install_live_tmux(monkeypatch, live, effects=effects)
+
+    # authorize LIVE → literal re-proof LIVE → Enter re-proof MISMATCH
+    states = iter([STATUS_LIVE, STATUS_LIVE, STATUS_MISMATCH])
+    monkeypatch.setattr(
+        operator,
+        "probe_exact_worker",
+        lambda _proof: next(states),
+    )
+    with pytest.raises(OperatorError) as exc:
+        input_worker(
+            root,
+            live_team["run_id"],
+            "w1",
+            "hi",
+            submit=True,
+            operator_override=True,
+            is_tty=True,
+        )
+    assert exc.value.code == "E_OPERATOR_TOCTOU"
+    # Literal delivered; Enter must not have been sent.
+    send_cmds = [cmd for cmd in effects if cmd and cmd[0] == "send-keys"]
+    assert any("-l" in cmd for cmd in send_cmds)
+    assert not any(cmd[-1] == "Enter" and "-l" not in cmd for cmd in send_cmds)
+
+
+def test_watch_without_worker_keeps_per_worker_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Shared last_identity/last_text across workers must not false-trigger."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team("op multi", TASKS_TWO, root=tmp_path, dry_run=True)
+    live = _write_live_team(tmp_path, meta, monkeypatch)
+    run_id = str(live["run_id"])
+    _install_live_tmux(monkeypatch, live)
+
+    texts = {
+        "w1": "alpha-stable\n",
+        "w2": "beta-one\n",
+    }
+    call_n = {"n": 0}
+
+    def fake_capture(
+        _root: Any,
+        _identity: Any,
+        wid: str,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        call_n["n"] += 1
+        # Second poll: only w2 text changes; w1 unchanged.
+        if call_n["n"] > 2 and wid == "w2":
+            texts["w2"] = "beta-two\n"
+        body = texts[wid]
+        return {
+            "ok": True,
+            "text": body,
+            "bytes": len(body.encode()),
+            "status": STATUS_LIVE,
+        }
+
+    monkeypatch.setattr(operator, "probe_exact_worker", lambda _p: STATUS_LIVE)
+    monkeypatch.setattr(operator, "capture_worker", fake_capture)
+
+    out = watch_worker(
+        tmp_path,
+        run_id,
+        worker_id=None,  # watch all workers
+        interval_s=0.5,
+        max_iterations=2,
+        sleep_fn=lambda _s: None,
+        as_json=False,
+    )
+    assert out["ok"] is True
+    assert out["stop_reason"] == "max_iterations"
+    events = out["events"] or []
+    # Two workers × two iterations
+    assert len(events) == 4
+    by_worker: dict[str, list[dict[str, Any]]] = {"w1": [], "w2": []}
+    for ev in events:
+        by_worker[str(ev["worker_id"])].append(ev)
+    assert len(by_worker["w1"]) == 2
+    assert len(by_worker["w2"]) == 2
+    # Distinct pane identities must not raise identity_changed across workers.
+    assert by_worker["w1"][0]["pane_id"] != by_worker["w2"][0]["pane_id"]
+    # First poll: both changed (no prior text). Second: only w2 changed.
+    assert by_worker["w1"][0]["changed"] is True
+    assert by_worker["w2"][0]["changed"] is True
+    assert by_worker["w1"][1]["changed"] is False
+    assert by_worker["w2"][1]["changed"] is True
 
 
 def test_watch_stops_on_gone(

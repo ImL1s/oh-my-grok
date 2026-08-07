@@ -842,6 +842,9 @@ def cmd_team(args: argparse.Namespace) -> int:
                         str(worker),
                         str(getattr(args, "key_name", "") or ""),
                         as_json=as_json,
+                        operator_override=bool(
+                            getattr(args, "operator_override", False)
+                        ),
                     )
                     emit_data(args, "team.key", result)
                     return 0
@@ -1746,7 +1749,7 @@ def register_team_parsers(
         parents=[common],
         help=(
             "send one allowlisted key to an exact worker pane (#101); "
-            "--json never delivers"
+            "--json never delivers; requires TTY or --operator-override"
         ),
     )
     _add_team_identity_args(p_t_key)
@@ -1756,6 +1759,12 @@ def register_team_parsers(
         dest="key_name",
         required=True,
         help="allowlisted key (Enter, Escape, Tab, arrows, C-c, …)",
+    )
+    p_t_key.add_argument(
+        "--operator-override",
+        dest="operator_override",
+        action="store_true",
+        help="allow non-TTY key delivery (still audited; not for agents)",
     )
     p_t_key.set_defaults(func=cmd_team, team_action="key")
 

@@ -407,8 +407,21 @@ def authorize_focus(proof: ExactPaneProof, *, status: str | None = None) -> str:
     return live
 
 
-def authorize_key(proof: ExactPaneProof, key: str, *, status: str | None = None) -> str:
+def authorize_key(
+    proof: ExactPaneProof,
+    key: str,
+    *,
+    status: str | None = None,
+    operator_override: bool = False,
+) -> str:
     _require_key_name(key)
+    if not operator_override and not sys.stdin.isatty():
+        raise OperatorError(
+            "pane key requires a TTY or --operator-override "
+            "(prefer omg team api send-message for automation)",
+            code="E_OPERATOR_KEY_POLICY",
+            exit_code=2,
+        )
     live = status if status is not None else probe_exact_worker(proof)
     if live != STATUS_LIVE:
         raise OperatorError(
@@ -693,6 +706,19 @@ def focus_worker(
     return result
 
 
+def _require_mutating_live(proof: ExactPaneProof, *, label: str) -> str:
+    """Re-probe exact identity immediately before one mutating tmux delivery."""
+    status = probe_exact_worker(proof)
+    if status != STATUS_LIVE:
+        raise OperatorError(
+            f"{label} TOCTOU: pane status={status}",
+            code="E_OPERATOR_TOCTOU",
+            exit_code=2 if status == STATUS_MISMATCH else 1,
+            status=status,
+        )
+    return status
+
+
 def key_worker(
     root: Path | str,
     identity: str | None,
@@ -700,6 +726,8 @@ def key_worker(
     key: str,
     *,
     as_json: bool = False,
+    operator_override: bool = False,
+    is_tty: bool | None = None,
 ) -> dict[str, Any]:
     if as_json:
         raise OperatorError(
@@ -709,27 +737,36 @@ def key_worker(
         )
     proof = resolve_live_worker(root, identity, worker_id)
     key_name = _require_key_name(key)
-    status = probe_exact_worker(proof)
-    authorize_key(proof, key_name, status=status)
-    status2 = probe_exact_worker(proof)
-    if status2 != STATUS_LIVE:
-        audit_operator_event(
-            root,
-            proof,
-            action="key",
-            ok=False,
-            key_name=key_name,
-            status=status2,
-            error_code="E_OPERATOR_TOCTOU",
-        )
+    tty = sys.stdin.isatty() if is_tty is None else bool(is_tty)
+    if not operator_override and not tty:
         raise OperatorError(
-            f"key TOCTOU: pane status={status2}",
-            code="E_OPERATOR_TOCTOU",
-            exit_code=2 if status2 == STATUS_MISMATCH else 1,
-            status=status2,
+            "pane key requires a TTY or --operator-override "
+            "(prefer omg team api send-message for automation)",
+            code="E_OPERATOR_KEY_POLICY",
+            exit_code=2,
         )
+    status = probe_exact_worker(proof)
+    authorize_key(
+        proof,
+        key_name,
+        status=status,
+        operator_override=True if tty or operator_override else False,
+    )
     try:
+        _require_mutating_live(proof, label="key")
         send_key(proof.pane_id, key_name)
+    except OperatorError as exc:
+        if exc.code == "E_OPERATOR_TOCTOU":
+            audit_operator_event(
+                root,
+                proof,
+                action="key",
+                ok=False,
+                key_name=key_name,
+                status=exc.status,
+                error_code="E_OPERATOR_TOCTOU",
+            )
+        raise
     except TmuxTeamError as exc:
         audit_operator_event(
             root,
@@ -798,30 +835,28 @@ def input_worker(
         status=status,
         operator_override=True if tty or operator_override else False,
     )
-    status2 = probe_exact_worker(proof)
     text_len = len(safe.encode("utf-8"))
     text_hash = _sha256_text(safe)
-    if status2 != STATUS_LIVE:
-        audit_operator_event(
-            root,
-            proof,
-            action="input",
-            ok=False,
-            text_length=text_len,
-            text_sha256=text_hash,
-            status=status2,
-            error_code="E_OPERATOR_TOCTOU",
-        )
-        raise OperatorError(
-            f"input TOCTOU: pane status={status2}",
-            code="E_OPERATOR_TOCTOU",
-            exit_code=2 if status2 == STATUS_MISMATCH else 1,
-            status=status2,
-        )
     try:
+        # Re-prove before every mutating delivery (literal and optional Enter).
+        _require_mutating_live(proof, label="input")
         send_literal(proof.pane_id, safe)
         if submit:
+            _require_mutating_live(proof, label="input-submit")
             send_key(proof.pane_id, "Enter")
+    except OperatorError as exc:
+        if exc.code == "E_OPERATOR_TOCTOU":
+            audit_operator_event(
+                root,
+                proof,
+                action="input",
+                ok=False,
+                text_length=text_len,
+                text_sha256=text_hash,
+                status=exc.status,
+                error_code="E_OPERATOR_TOCTOU",
+            )
+        raise
     except TmuxTeamError as exc:
         audit_operator_event(
             root,
@@ -892,8 +927,10 @@ def watch_worker(
     sleeper = sleep_fn or time.sleep
     root_path = Path(root).resolve()
     events: list[dict[str, Any]] = []
-    last_text: str | None = None
-    last_identity: tuple[str, int, int] | None = None
+    # Per-worker observation state — never share last_text / last_identity
+    # across workers when watching the whole team (no --worker).
+    last_text_by_worker: dict[str, str | None] = {}
+    last_identity_by_worker: dict[str, tuple[str, int, int]] = {}
     iterations = 0
     stop_reason = "max_iterations"
 
@@ -943,7 +980,8 @@ def watch_worker(
                 }
             status = probe_exact_worker(proof)
             identity_key = (proof.pane_id, proof.attempt, proof.generation)
-            if last_identity is not None and identity_key != last_identity:
+            prev_identity = last_identity_by_worker.get(wid)
+            if prev_identity is not None and identity_key != prev_identity:
                 stop_reason = "identity_changed"
                 event = {
                     "ts": _utc_now_iso(),
@@ -965,7 +1003,7 @@ def watch_worker(
                     "events": events if not as_json else None,
                     "event_count": len(events),
                 }
-            last_identity = identity_key
+            last_identity_by_worker[wid] = identity_key
             if status != STATUS_LIVE:
                 event = {
                     "ts": _utc_now_iso(),
@@ -995,8 +1033,9 @@ def watch_worker(
                 raw=False,
             )
             text = str(snap.get("text") or "")
-            changed = text != last_text
-            last_text = text
+            prev_text = last_text_by_worker.get(wid)
+            changed = text != prev_text
+            last_text_by_worker[wid] = text
             event = {
                 "ts": _utc_now_iso(),
                 "worker_id": wid,
