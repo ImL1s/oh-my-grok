@@ -104,7 +104,7 @@ def test_headless_success_text(fake_agy_path: Path) -> None:
     assert result.returncode == 0
     assert "echo:hello" in result.output
     assert result.argv[1] == "--print"
-    assert result.argv[2] == "hello"
+    assert result.argv[-1] == "hello"
     assert "--dangerously-skip-permissions" not in result.argv
 
 
@@ -179,7 +179,7 @@ def test_cancellation_preserves_partial(
         tmp_path / "bin", stdout="cancel-partial\n", marker=marker
     )
     monkeypatch.setenv("OMG_AGY_BIN", str(path))
-    monkeypatch.setenv("PATH", str(path.parent))
+    monkeypatch.setenv("PATH", str(path.parent) + os.pathsep + os.environ.get("PATH", ""))
     cancel = threading.Event()
 
     def _flip() -> None:
@@ -212,8 +212,8 @@ def test_partial_stderr_on_timeout(
         tmp_path / "bin", stdout="out\n", stderr="err-partial\n"
     )
     monkeypatch.setenv("OMG_AGY_BIN", str(path))
-    monkeypatch.setenv("PATH", str(path.parent))
-    result = run(ProviderRunRequest(prompt="e", timeout_s=0.8))
+    monkeypatch.setenv("PATH", str(path.parent) + os.pathsep + os.environ.get("PATH", ""))
+    result = run(ProviderRunRequest(prompt="e", timeout_s=2.0))
     assert result.timed_out
     assert "err-partial" in result.stderr
 
@@ -262,6 +262,42 @@ def test_empty_json_parse_error() -> None:
 
     with pytest.raises(ProviderRunError, match="empty"):
         parse_json_result("   ")
+
+
+def test_empty_json_stdout_not_success(
+    fake_agy_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.providers.antigravity import run
+    from omg_cli.providers.models import ProviderRunRequest
+
+    monkeypatch.setenv("FAKE_AGY_RUN_STDOUT", "   \n")
+    monkeypatch.setenv("FAKE_AGY_RUN_RC", "0")
+    result = run(
+        ProviderRunRequest(prompt="empty-json", output_format="json", timeout_s=5.0)
+    )
+    assert not result.ok
+    assert result.exit_class == "parse_error"
+    assert result.returncode == 0
+    assert "empty" in result.error_message.lower()
+
+
+def test_empty_stream_json_stdout_not_success(
+    fake_agy_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.providers.antigravity import run
+    from omg_cli.providers.models import ProviderRunRequest
+
+    monkeypatch.setenv("FAKE_AGY_RUN_STDOUT", "\n  \n")
+    monkeypatch.setenv("FAKE_AGY_RUN_RC", "0")
+    result = run(
+        ProviderRunRequest(
+            prompt="empty-stream", output_format="stream-json", timeout_s=5.0
+        )
+    )
+    assert not result.ok
+    assert result.exit_class == "parse_error"
+    assert result.returncode == 0
+    assert "empty" in result.error_message.lower()
 
 
 def test_stream_json_success(
@@ -332,12 +368,65 @@ def test_argv_injection_stays_single_element(fake_agy_path: Path) -> None:
 
     evil = "hello; rm -rf / --output-format json"
     argv = build_run_argv(str(fake_agy_path), evil, output_format="text")
-    assert argv[2] == evil
+    assert argv[-1] == evil
     assert "--output-format" not in argv  # text default omits flag
     result = run(ProviderRunRequest(prompt=evil, timeout_s=5.0))
     assert result.ok
     assert evil in result.output
-    assert result.argv[2] == evil
+    assert result.argv[-1] == evil
+
+
+def test_flags_before_prompt_positional(fake_agy_path: Path) -> None:
+    """Go flag semantics: no --flag may appear after the prompt positional."""
+    from omg_cli.providers.antigravity import (
+        assert_flags_before_prompt,
+        build_run_argv,
+        run,
+    )
+    from omg_cli.providers.errors import ProviderRunError
+    from omg_cli.providers.models import ProviderRunRequest
+
+    argv = build_run_argv(
+        str(fake_agy_path),
+        "prompt-text",
+        output_format="json",
+        model="m1",
+        effort="high",
+        mode="plan",
+        resume_id="conv-9",
+    )
+    # All flags precede the trailing prompt.
+    assert argv[-1] == "prompt-text"
+    assert_flags_before_prompt(argv, "prompt-text")
+    prompt_idx = len(argv) - 1
+    for flag in (
+        "--print",
+        "--output-format",
+        "--model",
+        "--effort",
+        "--mode",
+        "--conversation",
+    ):
+        assert flag in argv
+        assert argv.index(flag) < prompt_idx
+    # Negative: flag after prompt must fail the guard.
+    bad = [str(fake_agy_path), "--print", "prompt-text", "--output-format", "json"]
+    with pytest.raises(ProviderRunError, match="final argv positional|after prompt"):
+        assert_flags_before_prompt(bad, "prompt-text")
+
+    result = run(
+        ProviderRunRequest(
+            prompt="prompt-text",
+            output_format="json",
+            model="m1",
+            timeout_s=5.0,
+        )
+    )
+    assert result.ok
+    assert result.argv[-1] == "prompt-text"
+    assert "--output-format" in result.argv
+    assert result.argv.index("--output-format") < len(result.argv) - 1
+    assert result.argv.index("--output-format") < result.argv.index(result.argv[-1])
 
 
 def test_cjk_prompt_preserved(fake_agy_path: Path) -> None:
@@ -348,7 +437,7 @@ def test_cjk_prompt_preserved(fake_agy_path: Path) -> None:
     result = run(ProviderRunRequest(prompt=prompt, timeout_s=5.0))
     assert result.ok
     assert prompt in result.output
-    assert result.argv[2] == prompt
+    assert result.argv[-1] == prompt
 
 
 def test_cwd_respected(
@@ -541,6 +630,37 @@ def test_auth_block_not_success(
 
     monkeypatch.setenv("FAKE_AGY_RUN_AUTH_BLOCK", "1")
     result = run(ProviderRunRequest(prompt="auth", timeout_s=5.0))
+    assert not result.ok
+    assert result.exit_class == "auth_blocked"
+
+
+def test_auth_prompt_exit0_not_success(
+    fake_agy_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Auth/login cues must not false-green even when returncode is 0."""
+    from omg_cli.providers.antigravity import run
+    from omg_cli.providers.models import ProviderRunRequest
+
+    monkeypatch.setenv("FAKE_AGY_RUN_AUTH_BLOCK", "1")
+    monkeypatch.setenv("FAKE_AGY_RUN_AUTH_EXIT0", "1")
+    result = run(ProviderRunRequest(prompt="auth0", timeout_s=5.0))
+    assert result.returncode == 0
+    assert not result.ok
+    assert result.exit_class == "auth_blocked"
+
+
+def test_auth_prompt_in_stdout_json_exit0(
+    fake_agy_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.providers.antigravity import run
+    from omg_cli.providers.models import ProviderRunRequest
+
+    monkeypatch.setenv("FAKE_AGY_RUN_STDOUT", "Please sign in to continue\n")
+    monkeypatch.setenv("FAKE_AGY_RUN_RC", "0")
+    result = run(
+        ProviderRunRequest(prompt="auth-json", output_format="json", timeout_s=5.0)
+    )
+    assert result.returncode == 0
     assert not result.ok
     assert result.exit_class == "auth_blocked"
 

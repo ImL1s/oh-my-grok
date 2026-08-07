@@ -66,19 +66,86 @@ def _float_env(name: str, default: float = 0.0) -> float:
 
 
 def _flag_value(args: list[str], *names: str) -> str | None:
-    """Return the argv value following the first matching flag name."""
-    for i, tok in enumerate(args):
+    """Return the argv value following the first matching flag name.
+
+    Stops at the first non-flag positional (Go semantics: flags after the
+    prompt positional are ignored / invalid for our contract).
+    """
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        if not tok.startswith("-"):
+            break
         if tok in names and i + 1 < len(args):
             return args[i + 1]
         for name in names:
             prefix = name + "="
             if tok.startswith(prefix):
                 return tok[len(prefix) :]
+        # Known value-taking flags consume the next token when present.
+        if tok in {
+            "--output-format",
+            "--model",
+            "--effort",
+            "--mode",
+            "--conversation",
+            "--agent",
+            "--project",
+            "--json-schema",
+            "--log-file",
+            "--print-timeout",
+            "--add-dir",
+        }:
+            i += 2
+            continue
+        # Boolean / presence flags (including --print / -p / --prompt).
+        i += 1
     return None
 
 
 def _has_flag(args: list[str], *names: str) -> bool:
-    return any(tok in names or any(tok.startswith(n + "=") for n in names) for tok in args)
+    for tok in args:
+        if not tok.startswith("-"):
+            break
+        if tok in names or any(tok.startswith(n + "=") for n in names):
+            return True
+    return False
+
+
+def _prompt_positional(args: list[str]) -> str | None:
+    """Return the trailing prompt positional; enforce flags-before-prompt."""
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        if not tok.startswith("-"):
+            prompt = tok
+            # Any later --flag is a contract violation (Go would ignore it).
+            for later in args[i + 1 :]:
+                if later.startswith("-"):
+                    sys.stderr.write(
+                        f"fake_agy: flag {later!r} after prompt positional "
+                        f"(flags must precede prompt)\n"
+                    )
+                    return None
+            return prompt
+        if tok in {
+            "--output-format",
+            "--model",
+            "--effort",
+            "--mode",
+            "--conversation",
+            "--agent",
+            "--project",
+            "--json-schema",
+            "--log-file",
+            "--print-timeout",
+            "--add-dir",
+        }:
+            i += 2
+            continue
+        # --print / -p / --prompt are boolean mode flags (prompt is positional).
+        i += 1
+    return None
 
 
 def _synthesize_run_stdout(*, prompt: str, output_format: str) -> str:
@@ -125,9 +192,18 @@ def _synthesize_run_stdout(*, prompt: str, output_format: str) -> str:
 
 
 def _handle_print(args: list[str]) -> int:
-    prompt = _flag_value(args, "--print", "-p", "--prompt")
+    if not _has_flag(args, "--print", "-p", "--prompt"):
+        sys.stderr.write("fake_agy: missing --print/-p/--prompt mode flag\n")
+        return 2
+
+    prompt = _prompt_positional(args)
     if prompt is None:
-        sys.stderr.write("fake_agy: missing prompt after --print/-p/--prompt\n")
+        # Distinguish missing prompt vs flag-after-prompt (stderr already set).
+        if any(
+            (not t.startswith("-")) for t in args
+        ) and any(t.startswith("-") for t in args[1:]):
+            return 2
+        sys.stderr.write("fake_agy: missing prompt positional after flags\n")
         return 2
 
     output_format = (_flag_value(args, "--output-format") or "text").strip().lower()
@@ -137,6 +213,10 @@ def _handle_print(args: list[str]) -> int:
 
     if _truthy("FAKE_AGY_RUN_AUTH_BLOCK"):
         sys.stderr.write("Please sign in to continue (auth required)\n")
+        # Default non-zero; FAKE_AGY_RUN_AUTH_EXIT0 forces exit 0 false-green shape.
+        if _truthy("FAKE_AGY_RUN_AUTH_EXIT0"):
+            sys.stdout.write("Please sign in to continue (auth required)\n")
+            return 0
         return 1
 
     sleep_s = _float_env("FAKE_AGY_RUN_SLEEP", 0.0)

@@ -14,7 +14,7 @@ import re
 import shutil
 import threading
 from pathlib import Path
-from typing import Any, Final, Mapping
+from typing import Any, Final, Mapping, Sequence
 
 from omg_cli.providers.errors import (
     ProviderBinaryMissing,
@@ -112,6 +112,7 @@ _BOUNDED_ENV_KEYS: Final[frozenset[str]] = frozenset(
         "FAKE_AGY_RUN_STDERR",
         "FAKE_AGY_RUN_PARTIAL",
         "FAKE_AGY_RUN_AUTH_BLOCK",
+        "FAKE_AGY_RUN_AUTH_EXIT0",
         "FAKE_AGY_RUN_SESSION",
         "FAKE_AGY_RUN_RESUME",
         "FAKE_AGY_RUN_MALFORMED",
@@ -687,14 +688,18 @@ def build_run_argv(
 ) -> list[str]:
     """Assemble headless ``agy`` argv (list only; never a shell string).
 
+    Go flag semantics: once the first positional (prompt) appears, later
+    ``--flags`` are ignored. Therefore **every** flag must precede the prompt.
+
     Least-permissive by default: no ``--dangerously-skip-permissions``.
     ``session_id`` is execution metadata and is not injected into argv;
     use ``resume_id`` → ``--conversation`` for resume.
     """
     if output_format not in _OUTPUT_FORMATS:
         raise ProviderRunError(f"unsupported output_format: {output_format!r}")
-    # Prompt is one argv element — shell metacharacters / CJK stay literal.
-    argv: list[str] = [binary, "--print", prompt]
+    # Flags first; prompt is the sole trailing positional (one argv element —
+    # shell metacharacters / CJK stay literal).
+    argv: list[str] = [binary, "--print"]
     if output_format != "text":
         argv.extend(["--output-format", output_format])
     if model:
@@ -705,7 +710,32 @@ def build_run_argv(
         argv.extend(["--mode", mode])
     if resume_id:
         argv.extend(["--conversation", resume_id])
+    argv.append(prompt)
     return argv
+
+
+def assert_flags_before_prompt(argv: Sequence[str], prompt: str) -> None:
+    """Fail closed if any ``--flag`` (or ``-x``) appears after the prompt positional.
+
+    The prompt is the trailing positional (last matching token). Go flag
+    semantics ignore flags after the first positional — this guard keeps our
+    argv contract honest in hermetic tests and before spawn.
+    """
+    positions = [i for i, tok in enumerate(argv) if tok == prompt]
+    if not positions:
+        raise ProviderRunError("prompt missing from argv")
+    idx = positions[-1]
+    if idx != len(argv) - 1:
+        raise ProviderRunError(
+            "prompt must be the final argv positional "
+            f"(tail={list(argv[idx:])!r})"
+        )
+    # Vacuous when prompt is last; still scan for clarity / future edits.
+    for tok in argv[idx + 1 :]:
+        if tok.startswith("-"):
+            raise ProviderRunError(
+                f"flag {tok!r} appears after prompt positional (Go flag order)"
+            )
 
 
 def _usage_from_mapping(raw: Any) -> ProviderUsage | None:
@@ -861,9 +891,9 @@ def parse_stream_json(
     return output, tuple(events), usage, meta, had_malformed
 
 
-def _looks_auth_blocked(stdout: str, stderr: str, returncode: int) -> bool:
-    if returncode == 0:
-        return False
+def _looks_auth_blocked(stdout: str, stderr: str, returncode: int = 0) -> bool:
+    """True when auth/login prompts appear — including exit 0 false-greens."""
+    del returncode  # auth cues are content-based; exit code must not clear them
     blob = f"{stdout}\n{stderr}"
     return bool(_AUTH_HINT_RE.search(blob))
 
@@ -922,6 +952,8 @@ def run(request: ProviderRunRequest) -> ProviderRunResult:
         resume_id=request.resume_id,
         session_id=request.session_id,
     )
+    # Contract: no --flag after the prompt positional (Go flag semantics).
+    assert_flags_before_prompt(argv, prompt)
 
     try:
         proc = _run_provider_argv(
@@ -956,13 +988,11 @@ def run(request: ProviderRunRequest) -> ProviderRunResult:
     parse_error = False
     error_message = ""
 
-    if fmt == "json" and stdout.strip():
-        try:
-            output, events, usage, meta = parse_json_result(stdout)
-        except ProviderRunError as exc:
+    if fmt == "json":
+        # Fail closed: empty/whitespace structured output is never success.
+        if not stdout.strip():
             parse_error = True
-            error_message = str(exc)
-            output = stdout
+            error_message = "empty json output"
             events = (
                 ProviderRunEvent(
                     type="parse_error",
@@ -972,13 +1002,43 @@ def run(request: ProviderRunRequest) -> ProviderRunResult:
                     malformed=True,
                 ),
             )
-    elif fmt == "stream-json" and (stdout or partial):
-        output, events, usage, meta, had_malformed = parse_stream_json(
-            stdout, truncated=proc.stdout_truncated or partial
-        )
-        if had_malformed:
+        else:
+            try:
+                output, events, usage, meta = parse_json_result(stdout)
+            except ProviderRunError as exc:
+                parse_error = True
+                error_message = str(exc)
+                output = stdout
+                events = (
+                    ProviderRunEvent(
+                        type="parse_error",
+                        payload={},
+                        raw=stdout,
+                        index=0,
+                        malformed=True,
+                    ),
+                )
+    elif fmt == "stream-json":
+        if not stdout.strip():
+            # Same fail-closed contract as json (even on returncode 0).
             parse_error = True
-            error_message = "malformed stream-json event(s)"
+            error_message = "empty stream-json output"
+            events = (
+                ProviderRunEvent(
+                    type="parse_error",
+                    payload={},
+                    raw=stdout,
+                    index=0,
+                    malformed=True,
+                ),
+            )
+        else:
+            output, events, usage, meta, had_malformed = parse_stream_json(
+                stdout, truncated=proc.stdout_truncated or partial
+            )
+            if had_malformed:
+                parse_error = True
+                error_message = "malformed stream-json event(s)"
     elif fmt == "text":
         output = stdout
 
@@ -1069,6 +1129,7 @@ __all__ = [
     "TESTED_MIN_STR",
     "AntigravityProvider",
     "build_run_argv",
+    "assert_flags_before_prompt",
     "classify_compat",
     "discover_binary",
     "doctor",
