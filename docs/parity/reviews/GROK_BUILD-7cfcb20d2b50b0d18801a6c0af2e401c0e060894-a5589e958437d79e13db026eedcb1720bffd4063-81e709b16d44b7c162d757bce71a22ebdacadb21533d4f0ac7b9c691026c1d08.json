@@ -5,7 +5,7 @@
   "from_revision": "7cfcb20d2b50b0d18801a6c0af2e401c0e060894",
   "to_revision": "a5589e958437d79e13db026eedcb1720bffd4063",
   "generated_at": "2026-08-07T12:00:00Z",
-  "change_digest": "fe572ba447c089b9c0bcc5d880d4a4e653b41e14d60c14a913d259944b45008e",
+  "change_digest": "81e709b16d44b7c162d757bce71a22ebdacadb21533d4f0ac7b9c691026c1d08",
   "changes": [
     {
       "change_kind": "added",
@@ -180,6 +180,24 @@
           "promise": "Full-script permission display and Ctrl-F expansion for long Bash commands",
           "maturity": "catalogued",
           "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.plan.approval_model_switching",
+      "detail": {
+        "after": {
+          "id": "grok.plan.approval_model_switching",
+          "classification": "consumed_downstream",
+          "category": "workflow",
+          "promise": "Plan-approval flow supports model switching without breaking plan/approval UX contracts",
+          "maturity": "catalogued",
+          "source_commit": "ed6d543643628663873c5de28298e022ed634238",
           "source_paths": [
             "CHANGELOG.md"
           ]
@@ -725,11 +743,12 @@
   },
   "host_baseline": {
     "snapshot_path": "docs/parity/upstream-snapshots/grok-build.json",
-    "snapshot_hash": "2f29e9474b9b86d3cd9caf02ea4af9c5a2d2a6eec1b24ea42b7a77858eb0ca45",
-    "generated_docs_hash": "60337462e06e869999fe6dc0afb27840fb75a82f61c21a5564af060a9d004de6",
+    "snapshot_hash": "3eed15cc2d0583447fb9ad0fa30ec58cef320e6b6eb5d289995ae987091a87b0",
+    "generated_docs_hash": "fe0b985573f4bcc624921a7a315e9c5c65c27dae86d99209b51ebfdd15a385b3",
     "reviewed_pin": "a5589e958437d79e13db026eedcb1720bffd4063",
     "previous_pin": "7cfcb20d2b50b0d18801a6c0af2e401c0e060894",
     "release": "0.2.121",
-    "classification_complete": true
+    "classification_complete": true,
+    "missing_required_capability_ids": []
   }
 }

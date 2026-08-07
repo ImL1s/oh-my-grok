@@ -32,6 +32,22 @@ def test_canonical_host_snapshot_schema_valid() -> None:
     assert snapshot["source_revision"] == "4d6d11372ab8f73026a78c45a7b7e7b1310eb39f"
 
 
+def test_host_catalogue_includes_plan_approval_model_switching() -> None:
+    """Issue #105 ed6d543 release delta must remain classified."""
+    snapshot = validate_host_baseline_snapshot(_fixture_snapshot())
+    ids = {cap["id"] for cap in snapshot["capabilities"]}
+    assert "grok.plan.approval_model_switching" in ids
+    row = next(
+        cap
+        for cap in snapshot["capabilities"]
+        if cap["id"] == "grok.plan.approval_model_switching"
+    )
+    assert row["classification"] == "consumed_downstream"
+    assert row["evidence"]["source_commit"] == (
+        "ed6d543643628663873c5de28298e022ed634238"
+    )
+
+
 def test_host_catalogue_classifications_complete() -> None:
     snapshot = validate_host_baseline_snapshot(_fixture_snapshot())
     classes = {cap["classification"] for cap in snapshot["capabilities"]}

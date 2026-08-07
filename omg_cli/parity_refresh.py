@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from omg_cli.contracts.parity_schema import (
+    HOST_BASELINE_CLASSIFICATIONS,
     HOST_BASELINE_PIN_ID,
     SOURCE_STATUS_IDS,
     UPSTREAM_PIN_IDS,
@@ -23,6 +24,18 @@ from omg_cli.contracts.state_schemas import (
     require_nonempty_string,
     require_object,
     require_string_list,
+)
+
+# Release-note deltas that must appear in every host-baseline catalogue for the
+# current pin transition (extend when issue #105 classifies more required rows).
+REQUIRED_HOST_BASELINE_CAPABILITY_IDS = frozenset(
+    {
+        "grok.plan.approval_model_switching",
+        "grok.session.acp_resume_no_replay",
+        "grok.session.acp_close",
+        "grok.workflow.parallel_child_cap",
+        "grok.mcp.image_before_truncation",
+    }
 )
 
 COMMITTED_REVIEWS_RELATIVE = "docs/parity/reviews"
@@ -581,6 +594,20 @@ def build_host_baseline_refresh_plan(
         label="generated_at",
     )
     snap_hash = snapshot_hash or host_snapshot_content_hash(snapshot)
+    classified_ids = {
+        str(cap["id"])
+        for cap in snapshot["capabilities"]
+        if isinstance(cap, dict)
+        and cap.get("classification") in HOST_BASELINE_CLASSIFICATIONS
+    }
+    missing_required = sorted(REQUIRED_HOST_BASELINE_CAPABILITY_IDS - classified_ids)
+    unclassified = [
+        str(cap.get("id"))
+        for cap in snapshot["capabilities"]
+        if isinstance(cap, dict)
+        and cap.get("classification") not in HOST_BASELINE_CLASSIFICATIONS
+    ]
+    classification_complete = not missing_required and not unclassified
     return {
         "store_kind": "parity_refresh_review",
         "schema_version": 1,
@@ -605,7 +632,8 @@ def build_host_baseline_refresh_plan(
             "reviewed_pin": to_revision,
             "previous_pin": from_revision,
             "release": snapshot["release"],
-            "classification_complete": True,
+            "classification_complete": classification_complete,
+            "missing_required_capability_ids": missing_required,
         },
     }
 

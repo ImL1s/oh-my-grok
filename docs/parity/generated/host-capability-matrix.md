@@ -16,6 +16,7 @@ Pin `a5589e958437d79e13db026eedcb1720bffd4063` / release `0.2.121` (catalogue-on
 | `grok.mcp.disabled_servers_visible` | mcp | `host_owned` | `catalogued` | — | Disabled-but-re-enableable MCP servers remain visible |
 | `grok.mcp.image_before_truncation` | mcp | `consumed_downstream` | `catalogued` | #73, #75 | MCP image outputs are extracted before large-output truncation |
 | `grok.permissions.full_script_expandable` | permissions | `host_owned` | `catalogued` | — | Full-script permission display and Ctrl-F expansion for long Bash commands |
+| `grok.plan.approval_model_switching` | workflow | `consumed_downstream` | `catalogued` | #74, #69 | Plan-approval flow supports model switching without breaking plan/approval UX contracts |
 | `grok.prompt_queue.lossless_ordered` | queue | `consumed_downstream` | `catalogued` | #68, #69 | Rapid send-now and messages queued while waiting on subagents preserve earlier entries |
 | `grok.prompt_queue.reorderable` | queue | `consumed_downstream` | `catalogued` | #68, #69 | Queued prompts, slash commands, and images can be reordered |
 | `grok.prompt_queue.visible_while_waiting` | queue | `consumed_downstream` | `catalogued` | #68, #69 | Plain queued prompts remain visible/reachable while waiting |

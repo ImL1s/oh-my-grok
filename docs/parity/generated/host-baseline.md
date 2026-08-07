@@ -18,7 +18,7 @@ Rows start at `catalogued` unless a later PR promotes them with deterministic or
 ## Classification counts
 
 - `host_owned`: 20
-- `consumed_downstream`: 18
+- `consumed_downstream`: 19
 - `irrelevant`: 1
 
 ## Notes

@@ -546,6 +546,27 @@
       ]
     },
     {
+      "id": "grok.plan.approval_model_switching",
+      "category": "workflow",
+      "classification": "consumed_downstream",
+      "owner": "host",
+      "runtime": "grok",
+      "status": "catalogued",
+      "maturity": "catalogued",
+      "promise": "Plan-approval flow supports model switching without breaking plan/approval UX contracts",
+      "evidence": {
+        "source_commit": "ed6d543643628663873c5de28298e022ed634238",
+        "source_paths": [
+          "CHANGELOG.md"
+        ],
+        "notes": "Catalogue-only for PR1; OMG plan/approval consumers must not assume a frozen model mid-approval. Downstream adoption tracked with session/plan resume work."
+      },
+      "downstream_issues": [
+        "#74",
+        "#69"
+      ]
+    },
+    {
       "id": "grok.prompt_queue.lossless_ordered",
       "category": "queue",
       "classification": "consumed_downstream",
