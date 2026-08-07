@@ -811,6 +811,69 @@ def topology_sha256(snapshot: TopologySnapshot | Mapping[str, Any]) -> str:
     return sha256_hex(canonical_json_bytes(payload))
 
 
+@dataclass(frozen=True)
+class ViewTarget:
+    """Exact Team view target derived from a :class:`TopologySnapshot` (#103).
+
+    Leader pane by default. Never invents targets from index/title/focus.
+    """
+
+    mode: str
+    session_name: str
+    session_id: str
+    launch_nonce: str
+    session_owned: bool
+    window_id: str | None
+    leader_pane_id: str
+    leader_pane_pid: int | None
+    owner_token_sha256: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "session_name": self.session_name,
+            "session_id": self.session_id,
+            "launch_nonce": self.launch_nonce,
+            "session_owned": self.session_owned,
+            "window_id": self.window_id,
+            "leader_pane_id": self.leader_pane_id,
+            "leader_pane_pid": self.leader_pane_pid,
+            "owner_token_sha256": self.owner_token_sha256,
+        }
+
+
+def resolve_view_target(snapshot: TopologySnapshot) -> ViewTarget:
+    """Resolve the exact Team window + leader pane from topology authority.
+
+    Fail closed when leader pane or session identity is missing. Does not
+    call tmux or re-parse team.json.
+    """
+    if not isinstance(snapshot, TopologySnapshot):
+        raise TopologyError("resolve_view_target requires TopologySnapshot")
+    anchor = validate_topology_anchor(snapshot.anchor)
+    leader = anchor.leader_pane_id
+    if not isinstance(leader, str) or _PANE_ID_RE.fullmatch(leader) is None:
+        raise TopologyError(
+            "view target refused: topology missing exact leader_pane_id"
+        )
+    window_id = anchor.team_window_id
+    if window_id is not None and _WINDOW_ID_RE.fullmatch(window_id) is None:
+        raise TopologyError(
+            f"view target refused: non-exact team_window_id {window_id!r}"
+        )
+    return ViewTarget(
+        mode=anchor.mode,
+        session_name=anchor.session_name,
+        session_id=anchor.session_id,
+        launch_nonce=anchor.launch_nonce,
+        session_owned=anchor.session_owned,
+        window_id=window_id,
+        leader_pane_id=leader,
+        leader_pane_pid=anchor.leader_pane_pid,
+        owner_token_sha256=anchor.owner_token_sha256,
+    )
+
+
 def placement_target_for_add(snapshot: TopologySnapshot) -> PlacementTarget:
     """Exact placement for scale-up under the persisted topology mode."""
     anchor = snapshot.anchor
@@ -931,6 +994,7 @@ __all__ = [
     "VIEW_MODE_LEGACY_WINDOWS",
     "VIEW_MODE_SAME_WINDOW",
     "VIEW_MODES",
+    "ViewTarget",
     "build_topology_snapshot",
     "clamp_main_vertical_leader_width",
     "derive_worker_stack",
@@ -940,6 +1004,7 @@ __all__ = [
     "placement_target_for_relaunch",
     "resolve_launch_view_mode",
     "resolve_persisted_view_mode",
+    "resolve_view_target",
     "topology_sha256",
     "validate_topology_anchor",
 ]

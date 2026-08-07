@@ -586,20 +586,137 @@ def cmd_team(args: argparse.Namespace) -> int:
                 )
             return 0
         if action == "resume":
-            from omg_cli.team.runtime import resume_for_identity
+            from omg_cli.team.operator import OperatorError
+            from omg_cli.team.runtime import resume_for_identity, resume_with_view
 
             identity = getattr(args, "team_identity", None) or getattr(
                 args, "run_id", None
             )
-            result = resume_for_identity(root, identity)
-            # Always JSON (operator machine-readable); --json kept for symmetry.
-            emit_data(args, "team", result)
-            if result.get("layout_repair_needed"):
+            as_json = bool(
+                getattr(args, "as_json", False)
+                or getattr(args, "json_output", False)
+            )
+            want_view = bool(getattr(args, "resume_view", False))
+            print_only = bool(getattr(args, "view_print", False))
+            takeover = bool(getattr(args, "view_takeover", False))
+            worker = getattr(args, "worker_id", None)
+            if print_only and not want_view:
+                # resume --print implies view print without reconcile? No —
+                # --print on resume only makes sense with --view.
                 print(
-                    "warning: resume completed with layout_repair_needed=true "
-                    f"(status={result.get('layout_status')!r})",
+                    "omg team resume: --print requires --view "
+                    "(or use omg team view --print)",
                     file=sys.stderr,
                 )
+                return 2
+            if takeover and not want_view:
+                print(
+                    "omg team resume: --takeover requires --view",
+                    file=sys.stderr,
+                )
+                return 2
+            try:
+                if want_view or print_only:
+                    result = resume_with_view(
+                        root,
+                        identity,
+                        view=want_view or print_only,
+                        print_only=print_only,
+                        takeover=takeover,
+                        as_json=as_json,
+                        worker_id=str(worker) if worker else None,
+                    )
+                else:
+                    # Default: reconcile-only; never touches tmux clients.
+                    result = resume_for_identity(root, identity)
+            except OperatorError as exc:
+                emit_data(
+                    args,
+                    "team.resume",
+                    {
+                        "ok": False,
+                        "error": {
+                            "code": exc.code,
+                            "message": str(exc),
+                            **({"status": exc.status} if exc.status else {}),
+                        },
+                    },
+                )
+                return exc.exit_code
+            # Always JSON (operator machine-readable); --json kept for symmetry.
+            emit_data(args, "team", result)
+            if result.get("layout_repair_needed") or (
+                isinstance(result.get("reconcile"), dict)
+                and result["reconcile"].get("layout_repair_needed")
+            ):
+                layout_status = result.get("layout_status")
+                if isinstance(result.get("reconcile"), dict):
+                    layout_status = result["reconcile"].get(
+                        "layout_status", layout_status
+                    )
+                print(
+                    "warning: resume completed with layout_repair_needed=true "
+                    f"(status={layout_status!r})",
+                    file=sys.stderr,
+                )
+            if want_view or print_only:
+                view = result.get("view") or {}
+                if print_only and result.get("print_hint"):
+                    print(result["print_hint"])
+                if as_json:
+                    # --json never attaches; exit 0 if reconcile ok.
+                    return 0
+                if not result.get("ok", True):
+                    return 2 if view.get("status") == "refused" else 1
+            return 0
+
+        if action == "view":
+            from omg_cli.team.operator import OperatorError
+            from omg_cli.team.runtime import view_team
+
+            identity = getattr(args, "team_identity", None) or getattr(
+                args, "run_id", None
+            )
+            as_json = bool(
+                getattr(args, "as_json", False)
+                or getattr(args, "json_output", False)
+            )
+            print_only = bool(getattr(args, "view_print", False))
+            takeover = bool(getattr(args, "view_takeover", False))
+            worker = getattr(args, "worker_id", None)
+            try:
+                result = view_team(
+                    root,
+                    identity,
+                    print_only=print_only,
+                    takeover=takeover,
+                    as_json=as_json,
+                    worker_id=str(worker) if worker else None,
+                )
+            except OperatorError as exc:
+                emit_data(
+                    args,
+                    "team.view",
+                    {
+                        "ok": False,
+                        "error": {
+                            "code": exc.code,
+                            "message": str(exc),
+                            **({"status": exc.status} if exc.status else {}),
+                        },
+                    },
+                )
+                return exc.exit_code
+            if as_json:
+                emit_data(args, "team.view", result)
+                return 0 if result.get("ok", True) or print_only else 2
+            if print_only and result.get("print_hint"):
+                print(result["print_hint"])
+                return 0
+            emit_data(args, "team.view", result)
+            if not result.get("ok", True):
+                view = result.get("view") or {}
+                return 2 if view.get("status") == "refused" else 1
             return 0
 
         if action == "status":
@@ -1611,7 +1728,8 @@ def register_team_parsers(
         parents=[common],
         help=(
             "reconcile team.json pane liveness after leader restart "
-            "(idempotent status write; never sets verified)"
+            "(idempotent status write; never sets verified; "
+            "default never attaches — pass --view to restore tmux view)"
         ),
     )
     p_t_resume.add_argument(
@@ -1622,6 +1740,33 @@ def register_team_parsers(
     )
     p_t_resume.add_argument(
         "--run", dest="run_id", default=None, help="team run_id"
+    )
+    p_t_resume.add_argument(
+        "--view",
+        dest="resume_view",
+        action="store_true",
+        help=(
+            "after reconcile, restore exact Team window/leader pane "
+            "(never implied by TTY or --json)"
+        ),
+    )
+    p_t_resume.add_argument(
+        "--print",
+        dest="view_print",
+        action="store_true",
+        help="with --view: print exact tmux argv only (no client effect)",
+    )
+    p_t_resume.add_argument(
+        "--takeover",
+        dest="view_takeover",
+        action="store_true",
+        help="with --view: attach-session -d (detaches other clients)",
+    )
+    p_t_resume.add_argument(
+        "--worker",
+        dest="worker_id",
+        default=None,
+        help="with --view: focus exact worker pane via #101 instead of leader",
     )
     # --json inherited from common → json_output (handler maps to as_json)
     p_t_resume.set_defaults(func=cmd_team, team_action="resume")
@@ -1758,6 +1903,35 @@ def register_team_parsers(
             required=required,
             help="worker / task id (exact Team worker)",
         )
+
+    p_t_view = team_sub.add_parser(
+        "view",
+        parents=[common],
+        help=(
+            "restore exact Team tmux view without reconcile/relaunch (#103); "
+            "--json never attaches; --print prints argv only"
+        ),
+    )
+    _add_team_identity_args(p_t_view)
+    p_t_view.add_argument(
+        "--print",
+        dest="view_print",
+        action="store_true",
+        help="print exact tmux attach/switch/select argv without executing",
+    )
+    p_t_view.add_argument(
+        "--takeover",
+        dest="view_takeover",
+        action="store_true",
+        help="outside tmux: attach-session -d (detaches other clients)",
+    )
+    p_t_view.add_argument(
+        "--worker",
+        dest="worker_id",
+        default=None,
+        help="focus exact worker pane via #101 instead of leader",
+    )
+    p_t_view.set_defaults(func=cmd_team, team_action="view")
 
     p_t_panes = team_sub.add_parser(
         "panes",

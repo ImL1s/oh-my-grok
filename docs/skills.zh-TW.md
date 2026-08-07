@@ -190,7 +190,7 @@ omg accept --yes
 **生命週期（D4）：**
 
 - **`omg team scale --run ID --add N|--remove N [--dry-run]`** — 在 run 目錄 **scale lock** 下動態加/減 pane。Live scale-up 在副作用前先發布按 generation 分隔的不可變 **WAL**，再以 `@omg_scale_nonce` + rename 綁定 window，並 **fail-closed ownership readback**（精確 `display-message`；不單靠可變的 `session:index`）。未提交的 scale-up WAL 或未來 **identity-receipt** generation 會擋住 dry-run add、remove、resume/relaunch、collect/join/integrate、stop，直到原 op recovery 完成。`--add` 受 `max_workers_cap()` 與單調 window index 限制；`--remove` 首次優雅排空（idle/newest），recovery 綁定 **receipt 受害者**（錯誤的 `--remove N` 會 fail-closed 並帶 generation + task id），只殺記錄的 pgid + 已認證 pane（**不**殺 session、**禁止** `pkill -f`），標記 `scaled_down` 並保留 worktree；active 不可低於 1。Meta 提交若失去成功路徑，以 identity readback 分為 committed / not_committed / unknown（不以 volatile 的 `last_scale.actions` 單獨判定）。**不是**執行 sandbox — 見 `docs/security-model.md`。
-- **`omg team resume --run ID`** — 同一 scale lock 下重讀 `team.json`；若 relaunch WAL 待處理，先做精確 relaunch recovery，再做 pane 存活對帳（冪等 status 寫入）。仍符合 receipt 身分的 remain-on-exit dead pane，process 不在時可清理後提交為 `needs_collect`。
+- **`omg team resume --run ID`** — 同一 scale lock 下重讀 `team.json`；若 relaunch WAL 待處理，先做精確 relaunch recovery，再做 pane 存活對帳（冪等 status 寫入）。仍符合 receipt 身分的 remain-on-exit dead pane，process 不在時可清理後提交為 `needs_collect`。**預設絕不 attach / 切換 tmux client**（腳本安全）。加 `--view` 在釋放 lifecycle lock 後恢復精確 Team window/leader（同 session `select-*`、跨 session `switch-client`、TTY 外 `attach-session`；`--takeover` 才加 `-d`；`--json` 永不執行 view）。`omg team view` 只恢復視圖不做 reconcile/relaunch；`--print` 只列印 argv。reconcile / provider-session / tmux-view 結果分開回報。
 
 ```bash
 omg team start --goal "平行修 A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --dry-run
@@ -198,6 +198,8 @@ omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]'
 omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --ralph --max-iter 2 --dry-run
 omg team scale --run RUN --add 2 --dry-run
 omg team resume --run RUN
+omg team resume --run RUN --view
+omg team view --run RUN --print
 omg team status --run RUN --json
 omg team collect --run RUN   # seal_all_tasks + integrate；永不 verified
 omg team stop --run RUN      # 只殺記錄的 session + pgid（禁止 pkill -f）

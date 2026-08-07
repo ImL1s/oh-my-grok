@@ -4890,11 +4890,13 @@ def attach_argv_for_target(
     session: str,
     pane_id: str,
     window_id: str | None = None,
+    takeover: bool = False,
 ) -> list[str]:
     """Return a safe argv hint for attaching then selecting a proved pane.
 
     tmux parses ``;`` itself (no shell). ``window_id`` is validated when present
-    but targeting always uses the exact ``%N`` pane id.
+    but targeting always uses the exact ``%N`` pane id. ``takeover=True`` adds
+    ``attach-session -d`` (explicit only — never the default).
     """
     _require_exact_pane_id(pane_id)
     if (
@@ -4907,14 +4909,282 @@ def attach_argv_for_target(
     if window_id is not None:
         if not isinstance(window_id, str) or _TMUX_WINDOW_ID.fullmatch(window_id) is None:
             raise TmuxTeamError(f"refused non-exact window id {window_id!r}")
-    # Command separator is a tmux client token, not a shell metacharacter.
-    return [
-        "tmux",
-        "attach-session",
-        "-t",
-        session,
-        ";",
-        "select-pane",
-        "-t",
-        pane_id,
-    ]
+    argv: list[str] = ["tmux", "attach-session"]
+    if takeover:
+        argv.append("-d")
+    argv.extend(["-t", session, ";"])
+    if isinstance(window_id, str) and window_id:
+        argv.extend(["select-window", "-t", window_id, ";"])
+    argv.extend(["select-pane", "-t", pane_id])
+    return argv
+
+
+def select_window(
+    window_id: str,
+    *,
+    socket_path: str | None = None,
+) -> None:
+    """Select an exact window (``select-window -t @N``)."""
+    if not tmux_available():
+        raise TmuxTeamError("tmux is required for window select")
+    if not isinstance(window_id, str) or _TMUX_WINDOW_ID.fullmatch(window_id) is None:
+        raise TmuxTeamError(f"refused non-exact window id {window_id!r}")
+    result = _tmux_run(
+        ["select-window", "-t", window_id], socket_path=socket_path
+    )
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()[:200]
+        raise TmuxTeamError(f"select-window failed: {err}")
+
+
+def switch_client(
+    session_id: str,
+    *,
+    socket_path: str | None = None,
+) -> None:
+    """Switch the current client to an exact session (``$N``). Never attach."""
+    if not tmux_available():
+        raise TmuxTeamError("tmux is required for switch-client")
+    if not isinstance(session_id, str) or _TMUX_SESSION_ID.fullmatch(session_id) is None:
+        raise TmuxTeamError(f"refused non-exact session id {session_id!r}")
+    result = _tmux_run(
+        ["switch-client", "-t", session_id], socket_path=socket_path
+    )
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()[:200]
+        raise TmuxTeamError(f"switch-client failed: {err}")
+
+
+def probe_current_session_id(
+    *,
+    pane_id: str | None = None,
+    socket_path: str | None = None,
+) -> str | None:
+    """Return the current client's ``session_id`` (``$N``) or ``None``."""
+    if not tmux_available():
+        return None
+    argv: list[str] = ["display-message", "-p"]
+    if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id):
+        argv.extend(["-t", pane_id])
+    argv.append("#{session_id}")
+    result = _tmux_run(argv, socket_path=socket_path)
+    if result.returncode != 0:
+        return None
+    sid = (result.stdout or "").strip()
+    if _TMUX_SESSION_ID.fullmatch(sid) is None:
+        return None
+    return sid
+
+
+def prove_view_target_live(
+    *,
+    session_id: str,
+    session_name: str,
+    launch_nonce: str,
+    window_id: str | None,
+    pane_id: str,
+    expected_pid: int | None = None,
+    socket_path: str | None = None,
+) -> dict[str, Any]:
+    """Re-probe exact Team view identity immediately before a client effect.
+
+    Proves session id/name, optional window, pane, and launch nonce. Nonce may
+    live on the pane or the Team window (leader panes in same_window often
+    carry only the window-scoped stamp). Never falls back to current
+    focus/index/title.
+    """
+    if not tmux_available():
+        raise TmuxTeamError("tmux is required for view target proof")
+    target = _require_exact_pane_id(pane_id)
+    if _TMUX_SESSION_ID.fullmatch(session_id) is None:
+        raise TmuxTeamError(f"refused non-exact session id {session_id!r}")
+    if (
+        not isinstance(session_name, str)
+        or not session_name
+        or "\0" in session_name
+        or any(ch.isspace() for ch in session_name)
+    ):
+        raise TmuxTeamError(f"refused unsafe session name {session_name!r}")
+    if not isinstance(launch_nonce, str) or not launch_nonce:
+        raise TmuxTeamError("view proof requires launch_nonce")
+    if window_id is not None and _TMUX_WINDOW_ID.fullmatch(window_id) is None:
+        raise TmuxTeamError(f"refused non-exact window id {window_id!r}")
+
+    probe = _tmux_run(
+        [
+            "display-message",
+            "-p",
+            "-t",
+            target,
+            "#{pane_id}\t#{session_id}\t#{session_name}\t#{window_id}\t"
+            "#{pane_pid}\t#{pane_dead}",
+        ],
+        socket_path=socket_path,
+    )
+    parts = (probe.stdout or "").strip().split("\t")
+    if probe.returncode != 0 or len(parts) < 6:
+        raise TmuxTeamError(f"view target pane missing or unreadable: {target}")
+    got_pane, got_sid, got_name, got_wid, got_pid, dead = parts[:6]
+    if got_pane != target:
+        raise TmuxTeamError(
+            f"view target pane id drift (expected {target!r} got {got_pane!r})"
+        )
+    if got_sid != session_id:
+        raise TmuxTeamError(
+            f"view target session_id mismatch "
+            f"(expected {session_id!r} got {got_sid!r})"
+        )
+    if got_name != session_name:
+        raise TmuxTeamError(
+            f"view target session_name mismatch "
+            f"(expected {session_name!r} got {got_name!r})"
+        )
+    if window_id is not None and got_wid != window_id:
+        raise TmuxTeamError(
+            f"view target window_id mismatch "
+            f"(expected {window_id!r} got {got_wid!r})"
+        )
+    if dead != "0":
+        raise TmuxTeamError(f"view target pane is dead: {target}")
+    try:
+        pid = int(got_pid)
+    except ValueError as exc:
+        raise TmuxTeamError(f"invalid view target pane pid {got_pid!r}") from exc
+    if pid <= 0:
+        raise TmuxTeamError(f"non-positive view target pane pid {pid}")
+    if expected_pid is not None and pid != expected_pid:
+        raise TmuxTeamError(
+            f"view target pane pid mismatch "
+            f"(expected {expected_pid} got {pid})"
+        )
+
+    # Launch nonce: pane option first, then exact Team window (never session
+    # fallback for inside/shared sessions — would race concurrent Teams).
+    nonce: str | None = None
+    pane_nonce = _tmux_run(
+        ["show-options", "-p", "-v", "-t", target, "@omg_launch_nonce"],
+        socket_path=socket_path,
+    )
+    if pane_nonce.returncode == 0:
+        candidate = (pane_nonce.stdout or "").strip()
+        if candidate:
+            nonce = candidate
+    if nonce is None and isinstance(window_id, str) and window_id:
+        win_nonce = _tmux_run(
+            ["show-options", "-w", "-v", "-t", window_id, "@omg_launch_nonce"],
+            socket_path=socket_path,
+        )
+        if win_nonce.returncode == 0:
+            candidate = (win_nonce.stdout or "").strip()
+            if candidate:
+                nonce = candidate
+    if nonce is None and window_id is None:
+        # Detached session-owned Teams may stamp session option only.
+        sess_nonce = _tmux_run(
+            ["show-options", "-v", "-t", session_id, "@omg_launch_nonce"],
+            socket_path=socket_path,
+        )
+        if sess_nonce.returncode == 0:
+            candidate = (sess_nonce.stdout or "").strip()
+            if candidate:
+                nonce = candidate
+    if nonce != launch_nonce:
+        raise TmuxTeamError(
+            f"view target launch_nonce mismatch "
+            f"(expected {launch_nonce!r} got {nonce!r})"
+        )
+    return {
+        "pane_id": got_pane,
+        "session_id": got_sid,
+        "session_name": got_name,
+        "window_id": got_wid,
+        "pane_pid": pid,
+        "launch_nonce": nonce,
+    }
+
+
+def execute_authorized_view(
+    *,
+    action: str,
+    session_id: str,
+    session_name: str,
+    launch_nonce: str,
+    window_id: str | None,
+    pane_id: str,
+    expected_pid: int | None = None,
+    takeover: bool = False,
+    socket_path: str | None = None,
+) -> dict[str, Any]:
+    """Identity-gated view effect: re-probe then select/switch/attach.
+
+    ``ATTACH`` uses argv-only ``subprocess.run`` (shell=False) so the
+    interactive session can return after detach; never holds a lifecycle lock.
+    """
+    action_u = str(action or "").upper()
+    if action_u in {"NONE", "PRINT", "REFUSE"}:
+        return {"executed": False, "action": action_u}
+
+    prove_view_target_live(
+        session_id=session_id,
+        session_name=session_name,
+        launch_nonce=launch_nonce,
+        window_id=window_id,
+        pane_id=pane_id,
+        expected_pid=expected_pid,
+        socket_path=socket_path,
+    )
+
+    if action_u == "SELECT":
+        if isinstance(window_id, str) and window_id:
+            select_window(window_id, socket_path=socket_path)
+        focus_pane(pane_id, socket_path=socket_path)
+        return {"executed": True, "action": action_u, "mode": "select"}
+
+    if action_u == "SWITCH_CLIENT":
+        switch_client(session_id, socket_path=socket_path)
+        # Re-probe after switch (TOCTOU fence).
+        prove_view_target_live(
+            session_id=session_id,
+            session_name=session_name,
+            launch_nonce=launch_nonce,
+            window_id=window_id,
+            pane_id=pane_id,
+            expected_pid=expected_pid,
+            socket_path=socket_path,
+        )
+        if isinstance(window_id, str) and window_id:
+            select_window(window_id, socket_path=socket_path)
+        focus_pane(pane_id, socket_path=socket_path)
+        return {"executed": True, "action": action_u, "mode": "switch-client"}
+
+    if action_u == "ATTACH":
+        argv = attach_argv_for_target(
+            session=session_name,
+            pane_id=pane_id,
+            window_id=window_id,
+            takeover=takeover,
+        )
+        # Final re-probe immediately before attach handoff.
+        prove_view_target_live(
+            session_id=session_id,
+            session_name=session_name,
+            launch_nonce=launch_nonce,
+            window_id=window_id,
+            pane_id=pane_id,
+            expected_pid=expected_pid,
+            socket_path=socket_path,
+        )
+        result = subprocess.run(argv, check=False, shell=False)
+        if result.returncode != 0:
+            raise TmuxTeamError(
+                f"attach-session failed exit={result.returncode}"
+            )
+        return {
+            "executed": True,
+            "action": action_u,
+            "mode": "attach",
+            "attach_exit": result.returncode,
+            "attach_argv": argv,
+        }
+
+    raise TmuxTeamError(f"unsupported view action {action_u!r}")
