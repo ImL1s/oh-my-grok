@@ -71,6 +71,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remains open for slices B–D.
 
 ### Fixed
+- **#104 B1 leader operator visibility:** `_restore_leader_focus` now
+  `select-window -t %pane` then `select-pane` so session `window_active`
+  flips (select-pane alone is window-local). Postconditions require
+  `window_active=1`; real-tmux asserts + negative self-check reject the
+  hollow window-local `pane_active` check. Hermetic CI excludes
+  `tmux_real` (`not live and not tmux_real`); dedicated artifact upload
+  uses `if-no-files-found: error`.
 - **#104 misleading dedicated-window unit test name:** renamed
   `test_inside_tmux_splits_current_window` →
   `test_inside_dedicated_window_uses_new_window` so it no longer reads as

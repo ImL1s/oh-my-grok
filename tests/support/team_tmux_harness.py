@@ -103,11 +103,41 @@ class ForeignClient:
 
     session_name: str
     proc: subprocess.Popen[str] | None = None
+    # Socket path for select-window fallback (avoid forward-ref to server class).
+    socket_path: str | None = None
+
+    def select_window(self, window_id: str) -> None:
+        """Switch the shared session's current window (multi-client race)."""
+        if self.proc is not None and self.proc.stdin is not None:
+            try:
+                self.proc.stdin.write(f"select-window -t {window_id}\n")
+                self.proc.stdin.flush()
+                return
+            except (BrokenPipeError, OSError):
+                pass
+        if not self.socket_path:
+            raise RuntimeError("ForeignClient missing socket_path for select-window")
+        proc = subprocess.run(
+            ["tmux", "-S", self.socket_path, "select-window", "-t", window_id],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"foreign select-window failed: {(proc.stderr or proc.stdout or '').strip()}"
+            )
 
     def close(self) -> None:
         if self.proc is None:
             return
         try:
+            if self.proc.stdin is not None:
+                try:
+                    self.proc.stdin.write("detach-client\n")
+                    self.proc.stdin.flush()
+                except (BrokenPipeError, OSError):
+                    pass
             self.proc.terminate()
             self.proc.wait(timeout=2)
         except Exception:
@@ -437,7 +467,12 @@ class LeaderSession:
         return capture_topology(self.server, session=self.session_name)
 
     def capture_focus(self, window_id: str | None = None) -> str | None:
-        """Return the active pane id in *window_id* (default: leader window)."""
+        """Return the active pane id in *window_id* (default: leader window).
+
+        NOTE: this is window-local ``pane_active`` only — a non-visible window
+        still has an active pane. Prefer :meth:`assert_leader_operator_visible`
+        for operator visibility contracts (#104 B1).
+        """
         if self.leader is None:
             raise RuntimeError("leader not created")
         wid = window_id or self.leader.window_id
@@ -453,6 +488,52 @@ class LeaderSession:
             if len(parts) == 2 and parts[1] == "1":
                 return parts[0]
         return None
+
+    def window_is_session_active(self, window_id: str) -> bool:
+        """True iff *window_id* is the session's current (visible) window."""
+        proc = self.server.require_ok(
+            "display-message",
+            "-p",
+            "-t",
+            window_id,
+            "#{window_active}",
+        )
+        return (proc.stdout or "").strip() == "1"
+
+    def session_active_window_id(self) -> str | None:
+        if self.leader is None:
+            raise RuntimeError("leader not created")
+        proc = self.server.require_ok(
+            "list-windows",
+            "-t",
+            self.session_name,
+            "-F",
+            "#{window_id}\t#{window_active}",
+        )
+        for line in (proc.stdout or "").splitlines():
+            parts = line.split("\t")
+            if len(parts) == 2 and parts[1] == "1":
+                return parts[0]
+        return None
+
+    def assert_leader_operator_visible(self, expected: LeaderPane) -> None:
+        """Require session-visible leader window + active pane == leader pane.
+
+        Guards against the hollow check that only inspects window-local
+        ``pane_active`` while a foreign window is what the operator sees.
+        """
+        if not self.window_is_session_active(expected.window_id):
+            current = self.session_active_window_id()
+            raise AssertionError(
+                "leader window is not session-visible "
+                f"(want {expected.window_id}, session active={current!r})"
+            )
+        active_pane = self.capture_focus(expected.window_id)
+        if active_pane != expected.pane_id:
+            raise AssertionError(
+                "leader window active pane mismatch "
+                f"(want {expected.pane_id}, got {active_pane!r})"
+            )
 
     def create_foreign_window(self, *, name: str = "foreign") -> ForeignWindow:
         """Extra window in the same session (must survive Team launch)."""
@@ -513,7 +594,13 @@ class LeaderSession:
         )
 
     def attach_second_client(self) -> ForeignClient:
-        """Attach a control-mode client (does not steal interactive tty)."""
+        """Attach a control-mode client; wait until list-clients sees it."""
+        before = self.server.tmux(
+            "list-clients", "-F", "#{client_tty}\t#{session_name}"
+        )
+        before_n = len(
+            [ln for ln in (before.stdout or "").splitlines() if ln.strip()]
+        )
         proc = subprocess.Popen(
             [
                 "tmux",
@@ -529,7 +616,25 @@ class LeaderSession:
             stderr=subprocess.PIPE,
             text=True,
         )
-        return ForeignClient(session_name=self.session_name, proc=proc)
+        client = ForeignClient(
+            session_name=self.session_name,
+            proc=proc,
+            socket_path=self.server.socket_path,
+        )
+
+        def _attached() -> bool:
+            cur = self.server.tmux(
+                "list-clients", "-F", "#{client_tty}\t#{session_name}"
+            )
+            n = len([ln for ln in (cur.stdout or "").splitlines() if ln.strip()])
+            return n > before_n
+
+        try:
+            wait_until(_attached, timeout_s=5.0, label="second client attach")
+        except TimeoutError:
+            client.close()
+            raise
+        return client
 
     def select_window(self, window_id: str) -> None:
         self.server.require_ok("select-window", "-t", window_id)

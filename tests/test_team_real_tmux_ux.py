@@ -124,6 +124,7 @@ def test_same_window_launch_keeps_leader_visible_and_focused(
     foreign = leader.create_foreign_window(name="keep-me")
     before = leader.leader
     assert before is not None
+    leader.select_window(before.window_id)
     _bind_leader(monkeypatch, leader)
     install_fixture_provider(monkeypatch, provider_script("ready_provider.py"))
 
@@ -140,7 +141,9 @@ def test_same_window_launch_keeps_leader_visible_and_focused(
         live_leader = next(p for p in leader_panes if p.pane_id == before.pane_id)
         assert live_leader.pane_pid == before.pane_pid
         assert live_leader.pane_dead is False
-        assert leader.capture_focus(before.window_id) == before.pane_id
+        # Session-visible leader window + active pane (not window-local only).
+        assert leader.window_is_session_active(before.window_id) is True
+        leader.assert_leader_operator_visible(before)
         foreign_alive = tmux_server.tmux(
             "display-message",
             "-p",
@@ -156,6 +159,39 @@ def test_same_window_launch_keeps_leader_visible_and_focused(
         stop_team(repo, meta["run_id"])
 
 
+def test_leader_visibility_assertion_fails_when_foreign_window_selected(
+    tmux_server: IsolatedTmuxServer,
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Negative self-check: window-local pane_active must not satisfy visibility.
+
+    After switching to a foreign window, ``capture_focus(leader_window)`` still
+    returns the leader pane, but ``assert_leader_operator_visible`` must fail
+    because ``window_active != 1`` (#104 B1 mutation).
+    """
+    leader = _leader(tmux_server)
+    foreign = leader.create_foreign_window(name="keep-me")
+    before = leader.leader
+    assert before is not None
+    leader.select_window(before.window_id)
+    _bind_leader(monkeypatch, leader)
+    install_fixture_provider(monkeypatch, provider_script("ready_provider.py"))
+
+    meta = launch_team_inside(root=repo, leader=leader, workers=1)
+    try:
+        leader.assert_leader_operator_visible(before)
+        leader.select_window(foreign.window_id)
+        # Hollow old check still "passes":
+        assert leader.capture_focus(before.window_id) == before.pane_id
+        assert leader.window_is_session_active(before.window_id) is False
+        assert leader.window_is_session_active(foreign.window_id) is True
+        with pytest.raises(AssertionError, match="not session-visible"):
+            leader.assert_leader_operator_visible(before)
+    finally:
+        stop_team(repo, meta["run_id"])
+
+
 def test_same_window_cli_launch_from_leader_tmux_env(
     tmux_server: IsolatedTmuxServer,
     repo: Path,
@@ -166,6 +202,7 @@ def test_same_window_cli_launch_from_leader_tmux_env(
     leader = _leader(tmux_server)
     before = leader.leader
     assert before is not None
+    leader.select_window(before.window_id)
     env = {
         EXPERIMENTAL_ENV: "1",
         "OMG_TEAM_FIXTURE_HOLD_S": "20",
@@ -195,8 +232,8 @@ def test_same_window_cli_launch_from_leader_tmux_env(
         run_id = str(meta["run_id"])
         topo = leader.capture_topology()
         assert before.pane_id in topo.pane_ids
-        assert leader.capture_focus(before.window_id) == before.pane_id
         assert sum(1 for p in topo.panes if p.window_id == before.window_id) == 3
+        leader.assert_leader_operator_visible(before)
     finally:
         if run_id:
             stop_team(repo, run_id)
@@ -212,27 +249,43 @@ def test_foreign_client_window_switch_does_not_redirect_launch(
     repo: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Second attached client switches away; launch still binds TMUX_PANE window."""
     leader = _leader(tmux_server)
     foreign = leader.create_foreign_window(name="distractor")
     before = leader.leader
     assert before is not None
+    leader.select_window(before.window_id)
     _bind_leader(monkeypatch, leader)
     install_fixture_provider(monkeypatch, provider_script("ready_provider.py"))
 
-    leader.select_window(foreign.window_id)
-    meta = launch_team_inside(root=repo, leader=leader, workers=2)
+    client = leader.attach_second_client()
     try:
-        topo = leader.capture_topology()
-        leader_window_panes = [
-            p for p in topo.panes if p.window_id == before.window_id
-        ]
-        assert len(leader_window_panes) == 3
-        assert before.pane_id in {p.pane_id for p in leader_window_panes}
-        foreign_panes = [p for p in topo.panes if p.window_id == foreign.window_id]
-        assert len(foreign_panes) == 1
-        assert foreign_panes[0].pane_id == foreign.pane_id
+        client.select_window(foreign.window_id)
+        wait_until(
+            lambda: leader.window_is_session_active(foreign.window_id),
+            timeout_s=3.0,
+            label="foreign window session-active",
+        )
+        assert leader.window_is_session_active(before.window_id) is False
+
+        meta = launch_team_inside(root=repo, leader=leader, workers=2)
+        try:
+            topo = leader.capture_topology()
+            leader_window_panes = [
+                p for p in topo.panes if p.window_id == before.window_id
+            ]
+            assert len(leader_window_panes) == 3
+            assert before.pane_id in {p.pane_id for p in leader_window_panes}
+            foreign_panes = [
+                p for p in topo.panes if p.window_id == foreign.window_id
+            ]
+            assert len(foreign_panes) == 1
+            assert foreign_panes[0].pane_id == foreign.pane_id
+            leader.assert_leader_operator_visible(before)
+        finally:
+            stop_team(repo, meta["run_id"])
     finally:
-        stop_team(repo, meta["run_id"])
+        client.close()
 
 
 def test_pre_side_effect_failpoint_creates_zero_workers(

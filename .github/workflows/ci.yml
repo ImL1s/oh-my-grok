@@ -50,7 +50,7 @@ jobs:
           python scripts/generate_capabilities_lock.py --check
           python scripts/check_version_consistency.py --check
       - name: Hermetic unit/integration
-        run: python -m pytest -q -m "not live" --tb=short
+        run: python -m pytest -q -m "not live and not tmux_real" --tb=short
       - name: Static Python checks
         # #24: one entrypoint; no hand-picked file lists (see scripts/static_checks.sh).
         run: bash scripts/static_checks.sh
@@ -91,7 +91,7 @@ jobs:
         with:
           name: team-real-tmux-linux-artifacts
           path: /tmp/omg104-artifacts/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
 
   # Early #25 / P3A-25-MACOS-EARLY: one focused macOS job (not a full matrix).
@@ -155,5 +155,5 @@ jobs:
         with:
           name: team-real-tmux-macos-artifacts
           path: /tmp/omg104-artifacts/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7

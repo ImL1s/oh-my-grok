@@ -398,6 +398,9 @@ def test_inside_dedicated_window_uses_new_window(
             raise AssertionError(f"bare split-window forbidden: {args}")
         if cmd == "select-layout":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == "select-window":
+            assert args[-1] == "%9"
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "select-pane":
             assert args[-1] == "%9"
             return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -451,6 +454,7 @@ def test_inside_dedicated_window_uses_new_window(
         c[0] == "if-shell" and "split-window" in " ".join(c) for c in calls
     )
     assert not any(c[0] == "split-window" for c in calls)
+    assert any(c == ["select-window", "-t", "%9"] for c in calls)
     assert any(c == ["select-pane", "-t", "%9"] for c in calls)
     assert not any(c[0] == "new-session" for c in calls)
     assert not any(c[0] == "kill-session" for c in calls)
@@ -483,7 +487,7 @@ def test_inside_same_window_default_never_calls_new_window(
             if target == "%9" and "pane_active" in fmt:
                 return SimpleNamespace(
                     returncode=0,
-                    stdout="$42\t@3\t%9\t4242\t1\n",
+                    stdout="$42\t@3\t%9\t4242\t1\t1\n",
                     stderr="",
                 )
             if target == "%9":
@@ -520,7 +524,7 @@ def test_inside_same_window_default_never_calls_new_window(
         if cmd == "select-layout":
             assert "main-vertical" in joined
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd == "select-pane":
+        if cmd in ("select-window", "select-pane"):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "set-option":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -587,7 +591,7 @@ def test_inside_same_window_preserves_exact_leader_identity_and_selection(
             fmt = argv[-1]
             if "pane_active" in fmt:
                 return SimpleNamespace(
-                    returncode=0, stdout="$42\t@3\t%9\t777\t1\n", stderr=""
+                    returncode=0, stdout="$42\t@3\t%9\t777\t1\t1\n", stderr=""
                 )
             if target == "%9":
                 return SimpleNamespace(
@@ -606,7 +610,7 @@ def test_inside_same_window_preserves_exact_leader_identity_and_selection(
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "select-layout":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd == "select-pane":
+        if cmd in ("select-window", "select-pane"):
             select_targets.append(argv[-1])
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd in ("set-option", "show-options"):
@@ -624,6 +628,7 @@ def test_inside_same_window_preserves_exact_leader_identity_and_selection(
         session="s", tasks=tasks, env_pairs=[], attach_mode="inside"
     )
     assert select_targets[-1] == "%9"
+    assert "%9" in select_targets
     assert tasks[0]["_tmux_launch"]["leader_pane_pid"] == 777
 
 
@@ -655,7 +660,7 @@ def test_inside_same_window_layout_main_vertical_with_clamped_width(
             if target == "%9":
                 if "pane_active" in fmt:
                     return SimpleNamespace(
-                        returncode=0, stdout="$42\t@3\t%9\t4242\t1\n", stderr=""
+                        returncode=0, stdout="$42\t@3\t%9\t4242\t1\t1\n", stderr=""
                     )
                 return SimpleNamespace(
                     returncode=0, stdout="leader\t$42\t@3\t%9\t4242\n", stderr=""
@@ -683,7 +688,7 @@ def test_inside_same_window_layout_main_vertical_with_clamped_width(
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "select-layout":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd in ("select-pane", "set-option", "show-options"):
+        if cmd in ("select-window", "select-pane", "set-option", "show-options"):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd in ("new-window", "kill-window"):
             raise AssertionError(f"forbidden on same_window layout path: {argv}")
@@ -832,7 +837,7 @@ def test_inside_dedicated_window_opt_in_preserves_window_wal(
             return SimpleNamespace(returncode=0, stdout="%11\n", stderr="")
         if cmd == "split-window":
             raise AssertionError(f"bare split-window forbidden: {args}")
-        if cmd in ("select-layout", "select-pane", "set-option"):
+        if cmd in ("select-layout", "select-window", "select-pane", "set-option"):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
 
@@ -2163,7 +2168,7 @@ def test_inside_new_window_stamps_window_id_on_launch_wal(
             assert len(intents) == 1
             stamped.append(json.loads(intents[0].read_text(encoding="utf-8")))
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd == "select-pane":
+        if cmd in ("select-window", "select-pane"):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
 
@@ -2627,7 +2632,7 @@ def test_new_window_gated_by_wal_server_identity(
             )
         if cmd == "select-layout":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd == "select-pane":
+        if cmd in ("select-window", "select-pane"):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
 
@@ -3275,7 +3280,7 @@ def test_bind_failure_still_publishes_window_id_for_cleanup(
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "select-layout":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd == "select-pane":
+        if cmd in ("select-window", "select-pane"):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
 
@@ -3438,7 +3443,7 @@ def test_new_window_nonzero_with_atN_stdout_binds_and_keeps_wal(
             )
         if cmd == "select-layout":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd == "select-pane":
+        if cmd in ("select-window", "select-pane"):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "list-windows":
             return SimpleNamespace(returncode=0, stdout="@88\n", stderr="")
@@ -3549,7 +3554,7 @@ def test_nonce_ack_refused_when_readback_misses_created_handles(
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "select-layout":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd == "select-pane":
+        if cmd in ("select-window", "select-pane"):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == "list-windows":
             return SimpleNamespace(returncode=0, stdout="@88\n", stderr="")
