@@ -186,9 +186,15 @@ omg team launch --workers 2 --role executor --goal "map A and B" --dry-run
 # pane_created → provider_spawned → provider_ready → task_dispatched
 # (optional mailbox_ack enrichment). Legacy worker-ready v1 receipts are
 # wrapper_ready_legacy only and cannot produce startup_status=running.
-# Timeout knob: OMG_TEAM_READY_TIMEOUT_MS (default 45000). Partial/zero/
-# blocked_start leaves state for diagnosis and exits non-zero (no silent
-# dry-run fallback). --no-wait → unverified_start only.
+# process_stable requires live provider binary identity (cmdline/exe
+# basename); a mislabeled ``python -c sleep`` cannot green. After
+# provisional ready, a bounded post-stable observe window catches delayed
+# auth/trust (TUI idle uses a longer floor). Auth that appears *after*
+# finalize is out of that window by design — not an infinite watch
+# (#101 pane input is separate). Timeout knob: OMG_TEAM_READY_TIMEOUT_MS
+# (default 45000). Partial/zero/blocked_start leaves state for diagnosis
+# and exits non-zero (no silent dry-run fallback). --no-wait →
+# unverified_start only.
 # Attach: inside tmux → new window + split (shared session; stop never
 # kill-session). Outside TTY → new session + `tmux attach -t …` hint.
 # Non-interactive without --detach fails closed.

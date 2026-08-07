@@ -42,6 +42,7 @@ class ProviderReadinessStrategy(Protocol):
         capture_lines: Sequence[str],
         elapsed_s: float,
         env: Mapping[str, str] | None = None,
+        identity_matched: bool = False,
     ) -> ReadinessObservation: ...
 
 
@@ -85,6 +86,7 @@ class _BaseStrategy:
         capture_lines: Sequence[str],
         elapsed_s: float,
         env: Mapping[str, str] | None = None,
+        identity_matched: bool = False,
     ) -> ReadinessObservation:
         text = _joined(capture_lines)
         if not alive:
@@ -107,7 +109,8 @@ class _BaseStrategy:
                 blocked_reason=BlockedReason.TRUST.value,
                 detail="trust/hooks review prompt detected",
             )
-        if _ERROR_RE.search(text) and elapsed_s < 2.0:
+        # Fatal/error output always fails closed (no elapsed grace — N2/#99).
+        if _ERROR_RE.search(text):
             return ReadinessObservation(
                 status="failed",
                 evidence_code=EvidenceCode.MALFORMED.value,
@@ -117,16 +120,28 @@ class _BaseStrategy:
             # Weak TUI idle markers (including ``>`` / ``grok>``) are only
             # provisional — delayed auth/trust often prints after a prompt
             # glyph (#99 re-review). Never finalize immediately on these.
+            # Finalizing still requires provider binary identity (#99 B1).
+            if not identity_matched:
+                return ReadinessObservation(
+                    status="pending",
+                    evidence_code=EvidenceCode.TUI_IDLE_PROMPT.value,
+                    detail=(
+                        "idle marker seen but provider binary identity "
+                        "does not match; not provisional"
+                    ),
+                )
             return ReadinessObservation(
                 status="provisional",
                 evidence_code=EvidenceCode.TUI_IDLE_PROMPT.value,
                 detail="idle/input-ready marker observed; post-stable observe required",
             )
         # Known providers: process-alive through a stability interval is only
-        # *provisional* — supervisor must keep observing for delayed auth/trust
-        # before finalizing provider_ready + task_dispatched (#99 review).
+        # *provisional* when the live process identity matches the expected
+        # provider binary — a random ``python -c sleep`` labeled grok must
+        # not green via process_stable (#99 B1 / Pro review).
         if (
             getattr(self, "allow_process_stable", False)
+            and identity_matched
             and elapsed_s >= self.stability_s
             and alive
         ):
@@ -136,7 +151,12 @@ class _BaseStrategy:
                 detail="provider process stable; post-stable observe required",
             )
         force = (env or os.environ).get("OMG_TEAM_PROVIDER_STABLE_READY")
-        if force == "1" and elapsed_s >= self.stability_s and alive:
+        if (
+            force == "1"
+            and identity_matched
+            and elapsed_s >= self.stability_s
+            and alive
+        ):
             return ReadinessObservation(
                 status="provisional",
                 evidence_code=EvidenceCode.PROCESS_STABLE.value,
@@ -145,7 +165,11 @@ class _BaseStrategy:
         return ReadinessObservation(
             status="pending",
             evidence_code=EvidenceCode.PROCESS_STABLE.value,
-            detail="waiting for provider readiness evidence",
+            detail=(
+                "waiting for provider readiness evidence"
+                if identity_matched
+                else "waiting for provider binary identity match"
+            ),
         )
 
 
@@ -199,6 +223,7 @@ class FixtureStrategy:
         capture_lines: Sequence[str],
         elapsed_s: float,
         env: Mapping[str, str] | None = None,
+        identity_matched: bool = False,
     ) -> ReadinessObservation:
         text = _joined(capture_lines)
         if not alive:
@@ -230,6 +255,7 @@ class FakeReadyStrategy:
         capture_lines: Sequence[str],
         elapsed_s: float,
         env: Mapping[str, str] | None = None,
+        identity_matched: bool = False,
     ) -> ReadinessObservation:
         if not alive:
             return ReadinessObservation(
@@ -255,6 +281,7 @@ class FakeBlockedStrategy:
         capture_lines: Sequence[str],
         elapsed_s: float,
         env: Mapping[str, str] | None = None,
+        identity_matched: bool = False,
     ) -> ReadinessObservation:
         reason = (env or os.environ).get("OMG_TEAM_FAKE_BLOCKED_REASON") or "auth"
         if reason == "trust":
@@ -281,6 +308,7 @@ class FakeExitStrategy:
         capture_lines: Sequence[str],
         elapsed_s: float,
         env: Mapping[str, str] | None = None,
+        identity_matched: bool = False,
     ) -> ReadinessObservation:
         return ReadinessObservation(
             status="failed",
@@ -300,6 +328,7 @@ class FakeTimeoutStrategy:
         capture_lines: Sequence[str],
         elapsed_s: float,
         env: Mapping[str, str] | None = None,
+        identity_matched: bool = False,
     ) -> ReadinessObservation:
         if not alive:
             return ReadinessObservation(
@@ -327,6 +356,7 @@ class UnknownStrategy:
         capture_lines: Sequence[str],
         elapsed_s: float,
         env: Mapping[str, str] | None = None,
+        identity_matched: bool = False,
     ) -> ReadinessObservation:
         if not alive:
             return ReadinessObservation(

@@ -18,7 +18,12 @@ provider child, records exact provider PID/PGID/start identity, and advances
 monotonic phases (`pane_created` → `provider_spawned` → `provider_ready` →
 `task_dispatched`; optional `mailbox_ack`). Only workers that reach the
 configured gate (default `task_dispatched`) with a **live** provider identity
-contribute to `startup_status=running`. Legacy `omg team worker-ready` v1
+contribute to `startup_status=running`. `process_stable` also requires the
+live cmdline/exe basename to match the expected provider binary (or an
+explicit descriptor allowlist) — a mislabeled silent process cannot green.
+Provisional ready keeps a bounded post-stable observe window for delayed
+auth/trust (TUI idle uses a longer floor); auth *after* that finalize window
+is out of scope (not an infinite watch). Legacy `omg team worker-ready` v1
 receipts are `wrapper_ready_legacy` only and **cannot** false-green a new
 launch. Mailbox `ACK` is optional enrichment and cannot elevate a dead or
 unspawned provider. Auth/trust prompts → `blocked_start`. Timeout:

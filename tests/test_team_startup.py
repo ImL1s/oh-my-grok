@@ -705,9 +705,41 @@ def test_grok_tui_idle_markers_are_provisional() -> None:
             alive=True,
             capture_lines=[line],
             elapsed_s=0.1,
+            identity_matched=True,
         )
         assert obs.status == "provisional", line
         assert obs.evidence_code == EvidenceCode.TUI_IDLE_PROMPT.value
+    # Without provider binary identity, idle glyphs must not provisional-green.
+    denied = GrokStrategy().observe(
+        provider_pid=1,
+        alive=True,
+        capture_lines=[">"],
+        elapsed_s=0.1,
+        identity_matched=False,
+    )
+    assert denied.status == "pending"
+
+
+def test_process_stable_requires_identity_match() -> None:
+    from omg_cli.team.provider_ready import GrokStrategy
+
+    matched = GrokStrategy().observe(
+        provider_pid=1,
+        alive=True,
+        capture_lines=[],
+        elapsed_s=1.0,
+        identity_matched=True,
+    )
+    assert matched.status == "provisional"
+    assert matched.evidence_code == EvidenceCode.PROCESS_STABLE.value
+    mismatched = GrokStrategy().observe(
+        provider_pid=1,
+        alive=True,
+        capture_lines=[],
+        elapsed_s=1.0,
+        identity_matched=False,
+    )
+    assert mismatched.status == "pending"
 
 
 def test_post_stable_rejects_nan_inf() -> None:
@@ -1036,3 +1068,492 @@ def test_get_readiness_strategy_override(
         provider_pid=1, alive=True, capture_lines=[], elapsed_s=0
     )
     assert ready.status == "ready"
+
+
+def test_labeled_grok_python_sleep_not_running_via_process_stable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B1: argv=[python,-c,sleep] labeled provider=grok must NOT reach running."""
+    _bind_env(monkeypatch, tmp_path, run_id="run-fake-grok-sleep")
+    monkeypatch.setenv("OMG_TEAM_SUPERVISOR_READY_S", "2")
+    desc = write_provider_descriptor(
+        tmp_path / "desc.json",
+        provider="grok",
+        argv=[sys.executable, "-c", "import time; time.sleep(30)"],
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    env["OMG_TEAM_SUPERVISOR_READY_S"] = "2"
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "omg_cli.main",
+            "team",
+            "supervisor",
+            "--descriptor",
+            str(desc),
+            "--ready-timeout",
+            "2",
+        ],
+        cwd=str(tmp_path),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 6.0
+        record = None
+        while time.monotonic() < deadline:
+            record = read_startup_record(
+                tmp_path,
+                run_id="run-fake-grok-sleep",
+                team_id="team",
+                worker_id="w1",
+            )
+            if record and record.get("phase") in (
+                StartupPhase.FAILED.value,
+                StartupPhase.BLOCKED.value,
+                StartupPhase.TASK_DISPATCHED.value,
+            ):
+                break
+            time.sleep(0.05)
+        assert record is not None, "no startup record"
+        assert record["phase"] != StartupPhase.TASK_DISPATCHED.value, record
+        assert record["phase"] == StartupPhase.FAILED.value, record
+        assert record.get("evidence_code") == EvidenceCode.TIMEOUT.value
+        out = wait_for_startup_acks(
+            tmp_path,
+            run_id="run-fake-grok-sleep",
+            team_id="team",
+            expected_workers=["w1"],
+            timeout_ms=100,
+            poll_s=0.01,
+        )
+        assert out["startup_status"] != "running"
+        assert out["startup_process_ready"] == 0
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+
+
+def test_unknown_strategy_silent_hang_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B4: unknown provider silent hang → timeout / not running."""
+    _bind_env(monkeypatch, tmp_path, run_id="run-unknown-hang")
+    monkeypatch.setenv("OMG_TEAM_PROVIDER_STRATEGY", "unknown")
+    desc = write_provider_descriptor(
+        tmp_path / "desc.json",
+        provider="unknown-cli",
+        argv=[sys.executable, "-c", "import time; time.sleep(30)"],
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    env["OMG_TEAM_PROVIDER_STRATEGY"] = "unknown"
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "omg_cli.main",
+            "team",
+            "supervisor",
+            "--descriptor",
+            str(desc),
+            "--ready-timeout",
+            "1.5",
+        ],
+        cwd=str(tmp_path),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        record = None
+        while time.monotonic() < deadline:
+            record = read_startup_record(
+                tmp_path, run_id="run-unknown-hang", team_id="team", worker_id="w1"
+            )
+            if record and record.get("phase") in (
+                StartupPhase.FAILED.value,
+                StartupPhase.TASK_DISPATCHED.value,
+            ):
+                break
+            time.sleep(0.05)
+        assert record is not None
+        assert record["phase"] == StartupPhase.FAILED.value
+        assert record.get("evidence_code") == EvidenceCode.TIMEOUT.value
+        out = wait_for_startup_acks(
+            tmp_path,
+            run_id="run-unknown-hang",
+            team_id="team",
+            expected_workers=["w1"],
+            timeout_ms=80,
+            poll_s=0.01,
+        )
+        assert out["startup_status"] != "running"
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+
+
+def test_provider_ready_then_dies_before_wait_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B4: ready then provider dies before leader wait → fail/degrade."""
+    _bind_env(monkeypatch, tmp_path, run_id="run-die-after-ready")
+    script = _hold_script(tmp_path / "hold.py", seconds=60.0)
+    desc = write_provider_descriptor(
+        tmp_path / "desc.json",
+        provider="fake-ready",
+        argv=[sys.executable, str(script)],
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "omg_cli.main",
+            "team",
+            "supervisor",
+            "--descriptor",
+            str(desc),
+            "--ready-timeout",
+            "3",
+        ],
+        cwd=str(tmp_path),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        record = None
+        while time.monotonic() < deadline:
+            record = read_startup_record(
+                tmp_path,
+                run_id="run-die-after-ready",
+                team_id="team",
+                worker_id="w1",
+            )
+            if (
+                record
+                and record.get("phase") == StartupPhase.TASK_DISPATCHED.value
+            ):
+                break
+            time.sleep(0.05)
+        assert record is not None
+        assert record["phase"] == StartupPhase.TASK_DISPATCHED.value
+        provider_pid = int(record["provider_pid"])
+        os.kill(provider_pid, signal.SIGKILL)
+        # Allow supervisor/OS to reap.
+        deadline2 = time.monotonic() + 3.0
+        while time.monotonic() < deadline2:
+            if not provider_process_alive(
+                provider_pid=provider_pid,
+                provider_pid_start=record["provider_pid_start"],
+            ):
+                break
+            time.sleep(0.05)
+        out = wait_for_startup_acks(
+            tmp_path,
+            run_id="run-die-after-ready",
+            team_id="team",
+            expected_workers=["w1"],
+            timeout_ms=200,
+            poll_s=0.02,
+        )
+        assert out["startup_status"] != "running"
+        assert out["startup_process_ready"] == 0
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+
+
+def test_process_stable_with_matching_binary_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real provider basename may still use process_stable after identity match."""
+    _bind_env(monkeypatch, tmp_path, run_id="run-real-identity")
+    monkeypatch.setenv("OMG_TEAM_POST_STABLE_OBSERVE_S", "0.5")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_grok = bin_dir / "grok"
+    fake_grok.write_text(
+        "#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n",
+        encoding="utf-8",
+    )
+    fake_grok.chmod(0o755)
+    desc = write_provider_descriptor(
+        tmp_path / "desc.json",
+        provider="grok",
+        argv=[str(fake_grok)],
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    env["OMG_TEAM_POST_STABLE_OBSERVE_S"] = "0.5"
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "omg_cli.main",
+            "team",
+            "supervisor",
+            "--descriptor",
+            str(desc),
+            "--ready-timeout",
+            "5",
+        ],
+        cwd=str(tmp_path),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 8.0
+        record = None
+        while time.monotonic() < deadline:
+            record = read_startup_record(
+                tmp_path, run_id="run-real-identity", team_id="team", worker_id="w1"
+            )
+            if record and record.get("phase") in (
+                StartupPhase.TASK_DISPATCHED.value,
+                StartupPhase.FAILED.value,
+                StartupPhase.BLOCKED.value,
+            ):
+                break
+            time.sleep(0.05)
+        assert record is not None
+        assert record["phase"] == StartupPhase.TASK_DISPATCHED.value, record
+        assert StartupPhase.PROVIDER_READY.value in (record.get("phases") or [])
+        out = wait_for_startup_acks(
+            tmp_path,
+            run_id="run-real-identity",
+            team_id="team",
+            expected_workers=["w1"],
+            timeout_ms=200,
+            poll_s=0.02,
+        )
+        assert out["startup_status"] == "running"
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+
+
+def test_needs_pty_records_real_child_not_wrapper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B3/B4: needs_pty provider_pid must be the real child, not pty.spawn wrapper."""
+    _bind_env(monkeypatch, tmp_path, run_id="run-pty-child")
+    monkeypatch.setenv("OMG_TEAM_POST_STABLE_OBSERVE_S", "0.5")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_agy = bin_dir / "agy"
+    fake_agy.write_text(
+        "#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n",
+        encoding="utf-8",
+    )
+    fake_agy.chmod(0o755)
+    desc = write_provider_descriptor(
+        tmp_path / "desc.json",
+        provider="agy",
+        argv=[str(fake_agy)],
+        needs_pty=True,
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    env["OMG_TEAM_POST_STABLE_OBSERVE_S"] = "0.5"
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "omg_cli.main",
+            "team",
+            "supervisor",
+            "--descriptor",
+            str(desc),
+            "--ready-timeout",
+            "6",
+        ],
+        cwd=str(tmp_path),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 8.0
+        record = None
+        while time.monotonic() < deadline:
+            record = read_startup_record(
+                tmp_path, run_id="run-pty-child", team_id="team", worker_id="w1"
+            )
+            if record and record.get("provider_pid") and record.get("phase") in (
+                StartupPhase.PROVIDER_SPAWNED.value,
+                StartupPhase.PROVIDER_READY.value,
+                StartupPhase.TASK_DISPATCHED.value,
+                StartupPhase.FAILED.value,
+            ):
+                break
+            time.sleep(0.05)
+        assert record is not None
+        assert record.get("provider_pid")
+        assert record["phase"] != StartupPhase.FAILED.value, record
+        provider_pid = int(record["provider_pid"])
+        assert provider_pid != int(record["supervisor_pid"])
+        # Provider must not be the python -c pty.spawn wrapper.
+        from omg_cli.team.supervisor import (
+            _cmdline_tokens,
+            provider_binary_identity_matches,
+        )
+
+        tokens = _cmdline_tokens(provider_pid)
+        joined = " ".join(tokens)
+        assert "pty.spawn" not in joined
+        assert provider_binary_identity_matches(provider_pid, {"agy"})
+        assert provider_pid != proc.pid
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+
+
+def test_auth_after_finalize_window_documented_out_of_scope() -> None:
+    """B2 regression note: auth after finalize is intentionally out of window.
+
+    Post-stable observe + identity match shrink the false-green surface;
+    infinite post-finalize watch is out of scope (#101). This test locks the
+    helper floor so OMG_TEAM_POST_STABLE_OBSERVE_S=0 cannot nullify the window.
+    """
+    from omg_cli.team.supervisor import (
+        DEFAULT_POST_STABLE_OBSERVE_S,
+        MIN_POST_STABLE_OBSERVE_S,
+        MIN_TUI_IDLE_POST_STABLE_S,
+        POST_STABLE_OBSERVE_ENV,
+        _resolve_post_stable_observe_s,
+    )
+
+    assert (
+        _resolve_post_stable_observe_s({POST_STABLE_OBSERVE_ENV: "0"})
+        == DEFAULT_POST_STABLE_OBSERVE_S
+    )
+    assert (
+        _resolve_post_stable_observe_s({POST_STABLE_OBSERVE_ENV: "0.1"})
+        == MIN_POST_STABLE_OBSERVE_S
+    )
+    assert MIN_TUI_IDLE_POST_STABLE_S >= MIN_POST_STABLE_OBSERVE_S
+
+
+def test_supervisor_tees_provider_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B3: provider stdout is teed (not swallowed into PIPE only)."""
+    _bind_env(monkeypatch, tmp_path, run_id="run-tee")
+    script = tmp_path / "tee_auth.py"
+    script.write_text(
+        "import time\n"
+        "print('authentication required: please log in', flush=True)\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OMG_TEAM_PROVIDER_STRATEGY", "grok")
+    desc = write_provider_descriptor(
+        tmp_path / "desc.json",
+        provider="grok",
+        argv=[sys.executable, str(script)],
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "omg_cli.main",
+            "team",
+            "supervisor",
+            "--descriptor",
+            str(desc),
+            "--ready-timeout",
+            "3",
+        ],
+        cwd=str(tmp_path),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        # Allow blocked phase + tee.
+        deadline = time.monotonic() + 5.0
+        record = None
+        while time.monotonic() < deadline:
+            record = read_startup_record(
+                tmp_path, run_id="run-tee", team_id="team", worker_id="w1"
+            )
+            if record and record.get("phase") == StartupPhase.BLOCKED.value:
+                break
+            time.sleep(0.05)
+        assert record is not None
+        assert record["phase"] == StartupPhase.BLOCKED.value
+        # Collect teed stdout while supervisor still holds the blocked child.
+        import select
+
+        chunks: list[bytes] = []
+        assert proc.stdout is not None
+        fd = proc.stdout.fileno()
+        end = time.monotonic() + 1.5
+        while time.monotonic() < end:
+            ready, _, _ = select.select([fd], [], [], 0.1)
+            if not ready:
+                if chunks:
+                    break
+                continue
+            try:
+                piece = os.read(fd, 4096)
+            except OSError:
+                break
+            if not piece:
+                break
+            chunks.append(piece)
+            if b"authentication required" in b"".join(chunks).lower():
+                break
+        text = b"".join(chunks).decode("utf-8", errors="replace")
+        assert "authentication required" in text.lower()
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)

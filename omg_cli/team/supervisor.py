@@ -38,9 +38,22 @@ DEFAULT_READY_WAIT_S = 30.0
 # for delayed auth/trust before finalizing provider_ready.
 DEFAULT_POST_STABLE_OBSERVE_S = 2.0
 MIN_POST_STABLE_OBSERVE_S = 0.5
+# TUI idle glyphs are weaker than binary identity+stability; prefer a longer
+# floor so delayed auth after ``>`` / ``grok>`` is still in-window (#99 B2).
+MIN_TUI_IDLE_POST_STABLE_S = 2.0
 POST_STABLE_OBSERVE_ENV = "OMG_TEAM_POST_STABLE_OBSERVE_S"
 _CAPTURE_MAX_LINES = 48
 _CAPTURE_MAX_BYTES = 16_384
+
+# Default cmdline/exe basenames that may prove process_stable for a provider.
+_PROVIDER_IDENTITY_DEFAULTS: dict[str, tuple[str, ...]] = {
+    "grok": ("grok",),
+    "codex": ("codex",),
+    "agy": ("agy",),
+    "antigravity": ("agy", "antigravity"),
+    "cursor": ("cursor-agent", "cursor"),
+    "gemini": ("gemini",),
+}
 
 
 def _resolve_post_stable_observe_s(env: Mapping[str, str]) -> float:
@@ -70,6 +83,7 @@ def write_provider_descriptor(
     prompt_file: Path | str | None = None,
     needs_pty: bool = False,
     cwd: Path | str | None = None,
+    identity_basenames: Sequence[str] | None = None,
 ) -> Path:
     """Write a schema-versioned provider argv descriptor (atomic)."""
     target = Path(path)
@@ -89,6 +103,10 @@ def write_provider_descriptor(
         payload["prompt_file"] = str(prompt_file)
     if cwd is not None:
         payload["cwd"] = str(cwd)
+    if identity_basenames is not None:
+        names = [str(x).strip() for x in identity_basenames if str(x).strip()]
+        if names:
+            payload["identity_basenames"] = names
     body = (
         json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
     ).encode("utf-8")
@@ -114,6 +132,222 @@ def load_provider_descriptor(path: Path | str) -> dict[str, Any]:
     ):
         raise SupervisorError("provider descriptor argv must be non-empty string list")
     return data
+
+
+def expected_identity_basenames(
+    provider: str,
+    argv: Sequence[str],
+    *,
+    descriptor: Mapping[str, Any] | None = None,
+) -> set[str]:
+    """Basenames that may prove process_stable / provisional finalize (#99 B1)."""
+    raw = None if descriptor is None else descriptor.get("identity_basenames")
+    if isinstance(raw, list):
+        names = {str(x).strip() for x in raw if str(x).strip()}
+        if names:
+            return names
+    key = str(provider or "").strip().lower()
+    names = set(_PROVIDER_IDENTITY_DEFAULTS.get(key, ()))
+    if argv:
+        # Accept argv[0] basename only when it already looks like the provider
+        # binary (never auto-allow python/sh from a mislabeled argv).
+        base = Path(str(argv[0])).name
+        if base and base.lower() in {n.lower() for n in names}:
+            names.add(base)
+    return names
+
+
+def _cmdline_tokens(pid: int) -> list[str]:
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return []
+    proc_cmd = Path(f"/proc/{pid}/cmdline")
+    try:
+        raw = proc_cmd.read_bytes()
+    except OSError:
+        raw = b""
+    if raw:
+        return [t.decode("utf-8", errors="replace") for t in raw.split(b"\0") if t]
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "args=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    return (result.stdout or "").split()
+
+
+def _exe_basename(pid: int) -> str | None:
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return None
+    try:
+        return Path(os.readlink(f"/proc/{pid}/exe")).name
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "comm=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    value = (result.stdout or "").strip()
+    return Path(value).name if value else None
+
+
+def provider_binary_identity_matches(
+    pid: int, expected_basenames: set[str] | Sequence[str]
+) -> bool:
+    """True when live cmdline/exe basename matches an expected provider binary."""
+    expected = {
+        str(x).strip().lower()
+        for x in expected_basenames
+        if str(x).strip()
+    }
+    if not expected or isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return False
+    exe = _exe_basename(pid)
+    if exe and Path(exe).name.lower() in expected:
+        return True
+    for tok in _cmdline_tokens(pid):
+        base = Path(tok).name.lower()
+        if base in expected:
+            return True
+    return False
+
+
+def _child_pids_of(parent_pid: int) -> list[int]:
+    """Direct children of *parent_pid* (fail-open → empty)."""
+    if (
+        isinstance(parent_pid, bool)
+        or not isinstance(parent_pid, int)
+        or parent_pid <= 0
+    ):
+        return []
+    out: list[int] = []
+    # Linux: scan /proc
+    proc_root = Path("/proc")
+    if proc_root.is_dir():
+        try:
+            for entry in proc_root.iterdir():
+                if not entry.name.isdigit():
+                    continue
+                try:
+                    child = int(entry.name)
+                except ValueError:
+                    continue
+                try:
+                    status = (entry / "status").read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                for line in status.splitlines():
+                    if line.startswith("PPid:"):
+                        try:
+                            ppid = int(line.split(":", 1)[1].strip())
+                        except ValueError:
+                            break
+                        if ppid == parent_pid:
+                            out.append(child)
+                        break
+            if out:
+                return out
+        except OSError:
+            pass
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return out
+    if result.returncode != 0:
+        return out
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            pid_i = int(parts[0])
+            ppid_i = int(parts[1])
+        except ValueError:
+            continue
+        if ppid_i == parent_pid:
+            out.append(pid_i)
+    return out
+
+
+def _descendant_pids(root_pid: int, *, max_depth: int = 6) -> list[int]:
+    found: list[int] = []
+    frontier = [root_pid]
+    seen = {root_pid}
+    depth = 0
+    while frontier and depth < max_depth:
+        nxt: list[int] = []
+        for parent in frontier:
+            for child in _child_pids_of(parent):
+                if child in seen:
+                    continue
+                seen.add(child)
+                found.append(child)
+                nxt.append(child)
+        frontier = nxt
+        depth += 1
+    return found
+
+
+def resolve_provider_child_pid(
+    wrapper_pid: int,
+    *,
+    expected_basenames: set[str],
+    needs_pty: bool,
+    settle_s: float = 0.12,
+    wait_s: float = 1.0,
+) -> tuple[int | None, str | None]:
+    """Return (provider_pid, error). For needs_pty, require real child identity.
+
+    Fail-closed when *needs_pty* and no descendant matches the expected
+    provider binary (#99 B3). Non-pty returns the wrapper PID (direct spawn).
+    """
+    if (
+        isinstance(wrapper_pid, bool)
+        or not isinstance(wrapper_pid, int)
+        or wrapper_pid <= 0
+    ):
+        return None, "invalid wrapper pid"
+    if not needs_pty:
+        return wrapper_pid, None
+    deadline = time.monotonic() + max(0.05, float(wait_s))
+    time.sleep(max(0.0, float(settle_s)))
+    while True:
+        for child in _descendant_pids(wrapper_pid):
+            if not expected_basenames:
+                # No allowlist — still prefer any non-wrapper child so we do
+                # not record the python pty.spawn wrapper as the provider.
+                return child, None
+            if provider_binary_identity_matches(child, expected_basenames):
+                return child, None
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    if not expected_basenames:
+        return None, "needs_pty: provider child identity unresolved"
+    return None, (
+        "needs_pty: provider child identity unresolved "
+        f"(expected basenames={sorted(expected_basenames)!r})"
+    )
 
 
 def _env_identity() -> tuple[str, str, str, Path]:
@@ -205,11 +439,20 @@ def _spawn_provider(
     )
 
 
-def _drain_capture(proc: subprocess.Popen[bytes], bucket: list[str]) -> None:
+def _drain_capture(
+    proc: subprocess.Popen[bytes],
+    bucket: list[str],
+    *,
+    tee: Any | None = None,
+) -> None:
     """Non-blocking drain of provider stdout into a bounded line bucket.
 
     Must use ``os.read`` on the raw fd — buffered ``file.read()`` can block
     until EOF even after ``select`` reports readability.
+
+    When *tee* is set (typically the supervisor's controlling stdout/tty),
+    also forward raw bytes so auth/trust prompts remain visible in the pane
+    (#99 B3 / #100 visibility). Diagnostics files stay redacted separately.
     """
     if proc.stdout is None:
         return
@@ -227,6 +470,23 @@ def _drain_capture(proc: subprocess.Popen[bytes], bucket: list[str]) -> None:
                 break
             if not chunk:
                 break
+            if tee is not None:
+                try:
+                    if hasattr(tee, "buffer"):
+                        tee.buffer.write(chunk)
+                        tee.buffer.flush()
+                    elif hasattr(tee, "write"):
+                        # bytes file-like (stdout.buffer) or text
+                        try:
+                            tee.write(chunk)
+                        except TypeError:
+                            tee.write(chunk.decode("utf-8", errors="replace"))
+                        try:
+                            tee.flush()
+                        except Exception:
+                            pass
+                except (OSError, ValueError, AttributeError):
+                    pass
             text = chunk.decode("utf-8", errors="replace")
             for line in text.splitlines():
                 if line:
@@ -240,18 +500,39 @@ def _drain_capture(proc: subprocess.Popen[bytes], bucket: list[str]) -> None:
         del bucket[: len(bucket) - _CAPTURE_MAX_LINES]
 
 
-def _forward_signals(child_pgid: int | None, child_pid: int | None) -> None:
+def _forward_signals(
+    child_pgid: int | None,
+    child_pid: int | None,
+    *,
+    wrapper_pid: int | None = None,
+) -> None:
     def _handler(signum: int, _frame: Any) -> None:
-        target = child_pgid if child_pgid and child_pgid > 0 else child_pid
-        if not target:
-            return
-        try:
-            if child_pgid and child_pgid > 0:
-                os.killpg(child_pgid, signum)
-            else:
-                os.kill(int(target), signum)
-        except (ProcessLookupError, PermissionError, OSError):
-            return
+        targets: list[tuple[str, int]] = []
+        if child_pgid and child_pgid > 0:
+            targets.append(("pg", int(child_pgid)))
+        if child_pid and child_pid > 0:
+            targets.append(("pid", int(child_pid)))
+        if wrapper_pid and wrapper_pid > 0 and wrapper_pid != child_pid:
+            targets.append(("pid", int(wrapper_pid)))
+            try:
+                wpg = os.getpgid(int(wrapper_pid))
+            except (ProcessLookupError, PermissionError, OSError):
+                wpg = None
+            if wpg and wpg > 0 and wpg != child_pgid:
+                targets.append(("pg", int(wpg)))
+        seen: set[tuple[str, int]] = set()
+        for kind, target in targets:
+            key = (kind, target)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                if kind == "pg":
+                    os.killpg(target, signum)
+                else:
+                    os.kill(target, signum)
+            except (ProcessLookupError, PermissionError, OSError):
+                continue
 
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         try:
@@ -260,8 +541,35 @@ def _forward_signals(child_pgid: int | None, child_pid: int | None) -> None:
             pass
 
 
-def _child_alive(proc: subprocess.Popen[bytes]) -> bool:
-    return proc.poll() is None
+def _child_alive(
+    proc: subprocess.Popen[bytes],
+    *,
+    provider_pid: int | None = None,
+) -> bool:
+    if proc.poll() is not None:
+        return False
+    if (
+        isinstance(provider_pid, int)
+        and not isinstance(provider_pid, bool)
+        and provider_pid > 0
+        and provider_pid != proc.pid
+    ):
+        try:
+            os.kill(provider_pid, 0)
+        except (ProcessLookupError, PermissionError, OSError):
+            return False
+    return True
+
+
+def _tee_stream() -> Any | None:
+    """Best-effort controlling tty/stdout for pane-visible provider output."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if hasattr(stream, "isatty") and stream.isatty():
+                return stream
+        except Exception:
+            continue
+    return sys.stdout
 
 
 def run_supervisor(
@@ -316,15 +624,30 @@ def run_supervisor(
         raise SupervisorError(f"unknown prompt_delivery: {delivery!r}")
 
     strategy = get_readiness_strategy(provider, env=source)
+    identity_names = expected_identity_basenames(provider, argv, descriptor=desc)
     proc: subprocess.Popen[bytes] | None = None
     capture: list[str] = []
     provider_pid: int | None = None
     provider_pgid: int | None = None
     provider_start: str | None = None
+    wrapper_pid: int | None = None
     reached_ready = False
     reached_dispatch = False
     provisional_since: float | None = None
     provisional_evidence: str | None = None
+    tee = _tee_stream()
+
+    def _observe_window_s(evidence: str | None) -> float:
+        if evidence == EvidenceCode.TUI_IDLE_PROMPT.value:
+            return max(post_stable_s, MIN_TUI_IDLE_POST_STABLE_S)
+        return post_stable_s
+
+    def _identity_ok(pid: int | None) -> bool:
+        if not identity_names:
+            return False
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            return False
+        return provider_binary_identity_matches(pid, identity_names)
 
     def _finalize_ready(*, evidence: str) -> None:
         nonlocal reached_ready, reached_dispatch
@@ -357,14 +680,67 @@ def run_supervisor(
         )
         reached_dispatch = True
 
+    def _reap_while_draining() -> int:
+        """Wait for child while continuously draining stdout (no pipe deadlock)."""
+        assert proc is not None
+        while _child_alive(proc, provider_pid=provider_pid):
+            _drain_capture(proc, capture, tee=tee)
+            time.sleep(max(0.05, float(poll_s)))
+        # Final drain after exit.
+        for _ in range(8):
+            before = len(capture)
+            _drain_capture(proc, capture, tee=tee)
+            if len(capture) == before and proc.poll() is not None:
+                break
+            time.sleep(0.02)
+        rc = proc.wait()
+        return int(rc if rc is not None else 1)
+
     try:
         proc = _spawn_provider(
             argv, cwd=cwd, needs_pty=needs_pty, stdin_path=stdin_path
         )
-        provider_pid = int(proc.pid)
+        wrapper_pid = int(proc.pid)
+        resolved_pid, resolve_err = resolve_provider_child_pid(
+            wrapper_pid,
+            expected_basenames=identity_names,
+            needs_pty=needs_pty,
+        )
+        if resolve_err or resolved_pid is None:
+            try:
+                wpg = _pgid(wrapper_pid)
+                if wpg:
+                    os.killpg(wpg, signal.SIGTERM)
+                else:
+                    proc.terminate()
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            write_startup_phase(
+                root,
+                run_id=run_id,
+                team_id=team_id,
+                worker_id=worker_id,
+                phase=StartupPhase.FAILED,
+                provider=provider,
+                supervisor_pid=supervisor_pid,
+                provider_pid=wrapper_pid,
+                provider_pgid=_pgid(wrapper_pid),
+                evidence_code=EvidenceCode.MALFORMED,
+                failure_reason=resolve_err or "provider child identity unresolved",
+            )
+            try:
+                proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+            return 1
+
+        provider_pid = int(resolved_pid)
         # Brief settle so start identity is observable.
         time.sleep(0.02)
-        provider_pgid = _pgid(provider_pid)
+        provider_pgid = _pgid(provider_pid) or _pgid(wrapper_pid)
         provider_start = _pid_start(provider_pid)
         if not provider_start:
             # Fail closed: cannot prove identity.
@@ -373,6 +749,11 @@ def run_supervisor(
                     os.killpg(provider_pgid, signal.SIGTERM)
                 else:
                     proc.terminate()
+                if wrapper_pid and wrapper_pid != provider_pid:
+                    try:
+                        os.kill(wrapper_pid, signal.SIGTERM)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
             except (ProcessLookupError, PermissionError, OSError):
                 pass
             write_startup_phase(
@@ -420,19 +801,23 @@ def run_supervisor(
             provider_pid_start=provider_start,
             evidence_code=EvidenceCode.PROVIDER_SPAWNED,
         )
-        _forward_signals(provider_pgid, provider_pid)
+        _forward_signals(
+            provider_pgid, provider_pid, wrapper_pid=wrapper_pid
+        )
 
         deadline = time.monotonic() + max(0.05, timeout_s)
         started = time.monotonic()
         while time.monotonic() < deadline:
-            _drain_capture(proc, capture)
-            alive = _child_alive(proc)
+            _drain_capture(proc, capture, tee=tee)
+            alive = _child_alive(proc, provider_pid=provider_pid)
+            identity_matched = _identity_ok(provider_pid)
             obs = strategy.observe(
                 provider_pid=provider_pid,
                 alive=alive,
                 capture_lines=capture,
                 elapsed_s=time.monotonic() - started,
                 env=source,
+                identity_matched=identity_matched,
             )
             if obs.status == "blocked":
                 append_startup_diagnostics(
@@ -505,13 +890,16 @@ def run_supervisor(
                 and not reached_ready
             ):
                 # process_stable or weak TUI idle: keep observing for delayed
-                # auth/trust through the post-stable window.
+                # auth/trust through the post-stable window. Identity is
+                # required before provisional is accepted by the strategy.
                 if provisional_since is None:
                     provisional_since = time.monotonic()
                     provisional_evidence = obs.evidence_code
                 elif (
-                    time.monotonic() - provisional_since >= post_stable_s
+                    time.monotonic() - provisional_since
+                    >= _observe_window_s(provisional_evidence)
                     and alive
+                    and _identity_ok(provider_pid)
                 ):
                     _finalize_ready(
                         evidence=provisional_evidence
@@ -544,14 +932,16 @@ def run_supervisor(
                 worker_id=worker_id,
                 lines=capture[-16:],
             )
-            _drain_capture(proc, capture)
-            alive = _child_alive(proc)
+            _drain_capture(proc, capture, tee=tee)
+            alive = _child_alive(proc, provider_pid=provider_pid)
+            identity_matched = _identity_ok(provider_pid)
             final_obs = strategy.observe(
                 provider_pid=provider_pid or 0,
                 alive=alive,
                 capture_lines=capture,
                 elapsed_s=time.monotonic() - started,
                 env=source,
+                identity_matched=identity_matched,
             )
             if final_obs.status == "blocked" and not reached_ready:
                 write_startup_phase(
@@ -588,7 +978,9 @@ def run_supervisor(
                 alive
                 and provisional_since is not None
                 and not reached_ready
-                and time.monotonic() - provisional_since >= post_stable_s
+                and identity_matched
+                and time.monotonic() - provisional_since
+                >= _observe_window_s(provisional_evidence)
                 and final_obs.status in ("provisional", "ready", "pending")
             ):
                 # Post-stable window complete and final observe still clean.
@@ -646,8 +1038,9 @@ def run_supervisor(
                 )
 
         # Reap / wait for child for the rest of the pane lifetime.
+        # Drain continuously so a chatty provider cannot fill the PIPE (#99 B3).
         assert proc is not None
-        rc = proc.wait()
+        rc = _reap_while_draining()
         if reached_dispatch and rc != 0:
             # Provider died after ready — record terminal note but do not
             # reverse phases (monotonic). Leader wait checks liveness.
@@ -674,12 +1067,17 @@ def run_supervisor(
             evidence_code=EvidenceCode.MALFORMED,
             failure_reason=str(exc),
         )
-        if proc is not None and _child_alive(proc):
+        if proc is not None and _child_alive(proc, provider_pid=provider_pid):
             try:
                 if provider_pgid:
                     os.killpg(provider_pgid, signal.SIGTERM)
                 else:
                     proc.terminate()
+                if wrapper_pid and wrapper_pid != provider_pid:
+                    try:
+                        os.kill(wrapper_pid, signal.SIGTERM)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
             except (ProcessLookupError, PermissionError, OSError):
                 pass
             try:
@@ -710,5 +1108,8 @@ __all__ = [
     "SupervisorError",
     "write_provider_descriptor",
     "load_provider_descriptor",
+    "expected_identity_basenames",
+    "provider_binary_identity_matches",
+    "resolve_provider_child_pid",
     "run_supervisor",
 ]
