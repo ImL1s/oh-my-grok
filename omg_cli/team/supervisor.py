@@ -85,8 +85,15 @@ def write_provider_descriptor(
     needs_pty: bool = False,
     cwd: Path | str | None = None,
     identity_basenames: Sequence[str] | None = None,
+    provider_strategy: str | None = None,
+    startup_strategy: str | None = None,
 ) -> Path:
-    """Write a schema-versioned provider argv descriptor (atomic)."""
+    """Write a schema-versioned provider argv descriptor (atomic).
+
+    Optional ``identity_basenames`` / ``provider_strategy`` / ``startup_strategy``
+    are additive (#67-D). Schema stays at v1 so in-flight Team resume keeps
+    loading prior descriptors (no launch-receipt semantic change).
+    """
     target = Path(path)
     ensure_managed_dir(target.parent)
     argv_list = [str(x) for x in argv]
@@ -108,6 +115,10 @@ def write_provider_descriptor(
         names = [str(x).strip() for x in identity_basenames if str(x).strip()]
         if names:
             payload["identity_basenames"] = names
+    if provider_strategy:
+        payload["provider_strategy"] = str(provider_strategy)
+    if startup_strategy:
+        payload["startup_strategy"] = str(startup_strategy)
     body = (
         json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
     ).encode("utf-8")

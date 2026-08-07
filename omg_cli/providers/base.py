@@ -1,8 +1,9 @@
-"""Provider adapter Protocol — probe + headless run (#67-A/B/C).
+"""Provider adapter Protocol — probe + headless run + launch envelope (#67-A–D).
 
-Ask routes ``agy`` through :meth:`ProviderAdapter.run` (#67-C). Team routing
-still lands in #67-D; all Antigravity launches must call this surface rather
-than inventing parallel launchers.
+Ask routes ``agy`` through :meth:`ProviderAdapter.run` (#67-C). Team panes use
+:meth:`ProviderAdapter.build_launch_envelope` (#67-D) — never
+:meth:`ProviderAdapter.run` for interactive PTY workers. Supervisor retains
+spawn / PID / PGID / readiness / nonce authority.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ from typing import Protocol, runtime_checkable
 from omg_cli.providers.models import (
     DoctorReport,
     ProviderCapabilities,
+    ProviderLaunchEnvelope,
+    ProviderLaunchRequest,
     ProviderRunRequest,
     ProviderRunResult,
     VersionInfo,
@@ -20,7 +23,7 @@ from omg_cli.providers.models import (
 
 @runtime_checkable
 class ProviderAdapter(Protocol):
-    """Probe + unique headless execution surface (no ask/Team-specific APIs)."""
+    """Probe + headless run + generated launch envelope (no Team spawn APIs)."""
 
     name: str
 
@@ -33,6 +36,10 @@ class ProviderAdapter(Protocol):
     def doctor(self, *, strict: bool = False) -> DoctorReport: ...
 
     def run(self, request: ProviderRunRequest) -> ProviderRunResult: ...
+
+    def build_launch_envelope(
+        self, request: ProviderLaunchRequest
+    ) -> ProviderLaunchEnvelope: ...
 
 
 __all__ = ["ProviderAdapter"]

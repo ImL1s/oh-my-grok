@@ -6,19 +6,19 @@ Inventory status: **bootstrapping**.
 
 | Gap ID | Priority | Status | Issues | Capabilities | Summary |
 | --- | --- | --- | --- | --- | --- |
-| `gap.antigravity.provider` | P0 | open | #67 | `antigravity.provider.adapter` | Probe+run+ask landed (#67-A/B/C); Team cutover still open (#67-D) |
+| `gap.antigravity.provider` | P0 | open | #67 | `antigravity.provider.adapter` | A–D landed (probe/run/ask/Team envelope); dual review+CI before close |
 | `gap.jobs.durable` | P0 | open | #68 | `jobs.durable_background` | Durable background jobs plane not implemented |
 | `gap.parity.governance.remaining` | P0 | open | #78 | `parity.inventory.governance` | #78-B inventory landed; #78-C refresh+claim gate landed; completeness promotion still manual |
 | `gap.team.v3` | P0 | open | #69 | `team.plane_v3` | Team plane v3 not implemented; depends on #67/#68 |
 | `gap.omo.todo_continuation` | P1 | open | #78 | `omo.goal.todo_continuation` | OmO todo-continuation inject is host_impossible on Grok (no session.prompt API) |
 | `gap.parity.platform_live_evidence` | P1 | open | #78 | `antigravity.platform.version_matrix` | Platform/runtime live-evidence gate shipped (#78-C); completeness promotion still manual |
-| `gap.antigravity.headless_execution` | P2 | open | #67, #78 | `antigravity.headless.structured_execution`, `antigravity.runtime.model_effort_mode_perms` | Headless ProviderAdapter.run exists; ask/Team not routed; typed runtime controls unclaimed |
+| `gap.antigravity.headless_execution` | P2 | open | #67, #78 | `antigravity.headless.structured_execution`, `antigravity.runtime.model_effort_mode_perms` | Ask+Team routed (#67-C/D); typed runtime model/effort/mode controls still unclaimed |
 | `gap.omo.edit_and_hygiene` | P2 | open | #78 | `omo.edit.hash_anchored`, `omo.quality.comment_hygiene` | OmO hash-anchored edit and comment-hygiene quality surfaces unclaimed |
 | `gap.omx.research.modes` | P2 | open | #78 | `omx.research.modes` | OMX-style dedicated research/autoresearch mode surface unclaimed |
 
 ## Open P0
 
-- `gap.antigravity.provider` (#67): Probe+run+ask landed (#67-A/B/C); Team cutover still open (#67-D)
+- `gap.antigravity.provider` (#67): A–D landed (probe/run/ask/Team envelope); dual review+CI before close
 - `gap.jobs.durable` (#68): Durable background jobs plane not implemented
 - `gap.parity.governance.remaining` (#78): #78-B inventory landed; #78-C refresh+claim gate landed; completeness promotion still manual
 - `gap.team.v3` (#69): Team plane v3 not implemented; depends on #67/#68

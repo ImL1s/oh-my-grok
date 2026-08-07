@@ -539,7 +539,7 @@ them from a skill, but authority and evidence remain in the CLI artifacts.
 | `omg workflow install\|list\|show\|plan\|run` | Immutable workflow registry, deterministic waves, receipt-bound ship gate. |
 | `omg parity run\|release-readback\|check\|gaps\|refresh` | Frozen W0 manifest delegation, bundle verification, inventory check, gap listing, and plan-only upstream pin refresh. |
 | `omg capabilities` / `omg native-status` | Independent capability tiers; no private-sidecar probing. |
-| `omg provider antigravity capabilities\|doctor\|run` | Antigravity (`agy`) probe + headless run (#67-A/B): capabilities envelope, doctor, and `ProviderAdapter.run` (text/json/stream-json). `omg ask agy` cutover (#67-C); Team cutover still open (#67-D). Never claims `live_call_ready`. |
+| `omg provider antigravity capabilities\|doctor\|run` | Antigravity (`agy`) probe + headless run (#67-A/B): capabilities envelope, doctor, and `ProviderAdapter.run` (text/json/stream-json). `omg ask agy` cutover (#67-C); Team panes via `build_launch_envelope` (#67-D; supervisor owns PTY/PID/readiness). Never claims `live_call_ready`. |
 
 Workflow planning never launches a foreign CLI. The leader executes plan tasks
 through Grok-native `spawn_subagent`, supplies the exact `capability_mode`, and

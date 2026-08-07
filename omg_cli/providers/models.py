@@ -1,10 +1,13 @@
-"""Typed, JSON-serializable provider models (#67-A probe + #67-B run).
+"""Typed, JSON-serializable provider models (#67-A/B probe+run, #67-D launch).
 
 Provider-neutral defaults are empty / false / unknown — never Antigravity-positive
 claims. Per-provider adapters must fill observed fields explicitly.
 
 Run contracts are provider-neutral execution metadata only — no Team state,
 receipts, pane ownership, or worker mapping.
+
+Launch envelopes (#67-D) describe argv/env for interactive Team panes; they do
+**not** spawn processes. Supervisor retains PID/PGID/PTY/readiness authority.
 """
 
 from __future__ import annotations
@@ -29,8 +32,12 @@ ProviderExitClass = Literal[
     "unknown",
 ]
 
+# Team interactive vs future kinds — headless stays on ProviderRunRequest.
+ProviderLaunchKind = Literal["team"]
+
 CAPABILITIES_SCHEMA = "omg-provider-capabilities/v1"
 RUN_RESULT_SCHEMA = "omg-provider-run-result/v1"
+LAUNCH_ENVELOPE_SCHEMA = "omg-provider-launch-envelope/v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,13 +315,97 @@ class ProviderRunResult:
         return out
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderLaunchRequest:
+    """Adapter-owned launch input for interactive panes (no spawn / no Team IDs).
+
+    Team Antigravity (#67-D) uses ``launch_kind="team"`` with a prompt-file
+    *path placeholder* (body substituted by the supervisor/pane layer). This is
+    distinct from headless :class:`ProviderRunRequest` / :meth:`ProviderAdapter.run`.
+    """
+
+    provider: str = ""
+    launch_kind: ProviderLaunchKind = "team"
+    prompt_file: str | None = None
+    cwd: str | None = None
+    env: Mapping[str, str] | None = None
+    needs_pty: bool = True
+    model: str | None = None
+    effort: str | None = None
+    mode: str | None = None
+    posture: str | None = None  # "read-only" | "read-write"
+    session_id: str | None = None
+    resume_id: str | None = None
+    binary: str | None = None
+    artifacts: tuple[ProviderArtifactRef, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "launch_kind": self.launch_kind,
+            "prompt_file": self.prompt_file,
+            "cwd": self.cwd,
+            "needs_pty": self.needs_pty,
+            "model": self.model,
+            "effort": self.effort,
+            "mode": self.mode,
+            "posture": self.posture,
+            "session_id": self.session_id,
+            "resume_id": self.resume_id,
+            "binary": self.binary,
+            "artifacts": [a.to_dict() for a in self.artifacts],
+            "env_keys": sorted(self.env.keys()) if self.env else [],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderLaunchEnvelope:
+    """Generated launch plan: argv array only (never a shell string).
+
+    Supervisor consumes this to spawn; the adapter never calls
+    :func:`run_provider_process` for interactive Team panes.
+    """
+
+    provider: str
+    argv: tuple[str, ...]
+    needs_pty: bool
+    prompt_delivery: str
+    cwd: str | None = None
+    env: Mapping[str, str] = field(default_factory=dict)
+    identity_basenames: tuple[str, ...] = ()
+    startup_strategy: str = "supervisor"
+    provider_strategy: str = ""
+    posture: str | None = None
+    binary: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": LAUNCH_ENVELOPE_SCHEMA,
+            "provider": self.provider,
+            "argv": list(self.argv),
+            "needs_pty": self.needs_pty,
+            "prompt_delivery": self.prompt_delivery,
+            "cwd": self.cwd,
+            "env": dict(self.env),
+            "identity_basenames": list(self.identity_basenames),
+            "startup_strategy": self.startup_strategy,
+            "provider_strategy": self.provider_strategy,
+            "posture": self.posture,
+            "binary": self.binary,
+        }
+
+
 __all__ = [
     "CAPABILITIES_SCHEMA",
     "CompatStatus",
     "DoctorReport",
+    "LAUNCH_ENVELOPE_SCHEMA",
     "ProviderArtifactRef",
     "ProviderCapabilities",
     "ProviderExitClass",
+    "ProviderLaunchEnvelope",
+    "ProviderLaunchKind",
+    "ProviderLaunchRequest",
     "ProviderOutputFormat",
     "ProviderRunEvent",
     "ProviderRunRequest",

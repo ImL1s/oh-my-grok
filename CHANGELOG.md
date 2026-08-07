@@ -16,13 +16,27 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   fail-closes on non-`session_resume` gate capability ids.
 
 ### Added
+- **Partial work for issue 67 (slice D / #67-D):** Team Antigravity panes
+  route through adapter-owned `ProviderLaunchRequest` /
+  `ProviderLaunchEnvelope` + `AntigravityProvider.build_launch_envelope`
+  (argv array only; never a shell string). Team `_build_agy` /
+  `build_executor_argv` consume the envelope; supervisor retains
+  spawn/PTY/PID/PGID/readiness/nonce authority — **does not** call
+  `ProviderAdapter.run` for interactive panes. Preserves Team contract
+  (`needs_pty=True`, `-p` path placeholder + `positional-text`,
+  `--dangerously-skip-permissions`, RO `--sandbox`). Descriptor gains
+  optional `identity_basenames` / `provider_strategy` / `startup_strategy`
+  without bumping schema v1 (resume-safe; launch-receipt semantics
+  unchanged). Hermetic coverage in `tests/test_team_agy_envelope.py`.
+  **Slices A–D complete** — issue #67 may be closeable after dual review +
+  CI (do not merge until then).
 - **Partial work for issue 67 (slice C / #67-C):** `omg ask agy` routes
   through `ProviderAdapter.run` (Antigravity headless adapter). `agy` is a
   first-class ask provider — **not** aliased to `gemini`. Legacy
   codex/claude/gemini ask paths unchanged. Artifacts / exit codes / dry-run /
   timeout (exit 4) / missing-binary (exit 3) / auth-blocked failure preserved.
-  Hermetic fake-`agy` coverage in `tests/test_ask_agy.py`. Team/tmux cutover
-  remains **slice D** — issue #67 stays open.
+  Hermetic fake-`agy` coverage in `tests/test_ask_agy.py`. Team cutover
+  landed as **slice D**.
 - **Partial work for issue 67 (slice B / #67-B):** headless Antigravity
   execution on `ProviderAdapter.run` — provider-neutral
   `ProviderRunRequest`/`ProviderRunResult` (+ events/usage/exit_class),
@@ -30,8 +44,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   subprocess stack), `json`/`stream-json` parsers with partial-output
   preservation on timeout/cancel, session/resume *metadata* without Team
   coupling, and `omg provider antigravity run`. Hermetic fake-`agy` only —
-  no Team cutover, no live-network CI. Issue #67 remains open for slice D
-  (ask cutover landed as #67-C).
+  no live-network CI. Ask cutover landed as #67-C; Team envelope as #67-D.
 - **#105 Team resume consumes host gates (PR3 / seq E first slice):**
   `provider_session_result` replaces the fixed ACP stub in Team resume/view
   envelopes. CLI `omg team resume --provider-session` probes via

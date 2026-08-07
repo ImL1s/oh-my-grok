@@ -1010,6 +1010,9 @@ def materialize_supervisor_pane_command(
     prompt_file: Path | str | None = None,
     needs_pty: bool = False,
     cwd: Path | str | None = None,
+    identity_basenames: Sequence[str] | None = None,
+    provider_strategy: str | None = None,
+    startup_strategy: str | None = None,
 ) -> str:
     """Write provider descriptor and return supervisor pane command."""
     from omg_cli.team.supervisor import write_provider_descriptor
@@ -1022,6 +1025,9 @@ def materialize_supervisor_pane_command(
         prompt_file=prompt_file,
         needs_pty=needs_pty,
         cwd=cwd,
+        identity_basenames=identity_basenames,
+        provider_strategy=provider_strategy,
+        startup_strategy=startup_strategy,
     )
     return wrap_pane_with_supervisor(descriptor_path)
 
@@ -3067,6 +3073,9 @@ def start_team(
                         prompt_file=prompt_path,
                         needs_pty=needs_pty,
                         cwd=wt,
+                        identity_basenames=inv.identity_basenames or None,
+                        provider_strategy=inv.provider_strategy or None,
+                        startup_strategy=inv.startup_strategy or None,
                     )
                 else:
                     # D1 zero-config path — identical to pre-D3 behavior.

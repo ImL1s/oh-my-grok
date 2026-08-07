@@ -138,6 +138,10 @@ class ExecutorInvocation:
     posture: str  # "read-only" | "read-write"
     provider: str
     prompt_delivery: PromptDelivery
+    # Optional adapter-owned identity hints (#67-D agy envelope → descriptor).
+    identity_basenames: tuple[str, ...] = ()
+    provider_strategy: str = ""
+    startup_strategy: str = ""
 
 
 EXECUTOR_SPECS: Final[dict[str, ExecutorSpec]] = {
@@ -327,20 +331,55 @@ def _build_agy(
     *,
     posture: str,
     prompt_file: str,
-    cwd: str,  # noqa: ARG001 — agy has no --cwd; caller chdirs / PTY env
+    cwd: str,
     model: str | None,
 ) -> list[str]:
-    # Verified: agy -p <prompt TEXT> --model M --dangerously-skip-permissions
-    # [--sandbox]; needs_pty=True (ref agy-pty.py). Path is a placeholder;
-    # plane substitutes body at pane-build (positional-text).
-    # Read-only → --sandbox; read-write → no sandbox.
-    argv: list[str] = ["agy", "-p", prompt_file]
-    if model:
-        argv.extend(["--model", model])
-    argv.append("--dangerously-skip-permissions")
-    if posture == "read-only":
-        argv.append("--sandbox")
-    return argv
+    """Team AGY argv via adapter-owned launch envelope (#67-D).
+
+    Does **not** call ``ProviderAdapter.run`` — interactive PTY spawn stays
+    with the Team supervisor. Envelope preserves the pre-#67-D contract:
+    ``agy -p <placeholder> [--model] --dangerously-skip-permissions [--sandbox]``,
+    ``needs_pty=True``, ``prompt_delivery=positional-text``.
+    """
+    from omg_cli.providers.antigravity import get_adapter
+    from omg_cli.providers.models import ProviderLaunchRequest
+
+    envelope = get_adapter().build_launch_envelope(
+        ProviderLaunchRequest(
+            provider="antigravity",
+            launch_kind="team",
+            prompt_file=prompt_file,
+            cwd=cwd,
+            model=model,
+            posture=posture,
+            needs_pty=True,
+        )
+    )
+    return list(envelope.argv)
+
+
+def _agy_launch_envelope(
+    *,
+    posture: str,
+    prompt_file: str,
+    cwd: str,
+    model: str | None,
+):
+    """Full #67-D envelope for AGY (argv + needs_pty + identity + strategies)."""
+    from omg_cli.providers.antigravity import get_adapter
+    from omg_cli.providers.models import ProviderLaunchRequest
+
+    return get_adapter().build_launch_envelope(
+        ProviderLaunchRequest(
+            provider="antigravity",
+            launch_kind="team",
+            prompt_file=prompt_file,
+            cwd=cwd,
+            model=model,
+            posture=posture,
+            needs_pty=True,
+        )
+    )
 
 
 def _build_gemini(
@@ -413,15 +452,48 @@ def build_executor_argv(
         resolve_executor_binary(canon)
 
     builder = _BUILDERS[canon]
-    argv = builder(posture=posture, prompt_file=pf, cwd=workdir, model=m)
     spec = EXECUTOR_SPECS[canon]
-    delivery = _PROVIDER_PROMPT_DELIVERY[canon]
+    identity_basenames: tuple[str, ...] = ()
+    provider_strategy = ""
+    startup_strategy = ""
+    if canon == "agy":
+        # #67-D: consume full adapter envelope (not just argv) so needs_pty /
+        # prompt_delivery / identity stay adapter-owned.
+        envelope = _agy_launch_envelope(
+            posture=posture, prompt_file=pf, cwd=workdir, model=m
+        )
+        argv = list(envelope.argv)
+        delivery = envelope.prompt_delivery  # type: ignore[assignment]
+        if delivery not in (
+            PROMPT_DELIVERY_PROMPT_FILE,
+            PROMPT_DELIVERY_STDIN,
+            PROMPT_DELIVERY_POSITIONAL_TEXT,
+        ):
+            raise TeamProviderError(
+                f"adapter envelope prompt_delivery unsupported: {delivery!r}"
+            )
+        needs_pty = bool(envelope.needs_pty)
+        identity_basenames = tuple(envelope.identity_basenames)
+        provider_strategy = str(envelope.provider_strategy or "")
+        startup_strategy = str(envelope.startup_strategy or "")
+        if needs_pty is not True:
+            raise TeamProviderError(
+                "agy team envelope must set needs_pty=True (supervisor PTY contract)"
+            )
+    else:
+        argv = builder(posture=posture, prompt_file=pf, cwd=workdir, model=m)
+        delivery = _PROVIDER_PROMPT_DELIVERY[canon]
+        needs_pty = bool(spec.needs_pty)
+
     inv = ExecutorInvocation(
         argv=argv,
-        needs_pty=spec.needs_pty,
+        needs_pty=needs_pty,
         posture=posture,
         provider=canon,
         prompt_delivery=delivery,
+        identity_basenames=identity_basenames,
+        provider_strategy=provider_strategy,
+        startup_strategy=startup_strategy,
     )
     # Self-check: built argv must not carry free-form elevation.
     if argv_has_free_form(inv.argv):

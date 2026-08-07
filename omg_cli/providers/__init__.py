@@ -1,8 +1,10 @@
 """omg provider adapters — typed probe/launch surface (Antigravity first, #67).
 
 Slice A: discovery + capabilities + doctor.
-Slice B: headless ``ProviderAdapter.run`` (json/stream-json). Ask/Team cutover
-remains later slices.
+Slice B: headless ``ProviderAdapter.run`` (json/stream-json).
+Slice C: ``omg ask agy`` via ``ProviderAdapter.run``.
+Slice D: Team panes via adapter-owned ``build_launch_envelope`` (supervisor
+still owns spawn/PTY/PID/readiness — never ``Adapter.run`` for Team).
 """
 
 from __future__ import annotations
@@ -18,12 +20,16 @@ from omg_cli.providers.errors import (
 )
 from omg_cli.providers.models import (
     CAPABILITIES_SCHEMA,
+    LAUNCH_ENVELOPE_SCHEMA,
     RUN_RESULT_SCHEMA,
     CompatStatus,
     DoctorReport,
     ProviderArtifactRef,
     ProviderCapabilities,
     ProviderExitClass,
+    ProviderLaunchEnvelope,
+    ProviderLaunchKind,
+    ProviderLaunchRequest,
     ProviderOutputFormat,
     ProviderRunEvent,
     ProviderRunRequest,
@@ -40,6 +46,7 @@ from omg_cli.providers.process import (
 
 __all__ = [
     "CAPABILITIES_SCHEMA",
+    "LAUNCH_ENVELOPE_SCHEMA",
     "RUN_RESULT_SCHEMA",
     "CompatStatus",
     "DoctorReport",
@@ -50,6 +57,9 @@ __all__ = [
     "ProviderCapabilities",
     "ProviderError",
     "ProviderExitClass",
+    "ProviderLaunchEnvelope",
+    "ProviderLaunchKind",
+    "ProviderLaunchRequest",
     "ProviderOutputFormat",
     "ProviderProbeError",
     "ProviderProcessResult",
