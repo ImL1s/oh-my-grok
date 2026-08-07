@@ -8,6 +8,7 @@ Authoritative validator: `omg_cli.contracts.parity_schema.validate_parity_invent
 - `PARITY_V2_CLASSIFICATIONS` — claimability classifications
 - `UPSTREAM_PIN_IDS` — `OMC`, `OMX`, `OmO`, `Antigravity`, `GROK_BUILD` (no `OMG`)
 - `SOURCE_STATUS_IDS` — `OMC`, `OMX`, `OmO`, `Antigravity` (no `OMG`, no `GROK_BUILD`)
+- `HOST_BASELINE_PIN_ID` — `GROK_BUILD` (host runtime baseline; **not** part of parity score)
 - `PARITY_CATEGORY_TAXONOMY` — required #78-B category keys (`runtime_orchestration`, `skills`, `agents_routing`, `team`, `jobs`, `hooks`, `tools_mcp`, `state_memory_observability`, `install_update`, `quality_visual_edit_safety`, `antigravity`, `platform_live_evidence`, `parity_governance`)
 - `CATEGORY_STATUS_VALUES` — `bootstrapping` \| `complete` (shared by `category_status` and `source_status`)
 
@@ -35,6 +36,18 @@ Pinned catalogues live under `docs/parity/upstream-snapshots/{OMC,OMX,OmO,Antigr
 
 Refresh workflow: `omg parity refresh --source … --pin … --plan --catalog …` emits a review plan; unresolved drift blocks `--release`.
 
+## Host baseline (Grok Build)
+
+`GROK_BUILD` is a **host runtime pin**, not a `SOURCE_STATUS_IDS` sibling. Machine-readable baseline:
+
+- Snapshot: `docs/parity/upstream-snapshots/grok-build.json` (`store_kind=host_baseline_snapshot`)
+- Validator: `validate_host_baseline_snapshot` (independent of `validate_upstream_catalog`)
+- Classifications: `host_owned` \| `consumed_downstream` \| `irrelevant` (every release delta must be classified)
+- Generated docs: `docs/parity/generated/host-baseline.md`, `host-capability-matrix.md`
+- Pin transitions use the same committed ledger path as other sources:
+  `docs/parity/reviews/GROK_BUILD-<from>-<to>-<digest>.json` with a required `host_baseline` block (`snapshot_hash`, `reviewed_pin`, `generated_docs_hash`)
+
+Release gate (`check_parity_release_claims`) requires the host snapshot to match `FROZEN_PINS["GROK_BUILD"]` and `upstream_pins.GROK_BUILD.revision`, rejects symlink/malformed/stale snapshots, and fails closed when a `GROK_BUILD` pin moves without a matching review. `host_owned` rows must not claim OMG `omg_paths` as implementation evidence. Catalogue maturity starts at `catalogued`; do not overclaim live promotion here.
 ## Validation entry points
 
 ```python

@@ -57,6 +57,46 @@ SOURCE_STATUS_IDS = (
     "OmO",
     "Antigravity",
 )
+# Host runtime baseline (Grok Build) — independent of SOURCE_STATUS_IDS / parity score.
+HOST_BASELINE_PIN_ID = "GROK_BUILD"
+HOST_BASELINE_SNAPSHOT_RELATIVE = "docs/parity/upstream-snapshots/grok-build.json"
+HOST_BASELINE_CLASSIFICATIONS = (
+    "host_owned",
+    "consumed_downstream",
+    "irrelevant",
+)
+HOST_BASELINE_CATEGORIES = (
+    "session",
+    "subagent",
+    "workflow",
+    "queue",
+    "dashboard",
+    "permissions",
+    "tmux",
+    "extensions",
+    "terminal",
+    "mcp",
+    "workspace",
+    "auth",
+    "reliability",
+    "feedback",
+    "tools",
+    "slash",
+)
+HOST_BASELINE_MATURITY_LEVELS = (
+    "catalogued",
+    "configured",
+    "installed",
+    "enabled",
+    "loadable",
+    "observed",
+    "healthy",
+    "live_verified",
+)
+HOST_BASELINE_GENERATED_RELATIVE = (
+    "docs/parity/generated/host-baseline.md",
+    "docs/parity/generated/host-capability-matrix.md",
+)
 # #78-B required category taxonomy (constant; inventory file may lag during bootstrap).
 PARITY_CATEGORY_TAXONOMY = frozenset(
     {
@@ -137,7 +177,7 @@ FROZEN_PINS = {
     "OMA": "f8eeaae6f42ebbfc1c22be504277377332c0d8fe",
     "OMC": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
     "OMX": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
-    "GROK_BUILD": "7cfcb20d2b50b0d18801a6c0af2e401c0e060894",
+    "GROK_BUILD": "a5589e958437d79e13db026eedcb1720bffd4063",
 }
 NORMATIVE_ARTIFACT_HASHES = {
     "requirements": "f9ff4cdad865330b2ea6db3443f19ce2ed48567ba3cc5164459822226e11805f",
@@ -251,6 +291,10 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             "docs/parity/MATRIX-OMX.md",
             "docs/parity/MATRIX-OmO.md",
             "docs/parity/MATRIX-Antigravity.md",
+            "docs/parity/upstream-snapshots/grok-build.json",
+            "docs/parity/generated/host-baseline.md",
+            "docs/parity/generated/host-capability-matrix.md",
+            "scripts/generate_host_baseline_docs.py",
         ]
         + ["docs/parity/upstream-snapshots/**", "docs/parity/reviews/**"]
         + _paths(
@@ -1332,3 +1376,237 @@ def validate_traceability(value: Mapping[str, Any]) -> dict[str, Any]:
         if entry["evidence_tier"] not in {"L0", "L1", "L2", "L3", "L4", "L5"}:
             raise ContractValidationError("traceability evidence tier invalid")
     return trace
+
+
+def _require_relative_posix_path(path_text: str, *, label: str) -> str:
+    text = require_nonempty_string(path_text, label=label)
+    pure = PurePosixPath(text)
+    if pure.is_absolute() or ".." in pure.parts or pure.parts[0] == "~":
+        raise ContractValidationError(f"{label} must be a relative POSIX path")
+    return text
+
+
+def validate_host_baseline_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate independent Grok Build host-baseline snapshot (not SOURCE_STATUS)."""
+    snapshot = require_object(value, label="host_baseline_snapshot")
+    require_exact_keys(
+        snapshot,
+        required={
+            "store_kind",
+            "schema_version",
+            "host_id",
+            "repository",
+            "public_commit",
+            "source_revision",
+            "release",
+            "observed_version",
+            "platform",
+            "capabilities",
+            "review",
+            "generated",
+            "issues",
+            "maturity_floor",
+        },
+        label="host_baseline_snapshot",
+    )
+    if snapshot["store_kind"] != "host_baseline_snapshot":
+        raise ContractValidationError("host_baseline_snapshot.store_kind mismatch")
+    if snapshot["schema_version"] != 1:
+        raise ContractValidationError(
+            f"unsupported host_baseline schema_version={snapshot['schema_version']!r}"
+        )
+    if snapshot["host_id"] != HOST_BASELINE_PIN_ID:
+        raise ContractValidationError(
+            f"host_baseline_snapshot.host_id must be {HOST_BASELINE_PIN_ID!r}"
+        )
+    require_nonempty_string(snapshot["repository"], label="host_baseline.repository")
+    require_git_oid(snapshot["public_commit"], label="host_baseline.public_commit")
+    require_git_oid(snapshot["source_revision"], label="host_baseline.source_revision")
+    require_nonempty_string(snapshot["release"], label="host_baseline.release")
+    require_nonempty_string(
+        snapshot["observed_version"], label="host_baseline.observed_version"
+    )
+    require_nonempty_string(snapshot["platform"], label="host_baseline.platform")
+    if snapshot["maturity_floor"] not in HOST_BASELINE_MATURITY_LEVELS:
+        raise ContractValidationError("host_baseline.maturity_floor invalid")
+    if snapshot["maturity_floor"] == "live_verified":
+        raise ContractValidationError(
+            "host_baseline.maturity_floor must not claim live_verified without live proof"
+        )
+    issues = require_string_list(snapshot["issues"], label="host_baseline.issues")
+    if not issues:
+        raise ContractValidationError("host_baseline.issues must be non-empty")
+
+    review = require_object(snapshot["review"], label="host_baseline.review")
+    require_exact_keys(
+        review,
+        required={"status", "reviewed_pin", "notes"},
+        label="host_baseline.review",
+    )
+    require_nonempty_string(review["status"], label="host_baseline.review.status")
+    require_git_oid(review["reviewed_pin"], label="host_baseline.review.reviewed_pin")
+    if review["reviewed_pin"] != snapshot["public_commit"]:
+        raise ContractValidationError(
+            "host_baseline.review.reviewed_pin must equal public_commit"
+        )
+    require_nonempty_string(review["notes"], label="host_baseline.review.notes")
+
+    generated = require_object(snapshot["generated"], label="host_baseline.generated")
+    require_exact_keys(
+        generated,
+        required={"docs"},
+        label="host_baseline.generated",
+    )
+    docs = require_string_list(
+        generated["docs"], label="host_baseline.generated.docs", unique=True
+    )
+    if not docs:
+        raise ContractValidationError("host_baseline.generated.docs must be non-empty")
+    for relative in docs:
+        _require_relative_posix_path(relative, label="host_baseline.generated.docs[]")
+
+    capabilities = snapshot["capabilities"]
+    if not isinstance(capabilities, list) or not capabilities:
+        raise ContractValidationError(
+            "host_baseline.capabilities must be a non-empty array"
+        )
+    seen: set[str] = set()
+    for index, raw in enumerate(capabilities):
+        cap = require_object(raw, label=f"host_baseline.capabilities[{index}]")
+        require_exact_keys(
+            cap,
+            required={
+                "id",
+                "category",
+                "classification",
+                "owner",
+                "runtime",
+                "status",
+                "maturity",
+                "promise",
+                "evidence",
+                "downstream_issues",
+            },
+            label=f"host_baseline.capabilities[{index}]",
+        )
+        cap_id = require_nonempty_string(
+            cap["id"], label=f"host_baseline.capabilities[{index}].id"
+        )
+        if not USER_OBSERVABLE_CAPABILITY_ID_RE.match(cap_id):
+            raise ContractValidationError(
+                f"host capability id {cap_id!r} must be dotted lowercase"
+            )
+        if cap_id in seen:
+            raise ContractValidationError(f"duplicate host capability id {cap_id!r}")
+        seen.add(cap_id)
+        category = require_nonempty_string(
+            cap["category"], label=f"host_baseline.capabilities[{index}].category"
+        )
+        if category not in HOST_BASELINE_CATEGORIES:
+            raise ContractValidationError(
+                f"host capability {cap_id!r} category {category!r} not in "
+                "HOST_BASELINE_CATEGORIES"
+            )
+        classification = require_nonempty_string(
+            cap["classification"],
+            label=f"host_baseline.capabilities[{index}].classification",
+        )
+        if classification not in HOST_BASELINE_CLASSIFICATIONS:
+            raise ContractValidationError(
+                f"host capability {cap_id!r} classification {classification!r} "
+                "must be host_owned|consumed_downstream|irrelevant"
+            )
+        owner = require_nonempty_string(
+            cap["owner"], label=f"host_baseline.capabilities[{index}].owner"
+        )
+        runtime = require_nonempty_string(
+            cap["runtime"], label=f"host_baseline.capabilities[{index}].runtime"
+        )
+        if owner != "host":
+            raise ContractValidationError(
+                f"host capability {cap_id!r} owner must be 'host' (got {owner!r})"
+            )
+        if runtime != "grok":
+            raise ContractValidationError(
+                f"host capability {cap_id!r} runtime must be 'grok' (got {runtime!r})"
+            )
+        status = require_nonempty_string(
+            cap["status"], label=f"host_baseline.capabilities[{index}].status"
+        )
+        maturity = require_nonempty_string(
+            cap["maturity"], label=f"host_baseline.capabilities[{index}].maturity"
+        )
+        if status != maturity:
+            raise ContractValidationError(
+                f"host capability {cap_id!r} status must equal maturity"
+            )
+        if maturity not in HOST_BASELINE_MATURITY_LEVELS:
+            raise ContractValidationError(
+                f"host capability {cap_id!r} maturity {maturity!r} invalid"
+            )
+        if maturity == "live_verified":
+            raise ContractValidationError(
+                f"host capability {cap_id!r} must not claim live_verified in catalogue-only PR"
+            )
+        require_nonempty_string(
+            cap["promise"], label=f"host_baseline.capabilities[{index}].promise"
+        )
+        evidence = require_object(
+            cap["evidence"], label=f"host_baseline.capabilities[{index}].evidence"
+        )
+        require_exact_keys(
+            evidence,
+            required={"source_commit", "source_paths", "notes"},
+            label=f"host_baseline.capabilities[{index}].evidence",
+        )
+        require_git_oid(
+            evidence["source_commit"],
+            label=f"host_baseline.capabilities[{index}].evidence.source_commit",
+        )
+        paths = require_string_list(
+            evidence["source_paths"],
+            label=f"host_baseline.capabilities[{index}].evidence.source_paths",
+            unique=True,
+        )
+        if not paths:
+            raise ContractValidationError(
+                f"host capability {cap_id!r} evidence.source_paths must be non-empty"
+            )
+        for relative in paths:
+            _require_relative_posix_path(
+                relative,
+                label=f"host_baseline.capabilities[{index}].evidence.source_paths[]",
+            )
+        require_nonempty_string(
+            evidence["notes"],
+            label=f"host_baseline.capabilities[{index}].evidence.notes",
+        )
+        require_string_list(
+            cap["downstream_issues"],
+            label=f"host_baseline.capabilities[{index}].downstream_issues",
+            unique=True,
+        )
+        # host_owned / irrelevant must not claim OMG implementation evidence.
+        if "omg_paths" in cap:
+            omg_paths = cap["omg_paths"]
+            if classification in {"host_owned", "irrelevant"}:
+                if omg_paths not in (None, [], ()):
+                    raise ContractValidationError(
+                        f"host capability {cap_id!r} classification {classification!r} "
+                        "must not claim omg_paths as implementation evidence"
+                    )
+            elif omg_paths is not None:
+                if not isinstance(omg_paths, list):
+                    raise ContractValidationError(
+                        f"host capability {cap_id!r} omg_paths must be an array"
+                    )
+                for relative in require_string_list(
+                    omg_paths,
+                    label=f"host_baseline.capabilities[{index}].omg_paths",
+                    unique=True,
+                ):
+                    _require_relative_posix_path(
+                        relative,
+                        label=f"host_baseline.capabilities[{index}].omg_paths[]",
+                    )
+    return snapshot

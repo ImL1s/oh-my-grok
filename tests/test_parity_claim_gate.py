@@ -11,6 +11,9 @@ from pathlib import Path
 import pytest
 
 from omg_cli.contracts.parity_schema import (
+    FROZEN_PINS,
+    HOST_BASELINE_GENERATED_RELATIVE,
+    HOST_BASELINE_PIN_ID,
     PARITY_CATEGORY_TAXONOMY,
     PARITY_MATURITY_LEVELS,
     PARITY_V2_CLASSIFICATIONS,
@@ -97,7 +100,7 @@ def _bootstrapping_inventory(tmp_path: Path) -> dict:
             },
             "GROK_BUILD": {
                 "repository": "https://github.com/example/grok-build",
-                "revision": "7cfcb20d2b50b0d18801a6c0af2e401c0e060894",
+                "revision": FROZEN_PINS[HOST_BASELINE_PIN_ID],
                 "kind": "commit",
             },
         },
@@ -162,6 +165,10 @@ def _write_inventory(tmp_path: Path, inventory: dict) -> Path:
     path = tmp_path / "docs" / "parity" / "omg-parity.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(inventory, indent=2), encoding="utf-8")
+    # Release gate always requires host-baseline snapshot alongside inventory.
+    host_path = tmp_path / "docs" / "parity" / "upstream-snapshots" / "grok-build.json"
+    if not host_path.is_file():
+        _write_host_baseline_snapshot(tmp_path, inventory)
     return path
 
 
@@ -315,6 +322,78 @@ def _write_required_snapshots(
         (snap_dir / f"{source}.json").write_text(
             json.dumps(catalog, indent=2) + "\n", encoding="utf-8"
         )
+    _write_host_baseline_snapshot(tmp_path, inventory)
+
+
+def _minimal_host_capability(pin: str) -> dict:
+    return {
+        "id": "grok.host.baseline.probe",
+        "category": "reliability",
+        "classification": "irrelevant",
+        "owner": "host",
+        "runtime": "grok",
+        "status": "catalogued",
+        "maturity": "catalogued",
+        "promise": "Minimal host baseline probe capability for hermetic tests",
+        "evidence": {
+            "source_commit": pin,
+            "source_paths": ["CHANGELOG.md"],
+            "notes": "Test fixture capability.",
+        },
+        "downstream_issues": [],
+    }
+
+
+def _write_host_baseline_snapshot(
+    tmp_path: Path,
+    inventory: dict,
+    *,
+    snapshot_override: dict | None = None,
+    write_generated_docs: bool = True,
+) -> Path:
+    pin = inventory["upstream_pins"][HOST_BASELINE_PIN_ID]["revision"]
+    snap_dir = tmp_path / "docs" / "parity" / "upstream-snapshots"
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    if snapshot_override is not None:
+        snapshot = copy.deepcopy(snapshot_override)
+    else:
+        snapshot = {
+            "store_kind": "host_baseline_snapshot",
+            "schema_version": 1,
+            "host_id": HOST_BASELINE_PIN_ID,
+            "repository": inventory["upstream_pins"][HOST_BASELINE_PIN_ID]["repository"],
+            "public_commit": pin,
+            "source_revision": "4d6d11372ab8f73026a78c45a7b7e7b1310eb39f",
+            "release": "0.2.121",
+            "observed_version": "0.2.121",
+            "platform": "test-fixture",
+            "capabilities": [_minimal_host_capability(pin)],
+            "review": {
+                "status": "catalogued",
+                "reviewed_pin": pin,
+                "notes": "Hermetic test host baseline.",
+            },
+            "generated": {
+                "docs": list(HOST_BASELINE_GENERATED_RELATIVE),
+            },
+            "issues": ["#105"],
+            "maturity_floor": "catalogued",
+        }
+    path = snap_dir / "grok-build.json"
+    path.write_text(json.dumps(snapshot, indent=2) + "\n", encoding="utf-8")
+    if write_generated_docs:
+        for relative in HOST_BASELINE_GENERATED_RELATIVE:
+            doc = tmp_path / relative
+            doc.parent.mkdir(parents=True, exist_ok=True)
+            doc.write_text(
+                f"<!-- GENERATED test fixture for {relative} pin={pin} -->\n",
+                encoding="utf-8",
+            )
+    return path
+
+
+def _bump_grok_build_pin(inventory: dict, new_pin: str) -> None:
+    inventory["upstream_pins"][HOST_BASELINE_PIN_ID]["revision"] = new_pin
 
 
 def _ack_review(

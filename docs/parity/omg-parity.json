@@ -29,7 +29,7 @@
     },
     "GROK_BUILD": {
       "repository": "https://github.com/xai-org/grok-build",
-      "revision": "7cfcb20d2b50b0d18801a6c0af2e401c0e060894",
+      "revision": "a5589e958437d79e13db026eedcb1720bffd4063",
       "kind": "commit"
     }
   },

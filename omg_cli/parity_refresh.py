@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from omg_cli.contracts.parity_schema import SOURCE_STATUS_IDS, UPSTREAM_PIN_IDS
+from omg_cli.contracts.parity_schema import (
+    HOST_BASELINE_CLASSIFICATIONS,
+    HOST_BASELINE_PIN_ID,
+    SOURCE_STATUS_IDS,
+    UPSTREAM_PIN_IDS,
+    validate_host_baseline_snapshot,
+)
 from omg_cli.contracts.state_schemas import (
     ContractValidationError,
     require_exact_keys,
@@ -17,6 +24,18 @@ from omg_cli.contracts.state_schemas import (
     require_nonempty_string,
     require_object,
     require_string_list,
+)
+
+# Release-note deltas that must appear in every host-baseline catalogue for the
+# current pin transition (extend when issue #105 classifies more required rows).
+REQUIRED_HOST_BASELINE_CAPABILITY_IDS = frozenset(
+    {
+        "grok.plan.approval_model_switching",
+        "grok.session.acp_resume_no_replay",
+        "grok.session.acp_close",
+        "grok.workflow.parallel_child_cap",
+        "grok.mcp.image_before_truncation",
+    }
 )
 
 COMMITTED_REVIEWS_RELATIVE = "docs/parity/reviews"
@@ -457,6 +476,190 @@ def write_refresh_review_artifact(repo_root: Path | str, plan: dict[str, Any]) -
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"refresh-{source}-{short}.json"
     path.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _host_capability_fingerprint(cap: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": cap.get("id"),
+        "classification": cap.get("classification"),
+        "category": cap.get("category"),
+        "promise": cap.get("promise"),
+        "maturity": cap.get("maturity"),
+        "source_commit": (cap.get("evidence") or {}).get("source_commit")
+        if isinstance(cap.get("evidence"), Mapping)
+        else None,
+        "source_paths": sorted(
+            list((cap.get("evidence") or {}).get("source_paths") or [])
+            if isinstance(cap.get("evidence"), Mapping)
+            else []
+        ),
+    }
+
+
+def host_snapshot_content_hash(snapshot: Mapping[str, Any]) -> str:
+    """Stable SHA-256 over validated host snapshot (canonical JSON)."""
+    validated = validate_host_baseline_snapshot(dict(snapshot))
+    payload = json.dumps(validated, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def generated_docs_content_hash(repo_root: Path | str, relative_docs: list[str]) -> str:
+    """SHA-256 over concatenated generated host doc bytes (sorted paths)."""
+    root = Path(repo_root)
+    hasher = hashlib.sha256()
+    for relative in sorted(relative_docs):
+        path = root / relative
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise ContractValidationError(
+                f"missing generated host baseline doc {relative}: {exc}"
+            ) from exc
+        hasher.update(relative.encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update(data)
+        hasher.update(b"\0")
+    return hasher.hexdigest()
+
+
+def build_host_baseline_refresh_plan(
+    *,
+    from_revision: str,
+    to_revision: str,
+    host_snapshot: Mapping[str, Any],
+    previous_snapshot: Mapping[str, Any] | None = None,
+    generated_at: datetime | None = None,
+    snapshot_hash: str | None = None,
+    generated_docs_hash: str | None = None,
+) -> dict[str, Any]:
+    """Diff host-baseline capabilities across a GROK_BUILD pin transition."""
+    require_git_oid(from_revision, label="from_revision")
+    require_git_oid(to_revision, label="to_revision")
+    snapshot = validate_host_baseline_snapshot(dict(host_snapshot))
+    if snapshot["public_commit"] != to_revision:
+        raise ContractValidationError(
+            f"host snapshot public_commit {snapshot['public_commit']!r} != "
+            f"to_revision {to_revision!r}"
+        )
+    prev_rows: dict[str, dict[str, Any]] = {}
+    if previous_snapshot is not None:
+        prev = validate_host_baseline_snapshot(dict(previous_snapshot))
+        if prev["public_commit"] != from_revision:
+            raise ContractValidationError(
+                f"previous host snapshot public_commit {prev['public_commit']!r} != "
+                f"from_revision {from_revision!r}"
+            )
+        for cap in prev["capabilities"]:
+            prev_rows[str(cap["id"])] = cap
+    new_rows = {str(cap["id"]): cap for cap in snapshot["capabilities"]}
+
+    changes: list[dict[str, Any]] = []
+    for cap_id in sorted(set(prev_rows) & set(new_rows)):
+        before = _host_capability_fingerprint(prev_rows[cap_id])
+        after = _host_capability_fingerprint(new_rows[cap_id])
+        if before != after:
+            changes.append(
+                {
+                    "change_kind": "changed",
+                    "capability_id": cap_id,
+                    "detail": {"before": before, "after": after},
+                }
+            )
+    for cap_id in sorted(set(prev_rows) - set(new_rows)):
+        changes.append(
+            {
+                "change_kind": "deleted",
+                "capability_id": cap_id,
+                "detail": {
+                    "before": _host_capability_fingerprint(prev_rows[cap_id]),
+                    "after": None,
+                },
+            }
+        )
+    for cap_id in sorted(set(new_rows) - set(prev_rows)):
+        changes.append(
+            {
+                "change_kind": "added",
+                "capability_id": cap_id,
+                "detail": {
+                    "after": _host_capability_fingerprint(new_rows[cap_id]),
+                },
+            }
+        )
+
+    when = generated_at or datetime.now(timezone.utc)
+    generated_text = require_iso8601(
+        when.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        label="generated_at",
+    )
+    snap_hash = snapshot_hash or host_snapshot_content_hash(snapshot)
+    classified_ids = {
+        str(cap["id"])
+        for cap in snapshot["capabilities"]
+        if isinstance(cap, dict)
+        and cap.get("classification") in HOST_BASELINE_CLASSIFICATIONS
+    }
+    missing_required = sorted(REQUIRED_HOST_BASELINE_CAPABILITY_IDS - classified_ids)
+    unclassified = [
+        str(cap.get("id"))
+        for cap in snapshot["capabilities"]
+        if isinstance(cap, dict)
+        and cap.get("classification") not in HOST_BASELINE_CLASSIFICATIONS
+    ]
+    classification_complete = not missing_required and not unclassified
+    return {
+        "store_kind": "parity_refresh_review",
+        "schema_version": 1,
+        "source": HOST_BASELINE_PIN_ID,
+        "from_revision": from_revision,
+        "to_revision": to_revision,
+        "generated_at": generated_text,
+        "changes": changes,
+        "proposed_inventory_patch": {
+            "upstream_pins": {HOST_BASELINE_PIN_ID: {"revision": to_revision}},
+            "capabilities": [],
+        },
+        "guards": {
+            "auto_maturity_upgrade": False,
+            "requires_manual_mapping": True,
+            "host_baseline": True,
+        },
+        "host_baseline": {
+            "snapshot_path": "docs/parity/upstream-snapshots/grok-build.json",
+            "snapshot_hash": snap_hash,
+            "generated_docs_hash": generated_docs_hash or "",
+            "reviewed_pin": to_revision,
+            "previous_pin": from_revision,
+            "release": snapshot["release"],
+            "classification_complete": classification_complete,
+            "missing_required_capability_ids": missing_required,
+        },
+    }
+
+
+def write_committed_host_baseline_review(
+    repo_root: Path | str,
+    plan: dict[str, Any],
+    *,
+    acknowledgments: list[dict[str, Any]] | None = None,
+) -> Path:
+    """Write GROK_BUILD pin-transition ledger under docs/parity/reviews/."""
+    root = Path(repo_root)
+    if plan.get("source") != HOST_BASELINE_PIN_ID:
+        raise ContractValidationError(
+            f"host baseline review source must be {HOST_BASELINE_PIN_ID!r}"
+        )
+    host_meta = require_object(plan.get("host_baseline"), label="plan.host_baseline")
+    for key in ("snapshot_hash", "reviewed_pin", "previous_pin", "snapshot_path"):
+        require_nonempty_string(host_meta.get(key), label=f"plan.host_baseline.{key}")
+    path = write_committed_refresh_review(
+        root, plan, acknowledgments=acknowledgments
+    )
+    # Re-read and ensure host_baseline block is persisted (write_committed strips unknown?).
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["host_baseline"] = dict(host_meta)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
 
 

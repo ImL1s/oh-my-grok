@@ -713,6 +713,11 @@ def test_required_category_taxonomy_constant_matches_issue_78b() -> None:
     assert "OMG" not in SOURCE_STATUS_IDS
     assert "GROK_BUILD" not in SOURCE_STATUS_IDS
     assert tuple(SOURCE_STATUS_IDS) == ("OMC", "OMX", "OmO", "Antigravity")
+    from omg_cli.contracts.parity_schema import HOST_BASELINE_PIN_ID, UPSTREAM_PIN_IDS
+
+    assert HOST_BASELINE_PIN_ID == "GROK_BUILD"
+    assert HOST_BASELINE_PIN_ID in UPSTREAM_PIN_IDS
+    assert HOST_BASELINE_PIN_ID not in SOURCE_STATUS_IDS
 
 
 

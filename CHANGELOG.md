@@ -10,6 +10,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#105 Grok Build host-baseline gate (PR1):** independent host catalogue at
+  `docs/parity/upstream-snapshots/grok-build.json` for pin
+  `a5589e958437d79e13db026eedcb1720bffd4063` (`0.2.121`), fail-closed
+  `GROK_BUILD` pin-transition reviews under `docs/parity/reviews/`, and
+  generated `docs/parity/generated/host-baseline.md` +
+  `host-capability-matrix.md`. Host rows are `catalogued` only (not a
+  sibling of OMC/OMX parity scoring); `host_owned` cannot claim OMG
+  `omg_paths` as implementation evidence.
 - **#104 real-tmux Team UX regression suite:** hermetic Layer B coverage
   (`tests/test_team_real_tmux_ux.py` + `tests/support/team_tmux_harness.py`)
   on an isolated `tmux -S` socket with fake providers under
