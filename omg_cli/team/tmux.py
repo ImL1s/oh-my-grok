@@ -5,8 +5,12 @@ Shorthand launch uses this module so workers share one window via ``split-window
 
 Attach modes:
 - ``detached`` — create a new session (outside tmux; requires TTY or ``--detach``)
-- ``inside`` — create a dedicated window in the *current* session and split there;
-  never kill the leader pane or the whole session on cleanup/stop
+- ``inside`` — bind to the invoking leader session (#96):
+  - ``same_window`` (default) — split workers beside the leader
+  - ``dedicated_window`` — create an ``omg-team-*`` window and split there
+
+Cleanup never kills the leader pane, leader window (same_window), or the
+shared session.
 """
 
 from __future__ import annotations
@@ -276,12 +280,14 @@ def _tmux_identity_shell_predicate(
     expected_server: Mapping[str, Any],
     window_id: str | None = None,
     expected_session_id: str | None = None,
+    pane_id: str | None = None,
 ) -> str:
     """Build a shell predicate for ``if-shell`` (no ``-F``).
 
     tmux expands ``#{…}`` before ``sh`` runs. Includes server **pid start-id**
     so a same-PID replacement after the Python pre-probe cannot satisfy the
-    atomic kill/create gate.
+    atomic kill/create gate. Optional *pane_id* gates splits against an exact
+    leader / worker-stack pane (#96 same_window).
     """
     pid = expected_server.get("tmux_server_pid")
     start = expected_server.get("tmux_server_pid_start")
@@ -290,6 +296,12 @@ def _tmux_identity_shell_predicate(
     if not isinstance(start, str) or not start:
         raise TmuxTeamError("tmux identity predicate: invalid server pid_start")
     checks: list[str] = []
+    if pane_id is not None:
+        if _TMUX_PANE_ID.fullmatch(pane_id) is None:
+            raise TmuxTeamError(
+                f"tmux identity predicate: invalid pane id {pane_id!r}"
+            )
+        checks.append(f"[ '#{{pane_id}}' = {_sh_single_quote(pane_id)} ]")
     if window_id is not None:
         if _TMUX_WINDOW_ID.fullmatch(window_id) is None:
             raise TmuxTeamError(
@@ -338,6 +350,7 @@ def _tmux_run_if_identity(
     socket_path: str | None = None,
     window_id: str | None = None,
     expected_session_id: str | None = None,
+    pane_id: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run *argv* only when *target* still matches full server identity.
 
@@ -351,6 +364,7 @@ def _tmux_run_if_identity(
         expected_server=server,
         window_id=window_id,
         expected_session_id=expected_session_id,
+        pane_id=pane_id,
     )
     return _tmux_run(
         [
@@ -486,18 +500,19 @@ def write_team_launch_intent(
     window_name: str,
     nonce: str,
     tmux_server: Mapping[str, Any] | None = None,
+    view_mode: str | None = None,
+    leader_pane_id: str | None = None,
+    leader_window_id: str | None = None,
 ) -> Path:
-    """Atomically persist launch intent *before* ``new-window`` side effects.
+    """Atomically persist launch intent *before* create/split side effects.
 
     Stamps the ambient tmux **server** identity (socket + pid start-id) so
-    later recovery cannot kill a same-numbered ``@N`` on another/restarted
-    server. ``window_id`` is omitted until
-    :func:`bind_team_launch_intent_window_id` stamps the immutable ``@N``;
-    ``side_effect_started`` stays false until
-    :func:`mark_team_launch_intent_side_effect` runs immediately before
-    ``new-window``. ``nonce_published`` stays false until exact-handle
-    stamp+readback proves publication on the created worker
-    (:func:`ack_team_launch_intent_nonce_published`).
+    later recovery cannot kill a same-numbered ``@N``/``%pane`` on another
+    restarted server. ``window_id`` is omitted until
+    :func:`bind_team_launch_intent_window_id` stamps the immutable ``@N``
+    (dedicated path). ``same_window`` intents stamp ``leader_pane_id`` /
+    ``leader_window_id`` / ``created_pane_ids`` and must never authorize
+    ``kill-window`` on the leader window.
     """
     from omg_cli.contracts.path_keys import (
         DATA_FILE_MODE,
@@ -505,6 +520,7 @@ def write_team_launch_intent(
         atomic_write_bytes,
         ensure_managed_dir,
     )
+    from omg_cli.team.topology import VIEW_MODES
 
     owner_pid = os.getpid()
     owner_start = _process_start_identity(owner_pid)
@@ -525,7 +541,7 @@ def write_team_launch_intent(
     server = _intent_tmux_server(server)
     assert server is not None
     path = team_launch_intent_path(root, run_id, nonce)
-    payload = {
+    payload: dict[str, Any] = {
         "run_id": run_id,
         "session_id": session_id,
         "window_name": window_name,
@@ -538,7 +554,27 @@ def write_team_launch_intent(
         "tmux_server_pid": server["tmux_server_pid"],
         "tmux_server_pid_start": server["tmux_server_pid_start"],
         "created_at": _utc_now_iso(),
+        "created_pane_ids": [],
     }
+    if view_mode is not None:
+        if view_mode not in VIEW_MODES:
+            raise TmuxTeamError(
+                f"launch intent write refused: unsupported view_mode {view_mode!r}"
+            )
+        payload["view_mode"] = view_mode
+    if leader_pane_id is not None:
+        if _TMUX_PANE_ID.fullmatch(leader_pane_id) is None:
+            raise TmuxTeamError(
+                f"launch intent write refused: invalid leader pane {leader_pane_id!r}"
+            )
+        payload["leader_pane_id"] = leader_pane_id
+    if leader_window_id is not None:
+        if _TMUX_WINDOW_ID.fullmatch(leader_window_id) is None:
+            raise TmuxTeamError(
+                "launch intent write refused: invalid leader window "
+                f"{leader_window_id!r}"
+            )
+        payload["leader_window_id"] = leader_window_id
     body = (
         json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
     ).encode("utf-8")
@@ -548,6 +584,215 @@ def write_team_launch_intent(
     except ContractPathError as exc:
         raise TmuxTeamError(f"launch intent write refused: {exc}") from exc
     return path
+
+
+def append_team_launch_intent_pane_id(path: Path | str, pane_id: str) -> None:
+    """Atomically append a created worker pane id to the launch-intent WAL."""
+    from omg_cli.contracts.path_keys import (
+        DATA_FILE_MODE,
+        ContractPathError,
+        atomic_write_bytes,
+    )
+
+    if _TMUX_PANE_ID.fullmatch(pane_id) is None:
+        raise TmuxTeamError(
+            f"launch intent pane append refused: invalid pane id {pane_id!r}"
+        )
+    intent = Path(path)
+    try:
+        raw = json.loads(intent.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TmuxTeamError(
+            f"launch intent pane append refused (unreadable): {intent}: {exc}"
+        ) from exc
+    if not isinstance(raw, dict):
+        raise TmuxTeamError(
+            f"launch intent pane append refused (invalid): {intent}"
+        )
+    leader = raw.get("leader_pane_id")
+    if isinstance(leader, str) and leader == pane_id:
+        raise TmuxTeamError(
+            "launch intent pane append refused: refusing leader pane id"
+        )
+    existing = raw.get("created_pane_ids")
+    panes: list[str] = []
+    if isinstance(existing, list):
+        for item in existing:
+            if isinstance(item, str) and _TMUX_PANE_ID.fullmatch(item):
+                panes.append(item)
+    if pane_id in panes:
+        return
+    panes.append(pane_id)
+    payload = dict(raw)
+    payload["created_pane_ids"] = panes
+    payload["side_effect_started"] = True
+    body = (
+        json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    try:
+        atomic_write_bytes(intent, body, mode=DATA_FILE_MODE, replace=True)
+    except ContractPathError as exc:
+        raise TmuxTeamError(f"launch intent pane append refused: {exc}") from exc
+
+
+def _intent_known_pane_ids(raw: Mapping[str, Any]) -> list[str]:
+    """Return durable worker pane ids stamped on a same_window launch intent."""
+    raw_panes = raw.get("created_pane_ids")
+    if not isinstance(raw_panes, list):
+        return []
+    out: list[str] = []
+    for item in raw_panes:
+        if isinstance(item, str) and _TMUX_PANE_ID.fullmatch(item) is not None:
+            out.append(item)
+    return out
+
+
+def _intent_view_mode(raw: Mapping[str, Any]) -> str | None:
+    mode = raw.get("view_mode")
+    if isinstance(mode, str) and mode:
+        return mode
+    return None
+
+
+def _kill_panes_scoped(
+    pane_ids: Sequence[str],
+    *,
+    expected_server: Mapping[str, Any] | None,
+    expected_session_id: str | None,
+    expected_window_id: str | None,
+    intent_or_launch_nonce: str | None,
+    leader_pane_id: str | None,
+    socket_path: str | None = None,
+) -> str | None:
+    """Kill only transaction-owned worker panes with identity + absence proof.
+
+    Never kills *leader_pane_id*. Probe unknown / identity drift / nonce
+    mismatch retain authority (return error; do not claim success).
+    """
+    server = (
+        _intent_tmux_server(expected_server) if expected_server is not None else None
+    )
+    if expected_server is not None and server is None:
+        return "scoped kill-pane refused: invalid expected server"
+    if server is not None and socket_path is None:
+        socket_path = str(server["tmux_socket_path"])
+    if server is not None:
+        live = _probe_tmux_server_identity(socket_path=socket_path)
+        if not _tmux_server_matches(server, live):
+            return (
+                "scoped kill-pane refused: tmux server identity mismatch — "
+                "refuse foreign/restarted %pane"
+            )
+    errors: list[str] = []
+    for pane_id in pane_ids:
+        if _TMUX_PANE_ID.fullmatch(pane_id) is None:
+            errors.append(f"refused kill-pane for non-pane id {pane_id!r}")
+            continue
+        if leader_pane_id is not None and pane_id == leader_pane_id:
+            errors.append(f"refused kill-pane for leader pane {pane_id}")
+            continue
+        probe = _tmux_run(
+            [
+                "display-message",
+                "-p",
+                "-t",
+                pane_id,
+                "#{pane_id}\t#{session_id}\t#{window_id}\t#{pid}\t"
+                "#{pane_dead}\t#{" + INTENT_NONCE_OPTION + "}",
+            ],
+            socket_path=socket_path,
+        )
+        if probe.returncode != 0:
+            # Pane already gone — treat as success for this id.
+            continue
+        parts = (probe.stdout or "").strip().split("\t")
+        if len(parts) < 5:
+            errors.append(f"kill-pane {pane_id}: identity probe malformed")
+            continue
+        got_pane, got_session, got_window, got_pid, dead = parts[:5]
+        nonce_live = parts[5] if len(parts) > 5 else ""
+        if got_pane != pane_id:
+            errors.append(f"kill-pane {pane_id}: pane id drift ({got_pane!r})")
+            continue
+        if expected_session_id is not None and got_session != expected_session_id:
+            errors.append(
+                f"kill-pane {pane_id}: session drift "
+                f"(expected {expected_session_id!r} got {got_session!r})"
+            )
+            continue
+        if expected_window_id is not None and got_window != expected_window_id:
+            errors.append(
+                f"kill-pane {pane_id}: window drift "
+                f"(expected {expected_window_id!r} got {got_window!r})"
+            )
+            continue
+        if server is not None:
+            if not got_pid.isdigit() or int(got_pid) != server["tmux_server_pid"]:
+                errors.append(
+                    f"kill-pane {pane_id}: server pid mismatch "
+                    f"(expected {server['tmux_server_pid']})"
+                )
+                continue
+        if (
+            intent_or_launch_nonce is not None
+            and nonce_live
+            and nonce_live != intent_or_launch_nonce
+        ):
+            errors.append(
+                f"kill-pane {pane_id}: intent nonce mismatch "
+                f"(expected {intent_or_launch_nonce!r} got {nonce_live!r})"
+            )
+            continue
+        if dead == "1":
+            # Dead but still addressable — still kill to remove the pane object.
+            pass
+        if server is not None:
+            try:
+                predicate = _tmux_identity_shell_predicate(
+                    expected_server=server,
+                    window_id=expected_window_id,
+                    expected_session_id=expected_session_id,
+                    pane_id=pane_id,
+                )
+            except TmuxTeamError as exc:
+                errors.append(f"kill-pane {pane_id}: {exc}")
+                continue
+            killed = _tmux_run(
+                [
+                    "if-shell",
+                    "-t",
+                    pane_id,
+                    predicate,
+                    f"kill-pane -t {pane_id}",
+                    _TMUX_IF_SHELL_REJECT,
+                ],
+                socket_path=socket_path,
+            )
+        else:
+            killed = _tmux_run(
+                ["kill-pane", "-t", pane_id], socket_path=socket_path
+            )
+        if killed.returncode not in (0, 1):
+            err = (killed.stderr or killed.stdout or "").strip()
+            errors.append(f"kill-pane {pane_id}: exit {killed.returncode} {err}")
+            continue
+        # Absence proof via full list-panes -a.
+        listed = _tmux_run(
+            ["list-panes", "-a", "-F", "#{pane_id}"], socket_path=socket_path
+        )
+        if listed.returncode != 0:
+            errors.append(
+                f"kill-pane {pane_id}: absence probe exit {listed.returncode}"
+            )
+            continue
+        still = {
+            line.strip()
+            for line in (listed.stdout or "").splitlines()
+            if line.strip()
+        }
+        if pane_id in still:
+            errors.append(f"kill-pane {pane_id}: still present after kill")
+    return "; ".join(errors) if errors else None
 
 
 def mark_team_launch_intent_side_effect(path: Path | str) -> None:
@@ -1060,6 +1305,83 @@ def sweep_stale_team_launch_intents(
                     "window_name": intent_name,
                 }
             )
+            continue
+        # same_window: never kill-window — only scoped worker panes.
+        if _intent_view_mode(raw) == "same_window":
+            leader_pane = raw.get("leader_pane_id")
+            leader_window = raw.get("leader_window_id")
+            if not isinstance(leader_pane, str) or not isinstance(leader_window, str):
+                results.append(
+                    {
+                        "path": str(entry),
+                        "ok": False,
+                        "session_id": intent_session,
+                        "window_name": intent_name,
+                        "error": (
+                            "same_window launch intent missing leader pane/window "
+                            "— refuse unscoped cleanup"
+                        ),
+                    }
+                )
+                continue
+            pane_ids = _intent_known_pane_ids(raw)
+            if not pane_ids and raw.get("side_effect_started") is True:
+                # Side effect claimed but no pane ids — keep WAL (fail closed).
+                results.append(
+                    {
+                        "path": str(entry),
+                        "ok": False,
+                        "session_id": intent_session,
+                        "window_name": intent_name,
+                        "error": (
+                            "same_window side_effect without created_pane_ids — "
+                            "refuse clear"
+                        ),
+                    }
+                )
+                continue
+            cleanup = _kill_panes_scoped(
+                pane_ids,
+                expected_server=expected_server,
+                expected_session_id=intent_session,
+                expected_window_id=leader_window,
+                intent_or_launch_nonce=_intent_nonce_value(raw),
+                leader_pane_id=leader_pane,
+                socket_path=str(expected_server["tmux_socket_path"]),
+            )
+            if cleanup is None:
+                try:
+                    clear_team_launch_intent(entry)
+                except TmuxTeamError as exc:
+                    results.append(
+                        {
+                            "path": str(entry),
+                            "ok": False,
+                            "session_id": intent_session,
+                            "window_name": intent_name,
+                            "error": f"clear after pane absence failed: {exc}",
+                        }
+                    )
+                    continue
+                results.append(
+                    {
+                        "path": str(entry),
+                        "ok": True,
+                        "session_id": intent_session,
+                        "window_name": intent_name,
+                        "view_mode": "same_window",
+                    }
+                )
+            else:
+                results.append(
+                    {
+                        "path": str(entry),
+                        "ok": False,
+                        "session_id": intent_session,
+                        "window_name": intent_name,
+                        "error": cleanup,
+                    }
+                )
             continue
         cleanup = _kill_inside_windows_by_name(
             session_id=intent_session,
@@ -2371,7 +2693,10 @@ def _parse_new_window_create_handle(
 
 
 def _pane_command_with_intent_nonce_stamp(
-    pane_command: str, intent_nonce: str
+    pane_command: str,
+    intent_nonce: str,
+    *,
+    stamp_window: bool = True,
 ) -> str:
     """Prefix *pane_command* so the new pane self-stamps intent nonce on start.
 
@@ -2381,11 +2706,19 @@ def _pane_command_with_intent_nonce_stamp(
     targetless queued ``set-option`` (or ``$session:name`` target) can.
     The pane child is asynchronous — recovery must not treat nonce absence
     as proof until publication is acknowledged or positively observed.
+
+    *stamp_window* must be False for same_window (#96): the shared leader
+    window must never receive the Team intent nonce.
     """
     nq = shlex.quote(intent_nonce)
     opt = INTENT_NONCE_OPTION
+    if stamp_window:
+        return (
+            f"tmux set-option -wq {opt} {nq} && "
+            f"tmux set-option -pq {opt} {nq} && "
+            f"exec /bin/sh -c {shlex.quote(pane_command)}"
+        )
     return (
-        f"tmux set-option -wq {opt} {nq} && "
         f"tmux set-option -pq {opt} {nq} && "
         f"exec /bin/sh -c {shlex.quote(pane_command)}"
     )
@@ -2526,6 +2859,64 @@ def _publish_intent_nonce_on_created_handles(
         intent_nonce=intent_nonce,
         socket_path=socket_path,
     )
+
+
+def _publish_intent_nonce_on_pane(
+    *,
+    pane_id: str,
+    intent_nonce: str,
+    socket_path: str | None,
+    expected_server: Mapping[str, Any] | None,
+    expected_session_id: str | None = None,
+    expected_window_id: str | None = None,
+) -> bool:
+    """Pane-only nonce stamp+readback for same_window (#96).
+
+    Never stamps the shared leader window option — that would poison the
+    invoking window with the Team intent nonce.
+    """
+    pane_argv = [
+        "set-option",
+        "-p",
+        "-t",
+        pane_id,
+        INTENT_NONCE_OPTION,
+        intent_nonce,
+    ]
+    try:
+        if expected_server is not None:
+            server = _intent_tmux_server(expected_server)
+            if server is None:
+                return False
+            stamped = _tmux_run_if_identity(
+                pane_argv,
+                target=pane_id,
+                expected_server=server,
+                socket_path=socket_path,
+                window_id=expected_window_id,
+                expected_session_id=expected_session_id,
+                pane_id=pane_id,
+            )
+        else:
+            stamped = _tmux_run(pane_argv, socket_path=socket_path)
+        if stamped.returncode != 0:
+            return False
+        readback = _tmux_run(
+            [
+                "show-options",
+                "-pqv",
+                "-t",
+                pane_id,
+                INTENT_NONCE_OPTION,
+            ],
+            socket_path=socket_path,
+        )
+        return (
+            readback.returncode == 0
+            and (readback.stdout or "").strip() == intent_nonce
+        )
+    except (OSError, TmuxTeamError):
+        return False
 
 
 def _launch_first_inside(
@@ -2879,13 +3270,16 @@ def _split_remaining(
     expected_server: Mapping[str, Any] | None = None,
     expected_session_id: str | None = None,
     expected_window_id: str | None = None,
+    expected_pane_id: str | None = None,
+    vertical: bool = False,
 ) -> list[str]:
-    """Split remaining tasks into ``target`` (session id or window id).
+    """Split remaining tasks into ``target`` (session/window/pane id).
 
     Uses ``-d`` so splits do not steal client focus from the leader pane.
     When *expected_server* is set, each ``split-window`` runs under a PID+start
     ``if-shell`` gate so a replacement server on the same socket cannot receive
-    the worker command before Python postcheck.
+    the worker command before Python postcheck. *vertical* forces ``-v`` for
+    same_window worker-stack splits (#96).
     """
     created: list[str] = []
     server = (
@@ -2906,6 +3300,8 @@ def _split_remaining(
             *task_env,
             str(task["pane_command"]),
         ]
+        if vertical:
+            split_argv.insert(1, "-v")
         if server is not None:
             split = _tmux_run_if_identity(
                 split_argv,
@@ -2914,6 +3310,7 @@ def _split_remaining(
                 socket_path=socket_path,
                 window_id=expected_window_id,
                 expected_session_id=expected_session_id,
+                pane_id=expected_pane_id,
             )
         else:
             split = _tmux_run(split_argv, socket_path=socket_path)
@@ -2931,6 +3328,211 @@ def _split_remaining(
     return created
 
 
+def _split_worker_pane_gated(
+    *,
+    target: str,
+    task: dict[str, Any],
+    env_pairs: list[tuple[str, str]],
+    horizontal: bool,
+    socket_path: str | None,
+    expected_server: Mapping[str, Any] | None,
+    expected_session_id: str,
+    expected_window_id: str,
+    expected_pane_id: str,
+    intent_path: Path | None = None,
+    intent_nonce: str | None = None,
+) -> str:
+    """Identity-gated focus-detached split against an exact pane target."""
+    task_env = tmux_env_args(list(task.get("_env_pairs") or env_pairs))
+    pane_command = str(task["pane_command"])
+    if intent_nonce is not None:
+        pane_command = _pane_command_with_intent_nonce_stamp(
+            pane_command, intent_nonce, stamp_window=False
+        )
+    split_argv = [
+        "split-window",
+        "-h" if horizontal else "-v",
+        "-d",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        target,
+        "-c",
+        str(task["worktree"]),
+        *task_env,
+        pane_command,
+    ]
+    server = (
+        _intent_tmux_server(expected_server) if expected_server is not None else None
+    )
+    if server is None:
+        raise TmuxTeamError("same_window split refused: tmux server identity required")
+    if intent_path is not None:
+        mark_team_launch_intent_side_effect(intent_path)
+    split = _tmux_run_if_identity(
+        split_argv,
+        target=target,
+        expected_server=server,
+        socket_path=socket_path,
+        window_id=expected_window_id,
+        expected_session_id=expected_session_id,
+        pane_id=expected_pane_id,
+    )
+    if split.returncode != 0:
+        err = (split.stderr or split.stdout or "").strip()
+        raise TmuxTeamError(
+            f"failed to split pane for task {task['task_id']!r}: {err}"
+        )
+    pane_id = (split.stdout or "").strip()
+    if _TMUX_PANE_ID.fullmatch(pane_id) is None:
+        raise TmuxTeamError(
+            f"split-window did not return pane id for {task['task_id']!r}"
+        )
+    return pane_id
+
+
+def _verify_worker_pane_membership(
+    *,
+    pane_id: str,
+    leader_pane: str,
+    expected_session_id: str,
+    expected_window_id: str,
+    expected_server: Mapping[str, Any] | None,
+    socket_path: str | None,
+) -> None:
+    if pane_id == leader_pane:
+        raise TmuxTeamError("refusing to overwrite leader pane with worker")
+    probe = _tmux_run(
+        [
+            "display-message",
+            "-p",
+            "-t",
+            pane_id,
+            "#{pane_id}\t#{session_id}\t#{window_id}\t#{pid}",
+        ],
+        socket_path=socket_path,
+    )
+    parts = (probe.stdout or "").strip().split("\t")
+    server = (
+        _intent_tmux_server(expected_server) if expected_server is not None else None
+    )
+    if (
+        probe.returncode != 0
+        or len(parts) != 4
+        or parts[0] != pane_id
+        or parts[1] != expected_session_id
+        or parts[2] != expected_window_id
+        or (
+            server is not None
+            and (
+                not parts[3].isdigit()
+                or int(parts[3]) != server["tmux_server_pid"]
+            )
+        )
+    ):
+        raise TmuxTeamError(
+            "worker pane left the invoking session/window before commit "
+            f"(pane={pane_id!r}, expected session_id={expected_session_id!r} "
+            f"window_id={expected_window_id!r})"
+        )
+
+
+def _apply_same_window_layout(
+    *,
+    window_id: str,
+    leader_pane: str,
+    worker_count: int,
+    socket_path: str | None,
+) -> int:
+    """Select leader, apply main-vertical with clamped width; return width used."""
+    from omg_cli.team.topology import clamp_main_vertical_leader_width
+
+    width_probe = _tmux_run(
+        ["display-message", "-p", "-t", window_id, "#{window_width}"],
+        socket_path=socket_path,
+    )
+    try:
+        window_width = int((width_probe.stdout or "").strip())
+    except ValueError:
+        window_width = 0
+    if width_probe.returncode != 0 or window_width <= 0:
+        raise TmuxTeamError("failed to read window width for main-vertical layout")
+    leader_width = clamp_main_vertical_leader_width(
+        window_width, worker_count=worker_count
+    )
+    # Select leader first so main-vertical treats it as the main pane.
+    _restore_leader_focus(leader_pane, socket_path=socket_path)
+    set_w = _tmux_run(
+        [
+            "set-window-option",
+            "-t",
+            window_id,
+            "main-pane-width",
+            str(leader_width),
+        ],
+        socket_path=socket_path,
+    )
+    if set_w.returncode != 0:
+        err = (set_w.stderr or set_w.stdout or "").strip()
+        raise TmuxTeamError(f"failed to set main-pane-width: {err}")
+    layout = _tmux_run(
+        ["select-layout", "-t", window_id, "main-vertical"],
+        socket_path=socket_path,
+    )
+    if layout.returncode != 0:
+        err = (layout.stderr or layout.stdout or "").strip()
+        raise TmuxTeamError(f"failed to apply main-vertical layout: {err}")
+    return leader_width
+
+
+def _assert_leader_postconditions(
+    *,
+    snap: Mapping[str, Any],
+    socket_path: str | None,
+) -> dict[str, str | int]:
+    """Re-select leader and prove pane/pid/session/window + pane_active=1."""
+    leader_pane = str(snap["pane_id"])
+    _restore_leader_focus(leader_pane, socket_path=socket_path)
+    probe = _tmux_run(
+        [
+            "display-message",
+            "-p",
+            "-t",
+            leader_pane,
+            "#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_active}",
+        ],
+        socket_path=socket_path,
+    )
+    parts = (probe.stdout or "").strip().split("\t")
+    if probe.returncode != 0 or len(parts) != 5:
+        raise TmuxTeamError("leader postcondition probe failed")
+    session_id, window_id, pane_id, pid_s, active = parts
+    try:
+        pane_pid = int(pid_s)
+    except ValueError as exc:
+        raise TmuxTeamError(f"invalid leader pane pid {pid_s!r}") from exc
+    if (
+        session_id != str(snap["session_id"])
+        or window_id != str(snap["window_id"])
+        or pane_id != leader_pane
+        or pane_pid != int(snap["pane_pid"])
+        or active != "1"
+    ):
+        raise TmuxTeamError(
+            "leader identity/selection postcondition failed "
+            f"(session={session_id!r} window={window_id!r} pane={pane_id!r} "
+            f"pid={pane_pid!r} active={active!r})"
+        )
+    return {
+        "session_id": session_id,
+        "window_id": window_id,
+        "pane_id": pane_id,
+        "pane_pid": pane_pid,
+        "pane_active": 1,
+    }
+
+
 def create_split_team_session(
     *,
     session: str,
@@ -2943,18 +3545,20 @@ def create_split_team_session(
     invoking_pane: str | None = None,
     root: Path | str | None = None,
     run_id: str | None = None,
+    view_mode: str | None = None,
 ) -> tuple[str, str]:
-    """Create worker panes in one window; return ``(session_name, session_id)``.
+    """Create worker panes; return ``(session_name, session_id)``.
 
     Mutates each task with ``pane_id``. Sets ``_tmux_launch`` on ``tasks[0]``
-    (shared dict key consumed by plane) describing attach policy:
-    ``attach_mode``, ``session_owned``, ``leader_pane_id``, ``window_id``,
-    ``attach_hint``.
-
-    When *root* and *run_id* are provided (inside mode), a durable launch
-    intent is written before ``new-window`` and cleared only after successful
-    create (caller clears after receipt) or cleanup with absence proof.
+    describing attach policy including ``view_mode`` (#96).
     """
+    from omg_cli.team.topology import (
+        VIEW_MODE_DEDICATED_WINDOW,
+        VIEW_MODE_DETACHED_SESSION,
+        VIEW_MODE_SAME_WINDOW,
+        VIEW_MODES,
+    )
+
     if not tmux_available():
         raise TmuxTeamError(
             "tmux is required for omg team launch (non-dry-run).\n"
@@ -2968,17 +3572,28 @@ def create_split_team_session(
     if mode not in ("inside", "detached"):
         raise TmuxTeamError(f"unsupported attach_mode {mode!r}")
 
-    if mode == "inside":
-        return _create_inside(
-            session=session,
-            tasks=tasks,
-            env_pairs=env_pairs,
-            env=env,
-            invoking_pane=invoking_pane,
-            root=root,
-            run_id=run_id,
-        )
-    return _create_detached(session=session, tasks=tasks, env_pairs=env_pairs)
+    if mode == "detached":
+        if view_mode is not None and view_mode != VIEW_MODE_DETACHED_SESSION:
+            raise TmuxTeamError(
+                f"detached launch refuses view_mode {view_mode!r}"
+            )
+        return _create_detached(session=session, tasks=tasks, env_pairs=env_pairs)
+
+    resolved = view_mode or VIEW_MODE_SAME_WINDOW
+    if resolved not in (VIEW_MODE_SAME_WINDOW, VIEW_MODE_DEDICATED_WINDOW):
+        raise TmuxTeamError(f"unsupported inside view_mode {resolved!r}")
+    if resolved not in VIEW_MODES:
+        raise TmuxTeamError(f"unsupported view_mode {resolved!r}")
+    return _create_inside(
+        session=session,
+        tasks=tasks,
+        env_pairs=env_pairs,
+        env=env,
+        invoking_pane=invoking_pane,
+        root=root,
+        run_id=run_id,
+        view_mode=resolved,
+    )
 
 
 def _stamp_launch_meta(
@@ -2991,6 +3606,9 @@ def _stamp_launch_meta(
     attach_hint: str | None,
     session_id: str | None = None,
     tmux_server: Mapping[str, Any] | None = None,
+    view_mode: str | None = None,
+    layout: str | None = None,
+    leader_pane_pid: int | None = None,
 ) -> None:
     meta: dict[str, Any] = {
         "attach_mode": attach_mode,
@@ -3006,6 +3624,12 @@ def _stamp_launch_meta(
         meta["tmux_socket_path"] = server["tmux_socket_path"]
         meta["tmux_server_pid"] = server["tmux_server_pid"]
         meta["tmux_server_pid_start"] = server["tmux_server_pid_start"]
+    if view_mode is not None:
+        meta["view_mode"] = view_mode
+    if layout is not None:
+        meta["layout"] = layout
+    if isinstance(leader_pane_pid, int) and not isinstance(leader_pane_pid, bool):
+        meta["leader_pane_pid"] = leader_pane_pid
     tasks[0]["_tmux_launch"] = meta
 
 
@@ -3015,6 +3639,8 @@ def _create_detached(
     tasks: list[dict[str, Any]],
     env_pairs: list[tuple[str, str]],
 ) -> tuple[str, str]:
+    from omg_cli.team.topology import LAYOUT_TILED, VIEW_MODE_DETACHED_SESSION
+
     handle, first_pane, server = _launch_first_detached(
         session=session, task=tasks[0], env_pairs=env_pairs
     )
@@ -3033,8 +3659,6 @@ def _create_detached(
         )
         if len(created_panes) != len(tasks):
             raise TmuxTeamError("pane count mismatch after detached split")
-        # Re-authorize before commit so a mid-create server restart cannot be
-        # receipted under the original identity.
         _require_tmux_server(
             server, socket_path=sock, action="detached create commit"
         )
@@ -3059,6 +3683,8 @@ def _create_detached(
             attach_hint=f"tmux attach -t {handle[0]}",
             session_id=handle[1],
             tmux_server=server,
+            view_mode=VIEW_MODE_DETACHED_SESSION,
+            layout=LAYOUT_TILED,
         )
     except (TmuxTeamError, OSError) as exc:
         cleanup = _cleanup_session(
@@ -3079,12 +3705,273 @@ def _create_inside(
     invoking_pane: str | None = None,
     root: Path | str | None = None,
     run_id: str | None = None,
+    view_mode: str = "same_window",
+) -> tuple[str, str]:
+    """Dispatch inside topology: same_window (default) or dedicated_window."""
+    from omg_cli.team.topology import (
+        VIEW_MODE_DEDICATED_WINDOW,
+        VIEW_MODE_SAME_WINDOW,
+    )
+
+    if view_mode == VIEW_MODE_SAME_WINDOW:
+        return _create_inside_same_window(
+            session=session,
+            tasks=tasks,
+            env_pairs=env_pairs,
+            env=env,
+            invoking_pane=invoking_pane,
+            root=root,
+            run_id=run_id,
+        )
+    if view_mode == VIEW_MODE_DEDICATED_WINDOW:
+        return _create_inside_dedicated_window(
+            session=session,
+            tasks=tasks,
+            env_pairs=env_pairs,
+            env=env,
+            invoking_pane=invoking_pane,
+            root=root,
+            run_id=run_id,
+        )
+    raise TmuxTeamError(f"unsupported view_mode {view_mode!r}")
+
+
+def _create_inside_same_window(
+    *,
+    session: str,
+    tasks: list[dict[str, Any]],
+    env_pairs: list[tuple[str, str]],
+    env: Mapping[str, str] | None = None,
+    invoking_pane: str | None = None,
+    root: Path | str | None = None,
+    run_id: str | None = None,
+) -> tuple[str, str]:
+    """Split workers into the invoking leader window (#96).
+
+    First worker: ``split-window -h -d`` against the leader pane.
+    Remaining: ``split-window -v -d`` against the worker-stack pane.
+    Never calls kill-window / kill-session on failure.
+    """
+    from omg_cli.team.topology import (
+        LAYOUT_MAIN_VERTICAL,
+        VIEW_MODE_SAME_WINDOW,
+    )
+
+    leader_pane = resolve_invoking_pane(pane=invoking_pane, env=env, require_exact=True)
+    snap = snapshot_invoking_identity(leader_pane)
+    live_name = str(snap["session_name"])
+    live_id = str(snap["session_id"])
+    leader_window = str(snap["window_id"])
+    leader_pid = int(snap["pane_pid"])
+    if leader_pid <= 0:
+        raise TmuxTeamError(
+            f"same_window launch refused: non-positive leader pane pid {leader_pid}"
+        )
+    intent_nonce = secrets.token_hex(8)
+    # Synthetic name for WAL keying only — must never match a real window.
+    window_name = f"omg-same-{intent_nonce}"
+    created_panes: list[str] = []
+    intent_path: Path | None = None
+    intent_server = _intent_tmux_server(snap)
+    sock = (
+        str(intent_server["tmux_socket_path"]) if intent_server is not None else None
+    )
+    stack_pane: str | None = None
+    try:
+        assert_invoking_identity(snap)
+        if intent_server is None:
+            raise TmuxTeamError(
+                "same_window launch refused: invoking server identity unavailable"
+            )
+        if root is not None and run_id is not None:
+            intent_path = write_team_launch_intent(
+                root,
+                run_id=str(run_id),
+                session_id=live_id,
+                window_name=window_name,
+                nonce=intent_nonce,
+                tmux_server=intent_server,
+                view_mode=VIEW_MODE_SAME_WINDOW,
+                leader_pane_id=leader_pane,
+                leader_window_id=leader_window,
+            )
+
+        # First worker: horizontal split from exact leader pane.
+        first_pane = _split_worker_pane_gated(
+            target=leader_pane,
+            task=tasks[0],
+            env_pairs=env_pairs,
+            horizontal=True,
+            socket_path=sock,
+            expected_server=intent_server,
+            expected_session_id=live_id,
+            expected_window_id=leader_window,
+            expected_pane_id=leader_pane,
+            intent_path=intent_path,
+            intent_nonce=intent_nonce,
+        )
+        _verify_worker_pane_membership(
+            pane_id=first_pane,
+            leader_pane=leader_pane,
+            expected_session_id=live_id,
+            expected_window_id=leader_window,
+            expected_server=intent_server,
+            socket_path=sock,
+        )
+        created_panes.append(first_pane)
+        stack_pane = first_pane
+        if intent_path is not None:
+            append_team_launch_intent_pane_id(intent_path, first_pane)
+            if _publish_intent_nonce_on_pane(
+                pane_id=first_pane,
+                intent_nonce=intent_nonce,
+                socket_path=sock,
+                expected_server=intent_server,
+                expected_session_id=live_id,
+                expected_window_id=leader_window,
+            ):
+                try:
+                    ack_team_launch_intent_nonce_published(intent_path)
+                except TmuxTeamError:
+                    pass
+
+        # Remaining workers: vertical stack on the first worker pane.
+        for task in tasks[1:]:
+            assert stack_pane is not None
+            pane_id = _split_worker_pane_gated(
+                target=stack_pane,
+                task=task,
+                env_pairs=env_pairs,
+                horizontal=False,
+                socket_path=sock,
+                expected_server=intent_server,
+                expected_session_id=live_id,
+                expected_window_id=leader_window,
+                expected_pane_id=stack_pane,
+                intent_path=intent_path,
+                intent_nonce=intent_nonce,
+            )
+            _verify_worker_pane_membership(
+                pane_id=pane_id,
+                leader_pane=leader_pane,
+                expected_session_id=live_id,
+                expected_window_id=leader_window,
+                expected_server=intent_server,
+                socket_path=sock,
+            )
+            created_panes.append(pane_id)
+            if intent_path is not None:
+                append_team_launch_intent_pane_id(intent_path, pane_id)
+                _publish_intent_nonce_on_pane(
+                    pane_id=pane_id,
+                    intent_nonce=intent_nonce,
+                    socket_path=sock,
+                    expected_server=intent_server,
+                    expected_session_id=live_id,
+                    expected_window_id=leader_window,
+                )
+
+        if leader_pane in created_panes:
+            raise TmuxTeamError("worker pane list incorrectly includes leader pane")
+        if len(created_panes) != len(tasks):
+            raise TmuxTeamError("pane count mismatch after same_window split")
+
+        _require_tmux_server(
+            intent_server, socket_path=sock, action="same_window create commit"
+        )
+        for pane_id in created_panes:
+            _verify_worker_pane_membership(
+                pane_id=pane_id,
+                leader_pane=leader_pane,
+                expected_session_id=live_id,
+                expected_window_id=leader_window,
+                expected_server=intent_server,
+                socket_path=sock,
+            )
+        for task, pane_id in zip(tasks, created_panes, strict=True):
+            task["pane_id"] = pane_id
+
+        leader_width = _apply_same_window_layout(
+            window_id=leader_window,
+            leader_pane=leader_pane,
+            worker_count=len(created_panes),
+            socket_path=sock,
+        )
+        post = _assert_leader_postconditions(snap=snap, socket_path=sock)
+        if int(post["pane_pid"]) != leader_pid:
+            raise TmuxTeamError(
+                "leader pane pid drifted during same_window create "
+                f"(expected {leader_pid}, got {post['pane_pid']})"
+            )
+        _stamp_launch_meta(
+            tasks,
+            attach_mode="inside",
+            session_owned=False,
+            leader_pane_id=leader_pane,
+            window_id=leader_window,
+            attach_hint=f"tmux select-pane -t {leader_pane}",
+            session_id=live_id,
+            tmux_server=intent_server,
+            view_mode=VIEW_MODE_SAME_WINDOW,
+            layout=LAYOUT_MAIN_VERTICAL,
+            leader_pane_pid=int(post["pane_pid"]),
+        )
+        tasks[0]["_tmux_launch"]["leader_width"] = leader_width
+        if intent_path is not None:
+            tasks[0]["_tmux_launch_intent"] = str(intent_path)
+    except (TmuxTeamError, OSError) as exc:
+        cleanup_bits: list[str] = []
+        cleanup_ok = False
+        if intent_server is not None and sock is None:
+            sock = str(intent_server["tmux_socket_path"])
+        panes_to_kill = list(created_panes)
+        if intent_path is not None:
+            try:
+                raw_intent = json.loads(Path(intent_path).read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                raw_intent = None
+            if isinstance(raw_intent, dict):
+                for pid in _intent_known_pane_ids(raw_intent):
+                    if pid not in panes_to_kill:
+                        panes_to_kill.append(pid)
+        err = _kill_panes_scoped(
+            panes_to_kill,
+            expected_server=intent_server,
+            expected_session_id=live_id,
+            expected_window_id=leader_window,
+            intent_or_launch_nonce=intent_nonce,
+            leader_pane_id=leader_pane,
+            socket_path=sock,
+        )
+        if err:
+            cleanup_bits.append(err)
+        else:
+            cleanup_ok = True
+        if cleanup_ok:
+            clear_team_launch_intent(intent_path)
+        if cleanup_bits:
+            raise TmuxTeamError(f"{exc}; " + "; ".join(cleanup_bits)) from exc
+        raise
+    return live_name, live_id
+
+
+def _create_inside_dedicated_window(
+    *,
+    session: str,
+    tasks: list[dict[str, Any]],
+    env_pairs: list[tuple[str, str]],
+    env: Mapping[str, str] | None = None,
+    invoking_pane: str | None = None,
+    root: Path | str | None = None,
+    run_id: str | None = None,
 ) -> tuple[str, str]:
     """Create a dedicated worker window bound to the invoking leader pane.
 
-    Never kills the leader pane or the whole session on cleanup. Worker
-    creation uses focus-detached tmux flags and restores the leader selection.
+    Preserves main (#97/#98/#108) WAL / server identity / absence-proof cleanup.
+    Never kills the leader pane or the whole session on cleanup.
     """
+    from omg_cli.team.topology import LAYOUT_TILED, VIEW_MODE_DEDICATED_WINDOW
+
     leader_pane = resolve_invoking_pane(pane=invoking_pane, env=env, require_exact=True)
     snap = snapshot_invoking_identity(leader_pane)
     live_name = str(snap["session_name"])
@@ -3111,8 +3998,6 @@ def _create_inside(
                 raise TmuxTeamError(
                     "inside launch refused: invoking server identity unavailable"
                 )
-            # Stamp WAL with the *snapshotted* server — not a later ambient probe
-            # that could belong to a socket replacement after the pane snapshot.
             intent_path = write_team_launch_intent(
                 root,
                 run_id=str(run_id),
@@ -3120,14 +4005,13 @@ def _create_inside(
                 window_name=window_name,
                 nonce=window_nonce,
                 tmux_server=intent_server,
+                view_mode=VIEW_MODE_DEDICATED_WINDOW,
+                leader_pane_id=leader_pane,
+                leader_window_id=leader_window,
             )
-            # side_effect_started is marked inside _launch_first_inside
-            # immediately before new-window (not here) so mark-then-crash
-            # before the client call cannot permanently wedge launches.
 
         def _publish_created(wid: str, pane: str) -> None:
             nonlocal window_id
-            # Capture @N before WAL bind so bind failure still cleans by id.
             window_id = wid
 
         window_id, first_pane = _launch_first_inside(
@@ -3141,7 +4025,6 @@ def _create_inside(
             socket_path=sock,
             expected_server=intent_server,
         )
-        # Prove the new window belongs to the snapshotted session + server.
         if intent_server is not None:
             _require_tmux_server(
                 intent_server,
@@ -3194,39 +4077,15 @@ def _create_inside(
             raise TmuxTeamError("worker pane list incorrectly includes leader pane")
         if len(created_panes) != len(tasks):
             raise TmuxTeamError("pane count mismatch after inside split")
-        # Close the post-new-window TOCTOU: every worker pane must still sit
-        # in the snapshotted session + created window before we stamp meta.
         for pane_id in created_panes:
-            pane_probe = _tmux_run(
-                [
-                    "display-message",
-                    "-p",
-                    "-t",
-                    pane_id,
-                    "#{pane_id}\t#{session_id}\t#{window_id}\t#{pid}",
-                ],
+            _verify_worker_pane_membership(
+                pane_id=pane_id,
+                leader_pane=leader_pane,
+                expected_session_id=live_id,
+                expected_window_id=window_id,
+                expected_server=intent_server,
                 socket_path=sock,
             )
-            pane_parts = (pane_probe.stdout or "").strip().split("\t")
-            if (
-                pane_probe.returncode != 0
-                or len(pane_parts) != 4
-                or pane_parts[0] != pane_id
-                or pane_parts[1] != live_id
-                or pane_parts[2] != window_id
-                or (
-                    intent_server is not None
-                    and (
-                        not pane_parts[3].isdigit()
-                        or int(pane_parts[3]) != intent_server["tmux_server_pid"]
-                    )
-                )
-            ):
-                raise TmuxTeamError(
-                    "worker pane left the invoking session/window before commit "
-                    f"(pane={pane_id!r}, expected session_id={live_id!r} "
-                    f"window_id={window_id!r})"
-                )
         if intent_server is not None:
             _require_tmux_server(
                 intent_server,
@@ -3278,14 +4137,13 @@ def _create_inside(
             attach_hint=f"tmux select-pane -t {leader_pane}",
             session_id=live_id,
             tmux_server=intent_server,
+            view_mode=VIEW_MODE_DEDICATED_WINDOW,
+            layout=LAYOUT_TILED,
+            leader_pane_pid=int(snap["pane_pid"]),
         )
-        # Stash intent path for plane to clear after receipt + team.json commit.
         if intent_path is not None:
             tasks[0]["_tmux_launch_intent"] = str(intent_path)
     except (TmuxTeamError, OSError) as exc:
-        # Never kill-session: only the team window / worker panes we created.
-        # When window_id was never published, still kill by the unique launch
-        # name so a failed new-window readback cannot leave an unrecepted orphan.
         cleanup_bits: list[str] = []
         cleanup_ok = False
         if intent_server is not None and sock is None:
@@ -3300,10 +4158,6 @@ def _create_inside(
             )
             if id_err:
                 cleanup_bits.append(id_err)
-            # Also require name-level absence proof when we have session+name.
-            # Pass durable @N so a rename cannot authorize WAL clear via
-            # name-only absence while the id still lives. Nonce (+ published
-            # ack when present) recovers a post-bind session move.
             cleanup_nonce_published = False
             if intent_path is not None:
                 try:
@@ -3326,13 +4180,9 @@ def _create_inside(
             )
             if name_err:
                 cleanup_bits.append(name_err)
-            # Name absence must not override an unproven exact window-ID kill —
-            # a rename can hide the launch name while @N still lives; clearing
-            # the WAL then drops recoverable launch authority.
             if id_err is None and name_err is None:
                 cleanup_ok = True
         else:
-            # Prefer any WAL-stamped @N (discover→bind path) over name alone.
             known_ids: list[str] = []
             require_durable = True
             cleanup_intent_nonce: str | None = window_nonce

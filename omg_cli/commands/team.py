@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -293,11 +294,27 @@ def cmd_team(args: argparse.Namespace) -> int:
     try:
         if action == "launch":
             from omg_cli.team.runtime import launch_team
+            from omg_cli.team.topology import (
+                TopologyError,
+                resolve_launch_view_mode,
+            )
 
             routing_raw = getattr(args, "routing", None)
             routing = parse_routing_json(routing_raw) if routing_raw else None
             plan_only = bool(getattr(args, "plan_only", False))
             dry_run = bool(getattr(args, "dry_run", False) or getattr(args, "materialize_only", False))
+            detach = bool(getattr(args, "detach", False))
+            dedicated = bool(getattr(args, "dedicated_window", False))
+            inside_tmux = bool(os.environ.get("TMUX"))
+            try:
+                resolved_view = resolve_launch_view_mode(
+                    inside_tmux=inside_tmux,
+                    dedicated_window=dedicated,
+                    detach=detach,
+                )
+            except TopologyError as exc:
+                print(f"omg team launch: {exc}", file=sys.stderr)
+                return 2
             if plan_only:
                 # #27: side-effect-free preview (no run / worktrees / team dir).
                 workers = int(getattr(args, "workers", 0) or 0)
@@ -314,6 +331,8 @@ def cmd_team(args: argparse.Namespace) -> int:
                     "workers": workers,
                     "role": role,
                     "routing": routing,
+                    "view_mode": resolved_view,
+                    "detach": detach,
                     "note": (
                         "plan-only: no .omg mutation, no worktrees, no tmux "
                         "(#27). Use --dry-run/--materialize-only to materialize "
@@ -321,7 +340,10 @@ def cmd_team(args: argparse.Namespace) -> int:
                     ),
                 }
                 emit_data(args, "team", plan)
-                print("Team plan-only (no state written)", file=sys.stderr)
+                print(
+                    f"Team plan-only view={resolved_view} (no state written)",
+                    file=sys.stderr,
+                )
                 return 0
             meta = launch_team(
                 getattr(args, "goal", None) or "",
@@ -334,10 +356,21 @@ def cmd_team(args: argparse.Namespace) -> int:
                 yolo=bool(getattr(args, "yolo", False)),
                 safe=bool(getattr(args, "safe", False)),
                 run_id=getattr(args, "run_id", None),
-                detach=bool(getattr(args, "detach", False)),
+                detach=detach,
+                view_mode=resolved_view,
             )
             emit_data(args, "team", meta)
             hint = meta.get("attach_hint")
+            view = meta.get("view_mode") or resolved_view
+            leader = meta.get("leader_pane_id")
+            window = meta.get("window_id")
+            if not meta.get("dry_run"):
+                bits = [f"view={view}"]
+                if isinstance(leader, str) and leader:
+                    bits.append(f"leader={leader}")
+                if isinstance(window, str) and window:
+                    bits.append(f"window={window}")
+                print("omg team launch: " + " ".join(bits), file=sys.stderr)
             if hint and not meta.get("dry_run"):
                 print(f"omg team launch: {hint}", file=sys.stderr)
             # Bounded ACK wait: partial/zero ACKs leave state for diagnosis
@@ -569,8 +602,6 @@ def cmd_team(args: argparse.Namespace) -> int:
             return 0 if not result.get("errors") else 1
         if action == "worker-ready":
             # Process-level readiness (pane wrapper). Env-bound identity only.
-            import os
-
             from omg_cli.team.runtime import write_worker_ready_receipt
 
             worker_id = (os.environ.get("OMG_TEAM_WORKER_ID") or "").strip()
@@ -1062,6 +1093,15 @@ def register_team_parsers(
         dest="detach",
         action="store_true",
         help="allow detached live launch outside an interactive TTY",
+    )
+    p_t_launch.add_argument(
+        "--dedicated-window",
+        dest="dedicated_window",
+        action="store_true",
+        help=(
+            "inside tmux: place workers in a dedicated omg-team window "
+            "(default keeps leader + workers in the same window)"
+        ),
     )
     p_t_launch.set_defaults(func=cmd_team, team_action="launch")
 

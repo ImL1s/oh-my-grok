@@ -114,7 +114,9 @@ SPAWN_DENY_API_MARKERS: tuple[str, ...] = (
 )
 WORKSPACE_MODE = "worktree"
 SCHEMA_VERSION = 1
-LAUNCH_RECEIPT_SCHEMA_VERSION = 2
+LAUNCH_RECEIPT_SCHEMA_VERSION = 3
+# #108-era receipts: intent binding without topology (#96 view_mode).
+V2_LAUNCH_RECEIPT_SCHEMA_VERSION = 2
 # #106-era immutable launch receipts (no intent_nonce / window_name).
 # Readable only for existing-Team identity-chain ops (stop/scale/relaunch).
 LEGACY_LAUNCH_RECEIPT_SCHEMA_VERSION = 1
@@ -1626,10 +1628,18 @@ def _persist_team_launch_receipt(
     tasks: Sequence[Mapping[str, Any]],
     intent_nonce: str | None = None,
     window_name: str | None = None,
+    view_mode: str | None = None,
+    layout: str | None = None,
+    leader_pane_id: str | None = None,
+    leader_pane_pid: int | None = None,
+    window_id: str | None = None,
+    session_owned: bool | None = None,
+    attach_mode: str | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Persist the immutable process identity used by ``team stop``."""
     from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes
     from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
+    from omg_cli.team.topology import VIEW_MODES
 
     if intent_nonce is not None and (
         not isinstance(intent_nonce, str) or not intent_nonce
@@ -1643,6 +1653,33 @@ def _persist_team_launch_receipt(
         raise TeamError(
             "launch receipt intent_nonce and window_name must both be set or both null"
         )
+    if view_mode is not None and (
+        not isinstance(view_mode, str) or view_mode not in VIEW_MODES
+    ):
+        raise TeamError(f"launch receipt view_mode unsupported: {view_mode!r}")
+    if layout is not None and (not isinstance(layout, str) or not layout):
+        raise TeamError("launch receipt layout must be a non-empty string")
+    if leader_pane_id is not None and (
+        not isinstance(leader_pane_id, str)
+        or _TMUX_PANE_ID.fullmatch(leader_pane_id) is None
+    ):
+        raise TeamError("launch receipt leader_pane_id must be an exact pane id")
+    if leader_pane_pid is not None and (
+        isinstance(leader_pane_pid, bool)
+        or not isinstance(leader_pane_pid, int)
+        or leader_pane_pid <= 0
+    ):
+        raise TeamError("launch receipt leader_pane_pid must be a positive int")
+    if window_id is not None and (
+        not isinstance(window_id, str) or _TMUX_WINDOW_ID.fullmatch(window_id) is None
+    ):
+        raise TeamError("launch receipt window_id must be an exact window id")
+    if session_owned is not None and not isinstance(session_owned, bool):
+        raise TeamError("launch receipt session_owned must be a bool")
+    if attach_mode is not None and (
+        not isinstance(attach_mode, str) or attach_mode not in {"inside", "detached"}
+    ):
+        raise TeamError(f"launch receipt attach_mode unsupported: {attach_mode!r}")
     rows: list[dict[str, Any]] = []
     for raw in tasks:
         rows.append(
@@ -1665,6 +1702,13 @@ def _persist_team_launch_receipt(
         "launch_nonce": launch_nonce,
         "intent_nonce": intent_nonce,
         "window_name": window_name,
+        "view_mode": view_mode,
+        "layout": layout,
+        "leader_pane_id": leader_pane_id,
+        "leader_pane_pid": leader_pane_pid,
+        "window_id": window_id,
+        "session_owned": session_owned,
+        "attach_mode": attach_mode,
         "generation": 0,
         "previous_receipt_sha256": None,
         "tasks": rows,
@@ -1873,7 +1917,8 @@ def _load_team_launch_receipt(
     parsed = parse_canonical_json_bytes(body)
     if not isinstance(parsed, dict):
         raise TeamError("team launch receipt must be an object")
-    # Exact key sets: v1 (#106) lacked intent binding fields; v2 includes them.
+    # Exact key sets: v1 (#106) lacked intent binding; v2 adds intent fields;
+    # v3 (#96) binds view_mode / leader-window topology for stop.
     legacy_required = {
         "store_kind",
         "schema_version",
@@ -1890,6 +1935,15 @@ def _load_team_launch_receipt(
         "intent_nonce",
         "window_name",
     }
+    v3_required = v2_required | {
+        "view_mode",
+        "layout",
+        "leader_pane_id",
+        "leader_pane_pid",
+        "window_id",
+        "session_owned",
+        "attach_mode",
+    }
     schema_version = parsed.get("schema_version")
     if (
         (
@@ -1897,17 +1951,25 @@ def _load_team_launch_receipt(
             and set(parsed) != legacy_required
         )
         or (
-            schema_version == LAUNCH_RECEIPT_SCHEMA_VERSION
+            schema_version == V2_LAUNCH_RECEIPT_SCHEMA_VERSION
             and set(parsed) != v2_required
+        )
+        or (
+            schema_version == LAUNCH_RECEIPT_SCHEMA_VERSION
+            and set(parsed) != v3_required
         )
         or schema_version
         not in {
             LEGACY_LAUNCH_RECEIPT_SCHEMA_VERSION,
+            V2_LAUNCH_RECEIPT_SCHEMA_VERSION,
             LAUNCH_RECEIPT_SCHEMA_VERSION,
         }
     ):
         raise TeamError("team launch receipt keys mismatch")
-    if schema_version == LAUNCH_RECEIPT_SCHEMA_VERSION:
+    if schema_version in {
+        V2_LAUNCH_RECEIPT_SCHEMA_VERSION,
+        LAUNCH_RECEIPT_SCHEMA_VERSION,
+    }:
         intent_nonce = parsed.get("intent_nonce")
         window_name = parsed.get("window_name")
         if (intent_nonce is None) != (window_name is None):
@@ -1918,6 +1980,42 @@ def _load_team_launch_receipt(
             or not isinstance(window_name, str)
             or not window_name
         ):
+            raise TeamError("team launch receipt identity mismatch")
+    if schema_version == LAUNCH_RECEIPT_SCHEMA_VERSION:
+        from omg_cli.team.topology import VIEW_MODES
+
+        view_mode = parsed.get("view_mode")
+        if view_mode is not None and (
+            not isinstance(view_mode, str) or view_mode not in VIEW_MODES
+        ):
+            raise TeamError("team launch receipt identity mismatch")
+        layout = parsed.get("layout")
+        if layout is not None and (not isinstance(layout, str) or not layout):
+            raise TeamError("team launch receipt identity mismatch")
+        leader_pane_id = parsed.get("leader_pane_id")
+        if leader_pane_id is not None and (
+            not isinstance(leader_pane_id, str)
+            or _TMUX_PANE_ID.fullmatch(leader_pane_id) is None
+        ):
+            raise TeamError("team launch receipt identity mismatch")
+        leader_pane_pid = parsed.get("leader_pane_pid")
+        if leader_pane_pid is not None and (
+            isinstance(leader_pane_pid, bool)
+            or not isinstance(leader_pane_pid, int)
+            or leader_pane_pid <= 0
+        ):
+            raise TeamError("team launch receipt identity mismatch")
+        window_id = parsed.get("window_id")
+        if window_id is not None and (
+            not isinstance(window_id, str)
+            or _TMUX_WINDOW_ID.fullmatch(window_id) is None
+        ):
+            raise TeamError("team launch receipt identity mismatch")
+        session_owned = parsed.get("session_owned")
+        if session_owned is not None and not isinstance(session_owned, bool):
+            raise TeamError("team launch receipt identity mismatch")
+        attach_mode = parsed.get("attach_mode")
+        if attach_mode is not None and attach_mode not in {"inside", "detached"}:
             raise TeamError("team launch receipt identity mismatch")
     if (
         parsed["store_kind"] != "team_launch_receipt"
@@ -2353,6 +2451,7 @@ def start_team(
     owner_token: str | None = None,
     executor: str | None = None,
     detach: bool = False,
+    view_mode: str | None = None,
 ) -> dict[str, Any]:
     """Create ownership + worktrees + team.json (+ live tmux unless dry_run).
 
@@ -2377,16 +2476,30 @@ def start_team(
         When ``\"fixture\"``, replace every pane_command with the hermetic
         ACK fixture (transport smoke only — not Grok live parity). Default
         ``None`` keeps the production grok / routing pane path.
+    view_mode:
+        For ``topology=split``: ``same_window`` / ``dedicated_window`` /
+        ``detached_session``. Resolved by the CLI when omitted. Non-split
+        topologies refuse an explicit view_mode.
 
     Returns the written team.json payload.
     """
+    from omg_cli.team.topology import VIEW_MODES, layout_for_view_mode
+
     root_path = Path(root) if root is not None else Path.cwd().resolve()
     root_path = root_path.resolve()
     goal = (goal or "").strip() or "(no goal)"
     tasks = _parse_tasks_json(tasks_json)
     n = _assert_start_gates(tasks, env=env)
     if topology not in ("windows", "split"):
-        raise TeamError(f"unsupported team topology {topology!r}")
+        raise TeamError(f"unsupported topology {topology!r}")
+    resolved_view_mode = view_mode
+    if resolved_view_mode is not None:
+        if topology != "split":
+            raise TeamError(
+                f"view_mode requires topology='split' (got {topology!r})"
+            )
+        if resolved_view_mode not in VIEW_MODES:
+            raise TeamError(f"unsupported view_mode {resolved_view_mode!r}")
     executor_norm = (executor or "").strip().lower() or None
     if executor_norm is not None and executor_norm != "fixture":
         raise TeamError(
@@ -2721,6 +2834,11 @@ def start_team(
                     if multi_cli
                     else "grok-only pane argv recorded"
                 )
+                dry_view = resolved_view_mode
+                if topology == "split" and dry_view is None:
+                    dry_view = (
+                        "detached_session" if detach else "same_window"
+                    )
                 meta = {
                     "writer": CLI_WRITER,
                     "schema_version": SCHEMA_VERSION,
@@ -2741,6 +2859,12 @@ def start_team(
                     "team_id": tid_plane,
                     "owner_token": token,
                     "executor": executor_norm,
+                    "view_mode": dry_view if topology == "split" else None,
+                    "layout": (
+                        layout_for_view_mode(dry_view)
+                        if topology == "split" and dry_view
+                        else None
+                    ),
                     "note": note,
                 }
                 _atomic_write_json(team_meta_path(root_path, rid), meta)
@@ -2774,6 +2898,9 @@ def start_team(
                 "leader_pane_id": None,
                 "window_id": None,
                 "attach_hint": None,
+                "view_mode": None,
+                "layout": None,
+                "leader_pane_pid": None,
             }
             launch_intent_path: str | None = None
             intent_wal_cleared = False
@@ -2790,6 +2917,7 @@ def start_team(
                             env=env,
                             root=root_path,
                             run_id=rid,
+                            view_mode=resolved_view_mode,
                         )
                     except TmuxTeamError as exc:
                         raise TeamError(str(exc)) from exc
@@ -2942,6 +3070,38 @@ def start_team(
                     tasks=task_records,
                     intent_nonce=intent_nonce,
                     window_name=intent_window_name,
+                    view_mode=(
+                        str(tmux_launch["view_mode"])
+                        if isinstance(tmux_launch.get("view_mode"), str)
+                        else None
+                    ),
+                    layout=(
+                        str(tmux_launch["layout"])
+                        if isinstance(tmux_launch.get("layout"), str)
+                        else None
+                    ),
+                    leader_pane_id=(
+                        str(tmux_launch["leader_pane_id"])
+                        if isinstance(tmux_launch.get("leader_pane_id"), str)
+                        else None
+                    ),
+                    leader_pane_pid=(
+                        int(tmux_launch["leader_pane_pid"])
+                        if isinstance(tmux_launch.get("leader_pane_pid"), int)
+                        and not isinstance(tmux_launch.get("leader_pane_pid"), bool)
+                        else None
+                    ),
+                    window_id=(
+                        str(tmux_launch["window_id"])
+                        if isinstance(tmux_launch.get("window_id"), str)
+                        else None
+                    ),
+                    session_owned=bool(tmux_launch.get("session_owned", True)),
+                    attach_mode=(
+                        str(tmux_launch["attach_mode"])
+                        if isinstance(tmux_launch.get("attach_mode"), str)
+                        else None
+                    ),
                 )
 
                 meta = {
@@ -2973,6 +3133,9 @@ def start_team(
                     "leader_pane_id": tmux_launch.get("leader_pane_id"),
                     "window_id": tmux_launch.get("window_id"),
                     "attach_hint": tmux_launch.get("attach_hint"),
+                    "view_mode": tmux_launch.get("view_mode"),
+                    "layout": tmux_launch.get("layout"),
+                    "leader_pane_pid": tmux_launch.get("leader_pane_pid"),
                     "note": (
                         "experimental fixture tmux team; hermetic ACK transport "
                         "(not Grok live parity); stop via immutable launch identity"
@@ -3061,21 +3224,41 @@ def start_team(
                     ):
                         from omg_cli.team.tmux import (
                             _intent_tmux_server,
-                            _kill_panes,
+                            _kill_panes_scoped,
                             _kill_window,
                         )
+                        from omg_cli.team.topology import (
+                            VIEW_MODE_DEDICATED_WINDOW,
+                            VIEW_MODE_SAME_WINDOW,
+                            TopologyError,
+                            resolve_persisted_view_mode,
+                        )
 
+                        try:
+                            vm = resolve_persisted_view_mode(tmux_launch)
+                        except TopologyError:
+                            # Never default to dedicated_window+kill-window —
+                            # leader window_id under same_window would wipe the
+                            # invoking window. Pane-scoped cleanup only.
+                            vm = VIEW_MODE_SAME_WINDOW
                         window_id = tmux_launch.get("window_id")
-                        if isinstance(window_id, str) and window_id:
-                            expected_server = _intent_tmux_server(tmux_launch)
-                            sock = (
-                                str(expected_server["tmux_socket_path"])
-                                if expected_server is not None
-                                else None
-                            )
-                            expected_session = tmux_launch.get("session_id")
-                            if not isinstance(expected_session, str):
-                                expected_session = created_handle[1]
+                        expected_server = _intent_tmux_server(tmux_launch)
+                        sock = (
+                            str(expected_server["tmux_socket_path"])
+                            if expected_server is not None
+                            else None
+                        )
+                        expected_session = tmux_launch.get("session_id")
+                        if not isinstance(expected_session, str):
+                            expected_session = created_handle[1]
+                        pane_ids = [
+                            str(rec.get("pane_id"))
+                            for rec in task_records
+                            if isinstance(rec.get("pane_id"), str)
+                        ]
+                        if vm == VIEW_MODE_DEDICATED_WINDOW and isinstance(
+                            window_id, str
+                        ) and window_id:
                             cleanup_error = _kill_window(
                                 window_id,
                                 socket_path=sock,
@@ -3083,12 +3266,24 @@ def start_team(
                                 expected_server=expected_server,
                             )
                         else:
-                            pane_ids = [
-                                str(rec.get("pane_id"))
-                                for rec in task_records
-                                if isinstance(rec.get("pane_id"), str)
-                            ]
-                            cleanup_error = _kill_panes(pane_ids)
+                            # same_window / unknown: never kill-window.
+                            cleanup_error = _kill_panes_scoped(
+                                pane_ids,
+                                expected_server=expected_server,
+                                expected_session_id=expected_session,
+                                expected_window_id=(
+                                    window_id if isinstance(window_id, str) else None
+                                ),
+                                intent_or_launch_nonce=None,
+                                leader_pane_id=(
+                                    str(tmux_launch["leader_pane_id"])
+                                    if isinstance(
+                                        tmux_launch.get("leader_pane_id"), str
+                                    )
+                                    else None
+                                ),
+                                socket_path=sock,
+                            )
                     else:
                         cleanup_sock, cleanup_server = _tmux_scope_from_launch(
                             tmux_launch
@@ -3989,10 +4184,32 @@ def _stop_team_locked(
         if isinstance(window_id, str) and _TMUX_WINDOW_ID.fullmatch(window_id)
         else None
     )
+    leader_pane_id_str: str | None = (
+        str(meta["leader_pane_id"])
+        if isinstance(meta.get("leader_pane_id"), str)
+        and _TMUX_PANE_ID.fullmatch(str(meta.get("leader_pane_id")))
+        else None
+    )
     if session and not dry:
         try:
             chain = _load_team_identity_chain(root_path, run_id, meta)
             receipt = chain[0]
+            # Prefer receipt-bound topology when schema v3 stamped it.
+            if isinstance(receipt.get("session_owned"), bool):
+                session_owned = bool(receipt["session_owned"])
+            receipt_window = receipt.get("window_id")
+            if (
+                isinstance(receipt_window, str)
+                and _TMUX_WINDOW_ID.fullmatch(receipt_window) is not None
+            ):
+                window_id = receipt_window
+                window_id_str = receipt_window
+            receipt_leader = receipt.get("leader_pane_id")
+            if (
+                isinstance(receipt_leader, str)
+                and _TMUX_PANE_ID.fullmatch(receipt_leader) is not None
+            ):
+                leader_pane_id_str = receipt_leader
             current_rows = (
                 receipt["tasks"] if len(chain) == 1 else chain[-1]["tasks_after"]
             )
@@ -4363,20 +4580,48 @@ def _stop_team_locked(
                                 f"{probe.returncode}"
                             )
                 else:
-                    # Shared session: remove only the team window (or panes).
+                    # Shared session: remove only owned team transport.
+                    # same_window: kill worker panes only (never leader window).
+                    # dedicated_window: kill-window only with explicit mode.
+                    # Ambiguous / missing mode: pane-scoped fail-closed.
                     from omg_cli.team.tmux import (
                         _intent_tmux_server,
                         _kill_panes,
+                        _kill_panes_scoped,
                         _kill_window,
                     )
+                    from omg_cli.team.topology import (
+                        VIEW_MODE_DEDICATED_WINDOW,
+                        VIEW_MODE_SAME_WINDOW,
+                        TopologyError,
+                        resolve_persisted_view_mode,
+                    )
 
-                    if isinstance(window_id, str) and window_id:
-                        expected_server = _intent_tmux_server(meta)
-                        sock = (
-                            str(expected_server["tmux_socket_path"])
-                            if expected_server is not None
-                            else None
+                    try:
+                        stop_view = resolve_persisted_view_mode(
+                            meta, receipt=receipt
                         )
+                    except TopologyError as topo_exc:
+                        # NEVER default to dedicated_window + kill-window —
+                        # same_window runs store the leader window_id.
+                        errors.append(
+                            f"view_mode unresolved — pane-scoped cleanup only "
+                            f"(refuse kill-window): {topo_exc}"
+                        )
+                        stop_view = VIEW_MODE_SAME_WINDOW
+                    expected_server = _intent_tmux_server(meta)
+                    if expected_server is None and receipt is not None:
+                        expected_server = _intent_tmux_server(receipt)
+                    sock = (
+                        str(expected_server["tmux_socket_path"])
+                        if expected_server is not None
+                        else None
+                    )
+                    if (
+                        stop_view == VIEW_MODE_DEDICATED_WINDOW
+                        and isinstance(window_id, str)
+                        and window_id
+                    ):
                         win_err = _kill_window(
                             window_id,
                             socket_path=sock,
@@ -4393,6 +4638,27 @@ def _stop_team_locked(
                         if isinstance(rec, Mapping)
                         and isinstance(rec.get("pane_id"), str)
                     ]
+                    if stop_view == VIEW_MODE_SAME_WINDOW:
+                        leader = leader_pane_id_str or meta.get("leader_pane_id")
+                        scoped_err = _kill_panes_scoped(
+                            pane_ids,
+                            expected_server=expected_server,
+                            expected_session_id=session_id,
+                            expected_window_id=(
+                                window_id if isinstance(window_id, str) else None
+                            ),
+                            intent_or_launch_nonce=(
+                                str(meta.get("launch_nonce"))
+                                if isinstance(meta.get("launch_nonce"), str)
+                                else None
+                            ),
+                            leader_pane_id=(
+                                str(leader) if isinstance(leader, str) else None
+                            ),
+                            socket_path=sock,
+                        )
+                        if scoped_err:
+                            errors.append(scoped_err)
                     # Prove worker panes are gone (session may still exist).
                     remaining = []
                     for pane_id in pane_ids:
@@ -4404,7 +4670,11 @@ def _stop_team_locked(
                             and (probe.stdout or "").strip() == pane_id
                         ):
                             remaining.append(pane_id)
-                    if remaining and not (isinstance(window_id, str) and window_id):
+                    if (
+                        remaining
+                        and stop_view != VIEW_MODE_SAME_WINDOW
+                        and not (isinstance(window_id, str) and window_id)
+                    ):
                         pane_err = _kill_panes(remaining)
                         if pane_err:
                             errors.append(pane_err)

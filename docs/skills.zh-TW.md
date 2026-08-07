@@ -164,6 +164,8 @@ omg accept --yes
 | **CLI** | `omg team launch`（argv 簡寫 `N`/`N:role`+goal → launch）；亦 `start\|run\|scale\|resume\|status\|collect\|stop\|api` |
 | **誠實範圍** | 零設定 = grok panes；`--routing` 啟 multi-CLI（含角色地板）。**整合**隔離（ownership + seal + integrate）— **不是**執行沙箱。`collect` / `run` / `scale` / `resume` 永不寫 `verified`。scale/resume/ralph 是**同一** team plane 的生命週期延伸（無新隔離宣稱）。Live 升格證據：`scripts/live_team_smoke.py --live` → `LIVE_TEAM_SMOKE_OK`（2026-07-30 本地；不進 CI）。**無裸 `/team` slash alias** — 2026-07-25 host 探測：plugin skill 為 `/name` 或 `/plugin:name`，無 frontmatter 可為 `omg-team` 註冊 unnamespaced `/team`；其他 plugin 已占用 `team` skill 名。 |
 
+**視窗拓樸（#96）：** 既有 tmux pane 內啟動預設 `view_mode=same_window`（leader 左、workers 右堆疊；detached split + `main-vertical`）。`--dedicated-window` 使用獨立 Team window；tmux 外 / `--detach` 為 `detached_session`。same_window 的 `stop`/失敗回滾只清 worker panes，不殺 shared leader window。plan-only / dry-run / live JSON 皆帶 `view_mode`；缺 mode 的舊 run 維持 dedicated/detached 行為。
+
 **`omg team run`** 是 team plane 上的**分階段 DRIVER**（不是新的 planner/verifier）：
 
 `team-plan → team-prd → team-exec → team-verify → team-fix`（終態：`complete` / `failed` / `blocked`）。

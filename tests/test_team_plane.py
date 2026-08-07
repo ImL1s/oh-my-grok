@@ -947,7 +947,7 @@ def test_live_start_retains_authority_after_wal_cleared_postcommit_failure(
 def test_live_split_inside_rollback_scopes_kill_window_to_wal_server(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """P1-B: plane rollback must not bare-call _kill_window(@N) on ambient tmux."""
+    """P1-B: dedicated inside rollback scopes ``_kill_window`` to WAL server."""
     import omg_cli.team.tmux as tmux_mod
 
     _init_repo(tmp_path)
@@ -964,6 +964,8 @@ def test_live_split_inside_rollback_scopes_kill_window_to_wal_server(
             "window_id": "@7",
             "attach_hint": "tmux select-pane -t %9",
             "session_id": "$3",
+            "view_mode": "dedicated_window",
+            "layout": "tiled",
             **FAKE_TMUX_SERVER,
         }
         return (str(kwargs["session"]), "$3")
@@ -988,15 +990,79 @@ def test_live_split_inside_rollback_scopes_kill_window_to_wal_server(
             [TASKS_TWO[0]],
             root=tmp_path,
             topology="split",
+            view_mode="dedicated_window",
         )
 
-    assert kill_kwargs, "expected scoped _kill_window on inside rollback"
+    assert kill_kwargs, "expected scoped _kill_window on dedicated inside rollback"
     assert kill_kwargs[0]["window_id"] == "@7"
     assert kill_kwargs[0].get("expected_session_id") == "$3"
     assert kill_kwargs[0].get("expected_server") == FAKE_TMUX_SERVER
     assert (
         kill_kwargs[0].get("socket_path") == FAKE_TMUX_SERVER["tmux_socket_path"]
     )
+
+
+def test_live_split_same_window_rollback_never_kills_leader_window(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#96: same_window start-failure cleanup is pane-scoped, never kill-window."""
+    import omg_cli.team.tmux as tmux_mod
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    kill_window_calls: list[Any] = []
+    scoped_calls: list[dict[str, Any]] = []
+
+    def fake_create(**kwargs: Any) -> tuple[str, str]:
+        tasks = kwargs["tasks"]
+        tasks[0]["pane_id"] = "%10"
+        tasks[0]["_tmux_launch"] = {
+            "attach_mode": "inside",
+            "session_owned": False,
+            "leader_pane_id": "%9",
+            "window_id": "@3",
+            "attach_hint": "tmux select-pane -t %9",
+            "session_id": "$3",
+            "view_mode": "same_window",
+            "layout": "main-vertical",
+            "leader_pane_pid": 4242,
+            **FAKE_TMUX_SERVER,
+        }
+        return (str(kwargs["session"]), "$3")
+
+    def boom_bind(*_a: Any, **_kw: Any) -> None:
+        raise TeamError("injected post-create bind failure")
+
+    def capture_scoped(pane_ids: Any, **kwargs: Any) -> str | None:
+        scoped_calls.append({"pane_ids": list(pane_ids), **kwargs})
+        return None
+
+    def forbid_kill_window(*_a: Any, **_kw: Any) -> str | None:
+        kill_window_calls.append((_a, _kw))
+        raise AssertionError("same_window rollback must not kill-window")
+
+    monkeypatch.setattr(
+        "omg_cli.team.tmux.create_split_team_session", fake_create
+    )
+    monkeypatch.setattr(plane, "_bind_tmux_launch_nonce", boom_bind)
+    monkeypatch.setattr(tmux_mod, "_kill_window", forbid_kill_window)
+    monkeypatch.setattr(tmux_mod, "_kill_panes_scoped", capture_scoped)
+    monkeypatch.setattr(plane, "_cleanup_created_tmux_session", lambda *_a, **_k: None)
+
+    with pytest.raises(TeamError, match="injected post-create bind failure"):
+        start_team(
+            "same_window rollback",
+            [TASKS_TWO[0]],
+            root=tmp_path,
+            topology="split",
+            view_mode="same_window",
+        )
+
+    assert kill_window_calls == []
+    assert scoped_calls, "expected scoped pane cleanup"
+    assert scoped_calls[0]["leader_pane_id"] == "%9"
+    assert "%10" in scoped_calls[0]["pane_ids"]
+    assert scoped_calls[0].get("expected_window_id") == "@3"
 
 
 def test_snapshot_launch_pane_identities_refuses_session_drift(
@@ -2445,10 +2511,62 @@ def test_launch_receipt_loader_accepts_schema_v1_for_identity_chain(
 def test_launch_receipt_loader_still_accepts_schema_v2(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Current schema-v2 receipts (with intent binding fields) still load."""
+    """#108 schema-v2 receipts (intent binding, no topology) still load."""
+    from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes
+    from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
+
     _init_repo(tmp_path)
     _enable_team(monkeypatch)
     meta = start_team("v2 launch", [TASKS_TWO[0]], root=tmp_path, dry_run=True)
+    live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
+    # Overwrite with exact v2 key set (no #96 topology fields).
+    rows = [
+        {
+            "task_id": task.get("task_id"),
+            "window_index": task.get("window_index"),
+            "pane_id": task.get("pane_id"),
+            "pid": task.get("pid"),
+            "pgid": task.get("pgid"),
+            "pid_start": task.get("pid_start"),
+        }
+        for task in live["tasks"]
+    ]
+    receipt = {
+        "store_kind": "team_launch_receipt",
+        "schema_version": plane.V2_LAUNCH_RECEIPT_SCHEMA_VERSION,
+        "writer": CLI_WRITER,
+        "run_id": live["run_id"],
+        "session_name": live["session"],
+        "session_id": "$9",
+        "launch_nonce": live["launch_nonce"],
+        "intent_nonce": None,
+        "window_name": None,
+        "generation": 0,
+        "previous_receipt_sha256": None,
+        "tasks": rows,
+    }
+    body = canonical_json_bytes(receipt)
+    path = plane.team_launch_receipt_path(tmp_path, live["run_id"])
+    if path.exists():
+        path.unlink()
+    atomic_write_bytes(path, body, mode=DATA_FILE_MODE, replace=False)
+    live["launch_receipt_sha256"] = sha256_hex(body)
+    live["identity_receipt_sha256"] = live["launch_receipt_sha256"]
+    plane._atomic_write_json(team_meta_path(tmp_path, live["run_id"]), live)
+
+    loaded = plane._load_team_launch_receipt(tmp_path, live["run_id"], live)
+    assert loaded["schema_version"] == plane.V2_LAUNCH_RECEIPT_SCHEMA_VERSION
+    assert "view_mode" not in loaded
+    assert "intent_nonce" in loaded
+
+
+def test_launch_receipt_loader_accepts_schema_v3_topology(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Current schema-v3 receipts bind view_mode + leader/window topology."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team("v3 launch", [TASKS_TWO[0]], root=tmp_path, dry_run=True)
     live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
 
     loaded = plane._load_team_launch_receipt(tmp_path, live["run_id"], live)
@@ -2457,6 +2575,11 @@ def test_launch_receipt_loader_still_accepts_schema_v2(
     assert loaded["schema_version"] == plane.LAUNCH_RECEIPT_SCHEMA_VERSION
     assert "intent_nonce" in loaded
     assert "window_name" in loaded
+    assert "view_mode" in loaded
+    assert "window_id" in loaded
+    assert "leader_pane_id" in loaded
+    assert "session_owned" in loaded
+    assert "attach_mode" in loaded
     assert chain[0] == loaded
 
 

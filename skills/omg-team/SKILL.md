@@ -48,6 +48,38 @@ Dry-run (state only, no tmux):
 omg team 2:executor "map ownership" --dry-run
 ```
 
+## Window topology (#96)
+
+```text
+┌─────────────┬──────────────┐
+│   leader    │   worker 1   │
+│  (kept)     ├──────────────┤
+│             │   worker 2   │
+│             ├──────────────┤
+│             │   worker N   │
+└─────────────┴──────────────┘
+  same_window (default inside tmux)
+```
+
+- **Inside tmux (default):** `view_mode=same_window` — first worker
+  `split-window -h -d` from the exact leader pane; later workers
+  `split-window -v -d` on the worker stack; `main-vertical` layout with
+  clamped leader width. Leader pane ID/PID/session/window stay unchanged and
+  finish selected. `stop` / failed rollback kill **only** owned worker panes —
+  never the shared leader window/session.
+- **`--dedicated-window`:** legacy dedicated `omg-team-*` window (inside tmux
+  only; refuse with `--detach` / outside tmux).
+- **Outside tmux / `--detach`:** `view_mode=detached_session`.
+- Persisted on plan-only, dry-run, and live `team.json` as `view_mode` (+
+  `layout`). Legacy runs missing `view_mode` keep dedicated/detached stop
+  behavior (never guessed as same_window).
+
+```bash
+omg team launch --workers 3 --goal "…"                 # same_window inside tmux
+omg team launch --workers 3 --goal "…" --dedicated-window
+omg team launch --workers 3 --goal "…" --detach        # detached_session
+```
+
 ## Lifecycle
 
 ```bash

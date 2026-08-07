@@ -758,6 +758,7 @@ def launch_team(
     check_binary: bool = True,
     executor: str | None = None,
     detach: bool = False,
+    view_mode: str | None = None,
 ) -> dict[str, Any]:
     """OMX-like shorthand launch: decompose → start_team(split) → seed api/ref.
 
@@ -793,6 +794,7 @@ def launch_team(
         team_id=team_id,
         executor=executor,
         detach=detach,
+        view_mode=view_mode,
     )
     rid = str(meta["run_id"])
     # start_team creates a new run unless --run was supplied.
