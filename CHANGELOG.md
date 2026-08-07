@@ -10,6 +10,18 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#104 real-tmux Team UX regression suite:** hermetic Layer B coverage
+  (`tests/test_team_real_tmux_ux.py` + `tests/support/team_tmux_harness.py`)
+  on an isolated `tmux -S` socket with fake providers under
+  `tests/fixtures/providers/`. Protects same-window leader visibility/focus,
+  invocation race fail-closed, one-worker death, provider-ready/blocked/exit,
+  bootstrap scrollback cleanliness, operator exact-pane I/O, scale topology,
+  resume reconcile-only, and stop/rollback survivors. CI jobs
+  `team-real-tmux-linux` / `team-real-tmux-macos` run `-m tmux_real` and
+  must pass on this PR (GitHub branch-protection “required checks” are
+  admin-owned and not claimed here).
+  `live_team_smoke.py --interactive-ux` emits `interactive_evidence_v1` +
+  `LIVE_TEAM_INTERACTIVE_UX_OK` (optional; fail-closed without tmux).
 - **#103 Team resume/view attach semantics:** `omg team resume` stays
   reconcile-only by default (never attaches because stdout is a TTY).
   Explicit `resume --view` / `omg team view` restore the exact Team
@@ -20,8 +32,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   client effects). Reconcile, provider-session (ACP stub:
   `no_replay=true`, `restore_code=false`), and tmux-view outcomes are
   reported separately. `--worker` delegates to #101 focus.
-- **#101 identity-fenced live pane inspect/operator input:** `omg team
-  panes|capture|focus|key|input|watch` resolve Team identity → receipt
+- **#101 identity-fenced live pane inspect/operator input:** `omg team panes|capture|focus|key|input|watch` resolve Team identity → receipt
   chain → exact-pane proof (#98) → authorize → tmux effect (`shell=False`).
   Bounded/redacted capture; key allowlist; literal `send-keys -l`; audit
   stores length/hash only; `--json` never focuses or delivers input.
@@ -55,10 +66,31 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   Antigravity probe (discover binary, version argv probe, compat range,
   schema-versioned capabilities envelope) plus
   `omg provider antigravity {capabilities,doctor}`. Hermetic fake-`agy`
-  fixtures only — no ask/Team cutover, no `live_verified` claims. Issue #67
+  fixtures only — no ask/Team cutover, no fabricated live-evidence verification claims. Issue #67
   remains open for slices B–D.
 
 ### Fixed
+- **#104 B1 leader operator visibility:** `_restore_leader_focus` now
+  `select-window -t %pane` then `select-pane` so session `window_active`
+  flips (select-pane alone is window-local). Postconditions require
+  `window_active=1`; real-tmux asserts + negative self-check reject the
+  hollow window-local `pane_active` check. Hermetic CI excludes
+  `tmux_real` (`not live and not tmux_real`); dedicated artifact upload
+  uses `if-no-files-found: error`.
+- **#104 same_window scale-up geometry:** grow Team window before
+  `split-window` when headless defaults leave no space for another pane
+  (macOS GHA flake: scale returned with only leader+2 panes). Harness
+  pins 160x48; scale UX test asserts distinct new `pane_id` + live count.
+- **#104 scale inherits `executor=fixture`:** scale-up pane records now
+  use `build_fixture_pane_command` when team meta has
+  `executor=fixture`. Previously scale always built grok argv; on CI
+  without `grok` the pane exited and tmux destroyed it while the API
+  still returned `added=1` (TimeoutError waiting for 4th pane).
+- **#104 misleading dedicated-window unit test name:** renamed
+  `test_inside_tmux_splits_current_window` →
+  `test_inside_dedicated_window_uses_new_window` so it no longer reads as
+  locking the buggy new-window default (same-window default remains
+  `test_inside_same_window_default_never_calls_new_window`).
 - **#67-A probe fail-closed / process contract (PR #94 re-audit):** version and
   help probes require successful exit + observed evidence (no invented
   formats/efforts/modes); `run_probe_process` uses POSIX `start_new_session` +

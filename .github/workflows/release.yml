@@ -136,7 +136,7 @@ jobs:
           python scripts/check_version_consistency.py --check
       - name: Tests and static checks
         run: |
-          python -m pytest -q -m "not live" --tb=short
+          python -m pytest -q -m "not live and not tmux_real" --tb=short
           bash scripts/static_checks.sh
       - name: Hermetic smoke
         run: ./scripts/smoke.sh

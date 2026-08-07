@@ -2146,9 +2146,24 @@ def _current_leader_pane() -> str:
 def _restore_leader_focus(
     leader_pane: str, *, socket_path: str | None = None
 ) -> None:
-    """Reselect the exact leader pane after focus-detached worker creation."""
+    """Reselect the exact leader pane after focus-detached worker creation.
+
+    ``select-pane -t %N`` alone sets that pane active *within its window* but
+    does **not** flip session ``window_active`` when another window is current
+    (tmux 3.x). Issue #104 / B1: operators must see the leader window, so we
+    ``select-window -t %pane`` first (pane target switches to that window),
+    then ``select-pane`` so the leader pane is active inside it.
+    """
     if _TMUX_PANE_ID.fullmatch(leader_pane) is None:
         raise TmuxTeamError(f"invalid leader pane for focus restore {leader_pane!r}")
+    selected_win = _tmux_run(
+        ["select-window", "-t", leader_pane], socket_path=socket_path
+    )
+    if selected_win.returncode != 0:
+        err = (selected_win.stderr or selected_win.stdout or "").strip()
+        raise TmuxTeamError(
+            f"failed to restore leader window for {leader_pane}: {err}"
+        )
     selected = _tmux_run(
         ["select-pane", "-t", leader_pane], socket_path=socket_path
     )
@@ -3493,7 +3508,7 @@ def _assert_leader_postconditions(
     snap: Mapping[str, Any],
     socket_path: str | None,
 ) -> dict[str, str | int]:
-    """Re-select leader and prove pane/pid/session/window + pane_active=1."""
+    """Re-select leader and prove pane/pid/session/window + session-visible."""
     leader_pane = str(snap["pane_id"])
     _restore_leader_focus(leader_pane, socket_path=socket_path)
     probe = _tmux_run(
@@ -3502,14 +3517,15 @@ def _assert_leader_postconditions(
             "-p",
             "-t",
             leader_pane,
-            "#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_active}",
+            "#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t"
+            "#{pane_active}\t#{window_active}",
         ],
         socket_path=socket_path,
     )
     parts = (probe.stdout or "").strip().split("\t")
-    if probe.returncode != 0 or len(parts) != 5:
+    if probe.returncode != 0 or len(parts) != 6:
         raise TmuxTeamError("leader postcondition probe failed")
-    session_id, window_id, pane_id, pid_s, active = parts
+    session_id, window_id, pane_id, pid_s, active, window_active = parts
     try:
         pane_pid = int(pid_s)
     except ValueError as exc:
@@ -3520,11 +3536,12 @@ def _assert_leader_postconditions(
         or pane_id != leader_pane
         or pane_pid != int(snap["pane_pid"])
         or active != "1"
+        or window_active != "1"
     ):
         raise TmuxTeamError(
             "leader identity/selection postcondition failed "
             f"(session={session_id!r} window={window_id!r} pane={pane_id!r} "
-            f"pid={pane_pid!r} active={active!r})"
+            f"pid={pane_pid!r} active={active!r} window_active={window_active!r})"
         )
     return {
         "session_id": session_id,
@@ -3532,6 +3549,7 @@ def _assert_leader_postconditions(
         "pane_id": pane_id,
         "pane_pid": pane_pid,
         "pane_active": 1,
+        "window_active": 1,
     }
 
 
@@ -4421,6 +4439,59 @@ def discover_worker_pane_by_owner_nonce(
     return matches[0] if matches else None
 
 
+def _ensure_window_split_capacity(
+    window_id: str,
+    *,
+    socket_path: str | None,
+    min_width: int = 120,
+    min_height: int = 36,
+) -> None:
+    """Grow a Team window so ``split-window`` has geometric room.
+
+    Headless/CI tmux defaults can be too small after main-vertical packing;
+    ``split-window`` then fails with ``no space for a new pane`` (seen on
+    macOS GHA for same_window scale-up). Never shrinks. If the geometry
+    probe fails, leave the window unchanged — the subsequent split still
+    fails closed with the real tmux error.
+    """
+    if _TMUX_WINDOW_ID.fullmatch(window_id) is None:
+        return
+    probe = _tmux_run(
+        [
+            "display-message",
+            "-p",
+            "-t",
+            window_id,
+            "#{window_width}\t#{window_height}",
+        ],
+        socket_path=socket_path,
+    )
+    parts = (probe.stdout or "").strip().split("\t")
+    try:
+        width = int(parts[0]) if len(parts) == 2 else 0
+        height = int(parts[1]) if len(parts) == 2 else 0
+    except ValueError:
+        return
+    if probe.returncode != 0 or width <= 0 or height <= 0:
+        return
+    target_w = max(width, int(min_width))
+    target_h = max(height, int(min_height))
+    if target_w == width and target_h == height:
+        return
+    _tmux_run(
+        [
+            "resize-window",
+            "-t",
+            window_id,
+            "-x",
+            str(target_w),
+            "-y",
+            str(target_h),
+        ],
+        socket_path=socket_path,
+    )
+
+
 def _spawn_worker_split_pane(
     *,
     target_pane_id: str | None,
@@ -4445,6 +4516,7 @@ def _spawn_worker_split_pane(
     if leader_pane_id is not None and split_target == leader_pane_id and not horizontal:
         # Vertical split against leader is refused — callers must use -h first.
         raise TmuxTeamError("refusing vertical split against leader pane")
+    _ensure_window_split_capacity(target_window_id, socket_path=sock)
     task_env = tmux_env_args(list(env_pairs or []))
     split_argv = [
         "split-window",

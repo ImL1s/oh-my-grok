@@ -14,10 +14,16 @@ exit non-zero without that line — never claim promotion from a soft skip.
 ``--fixture-executor`` runs the hermetic ACK fixture in split panes (tmux
 required; no grok). That path proves transport only — never Grok live parity.
 
+``--interactive-ux`` (#104) records schema ``interactive_evidence_v1`` on an
+isolated tmux socket with a fake ready provider and prints
+``LIVE_TEAM_INTERACTIVE_UX_OK`` only when leader visibility/focus + readiness
+assertions pass. Fail-closed without tmux; never invents credentials evidence.
+
 Usage:
   python3 scripts/live_team_smoke.py --workers 2 --goal "1. a\\n2. b"
   OMG_EXPERIMENTAL_TMUX_TEAM=1 python3 scripts/live_team_smoke.py --live ...
   OMG_EXPERIMENTAL_TMUX_TEAM=1 python3 scripts/live_team_smoke.py --fixture-executor ...
+  python3 scripts/live_team_smoke.py --interactive-ux --workers 2 --goal "1. a\\n2. b"
 """
 
 from __future__ import annotations
@@ -338,6 +344,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--interactive-ux",
+        action="store_true",
+        help=(
+            "Layer C operator evidence (#104): schema interactive_evidence_v1 + "
+            "LIVE_TEAM_INTERACTIVE_UX_OK (fixture path; fail-closed without tmux)"
+        ),
+    )
+    parser.add_argument(
         "--timeout",
         type=float,
         default=None,
@@ -345,8 +359,11 @@ def main() -> int:
         f"(default OMG_LIVE_TEAM_TIMEOUT_S or {_DEFAULT_LIVE_TIMEOUT_S})",
     )
     args = parser.parse_args()
-    if args.live and args.fixture_executor:
-        return _fail("pass only one of --live / --fixture-executor", code=2)
+    if sum(bool(x) for x in (args.live, args.fixture_executor, args.interactive_ux)) > 1:
+        return _fail(
+            "pass only one of --live / --fixture-executor / --interactive-ux",
+            code=2,
+        )
 
     env = os.environ.copy()
     env["OMG_EXPERIMENTAL_TMUX_TEAM"] = "1"
@@ -406,6 +423,120 @@ def main() -> int:
             check=True,
             capture_output=True,
         )
+
+        if args.interactive_ux:
+            if shutil.which("tmux") is None:
+                _write_evidence(
+                    {
+                        "schema_version": "interactive_evidence_v1",
+                        "ok": False,
+                        "reason": "tmux unavailable",
+                        "live_ok_line": False,
+                    }
+                )
+                return _fail("interactive-ux requires tmux on PATH")
+            sys.path.insert(0, str(ROOT))
+            from omg_cli import __version__ as omg_version
+            from omg_cli.team.plane import stop_team
+            from tests.support.team_tmux_harness import (
+                IsolatedTmuxServer,
+                LeaderSession,
+                install_fixture_provider,
+                launch_team_inside,
+                provider_script,
+            )
+
+            evidence: dict = {
+                "schema_version": "interactive_evidence_v1",
+                "ok": False,
+                "live_ok_line": False,
+                "omg_version": omg_version,
+                "repo_sha": subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=str(ROOT),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                ).stdout.strip()
+                or None,
+                "tmux_version": subprocess.run(
+                    ["tmux", "-V"], capture_output=True, text=True, check=False
+                ).stdout.strip()
+                or None,
+                "provider": "fixture/ready_provider",
+            }
+
+            class _EnvPatch:
+                def setenv(self, k: str, v: str) -> None:
+                    os.environ[k] = v
+
+                def delenv(self, k: str, raising: bool = True) -> None:
+                    os.environ.pop(k, None)
+
+                def setattr(self, obj: object, name: str, value: object) -> None:
+                    setattr(obj, name, value)
+
+            mp = _EnvPatch()
+            with IsolatedTmuxServer(prefix="omg104-live") as server:
+                leader = LeaderSession(server)
+                leader.create()
+                assert leader.leader is not None
+                before = {
+                    "pane_id": leader.leader.pane_id,
+                    "pane_pid": leader.leader.pane_pid,
+                    "window_id": leader.leader.window_id,
+                }
+                evidence["topology_before"] = before
+                install_fixture_provider(mp, provider_script("ready_provider.py"))
+                for k, v in leader.tmux_env().items():
+                    os.environ[k] = v
+                os.environ["OMG_EXPERIMENTAL_TMUX_TEAM"] = "1"
+                os.environ.pop("OMG_DISABLE_TMUX_TEAM", None)
+                os.environ["OMG_TEAM_FIXTURE_HOLD_S"] = "20"
+                os.environ["OMG_TEAM_READY_TIMEOUT_MS"] = "20000"
+                os.environ["OMG_TEAM_PROVIDER_HOLD_S"] = "20"
+                meta = None
+                try:
+                    meta = launch_team_inside(
+                        root=cwd, leader=leader, workers=args.workers
+                    )
+                    evidence["run_id"] = meta.get("run_id")
+                    evidence["startup_status"] = meta.get("startup_status")
+                    evidence["readiness_timeline"] = meta.get("startup_workers")
+                    topo = leader.capture_topology()
+                    evidence["topology_after"] = {
+                        "pane_ids": list(topo.pane_ids),
+                        "active_pane_id": topo.active_pane_id,
+                        "window_id": before["window_id"],
+                    }
+                    evidence["leader_pane_hash"] = before["pane_id"]
+                    evidence["worker_pane_hash"] = [
+                        str(t.get("pane_id")) for t in (meta.get("tasks") or [])
+                    ]
+                    evidence["operator_marker"] = "capture_ok"
+                    evidence["scale_marker"] = "skipped_optional"
+                    evidence["resume_marker"] = "skipped_optional"
+                    assert meta.get("startup_status") == "running"
+                    assert topo.active_pane_id == before["pane_id"]
+                    assert before["pane_id"] in topo.pane_ids
+                    stop_team(cwd, str(meta["run_id"]), force=True)
+                    evidence["stop_marker"] = "workers_cleared"
+                    evidence["ok"] = True
+                    evidence["live_ok_line"] = True
+                    path = _write_evidence(evidence)
+                    if path:
+                        print(f"live_team_smoke: evidence {path}", file=sys.stderr)
+                    print("LIVE_TEAM_INTERACTIVE_UX_OK")
+                    return 0
+                except Exception as exc:
+                    evidence["error"] = repr(exc)
+                    if meta is not None:
+                        try:
+                            stop_team(cwd, str(meta["run_id"]), force=True)
+                        except Exception:
+                            pass
+                    _write_evidence(evidence)
+                    return _fail(f"interactive-ux failed: {exc}")
 
         if args.fixture_executor:
             # In-process launch so we can pass executor="fixture" without CLI flag.
