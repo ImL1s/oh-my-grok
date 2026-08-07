@@ -168,6 +168,10 @@ omg accept --yes
 旧版 `worker-ready` v1 收据仅为 `wrapper_ready_legacy`，不能产生
 `startup_status=running`。认证/信任提示 → `blocked_start`。`--no-wait` →
 `unverified_start`。
+
+**静默 bootstrap（#100）：** worker pane 成功启动不打印 JSON / nested-`.omg` 警告；
+失败仅一行提示。详情见 `workers/<id>/bootstrap.log`，用
+`omg team status <run> --full` 查看（不要把 pane scrollback 当权威错误源）。
 | **诚实范围** | 零设定 = grok panes；`--routing` 启 multi-CLI（含角色地板）。**整合**隔离（ownership + seal + integrate）— **不是**执行沙箱。`collect` / `run` / `scale` / `resume` 永不写 `verified`。scale/resume/ralph 是**同一** team plane 的生命周期延伸（无新隔离宣称）。Live 升格证据：`scripts/live_team_smoke.py --live` → `LIVE_TEAM_SMOKE_OK`（2026-07-30 本地；不进 CI）。**无裸 `/team` slash alias** — 2026-07-25 host 探测：plugin skill 为 `/name` 或 `/plugin:name`，无 frontmatter 可为 `omg-team` 注册 unnamespaced `/team`；其他 plugin 已占用 `team` skill 名。 |
 
 **窗口拓扑（#96）：** 既有 tmux pane 内启动默认 `view_mode=same_window`（leader 左、workers 右堆叠；detached split + `main-vertical`）。`--dedicated-window` 使用独立 Team window；tmux 外 / `--detach` 为 `detached_session`。same_window 的 `stop`/失败回滚只清 worker panes，不杀 shared leader window。plan-only / dry-run / live JSON 皆带 `view_mode`；缺 mode 的旧 run 维持 dedicated/detached 行为。

@@ -425,23 +425,102 @@ def resolve_provider_child_pid(
 
 
 def _env_identity() -> tuple[str, str, str, Path]:
-    worker_id = (os.environ.get("OMG_TEAM_WORKER_ID") or "").strip()
-    run_id = (os.environ.get("OMG_TEAM_RUN_ID") or "").strip()
-    team_id = (os.environ.get("OMG_TEAM_ID") or "team").strip() or "team"
-    leader = (
-        os.environ.get("OMG_TEAM_LEADER_ROOT")
-        or os.environ.get("OMG_PROJECT_ROOT")
-        or ""
-    ).strip()
-    if not worker_id or not run_id:
-        raise SupervisorError(
-            "team supervisor requires OMG_TEAM_WORKER_ID and OMG_TEAM_RUN_ID"
+    """Resolve worker identity + validated canonical leader root (#100).
+
+    Never walks nested worktree ``.omg`` ancestors — leader root comes from
+    the supervisor environment that the leader already validated.
+    """
+    from omg_cli.team.bootstrap import BootstrapError, bootstrap_env_identity
+
+    try:
+        return bootstrap_env_identity()
+    except BootstrapError as exc:
+        raise SupervisorError(str(exc)) from exc
+
+
+def _emit_pane_failure(*, worker_id: str | None, run_id: str | None) -> None:
+    """One safe stderr line for pane-facing bootstrap/supervisor failure."""
+    from omg_cli.team.bootstrap import pane_failure_line
+
+    try:
+        sys.stderr.write(pane_failure_line(worker_id=worker_id, run_id=run_id) + "\n")
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001 — never crash the pane wrapper
+        pass
+
+
+def _log_bootstrap(
+    root: Path,
+    *,
+    run_id: str,
+    team_id: str,
+    worker_id: str,
+    phase: str,
+    code: str | None = None,
+    summary: str | None = None,
+) -> None:
+    from omg_cli.team.bootstrap import append_bootstrap_log
+
+    append_bootstrap_log(
+        root,
+        run_id=run_id,
+        team_id=team_id,
+        worker_id=worker_id,
+        phase=phase,
+        code=code,
+        summary=summary,
+    )
+
+
+def _fail_closed_init(
+    *,
+    root: Path,
+    run_id: str,
+    team_id: str,
+    worker_id: str,
+    provider: str,
+    supervisor_pid: int,
+    failure_reason: str,
+    evidence_code: str,
+    provider_pid: int | None = None,
+    provider_pgid: int | None = None,
+    provider_pid_start: str | None = None,
+    code: str = "SUPERVISOR",
+) -> int:
+    """Fail-closed init exit: artifact + one pane line (never a blank pane)."""
+    from omg_cli.team.bootstrap import classify_bootstrap_exception
+
+    try:
+        _log_bootstrap(
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            worker_id=worker_id,
+            phase="BOOTSTRAP_FAIL",
+            code=code or classify_bootstrap_exception(RuntimeError(failure_reason)).value,
+            summary=failure_reason,
         )
-    if not leader:
-        raise SupervisorError(
-            "team supervisor requires OMG_TEAM_LEADER_ROOT or OMG_PROJECT_ROOT"
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        write_startup_phase(
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            worker_id=worker_id,
+            phase=StartupPhase.FAILED,
+            provider=provider,
+            supervisor_pid=supervisor_pid,
+            provider_pid=provider_pid,
+            provider_pgid=provider_pgid,
+            provider_pid_start=provider_pid_start,
+            evidence_code=evidence_code,
+            failure_reason=failure_reason,
         )
-    return run_id, team_id, worker_id, Path(leader).resolve()
+    except Exception:  # noqa: BLE001 — receipt best-effort
+        pass
+    _emit_pane_failure(worker_id=worker_id, run_id=run_id)
+    return 1
 
 
 def _pid_start(pid: int) -> str | None:
@@ -789,19 +868,6 @@ def run_supervisor(
                     proc.terminate()
             except (ProcessLookupError, PermissionError, OSError):
                 pass
-            write_startup_phase(
-                root,
-                run_id=run_id,
-                team_id=team_id,
-                worker_id=worker_id,
-                phase=StartupPhase.FAILED,
-                provider=provider,
-                supervisor_pid=supervisor_pid,
-                provider_pid=wrapper_pid,
-                provider_pgid=_pgid(wrapper_pid),
-                evidence_code=EvidenceCode.MALFORMED,
-                failure_reason=resolve_err or "provider child identity unresolved",
-            )
             try:
                 proc.wait(timeout=2.0)
             except subprocess.TimeoutExpired:
@@ -809,7 +875,19 @@ def run_supervisor(
                     proc.kill()
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
-            return 1
+            return _fail_closed_init(
+                root=root,
+                run_id=run_id,
+                team_id=team_id,
+                worker_id=worker_id,
+                provider=provider,
+                supervisor_pid=supervisor_pid,
+                provider_pid=wrapper_pid,
+                provider_pgid=_pgid(wrapper_pid),
+                evidence_code=EvidenceCode.MALFORMED,
+                failure_reason=resolve_err or "provider child identity unresolved",
+                code="IDENTITY",
+            )
 
         provider_pid = int(resolved_pid)
         # Brief settle so start identity is observable.
@@ -830,28 +908,26 @@ def run_supervisor(
                         pass
             except (ProcessLookupError, PermissionError, OSError):
                 pass
-            write_startup_phase(
-                root,
+            return _fail_closed_init(
+                root=root,
                 run_id=run_id,
                 team_id=team_id,
                 worker_id=worker_id,
-                phase=StartupPhase.FAILED,
                 provider=provider,
                 supervisor_pid=supervisor_pid,
                 provider_pid=provider_pid,
                 provider_pgid=provider_pgid,
                 evidence_code=EvidenceCode.MALFORMED,
                 failure_reason="provider_pid_start unavailable after spawn",
+                code="IDENTITY",
             )
-            return 1
 
         if provider_pid == supervisor_pid:
-            write_startup_phase(
-                root,
+            return _fail_closed_init(
+                root=root,
                 run_id=run_id,
                 team_id=team_id,
                 worker_id=worker_id,
-                phase=StartupPhase.FAILED,
                 provider=provider,
                 supervisor_pid=supervisor_pid,
                 provider_pid=provider_pid,
@@ -859,8 +935,8 @@ def run_supervisor(
                 provider_pid_start=provider_start,
                 evidence_code=EvidenceCode.MALFORMED,
                 failure_reason="provider_pid equals supervisor_pid",
+                code="IDENTITY",
             )
-            return 1
 
         write_startup_phase(
             root,
@@ -1127,20 +1203,37 @@ def run_supervisor(
             )
         return int(rc if rc is not None else 1)
     except SupervisorError as exc:
-        write_startup_phase(
-            root,
-            run_id=run_id,
-            team_id=team_id,
-            worker_id=worker_id,
-            phase=StartupPhase.FAILED,
-            provider=provider,
-            supervisor_pid=supervisor_pid,
-            provider_pid=provider_pid,
-            provider_pgid=provider_pgid,
-            provider_pid_start=provider_start,
-            evidence_code=EvidenceCode.MALFORMED,
-            failure_reason=str(exc),
-        )
+        from omg_cli.team.bootstrap import classify_bootstrap_exception
+
+        try:
+            _log_bootstrap(
+                root,
+                run_id=run_id,
+                team_id=team_id,
+                worker_id=worker_id,
+                phase="BOOTSTRAP_FAIL",
+                code=classify_bootstrap_exception(exc).value,
+                summary=str(exc),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            write_startup_phase(
+                root,
+                run_id=run_id,
+                team_id=team_id,
+                worker_id=worker_id,
+                phase=StartupPhase.FAILED,
+                provider=provider,
+                supervisor_pid=supervisor_pid,
+                provider_pid=provider_pid,
+                provider_pgid=provider_pgid,
+                provider_pid_start=provider_start,
+                evidence_code=EvidenceCode.MALFORMED,
+                failure_reason=str(exc),
+            )
+        except Exception:  # noqa: BLE001 — receipt best-effort on fail path
+            pass
         if proc is not None and _child_alive(proc, provider_pid=provider_pid):
             try:
                 if provider_pgid:
@@ -1164,9 +1257,24 @@ def run_supervisor(
                         proc.kill()
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
+        _emit_pane_failure(worker_id=worker_id, run_id=run_id)
         return 1
     except StartupError as exc:
-        sys.stderr.write(f"team supervisor startup error: {exc}\n")
+        from omg_cli.team.bootstrap import classify_bootstrap_exception
+
+        try:
+            _log_bootstrap(
+                root,
+                run_id=run_id,
+                team_id=team_id,
+                worker_id=worker_id,
+                phase="BOOTSTRAP_FAIL",
+                code=classify_bootstrap_exception(exc).value,
+                summary=str(exc),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        _emit_pane_failure(worker_id=worker_id, run_id=run_id)
         return 1
     finally:
         if proc is not None and proc.stdout is not None:

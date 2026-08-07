@@ -421,22 +421,29 @@ def collect_worker_startup_snapshots(
             and identity_ok
             and alive
         )
-        rows.append(
-            {
-                "worker_id": wid,
-                "phase": phase,
-                "evidence_code": classified.get("evidence_code"),
-                "blocked_reason": classified.get("blocked_reason"),
-                "failure_reason": classified.get("failure_reason"),
-                "provider": classified.get("provider"),
-                "provider_pid": classified.get("provider_pid"),
-                "supervisor_pid": classified.get("supervisor_pid"),
-                "provider_alive": alive,
-                "identity_ok": identity_ok,
-                "legacy": bool(classified.get("legacy")),
-                "gate_ok": gate_ok,
-            }
+        from omg_cli.team.bootstrap import read_bootstrap_summary
+
+        bootstrap = read_bootstrap_summary(
+            root, run_id=run_id, team_id=team_id, worker_id=wid
         )
+        row: dict[str, Any] = {
+            "worker_id": wid,
+            "phase": phase,
+            "evidence_code": classified.get("evidence_code"),
+            "blocked_reason": classified.get("blocked_reason"),
+            "failure_reason": classified.get("failure_reason"),
+            "provider": classified.get("provider"),
+            "provider_pid": classified.get("provider_pid"),
+            "supervisor_pid": classified.get("supervisor_pid"),
+            "provider_alive": alive,
+            "identity_ok": identity_ok,
+            "legacy": bool(classified.get("legacy")),
+            "gate_ok": gate_ok,
+        }
+        if bootstrap is not None:
+            # Descriptor only — never inline the full bootstrap.log (#100).
+            row["bootstrap"] = bootstrap
+        rows.append(row)
     return rows
 
 
