@@ -17,6 +17,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `running` / `degraded` / `failed_start` / `blocked_start` /
   `unverified_start`. Legacy v1 `worker-ready` receipts are
   `wrapper_ready_legacy` only and cannot false-green `startup_status=running`.
+  Review hardening: process_stable is provisional (post-stable observe catches
+  delayed auth/trust); gate requires distinct provider≠supervisor identity,
+  live PID, and phase history including `provider_spawned`+`provider_ready`.
 - **Partial work for issue 67 (slice A / #67-A):** typed `omg_cli/providers/`
   Antigravity probe (discover binary, version argv probe, compat range,
   schema-versioned capabilities envelope) plus

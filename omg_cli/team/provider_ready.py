@@ -17,9 +17,15 @@ from omg_cli.team.startup import BlockedReason, EvidenceCode
 
 @dataclass(frozen=True)
 class ReadinessObservation:
-    """Result of one observe() poll."""
+    """Result of one observe() poll.
 
-    status: str  # ready | blocked | failed | pending | unknown
+    status:
+      ready — definitive (idle prompt / fixture / fake); finalize immediately
+      provisional — process_stable only; supervisor must keep observing
+      blocked / failed / pending / unknown — as before
+    """
+
+    status: str  # ready | provisional | blocked | failed | pending | unknown
     evidence_code: str
     blocked_reason: str | None = None
     failure_reason: str | None = None
@@ -114,24 +120,25 @@ class _BaseStrategy:
                 evidence_code=EvidenceCode.TUI_IDLE_PROMPT.value,
                 detail="idle/input-ready marker observed",
             )
-        # Known providers: process-alive through a stability interval is
-        # accepted evidence when no blocked/error patterns were seen (#99).
+        # Known providers: process-alive through a stability interval is only
+        # *provisional* — supervisor must keep observing for delayed auth/trust
+        # before finalizing provider_ready + task_dispatched (#99 review).
         if (
             getattr(self, "allow_process_stable", False)
             and elapsed_s >= self.stability_s
             and alive
         ):
             return ReadinessObservation(
-                status="ready",
+                status="provisional",
                 evidence_code=EvidenceCode.PROCESS_STABLE.value,
-                detail="provider process stable without blocked/error evidence",
+                detail="provider process stable; post-stable observe required",
             )
         force = (env or os.environ).get("OMG_TEAM_PROVIDER_STABLE_READY")
         if force == "1" and elapsed_s >= self.stability_s and alive:
             return ReadinessObservation(
-                status="ready",
+                status="provisional",
                 evidence_code=EvidenceCode.PROCESS_STABLE.value,
-                detail="stable-alive override",
+                detail="stable-alive override; post-stable observe required",
             )
         return ReadinessObservation(
             status="pending",

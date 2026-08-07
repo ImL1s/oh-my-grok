@@ -299,10 +299,12 @@ def collect_process_ready_workers(
     """Return worker ids with a valid schema-v2 gate-satisfying startup receipt.
 
     Legacy v1 helper receipts are intentionally excluded (#99 false-green kill).
+    Requires distinct live provider identity and phase history.
     """
     from omg_cli.team.startup import (
         classify_startup_payload,
         meets_gate,
+        provider_identity_distinct,
         provider_process_alive,
         read_startup_record,
         resolve_gate_phase,
@@ -320,7 +322,28 @@ def collect_process_ready_workers(
         classified = classify_startup_payload(data)
         if classified.get("legacy") or not classified.get("phase"):
             continue
-        if not meets_gate(classified.get("phase"), gate=gate):
+        phases = classified.get("phases") or []
+        if not isinstance(phases, list):
+            phases = []
+        if not meets_gate(
+            classified.get("phase"),
+            gate=gate,
+            phases=[str(p) for p in phases],
+        ):
+            continue
+        if not provider_identity_distinct(
+            provider_pid=classified.get("provider_pid")
+            if isinstance(classified.get("provider_pid"), int)
+            else None,
+            supervisor_pid=classified.get("supervisor_pid")
+            if isinstance(classified.get("supervisor_pid"), int)
+            else None,
+            provider_pid_start=(
+                str(classified["provider_pid_start"])
+                if isinstance(classified.get("provider_pid_start"), str)
+                else None
+            ),
+        ):
             continue
         # Exact live provider identity required for gate satisfaction.
         if not provider_process_alive(
@@ -349,6 +372,7 @@ def collect_worker_startup_snapshots(
     from omg_cli.team.startup import (
         classify_startup_payload,
         meets_gate,
+        provider_identity_distinct,
         provider_process_alive,
         read_startup_record,
         resolve_gate_phase,
@@ -362,6 +386,9 @@ def collect_worker_startup_snapshots(
         )
         classified = classify_startup_payload(data)
         phase = classified.get("phase")
+        phases = classified.get("phases") or []
+        if not isinstance(phases, list):
+            phases = []
         alive = False
         if isinstance(classified.get("provider_pid"), int) and isinstance(
             classified.get("provider_pid_start"), str
@@ -370,8 +397,26 @@ def collect_worker_startup_snapshots(
                 provider_pid=classified["provider_pid"],
                 provider_pid_start=classified["provider_pid_start"],
             )
+        identity_ok = provider_identity_distinct(
+            provider_pid=classified.get("provider_pid")
+            if isinstance(classified.get("provider_pid"), int)
+            else None,
+            supervisor_pid=classified.get("supervisor_pid")
+            if isinstance(classified.get("supervisor_pid"), int)
+            else None,
+            provider_pid_start=(
+                str(classified["provider_pid_start"])
+                if isinstance(classified.get("provider_pid_start"), str)
+                else None
+            ),
+        )
         gate_ok = bool(
-            meets_gate(phase if isinstance(phase, str) else None, gate=gate)
+            meets_gate(
+                phase if isinstance(phase, str) else None,
+                gate=gate,
+                phases=[str(p) for p in phases],
+            )
+            and identity_ok
             and alive
         )
         rows.append(
@@ -383,7 +428,9 @@ def collect_worker_startup_snapshots(
                 "failure_reason": classified.get("failure_reason"),
                 "provider": classified.get("provider"),
                 "provider_pid": classified.get("provider_pid"),
+                "supervisor_pid": classified.get("supervisor_pid"),
                 "provider_alive": alive,
+                "identity_ok": identity_ok,
                 "legacy": bool(classified.get("legacy")),
                 "gate_ok": gate_ok,
             }
@@ -565,7 +612,8 @@ def wait_for_startup_acks(
     ]
     count = len(ordered_ready)
     if not expected:
-        status = "running"
+        # Vacuous "success" with zero workers is a false claim — fail closed.
+        status = "failed_start"
     elif count == len(expected):
         status = "running"
     elif count == 0 and blocked:

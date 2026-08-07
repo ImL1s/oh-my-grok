@@ -33,6 +33,9 @@ from omg_cli.team.startup import (
 DESCRIPTOR_SCHEMA_VERSION = 1
 DESCRIPTOR_KIND = "team_provider_descriptor"
 DEFAULT_READY_WAIT_S = 30.0
+# After process_stable provisional ready, keep watching for delayed auth/trust.
+DEFAULT_POST_STABLE_OBSERVE_S = 2.0
+POST_STABLE_OBSERVE_ENV = "OMG_TEAM_POST_STABLE_OBSERVE_S"
 _CAPTURE_MAX_LINES = 48
 _CAPTURE_MAX_BYTES = 16_384
 
@@ -271,6 +274,11 @@ def run_supervisor(
         if ready_timeout_s is not None
         else float(source.get("OMG_TEAM_SUPERVISOR_READY_S") or DEFAULT_READY_WAIT_S)
     )
+    post_stable_s = float(
+        source.get(POST_STABLE_OBSERVE_ENV) or DEFAULT_POST_STABLE_OBSERVE_S
+    )
+    if post_stable_s < 0:
+        post_stable_s = DEFAULT_POST_STABLE_OBSERVE_S
 
     supervisor_pid = os.getpid()
     write_startup_phase(
@@ -302,6 +310,39 @@ def run_supervisor(
     provider_start: str | None = None
     reached_ready = False
     reached_dispatch = False
+    provisional_since: float | None = None
+    provisional_evidence: str | None = None
+
+    def _finalize_ready(*, evidence: str) -> None:
+        nonlocal reached_ready, reached_dispatch
+        write_startup_phase(
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            worker_id=worker_id,
+            phase=StartupPhase.PROVIDER_READY,
+            provider=provider,
+            supervisor_pid=supervisor_pid,
+            provider_pid=provider_pid,
+            provider_pgid=provider_pgid,
+            provider_pid_start=provider_start,
+            evidence_code=evidence,
+        )
+        reached_ready = True
+        write_startup_phase(
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            worker_id=worker_id,
+            phase=StartupPhase.TASK_DISPATCHED,
+            provider=provider,
+            supervisor_pid=supervisor_pid,
+            provider_pid=provider_pid,
+            provider_pgid=provider_pgid,
+            provider_pid_start=provider_start,
+            evidence_code=EvidenceCode.PROMPT_CONTRACT_ACCEPTED,
+        )
+        reached_dispatch = True
 
     try:
         proc = _spawn_provider(
@@ -333,6 +374,23 @@ def run_supervisor(
                 provider_pgid=provider_pgid,
                 evidence_code=EvidenceCode.MALFORMED,
                 failure_reason="provider_pid_start unavailable after spawn",
+            )
+            return 1
+
+        if provider_pid == supervisor_pid:
+            write_startup_phase(
+                root,
+                run_id=run_id,
+                team_id=team_id,
+                worker_id=worker_id,
+                phase=StartupPhase.FAILED,
+                provider=provider,
+                supervisor_pid=supervisor_pid,
+                provider_pid=provider_pid,
+                provider_pgid=provider_pgid,
+                provider_pid_start=provider_start,
+                evidence_code=EvidenceCode.MALFORMED,
+                failure_reason="provider_pid equals supervisor_pid",
             )
             return 1
 
@@ -415,36 +473,23 @@ def run_supervisor(
                 # Stay pending until timeout — never optimistic ready.
                 pass
             elif obs.status == "ready" and not reached_ready:
-                write_startup_phase(
-                    root,
-                    run_id=run_id,
-                    team_id=team_id,
-                    worker_id=worker_id,
-                    phase=StartupPhase.PROVIDER_READY,
-                    provider=provider,
-                    supervisor_pid=supervisor_pid,
-                    provider_pid=provider_pid,
-                    provider_pgid=provider_pgid,
-                    provider_pid_start=provider_start,
-                    evidence_code=obs.evidence_code,
-                )
-                reached_ready = True
-                # Prompt already delivered via argv/stdin/positional contract.
-                write_startup_phase(
-                    root,
-                    run_id=run_id,
-                    team_id=team_id,
-                    worker_id=worker_id,
-                    phase=StartupPhase.TASK_DISPATCHED,
-                    provider=provider,
-                    supervisor_pid=supervisor_pid,
-                    provider_pid=provider_pid,
-                    provider_pgid=provider_pgid,
-                    provider_pid_start=provider_start,
-                    evidence_code=EvidenceCode.PROMPT_CONTRACT_ACCEPTED,
-                )
-                reached_dispatch = True
+                # Definitive ready (idle / fixture / fake) — finalize now.
+                _finalize_ready(evidence=obs.evidence_code)
                 break
+            elif obs.status == "provisional" and not reached_ready:
+                # process_stable: keep observing for delayed auth/trust.
+                if provisional_since is None:
+                    provisional_since = time.monotonic()
+                    provisional_evidence = obs.evidence_code
+                elif (
+                    time.monotonic() - provisional_since >= post_stable_s
+                    and alive
+                ):
+                    _finalize_ready(
+                        evidence=provisional_evidence
+                        or EvidenceCode.PROCESS_STABLE.value
+                    )
+                    break
             if not alive:
                 write_startup_phase(
                     root,
@@ -471,7 +516,33 @@ def run_supervisor(
                 worker_id=worker_id,
                 lines=capture[-16:],
             )
-            if _child_alive(proc):
+            if _child_alive(proc) and provisional_since is not None and not reached_ready:
+                # Timed out while provisional but still clean — finalize if
+                # post-stable window already elapsed; else fail closed.
+                if time.monotonic() - provisional_since >= post_stable_s:
+                    _finalize_ready(
+                        evidence=provisional_evidence
+                        or EvidenceCode.PROCESS_STABLE.value
+                    )
+                else:
+                    write_startup_phase(
+                        root,
+                        run_id=run_id,
+                        team_id=team_id,
+                        worker_id=worker_id,
+                        phase=StartupPhase.FAILED,
+                        provider=provider,
+                        supervisor_pid=supervisor_pid,
+                        provider_pid=provider_pid,
+                        provider_pgid=provider_pgid,
+                        provider_pid_start=provider_start,
+                        evidence_code=EvidenceCode.TIMEOUT,
+                        failure_reason=(
+                            f"provider readiness timed out after {timeout_s}s "
+                            "(post-stable window incomplete)"
+                        ),
+                    )
+            elif _child_alive(proc):
                 write_startup_phase(
                     root,
                     run_id=run_id,

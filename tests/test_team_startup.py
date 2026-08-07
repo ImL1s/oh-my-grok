@@ -171,12 +171,284 @@ def test_monotonic_phase_rejects_downgrade(tmp_path: Path) -> None:
 
 
 def test_meets_gate_requires_task_dispatched_by_default() -> None:
-    assert not meets_gate(StartupPhase.PROVIDER_READY.value)
-    assert meets_gate(StartupPhase.TASK_DISPATCHED.value)
+    history = [
+        StartupPhase.PANE_CREATED.value,
+        StartupPhase.PROVIDER_SPAWNED.value,
+        StartupPhase.PROVIDER_READY.value,
+        StartupPhase.TASK_DISPATCHED.value,
+    ]
+    assert not meets_gate(
+        StartupPhase.PROVIDER_READY.value,
+        phases=history[:3],
+    )
+    assert meets_gate(
+        StartupPhase.TASK_DISPATCHED.value,
+        phases=history,
+    )
     assert meets_gate(
         StartupPhase.PROVIDER_READY.value,
         gate=StartupPhase.PROVIDER_READY.value,
+        phases=history[:3],
     )
+    # Skip-to-dispatched without spawn/ready history must fail closed.
+    assert not meets_gate(
+        StartupPhase.TASK_DISPATCHED.value,
+        phases=[StartupPhase.TASK_DISPATCHED.value],
+    )
+
+
+def test_skip_to_task_dispatched_cannot_gate(tmp_path: Path) -> None:
+    """Forged task_dispatched without prior phases must not yield running."""
+    from omg_cli.team.startup import provider_identity_distinct
+
+    # Manually write a skip receipt (bypass write_startup_phase monotonicity
+    # by writing JSON directly — adversarial forged artifact).
+    from omg_cli.team.startup import worker_startup_path
+    from omg_cli.contracts.path_keys import atomic_write_bytes, ensure_managed_dir
+    from omg_cli.evidence import CLI_WRITER
+    import json as _json
+
+    path = worker_startup_path(
+        tmp_path, run_id="run-skip", team_id="team", worker_id="w1"
+    )
+    ensure_managed_dir(path.parent)
+    payload = {
+        "schema_version": 2,
+        "writer": CLI_WRITER,
+        "kind": "team_worker_startup",
+        "run_id": "run-skip",
+        "team_id": "team",
+        "worker_id": "w1",
+        "phase": "task_dispatched",
+        "phases": ["task_dispatched"],
+        "provider": "grok",
+        "supervisor_pid": 10,
+        "provider_pid": 11,
+        "provider_pgid": 11,
+        "provider_pid_start": "ps:fake",
+        "evidence_code": "prompt_contract_accepted",
+        "blocked_reason": None,
+        "failure_reason": None,
+        "observed_at": "2026-01-01T00:00:00Z",
+    }
+    atomic_write_bytes(
+        path,
+        (_json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+    )
+    assert provider_identity_distinct(
+        provider_pid=11, supervisor_pid=10, provider_pid_start="ps:fake"
+    )
+    out = wait_for_startup_acks(
+        tmp_path,
+        run_id="run-skip",
+        team_id="team",
+        expected_workers=["w1"],
+        timeout_ms=50,
+        poll_s=0.01,
+    )
+    assert out["startup_status"] != "running"
+    assert out["startup_process_ready"] == 0
+
+
+def test_gate_rejects_provider_pid_equals_supervisor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gate-level: provider_pid == supervisor_pid cannot count as ready."""
+    from omg_cli.contracts.path_keys import atomic_write_bytes, ensure_managed_dir
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team.startup import worker_startup_path
+    import json as _json
+
+    path = worker_startup_path(
+        tmp_path, run_id="run-samepid", team_id="team", worker_id="w1"
+    )
+    ensure_managed_dir(path.parent)
+    # Hold a real process so provider_process_alive would otherwise pass.
+    hold = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        from omg_cli.team.plane import _pid_start_identity
+
+        start = _pid_start_identity(hold.pid)
+        assert start
+        payload = {
+            "schema_version": 2,
+            "writer": CLI_WRITER,
+            "kind": "team_worker_startup",
+            "run_id": "run-samepid",
+            "team_id": "team",
+            "worker_id": "w1",
+            "phase": "task_dispatched",
+            "phases": [
+                "pane_created",
+                "provider_spawned",
+                "provider_ready",
+                "task_dispatched",
+            ],
+            "provider": "grok",
+            "supervisor_pid": hold.pid,  # same as provider — invalid
+            "provider_pid": hold.pid,
+            "provider_pgid": hold.pid,
+            "provider_pid_start": start,
+            "evidence_code": "process_stable",
+            "blocked_reason": None,
+            "failure_reason": None,
+            "observed_at": "2026-01-01T00:00:00Z",
+        }
+        atomic_write_bytes(
+            path,
+            (_json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        )
+        out = wait_for_startup_acks(
+            tmp_path,
+            run_id="run-samepid",
+            team_id="team",
+            expected_workers=["w1"],
+            timeout_ms=50,
+            poll_s=0.01,
+        )
+        assert out["startup_status"] != "running"
+        assert out["startup_process_ready"] == 0
+        assert out["startup_workers"][0]["identity_ok"] is False
+    finally:
+        hold.terminate()
+        try:
+            hold.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            hold.kill()
+            hold.wait(timeout=1)
+
+
+def test_gate_requires_provider_process_alive(tmp_path: Path) -> None:
+    """Dead provider_pid must not satisfy the gate even with full history."""
+    from omg_cli.contracts.path_keys import atomic_write_bytes, ensure_managed_dir
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team.startup import worker_startup_path
+    import json as _json
+
+    path = worker_startup_path(
+        tmp_path, run_id="run-dead", team_id="team", worker_id="w1"
+    )
+    ensure_managed_dir(path.parent)
+    payload = {
+        "schema_version": 2,
+        "writer": CLI_WRITER,
+        "kind": "team_worker_startup",
+        "run_id": "run-dead",
+        "team_id": "team",
+        "worker_id": "w1",
+        "phase": "task_dispatched",
+        "phases": [
+            "pane_created",
+            "provider_spawned",
+            "provider_ready",
+            "task_dispatched",
+        ],
+        "provider": "grok",
+        "supervisor_pid": 1,
+        "provider_pid": 999999,  # almost certainly dead
+        "provider_pgid": 999999,
+        "provider_pid_start": "ps:dead",
+        "evidence_code": "process_stable",
+        "blocked_reason": None,
+        "failure_reason": None,
+        "observed_at": "2026-01-01T00:00:00Z",
+    }
+    atomic_write_bytes(
+        path,
+        (_json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+    )
+    out = wait_for_startup_acks(
+        tmp_path,
+        run_id="run-dead",
+        team_id="team",
+        expected_workers=["w1"],
+        timeout_ms=50,
+        poll_s=0.01,
+    )
+    assert out["startup_status"] != "running"
+    assert out["startup_process_ready"] == 0
+
+
+def test_delayed_auth_after_process_stable_is_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Silent then auth must not false-green via early process_stable (#99)."""
+    _bind_env(monkeypatch, tmp_path, run_id="run-delayed-auth")
+    monkeypatch.setenv("OMG_TEAM_PROVIDER_STRATEGY", "grok")
+    # Short stability + long post-stable window so auth arrives during observe.
+    monkeypatch.setenv("OMG_TEAM_POST_STABLE_OBSERVE_S", "3")
+    script = tmp_path / "delayed_auth.py"
+    script.write_text(
+        "import time\n"
+        "time.sleep(1.0)\n"
+        "print('authentication required: please log in', flush=True)\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    desc = write_provider_descriptor(
+        tmp_path / "desc.json",
+        provider="grok",
+        argv=[sys.executable, str(script)],
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    env["OMG_TEAM_POST_STABLE_OBSERVE_S"] = "3"
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "omg_cli.main",
+            "team",
+            "supervisor",
+            "--descriptor",
+            str(desc),
+            "--ready-timeout",
+            "8",
+        ],
+        cwd=str(tmp_path),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 10.0
+        record = None
+        while time.monotonic() < deadline:
+            record = read_startup_record(
+                tmp_path, run_id="run-delayed-auth", team_id="team", worker_id="w1"
+            )
+            if record and record.get("phase") in (
+                StartupPhase.BLOCKED.value,
+                StartupPhase.TASK_DISPATCHED.value,
+                StartupPhase.FAILED.value,
+            ):
+                break
+            time.sleep(0.05)
+        assert record is not None
+        assert record["phase"] == StartupPhase.BLOCKED.value, record
+        out = wait_for_startup_acks(
+            tmp_path,
+            run_id="run-delayed-auth",
+            team_id="team",
+            expected_workers=["w1"],
+            timeout_ms=100,
+            poll_s=0.01,
+        )
+        assert out["startup_status"] == "blocked_start"
+        assert out["startup_status"] != "running"
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
 
 
 def test_redaction_strips_secrets() -> None:
@@ -292,13 +564,13 @@ def test_supervisor_immediate_exit_fails_closed(
         argv=[sys.executable, str(script)],
     )
     rc = run_supervisor(descriptor_path=desc, ready_timeout_s=2.0, poll_s=0.05)
-    assert rc == 0  # child exit 0, but readiness failed before ready
+    assert rc == 0  # child exit 0
     record = read_startup_record(
         tmp_path, run_id="run-exit", team_id="team", worker_id="w1"
     )
     assert record is not None
-    # Either failed before ready, or if fixture raced to ready then child
-    # already exited — wait must not claim running with dead provider.
+    assert record["phase"] == StartupPhase.FAILED.value
+    assert record.get("evidence_code") == EvidenceCode.PROVIDER_EXITED.value
     out = wait_for_startup_acks(
         tmp_path,
         run_id="run-exit",
@@ -307,7 +579,7 @@ def test_supervisor_immediate_exit_fails_closed(
         timeout_ms=100,
         poll_s=0.01,
     )
-    assert out["startup_status"] != "running"
+    assert out["startup_status"] == "failed_start"
     assert out["startup_process_ready"] == 0
 
 

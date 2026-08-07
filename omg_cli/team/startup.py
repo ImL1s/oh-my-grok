@@ -142,12 +142,70 @@ def resolve_gate_phase(env: Mapping[str, str] | None = None) -> str:
     return raw
 
 
-def meets_gate(phase: str | None, *, gate: str | None = None) -> bool:
-    """True when *phase* is at or beyond the required production gate."""
+def meets_gate(
+    phase: str | None,
+    *,
+    gate: str | None = None,
+    phases: Sequence[str] | None = None,
+) -> bool:
+    """True when *phase* is at or beyond the required production gate.
+
+    Rank alone is insufficient: ``task_dispatched`` / ``mailbox_ack`` also
+    require prior ``provider_spawned`` and ``provider_ready`` in *phases*
+    (blocks skip-to-dispatched forged receipts).
+    """
     if not phase or is_terminal_phase(phase):
         return False
     required = gate or DEFAULT_GATE_PHASE
-    return phase_rank(phase) >= phase_rank(required)
+    if phase_rank(phase) < phase_rank(required):
+        return False
+    # Any gate at or beyond provider_ready needs a real spawn+ready history
+    # when the current phase claims dispatch-or-later.
+    history = [str(p) for p in (phases or ()) if str(p).strip()]
+    needs_history = (
+        phase_rank(phase) >= phase_rank(StartupPhase.TASK_DISPATCHED.value)
+        or required
+        in (
+            StartupPhase.TASK_DISPATCHED.value,
+            StartupPhase.MAILBOX_ACK.value,
+        )
+    )
+    if needs_history:
+        if StartupPhase.PROVIDER_SPAWNED.value not in history:
+            return False
+        if StartupPhase.PROVIDER_READY.value not in history:
+            return False
+    elif phase_rank(required) >= phase_rank(StartupPhase.PROVIDER_READY.value):
+        # Gate is provider_ready: still require spawned in history.
+        if StartupPhase.PROVIDER_SPAWNED.value not in history:
+            return False
+    return True
+
+
+def provider_identity_distinct(
+    *,
+    provider_pid: int | None,
+    supervisor_pid: int | None,
+    provider_pid_start: str | None,
+) -> bool:
+    """Fail-closed: provider child must be distinct from supervisor."""
+    if (
+        not isinstance(provider_pid, int)
+        or isinstance(provider_pid, bool)
+        or provider_pid <= 0
+    ):
+        return False
+    if (
+        not isinstance(supervisor_pid, int)
+        or isinstance(supervisor_pid, bool)
+        or supervisor_pid <= 0
+    ):
+        return False
+    if provider_pid == supervisor_pid:
+        return False
+    if not isinstance(provider_pid_start, str) or not provider_pid_start.strip():
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -326,17 +384,39 @@ def classify_startup_payload(
             "ok_for_gate": False,
         }
     phase = str(data.get("phase") or "")
+    raw_phases = data.get("phases")
+    phases_list: list[str] = []
+    if isinstance(raw_phases, list):
+        phases_list = [str(p) for p in raw_phases if str(p).strip()]
+    identity_ok = provider_identity_distinct(
+        provider_pid=data.get("provider_pid")
+        if isinstance(data.get("provider_pid"), int)
+        else None,
+        supervisor_pid=data.get("supervisor_pid")
+        if isinstance(data.get("supervisor_pid"), int)
+        else None,
+        provider_pid_start=(
+            str(data["provider_pid_start"])
+            if isinstance(data.get("provider_pid_start"), str)
+            else None
+        ),
+    )
     return {
         "legacy": False,
         "phase": phase or None,
+        "phases": phases_list,
         "evidence_code": data.get("evidence_code"),
-        "ok_for_gate": meets_gate(phase),
+        "ok_for_gate": bool(
+            meets_gate(phase, phases=phases_list) and identity_ok
+        ),
+        "identity_ok": identity_ok,
         "blocked_reason": data.get("blocked_reason"),
         "failure_reason": data.get("failure_reason"),
         "provider": data.get("provider"),
         "provider_pid": data.get("provider_pid"),
         "provider_pgid": data.get("provider_pgid"),
         "provider_pid_start": data.get("provider_pid_start"),
+        "supervisor_pid": data.get("supervisor_pid"),
     }
 
 
@@ -513,6 +593,7 @@ __all__ = [
     "is_terminal_phase",
     "resolve_gate_phase",
     "meets_gate",
+    "provider_identity_distinct",
     "worker_startup_path",
     "worker_diagnostics_path",
     "redact_diagnostics_line",
