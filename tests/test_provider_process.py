@@ -354,10 +354,12 @@ def test_popen_wrapper_shares_kill_on_baseexception_try_with_post_spawn() -> Non
 
     from omg_cli.providers import process as process_mod
 
-    src = textwrap.dedent(inspect.getsource(process_mod.run_probe_process))
+    src = textwrap.dedent(inspect.getsource(process_mod.run_provider_process))
     tree = ast.parse(src)
     fn = next(
-        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_probe_process"
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "run_provider_process"
     )
 
     def _calls_name(node: ast.AST, name: str) -> bool:

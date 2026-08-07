@@ -1,10 +1,14 @@
-"""Bounded argv probe runner with process-group cleanup (#67-A).
+"""Bounded argv provider process runner with process-group cleanup (#67-A/B).
 
-Probes use ``shell=False``, an allowlisted env (caller-supplied), byte-capped
-stdout/stderr, and on POSIX ``start_new_session`` so timeout/cancel/overflow/
-KeyboardInterrupt (and other BaseException unwind) can ``killpg`` the whole
-child tree. Windows gets best-effort ``proc.kill()`` only — process-tree cancel
-is not claimed there.
+Probe and headless ``run`` share one subprocess stack (``run_provider_process``).
+``run_probe_process`` is a thin ``mode="probe"`` wrapper — do not grow a second
+runner.
+
+Uses ``shell=False``, an allowlisted env (caller-supplied), optional ``cwd``,
+byte-capped stdout/stderr, and on POSIX ``start_new_session`` so
+timeout/cancel/overflow/KeyboardInterrupt (and other BaseException unwind) can
+``killpg`` the whole child tree. Windows gets best-effort ``proc.kill()`` only —
+process-tree cancel is not claimed there.
 
 Any exception after a successful ``Popen`` must ``_kill_tree`` (including
 failures while allocating lists / closures / buffers / starting reader
@@ -27,7 +31,8 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from typing import Final, Mapping, Sequence
+from pathlib import Path
+from typing import Final, Literal, Mapping, Sequence
 
 # Local aliases so post-Popen allocation failures remain injectable in tests.
 _bytearray = bytearray
@@ -76,13 +81,17 @@ def _popen_bound(
 
 
 DEFAULT_PROBE_TIMEOUT_S: Final[float] = 8.0
+DEFAULT_RUN_TIMEOUT_S: Final[float] = 120.0
 DEFAULT_MAX_OUTPUT_BYTES: Final[int] = 256_000
+DEFAULT_RUN_MAX_OUTPUT_BYTES: Final[int] = 2_000_000
 _PIPE_CLOSE_TIMEOUT_S: float = 1.0
+
+ProviderProcessMode = Literal["probe", "run"]
 
 
 @dataclass(frozen=True, slots=True)
 class ProbeProcessResult:
-    """Outcome of one fixed-argv provider probe."""
+    """Outcome of one fixed-argv provider process (probe or headless run)."""
 
     argv: tuple[str, ...]
     returncode: int
@@ -100,26 +109,34 @@ class ProbeProcessResult:
     # POSIX session leader / process-group id (child pid with start_new_session).
     # Callers may killpg(pid) if cancel flips after return.
     pid: int = 0
+    mode: ProviderProcessMode = "probe"
+    cwd: str | None = None
 
     def combined_text(self) -> str:
         return ((self.stdout or "") + (self.stderr or "")).strip()
 
 
+# Alias kept for #67-B call sites that prefer a mode-neutral name.
+ProviderProcessResult = ProbeProcessResult
+
+
 class ProbeProcessError(RuntimeError):
-    """Invalid argv / launch contract for a provider probe."""
+    """Invalid argv / launch contract for a provider process."""
 
 
 def _validate_argv(argv: Sequence[str]) -> tuple[str, ...]:
     if not isinstance(argv, (list, tuple)) or not argv:
-        raise ProbeProcessError("probe argv must be a non-empty list/tuple of str")
+        raise ProbeProcessError("provider argv must be a non-empty list/tuple of str")
     out: list[str] = []
     for i, part in enumerate(argv):
         if not isinstance(part, str):
-            raise ProbeProcessError(f"probe argv[{i}] must be str, got {type(part).__name__}")
+            raise ProbeProcessError(
+                f"provider argv[{i}] must be str, got {type(part).__name__}"
+            )
         if part == "":
-            raise ProbeProcessError(f"probe argv[{i}] must not be empty")
+            raise ProbeProcessError(f"provider argv[{i}] must not be empty")
         if "\x00" in part:
-            raise ProbeProcessError(f"probe argv[{i}] must not contain NUL")
+            raise ProbeProcessError(f"provider argv[{i}] must not contain NUL")
         out.append(part)
     return tuple(out)
 
@@ -260,20 +277,45 @@ def _close_pipes(proc: subprocess.Popen[bytes]) -> None:
         _close_pipe_bounded(pipe)
 
 
-def run_probe_process(
+def run_provider_process(
     argv: Sequence[str],
     *,
     env: Mapping[str, str] | None = None,
-    timeout_s: float = DEFAULT_PROBE_TIMEOUT_S,
-    max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
+    timeout_s: float | None = None,
+    max_output_bytes: int | None = None,
     cancel_event: threading.Event | None = None,
+    cwd: str | Path | None = None,
+    mode: ProviderProcessMode = "run",
 ) -> ProbeProcessResult:
-    """Run a fixed argv probe; kill the process group on timeout/cancel/overflow/interrupt."""
+    """Run a fixed argv provider process; kill the process group on timeout/cancel/overflow.
+
+    ``mode`` selects default timeout/byte caps only — probe and run share this
+    implementation (no second subprocess stack).
+    """
+    if mode not in ("probe", "run"):
+        raise ProbeProcessError(f"mode must be 'probe' or 'run', got {mode!r}")
     clean_argv = _validate_argv(argv)
+    if timeout_s is None:
+        timeout_s = (
+            DEFAULT_PROBE_TIMEOUT_S if mode == "probe" else DEFAULT_RUN_TIMEOUT_S
+        )
+    if max_output_bytes is None:
+        max_output_bytes = (
+            DEFAULT_MAX_OUTPUT_BYTES
+            if mode == "probe"
+            else DEFAULT_RUN_MAX_OUTPUT_BYTES
+        )
     if timeout_s <= 0:
         raise ProbeProcessError("timeout_s must be positive")
     if max_output_bytes <= 0:
         raise ProbeProcessError("max_output_bytes must be positive")
+
+    cwd_str: str | None = None
+    if cwd is not None:
+        cwd_path = Path(cwd)
+        if not cwd_path.is_dir():
+            raise ProbeProcessError(f"cwd is not a directory: {cwd}")
+        cwd_str = str(cwd_path.resolve())
 
     child_env = dict(env) if env is not None else {}
     popen_kwargs: dict = {
@@ -284,6 +326,8 @@ def run_probe_process(
         "shell": False,
         "env": child_env,
     }
+    if cwd_str is not None:
+        popen_kwargs["cwd"] = cwd_str
     if os.name == "posix":
         popen_kwargs["start_new_session"] = True
 
@@ -310,7 +354,7 @@ def run_probe_process(
         try:
             proc = _popen_bound(proc_box, popen_kwargs)
         except OSError as exc:
-            raise ProbeProcessError(f"failed to spawn probe: {exc}") from exc
+            raise ProbeProcessError(f"failed to spawn provider process: {exc}") from exc
 
         # Earliest post-Popen window — injectable for OOM coverage before any
         # list/closure/buffer work (must still hit kill-on-BaseException).
@@ -507,6 +551,8 @@ def run_probe_process(
             bytes_stdout=len(stdout_buf),
             bytes_stderr=len(stderr_buf),
             pid=int(proc.pid or 0),
+            mode=mode,
+            cwd=cwd_str,
         )
         # Final cancel check after construction / before return.
         if cancel_event is not None and cancel_event.is_set():
@@ -528,6 +574,8 @@ def run_probe_process(
                     bytes_stdout=result.bytes_stdout,
                     bytes_stderr=result.bytes_stderr,
                     pid=result.pid,
+                    mode=result.mode,
+                    cwd=result.cwd,
                 )
         return result
     except BaseException:
@@ -537,10 +585,34 @@ def run_probe_process(
         raise
 
 
+def run_probe_process(
+    argv: Sequence[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    timeout_s: float = DEFAULT_PROBE_TIMEOUT_S,
+    max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
+    cancel_event: threading.Event | None = None,
+) -> ProbeProcessResult:
+    """Run a fixed argv probe; thin wrapper over :func:`run_provider_process`."""
+    return run_provider_process(
+        argv,
+        env=env,
+        timeout_s=timeout_s,
+        max_output_bytes=max_output_bytes,
+        cancel_event=cancel_event,
+        mode="probe",
+    )
+
+
 __all__ = [
     "DEFAULT_MAX_OUTPUT_BYTES",
     "DEFAULT_PROBE_TIMEOUT_S",
+    "DEFAULT_RUN_MAX_OUTPUT_BYTES",
+    "DEFAULT_RUN_TIMEOUT_S",
     "ProbeProcessError",
     "ProbeProcessResult",
+    "ProviderProcessMode",
+    "ProviderProcessResult",
     "run_probe_process",
+    "run_provider_process",
 ]

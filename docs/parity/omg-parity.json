@@ -77,12 +77,16 @@
         "antigravity": "catalogued"
       },
       "evidence": {
-        "tests": [],
-        "docs": ["docs/security-model.md"],
+        "tests": [
+          "tests/test_antigravity_provider_probe.py",
+          "tests/test_antigravity_provider_run.py",
+          "tests/test_provider_process.py"
+        ],
+        "docs": ["docs/skills.md", "CHANGELOG.md"],
         "live": []
       },
       "issues": ["#67"],
-      "gap": "Legacy Team argv builder and ask deny-list only; no typed adapter yet (#67-A..D)."
+      "gap": "Probe + headless run surfaces (#67-A/B); ask/Team cutover deferred (#67-C/D)."
     },
     {
       "id": "jobs.durable_background",
@@ -808,19 +812,25 @@
         "revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
         "source_paths": ["README.md"]
       },
-      "omg_paths": [],
+      "omg_paths": [
+        "omg_cli/providers/",
+        "omg_cli/commands/provider.py"
+      ],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued",
         "antigravity": "catalogued"
       },
       "evidence": {
-        "tests": [],
-        "docs": ["docs/security-model.md"],
+        "tests": [
+          "tests/test_antigravity_provider_run.py",
+          "tests/test_antigravity_provider_probe.py"
+        ],
+        "docs": ["docs/skills.md", "CHANGELOG.md"],
         "live": []
       },
       "issues": ["#67", "#78"],
-      "gap": "No Antigravity headless structured-execution adapter; Team/ask use argv builders only (#67/#78)."
+      "gap": "#67-B landed ProviderAdapter.run + json/stream-json hermetic path; ask/Team still use argv builders (#67-C/D)."
     },
     {
       "id": "antigravity.agents.markdown_custom",
@@ -974,7 +984,7 @@
       "status": "open",
       "issues": ["#67"],
       "capability_ids": ["antigravity.provider.adapter"],
-      "summary": "Antigravity first-class provider adapter not implemented"
+      "summary": "Probe+run landed (#67-A/B); ask/Team cutover still open (#67-C/D)"
     },
     {
       "id": "gap.jobs.durable",
@@ -1022,7 +1032,7 @@
       "status": "open",
       "issues": ["#67", "#78"],
       "capability_ids": ["antigravity.headless.structured_execution", "antigravity.runtime.model_effort_mode_perms"],
-      "summary": "Antigravity headless structured execution and typed runtime controls unclaimed"
+      "summary": "Headless ProviderAdapter.run exists; ask/Team not routed; typed runtime controls unclaimed"
     },
     {
       "id": "gap.omx.research.modes",

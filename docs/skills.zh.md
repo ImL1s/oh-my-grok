@@ -464,7 +464,7 @@ find_references/symbols/diagnostics）、
 | `omg workflow install\|list\|show\|plan\|run` | 不可变 registry、确定 waves、receipt-bound ship gate。 |
 | `omg parity run\|release-readback` | 委派 frozen W0 manifest engine，并验 exact bundle。 |
 | `omg capabilities` / `omg native-status` | 分开的 capability tiers；不探测私有 sidecar。 |
-| `omg provider antigravity capabilities\|doctor` | Antigravity（`agy`）探测（#67-A）：二进制/版本/compat 信封；不切换 ask/Team；不宣称 `live_call_ready`。 |
+| `omg provider antigravity capabilities\|doctor\|run` | Antigravity（`agy`）探测 + 无头执行（#67-A/B）：能力信封、doctor、与 `ProviderAdapter.run`（text/json/stream-json）。不切换 ask/Team；不宣称 `live_call_ready`。 |
 
 Workflow plan 不会启动外部 CLI。Leader 应使用 Grok 原生 `spawn_subagent`、传入
 精确 `capability_mode`，再把绑定 task ID 的 receipts 交给 `omg workflow run`。
