@@ -10,6 +10,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Fixed
+- **#68 PR1 launch ownership:** parent alone commits `starting→running`
+  (pid/pgid/handle); child readiness barrier polls `job.json` until that
+  commit (or terminal/timeout) before `ProviderAdapter.run`, and stamps
+  only `running→succeeded|failed`. Immediate post-spawn child exit and
+  cancel-during-uncommitted-window fail closed (never durable `running`
+  without a live handle).
 - **#105 PR3 review:** `omg team resume --provider-session` evaluates
   `session_resume` with `required=False` so missing cap yields reachable
   `LEGACY` (+ `next_action`), not unconditional BLOCKED; `provider_session_result`
