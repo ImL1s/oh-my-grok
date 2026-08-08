@@ -8,7 +8,7 @@ import re
 import secrets
 import time
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from omg_cli.contracts.path_keys import (
     DATA_FILE_MODE,
@@ -1343,6 +1343,77 @@ def _provider_session_ok(provider_session: Mapping[str, Any]) -> bool:
     return True
 
 
+_STOP_STATES_BLOCKING_ACP = frozenset({"stopping", "stopped", "stop_refused"})
+
+
+def _publish_acp_ensure_intent(root: Path, run_id: str) -> None:
+    """Publish pending ACP ensure under the scale lock before spawn.
+
+    Stop must observe this intent (or the jobs binding) before claiming
+    ``stop_completed``. Refuses when the team is already stopping/stopped.
+    """
+    from datetime import datetime, timezone
+
+    from omg_cli.team.scaling import acquire_scale_lock
+
+    def _utc() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    with acquire_scale_lock(root, run_id):
+        meta = load_team_meta(root, run_id)
+        stop_state = str(meta.get("stop_state") or "")
+        if stop_state in _STOP_STATES_BLOCKING_ACP or meta.get("stopped_at"):
+            raise TeamError(
+                f"refuse ACP ensure intent: team is stopping/stopped "
+                f"(stop_state={stop_state!r})"
+            )
+        gen = meta.get("meta_generation")
+        expected = int(gen) if isinstance(gen, int) and not isinstance(gen, bool) else 0
+
+        def _mutate(current: dict[str, Any]) -> dict[str, Any]:
+            st = str(current.get("stop_state") or "")
+            if st in _STOP_STATES_BLOCKING_ACP or current.get("stopped_at"):
+                raise TeamError(
+                    f"refuse ACP ensure intent: team is stopping/stopped "
+                    f"(stop_state={st!r})"
+                )
+            updated = dict(current)
+            updated["linked_acp_session"] = {
+                "state": "pending",
+                "pending_at": _utc(),
+                "job_id": None,
+                "session_close": False,
+            }
+            return updated
+
+        mutate_team_meta(root, run_id, _mutate, expected_generation=expected)
+
+
+def _clear_acp_ensure_intent(root: Path, run_id: str) -> None:
+    """Best-effort clear of a pending ACP intent (ensure failed before bind)."""
+    try:
+        meta = load_team_meta(root, run_id)
+    except TeamError:
+        return
+    linked = meta.get("linked_acp_session")
+    if not isinstance(linked, Mapping) or linked.get("state") != "pending":
+        return
+    gen = meta.get("meta_generation")
+    expected = int(gen) if isinstance(gen, int) and not isinstance(gen, bool) else 0
+
+    def _mutate(current: dict[str, Any]) -> dict[str, Any]:
+        updated = dict(current)
+        cur = updated.get("linked_acp_session")
+        if isinstance(cur, Mapping) and cur.get("state") == "pending":
+            updated.pop("linked_acp_session", None)
+        return updated
+
+    try:
+        mutate_team_meta(root, run_id, _mutate, expected_generation=expected)
+    except TeamError:
+        pass
+
+
 def _wrap_provider_resume(
     provider_resume: Any | None,
     *,
@@ -1442,14 +1513,23 @@ def resume_with_view(
     request_provider_session: bool = False,
     session_resume_gate: Any | None = None,
     provider_resume: Any | None = None,
+    after_acp_ready_before_bind: Callable[[Path, str, Mapping[str, Any]], None]
+    | None = None,
 ) -> dict[str, Any]:
     """Reconcile under lifecycle lock, then optionally restore view (#103/#105).
 
     View/attach never runs while the scale lock is held.
     ``session_resume_gate`` must be injected by the CLI (or tests) — this
     function does not probe the host or re-parse versions.
-    ACP ensure (when injected) runs **after** the scale lock is released.
+
+    When ``--provider-session`` will invoke ACP ensure (AVAILABLE gate), a
+    **pending** ``linked_acp_session`` intent is published under the scale lock
+    **before** spawn so concurrent ``stop`` cannot claim ``stop_completed``
+    while an in-flight sidecar is invisible. ACP ensure still runs after the
+    scale lock is released (spawn must not hold the lifecycle lock).
+    ``after_acp_ready_before_bind`` is a test-only barrier hook.
     """
+    from omg_cli.host_models import FeatureGateResult
     from omg_cli.team.operator import plan_and_execute_team_view
     from omg_cli.team.view import (
         MODE_PRINT,
@@ -1460,14 +1540,58 @@ def resume_with_view(
     reconcile = resume_for_identity(root, identity, env=env)
     run_id = str(reconcile.get("run_id") or resolve_team_ref(root, identity))
     root_path = Path(root).resolve()
+
+    will_ensure = (
+        bool(request_provider_session)
+        and isinstance(session_resume_gate, FeatureGateResult)
+        and session_resume_gate.state == "AVAILABLE"
+        and provider_resume is not None
+    )
+    intent_error: str | None = None
+    published_pending = False
+    if will_ensure:
+        try:
+            load_team_meta(root_path, run_id)
+        except TeamError:
+            # Unit tests / non-team callers: no stop race surface without meta.
+            pass
+        else:
+            try:
+                _publish_acp_ensure_intent(root_path, run_id)
+                published_pending = True
+            except TeamError as exc:
+                intent_error = str(exc)
+                will_ensure = False
+
     provider_session = provider_session_result(
         requested=bool(request_provider_session),
         gate=session_resume_gate,
-        provider_resume=_wrap_provider_resume(
-            provider_resume, root=root_path, run_id=run_id
+        provider_resume=(
+            None
+            if intent_error
+            else _wrap_provider_resume(
+                provider_resume, root=root_path, run_id=run_id
+            )
         ),
     )
-    # Bind linked ACP job id into team meta when execution resumed (best-effort).
+    if intent_error:
+        provider_session = dict(provider_session)
+        provider_session["status"] = "available"
+        provider_session["ok"] = False
+        provider_session["transport_wired"] = False
+        provider_session["invoked"] = False
+        provider_session["execution"] = {
+            "status": "failed",
+            "transport": "acp_stdio_job",
+            "error": intent_error,
+            "error_code": "E_ACP_ENSURE_REFUSED_STOP",
+            "connection_owned": False,
+            "no_replay": True,
+            "restore_code": False,
+        }
+
+    # Bind linked ACP job id into team meta when execution resumed.
+    bound_ok = False
     if (
         request_provider_session
         and isinstance(provider_session, dict)
@@ -1477,26 +1601,42 @@ def resume_with_view(
         execution = provider_session.get("execution") or {}
         job_id = execution.get("job_id") if isinstance(execution, dict) else None
         if job_id:
+            if after_acp_ready_before_bind is not None:
+                after_acp_ready_before_bind(
+                    root_path, run_id, execution if isinstance(execution, dict) else {}
+                )
             try:
                 _bind_acp_job_to_team_meta(root_path, run_id, str(job_id), execution)
-            except Exception:
-                # Compensate: cancel sidecar if Team metadata binding fails.
-                from omg_cli.jobs.runtime import cancel_job
+                bound_ok = True
+            except Exception as bind_exc:
+                # Compensate: cancel sidecar if Team metadata binding fails
+                # (including refuse-on-stopped). Prefer linked cancel so the
+                # binding is retained when cancel is unproven.
+                from omg_cli.jobs.runtime import cancel_linked_acp_sidecar
 
-                try:
-                    cancel_job(
-                        root_path, str(job_id), reason="team_meta_bind_failed"
-                    )
-                except Exception:
-                    pass
+                cancel_linked_acp_sidecar(
+                    root_path, run_id, reason="team_meta_bind_failed"
+                )
                 provider_session = dict(provider_session)
                 provider_session["ok"] = False
                 provider_session["transport_wired"] = False
                 provider_session["execution"] = {
                     **(execution if isinstance(execution, dict) else {}),
                     "status": "failed",
-                    "error": "team metadata bind failed; sidecar cancelled",
+                    "error": f"team metadata bind failed: {bind_exc}",
                 }
+
+    if published_pending and not bound_ok:
+        # Keep pending when the team entered a stop state so a retrying stop
+        # still observes the in-flight/sidecar intent. Clear only when the
+        # team remains active and ensure/bind did not complete.
+        try:
+            cur_meta = load_team_meta(root_path, run_id)
+            st = str(cur_meta.get("stop_state") or "")
+        except TeamError:
+            st = ""
+        if st not in _STOP_STATES_BLOCKING_ACP:
+            _clear_acp_ensure_intent(root_path, run_id)
 
     envelope: dict[str, Any] = {
         "run_id": run_id,
@@ -1550,15 +1690,21 @@ def _bind_acp_job_to_team_meta(
     job_id: str,
     execution: Mapping[str, Any],
 ) -> None:
-    from omg_cli.team.plane import load_team_meta, mutate_team_meta
-
+    """Bind a live ACP job into team meta; refuse stopping/stopped teams."""
     meta = load_team_meta(root, run_id)
     gen = meta.get("meta_generation")
     expected = int(gen) if isinstance(gen, int) and not isinstance(gen, bool) else 0
 
     def _mutate(current: dict[str, Any]) -> dict[str, Any]:
+        stop_state = str(current.get("stop_state") or "")
+        if stop_state in _STOP_STATES_BLOCKING_ACP or current.get("stopped_at"):
+            raise TeamError(
+                f"refuse ACP bind into stopping/stopped team "
+                f"(stop_state={stop_state!r})"
+            )
         updated = dict(current)
         updated["linked_acp_session"] = {
+            "state": "bound",
             "job_id": job_id,
             "attempt": execution.get("attempt"),
             "receipt_sha256": execution.get("receipt_sha256"),

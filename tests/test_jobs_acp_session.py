@@ -7,6 +7,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any, Mapping
 
 import pytest
 
@@ -363,3 +364,147 @@ def test_stop_team_acp_cancel_unproven_clears_stop_completed() -> None:
         if acp_out.get("attempted"):
             stop_completed = False
     assert stop_completed is False
+
+
+def test_resume_provider_session_stop_race_no_live_orphan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Barrier: sidecar ready before Team bind; concurrent stop must not leave orphan.
+
+    ``stop_completed=true`` is allowed only when ACP disappearance is proven.
+    After the race, a stopped Team must not retain a live ACP sidecar.
+    """
+    import threading
+
+    from omg_cli.host_models import FeatureGateResult
+    from omg_cli.host_session import allocate_host_session
+    from omg_cli.jobs.runtime import (
+        _job_is_live_sidecar,
+        cancel_job,
+        ensure_acp_session_for_team,
+    )
+    from omg_cli.state import write_status
+    from omg_cli.team.plane import (
+        EXPERIMENTAL_ENV,
+        load_team_meta,
+        start_team,
+        stop_team,
+    )
+    from omg_cli.team.runtime import resume_with_view
+
+    monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
+    monkeypatch.setenv("OMG_ACP_BIN", str(FIXTURE))
+    monkeypatch.setenv("OMG_ACP_FAKE_SCENARIO", "success")
+    monkeypatch.setenv("OMG_ACP_QUIET_WINDOW_S", "0.05")
+
+    # Minimal git repo for start_team
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "t"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "README").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    meta = start_team(
+        "acp race",
+        [{"task_id": "w1", "owned_files": ["lane_a/"]}],
+        root=tmp_path,
+        dry_run=True,
+    )
+    run_id = str(meta["run_id"])
+    binding = allocate_host_session()
+    write_status(
+        tmp_path,
+        run_id,
+        "running",
+        extra={
+            **binding.status_fields(),
+            "grok_session_state": "launched",
+        },
+    )
+
+    ready = threading.Event()
+    release_bind = threading.Event()
+    box: dict[str, Any] = {}
+
+    def _barrier(_root: Path, _rid: str, execution: Mapping) -> None:
+        box["job_id"] = execution.get("job_id")
+        ready.set()
+        assert release_bind.wait(timeout=45), "bind barrier not released"
+
+    gate = FeatureGateResult(
+        capability="session_resume",
+        state="AVAILABLE",
+        reason="test",
+        required=False,
+    )
+
+    def _resume() -> None:
+        box["resume"] = resume_with_view(
+            tmp_path,
+            run_id,
+            view=False,
+            as_json=True,
+            request_provider_session=True,
+            session_resume_gate=gate,
+            provider_resume=ensure_acp_session_for_team,
+            after_acp_ready_before_bind=_barrier,
+        )
+
+    thr = threading.Thread(target=_resume, name="acp-resume-race")
+    thr.start()
+    assert ready.wait(timeout=45), "sidecar never reached bind barrier"
+    job_id = str(box.get("job_id") or "")
+    assert job_id
+    assert _job_is_live_sidecar(tmp_path, job_id)
+
+    stop_out = stop_team(tmp_path, run_id)
+    box["stop"] = stop_out
+    release_bind.set()
+    thr.join(timeout=45)
+    assert not thr.is_alive()
+
+    # stop_completed requires proven ACP disappearance (or refusal).
+    if stop_out.get("stop_completed"):
+        assert not _job_is_live_sidecar(tmp_path, job_id), (
+            "stop_completed=true must not leave a live ACP sidecar"
+        )
+        durable = load_team_meta(tmp_path, run_id)
+        assert durable.get("stop_state") == "stopped"
+        assert durable.get("linked_acp_session") in (None, {})
+        # Bind must refuse stopped team — resume reports bind/transport failure
+        # or cancelled sidecar; never a live orphan under stopped meta.
+        resume_out = box.get("resume") or {}
+        ps = resume_out.get("provider_session") or {}
+        assert ps.get("transport_wired") is not True or ps.get("ok") is False
+    else:
+        assert stop_out.get("stop_completed") is False
+        durable = load_team_meta(tmp_path, run_id)
+        assert durable.get("stop_state") == "stop_refused"
+
+    # Final invariant: stopped Team ⇒ no live ACP for this job.
+    durable = load_team_meta(tmp_path, run_id)
+    if durable.get("stop_state") == "stopped":
+        assert not _job_is_live_sidecar(tmp_path, job_id)
+
+    try:
+        cancel_job(tmp_path, job_id, reason="test_cleanup")
+    except JobStoreError:
+        pass
