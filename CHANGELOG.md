@@ -10,6 +10,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#69 PR2 (Team operation catalog v1):** immutable
+  `omg_cli/team/operation_catalog.py` is the single source for Team API op
+  metadata; derives `TEAM_API_OPERATIONS` / `P0_OPERATIONS` /
+  `WORKER_ALLOWED_OPS` / `WORKER_DENIED_OPS`. Introspection
+  `omg team api catalog` emits versioned JSON
+  (`kind: omg.team.operation_catalog`, schema_version 1) with no `--input`,
+  team state, tmux, `.omg`, or subprocess. Golden
+  `tests/golden/team_operation_catalog_v1.json` +
+  `docs/team-operation-catalog-v1.md`. Does **not** close #69 (no new ops /
+  reconcile / jobs / Hyperplan).
 - **#68 PR2 Antigravity job adapter wiring:** durable jobs can execute the
   existing `ProviderAdapter.run` contract with repository fake-agy coverage,
   fail-closed provider admission, and bound child-process cancellation.

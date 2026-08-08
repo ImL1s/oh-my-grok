@@ -353,6 +353,13 @@ def cmd_team(args: argparse.Namespace) -> int:
     from omg_cli.team.scaling import scale_team
 
     action = getattr(args, "team_action", None)
+    # Introspection-only: versioned operation catalog (no project root, team
+    # state, tmux, .omg, or subprocess).
+    if action == "api" and (getattr(args, "api_op", None) or "") == "catalog":
+        from omg_cli.team.operation_catalog import catalog_document_json
+
+        print(catalog_document_json(), end="")
+        return 0
     # #100: supervisor must not trigger generic project-root discovery via
     # project_root(); it consumes the validated leader root from env only.
     if action == "supervisor":
@@ -945,6 +952,12 @@ def cmd_team(args: argparse.Namespace) -> int:
             )
 
             op = getattr(args, "api_op", None) or ""
+            # ``catalog`` handled above (before project_root); keep a guard.
+            if op == "catalog":
+                from omg_cli.team.operation_catalog import catalog_document_json
+
+                print(catalog_document_json(), end="")
+                return 0
             raw_input = getattr(args, "api_input", None)
             if not raw_input:
                 print("omg team api: --input JSON required", file=sys.stderr)
@@ -2118,6 +2131,7 @@ def register_team_parsers(
         parents=[common],
         help=(
             "OMX-shaped team api façade (P0 mailbox/task ops); "
+            "OP=catalog dumps versioned operation catalog (no --input); "
             "default on; set OMG_DISABLE_TMUX_TEAM=1 to refuse"
         ),
     )
@@ -2125,15 +2139,16 @@ def register_team_parsers(
         "api_op",
         metavar="OP",
         help=(
-            "operation name (P0/P0′ mailbox+task+heartbeat+shutdown+orphan; "
-            "see omg_cli.team.api.P0_OPERATIONS)"
+            "operation name, or 'catalog' for the versioned operation catalog "
+            "(see omg_cli.team.operation_catalog / docs/team-operation-catalog-v1.md)"
         ),
     )
     p_t_api.add_argument(
         "--input",
         dest="api_input",
-        required=True,
-        help="JSON object input (OMX-shaped fields + run_id/team_id)",
+        required=False,
+        default=None,
+        help="JSON object input (required except for OP=catalog)",
     )
     p_t_api.add_argument(
         "--run",

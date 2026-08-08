@@ -6,8 +6,10 @@ task files directly.
 
 P0 + P0′ ops (mailbox/task CRUD including claim renew/release, heartbeat/
 shutdown/orphan, events, manifest) are implemented; remaining
-``TEAM_API_OPERATIONS`` return ``E_TEAM_API_UNIMPLEMENTED``. Full 33-op
-parity is intentionally not claimed.
+``TEAM_API_OPERATIONS`` return ``E_TEAM_API_UNIMPLEMENTED``. Operation names
+and metadata come from ``omg_cli.team.operation_catalog`` (schema v1); full
+OMX catalog parity is intentionally not claimed — see
+``omg team api catalog`` / ``docs/team-operation-catalog-v1.md``.
 """
 
 from __future__ import annotations
@@ -44,6 +46,12 @@ from omg_cli.team.mailbox import (
     read_message,
     send_message,
 )
+from omg_cli.team.operation_catalog import (
+    P0_OPERATIONS,
+    TEAM_API_OPERATIONS,
+    WORKER_ALLOWED_OPS,
+    WORKER_DENIED_OPS,
+)
 from omg_cli.team.plane import (
     DISABLE_ENV,
     EXPERIMENTAL_ENV,
@@ -79,75 +87,6 @@ TASK_STATUS_TRANSITIONS: dict[str, frozenset[str]] = {
     "completed": frozenset(),
     "failed": frozenset(),
 }
-
-# Full OMX operation catalog (names only). P0 is the shipped subset.
-TEAM_API_OPERATIONS: tuple[str, ...] = (
-    "send-message",
-    "broadcast",
-    "mailbox-list",
-    "mailbox-mark-delivered",
-    "mailbox-mark-notified",
-    "create-task",
-    "read-task",
-    "list-tasks",
-    "update-task",
-    "claim-task",
-    "transition-task-status",
-    "release-task-claim",
-    "renew-task-claim",
-    "read-config",
-    "read-manifest",
-    "read-worker-status",
-    "read-worker-heartbeat",
-    "update-worker-heartbeat",
-    "write-worker-inbox",
-    "write-worker-identity",
-    "append-event",
-    "read-events",
-    "await-event",
-    "read-idle-state",
-    "read-stall-state",
-    "get-summary",
-    "cleanup",
-    "orphan-cleanup",
-    "write-shutdown-request",
-    "read-shutdown-request",
-    "write-shutdown-ack",
-    "read-shutdown-ack",
-    "read-monitor-snapshot",
-    "write-monitor-snapshot",
-    "read-task-approval",
-    "write-task-approval",
-)
-
-P0_OPERATIONS: tuple[str, ...] = (
-    "send-message",
-    "mailbox-list",
-    "mailbox-mark-delivered",
-    "create-task",
-    "read-task",
-    "list-tasks",
-    "update-task",
-    "claim-task",
-    "transition-task-status",
-    "release-task-claim",
-    "renew-task-claim",
-    "get-summary",
-    "read-config",
-    "read-manifest",
-    "write-worker-inbox",
-    # Production P0′ reliability ops (wired from existing plane/liveness modules)
-    "update-worker-heartbeat",
-    "read-worker-heartbeat",
-    "read-worker-status",
-    "write-shutdown-request",
-    "read-shutdown-request",
-    "write-shutdown-ack",
-    "read-shutdown-ack",
-    "orphan-cleanup",
-    "append-event",
-    "read-events",
-)
 
 TeamApiEnvelope = dict[str, Any]
 Handler = Callable[[Path, dict[str, Any]], TeamApiEnvelope]
@@ -1951,40 +1890,6 @@ _HANDLERS: dict[str, Handler] = {
 }
 
 
-WORKER_ALLOWED_OPS: frozenset[str] = frozenset(
-    {
-        "send-message",
-        "mailbox-list",
-        "mailbox-mark-delivered",
-        "read-task",
-        "list-tasks",
-        "claim-task",
-        "transition-task-status",
-        "release-task-claim",
-        "renew-task-claim",
-        "get-summary",
-        "read-config",
-        "read-manifest",
-        "update-worker-heartbeat",
-        "read-worker-heartbeat",
-        "read-worker-status",
-        "read-shutdown-request",
-        "write-shutdown-ack",
-        "append-event",
-        "read-events",
-    }
-)
-WORKER_DENIED_OPS: frozenset[str] = frozenset(
-    {
-        "create-task",
-        "update-task",
-        "write-worker-inbox",
-        "write-shutdown-request",
-        "orphan-cleanup",
-    }
-)
-
-
 def _bind_worker_env_field(
     out: dict[str, Any],
     *,
@@ -2262,6 +2167,8 @@ def parse_input_json(raw: str) -> dict[str, Any]:
 __all__ = [
     "P0_OPERATIONS",
     "TEAM_API_OPERATIONS",
+    "WORKER_ALLOWED_OPS",
+    "WORKER_DENIED_OPS",
     "TeamApiError",
     "execute_team_api",
     "parse_input_json",

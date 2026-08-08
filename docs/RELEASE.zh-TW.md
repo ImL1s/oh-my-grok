@@ -48,7 +48,7 @@ OMG_E2E=1 OMG_SMOKE_STRICT=0 ./scripts/smoke.sh
 
 Live Grok 閘門只在「依賴目前 host 行為」的宣稱時才需要。設定檔或 help probe **不能**把能力升格為 observed／healthy／verified。
 
-`omg team` **預設開啟**（關閉：`OMG_DISABLE_TMUX_TEAM=1`；舊 `OMG_EXPERIMENTAL_TMUX_TEAM=0` 也會關）。Hermetic 傳輸證明：`scripts/live_team_smoke.py --fixture-executor` → `FIXTURE_TEAM_SMOKE_OK`。Grok-live 升格證明：`scripts/live_team_smoke.py --live` → `LIVE_TEAM_SMOKE_OK`（quota；2026-07-30 本地已綠；**不要**只靠 fixture 宣稱 Grok-live 對等）。不是完整 OMX 33-op。
+`omg team` **預設開啟**（關閉：`OMG_DISABLE_TMUX_TEAM=1`；舊 `OMG_EXPERIMENTAL_TMUX_TEAM=0` 也會關）。Hermetic 傳輸證明：`scripts/live_team_smoke.py --fixture-executor` → `FIXTURE_TEAM_SMOKE_OK`。Grok-live 升格證明：`scripts/live_team_smoke.py --live` → `LIVE_TEAM_SMOKE_OK`（quota；2026-07-30 本地已綠；**不要**只靠 fixture 宣稱 Grok-live 對等）。不是完整 OMX catalog parity（v1：36 named / 25 implemented；見 `docs/team-operation-catalog-v1.md`）。
 
 ## 凍結的 run manifest
 
