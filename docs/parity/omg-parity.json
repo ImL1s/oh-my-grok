@@ -106,12 +106,12 @@
         "grok": "catalogued"
       },
       "evidence": {
-        "tests": ["tests/test_jobs_runtime.py", "tests/test_jobs_cli.py"],
+        "tests": ["tests/test_jobs_runtime.py", "tests/test_jobs_cli.py", "tests/test_jobs_provider_registry.py", "tests/test_jobs_antigravity.py"],
         "docs": ["docs/skills.md", "CHANGELOG.md"],
         "live": []
       },
       "issues": ["#68"],
-      "gap": "PR1 MVP landed (fake worker + job CLI); retry/GC/lease/ask--background and live Antigravity still open (#68)."
+      "gap": "PR2 adapter-backed hermetic Antigravity job wiring landed; retry/GC/lease/ask--background and authenticated live Antigravity still open (#68)."
     },
     {
       "id": "team.plane_v3",
@@ -1008,7 +1008,7 @@
       "status": "open",
       "issues": ["#68"],
       "capability_ids": ["jobs.durable_background"],
-      "summary": "Durable jobs PR1 MVP landed; retry/GC/lease/ask--background and live Antigravity still open"
+      "summary": "Durable jobs PR2 adapter wiring landed; retry/GC/lease/ask--background and authenticated live Antigravity still open"
     },
     {
       "id": "gap.team.v3",

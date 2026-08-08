@@ -343,12 +343,29 @@ def test_missing_artifact_fail_closed(root: Path) -> None:
     assert ei.value.code == "E_JOB_ARTIFACT"
 
 
-def test_antigravity_provider_refused(root: Path) -> None:
+def test_antigravity_provider_preflight_without_binary_is_missing(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a discoverable agy binary, admission fails before materialization."""
+    monkeypatch.setenv("PATH", "/nonexistent-omg-path")
+    monkeypatch.delenv("OMG_AGY_BIN", raising=False)
     prompt = _prompt(root)
     with pytest.raises(JobStoreError) as ei:
         start_job(
             root,
             provider="antigravity",
+            role="researcher",
+            prompt_file=prompt,
+        )
+    assert ei.value.code == "E_JOB_PROVIDER_MISSING"
+
+
+def test_unknown_provider_still_refused(root: Path) -> None:
+    prompt = _prompt(root)
+    with pytest.raises(JobStoreError) as ei:
+        start_job(
+            root,
+            provider="claude",
             role="researcher",
             prompt_file=prompt,
         )

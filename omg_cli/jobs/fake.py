@@ -129,7 +129,28 @@ class FakeProvider:
         if ignore_sigterm and sleep_s < 2.0:
             sleep_s = max(sleep_s, 2.0)
 
-        time.sleep(sleep_s)
+        # Honour cancel_event during normal sleeps (ignore_sigterm still needs
+        # forced SIGKILL of the outer runner — cancel_event alone is ignored).
+        deadline = time.monotonic() + sleep_s
+        while time.monotonic() < deadline:
+            if (
+                not ignore_sigterm
+                and request.cancel_event is not None
+                and request.cancel_event.is_set()
+            ):
+                return ProviderRunResult(
+                    ok=False,
+                    exit_class="cancelled",
+                    returncode=-15,
+                    output="fake:cancelled\n",
+                    stdout="fake:cancelled\n",
+                    stderr="",
+                    argv=("fake", "run", "--cancelled"),
+                    cancelled=True,
+                    partial_output=True,
+                    error_message="fake worker cancelled",
+                )
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
 
         lines = [
             f"fake:start provider={PROVIDER_NAME}",

@@ -1,4 +1,4 @@
-"""omg job — durable background jobs CLI (#68 PR1).
+"""omg job — durable background jobs CLI (#68).
 
 Commands: ``omg job {start,status,wait,collect,cancel,list}``.
 """
@@ -67,6 +67,27 @@ def _cmd_start(args: argparse.Namespace) -> int:
         )
         return 2
 
+    # Fake-only flags with antigravity: fail before start_job materialization
+    # (runtime also enforces; CLI gives a clearer usage error).
+    fake_flags = any(
+        [
+            getattr(args, "sleep", None) is not None,
+            bool(getattr(args, "fail", False)),
+            bool(getattr(args, "large_output", False)),
+            bool(getattr(args, "ignore_sigterm", False)),
+        ]
+    )
+    if provider == "antigravity" and fake_flags:
+        emit_json(
+            failure(
+                cmd,
+                "E_JOB_PROVIDER_OPTIONS",
+                "fake-only flags (--sleep/--fail/--large-output/--ignore-sigterm) "
+                "are not allowed with --provider antigravity",
+            )
+        )
+        return 2
+
     try:
         result = start_job(
             _root(args),
@@ -78,6 +99,11 @@ def _cmd_start(args: argparse.Namespace) -> int:
             fail=bool(getattr(args, "fail", False)),
             large_output=bool(getattr(args, "large_output", False)),
             ignore_sigterm=bool(getattr(args, "ignore_sigterm", False)),
+            model=getattr(args, "model", None) or None,
+            effort=getattr(args, "effort", None) or None,
+            mode=getattr(args, "mode", None) or None,
+            output_format=getattr(args, "output_format", None) or None,
+            provider_timeout_s=getattr(args, "provider_timeout", None),
         )
     except JobStoreError as exc:
         emit_json(
@@ -90,6 +116,8 @@ def _cmd_start(args: argparse.Namespace) -> int:
         return 1
 
     rec = result.record
+    from omg_cli.jobs.providers import public_request_summary
+
     payload = {
         "job_id": rec.job_id,
         "state": rec.state.value,
@@ -100,6 +128,7 @@ def _cmd_start(args: argparse.Namespace) -> int:
         "handle": rec.handle,
         "created_at": rec.created_at,
         "attempt": rec.attempt,
+        "request": public_request_summary(rec.request),
     }
     if wants_json(args):
         emit_json(success(cmd, **redact_value(payload)))
@@ -270,25 +299,25 @@ def register_job_parsers(
     p_job = sub.add_parser(
         "job",
         parents=[common],
-        help="durable background jobs (start/status/wait/collect/cancel/list; #68 PR1)",
+        help="durable background jobs (start/status/wait/collect/cancel/list; #68 PR1+PR2)",
     )
     job_sub = p_job.add_subparsers(dest="job_action")
 
     p_start = job_sub.add_parser(
         "start",
         parents=[common],
-        help="start a durable background job (PR1: --provider fake)",
+        help="start a durable background job (--provider fake|antigravity)",
     )
     p_start.add_argument(
         "--provider",
         required=True,
         choices=("fake", "antigravity"),
-        help="provider adapter (PR1 live spawn: fake only)",
+        help="provider adapter (fake hermetic; antigravity via ProviderAdapter.run)",
     )
     p_start.add_argument(
         "--role",
         default="researcher",
-        help="job role label (default researcher)",
+        help="job role label (default researcher; audit only, not --agent)",
     )
     p_start.add_argument(
         "--prompt-file",
@@ -302,25 +331,52 @@ def register_job_parsers(
         help="optional parent run id",
     )
     p_start.add_argument(
+        "--model",
+        default=None,
+        help="provider model (Antigravity)",
+    )
+    p_start.add_argument(
+        "--effort",
+        default=None,
+        help="provider effort (Antigravity)",
+    )
+    p_start.add_argument(
+        "--mode",
+        default=None,
+        help="provider mode (Antigravity)",
+    )
+    p_start.add_argument(
+        "--output-format",
+        default=None,
+        choices=("text", "json", "stream-json"),
+        help="Antigravity output format (default stream-json)",
+    )
+    p_start.add_argument(
+        "--provider-timeout",
+        type=float,
+        default=None,
+        help="provider run timeout seconds",
+    )
+    p_start.add_argument(
         "--sleep",
         type=float,
         default=None,
-        help="fake worker sleep seconds (test/hermetic)",
+        help="fake worker sleep seconds (test/hermetic; fake-only)",
     )
     p_start.add_argument(
         "--fail",
         action="store_true",
-        help="fake worker: exit nonzero (hermetic)",
+        help="fake worker: exit nonzero (hermetic; fake-only)",
     )
     p_start.add_argument(
         "--large-output",
         action="store_true",
-        help="fake worker: write ≥100KiB artifact (hermetic)",
+        help="fake worker: write ≥100KiB artifact (hermetic; fake-only)",
     )
     p_start.add_argument(
         "--ignore-sigterm",
         action="store_true",
-        help="fake worker: ignore SIGTERM to force SIGKILL path (hermetic)",
+        help="fake worker: ignore SIGTERM to force SIGKILL path (hermetic; fake-only)",
     )
     p_start.set_defaults(func=cmd_job, job_action="start")
 

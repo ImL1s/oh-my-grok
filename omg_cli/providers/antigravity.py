@@ -296,6 +296,7 @@ def _run_provider_argv(
     timeout_s: float,
     env: Mapping[str, str] | None = None,
     cancel_event: threading.Event | None = None,
+    on_process_started: Any | None = None,
     cwd: str | None = None,
     max_output_bytes: int | None = None,
 ) -> ProbeProcessResult:
@@ -354,6 +355,7 @@ def _run_provider_argv(
                 timeout_s=timeout_s,
                 max_output_bytes=max_output_bytes,
                 cancel_event=cancel,
+                on_process_started=on_process_started,
                 cwd=cwd,
                 mode="run",
             )
@@ -376,6 +378,9 @@ def _run_provider_argv(
                 raise
             if own_cancel:
                 _raise_if_cancelled()
+
+
+# Shared argv executor lives above; probe_version follows.
 
 
 def probe_version(binary: str | None = None) -> VersionInfo:
@@ -1143,6 +1148,7 @@ def run(request: ProviderRunRequest) -> ProviderRunResult:
             timeout_s=float(request.timeout_s),
             env=request.env,
             cancel_event=request.cancel_event,
+            on_process_started=request.on_process_started,
             cwd=request.cwd,
             max_output_bytes=request.max_output_bytes or DEFAULT_RUN_MAX_OUTPUT_BYTES,
         )

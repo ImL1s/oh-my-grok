@@ -540,7 +540,7 @@ them from a skill, but authority and evidence remain in the CLI artifacts.
 | `omg parity run\|release-readback\|check\|gaps\|refresh` | Frozen W0 manifest delegation, bundle verification, inventory check, gap listing, and plan-only upstream pin refresh. |
 | `omg capabilities` / `omg native-status` | Independent capability tiers; no private-sidecar probing. |
 | `omg provider antigravity capabilities\|doctor\|run` | Antigravity (`agy`) probe + headless run (#67-A/B): capabilities envelope, doctor, and `ProviderAdapter.run` (text/json/stream-json). `omg ask agy` cutover (#67-C); Team panes via `build_launch_envelope` (#67-D; supervisor owns PTY/PID/readiness). Never claims `live_call_ready`. |
-| `omg job start\|status\|wait\|collect\|cancel\|list` | Durable background jobs MVP (#68 PR1): `.omg/jobs/<id>/` store, subprocess runner owning `ProviderAdapter.run`, cancel by PID/PGID only. PR1 live spawn admits `--provider fake` only (hermetic); antigravity returns `E_JOB_PROVIDER`. No retry/GC/lease/`ask --background`. |
+| `omg job start\|status\|wait\|collect\|cancel\|list` | Durable background jobs (#68 PR1+PR2): `.omg/jobs/<id>/` store, subprocess runner owning `ProviderAdapter.run`, cancel by recorded PID/PGID (outer runner + bound inner provider). `--provider fake` (hermetic) and `--provider antigravity` (fail-closed preflight; stream-json default; evidence artifacts only). Fake-only flags rejected with Antigravity. No retry/GC/lease/`ask --background`. Authenticated Antigravity execution not claimed. #68 remains open. |
 
 Workflow planning never launches a foreign CLI. The leader executes plan tasks
 through Grok-native `spawn_subagent`, supplies the exact `capability_mode`, and

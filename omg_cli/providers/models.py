@@ -13,8 +13,13 @@ Launch envelopes (#67-D) describe argv/env for interactive Team panes; they do
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping
+
+# Non-serializable spawn observer: invoked once after successful Popen.
+# Signature receives the live Popen handle (pid/pgid available).
+ProcessStartedCallback = Callable[[Any], None]
 
 CompatStatus = Literal["compatible", "too_old", "too_new", "unknown"]
 
@@ -226,6 +231,7 @@ class ProviderRunRequest:
     env: Mapping[str, str] | None = None
     timeout_s: float = 120.0
     cancel_event: threading.Event | None = None
+    on_process_started: ProcessStartedCallback | None = None
     output_format: ProviderOutputFormat = "text"
     session_id: str | None = None
     resume_id: str | None = None
@@ -237,7 +243,7 @@ class ProviderRunRequest:
     binary: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize request metadata (prompt truncated; no cancel_event)."""
+        """Serialize request metadata (prompt truncated; no cancel_event/observer)."""
         prompt = self.prompt or ""
         return {
             "prompt_len": len(prompt),
@@ -255,6 +261,7 @@ class ProviderRunRequest:
             "max_output_bytes": self.max_output_bytes,
             "binary": self.binary,
             "has_cancel_event": self.cancel_event is not None,
+            "has_on_process_started": self.on_process_started is not None,
             "env_keys": sorted(self.env.keys()) if self.env else [],
         }
 
@@ -407,6 +414,7 @@ __all__ = [
     "ProviderLaunchKind",
     "ProviderLaunchRequest",
     "ProviderOutputFormat",
+    "ProcessStartedCallback",
     "ProviderRunEvent",
     "ProviderRunRequest",
     "ProviderRunResult",

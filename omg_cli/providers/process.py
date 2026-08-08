@@ -32,10 +32,14 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import Final, Literal, Mapping, Sequence
 
 # Local aliases so post-Popen allocation failures remain injectable in tests.
 _bytearray = bytearray
+
+# Optional spawn observer (jobs bind inner PID/PGID transactionally).
+ProcessStartedCallback = Callable[[subprocess.Popen[bytes]], None]
 
 
 def _post_popen_begin() -> None:
@@ -284,6 +288,7 @@ def run_provider_process(
     timeout_s: float | None = None,
     max_output_bytes: int | None = None,
     cancel_event: threading.Event | None = None,
+    on_process_started: ProcessStartedCallback | None = None,
     cwd: str | Path | None = None,
     mode: ProviderProcessMode = "run",
 ) -> ProbeProcessResult:
@@ -359,6 +364,12 @@ def run_provider_process(
         # Earliest post-Popen window — injectable for OOM coverage before any
         # list/closure/buffer work (must still hit kill-on-BaseException).
         _post_popen_begin()
+
+        # Bind observer exactly once after successful Popen, inside the
+        # kill-on-exception region, before reader/poll processing. Observer
+        # exceptions kill+reap the child and propagate.
+        if on_process_started is not None:
+            on_process_started(proc)
 
         started_readers = []
         stdout_overflow = [False]

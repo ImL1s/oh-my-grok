@@ -52,8 +52,40 @@ LEGAL_TRANSITIONS: dict[JobState, frozenset[JobState]] = {
 }
 
 IMMUTABLE_FIELDS: frozenset[str] = frozenset(
-    {"job_id", "created_at", "provider", "role", "schema"}
+    {"job_id", "created_at", "provider", "role", "schema", "request"}
 )
+
+PROVIDER_PROCESS_STATES: frozenset[str] = frozenset(
+    {"pending", "launching", "bound", "exited"}
+)
+
+
+def default_provider_process() -> dict[str, Any]:
+    """Empty provider-process binding (inner agy group not yet launched)."""
+    return {
+        "state": "pending",
+        "pid": None,
+        "pgid": None,
+        "pid_starttime": None,
+        "handle": None,
+        "bound_at": None,
+        "exited_at": None,
+    }
+
+
+def default_request() -> dict[str, Any]:
+    """Safe defaults for PR1 records that lack an immutable request snapshot."""
+    return {
+        "output_format": "text",
+        "model": None,
+        "effort": None,
+        "mode": None,
+        "timeout_s": 3600.0,
+        "provider_binary": None,
+        "provider_version": None,
+        "provider_compat": None,
+        "provider_pin_revision": None,
+    }
 
 
 class JobStoreError(ValueError):
@@ -106,12 +138,20 @@ class JobRecord:
     exit: dict[str, Any] | None = None
     usage: dict[str, Any] | None = None
     stdout: str = "stdout.jsonl"
+    stderr: str = "stderr.jsonl"
     events: str = "events.jsonl"
     run_id: str | None = None
     updated_at: str | None = None
     cancel_reason: str | None = None
+    cancel_requested_at: str | None = None
     worker: dict[str, Any] = field(default_factory=dict)
     error_message: str | None = None
+    # Immutable provider request snapshot (optional on PR1 records).
+    request: dict[str, Any] = field(default_factory=default_request)
+    # Inner provider process group binding (agy); separate from outer runner.
+    provider_process: dict[str, Any] = field(default_factory=default_provider_process)
+    # Bounded session / resume metadata from provider result (not Team).
+    session: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,12 +173,21 @@ class JobRecord:
             "exit": dict(self.exit) if isinstance(self.exit, dict) else self.exit,
             "usage": dict(self.usage) if isinstance(self.usage, dict) else self.usage,
             "stdout": self.stdout,
+            "stderr": self.stderr,
             "events": self.events,
             "run_id": self.run_id,
             "updated_at": self.updated_at,
             "cancel_reason": self.cancel_reason,
+            "cancel_requested_at": self.cancel_requested_at,
             "worker": dict(self.worker) if self.worker else {},
             "error_message": self.error_message,
+            "request": dict(self.request) if self.request else default_request(),
+            "provider_process": (
+                dict(self.provider_process)
+                if self.provider_process
+                else default_provider_process()
+            ),
+            "session": dict(self.session) if isinstance(self.session, dict) else self.session,
         }
 
     @classmethod
@@ -213,6 +262,35 @@ class JobRecord:
         if usage is not None and not isinstance(usage, dict):
             raise JobStoreError("job.json usage must be an object", code="E_JOB_MALFORMED")
 
+        request_raw = data.get("request")
+        if request_raw is None:
+            request = default_request()
+        elif not isinstance(request_raw, dict):
+            raise JobStoreError("job.json request must be an object", code="E_JOB_MALFORMED")
+        else:
+            request = {**default_request(), **dict(request_raw)}
+
+        pp_raw = data.get("provider_process")
+        if pp_raw is None:
+            provider_process = default_provider_process()
+        elif not isinstance(pp_raw, dict):
+            raise JobStoreError(
+                "job.json provider_process must be an object",
+                code="E_JOB_MALFORMED",
+            )
+        else:
+            provider_process = {**default_provider_process(), **dict(pp_raw)}
+            pp_state = provider_process.get("state")
+            if pp_state not in PROVIDER_PROCESS_STATES:
+                raise JobStoreError(
+                    f"job.json provider_process.state invalid: {pp_state!r}",
+                    code="E_JOB_MALFORMED",
+                )
+
+        session = data.get("session")
+        if session is not None and not isinstance(session, dict):
+            raise JobStoreError("job.json session must be an object", code="E_JOB_MALFORMED")
+
         return cls(
             job_id=str(job_id),
             created_at=str(created_at),
@@ -236,6 +314,7 @@ class JobRecord:
             exit=dict(exit_obj) if isinstance(exit_obj, dict) else None,
             usage=dict(usage) if isinstance(usage, dict) else None,
             stdout=str(data.get("stdout") or "stdout.jsonl"),
+            stderr=str(data.get("stderr") or "stderr.jsonl"),
             events=str(data.get("events") or "events.jsonl"),
             run_id=str(data["run_id"]) if data.get("run_id") is not None else None,
             updated_at=str(data["updated_at"]) if data.get("updated_at") is not None else None,
@@ -244,16 +323,26 @@ class JobRecord:
                 if data.get("cancel_reason") is not None
                 else None
             ),
+            cancel_requested_at=(
+                str(data["cancel_requested_at"])
+                if data.get("cancel_requested_at") is not None
+                else None
+            ),
             worker=dict(worker) if isinstance(worker, dict) else {},
             error_message=(
                 str(data["error_message"])
                 if data.get("error_message") is not None
                 else None
             ),
+            request=request,
+            provider_process=provider_process,
+            session=dict(session) if isinstance(session, dict) else None,
         )
 
     def public_status(self) -> dict[str, Any]:
-        """Status surface (no large payloads)."""
+        """Status surface (no large payloads; no provider_binary)."""
+        from omg_cli.jobs.providers import public_request_summary
+
         return {
             "job_id": self.job_id,
             "state": self.state.value,
@@ -271,11 +360,23 @@ class JobRecord:
             "usage": self.usage,
             "error_message": self.error_message,
             "cancel_reason": self.cancel_reason,
+            "cancel_requested_at": self.cancel_requested_at,
             "prompt": self.prompt,
             "result": self.result,
             "artifacts": list(self.artifacts),
             "stdout": self.stdout,
+            "stderr": self.stderr,
             "events": self.events,
+            "request": public_request_summary(self.request),
+            "provider_process": {
+                "state": (self.provider_process or {}).get("state"),
+                "pid": (self.provider_process or {}).get("pid"),
+                "pgid": (self.provider_process or {}).get("pgid"),
+                "bound_at": (self.provider_process or {}).get("bound_at"),
+                "exited_at": (self.provider_process or {}).get("exited_at"),
+                # intentionally omit pid_starttime / handle internals in public
+            },
+            "session": self.session,
         }
 
 
@@ -283,6 +384,7 @@ __all__ = [
     "IMMUTABLE_FIELDS",
     "JOB_SCHEMA",
     "LEGAL_TRANSITIONS",
+    "PROVIDER_PROCESS_STATES",
     "TERMINAL_STATES",
     "JobRecord",
     "JobState",
@@ -290,4 +392,6 @@ __all__ = [
     "JobStoreError",
     "TransitionError",
     "assert_transition",
+    "default_provider_process",
+    "default_request",
 ]

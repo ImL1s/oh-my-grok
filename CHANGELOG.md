@@ -10,6 +10,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#68 PR2 Antigravity job adapter wiring:** durable jobs can execute the
+  existing `ProviderAdapter.run` contract with repository fake-agy coverage,
+  fail-closed provider admission, and bound child-process cancellation.
+  Authenticated execution was not exercised. #68 remains open for retry,
+  lease recovery, GC, and ask --background.
 - **#78-D completeness promotion proof gate:** fail-closed
   `omg_cli/parity_completeness.py` policy/proof validators + reproduction,
   wired into strict `omg parity check` / `scripts/check_parity_inventory.py`.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import threading
@@ -13,6 +14,7 @@ import pytest
 from omg_cli.providers.process import (
     ProbeProcessError,
     run_probe_process,
+    run_provider_process,
 )
 
 
@@ -1082,3 +1084,99 @@ def test_secret_parent_env_not_inherited_by_default() -> None:
         assert result.returncode == 0
     finally:
         os.environ.pop("SUPER_SECRET_TOKEN", None)
+
+
+def test_on_process_started_runs_once_after_successful_popen() -> None:
+    seen: list[int] = []
+
+    def _obs(proc) -> None:
+        seen.append(int(proc.pid))
+
+    result = run_provider_process(
+        [sys.executable, "-c", "print('hi')"],
+        env={"PATH": os.environ.get("PATH", "")},
+        timeout_s=5.0,
+        on_process_started=_obs,
+    )
+    assert result.returncode == 0
+    assert len(seen) == 1
+    assert seen[0] > 0
+
+
+def test_on_process_started_runs_inside_kill_on_exception_region(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Observer exception must kill+reap the child (no orphan)."""
+
+    alive_pids: list[int] = []
+
+    def _obs(proc) -> None:
+        alive_pids.append(int(proc.pid))
+        raise RuntimeError("bind failed")
+
+    with pytest.raises(RuntimeError, match="bind failed"):
+        run_provider_process(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            env={"PATH": os.environ.get("PATH", "")},
+            timeout_s=10.0,
+            on_process_started=_obs,
+        )
+    assert alive_pids
+    pid = alive_pids[0]
+    # Child must be gone after observer failure cleanup.
+    deadline = time.monotonic() + 2.0
+    still = True
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+            still = True
+        except ProcessLookupError:
+            still = False
+            break
+        except OSError:
+            still = False
+            break
+        time.sleep(0.05)
+    assert still is False
+
+
+def test_on_process_started_exception_kills_and_reaps_child_group() -> None:
+    seen: list[int] = []
+
+    def _obs(proc) -> None:
+        seen.append(int(proc.pid))
+        raise RuntimeError("no bind")
+
+    with pytest.raises(RuntimeError, match="no bind"):
+        run_provider_process(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            env={"PATH": os.environ.get("PATH", "")},
+            timeout_s=10.0,
+            on_process_started=_obs,
+        )
+    assert seen
+    pid = seen[0]
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        except OSError:
+            return
+        time.sleep(0.05)
+    pytest.fail(f"child pid {pid} still alive after observer exception")
+
+
+def test_on_process_started_is_not_serialized_in_run_request() -> None:
+    from omg_cli.providers.models import ProviderRunRequest
+
+    def _obs(proc) -> None:
+        return None
+
+    req = ProviderRunRequest(prompt="x", on_process_started=_obs)
+    payload = req.to_dict()
+    assert "on_process_started" not in payload
+    assert payload.get("has_on_process_started") is True
+    # JSON-serializable
+    json.dumps(payload)
