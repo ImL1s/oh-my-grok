@@ -16,6 +16,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   fail-closes on non-`session_resume` gate capability ids.
 
 ### Added
+- **Partial work for issue 68 (PR1 / jobs MVP):** durable `.omg/jobs/<id>/`
+  store + `omg job start|status|wait|collect|cancel|list` with JSON CLI
+  envelopes. Subprocess job runner owns `ProviderAdapter.run` (no second
+  launcher). Hermetic `FakeProvider` worker (`--provider fake`);
+  `--provider antigravity` returns clear `E_JOB_PROVIDER` (live spawn
+  deferred). Atomic start (queued→starting before launch; launch failure →
+  failed, never running with null pid). Cancel by recorded PID/PGID only
+  (sibling-safe; never `pkill`/`killall`). Large outputs as
+  `artifacts/` descriptors only. Does **not** close #68 (retry/GC/lease
+  recovery/`ask --background` later).
 - **Partial work for issue 67 (slice D / #67-D):** Team Antigravity panes
   route through adapter-owned `ProviderLaunchRequest` /
   `ProviderLaunchEnvelope` + `AntigravityProvider.build_launch_envelope`

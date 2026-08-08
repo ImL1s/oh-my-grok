@@ -90,6 +90,7 @@ OMG_SUBDIRS = (
     "artifacts",
     "ultragoal",
     "wiki",
+    "jobs",
 )
 
 

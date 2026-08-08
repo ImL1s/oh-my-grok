@@ -55,6 +55,11 @@ COMMAND_SPECS: Final[tuple[CommandSpec, ...]] = (
         "provider probe/run (Antigravity capabilities/doctor/run; #67)",
         "inspect",
     ),
+    CommandSpec(
+        "job",
+        "durable background jobs (start/status/wait/collect/cancel/list; #68 PR1)",
+        "run",
+    ),
     CommandSpec("interview", "deep-interview gate", "workflow"),
     CommandSpec("goal", "ultragoal ledger", "workflow"),
     CommandSpec("accept", "acceptance + verified stamp", "team"),

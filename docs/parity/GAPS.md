@@ -7,7 +7,7 @@ Inventory status: **bootstrapping**.
 | Gap ID | Priority | Status | Issues | Capabilities | Summary |
 | --- | --- | --- | --- | --- | --- |
 | `gap.antigravity.provider` | P0 | open | #67 | `antigravity.provider.adapter` | A–D landed (probe/run/ask/Team envelope); dual review+CI before close |
-| `gap.jobs.durable` | P0 | open | #68 | `jobs.durable_background` | Durable background jobs plane not implemented |
+| `gap.jobs.durable` | P0 | open | #68 | `jobs.durable_background` | Durable jobs PR1 MVP landed; retry/GC/lease/ask--background and live Antigravity still open |
 | `gap.parity.governance.remaining` | P0 | open | #78 | `parity.inventory.governance` | #78-B inventory landed; #78-C refresh+claim gate landed; completeness promotion still manual |
 | `gap.team.v3` | P0 | open | #69 | `team.plane_v3` | Team plane v3 not implemented; depends on #67/#68 |
 | `gap.omo.todo_continuation` | P1 | open | #78 | `omo.goal.todo_continuation` | OmO todo-continuation inject is host_impossible on Grok (no session.prompt API) |
@@ -19,6 +19,6 @@ Inventory status: **bootstrapping**.
 ## Open P0
 
 - `gap.antigravity.provider` (#67): A–D landed (probe/run/ask/Team envelope); dual review+CI before close
-- `gap.jobs.durable` (#68): Durable background jobs plane not implemented
+- `gap.jobs.durable` (#68): Durable jobs PR1 MVP landed; retry/GC/lease/ask--background and live Antigravity still open
 - `gap.parity.governance.remaining` (#78): #78-B inventory landed; #78-C refresh+claim gate landed; completeness promotion still manual
 - `gap.team.v3` (#69): Team plane v3 not implemented; depends on #67/#68

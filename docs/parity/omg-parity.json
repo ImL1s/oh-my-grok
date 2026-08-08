@@ -100,18 +100,18 @@
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": ["README.md"]
       },
-      "omg_paths": ["omg_cli/team/plane.py"],
+      "omg_paths": ["omg_cli/jobs/", "omg_cli/commands/job.py", "omg_cli/team/plane.py"],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
       },
       "evidence": {
-        "tests": [],
-        "docs": ["docs/skills.md"],
+        "tests": ["tests/test_jobs_runtime.py", "tests/test_jobs_cli.py"],
+        "docs": ["docs/skills.md", "CHANGELOG.md"],
         "live": []
       },
       "issues": ["#68"],
-      "gap": "Team-specific durability only; no general job registry (#68-A..D)."
+      "gap": "PR1 MVP landed (fake worker + job CLI); retry/GC/lease/ask--background and live Antigravity still open (#68)."
     },
     {
       "id": "team.plane_v3",
@@ -994,7 +994,7 @@
       "status": "open",
       "issues": ["#68"],
       "capability_ids": ["jobs.durable_background"],
-      "summary": "Durable background jobs plane not implemented"
+      "summary": "Durable jobs PR1 MVP landed; retry/GC/lease/ask--background and live Antigravity still open"
     },
     {
       "id": "gap.team.v3",
