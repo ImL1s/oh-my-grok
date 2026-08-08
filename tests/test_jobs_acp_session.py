@@ -149,9 +149,10 @@ def test_handshaking_bind_write_failure_no_orphan_sidecar(
 ) -> None:
     """P0: failed ensuring→handshaking publish must not orphan a live sidecar.
 
-    Fault only the handshaking promotion write after start_job returns RUNNING.
-    Cancel is unproven → durable job-bearing recovery binding; second ensure
-    must not spawn another; stop cannot complete until disappearance is proven.
+    Fault handshaking promotion AND recovery writes after start_job is RUNNING.
+    Pre-allocated ensuring binding already carries job_id before spawn, so even
+    when recovery writes fail the singleton remains non-reclaimable. Cancel is
+    unproven → second ensure must not spawn another; stop refuses while live.
     """
     import subprocess
 
@@ -201,20 +202,23 @@ def test_handshaking_bind_write_failure_no_orphan_sidecar(
 
     real_write = rt._write_json_file
     handshaking_writes = {"n": 0}
+    recovery_faults = {"n": 0}
 
-    def _fault_handshaking_once(path: Path, data: Mapping[str, Any]) -> None:
-        if (
-            isinstance(data, Mapping)
-            and str(data.get("state") or "") == "handshaking"
-            and data.get("job_id")
-            and not data.get("recovery")
-        ):
+    def _fault_post_spawn_writes(path: Path, data: Mapping[str, Any]) -> None:
+        if not isinstance(data, Mapping):
+            real_write(path, data)
+            return
+        state = str(data.get("state") or "")
+        # Allow pre-spawn ensuring+job_id; fault handshaking + recovery only.
+        if state == "handshaking" and data.get("job_id"):
             handshaking_writes["n"] += 1
-            if handshaking_writes["n"] == 1:
-                raise OSError("simulated handshaking binding publish failure")
+            raise OSError("simulated handshaking binding publish failure")
+        if data.get("recovery") and data.get("job_id"):
+            recovery_faults["n"] += 1
+            raise OSError("simulated recovery binding publish failure")
         real_write(path, data)
 
-    monkeypatch.setattr(rt, "_write_json_file", _fault_handshaking_once)
+    monkeypatch.setattr(rt, "_write_json_file", _fault_post_spawn_writes)
 
     def _cancel_unproven(project_root, job_id, *, reason=""):  # noqa: ANN001
         raise JobStoreError(
@@ -233,13 +237,15 @@ def test_handshaking_bind_write_failure_no_orphan_sidecar(
         ensure_acp_session_sidecar(root, run_id=run_id, ready_timeout_s=10.0)
     assert ei.value.code == "E_JOB_CANCEL_UNPROVEN"
     assert handshaking_writes["n"] >= 1
+    assert recovery_faults["n"] >= 1
 
     bind = read_acp_sidecar_binding(root, run_id)
     assert isinstance(bind, dict)
     retained = bind.get("job_id")
     assert isinstance(retained, str) and retained
-    assert bind.get("state") in {"handshaking", "ensuring"}
-    # Sidecar must remain tracked (RUNNING / handshake-viable), not abandoned.
+    # Pre-alloc ensuring+job_id must survive dual write faults (not null).
+    assert bind.get("state") == "ensuring"
+    assert not bind.get("recovery")  # recovery writes failed; pre-alloc remains
     rec = job_status(root, retained)
     assert rec.state == JobState.RUNNING
     assert rt._job_handshake_still_viable(root, retained) or _job_is_live_sidecar(
@@ -253,10 +259,9 @@ def test_handshaking_bind_write_failure_no_orphan_sidecar(
     }
     spawned = after_ids - before_ids
     assert retained in spawned
-    # Exactly one new sidecar for this failure path (the start_job result).
     assert len(spawned) == 1
 
-    # Second ensure must not spawn another untracked sidecar.
+    # Second ensure must not spawn another (pre-alloc job_id still bound).
     try:
         second = ensure_acp_session_sidecar(root, run_id=run_id, ready_timeout_s=5.0)
         assert second.get("job_id") == retained
@@ -269,13 +274,11 @@ def test_handshaking_bind_write_failure_no_orphan_sidecar(
     }
     assert after2 - before_ids == spawned
 
-    # Stop cannot complete while cancel remains unproven / binding retained.
     stop_out = stop_team(root, run_id)
     assert stop_out.get("stop_completed") is False, stop_out
     kept = read_acp_sidecar_binding(root, run_id)
     assert isinstance(kept, dict)
     assert kept.get("job_id") == retained
-    # Still tracked — not reaped as abandoned ensuring/null.
     assert job_status(root, retained).state == JobState.RUNNING
 
 
@@ -851,7 +854,9 @@ def test_stop_during_pre_binding_ensure_no_live_orphan(
     assert ready.wait(timeout=45), "never reached pre-spawn ensuring barrier"
     assert isinstance(box.get("pre_bind"), dict)
     assert box["pre_bind"].get("state") == "ensuring"
-    assert not box["pre_bind"].get("job_id")
+    # Concrete job_id is pre-allocated before start_job spawns.
+    assert isinstance(box["pre_bind"].get("job_id"), str)
+    assert box["pre_bind"]["job_id"]
 
     # Stop blocks on the ACP transaction lock held by ensure — run it off-thread
     # and release the pre-spawn barrier so ensure can abort on stop_state=stopping.

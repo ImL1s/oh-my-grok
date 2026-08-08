@@ -35,6 +35,7 @@ from omg_cli.jobs.store import (
     create_job_dir,
     job_dir,
     list_job_ids,
+    make_job_id,
     mark_cancel_requested,
     read_job_record,
     safe_job_id,
@@ -167,6 +168,7 @@ def start_job(
     runner_python: str | None = None,
     allow_internal: bool = False,
     request_overrides: dict[str, Any] | None = None,
+    job_id: str | None = None,
 ) -> StartResult:
     """Atomic start: preflight → persist queued→starting before spawn.
 
@@ -268,6 +270,7 @@ def start_job(
         run_id=run_id,
         worker=worker,
         request=request_snapshot,
+        job_id=job_id,
     )
 
     # queued → starting BEFORE launch
@@ -1200,40 +1203,75 @@ def resolve_acp_binding_for_team_stop(
         job_id = binding.get("job_id")
         out["binding"] = dict(binding)
 
-        # CAS: unlink only if still ensuring with no job_id under the lock.
+        # CAS: unlink only if still ensuring with no job_id under the lock,
+        # and no live matching ACP sidecar exists for this run/session/cwd.
         if state == "ensuring" and not job_id:
-            # Re-read once more for CAS-like confirmation.
             again = _read_json_file(bind_path) if bind_path.is_file() else None
             if (
                 isinstance(again, Mapping)
                 and str(again.get("state") or "") == "ensuring"
                 and not again.get("job_id")
             ):
-                try:
-                    bind_path.unlink()
-                except OSError as exc:
+                bind_sid = str(again.get("session_id_hash") or "")
+                bind_cwd = str(again.get("cwd_hash") or "")
+                live_ids: list[str] = []
+                if bind_sid and bind_cwd:
+                    live_ids = _matching_acp_sidecar_job_ids(
+                        root,
+                        run_id=rid,
+                        session_id_hash=bind_sid,
+                        cwd_hash=bind_cwd,
+                    )
+                if live_ids:
+                    # Belt-and-suspenders: treat as job-bearing; do not unlink.
+                    job_id = live_ids[0]
+                    out["binding"] = {
+                        **dict(again),
+                        "job_id": job_id,
+                        "recovery": "stop_repaired_null_ensuring",
+                    }
+                    try:
+                        _write_json_file(
+                            bind_path,
+                            {
+                                "run_id": rid,
+                                "job_id": job_id,
+                                "session_id_hash": bind_sid,
+                                "cwd_hash": bind_cwd,
+                                "state": "handshaking",
+                                "recovery": "stop_repaired_null_ensuring",
+                            },
+                        )
+                    except Exception:
+                        pass
+                    # Fall through to cancel path with job_id set.
+                else:
+                    try:
+                        bind_path.unlink()
+                    except OSError as exc:
+                        return {
+                            **out,
+                            "status": "refused_unlink",
+                            "stop_ok": False,
+                            "errors": [f"ensuring binding unlink failed: {exc}"],
+                        }
                     return {
                         **out,
-                        "status": "refused_unlink",
-                        "stop_ok": False,
-                        "errors": [f"ensuring binding unlink failed: {exc}"],
+                        "status": "cleared_ensuring",
+                        "binding_cleared": True,
+                        "stop_ok": True,
+                        "actions": [
+                            "cleared abandoned ACP ensuring binding "
+                            "(CAS under ACP lock; no job_id; no live sidecar)"
+                        ],
                     }
-                return {
-                    **out,
-                    "status": "cleared_ensuring",
-                    "binding_cleared": True,
-                    "stop_ok": True,
-                    "actions": [
-                        "cleared abandoned ACP ensuring binding "
-                        "(CAS under ACP lock; no job_id)"
-                    ],
-                }
             # Promoted between reads while we held the lock — should not happen;
             # fall through to job_id handling with fresh read.
-            binding = again if isinstance(again, Mapping) else binding
-            state = str(binding.get("state") or "")
-            job_id = binding.get("job_id")
-            out["binding"] = dict(binding)
+            if not (isinstance(job_id, str) and job_id):
+                binding = again if isinstance(again, Mapping) else binding
+                state = str(binding.get("state") or "")
+                job_id = binding.get("job_id")
+                out["binding"] = dict(binding)
 
         if isinstance(job_id, str) and job_id:
             try:
@@ -1524,6 +1562,38 @@ def _job_handshake_still_viable(project_root: Path, job_id: str) -> bool:
     return False
 
 
+def _matching_acp_sidecar_job_ids(
+    project_root: Path,
+    *,
+    run_id: str,
+    session_id_hash: str,
+    cwd_hash: str,
+) -> list[str]:
+    """Return ACP sidecar job ids matching (run, session, cwd) that are still live."""
+    root = Path(project_root).resolve()
+    rid = str(run_id)
+    sid = str(session_id_hash)
+    cwd = str(cwd_hash)
+    found: list[str] = []
+    for jid in list_job_ids(root):
+        try:
+            rec = read_job_record(root, jid)
+        except JobStoreError:
+            continue
+        if str(rec.provider or "") != "grok-acp-session":
+            continue
+        if rec.run_id is not None and str(rec.run_id) != rid:
+            continue
+        req = rec.request if isinstance(rec.request, Mapping) else {}
+        if str(req.get("session_id_hash") or "") != sid:
+            continue
+        if str(req.get("cwd_hash") or "") != cwd:
+            continue
+        if _job_is_live_sidecar(root, jid) or _job_handshake_still_viable(root, jid):
+            found.append(jid)
+    return found
+
+
 def _cancel_orphan_acp_sidecar(
     project_root: Path, job_id: str, *, reason: str
 ) -> None:
@@ -1609,17 +1679,42 @@ def ensure_acp_session_sidecar(
         bind_path = _acp_binding_path(root, rid)
         existing = _read_json_file(bind_path) if bind_path.is_file() else None
 
-        # Reclaim abandoned pre-spawn marker (no job_id yet).
+        # Reclaim abandoned pre-spawn marker (no job_id yet) — but NEVER unlink
+        # when a live ACP sidecar still exists for this (run, session, cwd).
         if (
             existing
             and str(existing.get("state") or "") == "ensuring"
             and not existing.get("job_id")
         ):
-            try:
-                bind_path.unlink()
-            except OSError:
-                pass
-            existing = None
+            bind_sid = str(existing.get("session_id_hash") or sid_hash)
+            bind_cwd = str(existing.get("cwd_hash") or cwd_hash)
+            live_ids = _matching_acp_sidecar_job_ids(
+                root,
+                run_id=rid,
+                session_id_hash=bind_sid,
+                cwd_hash=bind_cwd,
+            )
+            if live_ids:
+                # Repair binding to the live job — do not orphan via unlink.
+                repaired_id = live_ids[0]
+                _write_json_file(
+                    bind_path,
+                    {
+                        "run_id": rid,
+                        "job_id": repaired_id,
+                        "session_id_hash": bind_sid,
+                        "cwd_hash": bind_cwd,
+                        "state": "handshaking",
+                        "recovery": "repaired_null_ensuring_marker",
+                    },
+                )
+                existing = _read_json_file(bind_path)
+            else:
+                try:
+                    bind_path.unlink()
+                except OSError:
+                    pass
+                existing = None
 
         if existing:
             ex_sid = existing.get("session_id_hash")
@@ -1744,13 +1839,15 @@ def ensure_acp_session_sidecar(
                 code="E_ACP_ENSURE_ABORTED_STOP",
             )
 
-        # Provisional binding BEFORE start_job so concurrent stop observes
-        # in-flight ensure (even before a job_id exists).
+        # Pre-allocate concrete job_id and publish it in the binding BEFORE
+        # start_job launches a runner — never leave reclaimable ensuring+null
+        # beside a RUNNING sidecar if a later handshaking/recovery write fails.
+        job_id = make_job_id()
         _write_json_file(
             bind_path,
             {
                 "run_id": rid,
-                "job_id": None,
+                "job_id": job_id,
                 "session_id_hash": sid_hash,
                 "cwd_hash": cwd_hash,
                 "state": "ensuring",
@@ -1770,7 +1867,7 @@ def ensure_acp_session_sidecar(
                 code="E_ACP_ENSURE_ABORTED_STOP",
             )
 
-        # Start a new internal ACP job.
+        # Start a new internal ACP job under the pre-allocated id.
         prompt = root / ".omg" / "jobs" / ".acp-prompt.md"
         prompt.parent.mkdir(parents=True, exist_ok=True)
         if not prompt.is_file():
@@ -1788,6 +1885,7 @@ def ensure_acp_session_sidecar(
                 run_id=rid,
                 allow_internal=True,
                 provider_timeout_s=handshake_timeout_s,
+                job_id=job_id,
                 request_overrides={
                     "session_id": identity["session_id"],
                     "parent_run_id": rid,
@@ -1805,10 +1903,18 @@ def ensure_acp_session_sidecar(
             except OSError:
                 pass
             raise
-        job_id = start.record.job_id
-        # Promote ensuring → handshaking with concrete job_id. A failed write
-        # must not leave ensuring/job_id=null beside a live RUNNING sidecar
-        # (later ensure/stop would treat that marker as abandoned and orphan).
+        if start.record.job_id != job_id:
+            # Should be impossible with job_id=; fail closed + cancel.
+            try:
+                cancel_job(root, start.record.job_id, reason="acp_job_id_mismatch")
+            except Exception:
+                pass
+            raise JobStoreError(
+                f"ACP start_job id mismatch: expected {job_id}, "
+                f"got {start.record.job_id}",
+                code="E_ACP_BINDING",
+            )
+        # Promote ensuring → handshaking (same pre-allocated job_id).
         handshake_binding = {
             "run_id": rid,
             "job_id": job_id,
@@ -1836,8 +1942,8 @@ def ensure_acp_session_sidecar(
                     code="E_ACP_BINDING",
                 ) from write_exc
 
-            # Cancel unproven — durable job-bearing recovery ref required.
-            # Never leave ensuring/job_id=null after start_job succeeded.
+            # Cancel unproven — pre-spawn ensuring already carries job_id, so
+            # even if recovery writes fail the binding is not reclaimable-null.
             recovery_payload = {
                 "run_id": rid,
                 "job_id": job_id,
@@ -1846,30 +1952,21 @@ def ensure_acp_session_sidecar(
                 "state": "handshaking",
                 "recovery": "handshaking_publish_failed",
             }
-            recovery_err: Exception | None = None
             try:
                 _write_json_file(bind_path, recovery_payload)
-            except Exception as hand_exc:
-                recovery_err = hand_exc
-                # ensuring+job_id still blocks abandoned reclaim / second spawn.
+            except Exception:
                 try:
                     _write_json_file(
                         bind_path,
-                        {
-                            **recovery_payload,
-                            "state": "ensuring",
-                        },
+                        {**recovery_payload, "state": "ensuring"},
                     )
-                    recovery_err = None
-                except Exception as ens_exc:
-                    recovery_err = ens_exc
+                except Exception:
+                    pass  # ensuring+job_id from pre-alloc still on disk
             code = getattr(cancel_err, "code", None) or "E_JOB_CANCEL_UNPROVEN"
-            detail = f"cancel not proven: {cancel_err}"
-            if recovery_err is not None:
-                detail = f"{detail}; recovery bind failed: {recovery_err}"
             raise JobStoreError(
                 f"ACP handshaking binding publish failed after start_job ({write_exc}); "
-                f"{detail}; binding retained with job_id={job_id}",
+                f"cancel not proven: {cancel_err}; "
+                f"binding retained with job_id={job_id}",
                 code=str(code),
             ) from cancel_err
         try:
