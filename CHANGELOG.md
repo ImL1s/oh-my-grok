@@ -10,6 +10,15 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#105 PR4 hermetic ACP resume sidecar:** Team `--provider-session` on an
+  AVAILABLE `session_resume` gate starts/reuses an internal jobs-plane
+  `grok-acp-session` sidecar (`grok agent stdio`, initialize → one
+  `session/resume`, no-replay quiet window, atomic content-free receipt).
+  Public `omg job start` still admits only `fake`/`antigravity`. Cancel is
+  dual process-group teardown (not `session/close`). Hermetic fake-peer
+  coverage only — no live-host maturity promotion. #105 stays open for
+  close/restore-code/search/background deltas.
+
 - **#78-E README↔JSON managed-snapshot drift gate:** hand-authored
   `docs/parity/README.md` keeps exactly one managed block between
   `BEGIN/END GENERATED PARITY INVENTORY SNAPSHOT` markers.

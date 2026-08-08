@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Hermetic line-delimited JSON-RPC ACP peer for #105 PR4 tests.
+
+Scenarios via ``OMG_ACP_FAKE_SCENARIO``:
+
+  success          — initialize + resume + optional chrome; stay alive
+  replay           — conversation update before resume response
+  late_replay      — conversation update during quiet window after resume
+  chrome           — non-conversation chrome before/after resume
+  hang             — never respond to initialize
+  overflow         — emit oversized line
+  wrong_id         — respond with mismatched JSON-RPC id
+  rpc_error        — resume returns RPC error
+  malformed        — emit non-JSON frame
+  exit_after_resume — exit immediately after resume (transient false success)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+
+
+def _read_msg() -> dict | None:
+    line = sys.stdin.buffer.readline()
+    if not line:
+        return None
+    return json.loads(line.decode("utf-8"))
+
+
+def _write(obj: dict) -> None:
+    sys.stdout.buffer.write((json.dumps(obj) + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
+
+
+def _notify_update(kind: str, **extra: object) -> None:
+    update: dict = {"sessionUpdate": kind, **extra}
+    _write(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {"update": update},
+        }
+    )
+
+
+def main() -> int:
+    scenario = (os.environ.get("OMG_ACP_FAKE_SCENARIO") or "success").strip().lower()
+    delay = float(os.environ.get("OMG_ACP_FAKE_DELAY_S") or "0")
+
+    if scenario == "hang":
+        while True:
+            time.sleep(1.0)
+
+    if scenario == "overflow":
+        # Wait for initialize then flood.
+        msg = _read_msg()
+        if msg and msg.get("id") is not None:
+            _write({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
+        sys.stdout.buffer.write(b"x" * (300_000) + b"\n")
+        sys.stdout.buffer.flush()
+        time.sleep(60)
+        return 0
+
+    if scenario == "malformed":
+        msg = _read_msg()
+        if msg and msg.get("id") is not None:
+            sys.stdout.buffer.write(b"not-json{{{\n")
+            sys.stdout.buffer.flush()
+        time.sleep(60)
+        return 0
+
+    # Standard initialize
+    init = _read_msg()
+    if init is None:
+        return 1
+    if init.get("method") != "initialize":
+        _write(
+            {
+                "jsonrpc": "2.0",
+                "id": init.get("id"),
+                "error": {"code": -32601, "message": "expected initialize first"},
+            }
+        )
+        return 1
+    if delay:
+        time.sleep(delay)
+    if scenario == "wrong_id":
+        _write({"jsonrpc": "2.0", "id": "nope", "result": {"protocolVersion": 1}})
+    else:
+        _write(
+            {
+                "jsonrpc": "2.0",
+                "id": init["id"],
+                "result": {"protocolVersion": 1, "agentInfo": {"name": "fake-acp"}},
+            }
+        )
+
+    if scenario == "chrome":
+        _notify_update("current_mode_update", mode="default")
+
+    resume = _read_msg()
+    if resume is None:
+        return 1
+    if resume.get("method") != "session/resume":
+        _write(
+            {
+                "jsonrpc": "2.0",
+                "id": resume.get("id"),
+                "error": {"code": -32601, "message": "expected session/resume"},
+            }
+        )
+        return 1
+
+    params = resume.get("params") or {}
+    # Echo validated binding for tests (not written to OMG receipts).
+    _ = params.get("sessionId"), params.get("cwd")
+
+    if scenario == "replay":
+        _notify_update(
+            "agent_message_chunk",
+            content={"type": "text", "text": "SECRET_REPLAY_BODY"},
+        )
+
+    if scenario == "rpc_error":
+        _write(
+            {
+                "jsonrpc": "2.0",
+                "id": resume["id"],
+                "error": {"code": -32000, "message": "resume refused"},
+            }
+        )
+        time.sleep(60)
+        return 0
+
+    if delay:
+        time.sleep(delay)
+    _write(
+        {
+            "jsonrpc": "2.0",
+            "id": resume["id"],
+            "result": {"sessionId": params.get("sessionId"), "resumed": True},
+        }
+    )
+
+    if scenario == "late_replay":
+        time.sleep(0.05)
+        _notify_update(
+            "agent_message_chunk",
+            content={"type": "text", "text": "LATE_SECRET_REPLAY"},
+        )
+
+    if scenario == "chrome":
+        _notify_update("available_commands_update", commands=[])
+        _notify_update("session_info_update", title="t")
+
+    if scenario == "exit_after_resume":
+        return 0
+
+    # Stay alive; drain stdin until EOF; emit periodic chrome.
+    while True:
+        msg = _read_msg()
+        if msg is None:
+            break
+        # Ignore further client methods; stay connected.
+        if msg.get("id") is not None:
+            _write(
+                {
+                    "jsonrpc": "2.0",
+                    "id": msg["id"],
+                    "error": {"code": -32601, "message": "method not supported"},
+                }
+            )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

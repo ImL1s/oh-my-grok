@@ -70,7 +70,9 @@ def _env_scope(updates: Mapping[str, str | None]) -> Iterator[None]:
 
 def resolve_adapter(provider: str) -> ProviderAdapter:
     """Resolve via the jobs-scoped registry (shared with parent start_job)."""
-    adapter, _meta = resolve_job_provider(provider)
+    # Runner may execute internal providers (ACP sidecar) started by Team.
+    allow_internal = provider == "grok-acp-session"
+    adapter, _meta = resolve_job_provider(provider, allow_internal=allow_internal)
     return adapter
 
 
@@ -339,10 +341,8 @@ def _execute_adapter(
         else:
             binary_path = None
 
-        # Antigravity (and future out-of-process providers) bind an inner
-        # process group. Fake runs in-process — leave provider_process pending
-        # so cancel only targets the outer runner (PR1 behavior).
-        bind_inner = ready.provider != "fake"
+        # Antigravity / ACP bind an inner process group. Fake runs in-process.
+        bind_inner = ready.provider not in {"fake"}
 
         if bind_inner:
             mark_provider_launching(
@@ -371,19 +371,40 @@ def _execute_adapter(
                 expected_attempt=int(ready.attempt),
             )
 
-        request = ProviderRunRequest(
-            prompt_file=str(prompt_path),
-            cwd=str(project_root),
-            timeout_s=timeout_s,
-            output_format=output_format,  # type: ignore[arg-type]
-            model=req.get("model"),
-            effort=req.get("effort"),
-            mode=req.get("mode"),
-            binary=binary_path,
-            cancel_event=cancel_event,
-            on_process_started=_on_process_started if bind_inner else None,
-        )
-        result = adapter.run(request)
+        # ACP sidecar: inject binding env for the adapter (never logs session UUID).
+        acp_env: dict[str, str | None] = {}
+        if ready.provider == "grok-acp-session":
+            acp_env = {
+                "OMG_ACP_SESSION_ID": str(req.get("session_id") or "") or None,
+                "OMG_ACP_PARENT_RUN_ID": str(req.get("parent_run_id") or "") or None,
+                "OMG_ACP_CWD": str(req.get("cwd") or "") or None,
+                "OMG_ACP_ATTEMPT": str(ready.attempt),
+            }
+            if req.get("provider_binary"):
+                acp_env["OMG_ACP_BIN"] = str(req["provider_binary"])
+
+        def _run_adapter() -> object:
+            request = ProviderRunRequest(
+                prompt_file=str(prompt_path),
+                cwd=str(req.get("cwd") or project_root),
+                timeout_s=timeout_s,
+                output_format=output_format,  # type: ignore[arg-type]
+                model=req.get("model"),
+                effort=req.get("effort"),
+                mode=req.get("mode"),
+                binary=binary_path,
+                session_id=str(req["session_id"]) if req.get("session_id") else None,
+                resume_id=str(req["session_id"]) if req.get("session_id") else None,
+                cancel_event=cancel_event,
+                on_process_started=_on_process_started if bind_inner else None,
+            )
+            return adapter.run(request)
+
+        if acp_env:
+            with _env_scope(acp_env):
+                result = _run_adapter()  # type: ignore[assignment]
+        else:
+            result = _run_adapter()  # type: ignore[assignment]
         if bind_inner:
             try:
                 mark_provider_exited(project_root, job_id)

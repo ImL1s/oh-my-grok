@@ -114,8 +114,18 @@ adoption (`#103`, `#74`, …) — this document does not claim live verification
   `blocked`. LEGACY keeps an actionable `next_action` and must not be
   reported as AVAILABLE. BLOCKED (wrong capability / explicit refuse) →
   fail closed (`ok=false` / nonzero).
-- Real ACP `session/resume` transport is still unwired (`transport_wired:
-  false` when AVAILABLE); this slice only consumes the gate.
+- When AVAILABLE, Team resume injects a durable ACP stdio sidecar owned by
+  the jobs plane (`grok-acp-session`, internal-only). `transport_wired` is
+  true only after an atomic `grok_acp_resume_receipt/v1` (no transcript
+  bodies; `no_replay_observed=true`, `restore_code_requested=false`). The
+  sidecar stays running until cancel/failure; cancel is process-group
+  teardown (**not** ACP `session/close`).
+- Missing/malformed run-level `grok_session_id` → blocked before any job
+  spawn. Concurrent resume reuses one sidecar per
+  `(run_id, session_id_hash, cwd_hash)`.
+- Still unfinished on #105: ACP `session/close`, explicit restore-code /
+  `session/load`, cross-directory UUID search, child-session / plan-mode
+  restore, host background queue/fan-out, and live-host evidence.
 
 Related trackers `#103` / `#68` / `#69` / `#74` **consume** host gates here
 but are **not** completed by this PR.

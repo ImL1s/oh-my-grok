@@ -5099,6 +5099,27 @@ def _stop_team_locked(
         except (TeamError, OSError, json.JSONDecodeError, TypeError) as exc:
             errors.append(f"linked_ralph cancel: {exc}")
 
+    # Cancel Team-linked ACP session sidecar (#105 PR4) — process-group
+    # teardown only; never claims ACP session/close.
+    linked_acp = meta.get("linked_acp_session")
+    if stop_completed and isinstance(linked_acp, Mapping) and linked_acp.get("job_id"):
+        try:
+            from omg_cli.jobs.runtime import cancel_linked_acp_sidecar
+
+            acp_out = cancel_linked_acp_sidecar(
+                root_path, run_id, reason="team_stop"
+            )
+            if acp_out.get("attempted"):
+                actions.append(
+                    "cancelled linked_acp_session sidecar "
+                    f"job_id={acp_out.get('job_id')} "
+                    "(sidecar cancellation; not session/close)"
+                )
+            if acp_out.get("error"):
+                errors.append(f"linked_acp_session cancel: {acp_out['error']}")
+        except Exception as exc:  # noqa: BLE001 — stop must continue
+            errors.append(f"linked_acp_session cancel: {exc}")
+
     # Update team.json without hiding live or uncertain process truth.
     # Locked + generation-fenced publication (#21). Refuse publication when a
     # concurrent scale mutated the task set after we verified identities.

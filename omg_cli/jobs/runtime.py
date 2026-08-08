@@ -9,7 +9,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from omg_cli.jobs.models import (
     TERMINAL_STATES,
@@ -165,11 +165,14 @@ def start_job(
     provider_timeout_s: float | None = None,
     launch: bool = True,
     runner_python: str | None = None,
+    allow_internal: bool = False,
+    request_overrides: dict[str, Any] | None = None,
 ) -> StartResult:
     """Atomic start: preflight → persist queued→starting before spawn.
 
     Antigravity admission is fail-closed (no job ID / no partial dir on probe
     failure). Fake-only flags with Antigravity raise ``E_JOB_PROVIDER_OPTIONS``.
+    Internal providers (``grok-acp-session``) require ``allow_internal=True``.
     """
     provider = (provider or "").strip().lower()
     role = (role or "").strip() or "researcher"
@@ -178,7 +181,9 @@ def start_job(
 
     # Registry resolution (exact names only) — before any job dir creation.
     try:
-        _adapter, meta = resolve_job_provider(provider)
+        _adapter, meta = resolve_job_provider(
+            provider, allow_internal=bool(allow_internal)
+        )
     except JobStoreError:
         raise
     del _adapter
@@ -198,6 +203,23 @@ def start_job(
         )
         request_snapshot = build_request_snapshot(
             provider, preflight=preflight
+        )
+    elif provider == "grok-acp-session":
+        if not allow_internal:
+            raise JobStoreError(
+                "grok-acp-session is internal-only",
+                code="E_JOB_PROVIDER_INTERNAL",
+            )
+        ov = dict(request_overrides or {})
+        request_snapshot = build_request_snapshot(
+            provider,
+            timeout_s=provider_timeout_s or ov.get("timeout_s"),
+            provider_binary=ov.get("provider_binary"),
+            session_id=ov.get("session_id"),
+            parent_run_id=ov.get("parent_run_id") or run_id,
+            cwd=ov.get("cwd"),
+            session_id_hash=ov.get("session_id_hash"),
+            cwd_hash=ov.get("cwd_hash"),
         )
     else:
         # fake
@@ -942,13 +964,486 @@ def list_jobs(
     return out
 
 
+# ---------------------------------------------------------------------------
+# #105 PR4 — durable ACP session sidecar ensure / reuse
+# ---------------------------------------------------------------------------
+
+DEFAULT_ACP_READY_TIMEOUT_S = 20.0
+DEFAULT_ACP_HANDSHAKE_WAIT_S = 15.0
+
+
+def _acp_lock_path(
+    project_root: Path, run_id: str, session_id_hash: str, cwd_hash: str
+) -> Path:
+    from omg_cli.jobs.store import ensure_jobs_root
+
+    root = ensure_jobs_root(project_root)
+    locks = root / ".locks"
+    locks.mkdir(mode=0o700, exist_ok=True)
+    key = f"acp-{run_id}-{session_id_hash[:16]}-{cwd_hash[:16]}.lock"
+    return locks / key
+
+
+def _acp_binding_path(project_root: Path, run_id: str) -> Path:
+    from omg_cli.jobs.store import ensure_jobs_root
+
+    root = ensure_jobs_root(project_root)
+    d = root / "acp_bindings"
+    d.mkdir(mode=0o700, exist_ok=True)
+    return d / f"{run_id}.json"
+
+
+def resolve_acp_session_identity(
+    project_root: Path, run_id: str
+) -> dict[str, Any]:
+    """Resolve canonical run_id + load_host_session(required=True) + cwd hashes.
+
+    Fail closed on missing/malformed/ambiguous binding — no spawn.
+    """
+    from omg_cli.contracts.state_schemas import require_safe_id
+    from omg_cli.host_acp import hash_cwd, hash_session_id
+    from omg_cli.host_session import HostSessionError, load_host_session
+    from omg_cli.state import load_run
+
+    rid = require_safe_id(run_id, label="run_id")
+    root = Path(project_root).resolve()
+    run = load_run(root, rid)
+    if run is None:
+        raise JobStoreError(
+            f"run {rid} missing; cannot bind ACP session",
+            code="E_ACP_SESSION_BINDING",
+        )
+    try:
+        binding = load_host_session(run, required=True)
+    except HostSessionError as exc:
+        raise JobStoreError(
+            f"host session binding unavailable: {exc}",
+            code="E_ACP_SESSION_BINDING",
+        ) from exc
+    if binding is None:
+        raise JobStoreError(
+            "host session binding missing",
+            code="E_ACP_SESSION_BINDING",
+        )
+    cwd = str(root)
+    return {
+        "run_id": rid,
+        "session_id": binding.session_id,
+        "cwd": cwd,
+        "session_id_hash": hash_session_id(binding.session_id),
+        "cwd_hash": hash_cwd(cwd),
+    }
+
+
+def _read_json_file(path: Path) -> dict[str, Any] | None:
+    import json
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_json_file(path: Path, data: Mapping[str, Any]) -> None:
+    import json
+
+    from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes
+
+    body = json.dumps(dict(data), sort_keys=True, indent=2).encode("utf-8")
+    atomic_write_bytes(path, body, mode=DATA_FILE_MODE, replace=True)
+
+
+def _load_receipt(project_root: Path, job_id: str) -> dict[str, Any] | None:
+    from omg_cli.jobs.acp_provider import receipt_path
+
+    path = receipt_path(job_dir(project_root, job_id))
+    if not path.is_file():
+        return None
+    return _read_json_file(path)
+
+
+def _job_is_live_sidecar(project_root: Path, job_id: str) -> bool:
+    try:
+        rec = read_job_record(project_root, job_id)
+    except JobStoreError:
+        return False
+    if rec.state != JobState.RUNNING:
+        return False
+    if rec.pid is None or not _pid_alive(int(rec.pid)):
+        return False
+    return True
+
+
+def _wait_acp_ready(
+    project_root: Path,
+    job_id: str,
+    *,
+    session_id_hash: str,
+    cwd_hash: str,
+    parent_run_id: str,
+    timeout_s: float,
+) -> dict[str, Any]:
+    from omg_cli.host_acp import validate_receipt
+
+    deadline = time.monotonic() + max(0.1, float(timeout_s))
+    while time.monotonic() < deadline:
+        if not _job_is_live_sidecar(project_root, job_id):
+            # Job died before ready — fail closed (no transient success).
+            try:
+                rec = read_job_record(project_root, job_id)
+                err = rec.error_message or f"state={rec.state.value}"
+            except JobStoreError:
+                err = "job unreadable"
+            raise JobStoreError(
+                f"ACP sidecar exited before ready: {err}",
+                code="E_ACP_SIDECAR_DEAD",
+            )
+        raw = _load_receipt(project_root, job_id)
+        if raw is not None:
+            return validate_receipt(
+                raw,
+                session_id_hash=session_id_hash,
+                cwd_hash=cwd_hash,
+                parent_run_id=parent_run_id,
+            ).to_dict()
+        time.sleep(0.05)
+    raise JobStoreError(
+        "ACP sidecar readiness timed out",
+        code="E_ACP_READY_TIMEOUT",
+    )
+
+
+def ensure_acp_session_sidecar(
+    project_root: Path,
+    *,
+    run_id: str,
+    provider_binary: str | None = None,
+    ready_timeout_s: float = DEFAULT_ACP_READY_TIMEOUT_S,
+    handshake_timeout_s: float = DEFAULT_ACP_HANDSHAKE_WAIT_S,
+) -> dict[str, Any]:
+    """Ensure one live ACP sidecar for (run_id, session, cwd); reuse if matching.
+
+    Holds a dedicated transaction lock — never the Team scale lock.
+    """
+    from omg_cli.contracts.path_keys import exclusive_lock
+    from omg_cli.host_acp import AcpError
+
+    root = Path(project_root).resolve()
+    identity = resolve_acp_session_identity(root, run_id)
+    rid = identity["run_id"]
+    sid_hash = identity["session_id_hash"]
+    cwd_hash = identity["cwd_hash"]
+    lock_path = _acp_lock_path(root, rid, sid_hash, cwd_hash)
+
+    with exclusive_lock(lock_path):
+        bind_path = _acp_binding_path(root, rid)
+        existing = _read_json_file(bind_path) if bind_path.is_file() else None
+
+        if existing:
+            ex_sid = existing.get("session_id_hash")
+            ex_cwd = existing.get("cwd_hash")
+            ex_job = existing.get("job_id")
+            if ex_sid != sid_hash or ex_cwd != cwd_hash:
+                raise JobStoreError(
+                    "stale/conflicting ACP sidecar binding for run "
+                    "(session/cwd hash mismatch); refusing silent retry",
+                    code="E_ACP_SIDECAR_CONFLICT",
+                )
+            if isinstance(ex_job, str) and ex_job:
+                if _job_is_live_sidecar(root, ex_job):
+                    receipt = _load_receipt(root, ex_job)
+                    if receipt is not None:
+                        from omg_cli.host_acp import validate_receipt
+
+                        try:
+                            validated = validate_receipt(
+                                receipt,
+                                session_id_hash=sid_hash,
+                                cwd_hash=cwd_hash,
+                                parent_run_id=rid,
+                            ).to_dict()
+                        except AcpError as exc:
+                            raise JobStoreError(
+                                f"linked ACP receipt invalid: {exc}",
+                                code="E_ACP_RECEIPT",
+                            ) from exc
+                        rec = read_job_record(root, ex_job)
+                        return {
+                            "ok": True,
+                            "reused": True,
+                            "job_id": ex_job,
+                            "attempt": int(rec.attempt),
+                            "receipt": validated,
+                            "receipt_sha256": validated.get("receipt_sha256"),
+                            "connection_owned": True,
+                            "transport": "acp_stdio_job",
+                            "status": "resumed",
+                        }
+                    # Still handshaking — wait boundedly.
+                    try:
+                        validated = _wait_acp_ready(
+                            root,
+                            ex_job,
+                            session_id_hash=sid_hash,
+                            cwd_hash=cwd_hash,
+                            parent_run_id=rid,
+                            timeout_s=ready_timeout_s,
+                        )
+                    except JobStoreError:
+                        raise
+                    rec = read_job_record(root, ex_job)
+                    return {
+                        "ok": True,
+                        "reused": True,
+                        "job_id": ex_job,
+                        "attempt": int(rec.attempt),
+                        "receipt": validated,
+                        "receipt_sha256": validated.get("receipt_sha256"),
+                        "connection_owned": True,
+                        "transport": "acp_stdio_job",
+                        "status": "resumed",
+                    }
+                # Stale linked job — block rather than silent retry (#105 P1).
+                raise JobStoreError(
+                    f"linked ACP sidecar job {ex_job} is not live; "
+                    "refusing untracked retry (cancel/clear binding first)",
+                    code="E_ACP_SIDECAR_STALE",
+                )
+
+        # Start a new internal ACP job.
+        prompt = root / ".omg" / "jobs" / ".acp-prompt.md"
+        prompt.parent.mkdir(parents=True, exist_ok=True)
+        if not prompt.is_file():
+            prompt.write_text(
+                "# internal ACP session sidecar (no prompt/tools)\n",
+                encoding="utf-8",
+            )
+        binary = provider_binary or os.environ.get("OMG_ACP_BIN")
+        start = start_job(
+            root,
+            provider="grok-acp-session",
+            role="acp-session",
+            prompt_file=prompt,
+            run_id=rid,
+            allow_internal=True,
+            provider_timeout_s=handshake_timeout_s,
+            request_overrides={
+                "session_id": identity["session_id"],
+                "parent_run_id": rid,
+                "cwd": identity["cwd"],
+                "session_id_hash": sid_hash,
+                "cwd_hash": cwd_hash,
+                "provider_binary": binary,
+                "timeout_s": handshake_timeout_s,
+            },
+        )
+        job_id = start.record.job_id
+        # Provisional binding (handshaking).
+        _write_json_file(
+            bind_path,
+            {
+                "run_id": rid,
+                "job_id": job_id,
+                "session_id_hash": sid_hash,
+                "cwd_hash": cwd_hash,
+                "state": "handshaking",
+            },
+        )
+        try:
+            validated = _wait_acp_ready(
+                root,
+                job_id,
+                session_id_hash=sid_hash,
+                cwd_hash=cwd_hash,
+                parent_run_id=rid,
+                timeout_s=ready_timeout_s,
+            )
+        except Exception as exc:
+            # Compensate: cancel exact job.
+            try:
+                cancel_job(root, job_id, reason="acp_ready_failed")
+            except Exception:
+                pass
+            try:
+                if bind_path.is_file():
+                    bind_path.unlink()
+            except OSError:
+                pass
+            if isinstance(exc, JobStoreError):
+                raise
+            raise JobStoreError(
+                f"ACP sidecar ready failed: {exc}",
+                code="E_ACP_READY",
+            ) from exc
+
+        _write_json_file(
+            bind_path,
+            {
+                "run_id": rid,
+                "job_id": job_id,
+                "session_id_hash": sid_hash,
+                "cwd_hash": cwd_hash,
+                "state": "ready",
+                "receipt_sha256": validated.get("receipt_sha256"),
+            },
+        )
+        rec = read_job_record(root, job_id)
+        if rec.state != JobState.RUNNING or not _pid_alive(int(rec.pid or 0)):
+            try:
+                cancel_job(root, job_id, reason="acp_post_ready_dead")
+            except Exception:
+                pass
+            raise JobStoreError(
+                "ACP sidecar not live after ready receipt",
+                code="E_ACP_SIDECAR_DEAD",
+            )
+        return {
+            "ok": True,
+            "reused": False,
+            "job_id": job_id,
+            "attempt": int(rec.attempt),
+            "receipt": validated,
+            "receipt_sha256": validated.get("receipt_sha256"),
+            "connection_owned": True,
+            "transport": "acp_stdio_job",
+            "status": "resumed",
+        }
+
+
+def ensure_acp_session_for_team(
+    gate: Any,
+    *,
+    root: Path | str,
+    run_id: str,
+    provider_binary: str | None = None,
+) -> dict[str, Any]:
+    """Team-injected provider_resume helper (AVAILABLE gate only).
+
+    Returns helper fields merged into provider_session_result. On missing
+    session binding, sets ``force_blocked=True``. Never claims session/close.
+    """
+    from omg_cli.host_models import FeatureGateResult
+
+    if not isinstance(gate, FeatureGateResult) or gate.state != "AVAILABLE":
+        return {
+            "invoked": False,
+            "transport_wired": False,
+            "force_blocked": True,
+            "reason": "ACP ensure requires AVAILABLE session_resume gate",
+            "ok": False,
+        }
+    root_path = Path(root).resolve()
+    try:
+        result = ensure_acp_session_sidecar(
+            root_path,
+            run_id=run_id,
+            provider_binary=provider_binary,
+        )
+    except JobStoreError as exc:
+        if exc.code == "E_ACP_SESSION_BINDING":
+            return {
+                "invoked": False,
+                "transport_wired": False,
+                "force_blocked": True,
+                "reason": str(exc),
+                "ok": False,
+                "next_action": (
+                    "Persist a run-level grok_session_id via load_host_session "
+                    "before --provider-session"
+                ),
+            }
+        # AVAILABLE gate retained; execution failed.
+        return {
+            "invoked": True,
+            "transport_wired": False,
+            "ok": False,
+            "execution": {
+                "status": "failed",
+                "transport": "acp_stdio_job",
+                "error": str(exc)[:400],
+                "error_code": exc.code,
+                "connection_owned": False,
+                "no_replay": True,
+                "restore_code": False,
+            },
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "invoked": True,
+            "transport_wired": False,
+            "ok": False,
+            "execution": {
+                "status": "failed",
+                "transport": "acp_stdio_job",
+                "error": str(exc)[:400],
+                "connection_owned": False,
+                "no_replay": True,
+                "restore_code": False,
+            },
+        }
+
+    return {
+        "invoked": True,
+        "transport_wired": True,
+        "ok": True,
+        "execution": {
+            "status": "resumed",
+            "transport": result["transport"],
+            "job_id": result["job_id"],
+            "attempt": result["attempt"],
+            "reused": bool(result.get("reused")),
+            "receipt_sha256": result.get("receipt_sha256"),
+            "connection_owned": True,
+            "no_replay": True,
+            "restore_code": False,
+        },
+    }
+
+
+def cancel_linked_acp_sidecar(
+    project_root: Path, run_id: str, *, reason: str = "team_stop"
+) -> dict[str, Any]:
+    """Cancel only the Team-linked ACP job (not session/close)."""
+    root = Path(project_root).resolve()
+    bind_path = _acp_binding_path(root, run_id)
+    out: dict[str, Any] = {
+        "attempted": False,
+        "cancelled": False,
+        "job_id": None,
+        "session_close": False,
+        "note": "sidecar cancellation (not ACP session/close)",
+    }
+    existing = _read_json_file(bind_path) if bind_path.is_file() else None
+    if not existing or not existing.get("job_id"):
+        return out
+    job_id = str(existing["job_id"])
+    out["attempted"] = True
+    out["job_id"] = job_id
+    try:
+        cancel_job(root, job_id, reason=reason)
+        out["cancelled"] = True
+    except JobStoreError as exc:
+        out["error"] = str(exc)
+    try:
+        if bind_path.is_file():
+            bind_path.unlink()
+    except OSError:
+        pass
+    return out
+
+
 __all__ = [
     "CancelOwnership",
     "StartResult",
     "cancel_job",
+    "cancel_linked_acp_sidecar",
     "collect_job",
+    "ensure_acp_session_for_team",
+    "ensure_acp_session_sidecar",
     "job_status",
     "list_jobs",
+    "resolve_acp_session_identity",
     "start_job",
     "wait_job",
 ]

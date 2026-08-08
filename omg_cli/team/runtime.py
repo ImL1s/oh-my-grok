@@ -1334,7 +1334,34 @@ def _provider_session_ok(provider_session: Mapping[str, Any]) -> bool:
     status = str(provider_session.get("status") or "")
     if status == "blocked":
         return False
+    if status == "available":
+        if provider_session.get("ok") is False:
+            return False
+        execution = provider_session.get("execution")
+        if isinstance(execution, dict) and execution.get("status") == "failed":
+            return False
     return True
+
+
+def _wrap_provider_resume(
+    provider_resume: Any | None,
+    *,
+    root: Path,
+    run_id: str,
+) -> Any | None:
+    """Bind root/run_id into the Team-injected ACP ensure callable."""
+    if provider_resume is None:
+        return None
+
+    def _helper(gate: Any) -> Mapping[str, Any]:
+        # Signature: ensure_acp_session_for_team(gate, *, root, run_id)
+        try:
+            return provider_resume(gate, root=root, run_id=run_id)
+        except TypeError:
+            # Legacy test helpers: (gate) -> dict
+            return provider_resume(gate)
+
+    return _helper
 
 
 def view_team(
@@ -1370,10 +1397,13 @@ def view_team(
         execute_effects=execute_effects and not print_only,
     )
     run_id = view_out.get("run_id") or resolve_team_ref(root, identity)
+    root_path = Path(root).resolve()
     provider_session = provider_session_result(
         requested=bool(request_provider_session),
         gate=session_resume_gate,
-        provider_resume=provider_resume,
+        provider_resume=_wrap_provider_resume(
+            provider_resume, root=root_path, run_id=str(run_id)
+        ),
     )
     view_ok = bool(view_out.get("ok"))
     return {
@@ -1418,6 +1448,7 @@ def resume_with_view(
     View/attach never runs while the scale lock is held.
     ``session_resume_gate`` must be injected by the CLI (or tests) — this
     function does not probe the host or re-parse versions.
+    ACP ensure (when injected) runs **after** the scale lock is released.
     """
     from omg_cli.team.operator import plan_and_execute_team_view
     from omg_cli.team.view import (
@@ -1428,11 +1459,45 @@ def resume_with_view(
 
     reconcile = resume_for_identity(root, identity, env=env)
     run_id = str(reconcile.get("run_id") or resolve_team_ref(root, identity))
+    root_path = Path(root).resolve()
     provider_session = provider_session_result(
         requested=bool(request_provider_session),
         gate=session_resume_gate,
-        provider_resume=provider_resume,
+        provider_resume=_wrap_provider_resume(
+            provider_resume, root=root_path, run_id=run_id
+        ),
     )
+    # Bind linked ACP job id into team meta when execution resumed (best-effort).
+    if (
+        request_provider_session
+        and isinstance(provider_session, dict)
+        and provider_session.get("status") == "available"
+        and provider_session.get("transport_wired") is True
+    ):
+        execution = provider_session.get("execution") or {}
+        job_id = execution.get("job_id") if isinstance(execution, dict) else None
+        if job_id:
+            try:
+                _bind_acp_job_to_team_meta(root_path, run_id, str(job_id), execution)
+            except Exception:
+                # Compensate: cancel sidecar if Team metadata binding fails.
+                from omg_cli.jobs.runtime import cancel_job
+
+                try:
+                    cancel_job(
+                        root_path, str(job_id), reason="team_meta_bind_failed"
+                    )
+                except Exception:
+                    pass
+                provider_session = dict(provider_session)
+                provider_session["ok"] = False
+                provider_session["transport_wired"] = False
+                provider_session["execution"] = {
+                    **(execution if isinstance(execution, dict) else {}),
+                    "status": "failed",
+                    "error": "team metadata bind failed; sidecar cancelled",
+                }
+
     envelope: dict[str, Any] = {
         "run_id": run_id,
         "reconcile": _reconcile_envelope(reconcile),
@@ -1477,6 +1542,32 @@ def resume_with_view(
         provider_session
     )
     return envelope
+
+
+def _bind_acp_job_to_team_meta(
+    root: Path,
+    run_id: str,
+    job_id: str,
+    execution: Mapping[str, Any],
+) -> None:
+    from omg_cli.team.plane import load_team_meta, mutate_team_meta
+
+    meta = load_team_meta(root, run_id)
+    gen = meta.get("meta_generation")
+    expected = int(gen) if isinstance(gen, int) and not isinstance(gen, bool) else 0
+
+    def _mutate(current: dict[str, Any]) -> dict[str, Any]:
+        updated = dict(current)
+        updated["linked_acp_session"] = {
+            "job_id": job_id,
+            "attempt": execution.get("attempt"),
+            "receipt_sha256": execution.get("receipt_sha256"),
+            "transport": execution.get("transport"),
+            "session_close": False,
+        }
+        return updated
+
+    mutate_team_meta(root, run_id, _mutate, expected_generation=expected)
 
 
 def worker_pane_descriptors(
