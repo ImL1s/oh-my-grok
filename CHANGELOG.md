@@ -10,6 +10,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#78-E README↔JSON managed-snapshot drift gate:** hand-authored
+  `docs/parity/README.md` keeps exactly one managed block between
+  `BEGIN/END GENERATED PARITY INVENTORY SNAPSHOT` markers.
+  `scripts/generate_parity_docs.py` validates the inventory, renders a
+  deterministic snapshot (statuses, pins, maturity/classifications as code
+  spans, counts only — no timestamps), and `--check` fails closed on
+  stale/malformed markers. Write mode repairs only that block
+  (`MANAGED_BLOCK_PATHS`, not whole-README overwrite). Inventory
+  maturity/status remain bootstrapping; #78 stays open (real-source
+  policies/proofs still outstanding). No `live_*` capability claims.
 - **#69 PR2 (Team operation catalog v1):** immutable
   `omg_cli/team/operation_catalog.py` is the single source for Team API op
   metadata; derives `TEAM_API_OPERATIONS` / `P0_OPERATIONS` /

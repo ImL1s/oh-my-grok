@@ -8,7 +8,7 @@
 | Capability | Category | Classification | Maturity | Marker | Gap |
 | --- | --- | --- | --- | --- | --- |
 | `team.plane_v3` | team | omg_native | grok=catalogued | catalogued | Current Team plane is production-usable but not v3; blocked on #67/#68. |
-| `parity.inventory.governance` | parity_governance | omg_native | grok=catalogued | catalogued | #78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; promotion remains unperformed and is proof-gated. |
+| `parity.inventory.governance` | parity_governance | omg_native | grok=catalogued | catalogued | #78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; #78-E README↔JSON managed-snapshot drift gate landed; promotion remains unperformed and is proof-gated; real-source policies/proofs still open. |
 | `omc.cli.session_surfaces` | runtime_orchestration | omg_native | grok=catalogued | catalogued | OMG substitutes via guidance + host_session; OMC in-session MCP/tool surfaces are not 1:1. |
 | `omc.agents.catalog_routing` | agents_routing | omg_native | grok=catalogued | catalogued | Grok plugin agents exist; OMC-style dynamic tier routing is not fully mirrored. |
 | `omc.skills.catalog_aliases` | skills | omg_native | grok=catalogued | catalogued | OMG ships omg-* skills; OMC alias/pipeline breadth remains partially unclaimed. |
