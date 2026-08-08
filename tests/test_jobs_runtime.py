@@ -377,6 +377,16 @@ def test_launch_commit_failure_stamps_failed_not_starting(
 
     prompt = _prompt(root)
     real_transition = runtime_mod.transition_job
+    spawned: dict[str, int] = {}
+
+    real_popen = runtime_mod.subprocess.Popen
+
+    def tracking_popen(*a, **k):  # noqa: ANN001
+        proc = real_popen(*a, **k)
+        spawned["pid"] = int(proc.pid)
+        return proc
+
+    monkeypatch.setattr("omg_cli.jobs.runtime.subprocess.Popen", tracking_popen)
 
     def selective(
         project_root: Path,
@@ -409,6 +419,112 @@ def test_launch_commit_failure_stamps_failed_not_starting(
     assert j["handle"] is None
     assert j["exit"]["class"] == "spawn_error"
     assert "commit failed" in (j.get("error_message") or "")
+    assert "pid" in spawned
+    time.sleep(0.1)
+    assert not runtime_mod._pid_alive(spawned["pid"])
+
+
+def test_raw_oserror_during_running_commit_kills_and_fails(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Raw OSError on RUNNING commit must kill child and stamp failed."""
+    from omg_cli.jobs import runtime as runtime_mod
+
+    prompt = _prompt(root)
+    real_transition = runtime_mod.transition_job
+    spawned: dict[str, int] = {}
+    real_popen = runtime_mod.subprocess.Popen
+
+    def tracking_popen(*a, **k):  # noqa: ANN001
+        proc = real_popen(*a, **k)
+        spawned["pid"] = int(proc.pid)
+        return proc
+
+    monkeypatch.setattr("omg_cli.jobs.runtime.subprocess.Popen", tracking_popen)
+
+    def boom_oserror(
+        project_root: Path,
+        job_id: str,
+        new_state: JobState,
+        *,
+        updates: dict | None = None,
+    ):
+        if new_state == JobState.RUNNING:
+            raise OSError(28, "simulated No space left on device")
+        return real_transition(project_root, job_id, new_state, updates=updates)
+
+    monkeypatch.setattr(runtime_mod, "transition_job", boom_oserror)
+
+    with pytest.raises(JobStoreError) as ei:
+        start_job(
+            root,
+            provider="fake",
+            role="researcher",
+            prompt_file=prompt,
+            sleep_s=30.0,
+        )
+    assert ei.value.code == "E_JOB_LAUNCH"
+    j = list_jobs(root)[0]
+    assert j["state"] == "failed"
+    assert j["state"] != "starting"
+    assert j["state"] != "running" or j.get("exit", {}).get("class") == "spawn_error"
+    # Must not be stuck starting or durable running without failure stamp.
+    assert j["state"] == "failed"
+    assert "pid" in spawned
+    time.sleep(0.1)
+    assert not runtime_mod._pid_alive(spawned["pid"])
+
+
+def test_post_commit_exception_kills_and_fails_running(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RUNNING commit lands, then exception on the way out → kill + running→failed."""
+    from omg_cli.jobs import runtime as runtime_mod
+
+    prompt = _prompt(root)
+    real_transition = runtime_mod.transition_job
+    spawned: dict[str, int] = {}
+    real_popen = runtime_mod.subprocess.Popen
+
+    def tracking_popen(*a, **k):  # noqa: ANN001
+        proc = real_popen(*a, **k)
+        spawned["pid"] = int(proc.pid)
+        return proc
+
+    monkeypatch.setattr("omg_cli.jobs.runtime.subprocess.Popen", tracking_popen)
+
+    def commit_then_raise(
+        project_root: Path,
+        job_id: str,
+        new_state: JobState,
+        *,
+        updates: dict | None = None,
+    ):
+        out = real_transition(project_root, job_id, new_state, updates=updates)
+        if new_state == JobState.RUNNING:
+            # Durable running is visible; simulate post-rename fsync/readback failure.
+            raise OSError("simulated post-rename fsync failure")
+        return out
+
+    monkeypatch.setattr(runtime_mod, "transition_job", commit_then_raise)
+
+    with pytest.raises(JobStoreError) as ei:
+        start_job(
+            root,
+            provider="fake",
+            role="researcher",
+            prompt_file=prompt,
+            sleep_s=30.0,
+        )
+    assert ei.value.code == "E_JOB_LAUNCH"
+    final = read_job_record(root, list_jobs(root)[0]["job_id"])
+    assert final.state == JobState.FAILED
+    assert final.exit and final.exit.get("class") == "spawn_error"
+    assert "pid" in spawned
+    time.sleep(0.1)
+    assert not runtime_mod._pid_alive(spawned["pid"])
+    # Not left as running with a live child
+    assert final.state != JobState.RUNNING
 
 
 def test_collect_rejects_absolute_and_dotdot_descriptors(root: Path) -> None:

@@ -196,9 +196,9 @@ def run_job(project_root: Path, job_id: str) -> int:
         os.environ["OMG_JOB_FAKE_SLEEP"] = str(worker.get("sleep_s"))
 
     prompt_path = jdir / "prompt.md"
-    _append_event(project_root, job_id, "runner.start", provider=ready.provider)
 
     try:
+        _append_event(project_root, job_id, "runner.start", provider=ready.provider)
         adapter = resolve_adapter(ready.provider)
         assert isinstance(adapter, ProviderAdapter)
         request = ProviderRunRequest(
@@ -208,16 +208,69 @@ def run_job(project_root: Path, job_id: str) -> int:
             output_format="text",
         )
         result = adapter.run(request)
+
+        _append_stdout_lines(project_root, job_id, result.stdout or result.output or "")
+        for ev in result.events:
+            _append_event(
+                project_root,
+                job_id,
+                "provider.event",
+                type=ev.type,
+                index=ev.index,
+                malformed=ev.malformed,
+            )
+
+        artifacts = [a.to_dict() for a in result.artifacts]
+        result_desc = None
+        for a in artifacts:
+            if a.get("kind") == "result":
+                result_desc = a.get("path")
+                break
+        large_path = jdir / "artifacts" / "result.md"
+        if large_path.is_file() and result_desc is None:
+            result_desc = "artifacts/result.md"
+            if not any(a.get("path") == result_desc for a in artifacts):
+                artifacts.append(
+                    {
+                        "path": result_desc,
+                        "kind": "result",
+                        "media_type": "text/markdown",
+                        "sha256": "",
+                    }
+                )
+
+        usage = result.usage.to_dict() if result.usage is not None else None
+        exit_obj = {
+            "class": result.exit_class,
+            "returncode": int(result.returncode),
+            "ok": bool(result.ok),
+            "timed_out": bool(result.timed_out),
+            "cancelled": bool(result.cancelled),
+        }
+        _stamp_running_terminal(
+            project_root,
+            job_id,
+            ok=bool(result.ok),
+            exit_obj=exit_obj,
+            usage=usage,
+            artifacts=artifacts,
+            result_desc=result_desc,
+            error_message=result.error_message or None,
+        )
+        return 0 if result.ok else 1
     except BaseException as exc:  # noqa: BLE001 — stamp failed; re-raise SystemExit-ish
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise
-        _append_event(
-            project_root,
-            job_id,
-            "runner.error",
-            error=str(exc),
-            traceback=traceback.format_exc()[-2000:],
-        )
+        try:
+            _append_event(
+                project_root,
+                job_id,
+                "runner.error",
+                error=str(exc),
+                traceback=traceback.format_exc()[-2000:],
+            )
+        except Exception:
+            pass
         try:
             _stamp_running_terminal(
                 project_root,
@@ -233,62 +286,6 @@ def run_job(project_root: Path, job_id: str) -> int:
             pass
         print(f"omg job runner: {exc}", file=sys.stderr)
         return 1
-
-    _append_stdout_lines(project_root, job_id, result.stdout or result.output or "")
-    for ev in result.events:
-        _append_event(
-            project_root,
-            job_id,
-            "provider.event",
-            type=ev.type,
-            index=ev.index,
-            malformed=ev.malformed,
-        )
-
-    artifacts = [a.to_dict() for a in result.artifacts]
-    result_desc = None
-    for a in artifacts:
-        if a.get("kind") == "result":
-            result_desc = a.get("path")
-            break
-    large_path = jdir / "artifacts" / "result.md"
-    if large_path.is_file() and result_desc is None:
-        result_desc = "artifacts/result.md"
-        if not any(a.get("path") == result_desc for a in artifacts):
-            artifacts.append(
-                {
-                    "path": result_desc,
-                    "kind": "result",
-                    "media_type": "text/markdown",
-                    "sha256": "",
-                }
-            )
-
-    usage = result.usage.to_dict() if result.usage is not None else None
-    exit_obj = {
-        "class": result.exit_class,
-        "returncode": int(result.returncode),
-        "ok": bool(result.ok),
-        "timed_out": bool(result.timed_out),
-        "cancelled": bool(result.cancelled),
-    }
-
-    try:
-        _stamp_running_terminal(
-            project_root,
-            job_id,
-            ok=bool(result.ok),
-            exit_obj=exit_obj,
-            usage=usage,
-            artifacts=artifacts,
-            result_desc=result_desc,
-            error_message=result.error_message or None,
-        )
-    except JobStoreError as exc:
-        print(f"omg job runner: stamp failed: {exc}", file=sys.stderr)
-        return 1
-
-    return 0 if result.ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:

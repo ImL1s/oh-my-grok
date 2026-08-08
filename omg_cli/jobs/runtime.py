@@ -221,45 +221,18 @@ def start_job(
                 "handle": handle,
             },
         )
-    except TransitionError as commit_exc:
-        # Another owner stamped terminal (e.g. cancel) — kill orphan, keep winner.
-        _kill_child_exact(pid, pgid)
-        cur = read_job_record(project_root, record.job_id)
-        if cur.state in TERMINAL_STATES:
-            raise JobStoreError(
-                f"launch aborted; job already terminal ({cur.state.value}): {commit_exc}",
-                code="E_JOB_LAUNCH",
-            ) from commit_exc
-        _best_effort_stamp_failed(
+    except Exception as commit_exc:
+        # Belt-and-suspenders: any post-spawn commit failure must kill the
+        # exact child and reconcile durable state (never leave starting or
+        # dead-running). SystemExit/KeyboardInterrupt are not caught.
+        _cleanup_after_spawn_commit_failure(
             project_root,
             record.job_id,
-            message=f"launch commit failed after spawn: {commit_exc}",
+            pid=pid,
+            pgid=pgid,
+            handle=handle,
+            exc=commit_exc,
         )
-        raise JobStoreError(
-            f"failed to commit running handle after spawn: {commit_exc}",
-            code="E_JOB_LAUNCH",
-        ) from commit_exc
-    except JobStoreError as commit_exc:
-        # Launch succeeded but state commit failed — kill orphan; stamp failed
-        # unless another terminal already won.
-        _kill_child_exact(pid, pgid)
-        try:
-            cur = read_job_record(project_root, record.job_id)
-            if cur.state in TERMINAL_STATES:
-                raise JobStoreError(
-                    f"launch aborted; job already terminal ({cur.state.value}): "
-                    f"{commit_exc}",
-                    code="E_JOB_LAUNCH",
-                ) from commit_exc
-            _best_effort_stamp_failed(
-                project_root,
-                record.job_id,
-                message=f"launch commit failed after spawn: {commit_exc}",
-            )
-        except JobStoreError as nested:
-            if nested.code == "E_JOB_LAUNCH":
-                raise
-            pass
         raise JobStoreError(
             f"failed to commit running handle after spawn: {commit_exc}",
             code="E_JOB_LAUNCH",
@@ -279,12 +252,55 @@ def _kill_child_exact(pid: int, pgid: int) -> None:
     _reap_child(pid)
 
 
+def _cleanup_after_spawn_commit_failure(
+    project_root: Path,
+    job_id: str,
+    *,
+    pid: int,
+    pgid: int,
+    handle: str,
+    exc: BaseException,
+) -> None:
+    """Always kill the spawned child, then reconcile job.json fail-closed."""
+    _kill_child_exact(pid, pgid)
+    try:
+        cur = read_job_record(project_root, job_id)
+    except JobStoreError:
+        # Unreadable — child already killed; best-effort failed if we can.
+        _best_effort_stamp_failed(
+            project_root,
+            job_id,
+            message=f"launch commit failed after spawn (unreadable): {exc}",
+            spawn_pid=pid,
+            spawn_pgid=pgid,
+            spawn_handle=handle,
+        )
+        return
+
+    if cur.state in TERMINAL_STATES:
+        # Another winner (cancel/failed/succeeded) — keep durable terminal.
+        return
+
+    _best_effort_stamp_failed(
+        project_root,
+        job_id,
+        message=f"launch commit failed after spawn: {exc}",
+        spawn_pid=pid,
+        spawn_pgid=pgid,
+        spawn_handle=handle,
+    )
+
+
 def _best_effort_stamp_failed(
     project_root: Path,
     job_id: str,
     *,
     message: str,
+    spawn_pid: int | None = None,
+    spawn_pgid: int | None = None,
+    spawn_handle: str | None = None,
 ) -> None:
+    """Stamp failed from queued/starting/running(this spawn). Never leaves dead-running."""
     try:
         cur = read_job_record(project_root, job_id)
         if cur.state in TERMINAL_STATES:
@@ -305,6 +321,38 @@ def _best_effort_stamp_failed(
                     "handle": None,
                 },
             )
+            return
+        if cur.state == JobState.RUNNING:
+            # Commit may have landed before the exception — fail this spawn's handle.
+            same_spawn = False
+            if spawn_pid is not None and cur.pid is not None and int(cur.pid) == int(spawn_pid):
+                same_spawn = True
+            elif (
+                spawn_handle is not None
+                and cur.handle is not None
+                and str(cur.handle) == str(spawn_handle)
+            ):
+                same_spawn = True
+            elif (
+                spawn_pgid is not None
+                and cur.pgid is not None
+                and int(cur.pgid) == int(spawn_pgid)
+                and spawn_pid is not None
+                and cur.pid is not None
+                and int(cur.pid) == int(spawn_pid)
+            ):
+                same_spawn = True
+            if same_spawn:
+                transition_job(
+                    project_root,
+                    job_id,
+                    JobState.FAILED,
+                    updates={
+                        "exit": {"class": "spawn_error", "returncode": 1},
+                        "error_message": message,
+                        # Keep pid/pgid for forensics; child is already killed.
+                    },
+                )
     except JobStoreError:
         pass
 

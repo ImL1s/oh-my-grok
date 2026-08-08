@@ -15,6 +15,7 @@ from typing import Any, Iterator
 from omg_cli.contracts.path_keys import (
     DATA_FILE_MODE,
     MANAGED_DIR_MODE,
+    ContractPathError,
     atomic_write_bytes,
     ensure_managed_dir,
 )
@@ -124,7 +125,18 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     body = (
         json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
-    atomic_write_bytes(path, body, mode=DATA_FILE_MODE, replace=True)
+    try:
+        atomic_write_bytes(path, body, mode=DATA_FILE_MODE, replace=True)
+    except ContractPathError as exc:
+        raise JobStoreError(
+            f"job durable write confinement failed: {exc}",
+            code="E_JOB_STORE",
+        ) from exc
+    except OSError as exc:
+        raise JobStoreError(
+            f"job durable write failed: {exc}",
+            code="E_JOB_STORE",
+        ) from exc
 
 
 def write_job_record(project_root: Path, record: JobRecord) -> JobRecord:
@@ -231,25 +243,33 @@ def transition_job(
     updates: dict[str, Any] | None = None,
 ) -> JobRecord:
     """Locked immutable transition + optional field updates."""
-    with job_lock(project_root, job_id):
-        record = read_job_record(project_root, job_id)
-        assert_transition(record.state, new_state)
-        if updates:
-            for key, value in updates.items():
-                if key in IMMUTABLE_FIELDS:
-                    raise JobStoreError(
-                        f"cannot mutate immutable field {key!r}",
-                        code="E_JOB_STORE",
-                    )
-                if not hasattr(record, key):
-                    raise JobStoreError(
-                        f"unknown job field {key!r}",
-                        code="E_JOB_STORE",
-                    )
-                setattr(record, key, value)
-        record.state = new_state
-        write_job_record(project_root, record)
-        return read_job_record(project_root, job_id)
+    try:
+        with job_lock(project_root, job_id):
+            record = read_job_record(project_root, job_id)
+            assert_transition(record.state, new_state)
+            if updates:
+                for key, value in updates.items():
+                    if key in IMMUTABLE_FIELDS:
+                        raise JobStoreError(
+                            f"cannot mutate immutable field {key!r}",
+                            code="E_JOB_STORE",
+                        )
+                    if not hasattr(record, key):
+                        raise JobStoreError(
+                            f"unknown job field {key!r}",
+                            code="E_JOB_STORE",
+                        )
+                    setattr(record, key, value)
+            record.state = new_state
+            write_job_record(project_root, record)
+            return read_job_record(project_root, job_id)
+    except JobStoreError:
+        raise
+    except (OSError, ContractPathError) as exc:
+        raise JobStoreError(
+            f"job transition durable failure: {exc}",
+            code="E_JOB_STORE",
+        ) from exc
 
 
 def update_job_fields(
@@ -258,19 +278,27 @@ def update_job_fields(
     **updates: Any,
 ) -> JobRecord:
     """Locked mutable field update without state change."""
-    with job_lock(project_root, job_id):
-        record = read_job_record(project_root, job_id)
-        for key, value in updates.items():
-            if key in IMMUTABLE_FIELDS or key == "state":
-                raise JobStoreError(
-                    f"cannot mutate field {key!r} via update_job_fields",
-                    code="E_JOB_STORE",
-                )
-            if not hasattr(record, key):
-                raise JobStoreError(f"unknown job field {key!r}", code="E_JOB_STORE")
-            setattr(record, key, value)
-        write_job_record(project_root, record)
-        return read_job_record(project_root, job_id)
+    try:
+        with job_lock(project_root, job_id):
+            record = read_job_record(project_root, job_id)
+            for key, value in updates.items():
+                if key in IMMUTABLE_FIELDS or key == "state":
+                    raise JobStoreError(
+                        f"cannot mutate field {key!r} via update_job_fields",
+                        code="E_JOB_STORE",
+                    )
+                if not hasattr(record, key):
+                    raise JobStoreError(f"unknown job field {key!r}", code="E_JOB_STORE")
+                setattr(record, key, value)
+            write_job_record(project_root, record)
+            return read_job_record(project_root, job_id)
+    except JobStoreError:
+        raise
+    except (OSError, ContractPathError) as exc:
+        raise JobStoreError(
+            f"job update durable failure: {exc}",
+            code="E_JOB_STORE",
+        ) from exc
 
 
 def list_job_ids(project_root: Path) -> list[str]:
