@@ -146,7 +146,8 @@ def main() -> int:
     )
 
     if scenario == "late_replay":
-        time.sleep(0.05)
+        # Emit immediately so the client's quiet window observes replay even
+        # under slow CI scheduling (no sleep race before the notification).
         _notify_update(
             "agent_message_chunk",
             content={"type": "text", "text": "LATE_SECRET_REPLAY"},

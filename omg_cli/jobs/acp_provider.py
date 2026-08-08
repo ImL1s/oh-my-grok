@@ -130,7 +130,7 @@ class GrokAcpSessionProvider:
         argv_override = None
         # Hermetic fake peer: OMG_ACP_BIN / binary points at *.py fixture.
         if str(binary).endswith(".py"):
-            argv_override = [sys.executable, str(Path(binary).resolve())]
+            argv_override = [sys.executable, "-u", str(Path(binary).resolve())]
 
         attempt = 1
         try:

@@ -32,7 +32,8 @@ def _spawn(scenario: str, cwd: Path, env: dict | None = None):
         binary=sys.executable,
         cwd=cwd,
         env=e,
-        argv_override=[sys.executable, str(FIXTURE)],
+        # -u: unbuffered peer stdout so quiet-window notifications are not held
+        argv_override=[sys.executable, "-u", str(FIXTURE)],
     )
     return proc, argv
 

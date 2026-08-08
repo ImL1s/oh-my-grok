@@ -226,18 +226,32 @@ def _read_line(
     max_bytes: int,
     deadline: float,
     byte_budget: list[int],
+    rx_buf: bytearray,
 ) -> bytes:
-    """Read one NL-terminated frame; fail on timeout/EOF/overflow."""
+    """Read one NL-terminated frame; fail on timeout/EOF/overflow.
+
+    Partial bytes are retained in *rx_buf* across calls so a quiet-window /
+    poll timeout mid-frame cannot drop already-consumed bytes and turn a later
+    replay notification into ``E_ACP_MALFORMED``.
+    """
     if proc.stdout is None:
         raise AcpError("ACP stdout missing", code="E_ACP_IO")
-    buf = bytearray()
     while True:
+        nl = rx_buf.find(b"\n")
+        if nl >= 0:
+            line = bytes(rx_buf[:nl])
+            del rx_buf[: nl + 1]
+            byte_budget[0] += len(line) + 1
+            if byte_budget[0] > max_bytes:
+                raise AcpError("ACP byte overflow", code="E_ACP_OVERFLOW")
+            if len(line) > max_bytes:
+                raise AcpError("ACP line overflow", code="E_ACP_OVERFLOW")
+            return line
+
         if time.monotonic() > deadline:
             raise AcpError("ACP read timed out", code="E_ACP_TIMEOUT")
-        if proc.poll() is not None and not buf:
+        if proc.poll() is not None and not rx_buf:
             raise AcpError("ACP process exited before response", code="E_ACP_EOF")
-        # Use short select-like poll via read with timeout via threading is heavy;
-        # peek with os.read on fileno when available.
         try:
             import select
 
@@ -248,21 +262,21 @@ def _read_line(
                         "ACP process exited before complete line", code="E_ACP_EOF"
                     )
                 continue
-            chunk = proc.stdout.read(1)
+            # Read available bytes (pipe may return short); retain partials in rx_buf.
+            chunk = proc.stdout.read(4096)
         except (OSError, ValueError) as exc:
             raise AcpError(f"ACP read failed: {exc}", code="E_ACP_IO") from exc
         if chunk is None or chunk == b"":
             if proc.poll() is not None:
+                if rx_buf:
+                    raise AcpError(
+                        "ACP EOF with incomplete frame", code="E_ACP_EOF"
+                    )
                 raise AcpError("ACP EOF while reading line", code="E_ACP_EOF")
             time.sleep(0.01)
             continue
-        byte_budget[0] += len(chunk)
-        if byte_budget[0] > max_bytes:
-            raise AcpError("ACP byte overflow", code="E_ACP_OVERFLOW")
-        if chunk == b"\n":
-            return bytes(buf)
-        buf.extend(chunk)
-        if len(buf) > max_bytes:
+        rx_buf.extend(chunk)
+        if len(rx_buf) > max_bytes:
             raise AcpError("ACP line overflow", code="E_ACP_OVERFLOW")
 
 
@@ -341,6 +355,7 @@ class AcpStdioSession:
     _seen_ids: set[Any] = field(default_factory=set)
     _ready: bool = False
     _receipt: AcpResumeReceipt | None = None
+    _rx_buf: bytearray = field(default_factory=bytearray)
 
     def handshake(
         self,
@@ -530,9 +545,11 @@ class AcpStdioSession:
                     max_bytes=self.max_line_bytes,
                     deadline=deadline,
                     byte_budget=self._byte_budget,
+                    rx_buf=self._rx_buf,
                 )
             except AcpError as exc:
                 if allow_timeout and exc.code == "E_ACP_TIMEOUT":
+                    # Keep any partial frame in _rx_buf for the next poll.
                     return None
                 raise
             if self._byte_budget[0] > self.max_total_bytes:
