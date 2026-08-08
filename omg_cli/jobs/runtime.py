@@ -16,6 +16,7 @@ from omg_cli.jobs.models import (
     JobRecord,
     JobState,
     JobStoreError,
+    TransitionError,
 )
 from omg_cli.jobs.store import (
     create_job_dir,
@@ -180,8 +181,9 @@ def start_job(
                 "handle": handle,
             },
         )
-    except JobStoreError:
-        # Launch succeeded but state commit failed — kill the orphaned child.
+    except JobStoreError as commit_exc:
+        # Launch succeeded but state commit failed — kill the orphaned child
+        # and stamp failed (never leave starting with a dead orphan).
         try:
             os.killpg(pgid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
@@ -189,7 +191,35 @@ def start_job(
                 os.kill(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
-        raise
+        _reap_child(pid)
+        try:
+            cur = read_job_record(project_root, record.job_id)
+            if cur.state not in TERMINAL_STATES:
+                # Prefer starting→failed; if somehow still queued, step through.
+                if cur.state == JobState.QUEUED:
+                    transition_job(project_root, record.job_id, JobState.STARTING)
+                    cur = read_job_record(project_root, record.job_id)
+                if cur.state == JobState.STARTING:
+                    transition_job(
+                        project_root,
+                        record.job_id,
+                        JobState.FAILED,
+                        updates={
+                            "exit": {"class": "spawn_error", "returncode": 1},
+                            "error_message": (
+                                f"launch commit failed after spawn: {commit_exc}"
+                            ),
+                            "pid": None,
+                            "pgid": None,
+                            "handle": None,
+                        },
+                    )
+        except JobStoreError:
+            pass
+        raise JobStoreError(
+            f"failed to commit running handle after spawn: {commit_exc}",
+            code="E_JOB_LAUNCH",
+        ) from commit_exc
 
     return StartResult(record=record, launched=True)
 
@@ -220,6 +250,36 @@ def wait_job(
         time.sleep(max(0.01, float(poll_s)))
 
 
+def _confined_job_path(jdir: Path, descriptor: str) -> Path:
+    """Resolve *descriptor* under *jdir*; fail closed on absolute/`..` escape."""
+    if not isinstance(descriptor, str) or not descriptor.strip():
+        raise JobStoreError(
+            "artifact descriptor must be a non-empty relative path",
+            code="E_JOB_ARTIFACT",
+        )
+    raw = descriptor.strip()
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        raise JobStoreError(
+            f"artifact path escapes job dir: {raw!r}",
+            code="E_JOB_ARTIFACT",
+        )
+    # Reject `..` components before resolve (defense in depth).
+    if any(p == ".." for p in candidate.parts):
+        raise JobStoreError(
+            f"artifact path escapes job dir: {raw!r}",
+            code="E_JOB_ARTIFACT",
+        )
+    jdir_res = jdir.resolve()
+    target = (jdir_res / candidate).resolve()
+    if not target.is_relative_to(jdir_res):
+        raise JobStoreError(
+            f"artifact path escapes job dir: {raw!r}",
+            code="E_JOB_ARTIFACT",
+        )
+    return target
+
+
 def collect_job(project_root: Path, job_id: str) -> dict[str, Any]:
     """Idempotent collect: summary + artifact descriptors only (no inline blobs)."""
     record = read_job_record(project_root, safe_job_id(job_id))
@@ -229,17 +289,18 @@ def collect_job(project_root: Path, job_id: str) -> dict[str, Any]:
             code="E_JOB_NOT_READY",
         )
 
-    # Fail-closed: declared result artifact must exist when referenced.
+    # Fail-closed: declared artifacts must stay under the job dir and exist.
     jdir = job_dir(project_root, record.job_id)
     missing: list[str] = []
     if record.result:
-        target = jdir / record.result
+        target = _confined_job_path(jdir, record.result)
         if not target.is_file():
             missing.append(record.result)
     for art in record.artifacts:
         path = art.get("path") if isinstance(art, dict) else None
         if isinstance(path, str) and path:
-            if not (jdir / path).is_file():
+            target = _confined_job_path(jdir, path)
+            if not target.is_file():
                 missing.append(path)
     if missing:
         raise JobStoreError(
@@ -364,23 +425,35 @@ def cancel_job(
         "error_message": None,
     }
 
-    # starting → cancelled or running → cancelled
-    if record.state in {JobState.STARTING, JobState.RUNNING}:
-        return transition_job(
-            project_root,
-            job_id,
-            JobState.CANCELLED,
-            updates=updates,
-        )
-    # queued should not happen post-start path; treat as cancelled via starting first
-    if record.state == JobState.QUEUED:
-        transition_job(project_root, job_id, JobState.STARTING)
-        return transition_job(
-            project_root,
-            job_id,
-            JobState.CANCELLED,
-            updates=updates,
-        )
+    # Re-read after kill: runner may have stamped succeeded/failed already.
+    try:
+        record = read_job_record(project_root, job_id)
+    except JobStoreError:
+        raise
+    if record.state in TERMINAL_STATES:
+        return record
+
+    try:
+        # starting → cancelled or running → cancelled
+        if record.state in {JobState.STARTING, JobState.RUNNING}:
+            return transition_job(
+                project_root,
+                job_id,
+                JobState.CANCELLED,
+                updates=updates,
+            )
+        # queued should not happen post-start path; treat as cancelled via starting first
+        if record.state == JobState.QUEUED:
+            transition_job(project_root, job_id, JobState.STARTING)
+            return transition_job(
+                project_root,
+                job_id,
+                JobState.CANCELLED,
+                updates=updates,
+            )
+    except TransitionError:
+        # Runner won the race and stamped a terminal state — return idempotently.
+        return read_job_record(project_root, job_id)
     return record
 
 

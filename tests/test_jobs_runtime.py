@@ -367,3 +367,133 @@ def test_immutable_transition(root: Path) -> None:
     )
     with pytest.raises(JobStoreError):
         transition_job(root, rec.job_id, JobState.RUNNING)
+
+
+def test_launch_commit_failure_stamps_failed_not_starting(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After Popen succeeds, a failed running-commit must kill + stamp failed."""
+    from omg_cli.jobs import runtime as runtime_mod
+
+    prompt = _prompt(root)
+    real_transition = runtime_mod.transition_job
+
+    def selective(
+        project_root: Path,
+        job_id: str,
+        new_state: JobState,
+        *,
+        updates: dict | None = None,
+    ):
+        if new_state == JobState.RUNNING:
+            raise JobStoreError("simulated commit failure", code="E_JOB_STORE")
+        return real_transition(project_root, job_id, new_state, updates=updates)
+
+    monkeypatch.setattr(runtime_mod, "transition_job", selective)
+
+    with pytest.raises(JobStoreError) as ei:
+        start_job(
+            root,
+            provider="fake",
+            role="researcher",
+            prompt_file=prompt,
+            sleep_s=2.0,
+        )
+    assert ei.value.code == "E_JOB_LAUNCH"
+
+    jobs = list_jobs(root)
+    assert len(jobs) == 1
+    j = jobs[0]
+    assert j["state"] == "failed"
+    assert j["pid"] is None
+    assert j["handle"] is None
+    assert j["exit"]["class"] == "spawn_error"
+    assert "commit failed" in (j.get("error_message") or "")
+
+
+def test_collect_rejects_absolute_and_dotdot_descriptors(root: Path) -> None:
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        sleep_s=0.05,
+    )
+    wait_job(root, started.record.job_id, timeout_s=10.0)
+    jid = started.record.job_id
+    path = job_json_path(root, jid)
+
+    # Absolute path escape
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["result"] = "/etc/passwd"
+    data["artifacts"] = [{"path": "/etc/passwd", "kind": "result"}]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(JobStoreError) as ei:
+        collect_job(root, jid)
+    assert ei.value.code == "E_JOB_ARTIFACT"
+    assert "escapes" in str(ei.value).lower() or "passwd" in str(ei.value)
+
+    # Relative `..` escape
+    data["result"] = "../outside.md"
+    data["artifacts"] = [{"path": "../../etc/passwd", "kind": "result"}]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(JobStoreError) as ei2:
+        collect_job(root, jid)
+    assert ei2.value.code == "E_JOB_ARTIFACT"
+
+
+def test_cancel_race_with_terminal_idempotent(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If runner stamps succeeded before cancel's transition, return that record."""
+    from omg_cli.jobs import runtime as runtime_mod
+    from omg_cli.jobs.models import TransitionError
+
+    prompt = _prompt(root)
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    transition_job(
+        root,
+        rec.job_id,
+        JobState.RUNNING,
+        updates={"pid": 1, "pgid": 1, "handle": "fake:dead"},
+    )
+
+    real_transition = runtime_mod.transition_job
+
+    def race_on_cancel(
+        project_root: Path,
+        job_id: str,
+        new_state: JobState,
+        *,
+        updates: dict | None = None,
+    ):
+        if new_state == JobState.CANCELLED:
+            # Runner wins: stamp succeeded, then cancel's transition would fail.
+            cur = read_job_record(project_root, job_id)
+            if cur.state == JobState.RUNNING:
+                real_transition(
+                    project_root,
+                    job_id,
+                    JobState.SUCCEEDED,
+                    updates={
+                        "exit": {"class": "success", "returncode": 0, "ok": True},
+                    },
+                )
+            raise TransitionError(
+                "illegal job transition succeeded -> cancelled",
+                code="E_JOB_TRANSITION",
+            )
+        return real_transition(project_root, job_id, new_state, updates=updates)
+
+    monkeypatch.setattr(runtime_mod, "transition_job", race_on_cancel)
+    # Dead pid: cancel skip-kills, then hits the race on stamp.
+    out = cancel_job(root, rec.job_id, reason="race", grace_s=0.05)
+    assert out.state == JobState.SUCCEEDED
+    assert out.exit and out.exit.get("class") == "success"
