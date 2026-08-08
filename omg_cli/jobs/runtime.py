@@ -1072,6 +1072,301 @@ def _pending_acp_intent_idle(
     return age >= float(max_age_s)
 
 
+def _acp_lock_paths_for_run(
+    project_root: Path, run_id: str, *, binding: Mapping[str, Any] | None
+) -> list[Path]:
+    """Resolve ACP transaction lock path(s) for *run_id* (prefer binding hashes)."""
+    root = Path(project_root).resolve()
+    rid = str(run_id)
+    paths: list[Path] = []
+    if isinstance(binding, Mapping):
+        sid = binding.get("session_id_hash")
+        cwd = binding.get("cwd_hash")
+        if isinstance(sid, str) and sid and isinstance(cwd, str) and cwd:
+            paths.append(_acp_lock_path(root, rid, sid, cwd))
+    if not paths:
+        try:
+            ident = resolve_acp_session_identity(root, rid)
+            paths.append(
+                _acp_lock_path(
+                    root,
+                    ident["run_id"],
+                    ident["session_id_hash"],
+                    ident["cwd_hash"],
+                )
+            )
+        except JobStoreError:
+            pass
+    if not paths:
+        from omg_cli.jobs.store import ensure_jobs_root
+
+        locks = ensure_jobs_root(root) / ".locks"
+        prefix = f"acp-{rid}-"
+        if locks.is_dir():
+            try:
+                paths.extend(
+                    sorted(
+                        p
+                        for p in locks.iterdir()
+                        if p.is_file() and p.name.startswith(prefix)
+                    )
+                )
+            except OSError:
+                pass
+    return paths
+
+
+def resolve_acp_binding_for_team_stop(
+    project_root: Path,
+    run_id: str,
+    *,
+    reason: str = "team_stop",
+    force: bool = False,
+    linked_acp: Mapping[str, Any] | None = None,
+    _before_lock_hook: Callable[[dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any]:
+    """Resolve ACP binding for Team stop under the ACP transaction lock.
+
+    Acquires the exact ensure lock, **re-reads** the binding, then:
+    - ``ensuring`` + no ``job_id`` → CAS unlink (only if still that marker)
+    - binding with ``job_id`` → cancel; unproven cancel refuses stop
+    - no binding → pending idle/force clear decision for the caller
+
+    ``_before_lock_hook`` is test-only (delay after peek, before lock).
+    """
+    from contextlib import ExitStack
+
+    from omg_cli.contracts.path_keys import exclusive_lock
+
+    root = Path(project_root).resolve()
+    rid = str(run_id)
+    bind_path = _acp_binding_path(root, rid)
+    peek = _read_json_file(bind_path) if bind_path.is_file() else None
+    if _before_lock_hook is not None:
+        _before_lock_hook(peek)
+
+    lock_paths = _acp_lock_paths_for_run(root, rid, binding=peek)
+    out: dict[str, Any] = {
+        "status": "no_binding",
+        "binding_cleared": False,
+        "cancelled": False,
+        "attempted": False,
+        "stop_ok": True,
+        "session_close": False,
+        "actions": [],
+        "errors": [],
+    }
+
+    def _under_locks(stack: ExitStack) -> dict[str, Any]:
+        for lp in sorted({str(p): p for p in lock_paths}.values(), key=str):
+            stack.enter_context(exclusive_lock(lp))
+
+        binding = _read_json_file(bind_path) if bind_path.is_file() else None
+        if not isinstance(binding, Mapping):
+            # No binding under lock — pending-only recovery for caller.
+            has_pending = (
+                isinstance(linked_acp, Mapping)
+                and str(linked_acp.get("state") or "") == "pending"
+            )
+            if not has_pending:
+                return {**out, "status": "no_binding", "stop_ok": True}
+            # We hold the ACP transaction lock(s); do not NB-probe ourselves.
+            idle = _pending_acp_intent_idle(linked_acp) if linked_acp else False
+            if force or idle:
+                return {
+                    **out,
+                    "status": "cleared_pending",
+                    "stop_ok": True,
+                    "actions": [
+                        "cleared abandoned linked_acp_session pending "
+                        "(proven idle / --force; no live sidecar)"
+                    ],
+                }
+            return {
+                **out,
+                "status": "refused_fresh_pending",
+                "stop_ok": False,
+                "errors": [
+                    "linked_acp_session pending without binding; "
+                    "ensure may still be in flight; stop_refused"
+                ],
+                "actions": [
+                    "fresh ACP pending; stop_refused until idle/force "
+                    "or cancel target exists"
+                ],
+            }
+
+        state = str(binding.get("state") or "")
+        job_id = binding.get("job_id")
+        out["binding"] = dict(binding)
+
+        # CAS: unlink only if still ensuring with no job_id under the lock.
+        if state == "ensuring" and not job_id:
+            # Re-read once more for CAS-like confirmation.
+            again = _read_json_file(bind_path) if bind_path.is_file() else None
+            if (
+                isinstance(again, Mapping)
+                and str(again.get("state") or "") == "ensuring"
+                and not again.get("job_id")
+            ):
+                try:
+                    bind_path.unlink()
+                except OSError as exc:
+                    return {
+                        **out,
+                        "status": "refused_unlink",
+                        "stop_ok": False,
+                        "errors": [f"ensuring binding unlink failed: {exc}"],
+                    }
+                return {
+                    **out,
+                    "status": "cleared_ensuring",
+                    "binding_cleared": True,
+                    "stop_ok": True,
+                    "actions": [
+                        "cleared abandoned ACP ensuring binding "
+                        "(CAS under ACP lock; no job_id)"
+                    ],
+                }
+            # Promoted between reads while we held the lock — should not happen;
+            # fall through to job_id handling with fresh read.
+            binding = again if isinstance(again, Mapping) else binding
+            state = str(binding.get("state") or "")
+            job_id = binding.get("job_id")
+            out["binding"] = dict(binding)
+
+        if isinstance(job_id, str) and job_id:
+            try:
+                cancel_job(root, job_id, reason=reason)
+            except JobStoreError as cancel_exc:
+                code = getattr(cancel_exc, "code", None) or "E_ACP_CANCEL"
+                if code in {"E_JOB_UNKNOWN", "E_JOB_NOT_FOUND"}:
+                    try:
+                        if bind_path.is_file():
+                            bind_path.unlink()
+                    except OSError:
+                        pass
+                    return {
+                        **out,
+                        "status": "cancelled",
+                        "attempted": True,
+                        "cancelled": True,
+                        "binding_cleared": True,
+                        "job_id": job_id,
+                        "stop_ok": True,
+                        "actions": [
+                            f"cancelled linked_acp_session sidecar job_id={job_id} "
+                            f"(already absent {code})"
+                        ],
+                    }
+                return {
+                    **out,
+                    "status": "cancel_unproven",
+                    "attempted": True,
+                    "cancelled": False,
+                    "job_id": job_id,
+                    "stop_ok": False,
+                    "error": str(cancel_exc),
+                    "error_code": code,
+                    "errors": [
+                        f"linked_acp_session cancel: {cancel_exc} ({code})"
+                    ],
+                    "actions": [
+                        "linked_acp_session cancel unproven; "
+                        "stop_refused (binding retained)"
+                    ],
+                }
+            # Proven cancel — clear binding under the same lock.
+            try:
+                if bind_path.is_file():
+                    bind_path.unlink()
+            except OSError as exc:
+                return {
+                    **out,
+                    "status": "cancelled",
+                    "attempted": True,
+                    "cancelled": True,
+                    "job_id": job_id,
+                    "stop_ok": True,
+                    "error": f"binding unlink failed after proven cancel: {exc}",
+                    "actions": [
+                        f"cancelled linked_acp_session sidecar job_id={job_id} "
+                        "(sidecar cancellation; not session/close)"
+                    ],
+                }
+            return {
+                **out,
+                "status": "cancelled",
+                "attempted": True,
+                "cancelled": True,
+                "binding_cleared": True,
+                "job_id": job_id,
+                "stop_ok": True,
+                "actions": [
+                    f"cancelled linked_acp_session sidecar job_id={job_id} "
+                    "(sidecar cancellation; not session/close)"
+                ],
+            }
+
+        # Binding without job_id but not ensuring (unexpected) — refuse.
+        return {
+            **out,
+            "status": "refused_unexpected_binding",
+            "stop_ok": False,
+            "errors": [
+                f"linked_acp_session binding state={state!r} without job_id; "
+                "stop_refused"
+            ],
+            "actions": [
+                "unexpected ACP binding shape; stop_refused (binding retained)"
+            ],
+        }
+
+    if not lock_paths:
+        # No lock file and no hashes — still handle pending-only / absent.
+        if peek is None:
+            has_pending = (
+                isinstance(linked_acp, Mapping)
+                and str(linked_acp.get("state") or "") == "pending"
+            )
+            if not has_pending:
+                return out
+            idle = _pending_acp_intent_idle(linked_acp) if linked_acp else False
+            if force or idle:
+                out["status"] = "cleared_pending"
+                out["actions"] = [
+                    "cleared abandoned linked_acp_session pending "
+                    "(proven idle / --force; no live sidecar)"
+                ]
+                return out
+            out["status"] = "refused_fresh_pending"
+            out["stop_ok"] = False
+            out["errors"] = [
+                "linked_acp_session pending without binding; "
+                "ensure may still be in flight; stop_refused"
+            ]
+            out["actions"] = [
+                "fresh ACP pending; stop_refused until idle/force "
+                "or cancel target exists"
+            ]
+            return out
+        # Binding exists but no lock path — derive a lock from peek hashes hard fail
+        sid = peek.get("session_id_hash") if isinstance(peek, Mapping) else None
+        cwd = peek.get("cwd_hash") if isinstance(peek, Mapping) else None
+        if isinstance(sid, str) and isinstance(cwd, str) and sid and cwd:
+            lock_paths = [_acp_lock_path(root, rid, sid, cwd)]
+        else:
+            out["status"] = "refused_no_lock"
+            out["stop_ok"] = False
+            out["errors"] = [
+                "ACP binding present but lock path unresolved; stop_refused"
+            ]
+            return out
+
+    with ExitStack() as stack:
+        return _under_locks(stack)
+
+
 def resolve_acp_session_identity(
     project_root: Path, run_id: str
 ) -> dict[str, Any]:
@@ -1770,6 +2065,7 @@ __all__ = [
     "job_status",
     "list_jobs",
     "read_acp_sidecar_binding",
+    "resolve_acp_binding_for_team_stop",
     "resolve_acp_session_identity",
     "start_job",
     "wait_job",

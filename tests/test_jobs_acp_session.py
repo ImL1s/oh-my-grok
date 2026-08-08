@@ -718,11 +718,24 @@ def test_stop_during_pre_binding_ensure_no_live_orphan(
     assert box["pre_bind"].get("state") == "ensuring"
     assert not box["pre_bind"].get("job_id")
 
-    stop_out = stop_team(tmp_path, run_id)
-    box["stop"] = stop_out
+    # Stop blocks on the ACP transaction lock held by ensure — run it off-thread
+    # and release the pre-spawn barrier so ensure can abort on stop_state=stopping.
+    stop_box: dict[str, Any] = {}
+
+    def _stop() -> None:
+        stop_box["out"] = stop_team(tmp_path, run_id)
+
+    stop_thr = threading.Thread(target=_stop, name="acp-prebind-stop")
+    stop_thr.start()
+    # Give stop time to publish stopping + block on ACP lock.
+    time.sleep(0.15)
     release.set()
     thr.join(timeout=45)
+    stop_thr.join(timeout=45)
     assert not thr.is_alive()
+    assert not stop_thr.is_alive()
+    stop_out = stop_box.get("out") or {}
+    box["stop"] = stop_out
 
     # Either stop refused while ensure in flight, or completed with no live orphan.
     durable = load_team_meta(tmp_path, run_id)
@@ -750,3 +763,125 @@ def test_stop_during_pre_binding_ensure_no_live_orphan(
     # Must not claim a successful live wire under a completed stop.
     if durable.get("stop_state") == "stopped":
         assert ps.get("transport_wired") is not True or ps.get("ok") is False
+
+
+def test_stop_ensuring_toctou_refuses_after_unproven_retain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P0: stop must not unlink a job-bearing binding using a stale ensuring peek.
+
+    Delay between initial binding read and ACP lock acquisition while ensure
+    retains a job-bearing binding after E_JOB_CANCEL_UNPROVEN; stop must refuse
+    and keep the binding.
+    """
+    import subprocess
+
+    from omg_cli.host_acp import hash_cwd, hash_session_id
+    from omg_cli.host_session import allocate_host_session
+    from omg_cli.jobs.runtime import (
+        _acp_binding_path,
+        _write_json_file,
+        read_acp_sidecar_binding,
+    )
+    from omg_cli.state import write_status
+    from omg_cli.team.plane import EXPERIMENTAL_ENV, load_team_meta, start_team, stop_team
+
+    monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "t"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "README").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    meta = start_team(
+        "ensuring toctou",
+        [{"task_id": "w1", "owned_files": ["lane_a/"]}],
+        root=tmp_path,
+        dry_run=True,
+    )
+    run_id = str(meta["run_id"])
+    host = allocate_host_session()
+    write_status(
+        tmp_path,
+        run_id,
+        "running",
+        extra={**host.status_fields(), "grok_session_state": "launched"},
+    )
+
+    sid_hash = hash_session_id(host.session_id)
+    cwd_hash = hash_cwd(str(tmp_path.resolve()))
+    retained_job = "job_retained_after_unproven"
+    bind_path = _acp_binding_path(tmp_path, run_id)
+    _write_json_file(
+        bind_path,
+        {
+            "run_id": run_id,
+            "job_id": None,
+            "session_id_hash": sid_hash,
+            "cwd_hash": cwd_hash,
+            "state": "ensuring",
+        },
+    )
+
+    def _promote_after_peek(peek: dict[str, Any] | None) -> None:
+        assert isinstance(peek, dict)
+        assert peek.get("state") == "ensuring"
+        assert not peek.get("job_id")
+        # Simulate ensure promoting then retaining after E_JOB_CANCEL_UNPROVEN.
+        _write_json_file(
+            bind_path,
+            {
+                "run_id": run_id,
+                "job_id": retained_job,
+                "session_id_hash": sid_hash,
+                "cwd_hash": cwd_hash,
+                "state": "handshaking",
+            },
+        )
+
+    def _cancel_unproven(root, job_id, *, reason=""):  # noqa: ANN001
+        raise JobStoreError(
+            "cancel disappearance unproven",
+            code="E_JOB_CANCEL_UNPROVEN",
+        )
+
+    monkeypatch.setattr(
+        "omg_cli.jobs.runtime.cancel_job",
+        _cancel_unproven,
+    )
+
+    import omg_cli.jobs.runtime as rt
+
+    orig = rt.resolve_acp_binding_for_team_stop
+
+    def _resolve_with_delay(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        kwargs["_before_lock_hook"] = _promote_after_peek
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(rt, "resolve_acp_binding_for_team_stop", _resolve_with_delay)
+
+    stop_out = stop_team(tmp_path, run_id)
+    assert stop_out.get("stop_completed") is False, stop_out
+    durable = load_team_meta(tmp_path, run_id)
+    assert durable.get("stop_state") == "stop_refused"
+    kept = read_acp_sidecar_binding(tmp_path, run_id)
+    assert isinstance(kept, dict)
+    assert kept.get("job_id") == retained_job
+    assert kept.get("state") == "handshaking"

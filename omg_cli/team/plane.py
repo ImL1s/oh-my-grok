@@ -5100,151 +5100,63 @@ def _stop_team_locked(
             errors.append(f"linked_ralph cancel: {exc}")
 
     # Cancel Team-linked / in-flight ACP session sidecar (#105 PR4).
-    # Binding present → fail-closed until cancel is proven (or refuse when
-    # ensuring-without-job_id). Pending without binding is cleared only when
-    # proven idle (aged / --force) and ACP ensure lock is not held — never
-    # clear a fresh pending solely because binding is briefly missing.
+    # Stop acquires the ACP transaction lock, re-reads the binding, then
+    # CAS-unlinks ensuring/no-job_id or cancels job-bearing bindings.
+    # Unproven cancel → stop_completed=false; binding retained.
     if stop_completed:
         linked_acp = meta.get("linked_acp_session")
-        has_pending = (
-            isinstance(linked_acp, Mapping)
-            and str(linked_acp.get("state") or "") == "pending"
-        )
         has_job = isinstance(linked_acp, Mapping) and bool(linked_acp.get("job_id"))
         try:
             from omg_cli.jobs.runtime import (
-                _acp_ensure_lock_busy,
-                _pending_acp_intent_idle,
                 cancel_job,
-                cancel_linked_acp_sidecar,
-                read_acp_sidecar_binding,
+                resolve_acp_binding_for_team_stop,
             )
 
-            binding = read_acp_sidecar_binding(root_path, run_id)
-            binding_state = (
-                str(binding.get("state") or "") if isinstance(binding, Mapping) else ""
+            resolved = resolve_acp_binding_for_team_stop(
+                root_path,
+                run_id,
+                reason="team_stop",
+                force=force,
+                linked_acp=linked_acp if isinstance(linked_acp, Mapping) else None,
             )
-            binding_job = (
-                binding.get("job_id") if isinstance(binding, Mapping) else None
-            )
+            for act in resolved.get("actions") or []:
+                actions.append(str(act))
+            for err in resolved.get("errors") or []:
+                errors.append(str(err))
 
-            acp_out: dict[str, Any] = {
-                "attempted": False,
-                "cancelled": False,
-                "session_close": False,
-            }
-
-            if (
-                isinstance(binding, Mapping)
-                and binding_state == "ensuring"
-                and not binding_job
+            if not resolved.get("stop_ok", True):
+                stop_completed = False
+            elif (
+                not resolved.get("attempted")
+                and not resolved.get("binding_cleared")
+                and resolved.get("status") == "no_binding"
+                and has_job
+                and isinstance(linked_acp, Mapping)
             ):
-                if _acp_ensure_lock_busy(root_path, run_id):
-                    # Live pre-spawn ensure — refuse until abort/bind settles.
-                    stop_completed = False
-                    errors.append(
-                        "linked_acp_session ensuring binding present (pre-spawn); "
-                        "stop_refused"
-                    )
-                    actions.append(
-                        "ACP ensure in flight (ensuring binding); stop_refused"
-                    )
-                else:
-                    # Orphan ensuring marker (ensure crashed / aborted); clear.
-                    from omg_cli.jobs.runtime import _acp_binding_path
-
-                    try:
-                        bp = _acp_binding_path(root_path, run_id)
-                        if bp.is_file():
-                            bp.unlink()
-                    except OSError:
-                        pass
-                    actions.append(
-                        "cleared abandoned ACP ensuring binding "
-                        "(ensure lock idle; no job_id)"
-                    )
-            else:
-                acp_out = cancel_linked_acp_sidecar(
-                    root_path, run_id, reason="team_stop"
-                )
-                if (
-                    not acp_out.get("attempted")
-                    and has_job
-                    and isinstance(linked_acp, Mapping)
-                ):
-                    jid = str(linked_acp.get("job_id"))
-                    try:
-                        cancel_job(root_path, jid, reason="team_stop")
-                        acp_out = {
-                            "attempted": True,
-                            "cancelled": True,
-                            "job_id": jid,
-                            "session_close": False,
-                        }
-                    except Exception as cancel_exc:  # noqa: BLE001
-                        code = getattr(cancel_exc, "code", None) or "E_ACP_CANCEL"
-                        if code in {"E_JOB_UNKNOWN", "E_JOB_NOT_FOUND"}:
-                            acp_out = {
-                                "attempted": True,
-                                "cancelled": True,
-                                "job_id": jid,
-                                "session_close": False,
-                                "note": f"job already absent ({code})",
-                            }
-                        else:
-                            acp_out = {
-                                "attempted": True,
-                                "cancelled": False,
-                                "job_id": jid,
-                                "error": str(cancel_exc),
-                                "error_code": code,
-                                "session_close": False,
-                            }
-
-                if acp_out.get("attempted") and acp_out.get("cancelled"):
+                # Meta still points at a job but binding was already gone under lock.
+                jid = str(linked_acp.get("job_id"))
+                try:
+                    cancel_job(root_path, jid, reason="team_stop")
                     actions.append(
                         "cancelled linked_acp_session sidecar "
-                        f"job_id={acp_out.get('job_id')} "
+                        f"job_id={jid} "
                         "(sidecar cancellation; not session/close)"
                     )
-                elif acp_out.get("attempted"):
-                    stop_completed = False
-                    err = acp_out.get("error") or "ACP sidecar cancel not proven"
-                    code = acp_out.get("error_code") or "E_ACP_CANCEL"
-                    errors.append(f"linked_acp_session cancel: {err} ({code})")
-                    actions.append(
-                        "linked_acp_session cancel unproven; "
-                        "stop_refused (binding retained)"
-                    )
-                elif has_pending:
-                    lock_busy = _acp_ensure_lock_busy(root_path, run_id)
-                    idle = (
-                        isinstance(linked_acp, Mapping)
-                        and _pending_acp_intent_idle(linked_acp)
-                    )
-                    if lock_busy:
-                        stop_completed = False
-                        errors.append(
-                            "linked_acp_session pending; ACP ensure lock held; "
-                            "stop_refused"
-                        )
+                except Exception as cancel_exc:  # noqa: BLE001
+                    code = getattr(cancel_exc, "code", None) or "E_ACP_CANCEL"
+                    if code in {"E_JOB_UNKNOWN", "E_JOB_NOT_FOUND"}:
                         actions.append(
-                            "ACP ensure lock busy; stop_refused (pending retained)"
-                        )
-                    elif force or idle:
-                        actions.append(
-                            "cleared abandoned linked_acp_session pending "
-                            "(proven idle / --force; no live sidecar)"
+                            "cancelled linked_acp_session sidecar "
+                            f"job_id={jid} (already absent {code})"
                         )
                     else:
                         stop_completed = False
                         errors.append(
-                            "linked_acp_session pending without binding; "
-                            "ensure may still be in flight; stop_refused"
+                            f"linked_acp_session cancel: {cancel_exc} ({code})"
                         )
                         actions.append(
-                            "fresh ACP pending; stop_refused until idle/force "
-                            "or cancel target exists"
+                            "linked_acp_session cancel unproven; "
+                            "stop_refused (binding retained)"
                         )
         except Exception as exc:  # noqa: BLE001 — fail closed on stop claim
             stop_completed = False
