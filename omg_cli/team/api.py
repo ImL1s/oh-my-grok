@@ -4,9 +4,10 @@ Durable mailbox/task mutations go through the CLI-owned stores under
 ``.omg/state/runs/<run_id>/team/<team_key>/``. Workers never write mailbox or
 task files directly.
 
-P0 + P0′ ops (mailbox/task CRUD, heartbeat/shutdown/orphan, events, manifest)
-are implemented; remaining ``TEAM_API_OPERATIONS`` return
-``E_TEAM_API_UNIMPLEMENTED``. Full 33-op parity is intentionally not claimed.
+P0 + P0′ ops (mailbox/task CRUD including claim renew/release, heartbeat/
+shutdown/orphan, events, manifest) are implemented; remaining
+``TEAM_API_OPERATIONS`` return ``E_TEAM_API_UNIMPLEMENTED``. Full 33-op
+parity is intentionally not claimed.
 """
 
 from __future__ import annotations
@@ -93,6 +94,7 @@ TEAM_API_OPERATIONS: tuple[str, ...] = (
     "claim-task",
     "transition-task-status",
     "release-task-claim",
+    "renew-task-claim",
     "read-config",
     "read-manifest",
     "read-worker-status",
@@ -129,6 +131,7 @@ P0_OPERATIONS: tuple[str, ...] = (
     "claim-task",
     "transition-task-status",
     "release-task-claim",
+    "renew-task-claim",
     "get-summary",
     "read-config",
     "read-manifest",
@@ -292,8 +295,36 @@ def resolve_team_api_cli_root(
     return leader_root
 
 
+def _now_utc() -> datetime:
+    """Timezone-aware clock seam for claim lease deadlines (tests monkeypatch)."""
+    return datetime.now(timezone.utc)
+
+
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return _now_utc().isoformat().replace("+00:00", "Z")
+
+
+def _format_lease_deadline(when: datetime) -> str:
+    return when.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_leased_until(claim: Mapping[str, Any] | None) -> datetime | None:
+    """Return a timezone-aware UTC deadline, or None if missing/malformed/naive."""
+    if not claim:
+        return None
+    raw = claim.get("leased_until")
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        stamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if stamp.tzinfo is None:
+        return None
+    return stamp.astimezone(timezone.utc)
 
 
 def _fail(
@@ -635,14 +666,19 @@ def _can_transition(src: str, dst: str) -> bool:
 
 
 def _lease_expired(claim: Mapping[str, Any] | None) -> bool:
-    if not claim or not claim.get("leased_until"):
+    """True when a claim object has no usable unexpired lease.
+
+    A missing claim object is not an active lease defender (returns False so
+    callers that gate on ``claim and not _lease_expired(claim)`` stay correct).
+    A present claim with missing/malformed/timezone-naive ``leased_until`` is
+    fail-closed as expired — never immortal.
+    """
+    if not claim:
         return False
-    raw = str(claim["leased_until"])
-    try:
-        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
+    stamp = _parse_leased_until(claim)
+    if stamp is None:
         return True
-    return stamp <= datetime.now(timezone.utc)
+    return stamp <= _now_utc()
 
 
 def _normalize_task(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -1140,9 +1176,9 @@ def _op_claim_task(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
                 return _ok("claim-task", {"ok": False, "error": "claim_conflict"})
 
         token = str(uuid.uuid4())
-        leased_until = (
-            datetime.now(timezone.utc) + timedelta(seconds=CLAIM_LEASE_SECONDS)
-        ).isoformat().replace("+00:00", "Z")
+        leased_until = _format_lease_deadline(
+            _now_utc() + timedelta(seconds=CLAIM_LEASE_SECONDS)
+        )
         updated = _write_task(
             root,
             run_id,
@@ -1305,6 +1341,83 @@ def _op_release_task_claim(root: Path, payload: dict[str, Any]) -> TeamApiEnvelo
             },
         )
     return _ok("release-task-claim", {"ok": True, "task": updated})
+
+
+def _op_renew_task_claim(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    """Extend an active claim lease without rotating the claim token."""
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    task_id = _validate_task_id(_require_str(payload, "task_id"))
+    claim_token = _require_str(payload, "claim_token")
+    worker = require_safe_id(_require_str(payload, "worker"), label="worker")
+    expected_version = payload.get("expected_version")
+    if expected_version is not None and (
+        isinstance(expected_version, bool)
+        or not isinstance(expected_version, int)
+        or expected_version < 1
+    ):
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "expected_version must be a positive integer when provided",
+            exit_code=2,
+        )
+
+    path = _task_path(root, run_id, team_id, task_id)
+    ensure_managed_dir(path.parent)
+    with exclusive_lock(path.with_suffix(".lock")):
+        task = _read_task(root, run_id, team_id, task_id)
+        if task is None:
+            return _ok("renew-task-claim", {"ok": False, "error": "task_not_found"})
+        if _is_terminal(task["status"]):
+            return _ok(
+                "renew-task-claim", {"ok": False, "error": "already_terminal"}
+            )
+        if task["status"] != "in_progress":
+            return _ok("renew-task-claim", {"ok": False, "error": "claim_conflict"})
+        claim = task.get("claim") or {}
+        if (
+            not task.get("owner")
+            or not claim
+            or claim.get("owner") != task.get("owner")
+            or claim.get("token") != claim_token
+            or claim.get("owner") != worker
+            or task.get("owner") != worker
+        ):
+            return _ok("renew-task-claim", {"ok": False, "error": "claim_conflict"})
+        current_deadline = _parse_leased_until(claim)
+        if current_deadline is None or current_deadline <= _now_utc():
+            return _ok("renew-task-claim", {"ok": False, "error": "lease_expired"})
+        if expected_version is not None and task["version"] != expected_version:
+            return _ok("renew-task-claim", {"ok": False, "error": "version_conflict"})
+
+        new_deadline = _now_utc() + timedelta(seconds=CLAIM_LEASE_SECONDS)
+        if new_deadline <= current_deadline:
+            return _ok(
+                "renew-task-claim", {"ok": False, "error": "lease_not_advanced"}
+            )
+
+        renewed_claim = {
+            **dict(claim),
+            "owner": worker,
+            "token": claim_token,
+            "leased_until": _format_lease_deadline(new_deadline),
+        }
+        updated = _write_task(
+            root,
+            run_id,
+            team_id,
+            {
+                **task,
+                "status": "in_progress",
+                "owner": worker,
+                "claim": renewed_claim,
+                "version": task["version"] + 1,
+            },
+        )
+    return _ok(
+        "renew-task-claim",
+        {"ok": True, "task": updated, "claimToken": claim_token},
+    )
 
 
 def _op_read_config(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
@@ -1820,6 +1933,7 @@ _HANDLERS: dict[str, Handler] = {
     "claim-task": _op_claim_task,
     "transition-task-status": _op_transition_task_status,
     "release-task-claim": _op_release_task_claim,
+    "renew-task-claim": _op_renew_task_claim,
     "get-summary": _op_get_summary,
     "read-config": _op_read_config,
     "read-manifest": _op_read_manifest,
@@ -1847,6 +1961,7 @@ WORKER_ALLOWED_OPS: frozenset[str] = frozenset(
         "claim-task",
         "transition-task-status",
         "release-task-claim",
+        "renew-task-claim",
         "get-summary",
         "read-config",
         "read-manifest",
@@ -1967,7 +2082,11 @@ def _apply_worker_identity_matrix(
                 details={"error": "identity_mismatch"},
             )
         out["worker"] = identity
-    if operation in ("transition-task-status", "release-task-claim"):
+    if operation in (
+        "transition-task-status",
+        "release-task-claim",
+        "renew-task-claim",
+    ):
         claimed = out.get("worker")
         if claimed is not None and str(claimed).strip() and str(claimed).strip() != identity:
             raise TeamApiError(

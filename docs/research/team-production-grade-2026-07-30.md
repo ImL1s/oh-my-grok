@@ -120,8 +120,8 @@ OmO exposes a **managed** team FSM: start/status/stop/supervise/reclaim/deliver/
 
 ### 3.3 P0 vs remaining API (fact)
 
-**P0 (11):**  
-`send-message`, `mailbox-list`, `mailbox-mark-delivered`, `create-task`, `list-tasks`, `claim-task`, `transition-task-status`, `release-task-claim`, `get-summary`, `read-config`, `write-worker-inbox`
+**P0 (12):**  
+`send-message`, `mailbox-list`, `mailbox-mark-delivered`, `create-task`, `list-tasks`, `claim-task`, `transition-task-status`, `release-task-claim`, `renew-task-claim`, `get-summary`, `read-config`, `write-worker-inbox`
 
 **Not P0 (22):**  
 `broadcast`, `mailbox-mark-notified`, `read-task`, `update-task`, `read-manifest`, `read-worker-status`, `read-worker-heartbeat`, `update-worker-heartbeat`, `write-worker-identity`, `append-event`, `read-events`, `await-event`, `read-idle-state`, `read-stall-state`, `cleanup`, `orphan-cleanup`, `write-shutdown-request`, `read-shutdown-ack`, `read-monitor-snapshot`, `write-monitor-snapshot`, `read-task-approval`, `write-task-approval`

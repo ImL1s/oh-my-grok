@@ -196,7 +196,7 @@ canonical authority 保持 run-scoped：
 | `send-message` | allow | allow；`from_worker` 強制等於 env identity |
 | `mailbox-list`, `mailbox-mark-delivered` | allow | 只允許自己的 mailbox |
 | `claim-task` | allow | allow；claim owner 強制等於 env identity |
-| `transition-task-status`, `release-task-claim` | allow | 只允許自己持有的 claim |
+| `transition-task-status`, `release-task-claim`, `renew-task-claim` | allow | 只允許自己持有的 claim |
 | `create-task`, `write-worker-inbox` | allow | deny |
 | launch／stop／cleanup | allow | deny |
 

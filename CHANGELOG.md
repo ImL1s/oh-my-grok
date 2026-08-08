@@ -32,6 +32,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   fail-closes on non-`session_resume` gate capability ids.
 
 ### Added
+- **#69 PR1 (renew-task-claim):** explicit `omg team api renew-task-claim`
+  extends an active in-progress claim lease under the per-task lock
+  (`leased_until` = now + CLAIM_LEASE_SECONDS; never shortens; same claim
+  token/owner/status). Fail-closed on missing task, terminal status, token
+  mismatch, expired/malformed deadline, and `expected_version` conflict.
+  Does not rotate tokens, mark tasks complete, or write `passes`/`verified`.
+  Hermetic coverage in `tests/test_team_api.py` (+ heartbeat non-renewal in
+  reliability). Does **not** close #69 (recovery/sweeper/job wiring later).
 - **Partial work for issue 68 (PR1 / jobs MVP):** durable `.omg/jobs/<id>/`
   store + `omg job start|status|wait|collect|cancel|list` with JSON CLI
   envelopes. Subprocess job runner owns `ProviderAdapter.run` (no second

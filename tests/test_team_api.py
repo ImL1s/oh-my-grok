@@ -1055,6 +1055,567 @@ def test_release_task_claim_returns_to_pending(
     assert released["data"]["task"].get("claim") in (None, {})
 
 
+def _task_file(root: Path, run_id: str, task_id: str = "1") -> Path:
+    from omg_cli.team.api import _task_path
+
+    return _task_path(root, run_id, TEAM, task_id)
+
+
+def _claim_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    run_id: str,
+    *,
+    worker: str = "worker-1",
+) -> tuple[str, dict]:
+    _exec(
+        tmp_path,
+        "create-task",
+        {
+            "subject": "renew me",
+            "description": "lease",
+            "workers": ["worker-1", "worker-2"],
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    code, claimed = _exec(
+        tmp_path,
+        "claim-task",
+        {"task_id": "1", "worker": worker},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0
+    token = claimed["data"]["claimToken"]
+    return token, claimed["data"]["task"]
+
+
+def test_renew_task_claim_extends_deadline_preserves_token_and_increments_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    import omg_cli.team.api as team_api
+
+    fixed = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: fixed)
+
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    token, task = _claim_one(tmp_path, monkeypatch, run_id)
+    before = task["claim"]["leased_until"]
+    version = task["version"]
+
+    later = fixed + timedelta(minutes=5)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: later)
+    code, renewed = _exec(
+        tmp_path,
+        "renew-task-claim",
+        {
+            "task_id": "1",
+            "worker": "worker-1",
+            "claim_token": token,
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0
+    assert renewed["operation"] == "renew-task-claim"
+    assert renewed["data"]["ok"] is True
+    assert renewed["data"]["claimToken"] == token
+    after_task = renewed["data"]["task"]
+    assert after_task["status"] == "in_progress"
+    assert after_task["owner"] == "worker-1"
+    assert after_task["claim"]["token"] == token
+    assert after_task["claim"]["owner"] == "worker-1"
+    assert after_task["version"] == version + 1
+    assert after_task["claim"]["leased_until"] > before
+    expected_deadline = (
+        later + timedelta(seconds=team_api.CLAIM_LEASE_SECONDS)
+    ).isoformat().replace("+00:00", "Z")
+    assert after_task["claim"]["leased_until"] == expected_deadline
+
+
+def test_renew_task_claim_again_further_extends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    import omg_cli.team.api as team_api
+
+    t0 = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: t0)
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    token, _ = _claim_one(tmp_path, monkeypatch, run_id)
+
+    t1 = t0 + timedelta(minutes=3)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: t1)
+    code, first = _exec(
+        tmp_path,
+        "renew-task-claim",
+        {"task_id": "1", "worker": "worker-1", "claim_token": token},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0
+    first_deadline = first["data"]["task"]["claim"]["leased_until"]
+    first_version = first["data"]["task"]["version"]
+
+    t2 = t0 + timedelta(minutes=6)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: t2)
+    code, second = _exec(
+        tmp_path,
+        "renew-task-claim",
+        {"task_id": "1", "worker": "worker-1", "claim_token": token},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0
+    assert second["data"]["claimToken"] == token
+    assert second["data"]["task"]["claim"]["leased_until"] > first_deadline
+    assert second["data"]["task"]["version"] == first_version + 1
+
+
+def test_renew_task_claim_expected_version_conflict_does_not_mutate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    import omg_cli.team.api as team_api
+
+    fixed = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: fixed)
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    token, task = _claim_one(tmp_path, monkeypatch, run_id)
+    path = _task_file(tmp_path, run_id)
+    before_bytes = path.read_bytes()
+
+    monkeypatch.setattr(
+        team_api, "_now_utc", lambda: fixed + timedelta(minutes=2)
+    )
+    code, envelope = _exec(
+        tmp_path,
+        "renew-task-claim",
+        {
+            "task_id": "1",
+            "worker": "worker-1",
+            "claim_token": token,
+            "expected_version": task["version"] + 99,
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 1
+    assert envelope["ok"] is False
+    assert envelope["error"]["details"]["error"] == "version_conflict"
+    assert path.read_bytes() == before_bytes
+
+
+def test_renew_task_claim_wrong_token_fails_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    import omg_cli.team.api as team_api
+
+    fixed = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: fixed)
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    token, task = _claim_one(tmp_path, monkeypatch, run_id)
+    path = _task_file(tmp_path, run_id)
+    before = path.read_bytes()
+
+    monkeypatch.setattr(
+        team_api, "_now_utc", lambda: fixed + timedelta(minutes=1)
+    )
+    code, envelope = _exec(
+        tmp_path,
+        "renew-task-claim",
+        {
+            "task_id": "1",
+            "worker": "worker-1",
+            "claim_token": "not-" + token,
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 1
+    assert envelope["error"]["details"]["error"] == "claim_conflict"
+    assert path.read_bytes() == before
+    assert task["claim"]["leased_until"]
+
+
+def test_renew_task_claim_wrong_worker_fails_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    import omg_cli.team.api as team_api
+
+    fixed = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: fixed)
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    token, _ = _claim_one(tmp_path, monkeypatch, run_id)
+    path = _task_file(tmp_path, run_id)
+    before = path.read_bytes()
+
+    monkeypatch.setattr(
+        team_api, "_now_utc", lambda: fixed + timedelta(minutes=1)
+    )
+    code, envelope = _exec(
+        tmp_path,
+        "renew-task-claim",
+        {
+            "task_id": "1",
+            "worker": "worker-2",
+            "claim_token": token,
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 1
+    assert envelope["error"]["details"]["error"] == "claim_conflict"
+    assert path.read_bytes() == before
+
+
+def test_worker_renew_task_claim_binds_env_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    import omg_cli.team.api as team_api
+
+    fixed = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: fixed)
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    token, task = _claim_one(tmp_path, monkeypatch, run_id)
+    version = task["version"]
+
+    _bind_worker_env(monkeypatch, run_id=run_id, worker_id="worker-1")
+    monkeypatch.setattr(
+        team_api, "_now_utc", lambda: fixed + timedelta(minutes=2)
+    )
+    code, renewed = execute_team_api(
+        "renew-task-claim",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "task_id": "1",
+            "claim_token": token,
+        },
+        root=tmp_path,
+    )
+    assert code == 0
+    assert renewed["data"]["ok"] is True
+    assert renewed["data"]["task"]["owner"] == "worker-1"
+    assert renewed["data"]["claimToken"] == token
+    assert renewed["data"]["task"]["version"] == version + 1
+
+
+def test_worker_renew_task_claim_forged_worker_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    import omg_cli.team.api as team_api
+
+    fixed = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: fixed)
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    token, _ = _claim_one(tmp_path, monkeypatch, run_id)
+    path = _task_file(tmp_path, run_id)
+    before = path.read_bytes()
+
+    _bind_worker_env(monkeypatch, run_id=run_id, worker_id="worker-1")
+    monkeypatch.setattr(
+        team_api, "_now_utc", lambda: fixed + timedelta(minutes=2)
+    )
+    code, forged = execute_team_api(
+        "renew-task-claim",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "task_id": "1",
+            "claim_token": token,
+            "worker": "worker-2",
+        },
+        root=tmp_path,
+    )
+    assert code == 2
+    assert forged["error"]["details"]["error"] == "identity_mismatch"
+    assert path.read_bytes() == before
+
+
+def test_renew_task_claim_expired_lease_cannot_be_resurrected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timezone
+
+    import omg_cli.team.api as team_api
+
+    t0 = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: t0)
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    token, task = _claim_one(tmp_path, monkeypatch, run_id)
+    path = _task_file(tmp_path, run_id)
+    before = path.read_bytes()
+    deadline = datetime.fromisoformat(
+        task["claim"]["leased_until"].replace("Z", "+00:00")
+    )
+
+    monkeypatch.setattr(team_api, "_now_utc", lambda: deadline)
+    code, expired = _exec(
+        tmp_path,
+        "renew-task-claim",
+        {"task_id": "1", "worker": "worker-1", "claim_token": token},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 1
+    assert expired["error"]["details"]["error"] == "lease_expired"
+    assert path.read_bytes() == before
+
+    # Another registered worker can still recover via claim-task after expiry.
+    code, recovered = _exec(
+        tmp_path,
+        "claim-task",
+        {"task_id": "1", "worker": "worker-2"},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0
+    assert recovered["data"]["ok"] is True
+    assert recovered["data"]["task"]["owner"] == "worker-2"
+    assert recovered["data"]["claimToken"] != token
+
+
+@pytest.mark.parametrize(
+    "setup",
+    ["released", "terminal"],
+)
+def test_renew_task_claim_released_or_terminal_task_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setup: str
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    import omg_cli.team.api as team_api
+
+    fixed = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: fixed)
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    token, _ = _claim_one(tmp_path, monkeypatch, run_id)
+
+    if setup == "released":
+        code, _ = _exec(
+            tmp_path,
+            "release-task-claim",
+            {"task_id": "1", "claim_token": token, "worker": "worker-1"},
+            run_id=run_id,
+            monkeypatch=monkeypatch,
+        )
+        assert code == 0
+        expected = "claim_conflict"
+    else:
+        code, _ = _exec(
+            tmp_path,
+            "transition-task-status",
+            {
+                "task_id": "1",
+                "from": "in_progress",
+                "to": "completed",
+                "claim_token": token,
+                "worker": "worker-1",
+                "result": "done",
+            },
+            run_id=run_id,
+            monkeypatch=monkeypatch,
+        )
+        assert code == 0
+        expected = "already_terminal"
+
+    path = _task_file(tmp_path, run_id)
+    before = path.read_bytes()
+    monkeypatch.setattr(
+        team_api, "_now_utc", lambda: fixed + timedelta(minutes=1)
+    )
+    code, envelope = _exec(
+        tmp_path,
+        "renew-task-claim",
+        {"task_id": "1", "worker": "worker-1", "claim_token": token},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 1
+    assert envelope["error"]["details"]["error"] == expected
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "bad_deadline",
+    [None, "not-a-timestamp", "2026-08-08T12:00:00"],
+)
+def test_renew_task_claim_missing_or_malformed_deadline_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bad_deadline: str | None,
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    import omg_cli.team.api as team_api
+
+    fixed = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: fixed)
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    token, task = _claim_one(tmp_path, monkeypatch, run_id)
+    path = _task_file(tmp_path, run_id)
+    from omg_cli.contracts.writer_chain import (
+        canonical_json_bytes,
+        parse_canonical_json_bytes,
+    )
+
+    data = parse_canonical_json_bytes(path.read_bytes())
+    assert isinstance(data, dict)
+    claim = dict(data["claim"])
+    if bad_deadline is None:
+        claim.pop("leased_until", None)
+    else:
+        claim["leased_until"] = bad_deadline
+    data["claim"] = claim
+    path.write_bytes(canonical_json_bytes(data))
+    before = path.read_bytes()
+
+    monkeypatch.setattr(
+        team_api, "_now_utc", lambda: fixed + timedelta(minutes=1)
+    )
+    code, envelope = _exec(
+        tmp_path,
+        "renew-task-claim",
+        {"task_id": "1", "worker": "worker-1", "claim_token": token},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 1
+    assert envelope["ok"] is False
+    assert envelope["error"]["details"]["error"] == "lease_expired"
+    assert path.read_bytes() == before
+    assert task["status"] == "in_progress"
+
+
+def test_renew_task_claim_never_shortens_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    import omg_cli.team.api as team_api
+
+    fixed = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: fixed)
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    token, task = _claim_one(tmp_path, monkeypatch, run_id)
+    path = _task_file(tmp_path, run_id)
+    before = path.read_bytes()
+    long_deadline = task["claim"]["leased_until"]
+
+    # Advance a little but shrink the lease constant so now+lease < existing.
+    monkeypatch.setattr(
+        team_api, "_now_utc", lambda: fixed + timedelta(minutes=1)
+    )
+    monkeypatch.setattr(team_api, "CLAIM_LEASE_SECONDS", 30)
+    code, envelope = _exec(
+        tmp_path,
+        "renew-task-claim",
+        {"task_id": "1", "worker": "worker-1", "claim_token": token},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 1
+    assert envelope["error"]["details"]["error"] == "lease_not_advanced"
+    assert path.read_bytes() == before
+    code, reread = _exec(
+        tmp_path, "read-task", {"task_id": "1"}, run_id=run_id, monkeypatch=monkeypatch
+    )
+    assert code == 0
+    assert reread["data"]["task"]["claim"]["leased_until"] == long_deadline
+    assert reread["data"]["task"]["version"] == task["version"]
+
+
+def test_cli_team_api_renew_task_claim_json_roundtrip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    import omg_cli.team.api as team_api
+
+    fixed = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: fixed)
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    token, _ = _claim_one(tmp_path, monkeypatch, run_id)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        team_api, "_now_utc", lambda: fixed + timedelta(minutes=2)
+    )
+    rc = main(
+        [
+            "team",
+            "api",
+            "renew-task-claim",
+            "--input",
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "team_id": TEAM,
+                    "task_id": "1",
+                    "worker": "worker-1",
+                    "claim_token": token,
+                }
+            ),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is True
+    assert out["operation"] == "renew-task-claim"
+    assert out["data"]["ok"] is True
+    assert out["data"]["claimToken"] == token
+    assert out["data"]["task"]["status"] == "in_progress"
+
+
+def test_renew_task_claim_does_not_set_passes_or_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    import omg_cli.team.api as team_api
+    from omg_cli.state import load_run
+
+    fixed = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: fixed)
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    token, _ = _claim_one(tmp_path, monkeypatch, run_id)
+    before = load_run(tmp_path, run_id) or {}
+    before_verified = before.get("verified")
+    before_passes = before.get("passes")
+
+    monkeypatch.setattr(
+        team_api, "_now_utc", lambda: fixed + timedelta(minutes=2)
+    )
+    code, renewed = _exec(
+        tmp_path,
+        "renew-task-claim",
+        {"task_id": "1", "worker": "worker-1", "claim_token": token},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0
+    assert renewed["data"]["task"]["status"] == "in_progress"
+    assert renewed["data"]["task"].get("completed_at") in (None, "")
+    after = load_run(tmp_path, run_id) or {}
+    assert after.get("verified") == before_verified
+    assert after.get("passes") == before_passes
+    assert after.get("verified") is not True
+
+
 def test_read_config_get_summary_and_write_worker_inbox(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1388,6 +1949,7 @@ def test_p0_operations_subset_of_omx_names() -> None:
         "claim-task",
         "transition-task-status",
         "release-task-claim",
+        "renew-task-claim",
         "get-summary",
         "read-config",
         "write-worker-inbox",

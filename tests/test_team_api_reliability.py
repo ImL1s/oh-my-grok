@@ -56,6 +56,87 @@ def test_p0_prime_ops_are_catalog_subset() -> None:
     assert set(P0_OPERATIONS) <= set(TEAM_API_OPERATIONS)
 
 
+def test_renew_task_claim_in_catalog_and_handlers() -> None:
+    from omg_cli.team.api import _HANDLERS
+
+    assert "renew-task-claim" in TEAM_API_OPERATIONS
+    assert "renew-task-claim" in P0_OPERATIONS
+    assert "renew-task-claim" in _HANDLERS
+
+
+def test_worker_heartbeat_does_not_renew_task_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Heartbeat is liveness-only; it must not extend claim.leased_until."""
+    from datetime import datetime, timezone
+
+    import omg_cli.team.api as team_api
+
+    fixed = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(team_api, "_now_utc", lambda: fixed)
+    run_id = _seed(tmp_path, monkeypatch)
+    team_id = "team"
+    env = {EXPERIMENTAL_ENV: "1"}
+    write_worker_ready_receipt(
+        tmp_path, run_id=run_id, team_id=team_id, worker_id="w1", source="test"
+    )
+    code, created = execute_team_api(
+        "create-task",
+        {
+            "run_id": run_id,
+            "team_id": team_id,
+            "subject": "heartbeat must not renew",
+            "description": "x",
+            "workers": ["w1"],
+        },
+        root=tmp_path,
+        env=env,
+    )
+    assert code == 0, created
+    code, claimed = execute_team_api(
+        "claim-task",
+        {
+            "run_id": run_id,
+            "team_id": team_id,
+            "task_id": "1",
+            "worker": "w1",
+        },
+        root=tmp_path,
+        env=env,
+    )
+    assert code == 0, claimed
+    task = claimed["data"]["task"]
+    deadline = task["claim"]["leased_until"]
+    version = task["version"]
+
+    code, hb = execute_team_api(
+        "update-worker-heartbeat",
+        {
+            "run_id": run_id,
+            "team_id": team_id,
+            "worker": "host-w1",
+            "task_id": "w1",
+            "generation": 0,
+            "expected_sequence": 0,
+        },
+        root=tmp_path,
+        env=env,
+    )
+    assert code == 0, hb
+
+    code, reread = execute_team_api(
+        "read-task",
+        {"run_id": run_id, "team_id": team_id, "task_id": "1"},
+        root=tmp_path,
+        env=env,
+    )
+    assert code == 0, reread
+    again = reread["data"]["task"]
+    assert again["claim"]["leased_until"] == deadline
+    assert again["version"] == version
+    assert again["status"] == "in_progress"
+
+
 def test_heartbeat_and_status_ops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
