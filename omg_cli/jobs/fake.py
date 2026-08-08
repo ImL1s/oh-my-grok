@@ -89,9 +89,25 @@ class FakeProvider:
 
     def run(self, request: ProviderRunRequest) -> ProviderRunResult:
         """Scripted worker invoked via Adapter.run inside the job runner child."""
-        if _env_truthy("OMG_JOB_FAKE_IGNORE_SIGTERM"):
+        ignore_sigterm = _env_truthy("OMG_JOB_FAKE_IGNORE_SIGTERM")
+        prev_handler = None
+        if ignore_sigterm:
+            prev_handler = signal.getsignal(signal.SIGTERM)
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
+        try:
+            return self._run_body(request, ignore_sigterm=ignore_sigterm)
+        finally:
+            if ignore_sigterm and prev_handler is not None:
+                try:
+                    signal.signal(signal.SIGTERM, prev_handler)
+                except (ValueError, OSError, TypeError):
+                    # Best-effort restore (e.g. non-main thread).
+                    pass
+
+    def _run_body(
+        self, request: ProviderRunRequest, *, ignore_sigterm: bool
+    ) -> ProviderRunResult:
         job_dir = (os.environ.get("OMG_JOB_DIR") or "").strip()
         prompt = request.prompt or ""
         if request.prompt_file:
@@ -109,7 +125,7 @@ class FakeProvider:
 
         sleep_s = _sleep_s()
         # Allow long sleeps for cancel tests; ignore_sigterm sleeps longer by default.
-        if _env_truthy("OMG_JOB_FAKE_IGNORE_SIGTERM") and sleep_s < 30.0:
+        if ignore_sigterm and sleep_s < 30.0:
             sleep_s = max(sleep_s, 30.0)
 
         time.sleep(sleep_s)
@@ -140,7 +156,11 @@ class FakeProvider:
             lines.append(f"fake:large_artifact={result_rel} bytes={len(body)}")
 
         stdout = "\n".join(lines) + "\n"
-        usage = ProviderUsage(input_tokens=len(prompt), output_tokens=len(stdout), total_tokens=len(prompt) + len(stdout))
+        usage = ProviderUsage(
+            input_tokens=len(prompt),
+            output_tokens=len(stdout),
+            total_tokens=len(prompt) + len(stdout),
+        )
 
         if _env_truthy("OMG_JOB_FAKE_FAIL"):
             return ProviderRunResult(

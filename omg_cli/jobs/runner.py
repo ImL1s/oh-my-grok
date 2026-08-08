@@ -16,6 +16,8 @@ import os
 import sys
 import time
 import traceback
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 
 from omg_cli.jobs.models import TERMINAL_STATES, JobRecord, JobState, JobStoreError
@@ -32,6 +34,26 @@ from omg_cli.providers.models import ProviderRunRequest
 # Child polls until parent commits running (or terminal / timeout).
 DEFAULT_READY_TIMEOUT_S = 60.0
 DEFAULT_READY_POLL_S = 0.02
+
+
+@contextmanager
+def _env_scope(updates: Mapping[str, str | None]) -> Iterator[None]:
+    """Apply env updates and restore prior values (or absence) on exit."""
+    previous: dict[str, str | None] = {}
+    for key, value in updates.items():
+        previous[key] = os.environ.get(key)
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    try:
+        yield
+    finally:
+        for key, old in previous.items():
+            if old is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old
 
 
 def resolve_adapter(provider: str) -> ProviderAdapter:
@@ -161,10 +183,27 @@ def run_job(project_root: Path, job_id: str) -> int:
         return 0
 
     jdir = job_dir(project_root, job_id)
-    os.environ["OMG_JOB_ID"] = job_id
-    os.environ["OMG_JOB_DIR"] = str(jdir)
-    os.environ["OMG_PROJECT_ROOT"] = str(project_root)
+    env_updates: dict[str, str | None] = {
+        "OMG_JOB_ID": job_id,
+        "OMG_JOB_DIR": str(jdir),
+        "OMG_PROJECT_ROOT": str(project_root),
+        # Clear fake-mode leftovers unless worker opts in below.
+        "OMG_JOB_FAKE_FAIL": None,
+        "OMG_JOB_FAKE_LARGE": None,
+        "OMG_JOB_FAKE_IGNORE_SIGTERM": None,
+        "OMG_JOB_FAKE_SLEEP": None,
+    }
 
+    with _env_scope(env_updates):
+        return _run_job_with_env(project_root, job_id, record, jdir)
+
+
+def _run_job_with_env(
+    project_root: Path,
+    job_id: str,
+    record: JobRecord,
+    jdir: Path,
+) -> int:
     ready_timeout = float(
         (record.worker or {}).get("ready_timeout_s") or DEFAULT_READY_TIMEOUT_S
     )
@@ -186,15 +225,26 @@ def run_job(project_root: Path, job_id: str) -> int:
         return 0
 
     worker = ready.worker or {}
-    if worker.get("fail"):
-        os.environ["OMG_JOB_FAKE_FAIL"] = "1"
-    if worker.get("large_output"):
-        os.environ["OMG_JOB_FAKE_LARGE"] = "1"
-    if worker.get("ignore_sigterm"):
-        os.environ["OMG_JOB_FAKE_IGNORE_SIGTERM"] = "1"
-    if "sleep_s" in worker:
-        os.environ["OMG_JOB_FAKE_SLEEP"] = str(worker.get("sleep_s"))
+    fake_env: dict[str, str | None] = {
+        "OMG_JOB_FAKE_FAIL": "1" if worker.get("fail") else None,
+        "OMG_JOB_FAKE_LARGE": "1" if worker.get("large_output") else None,
+        "OMG_JOB_FAKE_IGNORE_SIGTERM": "1" if worker.get("ignore_sigterm") else None,
+        "OMG_JOB_FAKE_SLEEP": (
+            str(worker.get("sleep_s")) if "sleep_s" in worker else None
+        ),
+    }
+    # Nested scope so fake flags do not leak past Adapter.run either.
+    with _env_scope(fake_env):
+        return _execute_adapter(project_root, job_id, ready, jdir, worker)
 
+
+def _execute_adapter(
+    project_root: Path,
+    job_id: str,
+    ready: JobRecord,
+    jdir: Path,
+    worker: dict,
+) -> int:
     prompt_path = jdir / "prompt.md"
 
     try:

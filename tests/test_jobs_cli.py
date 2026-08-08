@@ -3,12 +3,28 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 from omg_cli.cli_envelope import SCHEMA_VERSION
 from omg_cli.main import build_parser, main
+
+
+@pytest.fixture(autouse=True)
+def _jobs_test_env_isolation() -> None:
+    """Scrub runner env + process-local project root after each test."""
+    yield
+    for key in list(os.environ):
+        if key.startswith("OMG_JOB_") or key == "OMG_PROJECT_ROOT":
+            os.environ.pop(key, None)
+    try:
+        from omg_cli.project_root import clear_resolved_project_root
+
+        clear_resolved_project_root()
+    except Exception:
+        pass
 
 
 @pytest.fixture

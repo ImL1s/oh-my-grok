@@ -28,6 +28,21 @@ from omg_cli.jobs.store import (
 from omg_cli.providers.base import ProviderAdapter
 
 
+@pytest.fixture(autouse=True)
+def _jobs_test_env_isolation() -> None:
+    """Scrub runner env + process-local project root after each test."""
+    yield
+    for key in list(os.environ):
+        if key.startswith("OMG_JOB_") or key == "OMG_PROJECT_ROOT":
+            os.environ.pop(key, None)
+    try:
+        from omg_cli.project_root import clear_resolved_project_root
+
+        clear_resolved_project_root()
+    except Exception:
+        pass
+
+
 @pytest.fixture
 def root(tmp_path: Path) -> Path:
     (tmp_path / ".omg").mkdir()
@@ -731,6 +746,152 @@ def test_runner_never_transitions_to_running(
     assert JobState.RUNNING not in seen
     assert JobState.SUCCEEDED in seen
     assert read_job_record(root, rec.job_id).state == JobState.SUCCEEDED
+
+
+def test_run_job_restores_env_after_inprocess_call(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In-process run_job must not leak OMG_JOB_* / OMG_PROJECT_ROOT into later tests."""
+    from omg_cli.jobs import runner as runner_mod
+    from omg_cli.providers.models import ProviderRunResult
+
+    # Ensure previously unset.
+    for key in (
+        "OMG_JOB_ID",
+        "OMG_JOB_DIR",
+        "OMG_PROJECT_ROOT",
+        "OMG_JOB_FAKE_FAIL",
+        "OMG_JOB_FAKE_SLEEP",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    prior_project = os.environ.get("OMG_PROJECT_ROOT")
+    prior_job_id = os.environ.get("OMG_JOB_ID")
+    assert prior_project is None
+    assert prior_job_id is None
+
+    prompt = _prompt(root)
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+        worker={"sleep_s": 0.01, "fail": True},
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    transition_job(
+        root,
+        rec.job_id,
+        JobState.RUNNING,
+        updates={
+            "pid": os.getpid(),
+            "pgid": os.getpgid(0),
+            "handle": f"fake:{rec.job_id}:pid={os.getpid()}",
+        },
+    )
+
+    class InstantFake:
+        name = "fake"
+
+        def discover_binary(self) -> str:
+            return "fake"
+
+        def probe_version(self, binary=None):  # noqa: ANN001
+            raise NotImplementedError
+
+        def probe_capabilities(self, binary=None):  # noqa: ANN001
+            raise NotImplementedError
+
+        def doctor(self, *, strict: bool = False):  # noqa: ANN001
+            raise NotImplementedError
+
+        def build_launch_envelope(self, request):  # noqa: ANN001
+            raise NotImplementedError
+
+        def run(self, request):  # noqa: ANN001
+            # Env must be visible during the run.
+            assert os.environ.get("OMG_JOB_ID") == rec.job_id
+            assert os.environ.get("OMG_PROJECT_ROOT") == str(root)
+            return ProviderRunResult(
+                ok=True,
+                exit_class="success",
+                returncode=0,
+                output="ok\n",
+                stdout="ok\n",
+            )
+
+    monkeypatch.setattr(runner_mod, "resolve_adapter", lambda _p: InstantFake())
+    assert runner_mod.run_job(root, rec.job_id) == 0
+
+    assert os.environ.get("OMG_JOB_ID") is None
+    assert os.environ.get("OMG_JOB_DIR") is None
+    assert os.environ.get("OMG_PROJECT_ROOT") is None
+    assert os.environ.get("OMG_JOB_FAKE_FAIL") is None
+    assert os.environ.get("OMG_JOB_FAKE_SLEEP") is None
+
+
+def test_run_job_restores_preexisting_env(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pre-existing OMG_PROJECT_ROOT is restored after in-process run_job."""
+    from omg_cli.jobs import runner as runner_mod
+    from omg_cli.providers.models import ProviderRunResult
+
+    sentinel = "/tmp/omg-job-env-sentinel-should-restore"
+    monkeypatch.setenv("OMG_PROJECT_ROOT", sentinel)
+    monkeypatch.setenv("OMG_JOB_ID", "preexisting-id")
+
+    prompt = _prompt(root)
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+        worker={"sleep_s": 0.01},
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    transition_job(
+        root,
+        rec.job_id,
+        JobState.RUNNING,
+        updates={
+            "pid": os.getpid(),
+            "pgid": os.getpgid(0),
+            "handle": f"fake:{rec.job_id}:pid={os.getpid()}",
+        },
+    )
+
+    class InstantFake:
+        name = "fake"
+
+        def discover_binary(self) -> str:
+            return "fake"
+
+        def probe_version(self, binary=None):  # noqa: ANN001
+            raise NotImplementedError
+
+        def probe_capabilities(self, binary=None):  # noqa: ANN001
+            raise NotImplementedError
+
+        def doctor(self, *, strict: bool = False):  # noqa: ANN001
+            raise NotImplementedError
+
+        def build_launch_envelope(self, request):  # noqa: ANN001
+            raise NotImplementedError
+
+        def run(self, request):  # noqa: ANN001
+            return ProviderRunResult(
+                ok=True,
+                exit_class="success",
+                returncode=0,
+                output="ok\n",
+                stdout="ok\n",
+            )
+
+    monkeypatch.setattr(runner_mod, "resolve_adapter", lambda _p: InstantFake())
+    assert runner_mod.run_job(root, rec.job_id) == 0
+    assert os.environ.get("OMG_PROJECT_ROOT") == sentinel
+    assert os.environ.get("OMG_JOB_ID") == "preexisting-id"
 
 
 def test_barrier_blocks_adapter_until_running_committed(
