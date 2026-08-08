@@ -261,7 +261,7 @@ omg team status --run RUN --json
 omg team collect --run RUN   # seal_all_tasks + integrate; never verified
 omg team stop --run RUN      # kill recorded session + pgids only (no pkill -f)
 omg team api send-message --input '{"run_id":"RUN","team_id":"t","from_worker":"leader","to_worker":"w1","body":"hi"}' --json
-# P0′ ops (mailbox/task/reliability/events); not full OMX 33-op parity
+# P0′ ops (mailbox/task claim+renew+release/reliability/events); not full OMX 33-op parity
 # disable: export OMG_DISABLE_TMUX_TEAM=1
 ```
 
