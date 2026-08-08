@@ -312,9 +312,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     command = str(getattr(args, "command", "") or "")
     team_action = getattr(args, "team_action", None)
+    api_op = str(getattr(args, "api_op", "") or "")
+    # Pure introspection: versioned Team operation catalog (no project root).
+    team_api_catalog = (
+        command == "team" and team_action == "api" and api_op == "catalog"
+    )
     clear_resolved_project_root()
     root_path: Path | None = None
-    if command not in _INSTALL_SCOPED:
+    if command not in _INSTALL_SCOPED and not team_api_catalog:
         # #100: pane supervisor must use the validated leader root and must
         # NOT walk ancestors from the worktree (avoids nested-.omg warnings
         # and keeps bootstrap silent). Public CLI discovery is unchanged.
