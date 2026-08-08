@@ -151,7 +151,8 @@
         "omg_cli/parity_completeness.py",
         "docs/parity/omg-parity.json",
         "scripts/check_parity_inventory.py",
-        "scripts/check_parity_completeness.py"
+        "scripts/check_parity_completeness.py",
+        "scripts/generate_parity_docs.py"
       ],
       "runtime_owner": "omg",
       "maturity": {
@@ -161,7 +162,8 @@
         "tests": [
           "tests/test_parity_inventory.py",
           "tests/test_parity_inventory_v2.py",
-          "tests/test_parity_completeness.py"
+          "tests/test_parity_completeness.py",
+          "tests/test_parity_generation.py"
         ],
         "docs": [
           "docs/parity/README.md",
@@ -171,7 +173,7 @@
         "live": []
       },
       "issues": ["#78"],
-      "gap": "#78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; promotion remains unperformed and is proof-gated."
+      "gap": "#78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; #78-E README↔JSON managed-snapshot drift gate landed; promotion remains unperformed and is proof-gated; real-source policies/proofs still open."
     },
     {
       "id": "omc.cli.session_surfaces",
@@ -1024,7 +1026,7 @@
       "status": "open",
       "issues": ["#78"],
       "capability_ids": ["parity.inventory.governance"],
-      "summary": "#78-B inventory landed; #78-C refresh+claim gate landed; #78-D proof gate landed; promotion remains unperformed and is proof-gated"
+      "summary": "#78-B inventory landed; #78-C refresh+claim gate landed; #78-D proof gate landed; #78-E README↔JSON managed-snapshot drift gate landed; promotion remains unperformed and is proof-gated; real-source policies/proofs still open"
     },
     {
       "id": "gap.parity.platform_live_evidence",
