@@ -5100,9 +5100,9 @@ def _stop_team_locked(
             errors.append(f"linked_ralph cancel: {exc}")
 
     # Cancel Team-linked / in-flight ACP session sidecar (#105 PR4).
-    # Always consult the jobs binding (even before meta job_id is bound) and
-    # refuse stop_completed when a pending ensure intent exists without a
-    # proven cancel — never publish stopped with a live ACP orphan.
+    # Binding present → fail-closed until cancel is proven. Pending intent
+    # with no binding is abandoned (ensure never bound / already gone): clear
+    # it so stop cannot permanently pin stop_refused with nothing to cancel.
     if stop_completed:
         linked_acp = meta.get("linked_acp_session")
         has_pending = (
@@ -5132,15 +5132,25 @@ def _stop_team_locked(
                         "session_close": False,
                     }
                 except Exception as cancel_exc:  # noqa: BLE001
-                    acp_out = {
-                        "attempted": True,
-                        "cancelled": False,
-                        "job_id": jid,
-                        "error": str(cancel_exc),
-                        "error_code": getattr(cancel_exc, "code", None)
-                        or "E_ACP_CANCEL",
-                        "session_close": False,
-                    }
+                    code = getattr(cancel_exc, "code", None) or "E_ACP_CANCEL"
+                    # Unknown / already-gone job: treat as proven absence.
+                    if code in {"E_JOB_UNKNOWN", "E_JOB_NOT_FOUND"}:
+                        acp_out = {
+                            "attempted": True,
+                            "cancelled": True,
+                            "job_id": jid,
+                            "session_close": False,
+                            "note": f"job already absent ({code})",
+                        }
+                    else:
+                        acp_out = {
+                            "attempted": True,
+                            "cancelled": False,
+                            "job_id": jid,
+                            "error": str(cancel_exc),
+                            "error_code": code,
+                            "session_close": False,
+                        }
 
             if acp_out.get("attempted") and acp_out.get("cancelled"):
                 actions.append(
@@ -5157,16 +5167,12 @@ def _stop_team_locked(
                     "linked_acp_session cancel unproven; "
                     "stop_refused (binding retained)"
                 )
-            elif has_pending or has_job:
-                # Pending ensure (or stale link) with no binding yet — fail closed.
-                stop_completed = False
-                errors.append(
-                    "linked_acp_session pending/in-flight without proven cancel; "
-                    "stop_refused"
-                )
+            elif has_pending:
+                # No binding → nothing live to cancel. Clear sticky pending so
+                # stop_refused cannot deadlock recovery (incl. --force retries).
                 actions.append(
-                    "linked_acp_session intent observed; stop_refused until "
-                    "sidecar disappearance is proven"
+                    "cleared abandoned linked_acp_session pending "
+                    "(no jobs binding; no live sidecar to cancel)"
                 )
         except Exception as exc:  # noqa: BLE001 — fail closed on stop claim
             stop_completed = False

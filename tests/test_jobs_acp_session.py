@@ -508,3 +508,105 @@ def test_resume_provider_session_stop_race_no_live_orphan(
         cancel_job(tmp_path, job_id, reason="test_cleanup")
     except JobStoreError:
         pass
+
+
+def test_stop_clears_sticky_pending_acp_without_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pending ACP intent with no jobs binding must not permanently pin stop_refused."""
+    import subprocess
+    from datetime import datetime, timezone
+
+    from omg_cli.team.plane import (
+        EXPERIMENTAL_ENV,
+        load_team_meta,
+        mutate_team_meta,
+        start_team,
+        stop_team,
+    )
+    from omg_cli.jobs.runtime import _acp_binding_path
+
+    monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "t"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "README").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    meta = start_team(
+        "sticky pending",
+        [{"task_id": "w1", "owned_files": ["lane_a/"]}],
+        root=tmp_path,
+        dry_run=True,
+    )
+    run_id = str(meta["run_id"])
+
+    def _plant_pending(current: dict) -> dict:
+        updated = dict(current)
+        updated["linked_acp_session"] = {
+            "state": "pending",
+            "pending_at": datetime.now(timezone.utc).isoformat(),
+            "job_id": None,
+            "session_close": False,
+        }
+        return updated
+
+    gen = meta.get("meta_generation")
+    expected = int(gen) if isinstance(gen, int) and not isinstance(gen, bool) else 0
+    mutate_team_meta(tmp_path, run_id, _plant_pending, expected_generation=expected)
+    planted = load_team_meta(tmp_path, run_id)
+    assert planted["linked_acp_session"]["state"] == "pending"
+    assert not _acp_binding_path(tmp_path, run_id).is_file()
+
+    # First stop must complete (clear abandoned pending) — no live orphan.
+    first = stop_team(tmp_path, run_id)
+    assert first.get("stop_completed") is True, first
+    durable = load_team_meta(tmp_path, run_id)
+    assert durable.get("stop_state") == "stopped"
+    assert durable.get("linked_acp_session") in (None, {})
+    assert any(
+        "abandoned linked_acp_session pending" in str(a)
+        for a in (first.get("actions") or [])
+    )
+
+    # Simulate pre-fix deadlock: stop_refused + sticky pending, no binding.
+    def _plant_deadlock(current: dict) -> dict:
+        updated = dict(current)
+        updated["stop_state"] = "stop_refused"
+        updated.pop("stopped_at", None)
+        updated["linked_acp_session"] = {
+            "state": "pending",
+            "pending_at": datetime.now(timezone.utc).isoformat(),
+            "job_id": None,
+            "session_close": False,
+        }
+        return updated
+
+    durable = load_team_meta(tmp_path, run_id)
+    gen2 = durable.get("meta_generation")
+    expected2 = (
+        int(gen2) if isinstance(gen2, int) and not isinstance(gen2, bool) else 0
+    )
+    mutate_team_meta(tmp_path, run_id, _plant_deadlock, expected_generation=expected2)
+
+    recovered = stop_team(tmp_path, run_id, force=True)
+    assert recovered.get("stop_completed") is True, recovered
+    final = load_team_meta(tmp_path, run_id)
+    assert final.get("stop_state") == "stopped"
+    assert final.get("linked_acp_session") in (None, {})
