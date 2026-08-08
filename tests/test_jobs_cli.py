@@ -16,12 +16,9 @@ pytest_plugins = ["tests.jobs_testutil"]
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    from tests.jobs_testutil import register_project_root
-
     (tmp_path / ".omg").mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OMG_PROJECT_ROOT", str(tmp_path))
-    register_project_root(tmp_path)
     prompt = tmp_path / "task.md"
     prompt.write_text("hermetic job prompt", encoding="utf-8")
     return tmp_path

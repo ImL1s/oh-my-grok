@@ -97,6 +97,9 @@ class JobRecord:
     pid: int | None = None
     pgid: int | None = None
     handle: str | None = None
+    # Best-effort process start fingerprint for cancel ownership (PR1).
+    # Null when the start-time probe failed — cancel then falls back to pid/pgid only.
+    pid_starttime: str | None = None
     prompt: str = "prompt.md"
     result: str | None = None
     artifacts: list[dict[str, Any]] = field(default_factory=list)
@@ -123,6 +126,7 @@ class JobRecord:
             "pid": self.pid,
             "pgid": self.pgid,
             "handle": self.handle,
+            "pid_starttime": self.pid_starttime,
             "prompt": self.prompt,
             "result": self.result,
             "artifacts": list(self.artifacts),
@@ -221,6 +225,11 @@ class JobRecord:
             pid=pid,
             pgid=pgid,
             handle=str(data["handle"]) if data.get("handle") is not None else None,
+            pid_starttime=(
+                str(data["pid_starttime"])
+                if data.get("pid_starttime") is not None
+                else None
+            ),
             prompt=str(data.get("prompt") or "prompt.md"),
             result=str(data["result"]) if data.get("result") is not None else None,
             artifacts=[a for a in artifacts if isinstance(a, dict)],
@@ -254,6 +263,7 @@ class JobRecord:
             "pid": self.pid,
             "pgid": self.pgid,
             "handle": self.handle,
+            "pid_starttime": self.pid_starttime,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "run_id": self.run_id,

@@ -32,6 +32,73 @@ DEFAULT_CANCEL_GRACE_S = 2.0
 DEFAULT_WAIT_POLL_S = 0.05
 
 
+def _probe_pid_starttime(pid: int) -> str | None:
+    """Best-effort process start fingerprint (PR1 ownership aid).
+
+    Linux: ``/proc/<pid>/stat`` starttime (field 22) as ``proc:<ticks>``.
+    Elsewhere: ``ps -p PID -o lstart=`` as ``lstart:<text>``.
+    Returns ``None`` when the probe fails — callers must treat that as
+    \"fingerprint unavailable\" (cancel falls back to pid/pgid only).
+    """
+    if pid <= 0:
+        return None
+    proc_stat = Path(f"/proc/{pid}/stat")
+    if proc_stat.is_file():
+        try:
+            raw = proc_stat.read_text(encoding="utf-8", errors="replace")
+            close = raw.rfind(")")
+            if close < 0:
+                return None
+            rest = raw[close + 2 :].split()
+            # After \"(comm)\": state=rest[0] … starttime is field 22 → rest[19].
+            if len(rest) < 20:
+                return None
+            return f"proc:{rest[19]}"
+        except OSError:
+            return None
+    try:
+        proc = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+        out = (proc.stdout or "").strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if not out:
+        return None
+    return f"lstart:{out}"
+
+
+def _assert_cancel_ownership(record: JobRecord, target_pid: int) -> None:
+    """Fail closed before signalling when a recorded fingerprint mismatches.
+
+    If ``pid_starttime`` was null at start (probe failed), PR1 keeps pid/pgid-only
+    cancel (documented limitation). Never signals pid/pgid <= 1.
+    """
+    if target_pid <= 1:
+        raise JobStoreError(
+            f"job {record.job_id} refuses to signal pid/pgid={target_pid} "
+            "(invalid or privileged identity)",
+            code="E_JOB_PID_REUSED",
+        )
+    expected = record.pid_starttime
+    if expected is None or expected == "":
+        return
+    if not _pid_alive(target_pid):
+        return
+    live = _probe_pid_starttime(target_pid)
+    if live is None or live != expected:
+        raise JobStoreError(
+            f"job {record.job_id} pid {target_pid} ownership fingerprint mismatch "
+            f"(recorded={expected!r} live={live!r}); refusing to signal "
+            "(possible PID reuse)",
+            code="E_JOB_PID_REUSED",
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class StartResult:
     record: JobRecord
@@ -211,6 +278,8 @@ def start_job(
         )
 
     handle = f"{provider}:{record.job_id}:pid={pid}"
+    # Best-effort ownership fingerprint; null when probe fails (PR1 honesty).
+    pid_starttime = _probe_pid_starttime(pid)
     try:
         record = transition_job(
             project_root,
@@ -220,6 +289,7 @@ def start_job(
                 "pid": pid,
                 "pgid": pgid,
                 "handle": handle,
+                "pid_starttime": pid_starttime,
             },
         )
     except Exception as commit_exc:
@@ -232,6 +302,7 @@ def start_job(
             pid=pid,
             pgid=pgid,
             handle=handle,
+            expected_starttime=pid_starttime,
             exc=commit_exc,
         )
         raise JobStoreError(
@@ -242,12 +313,30 @@ def start_job(
     return StartResult(record=record, launched=True)
 
 
-def _kill_child_exact(pid: int, pgid: int) -> None:
+def _kill_child_exact(
+    pid: int,
+    pgid: int,
+    *,
+    expected_starttime: str | None = None,
+) -> None:
+    """Kill the exact spawn we own. Skip signals on fingerprint mismatch."""
+    if pid <= 1 and pgid <= 1:
+        return
+    if expected_starttime:
+        if _pid_alive(pid):
+            live = _probe_pid_starttime(pid)
+            if live is None or live != expected_starttime:
+                # Possible PID reuse — do not signal the wrong process.
+                return
     try:
-        os.killpg(pgid, signal.SIGKILL)
+        if pgid > 1:
+            os.killpg(pgid, signal.SIGKILL)
+        elif pid > 1:
+            os.kill(pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
         try:
-            os.kill(pid, signal.SIGKILL)
+            if pid > 1:
+                os.kill(pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
             pass
     _reap_child(pid)
@@ -261,9 +350,10 @@ def _cleanup_after_spawn_commit_failure(
     pgid: int,
     handle: str,
     exc: BaseException,
+    expected_starttime: str | None = None,
 ) -> None:
     """Always kill the spawned child, then reconcile job.json fail-closed."""
-    _kill_child_exact(pid, pgid)
+    _kill_child_exact(pid, pgid, expected_starttime=expected_starttime)
     try:
         cur = read_job_record(project_root, job_id)
     except JobStoreError:
@@ -533,7 +623,12 @@ def cancel_job(
     reason: str | None = None,
     grace_s: float = DEFAULT_CANCEL_GRACE_S,
 ) -> JobRecord:
-    """Cancel by recorded PID/PGID only. Idempotent for terminal jobs."""
+    """Cancel by recorded PID/PGID with best-effort starttime fencing.
+
+    When ``pid_starttime`` is present, a live-process fingerprint mismatch
+    raises ``E_JOB_PID_REUSED`` and does **not** signal. When the fingerprint
+    was null at start, PR1 falls back to pid/pgid only.
+    """
     job_id = safe_job_id(job_id)
     record = read_job_record(project_root, job_id)
     if record.state in TERMINAL_STATES:
@@ -544,22 +639,26 @@ def cancel_job(
     target_pgid = int(pgid) if pgid is not None else (int(pid) if pid is not None else 0)
     target_pid = int(pid) if pid is not None else target_pgid
 
-    if target_pgid > 0 and _pid_alive(target_pid):
-        _kill_pgid(target_pgid, signal.SIGTERM)
-        deadline = time.monotonic() + max(0.0, float(grace_s))
-        while time.monotonic() < deadline:
-            _reap_child(target_pid)
-            if not _pid_alive(target_pid):
-                break
-            time.sleep(0.05)
+    if target_pgid > 0 and target_pid > 0:
+        _assert_cancel_ownership(record, target_pid)
         if _pid_alive(target_pid):
-            _kill_pgid(target_pgid, signal.SIGKILL)
-            for _ in range(40):
+            _kill_pgid(target_pgid, signal.SIGTERM)
+            deadline = time.monotonic() + max(0.0, float(grace_s))
+            while time.monotonic() < deadline:
                 _reap_child(target_pid)
                 if not _pid_alive(target_pid):
                     break
                 time.sleep(0.05)
-    else:
+            if _pid_alive(target_pid):
+                _kill_pgid(target_pgid, signal.SIGKILL)
+                for _ in range(40):
+                    _reap_child(target_pid)
+                    if not _pid_alive(target_pid):
+                        break
+                    time.sleep(0.05)
+        else:
+            _reap_child(target_pid)
+    elif target_pid > 0:
         _reap_child(target_pid)
 
     updates: dict[str, Any] = {

@@ -32,10 +32,7 @@ pytest_plugins = ["tests.jobs_testutil"]
 
 @pytest.fixture
 def root(tmp_path: Path) -> Path:
-    from tests.jobs_testutil import register_project_root
-
     (tmp_path / ".omg").mkdir()
-    register_project_root(tmp_path)
     return tmp_path
 
 
@@ -68,10 +65,13 @@ def test_atomic_start_commit_and_running_handle(root: Path) -> None:
     assert rec.pid is not None and rec.pid > 0
     assert rec.pgid is not None and rec.pgid > 0
     assert rec.handle
+    # Best-effort ownership fingerprint (null only if probe failed).
+    assert "pid_starttime" in rec.to_dict()
     # Durability: job.json on disk
     disk = json.loads(job_json_path(root, rec.job_id).read_text(encoding="utf-8"))
     assert disk["state"] == "running"
     assert disk["pid"] == rec.pid
+    assert disk.get("pid_starttime") == rec.pid_starttime
 
     terminal, timed_out = wait_job(root, rec.job_id, timeout_s=10.0)
     assert timed_out is False
@@ -568,10 +568,32 @@ def test_cancel_race_with_terminal_idempotent(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """If runner stamps succeeded before cancel's transition, return that record."""
+    import signal
+    import subprocess
+    import sys
+
     from omg_cli.jobs import runtime as runtime_mod
     from omg_cli.jobs.models import TransitionError
 
     prompt = _prompt(root)
+    # Real owned child (never pid/pgid=1); kill it first so cancel skips signals.
+    child = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pid = int(child.pid)
+    pgid = int(os.getpgid(pid))
+    assert pid > 1 and pgid > 1
+    starttime = runtime_mod._probe_pid_starttime(pid)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        child.kill()
+    child.wait(timeout=5)
+
     rec = create_job_dir(
         root,
         provider="fake",
@@ -583,10 +605,16 @@ def test_cancel_race_with_terminal_idempotent(
         root,
         rec.job_id,
         JobState.RUNNING,
-        updates={"pid": 1, "pgid": 1, "handle": "fake:dead"},
+        updates={
+            "pid": pid,
+            "pgid": pgid,
+            "handle": f"fake:{rec.job_id}:pid={pid}",
+            "pid_starttime": starttime,
+        },
     )
 
     real_transition = runtime_mod.transition_job
+    signals: list[int] = []
 
     def race_on_cancel(
         project_root: Path,
@@ -613,9 +641,15 @@ def test_cancel_race_with_terminal_idempotent(
             )
         return real_transition(project_root, job_id, new_state, updates=updates)
 
+    def spy_kill(pgid_arg: int, signum: int) -> bool:
+        signals.append(int(signum))
+        return False
+
     monkeypatch.setattr(runtime_mod, "transition_job", race_on_cancel)
-    # Dead pid: cancel skip-kills, then hits the race on stamp.
+    monkeypatch.setattr(runtime_mod, "_kill_pgid", spy_kill)
+    # Dead owned pid: cancel skip-kills, then hits the race on stamp.
     out = cancel_job(root, rec.job_id, reason="race", grace_s=0.05)
+    assert signals == [], "dead-pid cancel must not signal"
     assert out.state == JobState.SUCCEEDED
     assert out.exit and out.exit.get("class") == "success"
 
@@ -1080,7 +1114,7 @@ def test_pid_alive_fail_open_on_ps_timeout(monkeypatch: pytest.MonkeyPatch) -> N
 def test_cancel_still_signals_when_ps_probe_times_out(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """cancel_job must not skip kill when _pid_alive's ps probe times out."""
+    """cancel_job must not skip kill when _pid_alive's ps STAT probe times out."""
     import subprocess
 
     from omg_cli.jobs import runtime as runtime_mod
@@ -1096,14 +1130,21 @@ def test_cancel_still_signals_when_ps_probe_times_out(
     pid = int(started.record.pid or 0)
     assert pid > 0
     assert runtime_mod._pid_alive(pid)
+    recorded_fp = started.record.pid_starttime
 
     real_run = subprocess.run
     signals_sent: list[int] = []
     real_kill_pgid = runtime_mod._kill_pgid
 
-    def _ps_timeout(*args, **kwargs):  # noqa: ANN001, ANN002
+    def _ps_stat_timeout(*args, **kwargs):  # noqa: ANN001, ANN002
         cmd = args[0] if args else kwargs.get("args")
-        if isinstance(cmd, (list, tuple)) and cmd and str(cmd[0]) == "ps":
+        # Only the zombie STAT probe times out; leave other ps calls alone.
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 2
+            and str(cmd[0]) == "ps"
+            and any(str(part) == "stat=" or str(part).startswith("stat=") for part in cmd)
+        ):
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=2.0)
         return real_run(*args, **kwargs)
 
@@ -1111,14 +1152,19 @@ def test_cancel_still_signals_when_ps_probe_times_out(
         signals_sent.append(int(signum))
         return real_kill_pgid(pgid, signum)
 
-    monkeypatch.setattr(subprocess, "run", _ps_timeout)
+    # Keep ownership fingerprint stable even if a parallel ps probe flakes.
+    monkeypatch.setattr(
+        runtime_mod,
+        "_probe_pid_starttime",
+        lambda _pid: recorded_fp,
+    )
+    monkeypatch.setattr(subprocess, "run", _ps_stat_timeout)
     monkeypatch.setattr(runtime_mod, "_kill_pgid", _spy_kill)
 
     rec = cancel_job(root, started.record.job_id, reason="ps-timeout", grace_s=0.3)
-    assert signals_sent, "cancel must still send signals when ps probe times out"
+    assert signals_sent, "cancel must still send signals when STAT probe times out"
     assert rec.state == JobState.CANCELLED
     time.sleep(0.15)
-    # Restore real ps for the liveness check after cancel.
     monkeypatch.setattr(subprocess, "run", real_run)
     assert not runtime_mod._pid_alive(pid)
 
@@ -1147,9 +1193,8 @@ def test_cleanup_does_not_kill_unregistered_runner_cmdline(
     )
     try:
         assert decoy.poll() is None
-        # Ensure registry has no handles (and no job-record kill targets).
+        # Ensure spawn registry is empty (no job.json union path).
         jobs_testutil._SPAWNED.clear()
-        jobs_testutil._PROJECT_ROOTS.clear()
         jobs_testutil.kill_registered_jobs()
         time.sleep(0.05)
         assert decoy.poll() is None, "unregistered decoy must survive scoped cleanup"
@@ -1169,3 +1214,111 @@ def test_cleanup_does_not_kill_unregistered_runner_cmdline(
             decoy.wait(timeout=2)
         except Exception:
             pass
+
+
+def test_cancel_fingerprint_mismatch_does_not_signal(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Recorded pid_starttime mismatch → E_JOB_PID_REUSED, no kill signals."""
+    import subprocess
+    import sys
+
+    from omg_cli.jobs import runtime as runtime_mod
+
+    prompt = _prompt(root)
+    child = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pid = int(child.pid)
+    pgid = int(os.getpgid(pid))
+    assert pid > 1
+    live_fp = runtime_mod._probe_pid_starttime(pid)
+    assert live_fp  # need a real fingerprint to mismatch against
+    signals: list[int] = []
+
+    def spy_kill(pgid_arg: int, signum: int) -> bool:
+        signals.append(int(signum))
+        return False
+
+    monkeypatch.setattr(runtime_mod, "_kill_pgid", spy_kill)
+
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    transition_job(
+        root,
+        rec.job_id,
+        JobState.RUNNING,
+        updates={
+            "pid": pid,
+            "pgid": pgid,
+            "handle": f"fake:{rec.job_id}:pid={pid}",
+            "pid_starttime": "proc:999999999999",  # deliberate mismatch
+        },
+    )
+    try:
+        with pytest.raises(JobStoreError) as ei:
+            cancel_job(root, rec.job_id, reason="reuse", grace_s=0.05)
+        assert ei.value.code == "E_JOB_PID_REUSED"
+        assert signals == []
+        assert runtime_mod._pid_alive(pid)
+        still = read_job_record(root, rec.job_id)
+        assert still.state == JobState.RUNNING
+    finally:
+        import signal as signal_mod
+
+        try:
+            os.killpg(pgid, signal_mod.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            child.kill()
+        try:
+            child.wait(timeout=2)
+        except Exception:
+            pass
+
+
+def test_cancel_refuses_pid_one(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """pid=1 / pgid=1 must never be signalled (E_JOB_PID_REUSED)."""
+    from omg_cli.jobs import runtime as runtime_mod
+
+    prompt = _prompt(root)
+    signals: list[tuple[int, int]] = []
+
+    def spy_kill(pgid_arg: int, signum: int) -> bool:
+        signals.append((int(pgid_arg), int(signum)))
+        return False
+
+    monkeypatch.setattr(runtime_mod, "_kill_pgid", spy_kill)
+    monkeypatch.setattr(runtime_mod, "_pid_alive", lambda _pid: True)
+
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    transition_job(
+        root,
+        rec.job_id,
+        JobState.RUNNING,
+        updates={
+            "pid": 1,
+            "pgid": 1,
+            "handle": "fake:forbidden",
+            "pid_starttime": None,
+        },
+    )
+    with pytest.raises(JobStoreError) as ei:
+        cancel_job(root, rec.job_id, reason="init", grace_s=0.05)
+    assert ei.value.code == "E_JOB_PID_REUSED"
+    assert signals == []
+    assert read_job_record(root, rec.job_id).state == JobState.RUNNING
