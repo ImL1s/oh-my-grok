@@ -175,3 +175,50 @@ def test_ensure_blocks_without_session(root: Path) -> None:
     )
     assert helper.get("force_blocked") is True
     assert helper.get("transport_wired") is False
+
+
+@pytest.mark.skipif(os.name != "posix", reason="killpg / ACP pgid ownership is POSIX")
+def test_ensure_rejects_reuse_when_inner_acp_peer_dead(root: Path) -> None:
+    """P0: outer runner still alive + dead inner ACP must not reuse as success."""
+    import signal
+
+    from omg_cli.jobs.store import read_job_record
+
+    run_id = _seed_run(root)
+    first = ensure_acp_session_sidecar(root, run_id=run_id, ready_timeout_s=10.0)
+    assert first["ok"] is True
+    assert first.get("reused") is False
+    job_id = first["job_id"]
+    rec = read_job_record(root, job_id)
+    assert rec.state == JobState.RUNNING
+    pp = rec.provider_process or {}
+    assert pp.get("state") == "bound"
+    inner_pid = int(pp["pid"])
+    inner_pgid = int(pp["pgid"])
+    outer_pid = int(rec.pid or 0)
+    assert outer_pid > 1
+    assert inner_pid > 1
+    assert inner_pid != outer_pid
+
+    # Kill only the inner ACP process group; leave outer runner if possible.
+    try:
+        os.killpg(inner_pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        os.kill(inner_pid, signal.SIGKILL)
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        try:
+            os.kill(inner_pid, 0)
+            time.sleep(0.05)
+        except (ProcessLookupError, PermissionError, OSError):
+            break
+    else:
+        pytest.fail("inner ACP peer did not exit after SIGKILL")
+
+    with pytest.raises(JobStoreError) as ei:
+        ensure_acp_session_sidecar(root, run_id=run_id, ready_timeout_s=5.0)
+    assert ei.value.code == "E_ACP_SIDECAR_STALE"
+    try:
+        cancel_job(root, job_id, reason="test_cleanup")
+    except JobStoreError:
+        pass

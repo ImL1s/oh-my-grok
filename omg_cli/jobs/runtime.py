@@ -1063,16 +1063,101 @@ def _load_receipt(project_root: Path, job_id: str) -> dict[str, Any] | None:
     return _read_json_file(path)
 
 
+def _outer_runner_alive(record: JobRecord) -> bool:
+    """True when the durable outer runner handle is still the live process."""
+    if record.state != JobState.RUNNING:
+        return False
+    if record.pid is None:
+        return False
+    pgid = record.pgid if record.pgid is not None else record.pid
+    identity = ProcessIdentity(
+        pid=int(record.pid),
+        pgid=int(pgid),
+        pid_starttime=record.pid_starttime,
+    )
+    try:
+        from omg_cli.jobs.ownership import assert_ownership
+
+        outcome = assert_ownership(
+            identity, job_id=record.job_id, label="runner"
+        )
+    except JobStoreError:
+        return False
+    return outcome is OwnershipOutcome.OK
+
+
+def _provider_process_bound_alive(record: JobRecord) -> bool:
+    """True when provider_process is bound and the exact ACP peer is still live.
+
+    Fingerprint-aware: zombie / PID-reuse / pgid mismatch → not live.
+    ``pending`` / ``launching`` / ``exited`` are not live (no owned ACP peer).
+    """
+    pp = record.provider_process or default_provider_process()
+    if str(pp.get("state") or "") != "bound":
+        return False
+    pid = pp.get("pid")
+    pgid = pp.get("pgid")
+    if pid is None or pgid is None:
+        return False
+    identity = ProcessIdentity(
+        pid=int(pid),
+        pgid=int(pgid),
+        pid_starttime=(
+            str(pp["pid_starttime"]) if pp.get("pid_starttime") is not None else None
+        ),
+    )
+    try:
+        from omg_cli.jobs.ownership import assert_ownership
+
+        outcome = assert_ownership(
+            identity, job_id=record.job_id, label="provider"
+        )
+    except JobStoreError:
+        return False
+    return outcome is OwnershipOutcome.OK
+
+
 def _job_is_live_sidecar(project_root: Path, job_id: str) -> bool:
+    """Live ACP sidecar requires outer runner AND bound inner ACP peer.
+
+    Outer-only liveness is insufficient: a dead/zombie ACP child with a still-
+    running outer runner must not count as reusable (P0 transient false success).
+    """
     try:
         rec = read_job_record(project_root, job_id)
     except JobStoreError:
         return False
-    if rec.state != JobState.RUNNING:
+    if not _outer_runner_alive(rec):
         return False
-    if rec.pid is None or not _pid_alive(int(rec.pid)):
+    return _provider_process_bound_alive(rec)
+
+
+def _job_handshake_still_viable(project_root: Path, job_id: str) -> bool:
+    """Handshaking job: outer must be alive; bound peer must stay alive if present."""
+    try:
+        rec = read_job_record(project_root, job_id)
+    except JobStoreError:
         return False
-    return True
+    if not _outer_runner_alive(rec):
+        return False
+    pp = rec.provider_process or default_provider_process()
+    state = str(pp.get("state") or "pending")
+    if state in {"pending", "launching"}:
+        return True
+    if state == "bound":
+        return _provider_process_bound_alive(rec)
+    # exited / unknown — not viable
+    return False
+
+
+def _cancel_orphan_acp_sidecar(
+    project_root: Path, job_id: str, *, reason: str
+) -> None:
+    """Best-effort cancel of a linked sidecar that is no longer fully live."""
+    try:
+        cancel_job(project_root, job_id, reason=reason)
+    except JobStoreError:
+        pass
 
 
 def _wait_acp_ready(
@@ -1088,8 +1173,8 @@ def _wait_acp_ready(
 
     deadline = time.monotonic() + max(0.1, float(timeout_s))
     while time.monotonic() < deadline:
-        if not _job_is_live_sidecar(project_root, job_id):
-            # Job died before ready — fail closed (no transient success).
+        if not _job_handshake_still_viable(project_root, job_id):
+            # Job / ACP peer died before ready — fail closed (no transient success).
             try:
                 rec = read_job_record(project_root, job_id)
                 err = rec.error_message or f"state={rec.state.value}"
@@ -1101,6 +1186,12 @@ def _wait_acp_ready(
             )
         raw = _load_receipt(project_root, job_id)
         if raw is not None:
+            # Receipt published — refuse success unless inner ACP peer is still live.
+            if not _job_is_live_sidecar(project_root, job_id):
+                raise JobStoreError(
+                    "ACP resume receipt present but inner provider process is gone",
+                    code="E_ACP_SIDECAR_DEAD",
+                )
             return validate_receipt(
                 raw,
                 session_id_hash=session_id_hash,
@@ -1168,6 +1259,16 @@ def ensure_acp_session_sidecar(
                                 f"linked ACP receipt invalid: {exc}",
                                 code="E_ACP_RECEIPT",
                             ) from exc
+                        # Re-check after receipt read — inner may have died.
+                        if not _job_is_live_sidecar(root, ex_job):
+                            _cancel_orphan_acp_sidecar(
+                                root, ex_job, reason="acp_inner_dead_after_receipt"
+                            )
+                            raise JobStoreError(
+                                f"linked ACP sidecar job {ex_job} inner provider "
+                                "exited; refusing reuse (not live)",
+                                code="E_ACP_SIDECAR_STALE",
+                            )
                         rec = read_job_record(root, ex_job)
                         return {
                             "ok": True,
@@ -1180,7 +1281,16 @@ def ensure_acp_session_sidecar(
                             "transport": "acp_stdio_job",
                             "status": "resumed",
                         }
-                    # Still handshaking — wait boundedly.
+                    # Still handshaking — wait boundedly (outer + launching/bound).
+                    if not _job_handshake_still_viable(root, ex_job):
+                        _cancel_orphan_acp_sidecar(
+                            root, ex_job, reason="acp_handshake_not_viable"
+                        )
+                        raise JobStoreError(
+                            f"linked ACP sidecar job {ex_job} is not live; "
+                            "refusing untracked retry (cancel/clear binding first)",
+                            code="E_ACP_SIDECAR_STALE",
+                        )
                     try:
                         validated = _wait_acp_ready(
                             root,
@@ -1192,6 +1302,15 @@ def ensure_acp_session_sidecar(
                         )
                     except JobStoreError:
                         raise
+                    if not _job_is_live_sidecar(root, ex_job):
+                        _cancel_orphan_acp_sidecar(
+                            root, ex_job, reason="acp_dead_after_handshake_wait"
+                        )
+                        raise JobStoreError(
+                            f"linked ACP sidecar job {ex_job} is not live after "
+                            "handshake; refusing reuse",
+                            code="E_ACP_SIDECAR_STALE",
+                        )
                     rec = read_job_record(root, ex_job)
                     return {
                         "ok": True,
@@ -1204,9 +1323,13 @@ def ensure_acp_session_sidecar(
                         "transport": "acp_stdio_job",
                         "status": "resumed",
                     }
-                # Stale linked job — block rather than silent retry (#105 P1).
+                # Stale / inner-dead linked job — cancel orphan outer, refuse retry.
+                _cancel_orphan_acp_sidecar(
+                    root, ex_job, reason="acp_sidecar_stale_not_live"
+                )
                 raise JobStoreError(
-                    f"linked ACP sidecar job {ex_job} is not live; "
+                    f"linked ACP sidecar job {ex_job} is not live "
+                    "(outer or inner provider process gone); "
                     "refusing untracked retry (cancel/clear binding first)",
                     code="E_ACP_SIDECAR_STALE",
                 )
@@ -1289,13 +1412,14 @@ def ensure_acp_session_sidecar(
             },
         )
         rec = read_job_record(root, job_id)
-        if rec.state != JobState.RUNNING or not _pid_alive(int(rec.pid or 0)):
+        if not _job_is_live_sidecar(root, job_id):
             try:
                 cancel_job(root, job_id, reason="acp_post_ready_dead")
             except Exception:
                 pass
             raise JobStoreError(
-                "ACP sidecar not live after ready receipt",
+                "ACP sidecar not live after ready receipt "
+                "(outer runner or inner provider process gone)",
                 code="E_ACP_SIDECAR_DEAD",
             )
         return {
