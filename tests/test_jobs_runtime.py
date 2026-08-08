@@ -1464,7 +1464,9 @@ def test_cancel_revalidates_before_sigkill_after_term(
     def counting_assert(record, target_pid, target_pgid):  # noqa: ANN001
         assert_calls["n"] += 1
         if assert_calls["n"] == 1:
-            return real_assert(record, target_pid, target_pgid)
+            outcome = real_assert(record, target_pid, target_pgid)
+            assert outcome is runtime_mod.CancelOwnership.OK
+            return outcome
         raise JobStoreError(
             "simulated pre-KILL fingerprint mismatch",
             code="E_JOB_PID_REUSED",
@@ -1489,3 +1491,91 @@ def test_cancel_revalidates_before_sigkill_after_term(
     except (ProcessLookupError, PermissionError, OSError):
         pass
     time.sleep(0.1)
+
+
+def test_cancel_ownership_gone_skips_all_signals(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Outer alive True but ownership returns GONE → no SIGTERM/SIGKILL."""
+    from omg_cli.jobs import runtime as runtime_mod
+
+    prompt = _prompt(root)
+    signals: list[int] = []
+
+    def spy_kill(pgid_arg: int, signum: int) -> bool:
+        signals.append(int(signum))
+        return False
+
+    monkeypatch.setattr(runtime_mod, "_kill_pgid", spy_kill)
+    monkeypatch.setattr(runtime_mod, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(
+        runtime_mod,
+        "_assert_cancel_ownership",
+        lambda *_a, **_k: runtime_mod.CancelOwnership.GONE,
+    )
+
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    transition_job(
+        root,
+        rec.job_id,
+        JobState.RUNNING,
+        updates={
+            "pid": 4242,
+            "pgid": 4242,
+            "handle": "fake:gone",
+            "pid_starttime": None,
+        },
+    )
+    out = cancel_job(root, rec.job_id, reason="gone", grace_s=0.05)
+    assert signals == [], "GONE must never call _kill_pgid"
+    assert out.state == JobState.CANCELLED
+
+
+def test_cancel_getpgid_lookup_error_is_gone_no_signal(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """getpgid ProcessLookupError → GONE, no signal, cancel still stamps."""
+    from omg_cli.jobs import runtime as runtime_mod
+
+    prompt = _prompt(root)
+    signals: list[int] = []
+
+    def spy_kill(pgid_arg: int, signum: int) -> bool:
+        signals.append(int(signum))
+        return False
+
+    monkeypatch.setattr(runtime_mod, "_kill_pgid", spy_kill)
+    monkeypatch.setattr(runtime_mod, "_pid_alive", lambda _pid: True)
+
+    def boom_getpgid(_pid: int) -> int:
+        raise ProcessLookupError("simulated gone between alive and getpgid")
+
+    monkeypatch.setattr(os, "getpgid", boom_getpgid)
+
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    transition_job(
+        root,
+        rec.job_id,
+        JobState.RUNNING,
+        updates={
+            "pid": 4243,
+            "pgid": 4243,
+            "handle": "fake:lookup-gone",
+            "pid_starttime": None,
+        },
+    )
+    out = cancel_job(root, rec.job_id, reason="lookup-gone", grace_s=0.05)
+    assert signals == []
+    assert out.state == JobState.CANCELLED
