@@ -77,6 +77,15 @@ def _flag_value(argv: list[str], flag: str) -> str:
 
 
 def _run_omg(*args: str, cwd: Path, env: dict[str, str] | None = None):
+    """Run ``bin/omg`` hermetically with *cwd* as the authoritative project root.
+
+    Always passes ``--project-root`` (highest precedence) so ancestor ``.omg``
+    discovery cannot hijack state writes. On CI, pytest ``tmp_path`` lives under
+    ``/tmp/...``; a leftover ``/tmp/.omg`` from earlier suite pollution makes
+    ``resolve_project_root`` select ``/tmp`` and ralph exits 0 while
+    ``load_active_run(tmp_path)`` is None. Dropping leaked env pins alone is
+    not enough when discovery still walks to that ancestor.
+    """
     process_env = os.environ.copy()
     process_env.pop("OMG_ALLOW_EXTERNAL_CLI", None)
     process_env["PYTHONPATH"] = str(REPO_ROOT) + (
@@ -86,23 +95,38 @@ def _run_omg(*args: str, cwd: Path, env: dict[str, str] | None = None):
     )
     if env:
         process_env.update(env)
-    # These hermetic mode tests pass cwd=tmp_path as the project root. A leaked
-    # OMG_PROJECT_ROOT (or team leader pin) from earlier in-process job/team
-    # tests would redirect state writes away from cwd → load_active_run(cwd)
-    # returns None while the subprocess still exits 0.
     for key in (
         "OMG_PROJECT_ROOT",
         "OMG_TEAM_LEADER_ROOT",
         "OMG_TEAM_STATE_ROOT",
     ):
         process_env.pop(key, None)
+    # Belt: pin env as well so nested tooling cannot rediscover a stranger root.
+    process_env["OMG_PROJECT_ROOT"] = str(cwd.resolve())
+    argv = [sys.executable, str(BIN_OMG), "--project-root", str(cwd.resolve()), *args]
     return subprocess.run(
-        [sys.executable, str(BIN_OMG), *args],
+        argv,
         cwd=cwd,
         env=process_env,
         capture_output=True,
         text=True,
     )
+
+
+def _state_tree_listing(root: Path) -> str:
+    """Compact listing of ``.omg/state`` for fail diagnostics."""
+    state = root / ".omg" / "state"
+    if not state.exists():
+        omg = root / ".omg"
+        if not omg.exists():
+            return f"<missing {omg}>"
+        return f"<missing {state}; .omg entries={sorted(p.name for p in omg.iterdir())}>"
+    entries: list[str] = []
+    for path in sorted(state.rglob("*")):
+        rel = path.relative_to(state)
+        suffix = "/" if path.is_dir() else f" ({path.stat().st_size}B)"
+        entries.append(f"{rel}{suffix}")
+    return "\n".join(entries) if entries else "<empty .omg/state>"
 
 
 # U-01: one shared, two-layer evidence parser; authoritative files are not host
@@ -322,8 +346,6 @@ def test_ralph_iteration_two_resumes_the_first_iteration_session(
 
 
 def test_ralph_new_process_resume_reuses_persisted_session(tmp_path: Path) -> None:
-    import time
-
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     invocation_log = tmp_path / "grok-invocations.jsonl"
@@ -352,28 +374,29 @@ def test_ralph_new_process_resume_reuses_persisted_session(tmp_path: Path) -> No
     )
     assert first.returncode == 0, first.stderr + first.stdout
 
-    # Bounded poll: CI can briefly lag active.json/status visibility after exit.
-    # Do not weaken production fail-closed — only wait for the CLI's own writes.
+    # Fail-closed + deterministic: subprocess exit flushes state before return.
+    # No poll — missing active under the pinned root is a hard failure.
     active_path = tmp_path / ".omg" / "state" / "active.json"
-    run = None
-    deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline:
-        run = load_active_run(tmp_path)
-        if run is not None:
-            break
-        time.sleep(0.05)
+    assert active_path.is_file(), (
+        "ralph exited 0 but active.json missing under pinned --project-root\n"
+        f"root={tmp_path.resolve()}\n"
+        f".omg/state:\n{_state_tree_listing(tmp_path)}\n"
+        f"stdout={first.stdout!r}\nstderr={first.stderr!r}"
+    )
+    run = load_active_run(tmp_path)
     if run is None:
-        active_raw = (
-            active_path.read_text(encoding="utf-8")
-            if active_path.is_file()
-            else "<missing active.json>"
-        )
         pytest.fail(
-            "ralph exited 0 but load_active_run returned None\n"
-            f"active.json={active_raw!r}\n"
+            "ralph exited 0; active.json exists but load_active_run returned None\n"
+            f"active.json={active_path.read_text(encoding='utf-8')!r}\n"
+            f".omg/state:\n{_state_tree_listing(tmp_path)}\n"
             f"stdout={first.stdout!r}\nstderr={first.stderr!r}"
         )
     run_id = run["run_id"]
+    status_path = tmp_path / ".omg" / "state" / "runs" / run_id / "status.json"
+    assert status_path.is_file(), (
+        f"missing status.json for run_id={run_id!r}\n"
+        f".omg/state:\n{_state_tree_listing(tmp_path)}"
+    )
 
     resumed = _run_omg(
         "ralph",
