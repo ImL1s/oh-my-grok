@@ -124,9 +124,10 @@ class FakeProvider:
                 )
 
         sleep_s = _sleep_s()
-        # Allow long sleeps for cancel tests; ignore_sigterm sleeps longer by default.
-        if ignore_sigterm and sleep_s < 30.0:
-            sleep_s = max(sleep_s, 30.0)
+        # Keep ignore_sigterm coverage short for hermetic/CI (still long enough
+        # for cancel's SIGTERM→SIGKILL path).
+        if ignore_sigterm and sleep_s < 2.0:
+            sleep_s = max(sleep_s, 2.0)
 
         time.sleep(sleep_s)
 

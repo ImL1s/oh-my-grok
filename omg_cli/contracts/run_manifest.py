@@ -1203,14 +1203,34 @@ def _read_current_proposal_path(root: Path, relative_path: str) -> bytes | None:
     return b"".join(chunks)
 
 
+def _git_env() -> dict[str, str]:
+    """Hermetic git env: never wait on fsmonitor/optional locks."""
+    env = os.environ.copy()
+    env.setdefault("GIT_OPTIONAL_LOCKS", "0")
+    env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    return env
+
+
 def _git_bytes(root: Path, argv: Sequence[str], *, label: str) -> bytes:
-    result = subprocess.run(
-        ["git", *argv],
-        cwd=root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.usebuiltinfsmonitor=false",
+                *argv,
+            ],
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=30,
+            env=_git_env(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ContractValidationError(f"{label} timed out after 30s") from exc
     if result.returncode != 0:
         raise ContractValidationError(
             f"{label} failed rc={result.returncode}: "
@@ -1220,20 +1240,33 @@ def _git_bytes(root: Path, argv: Sequence[str], *, label: str) -> bytes:
 
 
 def _base_path_bytes(root: Path, base_commit: str, relative_path: str) -> bytes | None:
-    exists = subprocess.run(
-        ["git", "cat-file", "-e", f"{base_commit}:{relative_path}"],
-        cwd=root,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    if exists.returncode != 0:
+    # Single `git show` (not cat-file -e + show): halves subprocess fan-out in
+    # verify_repository_aggregate path walks; timeout fail-closes hung git.
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.usebuiltinfsmonitor=false",
+                "show",
+                f"{base_commit}:{relative_path}",
+            ],
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=30,
+            env=_git_env(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ContractValidationError(
+            f"read frozen base path {relative_path} timed out after 30s"
+        ) from exc
+    if result.returncode != 0:
         return None
-    return _git_bytes(
-        root,
-        ["show", f"{base_commit}:{relative_path}"],
-        label=f"read frozen base path {relative_path}",
-    )
+    return result.stdout
 
 
 def _expected_omg_owner_paths(root: Path, *, base_commit: str) -> dict[str, set[str]]:

@@ -32,7 +32,7 @@ from omg_cli.providers.base import ProviderAdapter
 from omg_cli.providers.models import ProviderRunRequest
 
 # Child polls until parent commits running (or terminal / timeout).
-DEFAULT_READY_TIMEOUT_S = 60.0
+DEFAULT_READY_TIMEOUT_S = 15.0
 DEFAULT_READY_POLL_S = 0.02
 
 

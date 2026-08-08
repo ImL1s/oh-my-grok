@@ -30,8 +30,37 @@ from omg_cli.providers.base import ProviderAdapter
 
 @pytest.fixture(autouse=True)
 def _jobs_test_env_isolation() -> None:
-    """Scrub runner env + process-local project root after each test."""
+    """Scrub runner env, kill stray job runners, clear process-local project root."""
     yield
+    # Best-effort: reap leftover `python -m omg_cli.jobs.runner` children.
+    try:
+        import signal
+        import subprocess
+
+        proc = subprocess.run(
+            ["pgrep", "-f", "omg_cli.jobs.runner"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+        for line in (proc.stdout or "").splitlines():
+            try:
+                pid = int(line.strip())
+            except ValueError:
+                continue
+            if pid <= 0 or pid == os.getpid():
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except (ChildProcessError, OSError):
+                pass
+    except Exception:
+        pass
     for key in list(os.environ):
         if key.startswith("OMG_JOB_") or key == "OMG_PROJECT_ROOT":
             os.environ.pop(key, None)
@@ -147,7 +176,7 @@ def test_wait_timeout_does_not_cancel(root: Path) -> None:
         provider="fake",
         role="researcher",
         prompt_file=prompt,
-        sleep_s=3.0,
+        sleep_s=1.5,
     )
     rec, timed_out = wait_job(root, started.record.job_id, timeout_s=0.15)
     assert timed_out is True
@@ -205,7 +234,7 @@ def test_cancel_graceful(root: Path) -> None:
         provider="fake",
         role="researcher",
         prompt_file=prompt,
-        sleep_s=5.0,
+        sleep_s=1.5,
     )
     pid = started.record.pid
     assert pid and os.getpgid(pid)
@@ -227,7 +256,7 @@ def test_cancel_force_ignore_sigterm(root: Path) -> None:
         role="researcher",
         prompt_file=prompt,
         ignore_sigterm=True,
-        sleep_s=30.0,
+        sleep_s=2.0,
     )
     pid = started.record.pid
     assert pid
@@ -265,14 +294,14 @@ def test_sibling_isolation_cancel_a_keeps_b(root: Path) -> None:
         provider="fake",
         role="researcher",
         prompt_file=prompt,
-        sleep_s=4.0,
+        sleep_s=1.5,
     )
     b = start_job(
         root,
         provider="fake",
         role="researcher",
         prompt_file=prompt,
-        sleep_s=4.0,
+        sleep_s=1.5,
     )
     assert a.record.job_id != b.record.job_id
     assert a.record.pgid != b.record.pgid
@@ -476,7 +505,7 @@ def test_raw_oserror_during_running_commit_kills_and_fails(
             provider="fake",
             role="researcher",
             prompt_file=prompt,
-            sleep_s=30.0,
+            sleep_s=1.5,
         )
     assert ei.value.code == "E_JOB_LAUNCH"
     j = list_jobs(root)[0]
@@ -529,7 +558,7 @@ def test_post_commit_exception_kills_and_fails_running(
             provider="fake",
             role="researcher",
             prompt_file=prompt,
-            sleep_s=30.0,
+            sleep_s=1.5,
         )
     assert ei.value.code == "E_JOB_LAUNCH"
     final = read_job_record(root, list_jobs(root)[0]["job_id"])
@@ -1015,7 +1044,7 @@ def test_cancel_during_uncommitted_window_aborts_running_commit(
     # Long-sleep child so it stays alive until kill after commit failure.
     def long_child(*_a, **_k):  # noqa: ANN001
         return real_popen(
-            [sys.executable, "-c", "import time; time.sleep(30)"],
+            [sys.executable, "-c", "import time; time.sleep(2)"],
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -1058,7 +1087,7 @@ def test_cancel_during_uncommitted_window_aborts_running_commit(
             provider="fake",
             role="researcher",
             prompt_file=prompt,
-            sleep_s=30.0,
+            sleep_s=1.5,
         )
     assert ei.value.code == "E_JOB_LAUNCH"
     final = read_job_record(root, list_jobs(root)[0]["job_id"])

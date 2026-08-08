@@ -94,7 +94,8 @@ def start_job(
         worker["large_output"] = True
     if ignore_sigterm:
         worker["ignore_sigterm"] = True
-        worker.setdefault("sleep_s", 30.0)
+        # Hermetic default: long enough for SIGTERM→grace→SIGKILL, short for CI.
+        worker.setdefault("sleep_s", 2.0)
 
     record = create_job_dir(
         project_root,
@@ -473,12 +474,15 @@ def _pid_alive(pid: int) -> bool:
         return False
     # macOS/Linux: kill(0) succeeds for zombies; treat Z as dead.
     try:
-        out = subprocess.check_output(
+        proc = subprocess.run(
             ["ps", "-p", str(pid), "-o", "stat="],
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
             text=True,
-        ).strip()
-    except (OSError, subprocess.CalledProcessError):
+            timeout=2.0,
+            check=False,
+        )
+        out = (proc.stdout or "").strip()
+    except (OSError, subprocess.TimeoutExpired):
         return False
     if not out:
         return False

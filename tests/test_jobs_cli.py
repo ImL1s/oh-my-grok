@@ -14,8 +14,36 @@ from omg_cli.main import build_parser, main
 
 @pytest.fixture(autouse=True)
 def _jobs_test_env_isolation() -> None:
-    """Scrub runner env + process-local project root after each test."""
+    """Scrub runner env, kill stray job runners, clear process-local project root."""
     yield
+    try:
+        import signal
+        import subprocess
+
+        proc = subprocess.run(
+            ["pgrep", "-f", "omg_cli.jobs.runner"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+        for line in (proc.stdout or "").splitlines():
+            try:
+                pid = int(line.strip())
+            except ValueError:
+                continue
+            if pid <= 0 or pid == os.getpid():
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except (ChildProcessError, OSError):
+                pass
+    except Exception:
+        pass
     for key in list(os.environ):
         if key.startswith("OMG_JOB_") or key == "OMG_PROJECT_ROOT":
             os.environ.pop(key, None)
@@ -125,7 +153,7 @@ def test_cli_wait_timeout_envelope(
             "--prompt-file",
             str(prompt),
             "--sleep",
-            "3",
+            "1.5",
         ]
     )
     assert rc == 0
