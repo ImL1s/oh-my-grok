@@ -27,54 +27,15 @@ from omg_cli.jobs.store import (
 )
 from omg_cli.providers.base import ProviderAdapter
 
-
-@pytest.fixture(autouse=True)
-def _jobs_test_env_isolation() -> None:
-    """Scrub runner env, kill stray job runners, clear process-local project root."""
-    yield
-    # Best-effort: reap leftover `python -m omg_cli.jobs.runner` children.
-    try:
-        import signal
-        import subprocess
-
-        proc = subprocess.run(
-            ["pgrep", "-f", "omg_cli.jobs.runner"],
-            capture_output=True,
-            text=True,
-            timeout=2.0,
-            check=False,
-        )
-        for line in (proc.stdout or "").splitlines():
-            try:
-                pid = int(line.strip())
-            except ValueError:
-                continue
-            if pid <= 0 or pid == os.getpid():
-                continue
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-            try:
-                os.waitpid(pid, os.WNOHANG)
-            except (ChildProcessError, OSError):
-                pass
-    except Exception:
-        pass
-    for key in list(os.environ):
-        if key.startswith("OMG_JOB_") or key == "OMG_PROJECT_ROOT":
-            os.environ.pop(key, None)
-    try:
-        from omg_cli.project_root import clear_resolved_project_root
-
-        clear_resolved_project_root()
-    except Exception:
-        pass
+pytest_plugins = ["tests.jobs_testutil"]
 
 
 @pytest.fixture
 def root(tmp_path: Path) -> Path:
+    from tests.jobs_testutil import register_project_root
+
     (tmp_path / ".omg").mkdir()
+    register_project_root(tmp_path)
     return tmp_path
 
 
@@ -1095,3 +1056,116 @@ def test_cancel_during_uncommitted_window_aborts_running_commit(
     assert final.pid is None or final.handle is None or final.state != JobState.RUNNING
     # Durable state is cancelled — never running with a live handle from this start.
     assert final.state != JobState.RUNNING
+
+
+def test_pid_alive_fail_open_on_ps_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After kill(0) succeeds, ps TimeoutExpired must not mark the pid dead."""
+    import subprocess
+
+    from omg_cli.jobs import runtime as runtime_mod
+
+    live = os.getpid()
+    real_run = subprocess.run
+
+    def _ps_timeout(*args, **kwargs):  # noqa: ANN001, ANN002
+        cmd = args[0] if args else kwargs.get("args")
+        if isinstance(cmd, (list, tuple)) and cmd and str(cmd[0]) == "ps":
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=2.0)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _ps_timeout)
+    assert runtime_mod._pid_alive(live) is True
+
+
+def test_cancel_still_signals_when_ps_probe_times_out(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cancel_job must not skip kill when _pid_alive's ps probe times out."""
+    import subprocess
+
+    from omg_cli.jobs import runtime as runtime_mod
+
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        sleep_s=2.0,
+    )
+    pid = int(started.record.pid or 0)
+    assert pid > 0
+    assert runtime_mod._pid_alive(pid)
+
+    real_run = subprocess.run
+    signals_sent: list[int] = []
+    real_kill_pgid = runtime_mod._kill_pgid
+
+    def _ps_timeout(*args, **kwargs):  # noqa: ANN001, ANN002
+        cmd = args[0] if args else kwargs.get("args")
+        if isinstance(cmd, (list, tuple)) and cmd and str(cmd[0]) == "ps":
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=2.0)
+        return real_run(*args, **kwargs)
+
+    def _spy_kill(pgid: int, signum: int) -> bool:
+        signals_sent.append(int(signum))
+        return real_kill_pgid(pgid, signum)
+
+    monkeypatch.setattr(subprocess, "run", _ps_timeout)
+    monkeypatch.setattr(runtime_mod, "_kill_pgid", _spy_kill)
+
+    rec = cancel_job(root, started.record.job_id, reason="ps-timeout", grace_s=0.3)
+    assert signals_sent, "cancel must still send signals when ps probe times out"
+    assert rec.state == JobState.CANCELLED
+    time.sleep(0.15)
+    # Restore real ps for the liveness check after cancel.
+    monkeypatch.setattr(subprocess, "run", real_run)
+    assert not runtime_mod._pid_alive(pid)
+
+
+def test_cleanup_does_not_kill_unregistered_runner_cmdline(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Teardown must not kill processes merely matching omg_cli.jobs.runner in argv."""
+    import signal
+    import subprocess
+    import sys
+
+    from tests import jobs_testutil
+
+    # Dummy whose cmdline contains the runner module path but was never registered.
+    decoy = subprocess.Popen(  # noqa: S603
+        [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(30)  # omg_cli.jobs.runner decoy",
+        ],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert decoy.poll() is None
+        # Ensure registry has no handles (and no job-record kill targets).
+        jobs_testutil._SPAWNED.clear()
+        jobs_testutil._PROJECT_ROOTS.clear()
+        jobs_testutil.kill_registered_jobs()
+        time.sleep(0.05)
+        assert decoy.poll() is None, "unregistered decoy must survive scoped cleanup"
+        try:
+            os.kill(decoy.pid, 0)
+        except ProcessLookupError as exc:  # pragma: no cover
+            raise AssertionError("decoy was killed by scoped cleanup") from exc
+    finally:
+        try:
+            os.killpg(os.getpgid(decoy.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                decoy.kill()
+            except (ProcessLookupError, OSError):
+                pass
+        try:
+            decoy.wait(timeout=2)
+        except Exception:
+            pass

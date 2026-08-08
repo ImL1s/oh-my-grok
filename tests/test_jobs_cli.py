@@ -11,55 +11,17 @@ import pytest
 from omg_cli.cli_envelope import SCHEMA_VERSION
 from omg_cli.main import build_parser, main
 
-
-@pytest.fixture(autouse=True)
-def _jobs_test_env_isolation() -> None:
-    """Scrub runner env, kill stray job runners, clear process-local project root."""
-    yield
-    try:
-        import signal
-        import subprocess
-
-        proc = subprocess.run(
-            ["pgrep", "-f", "omg_cli.jobs.runner"],
-            capture_output=True,
-            text=True,
-            timeout=2.0,
-            check=False,
-        )
-        for line in (proc.stdout or "").splitlines():
-            try:
-                pid = int(line.strip())
-            except ValueError:
-                continue
-            if pid <= 0 or pid == os.getpid():
-                continue
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-            try:
-                os.waitpid(pid, os.WNOHANG)
-            except (ChildProcessError, OSError):
-                pass
-    except Exception:
-        pass
-    for key in list(os.environ):
-        if key.startswith("OMG_JOB_") or key == "OMG_PROJECT_ROOT":
-            os.environ.pop(key, None)
-    try:
-        from omg_cli.project_root import clear_resolved_project_root
-
-        clear_resolved_project_root()
-    except Exception:
-        pass
+pytest_plugins = ["tests.jobs_testutil"]
 
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from tests.jobs_testutil import register_project_root
+
     (tmp_path / ".omg").mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OMG_PROJECT_ROOT", str(tmp_path))
+    register_project_root(tmp_path)
     prompt = tmp_path / "task.md"
     prompt.write_text("hermetic job prompt", encoding="utf-8")
     return tmp_path

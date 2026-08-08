@@ -461,7 +461,13 @@ def collect_job(project_root: Path, job_id: str) -> dict[str, Any]:
 
 
 def _pid_alive(pid: int) -> bool:
-    """True when *pid* exists and is not a zombie (fail-open on probe errors)."""
+    """True when *pid* exists and is not a zombie.
+
+    After ``os.kill(pid, 0)`` proves the pid exists, *ps* probe errors
+    (including ``TimeoutExpired``) fail **open** as alive — never treat a
+    live process as dead because the STAT probe hung. Only ProcessLookupError,
+    empty STAT output, or an explicit zombie STAT returns False.
+    """
     if pid <= 0:
         return False
     try:
@@ -482,8 +488,11 @@ def _pid_alive(pid: int) -> bool:
             check=False,
         )
         out = (proc.stdout or "").strip()
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+    except subprocess.TimeoutExpired:
+        return True
+    except OSError:
+        # Probe failed after existence was proven — fail open as alive.
+        return True
     if not out:
         return False
     # STAT may be like "Z", "Zs", "ZW", "Z+" …
