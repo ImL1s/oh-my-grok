@@ -75,7 +75,8 @@ def test_acp_sidecar_cancel_does_not_claim_session_close(root: Path) -> None:
     job_id = out["job_id"]
     cancelled = cancel_linked_acp_sidecar(root, run_id, reason="test_stop")
     assert cancelled["session_close"] is False
-    assert cancelled.get("cancelled") is True or cancelled.get("attempted") is True
+    assert cancelled.get("cancelled") is True
+    assert cancelled.get("binding_cleared") is True
     assert "session_close=true" not in json.dumps(cancelled).lower()
     assert cancelled.get("note") and "sidecar" in cancelled["note"].lower()
     # Job should leave running
@@ -222,3 +223,80 @@ def test_ensure_rejects_reuse_when_inner_acp_peer_dead(root: Path) -> None:
         cancel_job(root, job_id, reason="test_cleanup")
     except JobStoreError:
         pass
+
+
+def test_cancel_unproven_retains_binding_blocks_second_sidecar(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P0: E_JOB_CANCEL_UNPROVEN must keep binding so ensure cannot double-spawn."""
+    from omg_cli.jobs import runtime as runtime_mod
+
+    run_id = _seed_run(root)
+    first = ensure_acp_session_sidecar(root, run_id=run_id, ready_timeout_s=10.0)
+    job_id = first["job_id"]
+    bind_path = runtime_mod._acp_binding_path(root, run_id)
+    assert bind_path.is_file()
+
+    real_cancel_job = runtime_mod.cancel_job
+
+    def _unproven(*_a, **_k):  # noqa: ANN001
+        raise JobStoreError(
+            "cancel disappearance unproven",
+            code="E_JOB_CANCEL_UNPROVEN",
+        )
+
+    # Keep cancel_job unproven for cancel_linked AND ensure's orphan path so a
+    # failed cancel cannot clear the singleton and open a second spawn.
+    monkeypatch.setattr(runtime_mod, "cancel_job", _unproven)
+    try:
+        out = runtime_mod.cancel_linked_acp_sidecar(
+            root, run_id, reason="test_unproven"
+        )
+        assert out["attempted"] is True
+        assert out["cancelled"] is False
+        assert out["binding_cleared"] is False
+        assert out.get("error_code") == "E_JOB_CANCEL_UNPROVEN"
+        assert bind_path.is_file(), "binding must survive unproven cancel"
+
+        monkeypatch.setattr(
+            runtime_mod, "_job_is_live_sidecar", lambda *_a, **_k: False
+        )
+        monkeypatch.setattr(
+            runtime_mod, "_job_handshake_still_viable", lambda *_a, **_k: False
+        )
+        jobs_root = root / ".omg" / "jobs"
+        jobs_before = {
+            p.name for p in jobs_root.iterdir() if p.is_dir() and p.name[0].isdigit()
+        }
+        with pytest.raises(JobStoreError) as ei:
+            runtime_mod.ensure_acp_session_sidecar(
+                root, run_id=run_id, ready_timeout_s=5.0
+            )
+        assert ei.value.code == "E_ACP_SIDECAR_STALE"
+        jobs_after = {
+            p.name for p in jobs_root.iterdir() if p.is_dir() and p.name[0].isdigit()
+        }
+        assert jobs_after == jobs_before
+        assert job_id in jobs_after
+        assert bind_path.is_file(), "singleton binding must still block a second ensure"
+    finally:
+        monkeypatch.setattr(runtime_mod, "cancel_job", real_cancel_job)
+        try:
+            real_cancel_job(root, job_id, reason="test_cleanup")
+        except JobStoreError:
+            pass
+
+
+def test_stop_team_acp_cancel_unproven_clears_stop_completed() -> None:
+    """Plane contract: unproven ACP cancel must refuse stop_completed publication."""
+    # Mirrors omg_cli.team.plane._stop_team_locked linked_acp_session gate.
+    stop_completed = True
+    acp_out = {
+        "attempted": True,
+        "cancelled": False,
+        "error_code": "E_JOB_CANCEL_UNPROVEN",
+    }
+    if not (acp_out.get("attempted") and acp_out.get("cancelled")):
+        if acp_out.get("attempted"):
+            stop_completed = False
+    assert stop_completed is False

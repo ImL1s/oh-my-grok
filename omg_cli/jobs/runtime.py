@@ -1528,12 +1528,19 @@ def ensure_acp_session_for_team(
 def cancel_linked_acp_sidecar(
     project_root: Path, run_id: str, *, reason: str = "team_stop"
 ) -> dict[str, Any]:
-    """Cancel only the Team-linked ACP job (not session/close)."""
+    """Cancel only the Team-linked ACP job (not session/close).
+
+    The singleton binding file is removed **only** after ``cancel_job`` returns
+    successfully (disappearance proven). ``E_JOB_CANCEL_UNPROVEN`` and other
+    cancel failures retain the binding so a later ensure cannot spawn a second
+    sidecar for the same ``(run_id, session, cwd)`` tuple.
+    """
     root = Path(project_root).resolve()
     bind_path = _acp_binding_path(root, run_id)
     out: dict[str, Any] = {
         "attempted": False,
         "cancelled": False,
+        "binding_cleared": False,
         "job_id": None,
         "session_close": False,
         "note": "sidecar cancellation (not ACP session/close)",
@@ -1546,14 +1553,21 @@ def cancel_linked_acp_sidecar(
     out["job_id"] = job_id
     try:
         cancel_job(root, job_id, reason=reason)
-        out["cancelled"] = True
     except JobStoreError as exc:
         out["error"] = str(exc)
+        out["error_code"] = getattr(exc, "code", None) or "E_JOB_STORE"
+        # Retain binding — live or unproven processes must keep the singleton ref.
+        return out
+
+    out["cancelled"] = True
     try:
         if bind_path.is_file():
             bind_path.unlink()
-    except OSError:
-        pass
+            out["binding_cleared"] = True
+    except OSError as exc:
+        # Cancel proved disappearance, but binding unlink failed — still report
+        # cancelled; ensure may see a stale binding to a terminal job (STALE).
+        out["error"] = f"binding unlink failed after proven cancel: {exc}"
     return out
 
 

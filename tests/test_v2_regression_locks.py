@@ -86,6 +86,16 @@ def _run_omg(*args: str, cwd: Path, env: dict[str, str] | None = None):
     )
     if env:
         process_env.update(env)
+    # These hermetic mode tests pass cwd=tmp_path as the project root. A leaked
+    # OMG_PROJECT_ROOT (or team leader pin) from earlier in-process job/team
+    # tests would redirect state writes away from cwd → load_active_run(cwd)
+    # returns None while the subprocess still exits 0.
+    for key in (
+        "OMG_PROJECT_ROOT",
+        "OMG_TEAM_LEADER_ROOT",
+        "OMG_TEAM_STATE_ROOT",
+    ):
+        process_env.pop(key, None)
     return subprocess.run(
         [sys.executable, str(BIN_OMG), *args],
         cwd=cwd,
@@ -312,6 +322,8 @@ def test_ralph_iteration_two_resumes_the_first_iteration_session(
 
 
 def test_ralph_new_process_resume_reuses_persisted_session(tmp_path: Path) -> None:
+    import time
+
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     invocation_log = tmp_path / "grok-invocations.jsonl"
@@ -339,8 +351,28 @@ def test_ralph_new_process_resume_reuses_persisted_session(tmp_path: Path) -> No
         env=env,
     )
     assert first.returncode == 0, first.stderr + first.stdout
-    run = load_active_run(tmp_path)
-    assert run is not None
+
+    # Bounded poll: CI can briefly lag active.json/status visibility after exit.
+    # Do not weaken production fail-closed — only wait for the CLI's own writes.
+    active_path = tmp_path / ".omg" / "state" / "active.json"
+    run = None
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        run = load_active_run(tmp_path)
+        if run is not None:
+            break
+        time.sleep(0.05)
+    if run is None:
+        active_raw = (
+            active_path.read_text(encoding="utf-8")
+            if active_path.is_file()
+            else "<missing active.json>"
+        )
+        pytest.fail(
+            "ralph exited 0 but load_active_run returned None\n"
+            f"active.json={active_raw!r}\n"
+            f"stdout={first.stdout!r}\nstderr={first.stderr!r}"
+        )
     run_id = run["run_id"]
 
     resumed = _run_omg(

@@ -5100,7 +5100,9 @@ def _stop_team_locked(
             errors.append(f"linked_ralph cancel: {exc}")
 
     # Cancel Team-linked ACP session sidecar (#105 PR4) — process-group
-    # teardown only; never claims ACP session/close.
+    # teardown only; never claims ACP session/close. Failed / unproven cancel
+    # must flip stop_completed so we never publish stopped while a live ACP
+    # peer may still exist (binding retained by cancel_linked_acp_sidecar).
     linked_acp = meta.get("linked_acp_session")
     if stop_completed and isinstance(linked_acp, Mapping) and linked_acp.get("job_id"):
         try:
@@ -5109,16 +5111,27 @@ def _stop_team_locked(
             acp_out = cancel_linked_acp_sidecar(
                 root_path, run_id, reason="team_stop"
             )
-            if acp_out.get("attempted"):
+            if acp_out.get("attempted") and acp_out.get("cancelled"):
                 actions.append(
                     "cancelled linked_acp_session sidecar "
                     f"job_id={acp_out.get('job_id')} "
                     "(sidecar cancellation; not session/close)"
                 )
-            if acp_out.get("error"):
-                errors.append(f"linked_acp_session cancel: {acp_out['error']}")
-        except Exception as exc:  # noqa: BLE001 — stop must continue
+            elif acp_out.get("attempted"):
+                stop_completed = False
+                err = acp_out.get("error") or "ACP sidecar cancel not proven"
+                code = acp_out.get("error_code") or "E_ACP_CANCEL"
+                errors.append(f"linked_acp_session cancel: {err} ({code})")
+                actions.append(
+                    "linked_acp_session cancel unproven; "
+                    "stop_refused (binding retained)"
+                )
+        except Exception as exc:  # noqa: BLE001 — fail closed on stop claim
+            stop_completed = False
             errors.append(f"linked_acp_session cancel: {exc}")
+            actions.append(
+                "linked_acp_session cancel raised; stop_refused (binding retained)"
+            )
 
     # Update team.json without hiding live or uncertain process truth.
     # Locked + generation-fenced publication (#21). Refuse publication when a
