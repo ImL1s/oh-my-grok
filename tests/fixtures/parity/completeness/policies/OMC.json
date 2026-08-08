@@ -1,0 +1,25 @@
+{
+  "store_kind": "parity-completeness-policy",
+  "schema_version": 1,
+  "source": "OMC",
+  "repository": "https://example.invalid/fixture-omc",
+  "discovery_rules": {
+    "version": 1,
+    "authoritative_registries": [
+      {
+        "path": "registry/commands.json",
+        "extraction_method": "json_registry_v1"
+      }
+    ],
+    "category_assignment": {
+      "command": "runtime_orchestration"
+    },
+    "non_surface_exceptions": [
+      {
+        "path": "README.md",
+        "rationale": "Narrative README is not a registered user-facing surface",
+        "issue": "#78"
+      }
+    ]
+  }
+}

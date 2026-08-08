@@ -149,3 +149,50 @@ def test_filter_parity_gaps_defaults_to_open_only() -> None:
 
     all_p0 = filter_parity_gaps(inventory, priority="P0", include_all=True)
     assert "gap.closed.example" in {gap["id"] for gap in all_p0}
+
+
+def test_strict_check_invokes_completeness_promotion_gate(tmp_path: Path) -> None:
+    """Closing P0s and flipping status strings is no longer enough for --strict."""
+    inventory = load_json_object(INVENTORY)
+    broken = copy.deepcopy(inventory)
+    for gap in broken["gaps"]:
+        if gap.get("priority") == "P0":
+            gap["status"] = "closed"
+    broken["source_status"]["OMC"] = "complete"
+    path = tmp_path / "omg-parity.json"
+    path.write_text(json.dumps(broken), encoding="utf-8")
+
+    with pytest.raises(ContractValidationError, match="completeness proof"):
+        check_parity_inventory(inventory_path=path, repo_root=ROOT, strict=True)
+
+    validated = validate_parity_inventory(broken)
+    with pytest.raises(ContractValidationError, match="completeness proof"):
+        apply_strict_parity_gates(validated, repo_root=ROOT)
+
+
+def test_strict_payload_reports_completeness_proof_state() -> None:
+    payload = check_parity_inventory(
+        inventory_path=INVENTORY,
+        repo_root=ROOT,
+        strict=True,
+    )
+    assert payload["ok"] is True
+    assert payload["completeness_gate_checked"] is True
+    assert payload["completeness_proofs_required"] is False
+    assert payload["completeness_proofs_verified"] == 0
+    assert payload["promoted_sources"] == []
+    assert payload["promoted_categories"] == []
+
+    script = subprocess.run(
+        [sys.executable, "scripts/check_parity_inventory.py", "--strict"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert script.returncode == 0, script.stderr
+    via_script = json.loads(script.stdout)
+    assert via_script["completeness_gate_checked"] is True
+    assert via_script["completeness_proofs_required"] is False
+    assert via_script["completeness_proofs_verified"] == 0
+

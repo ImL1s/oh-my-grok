@@ -14,6 +14,7 @@ from omg_cli.contracts.parity_schema import (
 )
 from omg_cli.contracts.state_schemas import ContractValidationError
 from omg_cli.parity_claim_gate import check_parity_release_claims
+from omg_cli.parity_completeness import check_completeness_promotion_gate
 
 __all__ = [
     "ARTIFACT_PATHS_RELATIVE",
@@ -50,27 +51,52 @@ def _check_v1_normative_artifacts(repo_root: Path) -> bool:
     return True
 
 
-def apply_strict_parity_gates(inventory: dict[str, Any]) -> None:
-    """Fail closed on overclaim / status contradictions (strict mode only)."""
+def apply_strict_parity_gates(
+    inventory: dict[str, Any],
+    *,
+    repo_root: Path | str | None = None,
+    completeness_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Fail closed on overclaim / status contradictions (strict mode only).
+
+    Invokes the completeness-promotion proof gate whenever any source/category
+    (or overall inventory) status is ``complete``. Retains the open-P0 rule for
+    overall-complete inventories. Returns the completeness proof-state payload.
+    """
     if inventory.get("schema_version") != 2:
-        return
+        empty = {
+            "completeness_gate_checked": False,
+            "completeness_proofs_required": False,
+            "completeness_proofs_verified": 0,
+            "promoted_sources": [],
+            "promoted_categories": [],
+        }
+        if completeness_payload is not None:
+            completeness_payload.update(empty)
+        return empty
     status = inventory.get("inventory_status")
     if status not in {"bootstrapping", "complete"}:
         raise ContractValidationError("inventory_status invalid")
-    if not inventory_completion_claims_allowed(inventory):
-        return
-    open_p0 = [
-        gap
-        for gap in inventory.get("gaps", [])
-        if isinstance(gap, dict)
-        and gap.get("status") == "open"
-        and gap.get("priority") == "P0"
-    ]
-    if open_p0:
-        raise ContractValidationError(
-            "complete inventory cannot leave open P0 gaps: "
-            + ",".join(str(gap.get("id")) for gap in open_p0)
-        )
+
+    # Retain open-P0 rule for overall-complete inventories (before proof work).
+    if inventory_completion_claims_allowed(inventory):
+        open_p0 = [
+            gap
+            for gap in inventory.get("gaps", [])
+            if isinstance(gap, dict)
+            and gap.get("status") == "open"
+            and gap.get("priority") == "P0"
+        ]
+        if open_p0:
+            raise ContractValidationError(
+                "complete inventory cannot leave open P0 gaps: "
+                + ",".join(str(gap.get("id")) for gap in open_p0)
+            )
+
+    gate = check_completeness_promotion_gate(inventory, repo_root=repo_root)
+    if completeness_payload is not None:
+        completeness_payload.update(gate)
+    return gate
 
 
 def check_parity_inventory(
@@ -99,11 +125,20 @@ def check_parity_inventory(
     root = Path(repo_root)
     path = Path(inventory_path)
     raw = load_json_object(path)
+    completeness_state: dict[str, Any] = {
+        "completeness_gate_checked": False,
+        "completeness_proofs_required": False,
+        "completeness_proofs_verified": 0,
+        "promoted_sources": [],
+        "promoted_categories": [],
+    }
     if release:
         strict = True
     if strict:
         inventory = validate_parity_inventory(raw, repo_root=root)
-        apply_strict_parity_gates(inventory)
+        apply_strict_parity_gates(
+            inventory, repo_root=root, completeness_payload=completeness_state
+        )
     else:
         inventory = validate_parity_inventory(raw)
 
@@ -137,6 +172,7 @@ def check_parity_inventory(
         "release": bool(release),
         "normative_artifacts_verified": artifacts_checked,
         "inventory_path": relative,
+        **completeness_state,
     }
     if release:
         release_payload = check_parity_release_claims(

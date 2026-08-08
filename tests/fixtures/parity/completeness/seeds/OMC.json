@@ -1,0 +1,13 @@
+{
+  "source": "OMC",
+  "pin_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "capabilities": [
+    {
+      "id": "fixture.omc.hello",
+      "source_paths": [
+        "commands/hello.md"
+      ],
+      "promise": "fixture hello command"
+    }
+  ]
+}
