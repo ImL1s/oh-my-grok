@@ -9,20 +9,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
-### Added
-- **#78-D completeness promotion proof gate:** fail-closed
-  `omg_cli/parity_completeness.py` policy/proof validators + reproduction,
-  wired into strict `omg parity check` / `scripts/check_parity_inventory.py`.
-  Promoting `source_status` / `category_status` / `inventory_status` to
-  `complete` without a digest-bound proof fails closed; catalogue seeds are
-  not proofs. Maintainer `scripts/check_parity_completeness.py` (`--plan` /
-  `--check`) may emit a candidate proof but never mutates inventory status.
-  Hermetic fixtures under `tests/fixtures/parity/completeness/`; schema in
-  `docs/parity/completeness-schema-v1.md`. Canonical inventory stays
-  bootstrapping — promotion remains unperformed and is proof-gated.
-  Does **not** close #78 (real-source policies/proofs still outstanding).
-
 ### Fixed
+- **#78-D P0 checkout/pin binding:** completeness proofs authenticate
+  `--upstream-root` to `pin_revision` (`HEAD` match + clean porcelain) and
+  stamp `checkout_provenance` before hashing registry/surface bytes. Wrong
+  HEAD or dirty/untracked checkouts fail closed (hermetic git fixture
+  coverage).
 - **#68 PR1 PID ownership (best-effort):** cancel records a `pid_starttime`
   fingerprint at `starting→running` (Linux `/proc/<pid>/stat` starttime or
   `ps -o lstart=`). Before **each** cancel signal (SIGTERM and again before

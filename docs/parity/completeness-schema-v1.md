@@ -47,6 +47,8 @@ at the exact pinned revision.
 Required bindings:
 
 - `source`, `repository`, `pin_revision`
+- `checkout_provenance` — `{ method: "git_head_clean", observed_revision }`
+  (must equal `pin_revision`)
 - `policy_digest`, `seed_digest`, `coverage_digest`
 - `source_input_digest`, `surface_index_digest`
 - `discovered_surfaces[]` — `surface_id`, `kind`, `category`,
@@ -85,6 +87,10 @@ Committed layout (when a source is later promoted):
 - PR CI validates committed artifact consistency with **no network**.
 - Full filesystem reproduction requires an explicitly supplied
   `--upstream-root` (maintainer `--plan` / `--check`, hermetic fixtures).
+- Before hashing, the checkout is authenticated to `pin_revision`:
+  `git rev-parse HEAD` must equal the pin, the path must be its own
+  work-tree root, and `git status --porcelain` must be empty (no dirty or
+  untracked paths). Provenance is stamped into `checkout_provenance`.
 - Source paths must be relative, confined under the checkout root, regular
   files, and non-symlinks.
 - Mapping a discovered surface to an alias-only row, unknown capability,

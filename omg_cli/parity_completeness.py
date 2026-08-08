@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -42,6 +43,7 @@ __all__ = [
     "EXTRACTION_JSON_REGISTRY_V1",
     "CompletenessGateResult",
     "assert_completeness_promotion",
+    "authenticate_pinned_checkout",
     "build_completeness_proof",
     "canonical_json_digest",
     "check_completeness_promotion_gate",
@@ -91,6 +93,7 @@ _PROOF_TOP_KEYS = frozenset(
         "source",
         "repository",
         "pin_revision",
+        "checkout_provenance",
         "policy_digest",
         "seed_digest",
         "coverage_digest",
@@ -101,6 +104,8 @@ _PROOF_TOP_KEYS = frozenset(
         "empty_category_partitions",
     }
 )
+_PROVENANCE_KEYS = frozenset({"method", "observed_revision"})
+_CHECKOUT_AUTH_METHOD = "git_head_clean"
 _SURFACE_KEYS = frozenset(
     {
         "surface_id",
@@ -155,6 +160,80 @@ def _resolve_confined_file(root: Path, relative: str, *, label: str) -> Path:
 
 def _file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _run_git(root: Path, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def authenticate_pinned_checkout(
+    upstream_root: Path | str,
+    pin_revision: str,
+) -> dict[str, str]:
+    """Require upstream_root HEAD == pin_revision with a clean work tree.
+
+    Fail closed when the directory is not its own git work-tree root, when HEAD
+    drifts from the pin, or when any tracked/untracked dirty path is present.
+    This binds filesystem bytes used for hashing to the claimed pin.
+    """
+    root = Path(upstream_root)
+    if not root.is_dir():
+        raise ContractValidationError(f"upstream_root is not a directory: {root}")
+    pin = require_git_oid(pin_revision, label="pin_revision")
+
+    inside = _run_git(root, ["rev-parse", "--is-inside-work-tree"])
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        raise ContractValidationError(
+            f"upstream_root is not a git work tree: {root}"
+        )
+
+    toplevel = _run_git(root, ["rev-parse", "--show-toplevel"])
+    if toplevel.returncode != 0:
+        raise ContractValidationError(
+            f"git rev-parse --show-toplevel failed in {root}: {toplevel.stderr.strip()}"
+        )
+    top = Path(toplevel.stdout.strip()).resolve()
+    if top != root.resolve():
+        raise ContractValidationError(
+            "upstream_root must be a git work-tree root matching the pin "
+            f"(toplevel={top}, root={root.resolve()})"
+        )
+
+    head_proc = _run_git(root, ["rev-parse", "HEAD"])
+    if head_proc.returncode != 0:
+        raise ContractValidationError(
+            f"git rev-parse HEAD failed in {root}: {head_proc.stderr.strip()}"
+        )
+    head = head_proc.stdout.strip().lower()
+    if not head or head != pin:
+        raise ContractValidationError(
+            f"upstream_root HEAD {head!r} does not match pin_revision {pin!r}"
+        )
+
+    status = _run_git(
+        root,
+        ["status", "--porcelain=v1", "--untracked-files=all"],
+    )
+    if status.returncode != 0:
+        raise ContractValidationError(
+            f"git status failed in {root}: {status.stderr.strip()}"
+        )
+    dirty_lines = [line for line in status.stdout.splitlines() if line.strip()]
+    if dirty_lines:
+        sample = "; ".join(dirty_lines[:5])
+        raise ContractValidationError(
+            f"upstream_root is dirty relative to pin_revision {pin}: {sample}"
+        )
+
+    return {
+        "method": _CHECKOUT_AUTH_METHOD,
+        "observed_revision": head,
+    }
 
 
 def coverage_projection_for_source(
@@ -431,9 +510,16 @@ def _parse_json_registry_v1(
 def reproduce_source_index(
     policy: Mapping[str, Any],
     upstream_root: Path | str,
+    *,
+    pin_revision: str,
 ) -> dict[str, Any]:
-    """Discover surfaces from a supplied pinned checkout (fail-closed)."""
+    """Discover surfaces from a supplied pinned checkout (fail-closed).
+
+    Authenticates ``upstream_root`` to ``pin_revision`` (HEAD match + clean
+    tree) before hashing any registry/surface bytes.
+    """
     validated = validate_completeness_policy(policy)
+    provenance = authenticate_pinned_checkout(upstream_root, pin_revision)
     root = Path(upstream_root)
     if not root.is_dir():
         raise ContractValidationError(f"upstream_root is not a directory: {root}")
@@ -498,6 +584,8 @@ def reproduce_source_index(
     return {
         "source": validated["source"],
         "repository": validated["repository"],
+        "pin_revision": provenance["observed_revision"],
+        "checkout_provenance": provenance,
         "discovered_surfaces": normalized,
         "empty_category_partitions": empty_partitions,
         "source_input": input_parts,
@@ -685,6 +773,27 @@ def validate_completeness_proof(value: Mapping[str, Any]) -> dict[str, Any]:
         proof.get("repository"), label="proof.repository"
     )
     pin = require_git_oid(proof.get("pin_revision"), label="proof.pin_revision")
+    provenance_raw = require_object(
+        proof.get("checkout_provenance"), label="checkout_provenance"
+    )
+    require_exact_keys(
+        provenance_raw, required=_PROVENANCE_KEYS, label="checkout_provenance"
+    )
+    method = require_nonempty_string(
+        provenance_raw.get("method"), label="checkout_provenance.method"
+    )
+    if method != _CHECKOUT_AUTH_METHOD:
+        raise ContractValidationError(
+            f"checkout_provenance.method must be {_CHECKOUT_AUTH_METHOD!r}"
+        )
+    observed = require_git_oid(
+        provenance_raw.get("observed_revision"),
+        label="checkout_provenance.observed_revision",
+    )
+    if observed != pin:
+        raise ContractValidationError(
+            "checkout_provenance.observed_revision must equal pin_revision"
+        )
     policy_digest = require_sha256(proof.get("policy_digest"), label="policy_digest")
     seed_digest = require_sha256(proof.get("seed_digest"), label="seed_digest")
     coverage_digest = require_sha256(
@@ -775,6 +884,10 @@ def validate_completeness_proof(value: Mapping[str, Any]) -> dict[str, Any]:
         "source": source,
         "repository": repository,
         "pin_revision": pin,
+        "checkout_provenance": {
+            "method": method,
+            "observed_revision": observed,
+        },
         "policy_digest": policy_digest,
         "seed_digest": seed_digest,
         "coverage_digest": coverage_digest,
@@ -803,7 +916,9 @@ def build_completeness_proof(
         raise ContractValidationError(
             "policy.repository does not match inventory upstream_pins repository"
         )
-    index = reproduce_source_index(validated_policy, upstream_root)
+    index = reproduce_source_index(
+        validated_policy, upstream_root, pin_revision=pin["revision"]
+    )
     mapped, unresolved = _apply_surface_mappings(
         surfaces=index["discovered_surfaces"],
         mappings=surface_mappings,
@@ -818,6 +933,7 @@ def build_completeness_proof(
         "source": source,
         "repository": validated_policy["repository"],
         "pin_revision": pin["revision"],
+        "checkout_provenance": dict(index["checkout_provenance"]),
         "policy_digest": digest_policy(validated_policy),
         "seed_digest": digest_seed_catalog(seed),
         "coverage_digest": canonical_json_digest(coverage),
@@ -917,7 +1033,26 @@ def verify_completeness_proof(
         )
 
     if upstream_root is not None:
-        reproduced = reproduce_source_index(validated_policy, upstream_root)
+        # Re-authenticate checkout bytes to the claimed pin before comparing digests.
+        if (
+            validated_proof["checkout_provenance"].get("observed_revision")
+            != validated_proof["pin_revision"]
+        ):
+            raise ContractValidationError(
+                "checkout_provenance.observed_revision does not match pin_revision"
+            )
+        reproduced = reproduce_source_index(
+            validated_policy,
+            upstream_root,
+            pin_revision=validated_proof["pin_revision"],
+        )
+        if (
+            reproduced["checkout_provenance"]["observed_revision"]
+            != validated_proof["pin_revision"]
+        ):
+            raise ContractValidationError(
+                "upstream_root HEAD does not match proof.pin_revision"
+            )
         if reproduced["source_input_digest"] != validated_proof["source_input_digest"]:
             raise ContractValidationError("proof.source_input_digest reproduction drift")
         if reproduced["surface_index_digest"] != validated_proof["surface_index_digest"]:
