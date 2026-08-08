@@ -158,8 +158,8 @@ def _resolve_confined_file(root: Path, relative: str, *, label: str) -> Path:
     return current
 
 
-def _file_digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _file_digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _run_git(root: Path, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -171,15 +171,128 @@ def _run_git(root: Path, args: Sequence[str]) -> subprocess.CompletedProcess[str
     )
 
 
+def _run_git_bytes(root: Path, args: Sequence[str]) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        check=False,
+    )
+
+
+def _parse_ls_tree_z(payload: str) -> list[tuple[str, str, str, str]]:
+    """Parse ``git ls-tree -r -z`` lines into (mode, obj_type, sha, path)."""
+    entries: list[tuple[str, str, str, str]] = []
+    for item in payload.split("\0"):
+        if not item:
+            continue
+        # "<mode> <type> <sha>\t<path>"
+        try:
+            meta, path = item.split("\t", 1)
+            mode, obj_type, sha = meta.split(" ", 2)
+        except ValueError as exc:
+            raise ContractValidationError(
+                f"malformed git ls-tree entry: {item!r}"
+            ) from exc
+        entries.append((mode, obj_type, sha.lower(), path))
+    return entries
+
+
+def _git_blob_bytes(root: Path, pin: str, relative: str, *, label: str) -> bytes:
+    """Read path bytes from the pinned commit (not the worktree)."""
+    rel = _require_relative_posix(relative, label=label)
+    # Reject gitlink/symlink/tree; only regular blobs are user-facing file surfaces.
+    ls = _run_git(root, ["ls-tree", "-z", "--full-tree", pin, "--", rel])
+    if ls.returncode != 0:
+        raise ContractValidationError(
+            f"{label}: git ls-tree failed for {rel}: {ls.stderr.strip()}"
+        )
+    entries = _parse_ls_tree_z(ls.stdout)
+    if not entries:
+        raise ContractValidationError(
+            f"{label}: path {rel!r} missing from pin {pin}"
+        )
+    if len(entries) != 1:
+        raise ContractValidationError(
+            f"{label}: path {rel!r} is not a single tree entry at pin {pin}"
+        )
+    mode, obj_type, _sha, path = entries[0]
+    if path != rel:
+        raise ContractValidationError(
+            f"{label}: ls-tree path mismatch for {rel!r} (got {path!r})"
+        )
+    if obj_type != "blob":
+        raise ContractValidationError(
+            f"{label}: {rel!r} must be a blob at pin (got {obj_type})"
+        )
+    if mode == "120000":
+        raise ContractValidationError(f"{label} must not be a symlink: {rel}")
+    if mode not in {"100644", "100755"}:
+        raise ContractValidationError(
+            f"{label}: unsupported git mode {mode} for {rel}"
+        )
+    blob = _run_git_bytes(root, ["cat-file", "blob", f"{pin}:{rel}"])
+    if blob.returncode != 0:
+        err = blob.stderr.decode("utf-8", errors="replace").strip()
+        raise ContractValidationError(
+            f"{label}: git cat-file blob failed for {pin}:{rel}: {err}"
+        )
+    return blob.stdout
+
+
+def _assert_worktree_matches_pin_blobs(root: Path, pin: str) -> None:
+    """Fail closed when worktree bytes diverge from pin (incl. skip-worktree).
+
+    ``git status --porcelain`` is insufficient: ``skip-worktree`` /
+    ``assume-unchanged`` can hide tracked mutations. Compare each pin blob to
+    ``git hash-object`` of the worktree path.
+    """
+    ls = _run_git(root, ["ls-tree", "-r", "-z", "--full-tree", pin])
+    if ls.returncode != 0:
+        raise ContractValidationError(
+            f"git ls-tree failed for pin {pin}: {ls.stderr.strip()}"
+        )
+    for mode, obj_type, sha, path in _parse_ls_tree_z(ls.stdout):
+        if obj_type != "blob":
+            raise ContractValidationError(
+                f"pin tree contains non-blob entry {path!r} ({obj_type})"
+            )
+        if mode == "120000":
+            raise ContractValidationError(
+                f"pin tree must not contain symlink: {path}"
+            )
+        wt = root / path
+        if os.path.lexists(wt) and os.path.islink(wt):
+            raise ContractValidationError(
+                f"upstream_root worktree path must not be a symlink: {path}"
+            )
+        if not wt.is_file():
+            raise ContractValidationError(
+                f"upstream_root missing tracked path for pin {pin}: {path}"
+            )
+        hashed = _run_git(root, ["hash-object", "--", path])
+        if hashed.returncode != 0:
+            raise ContractValidationError(
+                f"git hash-object failed for {path}: {hashed.stderr.strip()}"
+            )
+        observed = hashed.stdout.strip().lower()
+        if observed != sha:
+            raise ContractValidationError(
+                f"upstream_root worktree diverges from pin_revision {pin} at "
+                f"{path} (skip-worktree/assume-unchanged/mutation)"
+            )
+
+
 def authenticate_pinned_checkout(
     upstream_root: Path | str,
     pin_revision: str,
 ) -> dict[str, str]:
-    """Require upstream_root HEAD == pin_revision with a clean work tree.
+    """Require upstream_root HEAD == pin_revision with pin-bound worktree bytes.
 
     Fail closed when the directory is not its own git work-tree root, when HEAD
-    drifts from the pin, or when any tracked/untracked dirty path is present.
-    This binds filesystem bytes used for hashing to the claimed pin.
+    drifts from the pin, when porcelain reports dirty/untracked paths, or when
+    any tracked worktree file OID diverges from the pin blob (covers
+    skip-worktree / assume-unchanged mutations that porcelain hides).
+    Discovery hashes are read from git objects at the pin, not the worktree.
     """
     root = Path(upstream_root)
     if not root.is_dir():
@@ -229,6 +342,30 @@ def authenticate_pinned_checkout(
         raise ContractValidationError(
             f"upstream_root is dirty relative to pin_revision {pin}: {sample}"
         )
+
+    # Surface skip-worktree / assume-unchanged mutations porcelain can hide.
+    refresh = _run_git(root, ["update-index", "--refresh"])
+    # --refresh returns non-zero when the index needs refresh; still inspect
+    # diff-index / blob match below rather than trusting the exit code alone.
+    _ = refresh
+    diff_index = _run_git(
+        root,
+        ["diff-index", "--exit-code", "--raw", "-r", pin],
+    )
+    if diff_index.returncode not in {0, 1}:
+        raise ContractValidationError(
+            f"git diff-index failed in {root}: {diff_index.stderr.strip()}"
+        )
+    if diff_index.returncode != 0 or diff_index.stdout.strip():
+        sample = "; ".join(
+            line for line in diff_index.stdout.splitlines() if line.strip()
+        )[:500]
+        raise ContractValidationError(
+            f"upstream_root index/worktree differs from pin_revision {pin}"
+            + (f": {sample}" if sample else "")
+        )
+
+    _assert_worktree_matches_pin_blobs(root, pin)
 
     return {
         "method": _CHECKOUT_AUTH_METHOD,
@@ -515,11 +652,13 @@ def reproduce_source_index(
 ) -> dict[str, Any]:
     """Discover surfaces from a supplied pinned checkout (fail-closed).
 
-    Authenticates ``upstream_root`` to ``pin_revision`` (HEAD match + clean
-    tree) before hashing any registry/surface bytes.
+    Authenticates ``upstream_root`` to ``pin_revision`` (HEAD match, clean
+    porcelain, worktree OID == pin blobs) then hashes registry/surface bytes
+    via ``git cat-file`` at the pin — never via possibly-skewed worktree files.
     """
     validated = validate_completeness_policy(policy)
-    provenance = authenticate_pinned_checkout(upstream_root, pin_revision)
+    pin = require_git_oid(pin_revision, label="pin_revision")
+    provenance = authenticate_pinned_checkout(upstream_root, pin)
     root = Path(upstream_root)
     if not root.is_dir():
         raise ContractValidationError(f"upstream_root is not a directory: {root}")
@@ -531,16 +670,17 @@ def reproduce_source_index(
 
     for reg in rules["authoritative_registries"]:
         path = reg["path"]
-        file_path = _resolve_confined_file(
-            root, path, label=f"registry:{path}"
-        )
-        digest = _file_digest(file_path)
+        # Keep worktree confinement checks (relative, no symlink) in addition to
+        # pin-blob reads so escape attempts fail before git path lookup.
+        _resolve_confined_file(root, path, label=f"registry:{path}")
+        raw = _git_blob_bytes(root, pin, path, label=f"registry:{path}")
+        digest = _file_digest(raw)
         input_parts.append({"path": path, "content_digest": digest})
         try:
-            payload = json.loads(file_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ContractValidationError(
-                f"registry {path} is not valid JSON: {exc}"
+                f"registry {path} is not valid UTF-8 JSON: {exc}"
             ) from exc
         if not isinstance(payload, Mapping):
             raise ContractValidationError(f"registry {path} must be a JSON object")
@@ -553,7 +693,7 @@ def reproduce_source_index(
             )
         )
 
-    # Confirm each surface source_path is a confined regular file; digest content.
+    # Confirm each surface source_path is a confined regular blob at the pin.
     normalized: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for surface in discovered:
@@ -561,10 +701,13 @@ def reproduce_source_index(
         if sid in seen_ids:
             raise ContractValidationError(f"duplicate surface_id: {sid}")
         seen_ids.add(sid)
-        src = _resolve_confined_file(
+        _resolve_confined_file(
             root, surface["source_path"], label=f"surface:{sid}.source_path"
         )
-        content_digest = _file_digest(src)
+        raw = _git_blob_bytes(
+            root, pin, surface["source_path"], label=f"surface:{sid}.source_path"
+        )
+        content_digest = _file_digest(raw)
         normalized.append(
             {
                 "surface_id": sid,

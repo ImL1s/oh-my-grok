@@ -414,9 +414,9 @@ def test_dirty_checkout_fails(tmp_path: Path) -> None:
     )
 
     (upstream / "commands" / "hello.md").write_text("# hello DIRTY\n", encoding="utf-8")
-    with pytest.raises(ContractValidationError, match="dirty"):
+    with pytest.raises(ContractValidationError, match="dirty|diverges from pin"):
         authenticate_pinned_checkout(upstream, pin)
-    with pytest.raises(ContractValidationError, match="dirty"):
+    with pytest.raises(ContractValidationError, match="dirty|diverges from pin"):
         verify_completeness_proof(
             proof,
             policy=policy,
@@ -429,6 +429,55 @@ def test_dirty_checkout_fails(tmp_path: Path) -> None:
     (upstream / "untracked-extra.txt").write_text("nope\n", encoding="utf-8")
     with pytest.raises(ContractValidationError, match="dirty"):
         authenticate_pinned_checkout(upstream, pin)
+
+
+def test_skip_worktree_or_assume_unchanged_mutation_fails(tmp_path: Path) -> None:
+    """Porcelain-clean mutations under skip-worktree/assume-unchanged must fail."""
+    upstream, pin, inventory, seed = _omc_world(tmp_path)
+    policy = _policy()
+    proof = build_completeness_proof(
+        policy=policy,
+        inventory=inventory,
+        upstream_root=upstream,
+        seed=seed,
+        surface_mappings=_mappings(),
+    )
+    target = "commands/hello.md"
+
+    for flag in ("--skip-worktree", "--assume-unchanged"):
+        assert _git(upstream, "checkout", "--", target).returncode == 0
+        assert _git(upstream, "update-index", flag, "--", target).returncode == 0
+        (upstream / target).write_text(f"# mutated under {flag}\n", encoding="utf-8")
+        # Porcelain often stays clean with these bits set.
+        status = _git(upstream, "status", "--porcelain=v1", "--untracked-files=all")
+        assert status.returncode == 0
+        assert status.stdout.strip() == "", status.stdout
+
+        with pytest.raises(
+            ContractValidationError,
+            match="diverges from pin|differs from pin",
+        ):
+            authenticate_pinned_checkout(upstream, pin)
+        with pytest.raises(
+            ContractValidationError,
+            match="diverges from pin|differs from pin",
+        ):
+            verify_completeness_proof(
+                proof,
+                policy=policy,
+                inventory=inventory,
+                seed=seed,
+                upstream_root=upstream,
+            )
+
+        # Clear bit and restore for the next flag.
+        clear = (
+            "--no-skip-worktree"
+            if flag == "--skip-worktree"
+            else "--no-assume-unchanged"
+        )
+        assert _git(upstream, "update-index", clear, "--", target).returncode == 0
+        assert _git(upstream, "checkout", "--", target).returncode == 0
 
 
 def test_source_proof_binds_repository_pin_policy_seed_and_inventory(
