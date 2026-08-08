@@ -12,10 +12,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ### Fixed
 - **#68 PR1 PID ownership (best-effort):** cancel records a `pid_starttime`
   fingerprint at `starting→running` (Linux `/proc/<pid>/stat` starttime or
-  `ps -o lstart=`). When present, cancel re-probes before SIGTERM/SIGKILL and
-  fail-closes with `E_JOB_PID_REUSED` on mismatch (no signal). Null fingerprint
-  (probe failed at start) still falls back to pid/pgid-only — **not** full
-  OmO-style lease/nonce ownership; deferred to a later #68 slice.
+  `ps -o lstart=`). Before **each** cancel signal (SIGTERM and again before
+  SIGKILL), cancel revalidates pid/pgid both `> 1`, live `getpgid(pid)` vs
+  recorded PGID, and (when present) the fingerprint; mismatch fail-closes with
+  `E_JOB_PID_REUSED` / `E_JOB_PGID_MISMATCH` and does **not** signal. Null
+  fingerprint (probe failed at start) still falls back to pid/pgid + live PGID
+  checks only — **not** full OmO-style lease/nonce ownership; deferred to a
+  later #68 slice.
 - **#68 PR1 launch ownership:** parent alone commits `starting→running`
   (pid/pgid/handle); child readiness barrier polls `job.json` until that
   commit (or terminal/timeout) before `ProviderAdapter.run`, and stamps

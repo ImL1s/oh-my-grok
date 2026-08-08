@@ -1322,3 +1322,170 @@ def test_cancel_refuses_pid_one(root: Path, monkeypatch: pytest.MonkeyPatch) -> 
     assert ei.value.code == "E_JOB_PID_REUSED"
     assert signals == []
     assert read_job_record(root, rec.job_id).state == JobState.RUNNING
+
+
+def test_cancel_refuses_pgid_one_even_if_pid_ok(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pid>1 with pgid=1 must never be signalled."""
+    from omg_cli.jobs import runtime as runtime_mod
+
+    prompt = _prompt(root)
+    signals: list[tuple[int, int]] = []
+
+    def spy_kill(pgid_arg: int, signum: int) -> bool:
+        signals.append((int(pgid_arg), int(signum)))
+        return False
+
+    monkeypatch.setattr(runtime_mod, "_kill_pgid", spy_kill)
+    monkeypatch.setattr(runtime_mod, "_pid_alive", lambda _pid: True)
+    # Bypass getpgid so we exercise the pgid<=1 gate first.
+    monkeypatch.setattr(os, "getpgid", lambda _pid: 1)
+
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    transition_job(
+        root,
+        rec.job_id,
+        JobState.RUNNING,
+        updates={
+            "pid": 4242,
+            "pgid": 1,
+            "handle": "fake:bad-pgid",
+            "pid_starttime": None,
+        },
+    )
+    with pytest.raises(JobStoreError) as ei:
+        cancel_job(root, rec.job_id, reason="bad-pgid", grace_s=0.05)
+    assert ei.value.code == "E_JOB_PID_REUSED"
+    assert signals == []
+    assert read_job_record(root, rec.job_id).state == JobState.RUNNING
+
+
+def test_cancel_live_pgid_mismatch_does_not_signal(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live getpgid(pid) ≠ recorded pgid → E_JOB_PGID_MISMATCH, no signals."""
+    import subprocess
+    import sys
+
+    from omg_cli.jobs import runtime as runtime_mod
+
+    prompt = _prompt(root)
+    child = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pid = int(child.pid)
+    real_pgid = int(os.getpgid(pid))
+    assert pid > 1 and real_pgid > 1
+    wrong_pgid = real_pgid + 777
+    signals: list[int] = []
+
+    def spy_kill(pgid_arg: int, signum: int) -> bool:
+        signals.append(int(signum))
+        return False
+
+    monkeypatch.setattr(runtime_mod, "_kill_pgid", spy_kill)
+
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    transition_job(
+        root,
+        rec.job_id,
+        JobState.RUNNING,
+        updates={
+            "pid": pid,
+            "pgid": wrong_pgid,
+            "handle": f"fake:{rec.job_id}:pid={pid}",
+            "pid_starttime": None,
+        },
+    )
+    try:
+        with pytest.raises(JobStoreError) as ei:
+            cancel_job(root, rec.job_id, reason="pgid-drift", grace_s=0.05)
+        assert ei.value.code == "E_JOB_PGID_MISMATCH"
+        assert signals == []
+        assert runtime_mod._pid_alive(pid)
+        assert read_job_record(root, rec.job_id).state == JobState.RUNNING
+    finally:
+        import signal as signal_mod
+
+        try:
+            os.killpg(real_pgid, signal_mod.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            child.kill()
+        try:
+            child.wait(timeout=2)
+        except Exception:
+            pass
+
+
+def test_cancel_revalidates_before_sigkill_after_term(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ownership OK before SIGTERM; mismatch before SIGKILL → no SIGKILL."""
+    import signal as signal_mod
+
+    from omg_cli.jobs import runtime as runtime_mod
+
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        ignore_sigterm=True,
+        sleep_s=2.5,
+    )
+    pid = int(started.record.pid or 0)
+    pgid = int(started.record.pgid or 0)
+    assert pid > 1 and pgid > 1
+    time.sleep(0.25)  # allow SIG_IGN install
+
+    signals: list[int] = []
+    assert_calls = {"n": 0}
+    real_assert = runtime_mod._assert_cancel_ownership
+    real_kill = runtime_mod._kill_pgid
+
+    def counting_assert(record, target_pid, target_pgid):  # noqa: ANN001
+        assert_calls["n"] += 1
+        if assert_calls["n"] == 1:
+            return real_assert(record, target_pid, target_pgid)
+        raise JobStoreError(
+            "simulated pre-KILL fingerprint mismatch",
+            code="E_JOB_PID_REUSED",
+        )
+
+    def spy_kill(pgid_arg: int, signum: int) -> bool:
+        signals.append(int(signum))
+        return real_kill(pgid_arg, signum)
+
+    monkeypatch.setattr(runtime_mod, "_assert_cancel_ownership", counting_assert)
+    monkeypatch.setattr(runtime_mod, "_kill_pgid", spy_kill)
+
+    with pytest.raises(JobStoreError) as ei:
+        cancel_job(root, started.record.job_id, reason="pre-kill", grace_s=0.35)
+    assert ei.value.code == "E_JOB_PID_REUSED"
+    assert signal_mod.SIGTERM in signals
+    assert signal_mod.SIGKILL not in signals
+    assert assert_calls["n"] >= 2
+    # Child may still be alive (TERM ignored); clean up exactly.
+    try:
+        os.killpg(pgid, signal_mod.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    time.sleep(0.1)

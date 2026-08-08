@@ -72,22 +72,46 @@ def _probe_pid_starttime(pid: int) -> str | None:
     return f"lstart:{out}"
 
 
-def _assert_cancel_ownership(record: JobRecord, target_pid: int) -> None:
-    """Fail closed before signalling when a recorded fingerprint mismatches.
+def _assert_cancel_ownership(
+    record: JobRecord,
+    target_pid: int,
+    target_pgid: int,
+) -> None:
+    """Fail closed before *each* signal when ownership cannot be revalidated.
 
-    If ``pid_starttime`` was null at start (probe failed), PR1 keeps pid/pgid-only
-    cancel (documented limitation). Never signals pid/pgid <= 1.
+    Checks (every call — before SIGTERM and again before SIGKILL):
+    - both ``pid`` and ``pgid`` are ``> 1``
+    - live ``os.getpgid(pid)`` still equals the recorded PGID
+    - when ``pid_starttime`` was recorded, re-probe matches
+
+    If ``pid_starttime`` was null at start (probe failed), PR1 keeps fingerprint
+    skipped but still enforces pid/pgid/>1 and live PGID match.
     """
-    if target_pid <= 1:
+    if target_pid <= 1 or target_pgid <= 1:
         raise JobStoreError(
-            f"job {record.job_id} refuses to signal pid/pgid={target_pid} "
-            "(invalid or privileged identity)",
+            f"job {record.job_id} refuses to signal pid={target_pid} pgid={target_pgid} "
+            "(both must be > 1)",
             code="E_JOB_PID_REUSED",
+        )
+    if not _pid_alive(target_pid):
+        return
+    try:
+        live_pgid = int(os.getpgid(target_pid))
+    except ProcessLookupError:
+        return
+    except OSError as exc:
+        raise JobStoreError(
+            f"job {record.job_id} cannot read live pgid for pid={target_pid}: {exc}",
+            code="E_JOB_PGID_MISMATCH",
+        ) from exc
+    if live_pgid != int(target_pgid):
+        raise JobStoreError(
+            f"job {record.job_id} live pgid mismatch for pid={target_pid} "
+            f"(recorded={target_pgid} live={live_pgid}); refusing to signal",
+            code="E_JOB_PGID_MISMATCH",
         )
     expected = record.pid_starttime
     if expected is None or expected == "":
-        return
-    if not _pid_alive(target_pid):
         return
     live = _probe_pid_starttime(target_pid)
     if live is None or live != expected:
@@ -603,7 +627,7 @@ def _reap_child(pid: int) -> None:
 
 def _kill_pgid(pgid: int, signum: int) -> bool:
     """Send signal to process group only (never by name). Returns True if signal sent."""
-    if pgid <= 0:
+    if pgid <= 1:
         return False
     try:
         os.killpg(pgid, signum)
@@ -625,9 +649,12 @@ def cancel_job(
 ) -> JobRecord:
     """Cancel by recorded PID/PGID with best-effort starttime fencing.
 
-    When ``pid_starttime`` is present, a live-process fingerprint mismatch
-    raises ``E_JOB_PID_REUSED`` and does **not** signal. When the fingerprint
-    was null at start, PR1 falls back to pid/pgid only.
+    Ownership is revalidated immediately before **every** signal (SIGTERM and
+    SIGKILL): pid/pgid must both be ``> 1``, live PGID must match the record,
+    and when ``pid_starttime`` is present the fingerprint must still match.
+    Mismatch raises ``E_JOB_PID_REUSED`` / ``E_JOB_PGID_MISMATCH`` with no
+    further signals. Null fingerprint at start remains a PR1 limitation
+    (pid/pgid + live PGID only — not full lease/nonce ownership).
     """
     job_id = safe_job_id(job_id)
     record = read_job_record(project_root, job_id)
@@ -640,8 +667,9 @@ def cancel_job(
     target_pid = int(pid) if pid is not None else target_pgid
 
     if target_pgid > 0 and target_pid > 0:
-        _assert_cancel_ownership(record, target_pid)
         if _pid_alive(target_pid):
+            # Revalidate immediately before SIGTERM.
+            _assert_cancel_ownership(record, target_pid, target_pgid)
             _kill_pgid(target_pgid, signal.SIGTERM)
             deadline = time.monotonic() + max(0.0, float(grace_s))
             while time.monotonic() < deadline:
@@ -650,6 +678,8 @@ def cancel_job(
                     break
                 time.sleep(0.05)
             if _pid_alive(target_pid):
+                # Revalidate again immediately before SIGKILL.
+                _assert_cancel_ownership(record, target_pid, target_pgid)
                 _kill_pgid(target_pgid, signal.SIGKILL)
                 for _ in range(40):
                     _reap_child(target_pid)
