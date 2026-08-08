@@ -287,6 +287,69 @@ def test_cancel_unproven_retains_binding_blocks_second_sidecar(
             pass
 
 
+def test_ready_fail_unproven_cancel_retains_binding_blocks_second(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P0: ready-fail compensation must not unlink when cancel is unproven."""
+    from omg_cli.jobs import runtime as runtime_mod
+
+    run_id = _seed_run(root)
+    bind_path = runtime_mod._acp_binding_path(root, run_id)
+    real_cancel_job = runtime_mod.cancel_job
+
+    def _ready_fail(*_a, **_k):  # noqa: ANN001
+        raise JobStoreError(
+            "ACP sidecar readiness timed out",
+            code="E_ACP_READY_TIMEOUT",
+        )
+
+    def _unproven(*_a, **_k):  # noqa: ANN001
+        raise JobStoreError(
+            "cancel disappearance unproven",
+            code="E_JOB_CANCEL_UNPROVEN",
+        )
+
+    monkeypatch.setattr(runtime_mod, "_wait_acp_ready", _ready_fail)
+    monkeypatch.setattr(runtime_mod, "cancel_job", _unproven)
+
+    with pytest.raises(JobStoreError) as ei:
+        runtime_mod.ensure_acp_session_sidecar(
+            root, run_id=run_id, ready_timeout_s=5.0
+        )
+    assert ei.value.code == "E_JOB_CANCEL_UNPROVEN"
+    assert "binding retained" in str(ei.value).lower()
+    assert bind_path.is_file(), "provisional binding must survive unproven cancel"
+
+    existing = json.loads(bind_path.read_text(encoding="utf-8"))
+    job_id = str(existing["job_id"])
+
+    jobs_root = root / ".omg" / "jobs"
+    jobs_before = {
+        p.name for p in jobs_root.iterdir() if p.is_dir() and p.name[0].isdigit()
+    }
+    # Binding retained + not-live → STALE; must not spawn a second sidecar.
+    monkeypatch.setattr(runtime_mod, "_job_is_live_sidecar", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        runtime_mod, "_job_handshake_still_viable", lambda *_a, **_k: False
+    )
+    with pytest.raises(JobStoreError) as ei2:
+        runtime_mod.ensure_acp_session_sidecar(
+            root, run_id=run_id, ready_timeout_s=5.0
+        )
+    assert ei2.value.code == "E_ACP_SIDECAR_STALE"
+    jobs_after = {
+        p.name for p in jobs_root.iterdir() if p.is_dir() and p.name[0].isdigit()
+    }
+    assert jobs_after == jobs_before
+    assert bind_path.is_file()
+
+    monkeypatch.setattr(runtime_mod, "cancel_job", real_cancel_job)
+    try:
+        real_cancel_job(root, job_id, reason="test_cleanup")
+    except JobStoreError:
+        pass
+
+
 def test_stop_team_acp_cancel_unproven_clears_stop_completed() -> None:
     """Plane contract: unproven ACP cancel must refuse stop_completed publication."""
     # Mirrors omg_cli.team.plane._stop_team_locked linked_acp_session gate.

@@ -1383,16 +1383,29 @@ def ensure_acp_session_sidecar(
                 timeout_s=ready_timeout_s,
             )
         except Exception as exc:
-            # Compensate: cancel exact job.
+            # Compensate: cancel exact job. Unlink the provisional binding ONLY
+            # after cancel_job proves disappearance — E_JOB_CANCEL_UNPROVEN must
+            # retain the singleton so a later ensure cannot spawn a second sidecar.
+            cancel_err: Exception | None = None
             try:
                 cancel_job(root, job_id, reason="acp_ready_failed")
-            except Exception:
-                pass
-            try:
-                if bind_path.is_file():
-                    bind_path.unlink()
-            except OSError:
-                pass
+            except Exception as cancel_exc:
+                cancel_err = cancel_exc
+            else:
+                try:
+                    if bind_path.is_file():
+                        bind_path.unlink()
+                except OSError:
+                    pass
+
+            if cancel_err is not None:
+                code = getattr(cancel_err, "code", None) or "E_ACP_READY_CANCEL"
+                raise JobStoreError(
+                    f"ACP sidecar ready failed ({exc}); cancel not proven, "
+                    f"binding retained: {cancel_err}",
+                    code=str(code),
+                ) from cancel_err
+
             if isinstance(exc, JobStoreError):
                 raise
             raise JobStoreError(
