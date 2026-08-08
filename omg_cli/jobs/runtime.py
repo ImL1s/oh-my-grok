@@ -169,6 +169,46 @@ def start_job(
     except OSError:
         pgid = pid
 
+    # Immediate child exit → never claim running.
+    early_rc = proc.poll()
+    if early_rc is None:
+        # Bounded probe: catch runners that exit before the parent commits.
+        for _ in range(10):
+            time.sleep(0.01)
+            early_rc = proc.poll()
+            if early_rc is not None:
+                break
+    if early_rc is not None:
+        _reap_child(pid)
+        try:
+            cur = read_job_record(project_root, record.job_id)
+            if cur.state not in TERMINAL_STATES:
+                if cur.state == JobState.QUEUED:
+                    transition_job(project_root, record.job_id, JobState.STARTING)
+                transition_job(
+                    project_root,
+                    record.job_id,
+                    JobState.FAILED,
+                    updates={
+                        "exit": {
+                            "class": "spawn_error",
+                            "returncode": int(early_rc),
+                        },
+                        "error_message": (
+                            f"job runner exited immediately with code {early_rc}"
+                        ),
+                        "pid": None,
+                        "pgid": None,
+                        "handle": None,
+                    },
+                )
+        except JobStoreError:
+            pass
+        raise JobStoreError(
+            f"job runner exited immediately with code {early_rc}",
+            code="E_JOB_LAUNCH",
+        )
+
     handle = f"{provider}:{record.job_id}:pid={pid}"
     try:
         record = transition_job(
@@ -181,40 +221,44 @@ def start_job(
                 "handle": handle,
             },
         )
+    except TransitionError as commit_exc:
+        # Another owner stamped terminal (e.g. cancel) — kill orphan, keep winner.
+        _kill_child_exact(pid, pgid)
+        cur = read_job_record(project_root, record.job_id)
+        if cur.state in TERMINAL_STATES:
+            raise JobStoreError(
+                f"launch aborted; job already terminal ({cur.state.value}): {commit_exc}",
+                code="E_JOB_LAUNCH",
+            ) from commit_exc
+        _best_effort_stamp_failed(
+            project_root,
+            record.job_id,
+            message=f"launch commit failed after spawn: {commit_exc}",
+        )
+        raise JobStoreError(
+            f"failed to commit running handle after spawn: {commit_exc}",
+            code="E_JOB_LAUNCH",
+        ) from commit_exc
     except JobStoreError as commit_exc:
-        # Launch succeeded but state commit failed — kill the orphaned child
-        # and stamp failed (never leave starting with a dead orphan).
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-        _reap_child(pid)
+        # Launch succeeded but state commit failed — kill orphan; stamp failed
+        # unless another terminal already won.
+        _kill_child_exact(pid, pgid)
         try:
             cur = read_job_record(project_root, record.job_id)
-            if cur.state not in TERMINAL_STATES:
-                # Prefer starting→failed; if somehow still queued, step through.
-                if cur.state == JobState.QUEUED:
-                    transition_job(project_root, record.job_id, JobState.STARTING)
-                    cur = read_job_record(project_root, record.job_id)
-                if cur.state == JobState.STARTING:
-                    transition_job(
-                        project_root,
-                        record.job_id,
-                        JobState.FAILED,
-                        updates={
-                            "exit": {"class": "spawn_error", "returncode": 1},
-                            "error_message": (
-                                f"launch commit failed after spawn: {commit_exc}"
-                            ),
-                            "pid": None,
-                            "pgid": None,
-                            "handle": None,
-                        },
-                    )
-        except JobStoreError:
+            if cur.state in TERMINAL_STATES:
+                raise JobStoreError(
+                    f"launch aborted; job already terminal ({cur.state.value}): "
+                    f"{commit_exc}",
+                    code="E_JOB_LAUNCH",
+                ) from commit_exc
+            _best_effort_stamp_failed(
+                project_root,
+                record.job_id,
+                message=f"launch commit failed after spawn: {commit_exc}",
+            )
+        except JobStoreError as nested:
+            if nested.code == "E_JOB_LAUNCH":
+                raise
             pass
         raise JobStoreError(
             f"failed to commit running handle after spawn: {commit_exc}",
@@ -222,6 +266,47 @@ def start_job(
         ) from commit_exc
 
     return StartResult(record=record, launched=True)
+
+
+def _kill_child_exact(pid: int, pgid: int) -> None:
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    _reap_child(pid)
+
+
+def _best_effort_stamp_failed(
+    project_root: Path,
+    job_id: str,
+    *,
+    message: str,
+) -> None:
+    try:
+        cur = read_job_record(project_root, job_id)
+        if cur.state in TERMINAL_STATES:
+            return
+        if cur.state == JobState.QUEUED:
+            transition_job(project_root, job_id, JobState.STARTING)
+            cur = read_job_record(project_root, job_id)
+        if cur.state == JobState.STARTING:
+            transition_job(
+                project_root,
+                job_id,
+                JobState.FAILED,
+                updates={
+                    "exit": {"class": "spawn_error", "returncode": 1},
+                    "error_message": message,
+                    "pid": None,
+                    "pgid": None,
+                    "handle": None,
+                },
+            )
+    except JobStoreError:
+        pass
 
 
 def job_status(project_root: Path, job_id: str) -> JobRecord:

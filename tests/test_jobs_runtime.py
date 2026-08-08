@@ -497,3 +497,295 @@ def test_cancel_race_with_terminal_idempotent(
     out = cancel_job(root, rec.job_id, reason="race", grace_s=0.05)
     assert out.state == JobState.SUCCEEDED
     assert out.exit and out.exit.get("class") == "success"
+
+
+def test_immediate_child_exit_stamps_failed_never_running(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Successful Popen of a process that exits immediately → failed, not running."""
+    import subprocess
+    import sys
+
+    prompt = _prompt(root)
+    real_popen = subprocess.Popen
+
+    def immediate_exit(*_a, **_k):  # noqa: ANN001
+        return real_popen(
+            [sys.executable, "-c", "import sys; sys.exit(42)"],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    monkeypatch.setattr("omg_cli.jobs.runtime.subprocess.Popen", immediate_exit)
+
+    with pytest.raises(JobStoreError) as ei:
+        start_job(
+            root,
+            provider="fake",
+            role="researcher",
+            prompt_file=prompt,
+            sleep_s=1.0,
+        )
+    assert ei.value.code == "E_JOB_LAUNCH"
+    jobs = list_jobs(root)
+    assert len(jobs) == 1
+    assert jobs[0]["state"] == "failed"
+    assert jobs[0]["pid"] is None
+    assert jobs[0]["handle"] is None
+    assert jobs[0]["exit"]["returncode"] == 42
+    assert jobs[0]["exit"]["class"] == "spawn_error"
+
+
+def test_runner_never_transitions_to_running(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Child stamps only running→terminal; parent alone owns starting→running."""
+    from omg_cli.jobs import runner as runner_mod
+    from omg_cli.providers.models import ProviderRunResult
+
+    prompt = _prompt(root)
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+        worker={"sleep_s": 0.01},
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    # Parent commit (this test process is the "runner" PID).
+    transition_job(
+        root,
+        rec.job_id,
+        JobState.RUNNING,
+        updates={
+            "pid": os.getpid(),
+            "pgid": os.getpgid(0),
+            "handle": f"fake:{rec.job_id}:pid={os.getpid()}",
+        },
+    )
+
+    seen: list[JobState] = []
+    real_transition = runner_mod.transition_job
+
+    def spy(
+        project_root: Path,
+        job_id: str,
+        new_state: JobState,
+        *,
+        updates: dict | None = None,
+    ):
+        seen.append(new_state)
+        assert new_state != JobState.RUNNING, "child must not transition to running"
+        return real_transition(project_root, job_id, new_state, updates=updates)
+
+    monkeypatch.setattr(runner_mod, "transition_job", spy)
+
+    class InstantFake:
+        name = "fake"
+
+        def discover_binary(self) -> str:
+            return "fake"
+
+        def probe_version(self, binary=None):  # noqa: ANN001
+            raise NotImplementedError
+
+        def probe_capabilities(self, binary=None):  # noqa: ANN001
+            raise NotImplementedError
+
+        def doctor(self, *, strict: bool = False):  # noqa: ANN001
+            raise NotImplementedError
+
+        def build_launch_envelope(self, request):  # noqa: ANN001
+            raise NotImplementedError
+
+        def run(self, request):  # noqa: ANN001
+            return ProviderRunResult(
+                ok=True,
+                exit_class="success",
+                returncode=0,
+                output="ok\n",
+                stdout="ok\n",
+            )
+
+    monkeypatch.setattr(runner_mod, "resolve_adapter", lambda _p: InstantFake())
+    rc = runner_mod.run_job(root, rec.job_id)
+    assert rc == 0
+    assert JobState.RUNNING not in seen
+    assert JobState.SUCCEEDED in seen
+    assert read_job_record(root, rec.job_id).state == JobState.SUCCEEDED
+
+
+def test_barrier_blocks_adapter_until_running_committed(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Adapter.run must not run while job is still starting."""
+    import threading
+
+    from omg_cli.jobs import runner as runner_mod
+    from omg_cli.providers.models import ProviderRunResult
+
+    prompt = _prompt(root)
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+        worker={"ready_timeout_s": 5.0},
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+
+    events: list[str] = []
+    run_states: list[str] = []
+
+    class GatedFake:
+        name = "fake"
+
+        def discover_binary(self) -> str:
+            return "fake"
+
+        def probe_version(self, binary=None):  # noqa: ANN001
+            raise NotImplementedError
+
+        def probe_capabilities(self, binary=None):  # noqa: ANN001
+            raise NotImplementedError
+
+        def doctor(self, *, strict: bool = False):  # noqa: ANN001
+            raise NotImplementedError
+
+        def build_launch_envelope(self, request):  # noqa: ANN001
+            raise NotImplementedError
+
+        def run(self, request):  # noqa: ANN001
+            cur = read_job_record(root, rec.job_id)
+            run_states.append(cur.state.value)
+            events.append("adapter.run")
+            assert cur.state == JobState.RUNNING
+            assert cur.pid == os.getpid()
+            assert cur.handle
+            return ProviderRunResult(
+                ok=True,
+                exit_class="success",
+                returncode=0,
+                output="gated\n",
+                stdout="gated\n",
+            )
+
+    monkeypatch.setattr(runner_mod, "resolve_adapter", lambda _p: GatedFake())
+
+    def commit_later() -> None:
+        time.sleep(0.15)
+        events.append("parent.commit")
+        transition_job(
+            root,
+            rec.job_id,
+            JobState.RUNNING,
+            updates={
+                "pid": os.getpid(),
+                "pgid": os.getpgid(0),
+                "handle": f"fake:{rec.job_id}:pid={os.getpid()}",
+            },
+        )
+
+    t = threading.Thread(target=commit_later, daemon=True)
+    t.start()
+    rc = runner_mod.run_job(root, rec.job_id)
+    t.join(timeout=5.0)
+    assert rc == 0
+    assert events == ["parent.commit", "adapter.run"]
+    assert run_states == ["running"]
+
+
+def test_cancel_before_handle_commit_no_running_without_handle(root: Path) -> None:
+    """launch=False leaves starting; cancel → cancelled with no durable running handle."""
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        launch=False,
+    )
+    assert started.launched is False
+    assert started.record.state == JobState.STARTING
+    assert started.record.pid is None
+    assert started.record.handle is None
+
+    cancelled = cancel_job(root, started.record.job_id, reason="pre-handle")
+    assert cancelled.state == JobState.CANCELLED
+    assert cancelled.pid is None
+    assert cancelled.handle is None
+    # Never became running
+    disk = json.loads(job_json_path(root, started.record.job_id).read_text(encoding="utf-8"))
+    assert disk["state"] == "cancelled"
+    assert disk.get("pid") is None
+
+
+def test_cancel_during_uncommitted_window_aborts_running_commit(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancel while still starting: parent must not leave running; orphan killed."""
+    import subprocess
+    import sys
+
+    from omg_cli.jobs import runtime as runtime_mod
+
+    prompt = _prompt(root)
+    real_transition = runtime_mod.transition_job
+    real_popen = subprocess.Popen
+
+    # Long-sleep child so it stays alive until kill after commit failure.
+    def long_child(*_a, **_k):  # noqa: ANN001
+        return real_popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    monkeypatch.setattr("omg_cli.jobs.runtime.subprocess.Popen", long_child)
+
+    def cancel_then_running(
+        project_root: Path,
+        job_id: str,
+        new_state: JobState,
+        *,
+        updates: dict | None = None,
+    ):
+        if new_state == JobState.RUNNING:
+            # Simulate concurrent cancel winning the uncommitted window.
+            real_transition(
+                project_root,
+                job_id,
+                JobState.CANCELLED,
+                updates={
+                    "cancel_reason": "inject",
+                    "exit": {"class": "cancelled", "returncode": -1},
+                },
+            )
+            from omg_cli.jobs.models import TransitionError
+
+            raise TransitionError(
+                "illegal job transition cancelled -> running",
+                code="E_JOB_TRANSITION",
+            )
+        return real_transition(project_root, job_id, new_state, updates=updates)
+
+    monkeypatch.setattr(runtime_mod, "transition_job", cancel_then_running)
+
+    with pytest.raises(JobStoreError) as ei:
+        start_job(
+            root,
+            provider="fake",
+            role="researcher",
+            prompt_file=prompt,
+            sleep_s=30.0,
+        )
+    assert ei.value.code == "E_JOB_LAUNCH"
+    final = read_job_record(root, list_jobs(root)[0]["job_id"])
+    assert final.state == JobState.CANCELLED
+    assert final.pid is None or final.handle is None or final.state != JobState.RUNNING
+    # Durable state is cancelled — never running with a live handle from this start.
+    assert final.state != JobState.RUNNING

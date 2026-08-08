@@ -1,11 +1,12 @@
-"""Job runner child entry — owns ``ProviderAdapter.run`` (#68 PR1).
+"""Job runner child entry — owns ``ProviderAdapter.run`` after parent commit (#68).
 
 Invoked as::
 
     python -m omg_cli.jobs.runner --job-id ID --project-root PATH
 
-Survives leader exit. Never sets ``verified``. Writes terminal state under
-``.omg/jobs/<id>/`` after Adapter.run returns (or on uncaught error → failed).
+Parent alone owns ``starting → running`` (pid/pgid/handle). This process waits
+on a readiness barrier until that commit is visible, then runs the adapter and
+stamps only ``running → succeeded|failed``. Never transitions to ``running``.
 """
 
 from __future__ import annotations
@@ -13,20 +14,24 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 import traceback
 from pathlib import Path
 
-from omg_cli.jobs.models import TERMINAL_STATES, JobState, JobStoreError
+from omg_cli.jobs.models import TERMINAL_STATES, JobRecord, JobState, JobStoreError
 from omg_cli.jobs.store import (
     append_jsonl,
     job_dir,
     read_job_record,
     transition_job,
-    update_job_fields,
     utc_now,
 )
 from omg_cli.providers.base import ProviderAdapter
 from omg_cli.providers.models import ProviderRunRequest
+
+# Child polls until parent commits running (or terminal / timeout).
+DEFAULT_READY_TIMEOUT_S = 60.0
+DEFAULT_READY_POLL_S = 0.02
 
 
 def resolve_adapter(provider: str) -> ProviderAdapter:
@@ -59,8 +64,93 @@ def _append_event(project_root: Path, job_id: str, event_type: str, **payload: o
     )
 
 
+def wait_until_parent_running(
+    project_root: Path,
+    job_id: str,
+    *,
+    timeout_s: float = DEFAULT_READY_TIMEOUT_S,
+    poll_s: float = DEFAULT_READY_POLL_S,
+    expected_pid: int | None = None,
+) -> JobRecord | None:
+    """Barrier: wait until parent committed ``running`` with our PID/handle.
+
+    Returns the running record, or ``None`` when the child must exit without
+    calling ``ProviderAdapter.run`` (terminal state or timeout).
+    """
+    my_pid = int(expected_pid if expected_pid is not None else os.getpid())
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    while time.monotonic() < deadline:
+        try:
+            rec = read_job_record(project_root, job_id)
+        except JobStoreError:
+            time.sleep(max(0.01, float(poll_s)))
+            continue
+        if rec.state in TERMINAL_STATES:
+            return None
+        if (
+            rec.state == JobState.RUNNING
+            and rec.pid is not None
+            and int(rec.pid) == my_pid
+            and rec.handle
+        ):
+            return rec
+        time.sleep(max(0.01, float(poll_s)))
+    return None
+
+
+def _stamp_running_terminal(
+    project_root: Path,
+    job_id: str,
+    *,
+    ok: bool,
+    exit_obj: dict,
+    usage: dict | None,
+    artifacts: list,
+    result_desc: str | None,
+    error_message: str | None,
+) -> None:
+    cur = read_job_record(project_root, job_id)
+    if cur.state in TERMINAL_STATES:
+        _append_event(
+            project_root,
+            job_id,
+            "runner.skip_terminal",
+            state=cur.state.value,
+        )
+        return
+    if cur.state != JobState.RUNNING:
+        # Parent never committed / cancel won while we waited — do not invent running.
+        _append_event(
+            project_root,
+            job_id,
+            "runner.skip_non_running",
+            state=cur.state.value,
+        )
+        return
+    target = JobState.SUCCEEDED if ok else JobState.FAILED
+    transition_job(
+        project_root,
+        job_id,
+        target,
+        updates={
+            "exit": exit_obj,
+            "usage": usage,
+            "artifacts": artifacts,
+            "result": result_desc,
+            "error_message": error_message if not ok else None,
+        },
+    )
+    _append_event(
+        project_root,
+        job_id,
+        "runner.terminal",
+        state=target.value,
+        ok=bool(ok),
+    )
+
+
 def run_job(project_root: Path, job_id: str) -> int:
-    """Load job, call Adapter.run, stamp terminal state. Returns process exit."""
+    """Wait for parent running commit, then Adapter.run, then terminal stamp."""
     try:
         record = read_job_record(project_root, job_id)
     except JobStoreError as exc:
@@ -75,7 +165,27 @@ def run_job(project_root: Path, job_id: str) -> int:
     os.environ["OMG_JOB_DIR"] = str(jdir)
     os.environ["OMG_PROJECT_ROOT"] = str(project_root)
 
-    worker = record.worker or {}
+    ready_timeout = float(
+        (record.worker or {}).get("ready_timeout_s") or DEFAULT_READY_TIMEOUT_S
+    )
+    _append_event(
+        project_root,
+        job_id,
+        "runner.barrier_wait",
+        provider=record.provider,
+        pid=os.getpid(),
+    )
+    ready = wait_until_parent_running(
+        project_root,
+        job_id,
+        timeout_s=ready_timeout,
+    )
+    if ready is None:
+        _append_event(project_root, job_id, "runner.barrier_abort")
+        # Terminal already, or parent never committed — exit without Adapter.run.
+        return 0
+
+    worker = ready.worker or {}
     if worker.get("fail"):
         os.environ["OMG_JOB_FAKE_FAIL"] = "1"
     if worker.get("large_output"):
@@ -86,10 +196,10 @@ def run_job(project_root: Path, job_id: str) -> int:
         os.environ["OMG_JOB_FAKE_SLEEP"] = str(worker.get("sleep_s"))
 
     prompt_path = jdir / "prompt.md"
-    _append_event(project_root, job_id, "runner.start", provider=record.provider)
+    _append_event(project_root, job_id, "runner.start", provider=ready.provider)
 
     try:
-        adapter = resolve_adapter(record.provider)
+        adapter = resolve_adapter(ready.provider)
         assert isinstance(adapter, ProviderAdapter)
         request = ProviderRunRequest(
             prompt_file=str(prompt_path),
@@ -109,35 +219,16 @@ def run_job(project_root: Path, job_id: str) -> int:
             traceback=traceback.format_exc()[-2000:],
         )
         try:
-            cur = read_job_record(project_root, job_id)
-            if cur.state not in TERMINAL_STATES:
-                # starting|running → failed
-                if cur.state == JobState.STARTING:
-                    transition_job(
-                        project_root,
-                        job_id,
-                        JobState.FAILED,
-                        updates={
-                            "exit": {
-                                "class": "spawn_error",
-                                "returncode": 1,
-                            },
-                            "error_message": str(exc),
-                        },
-                    )
-                elif cur.state == JobState.RUNNING:
-                    transition_job(
-                        project_root,
-                        job_id,
-                        JobState.FAILED,
-                        updates={
-                            "exit": {
-                                "class": "spawn_error",
-                                "returncode": 1,
-                            },
-                            "error_message": str(exc),
-                        },
-                    )
+            _stamp_running_terminal(
+                project_root,
+                job_id,
+                ok=False,
+                exit_obj={"class": "spawn_error", "returncode": 1},
+                usage=None,
+                artifacts=[],
+                result_desc=None,
+                error_message=str(exc),
+            )
         except JobStoreError:
             pass
         print(f"omg job runner: {exc}", file=sys.stderr)
@@ -160,7 +251,6 @@ def run_job(project_root: Path, job_id: str) -> int:
         if a.get("kind") == "result":
             result_desc = a.get("path")
             break
-    # Prefer explicit large-output path if present on disk
     large_path = jdir / "artifacts" / "result.md"
     if large_path.is_file() and result_desc is None:
         result_desc = "artifacts/result.md"
@@ -184,85 +274,15 @@ def run_job(project_root: Path, job_id: str) -> int:
     }
 
     try:
-        cur = read_job_record(project_root, job_id)
-        if cur.state in TERMINAL_STATES:
-            # Cancel won the race — do not overwrite cancelled/lost.
-            _append_event(project_root, job_id, "runner.skip_terminal", state=cur.state.value)
-            return 0 if result.ok else 1
-
-        target = JobState.SUCCEEDED if result.ok else JobState.FAILED
-        # Parent may still be on starting if update races; allow both.
-        if cur.state == JobState.STARTING:
-            # First commit running handle fields if parent missed, then terminal —
-            # but PR1 parent always sets running. If still starting, go failed/succeeded
-            # via starting→failed or starting→running→terminal.
-            # Legal: starting → failed; starting → running only.
-            if target == JobState.FAILED:
-                transition_job(
-                    project_root,
-                    job_id,
-                    JobState.FAILED,
-                    updates={
-                        "exit": exit_obj,
-                        "usage": usage,
-                        "artifacts": artifacts,
-                        "result": result_desc,
-                        "error_message": result.error_message or None,
-                        "handle": cur.handle or f"fake:{job_id}",
-                    },
-                )
-            else:
-                transition_job(
-                    project_root,
-                    job_id,
-                    JobState.RUNNING,
-                    updates={
-                        "handle": cur.handle or f"{cur.provider}:{job_id}",
-                        "pid": cur.pid or os.getpid(),
-                        "pgid": cur.pgid or os.getpgid(0),
-                    },
-                )
-                transition_job(
-                    project_root,
-                    job_id,
-                    JobState.SUCCEEDED,
-                    updates={
-                        "exit": exit_obj,
-                        "usage": usage,
-                        "artifacts": artifacts,
-                        "result": result_desc,
-                    },
-                )
-        elif cur.state == JobState.RUNNING:
-            transition_job(
-                project_root,
-                job_id,
-                target,
-                updates={
-                    "exit": exit_obj,
-                    "usage": usage,
-                    "artifacts": artifacts,
-                    "result": result_desc,
-                    "error_message": (result.error_message or None)
-                    if not result.ok
-                    else None,
-                },
-            )
-        else:
-            update_job_fields(
-                project_root,
-                job_id,
-                exit=exit_obj,
-                usage=usage,
-                artifacts=artifacts,
-                result=result_desc,
-            )
-        _append_event(
+        _stamp_running_terminal(
             project_root,
             job_id,
-            "runner.terminal",
-            state=target.value,
             ok=bool(result.ok),
+            exit_obj=exit_obj,
+            usage=usage,
+            artifacts=artifacts,
+            result_desc=result_desc,
+            error_message=result.error_message or None,
         )
     except JobStoreError as exc:
         print(f"omg job runner: stamp failed: {exc}", file=sys.stderr)
