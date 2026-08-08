@@ -25,7 +25,6 @@ from omg_cli.jobs.ownership import (
     ProcessIdentity,
     probe_pid_starttime,
     reap_child,
-    wait_until_gone,
 )
 from omg_cli.jobs.providers import (
     build_request_snapshot,
@@ -629,9 +628,13 @@ def collect_job(project_root: Path, job_id: str) -> dict[str, Any]:
 
 
 def _provider_identity(record: JobRecord) -> ProcessIdentity | None:
+    """Inner provider identity for the cancel gate.
+
+    Any recorded pid/pgid remains in the gate (bound *or* exited). Clearing the
+    durable ``state`` to ``exited`` must not drop the cancel target without
+    OS-level disappearance proof.
+    """
     pp = record.provider_process or {}
-    if pp.get("state") != "bound":
-        return None
     pid = pp.get("pid")
     pgid = pp.get("pgid")
     if pid is None or pgid is None:
@@ -654,6 +657,56 @@ def _runner_identity(record: JobRecord) -> ProcessIdentity | None:
     )
 
 
+def _wait_until_gone(pid: int, *, timeout_s: float = 2.0, poll_s: float = 0.05) -> bool:
+    """Poll until *pid* is gone using monkeypatchable ``_pid_alive`` / ``_reap_child``."""
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    while time.monotonic() < deadline:
+        _reap_child(pid)
+        if not _pid_alive(pid):
+            return True
+        time.sleep(max(0.01, float(poll_s)))
+    _reap_child(pid)
+    return not _pid_alive(pid)
+
+
+def _prove_gone(
+    record: JobRecord,
+    identity: ProcessIdentity | None,
+    *,
+    label: str,
+    already_gone: bool,
+) -> bool:
+    """Return True when *identity* is proven gone (alive check, wait, or ownership GONE)."""
+    if identity is None or already_gone:
+        return True
+    if not _pid_alive(identity.pid):
+        _reap_child(identity.pid)
+        return True
+    # Ownership GONE is OS-level proof (ProcessLookupError / gone between probes).
+    try:
+        if label == "provider":
+            view = JobRecord(
+                job_id=record.job_id,
+                created_at=record.created_at,
+                provider=record.provider,
+                role=record.role,
+                state=record.state,
+                attempt=record.attempt,
+                schema=record.schema,
+                generation=record.generation,
+                pid=record.pid,
+                pgid=record.pgid,
+                handle=record.handle,
+                pid_starttime=identity.pid_starttime,
+            )
+            own = _assert_cancel_ownership(view, identity.pid, identity.pgid)
+        else:
+            own = _assert_cancel_ownership(record, identity.pid, identity.pgid)
+    except JobStoreError:
+        raise
+    return own is OwnershipOutcome.GONE
+
+
 def cancel_job(
     project_root: Path,
     job_id: str,
@@ -667,22 +720,27 @@ def cancel_job(
     cancel_event → inner reaped by process runner → observe both gone.
 
     Forced path after grace: revalidate → kill inner first → kill outer →
-    observe disappearance of both before stamping cancelled.
+    observe disappearance of both before claiming success.
 
-    Fail-closed ``E_JOB_CANCEL_UNPROVEN`` when bind/fingerprint is unproven
-    (launching-unbound, identity mismatch, disappearance not observed).
+    A durable ``CANCELLED`` stamp from the runner is **provisional** to this
+    function: success requires OS-level disappearance of every captured
+    identity (or ownership ``GONE``). ``wait_until_gone`` return values are
+    checked; failure to observe disappearance raises ``E_JOB_CANCEL_UNPROVEN``.
     """
     job_id = safe_job_id(job_id)
     record = read_job_record(project_root, job_id)
-    if record.state in TERMINAL_STATES:
+
+    # Non-cancel terminals are final (idempotent). CANCELLED is provisional —
+    # live pids may still need a force reap.
+    if record.state in {JobState.SUCCEEDED, JobState.FAILED, JobState.LOST}:
         return record
 
-    # Persist cancel intent under lock before any signal.
-    record = mark_cancel_requested(
-        project_root, job_id, reason=reason or "operator"
-    )
-    if record.state in TERMINAL_STATES:
-        return record
+    if record.state != JobState.CANCELLED:
+        record = mark_cancel_requested(
+            project_root, job_id, reason=reason or "operator"
+        )
+        if record.state in {JobState.SUCCEEDED, JobState.FAILED, JobState.LOST}:
+            return record
 
     pp = record.provider_process or default_provider_process()
     pp_state = str(pp.get("state") or "pending")
@@ -696,95 +754,72 @@ def cancel_job(
             code="E_JOB_CANCEL_UNPROVEN",
         )
 
-    runner = _runner_identity(record)
-    provider = _provider_identity(record)
+    # Capture identities once. Re-reads / mark_provider_exited must not drop
+    # them from the cancel gate without OS-level disappearance proof.
+    captured_runner = _runner_identity(record)
+    captured_provider = _provider_identity(record)
 
-    runner_gone = runner is None
-    provider_gone = provider is None
+    runner_gone = captured_runner is None
+    provider_gone = captured_provider is None
+    if captured_runner is not None and not _pid_alive(captured_runner.pid):
+        runner_gone = True
+        _reap_child(captured_runner.pid)
+    if captured_provider is not None and not _pid_alive(captured_provider.pid):
+        provider_gone = True
+        _reap_child(captured_provider.pid)
 
     # ---- Graceful: SIGTERM outer runner (handler sets cancel_event) ----
-    if runner is not None:
-        if not _pid_alive(runner.pid):
+    if captured_runner is not None and not runner_gone:
+        ownership = _signal_identity(
+            record, captured_runner, signal.SIGTERM, label="runner"
+        )
+        if ownership is OwnershipOutcome.GONE:
             runner_gone = True
-            _reap_child(runner.pid)
-        else:
-            ownership = _signal_identity(
-                record, runner, signal.SIGTERM, label="runner"
-            )
-            if ownership is OwnershipOutcome.GONE:
-                runner_gone = True
-            elif ownership is OwnershipOutcome.OK:
-                deadline = time.monotonic() + max(0.0, float(grace_s))
-                while time.monotonic() < deadline:
-                    _reap_child(runner.pid)
-                    if provider is not None:
-                        _reap_child(provider.pid)
-                    if not _pid_alive(runner.pid):
+        elif ownership is OwnershipOutcome.OK:
+            deadline = time.monotonic() + max(0.0, float(grace_s))
+            while time.monotonic() < deadline:
+                if captured_runner is not None:
+                    _reap_child(captured_runner.pid)
+                    if not _pid_alive(captured_runner.pid):
                         runner_gone = True
-                    if provider is None or not _pid_alive(provider.pid):
+                if captured_provider is not None:
+                    _reap_child(captured_provider.pid)
+                    if not _pid_alive(captured_provider.pid):
                         provider_gone = True
-                    if runner_gone and provider_gone:
-                        break
-                    try:
-                        cur = read_job_record(project_root, job_id)
-                        if cur.state in TERMINAL_STATES:
-                            # Runner may have stamped cancelled while children
-                            # are still exiting — wait briefly for disappearance.
-                            if runner is not None:
-                                wait_until_gone(runner.pid, timeout_s=2.0)
-                            if provider is not None:
-                                wait_until_gone(provider.pid, timeout_s=2.0)
-                            return cur
-                    except JobStoreError:
-                        pass
-                    time.sleep(0.05)
-                if not _pid_alive(runner.pid):
-                    runner_gone = True
-                if provider is None or not _pid_alive(provider.pid):
-                    provider_gone = True
+                if runner_gone and provider_gone:
+                    break
+                # CANCELLED stamp is provisional — never return success here.
+                time.sleep(0.05)
 
-    # Re-read before force path / terminal stamp.
-    record = read_job_record(project_root, job_id)
-    if record.state in TERMINAL_STATES:
-        # Best-effort wait for process disappearance after runner self-cancel.
-        if runner is not None:
-            wait_until_gone(runner.pid, timeout_s=2.0)
-        if provider is not None:
-            wait_until_gone(provider.pid, timeout_s=2.0)
-        return record
+    # Post-grace observation (must honor wait_until_gone return values).
+    if captured_runner is not None and not runner_gone:
+        if _wait_until_gone(captured_runner.pid, timeout_s=min(2.0, max(0.05, grace_s) or 0.05)):
+            runner_gone = True
+    if captured_provider is not None and not provider_gone:
+        if _wait_until_gone(captured_provider.pid, timeout_s=min(2.0, max(0.05, grace_s) or 0.05)):
+            provider_gone = True
 
-    runner = _runner_identity(record)
-    provider = _provider_identity(record)
-    if runner is None:
-        runner_gone = True
-    if provider is None:
-        provider_gone = True
-
+    # ---- Forced: kill inner provider group first, then outer ----
+    # Continue whenever either captured identity remains alive, even if the
+    # runner already stamped CANCELLED.
     need_force = False
-    if runner is not None and not runner_gone and _pid_alive(runner.pid):
+    if captured_provider is not None and not provider_gone and _pid_alive(captured_provider.pid):
         need_force = True
-    if provider is not None and not provider_gone and _pid_alive(provider.pid):
+    if captured_runner is not None and not runner_gone and _pid_alive(captured_runner.pid):
         need_force = True
 
     if need_force:
-        # ---- Forced: kill inner provider group first, then outer ----
         record = read_job_record(project_root, job_id)
-        provider = _provider_identity(record)
-        if provider is not None and _pid_alive(provider.pid):
+        if captured_provider is not None and not provider_gone and _pid_alive(
+            captured_provider.pid
+        ):
             ownership = _signal_identity(
-                record, provider, signal.SIGKILL, label="provider"
+                record, captured_provider, signal.SIGKILL, label="provider"
             )
             if ownership is OwnershipOutcome.GONE:
                 provider_gone = True
             elif ownership is OwnershipOutcome.OK:
-                deadline = time.monotonic() + 2.0
-                while time.monotonic() < deadline:
-                    _reap_child(provider.pid)
-                    if not _pid_alive(provider.pid):
-                        provider_gone = True
-                        break
-                    time.sleep(0.05)
-                if not provider_gone and _pid_alive(provider.pid):
+                if not _wait_until_gone(captured_provider.pid, timeout_s=2.0):
                     raise JobStoreError(
                         f"job {job_id} provider process did not disappear after SIGKILL",
                         code="E_JOB_CANCEL_UNPROVEN",
@@ -792,83 +827,51 @@ def cancel_job(
                 provider_gone = True
 
         record = read_job_record(project_root, job_id)
-        if record.state in TERMINAL_STATES:
-            return record
-        runner = _runner_identity(record)
-        if runner is not None and _pid_alive(runner.pid):
+        if captured_runner is not None and not runner_gone and _pid_alive(
+            captured_runner.pid
+        ):
             ownership = _signal_identity(
-                record, runner, signal.SIGKILL, label="runner"
+                record, captured_runner, signal.SIGKILL, label="runner"
             )
             if ownership is OwnershipOutcome.GONE:
                 runner_gone = True
             elif ownership is OwnershipOutcome.OK:
-                deadline = time.monotonic() + 2.0
-                while time.monotonic() < deadline:
-                    _reap_child(runner.pid)
-                    if not _pid_alive(runner.pid):
-                        runner_gone = True
-                        break
-                    time.sleep(0.05)
-                if not runner_gone and _pid_alive(runner.pid):
+                if not _wait_until_gone(captured_runner.pid, timeout_s=2.0):
                     raise JobStoreError(
                         f"job {job_id} runner process did not disappear after SIGKILL",
                         code="E_JOB_CANCEL_UNPROVEN",
                     )
                 runner_gone = True
 
-    # Final observation gate: both must be gone (or never bound).
-    # OwnershipOutcome.GONE counts as proven disappearance (PR1 GONE contract).
+    # Final observation gate — CANCELLED stamp alone is never enough.
     record = read_job_record(project_root, job_id)
-    if record.state in TERMINAL_STATES:
-        return record
+    if record.state in {JobState.SUCCEEDED, JobState.FAILED, JobState.LOST}:
+        # Non-cancel race winner: still require captured targets gone if any.
+        pass
 
-    runner = _runner_identity(record)
-    provider = _provider_identity(record)
-    if runner is not None and not runner_gone:
-        if not _pid_alive(runner.pid):
-            runner_gone = True
-        else:
-            # Last-chance ownership probe without signalling (3-arg for spies).
-            try:
-                own = _assert_cancel_ownership(record, runner.pid, runner.pgid)
-                if own is OwnershipOutcome.GONE:
-                    runner_gone = True
-            except JobStoreError:
-                raise
-        if not runner_gone:
-            raise JobStoreError(
-                f"job {job_id} runner still alive; cannot prove cancellation",
-                code="E_JOB_CANCEL_UNPROVEN",
-            )
-    if provider is not None and not provider_gone:
-        if not _pid_alive(provider.pid):
-            provider_gone = True
-        else:
-            view = JobRecord(
-                job_id=record.job_id,
-                created_at=record.created_at,
-                provider=record.provider,
-                role=record.role,
-                state=record.state,
-                attempt=record.attempt,
-                schema=record.schema,
-                generation=record.generation,
-                pid=record.pid,
-                pgid=record.pgid,
-                handle=record.handle,
-                pid_starttime=provider.pid_starttime,
-            )
-            try:
-                own = _assert_cancel_ownership(view, provider.pid, provider.pgid)
-                if own is OwnershipOutcome.GONE:
-                    provider_gone = True
-            except JobStoreError:
-                raise
-        if not provider_gone:
-            raise JobStoreError(
-                f"job {job_id} provider still alive; cannot prove cancellation",
-                code="E_JOB_CANCEL_UNPROVEN",
-            )
+    runner_gone = _prove_gone(
+        record, captured_runner, label="runner", already_gone=runner_gone
+    )
+    provider_gone = _prove_gone(
+        record, captured_provider, label="provider", already_gone=provider_gone
+    )
+
+    if captured_runner is not None and not runner_gone:
+        raise JobStoreError(
+            f"job {job_id} runner still alive; cannot prove cancellation",
+            code="E_JOB_CANCEL_UNPROVEN",
+        )
+    if captured_provider is not None and not provider_gone:
+        raise JobStoreError(
+            f"job {job_id} provider still alive; cannot prove cancellation",
+            code="E_JOB_CANCEL_UNPROVEN",
+        )
+
+    # Proven gone — stamp CANCELLED if still non-terminal, else return idempotently.
+    if record.state == JobState.CANCELLED:
+        return record
+    if record.state in {JobState.SUCCEEDED, JobState.FAILED, JobState.LOST}:
+        return record
 
     updates: dict[str, Any] = {
         "cancel_reason": reason or record.cancel_reason or "operator",
@@ -899,7 +902,23 @@ def cancel_job(
                 updates=updates,
             )
     except TransitionError:
-        return read_job_record(project_root, job_id)
+        # Runner may have stamped CANCELLED/succeeded concurrently — only
+        # accept CANCELLED after re-proving disappearance with captured ids.
+        cur = read_job_record(project_root, job_id)
+        if cur.state in {JobState.SUCCEEDED, JobState.FAILED, JobState.LOST}:
+            return cur
+        if cur.state == JobState.CANCELLED:
+            if not _prove_gone(
+                cur, captured_runner, label="runner", already_gone=False
+            ) or not _prove_gone(
+                cur, captured_provider, label="provider", already_gone=False
+            ):
+                raise JobStoreError(
+                    f"job {job_id} CANCELLED stamp without process disappearance",
+                    code="E_JOB_CANCEL_UNPROVEN",
+                )
+            return cur
+        raise
     return record
 
 

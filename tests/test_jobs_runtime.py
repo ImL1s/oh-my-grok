@@ -1596,3 +1596,82 @@ def test_cancel_getpgid_lookup_error_is_gone_no_signal(
     out = cancel_job(root, rec.job_id, reason="lookup-gone", grace_s=0.05)
     assert signals == []
     assert out.state == JobState.CANCELLED
+
+
+def test_cancel_provisional_cancelled_stamp_requires_disappearance(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CANCELLED stamped while runner still alive must not return success.
+
+    Simulates the runner writing CANCELLED while ``_pid_alive`` stays True and
+    ``_wait_until_gone`` returns False — cancel_job must raise
+    ``E_JOB_CANCEL_UNPROVEN`` (or force-kill to real disappearance), never
+    treat the durable stamp alone as proof.
+    """
+    from omg_cli.jobs import runtime as runtime_mod
+
+    prompt = _prompt(root)
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    transition_job(
+        root,
+        rec.job_id,
+        JobState.RUNNING,
+        updates={
+            "pid": 4242,
+            "pgid": 4242,
+            "handle": f"fake:{rec.job_id}:pid=4242",
+            "pid_starttime": None,
+            "provider_process": {
+                "state": "exited",  # mark_provider_exited cleared "bound"
+                "pid": 4243,
+                "pgid": 4243,
+                "pid_starttime": None,
+                "handle": "provider:x",
+                "bound_at": "t0",
+                "exited_at": "t1",
+            },
+        },
+    )
+
+    # Mid-cancel: runner stamps CANCELLED while processes still "alive".
+    def stamp_cancelled_on_mark(*_a, **_k):
+        from omg_cli.jobs.store import transition_job as real_tj
+
+        # Already running → cancelled (provisional stamp).
+        return real_tj(
+            root,
+            rec.job_id,
+            JobState.CANCELLED,
+            updates={
+                "cancel_reason": "runner",
+                "exit": {"class": "cancelled", "cancelled": True},
+            },
+        )
+
+    monkeypatch.setattr(runtime_mod, "mark_cancel_requested", stamp_cancelled_on_mark)
+    monkeypatch.setattr(runtime_mod, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(runtime_mod, "_wait_until_gone", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        runtime_mod,
+        "_assert_cancel_ownership",
+        lambda *_a, **_k: runtime_mod.CancelOwnership.OK,
+    )
+    signals: list[int] = []
+
+    def spy_kill(pgid_arg: int, signum: int) -> bool:
+        signals.append(int(signum))
+        return True
+
+    monkeypatch.setattr(runtime_mod, "_kill_pgid", spy_kill)
+
+    with pytest.raises(JobStoreError) as ei:
+        cancel_job(root, rec.job_id, reason="provisional", grace_s=0.0)
+    assert ei.value.code == "E_JOB_CANCEL_UNPROVEN"
+    # Force path must have attempted signals (stamp alone was insufficient).
+    assert signals, "expected force-path signals when wait_until_gone fails"
