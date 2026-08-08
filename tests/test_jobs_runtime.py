@@ -897,9 +897,7 @@ def test_run_job_restores_preexisting_env(
 def test_barrier_blocks_adapter_until_running_committed(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Adapter.run must not run while job is still starting."""
-    import threading
-
+    """Adapter.run must not run while job is still starting (no threads — fork-safe)."""
     from omg_cli.jobs import runner as runner_mod
     from omg_cli.providers.models import ProviderRunResult
 
@@ -915,6 +913,7 @@ def test_barrier_blocks_adapter_until_running_committed(
 
     events: list[str] = []
     run_states: list[str] = []
+    committed = {"done": False}
 
     class GatedFake:
         name = "fake"
@@ -949,27 +948,28 @@ def test_barrier_blocks_adapter_until_running_committed(
                 stdout="gated\n",
             )
 
+    def sleep_then_commit(_seconds: float) -> None:
+        # First barrier poll sleep: parent commits running before Adapter.run.
+        if not committed["done"]:
+            committed["done"] = True
+            events.append("parent.commit")
+            transition_job(
+                root,
+                rec.job_id,
+                JobState.RUNNING,
+                updates={
+                    "pid": os.getpid(),
+                    "pgid": os.getpgid(0),
+                    "handle": f"fake:{rec.job_id}:pid={os.getpid()}",
+                },
+            )
+
     monkeypatch.setattr(runner_mod, "resolve_adapter", lambda _p: GatedFake())
+    monkeypatch.setattr(runner_mod.time, "sleep", sleep_then_commit)
 
-    def commit_later() -> None:
-        time.sleep(0.15)
-        events.append("parent.commit")
-        transition_job(
-            root,
-            rec.job_id,
-            JobState.RUNNING,
-            updates={
-                "pid": os.getpid(),
-                "pgid": os.getpgid(0),
-                "handle": f"fake:{rec.job_id}:pid={os.getpid()}",
-            },
-        )
-
-    t = threading.Thread(target=commit_later, daemon=True)
-    t.start()
     rc = runner_mod.run_job(root, rec.job_id)
-    t.join(timeout=5.0)
     assert rc == 0
+    assert committed["done"] is True
     assert events == ["parent.commit", "adapter.run"]
     assert run_states == ["running"]
 
