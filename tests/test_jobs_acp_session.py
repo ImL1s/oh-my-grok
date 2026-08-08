@@ -513,9 +513,9 @@ def test_resume_provider_session_stop_race_no_live_orphan(
 def test_stop_clears_sticky_pending_acp_without_binding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Pending ACP intent with no jobs binding must not permanently pin stop_refused."""
+    """Abandoned pending (proven idle / --force) must not permanently pin stop_refused."""
     import subprocess
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     from omg_cli.team.plane import (
         EXPERIMENTAL_ENV,
@@ -556,12 +556,13 @@ def test_stop_clears_sticky_pending_acp_without_binding(
         dry_run=True,
     )
     run_id = str(meta["run_id"])
+    aged = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
 
     def _plant_pending(current: dict) -> dict:
         updated = dict(current)
         updated["linked_acp_session"] = {
             "state": "pending",
-            "pending_at": datetime.now(timezone.utc).isoformat(),
+            "pending_at": aged,
             "job_id": None,
             "session_close": False,
         }
@@ -574,7 +575,7 @@ def test_stop_clears_sticky_pending_acp_without_binding(
     assert planted["linked_acp_session"]["state"] == "pending"
     assert not _acp_binding_path(tmp_path, run_id).is_file()
 
-    # First stop must complete (clear abandoned pending) — no live orphan.
+    # Aged pending + no binding + lock idle → clear and complete.
     first = stop_team(tmp_path, run_id)
     assert first.get("stop_completed") is True, first
     durable = load_team_meta(tmp_path, run_id)
@@ -585,7 +586,7 @@ def test_stop_clears_sticky_pending_acp_without_binding(
         for a in (first.get("actions") or [])
     )
 
-    # Simulate pre-fix deadlock: stop_refused + sticky pending, no binding.
+    # Simulate pre-fix deadlock: stop_refused + fresh sticky pending.
     def _plant_deadlock(current: dict) -> dict:
         updated = dict(current)
         updated["stop_state"] = "stop_refused"
@@ -605,8 +606,147 @@ def test_stop_clears_sticky_pending_acp_without_binding(
     )
     mutate_team_meta(tmp_path, run_id, _plant_deadlock, expected_generation=expected2)
 
+    # Fresh pending refuses without --force; --force recovers.
+    refused = stop_team(tmp_path, run_id)
+    assert refused.get("stop_completed") is False, refused
+
     recovered = stop_team(tmp_path, run_id, force=True)
     assert recovered.get("stop_completed") is True, recovered
     final = load_team_meta(tmp_path, run_id)
     assert final.get("stop_state") == "stopped"
     assert final.get("linked_acp_session") in (None, {})
+
+
+def test_stop_during_pre_binding_ensure_no_live_orphan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Barrier: pending + ensuring bind before start_job; stop must not leave orphan."""
+    import subprocess
+    import threading
+
+    from omg_cli.host_models import FeatureGateResult
+    from omg_cli.host_session import allocate_host_session
+    from omg_cli.jobs.runtime import (
+        _job_is_live_sidecar,
+        cancel_job,
+        ensure_acp_session_for_team,
+        read_acp_sidecar_binding,
+    )
+    from omg_cli.state import write_status
+    from omg_cli.team.plane import EXPERIMENTAL_ENV, load_team_meta, start_team, stop_team
+    from omg_cli.team.runtime import resume_with_view
+
+    monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
+    monkeypatch.setenv("OMG_ACP_BIN", str(FIXTURE))
+    monkeypatch.setenv("OMG_ACP_FAKE_SCENARIO", "success")
+    monkeypatch.setenv("OMG_ACP_QUIET_WINDOW_S", "0.05")
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "t"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "README").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    meta = start_team(
+        "prebind race",
+        [{"task_id": "w1", "owned_files": ["lane_a/"]}],
+        root=tmp_path,
+        dry_run=True,
+    )
+    run_id = str(meta["run_id"])
+    binding = allocate_host_session()
+    write_status(
+        tmp_path,
+        run_id,
+        "running",
+        extra={**binding.status_fields(), "grok_session_state": "launched"},
+    )
+
+    ready = threading.Event()
+    release = threading.Event()
+    box: dict[str, Any] = {}
+
+    def _pre_spawn() -> None:
+        bind = read_acp_sidecar_binding(tmp_path, run_id)
+        box["pre_bind"] = bind
+        ready.set()
+        assert release.wait(timeout=45), "pre-spawn barrier not released"
+
+    def _provider(gate, *, root, run_id):  # noqa: ANN001
+        return ensure_acp_session_for_team(
+            gate, root=root, run_id=run_id, _pre_spawn_hook=_pre_spawn
+        )
+
+    gate = FeatureGateResult(
+        capability="session_resume",
+        state="AVAILABLE",
+        reason="test",
+        required=False,
+    )
+
+    def _resume() -> None:
+        box["resume"] = resume_with_view(
+            tmp_path,
+            run_id,
+            view=False,
+            as_json=True,
+            request_provider_session=True,
+            session_resume_gate=gate,
+            provider_resume=_provider,
+        )
+
+    thr = threading.Thread(target=_resume, name="acp-prebind-race")
+    thr.start()
+    assert ready.wait(timeout=45), "never reached pre-spawn ensuring barrier"
+    assert isinstance(box.get("pre_bind"), dict)
+    assert box["pre_bind"].get("state") == "ensuring"
+    assert not box["pre_bind"].get("job_id")
+
+    stop_out = stop_team(tmp_path, run_id)
+    box["stop"] = stop_out
+    release.set()
+    thr.join(timeout=45)
+    assert not thr.is_alive()
+
+    # Either stop refused while ensure in flight, or completed with no live orphan.
+    durable = load_team_meta(tmp_path, run_id)
+    if stop_out.get("stop_completed"):
+        assert durable.get("stop_state") == "stopped"
+        # No jobs should be live for this run's ACP binding.
+        bind_after = read_acp_sidecar_binding(tmp_path, run_id)
+        if bind_after and bind_after.get("job_id"):
+            assert not _job_is_live_sidecar(tmp_path, str(bind_after["job_id"]))
+    else:
+        assert stop_out.get("stop_completed") is False
+        assert durable.get("stop_state") == "stop_refused"
+        # Ensure must abort on stop_state — no live orphan after join.
+        bind_after = read_acp_sidecar_binding(tmp_path, run_id)
+        if bind_after and bind_after.get("job_id"):
+            jid = str(bind_after["job_id"])
+            assert not _job_is_live_sidecar(tmp_path, jid)
+            try:
+                cancel_job(tmp_path, jid, reason="test_cleanup")
+            except JobStoreError:
+                pass
+
+    resume_out = box.get("resume") or {}
+    ps = resume_out.get("provider_session") or {}
+    # Must not claim a successful live wire under a completed stop.
+    if durable.get("stop_state") == "stopped":
+        assert ps.get("transport_wired") is not True or ps.get("ok") is False

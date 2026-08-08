@@ -9,7 +9,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from omg_cli.jobs.models import (
     TERMINAL_STATES,
@@ -993,6 +993,85 @@ def _acp_binding_path(project_root: Path, run_id: str) -> Path:
     return d / f"{run_id}.json"
 
 
+def read_acp_sidecar_binding(
+    project_root: Path, run_id: str
+) -> dict[str, Any] | None:
+    """Public read of the Team/jobs ACP singleton binding (may lack job_id)."""
+    path = _acp_binding_path(Path(project_root).resolve(), str(run_id))
+    return _read_json_file(path) if path.is_file() else None
+
+
+_TEAM_STOP_STATES_BLOCKING_ACP = frozenset({"stopping", "stopped", "stop_refused"})
+
+
+def _team_acp_stop_block_reason(project_root: Path, run_id: str) -> str | None:
+    """Return a reason when Team stop state must abort ACP ensure; else None."""
+    try:
+        from omg_cli.team.plane import load_team_meta
+
+        meta = load_team_meta(Path(project_root).resolve(), str(run_id))
+    except Exception:
+        # No team meta (unit tests / non-team) — ensure proceeds.
+        return None
+    st = str(meta.get("stop_state") or "")
+    if st in _TEAM_STOP_STATES_BLOCKING_ACP or meta.get("stopped_at"):
+        return f"team stop_state={st!r}"
+    return None
+
+
+def _acp_ensure_lock_busy(project_root: Path, run_id: str) -> bool:
+    """True when an ACP ensure exclusive lock for this run appears held."""
+    import fcntl
+
+    from omg_cli.jobs.store import ensure_jobs_root
+
+    root = ensure_jobs_root(Path(project_root).resolve())
+    locks = root / ".locks"
+    if not locks.is_dir():
+        return False
+    prefix = f"acp-{run_id}-"
+    try:
+        candidates = [
+            p for p in locks.iterdir() if p.is_file() and p.name.startswith(prefix)
+        ]
+    except OSError:
+        return False
+    for path in candidates:
+        try:
+            with path.open("a+", encoding="utf-8") as fh:
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return True
+                else:
+                    try:
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                    except OSError:
+                        pass
+        except OSError:
+            continue
+    return False
+
+
+def _pending_acp_intent_idle(
+    linked_acp: Mapping[str, Any], *, max_age_s: float = 60.0
+) -> bool:
+    """True when pending_at is parseable and older than *max_age_s* (abandoned)."""
+    from datetime import datetime, timezone
+
+    raw = linked_acp.get("pending_at")
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    try:
+        ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - ts).total_seconds()
+    return age >= float(max_age_s)
+
+
 def resolve_acp_session_identity(
     project_root: Path, run_id: str
 ) -> dict[str, Any]:
@@ -1212,10 +1291,14 @@ def ensure_acp_session_sidecar(
     provider_binary: str | None = None,
     ready_timeout_s: float = DEFAULT_ACP_READY_TIMEOUT_S,
     handshake_timeout_s: float = DEFAULT_ACP_HANDSHAKE_WAIT_S,
+    _pre_spawn_hook: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Ensure one live ACP sidecar for (run_id, session, cwd); reuse if matching.
 
     Holds a dedicated transaction lock — never the Team scale lock.
+    Writes a provisional ``ensuring`` binding **before** ``start_job`` so Team
+    stop can observe in-flight ensure. Aborts if Team is stopping/stopped.
+    ``_pre_spawn_hook`` is test-only (barrier between ensuring bind and spawn).
     """
     from omg_cli.contracts.path_keys import exclusive_lock
     from omg_cli.host_acp import AcpError
@@ -1230,6 +1313,18 @@ def ensure_acp_session_sidecar(
     with exclusive_lock(lock_path):
         bind_path = _acp_binding_path(root, rid)
         existing = _read_json_file(bind_path) if bind_path.is_file() else None
+
+        # Reclaim abandoned pre-spawn marker (no job_id yet).
+        if (
+            existing
+            and str(existing.get("state") or "") == "ensuring"
+            and not existing.get("job_id")
+        ):
+            try:
+                bind_path.unlink()
+            except OSError:
+                pass
+            existing = None
 
         if existing:
             ex_sid = existing.get("session_id_hash")
@@ -1268,6 +1363,12 @@ def ensure_acp_session_sidecar(
                                 f"linked ACP sidecar job {ex_job} inner provider "
                                 "exited; refusing reuse (not live)",
                                 code="E_ACP_SIDECAR_STALE",
+                            )
+                        block = _team_acp_stop_block_reason(root, rid)
+                        if block:
+                            raise JobStoreError(
+                                f"ACP ensure aborted: {block}",
+                                code="E_ACP_ENSURE_ABORTED_STOP",
                             )
                         rec = read_job_record(root, ex_job)
                         return {
@@ -1311,6 +1412,12 @@ def ensure_acp_session_sidecar(
                             "handshake; refusing reuse",
                             code="E_ACP_SIDECAR_STALE",
                         )
+                    block = _team_acp_stop_block_reason(root, rid)
+                    if block:
+                        raise JobStoreError(
+                            f"ACP ensure aborted: {block}",
+                            code="E_ACP_ENSURE_ABORTED_STOP",
+                        )
                     rec = read_job_record(root, ex_job)
                     return {
                         "ok": True,
@@ -1334,6 +1441,40 @@ def ensure_acp_session_sidecar(
                     code="E_ACP_SIDECAR_STALE",
                 )
 
+        # Abort before allocating a new sidecar if Team stop is in progress.
+        block = _team_acp_stop_block_reason(root, rid)
+        if block:
+            raise JobStoreError(
+                f"ACP ensure aborted before spawn: {block}",
+                code="E_ACP_ENSURE_ABORTED_STOP",
+            )
+
+        # Provisional binding BEFORE start_job so concurrent stop observes
+        # in-flight ensure (even before a job_id exists).
+        _write_json_file(
+            bind_path,
+            {
+                "run_id": rid,
+                "job_id": None,
+                "session_id_hash": sid_hash,
+                "cwd_hash": cwd_hash,
+                "state": "ensuring",
+            },
+        )
+        if _pre_spawn_hook is not None:
+            _pre_spawn_hook()
+        block = _team_acp_stop_block_reason(root, rid)
+        if block:
+            try:
+                if bind_path.is_file():
+                    bind_path.unlink()
+            except OSError:
+                pass
+            raise JobStoreError(
+                f"ACP ensure aborted before spawn: {block}",
+                code="E_ACP_ENSURE_ABORTED_STOP",
+            )
+
         # Start a new internal ACP job.
         prompt = root / ".omg" / "jobs" / ".acp-prompt.md"
         prompt.parent.mkdir(parents=True, exist_ok=True)
@@ -1343,26 +1484,34 @@ def ensure_acp_session_sidecar(
                 encoding="utf-8",
             )
         binary = provider_binary or os.environ.get("OMG_ACP_BIN")
-        start = start_job(
-            root,
-            provider="grok-acp-session",
-            role="acp-session",
-            prompt_file=prompt,
-            run_id=rid,
-            allow_internal=True,
-            provider_timeout_s=handshake_timeout_s,
-            request_overrides={
-                "session_id": identity["session_id"],
-                "parent_run_id": rid,
-                "cwd": identity["cwd"],
-                "session_id_hash": sid_hash,
-                "cwd_hash": cwd_hash,
-                "provider_binary": binary,
-                "timeout_s": handshake_timeout_s,
-            },
-        )
+        try:
+            start = start_job(
+                root,
+                provider="grok-acp-session",
+                role="acp-session",
+                prompt_file=prompt,
+                run_id=rid,
+                allow_internal=True,
+                provider_timeout_s=handshake_timeout_s,
+                request_overrides={
+                    "session_id": identity["session_id"],
+                    "parent_run_id": rid,
+                    "cwd": identity["cwd"],
+                    "session_id_hash": sid_hash,
+                    "cwd_hash": cwd_hash,
+                    "provider_binary": binary,
+                    "timeout_s": handshake_timeout_s,
+                },
+            )
+        except Exception:
+            try:
+                if bind_path.is_file():
+                    bind_path.unlink()
+            except OSError:
+                pass
+            raise
         job_id = start.record.job_id
-        # Provisional binding (handshaking).
+        # Promote ensuring → handshaking with concrete job_id.
         _write_json_file(
             bind_path,
             {
@@ -1413,6 +1562,30 @@ def ensure_acp_session_sidecar(
                 code="E_ACP_READY",
             ) from exc
 
+        block = _team_acp_stop_block_reason(root, rid)
+        if block:
+            cancel_err = None
+            try:
+                cancel_job(root, job_id, reason="acp_aborted_team_stop")
+            except Exception as cancel_exc:
+                cancel_err = cancel_exc
+            else:
+                try:
+                    if bind_path.is_file():
+                        bind_path.unlink()
+                except OSError:
+                    pass
+            if cancel_err is not None:
+                raise JobStoreError(
+                    f"ACP ensure aborted after ready ({block}); cancel not proven, "
+                    f"binding retained: {cancel_err}",
+                    code=getattr(cancel_err, "code", None) or "E_JOB_CANCEL_UNPROVEN",
+                ) from cancel_err
+            raise JobStoreError(
+                f"ACP ensure aborted after ready: {block}",
+                code="E_ACP_ENSURE_ABORTED_STOP",
+            )
+
         _write_json_file(
             bind_path,
             {
@@ -1454,6 +1627,7 @@ def ensure_acp_session_for_team(
     root: Path | str,
     run_id: str,
     provider_binary: str | None = None,
+    _pre_spawn_hook: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Team-injected provider_resume helper (AVAILABLE gate only).
 
@@ -1476,6 +1650,7 @@ def ensure_acp_session_for_team(
             root_path,
             run_id=run_id,
             provider_binary=provider_binary,
+            _pre_spawn_hook=_pre_spawn_hook,
         )
     except JobStoreError as exc:
         if exc.code == "E_ACP_SESSION_BINDING":
@@ -1594,6 +1769,7 @@ __all__ = [
     "ensure_acp_session_sidecar",
     "job_status",
     "list_jobs",
+    "read_acp_sidecar_binding",
     "resolve_acp_session_identity",
     "start_job",
     "wait_job",
