@@ -22,6 +22,10 @@ from omg_cli.commands.provider import (  # #67-A — provider probe
     cmd_provider,  # noqa: F401 — re-export for tests
     register_provider_parsers,
 )
+from omg_cli.commands.job import (  # #68 PR1 — durable background jobs
+    cmd_job,  # noqa: F401 — re-export for tests
+    register_job_parsers,
+)
 from omg_cli.commands.install import (  # #29 Phase 2+4' — install family
     cmd_doctor,  # noqa: F401
     cmd_install_hook,  # noqa: F401
@@ -202,6 +206,8 @@ def build_parser() -> argparse.ArgumentParser:
     register_inspect_parsers(sub, common, phase="late")
 
     register_provider_parsers(sub, common)
+
+    register_job_parsers(sub, common)
 
     register_workflow_parsers(sub, common, phase="late")
 

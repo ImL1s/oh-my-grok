@@ -864,6 +864,8 @@ def test_manifest_rejects_stale_revision_wrong_path_and_trust_drift(
         read_run_manifest(path, root=tmp_path)
 
 
+@pytest.mark.timeout(300)
+@pytest.mark.slow
 def test_repository_aggregate_signing_is_manifest_and_generation_fenced(
     tmp_path: Path,
 ) -> None:
@@ -1086,6 +1088,8 @@ def test_repository_aggregate_signing_is_manifest_and_generation_fenced(
         read_run_manifest(path, root=tmp_path)
 
 
+@pytest.mark.timeout(300)
+@pytest.mark.slow
 def test_final_sign_transaction_recovers_keyboard_interrupt_at_every_write_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1191,6 +1195,8 @@ def test_final_sign_transaction_recovers_keyboard_interrupt_at_every_write_bound
         )
 
 
+@pytest.mark.timeout(300)
+@pytest.mark.slow
 def test_repository_aggregate_rejects_identity_phase_domain_and_key_substitution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1954,6 +1960,8 @@ def test_repository_aggregate_rejects_identity_phase_domain_and_key_substitution
         verify_repository_aggregate(path, phase="final", envelope=final_envelope)
 
 
+@pytest.mark.timeout(300)
+@pytest.mark.slow
 def test_repository_aggregate_cli_uses_canonical_0600_files_without_key_output(
     tmp_path: Path,
 ) -> None:

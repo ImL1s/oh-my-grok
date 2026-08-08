@@ -16,7 +16,7 @@ Homepage = "https://github.com/ImL1s/oh-my-grok"
 Repository = "https://github.com/ImL1s/oh-my-grok"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pytest-timeout>=2.3.1"]
 
 [project.scripts]
 omg = "omg_cli.main:main"

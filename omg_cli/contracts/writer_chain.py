@@ -893,13 +893,30 @@ class GitChangeRecord:
 
 
 def _git(root: Path, argv: Sequence[str], *, check: bool = True) -> bytes:
-    result = subprocess.run(
-        ["git", *argv],
-        cwd=root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    env = os.environ.copy()
+    env.setdefault("GIT_OPTIONAL_LOCKS", "0")
+    env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.usebuiltinfsmonitor=false",
+                *argv,
+            ],
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=30,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ContractValidationError(
+            f"git {' '.join(argv)} timed out after 30s"
+        ) from exc
     if check and result.returncode != 0:
         raise ContractValidationError(
             f"git {' '.join(argv)} failed rc={result.returncode}: "

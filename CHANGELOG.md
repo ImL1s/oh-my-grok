@@ -10,12 +10,38 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Fixed
+- **#68 PR1 PID ownership (best-effort):** cancel records a `pid_starttime`
+  fingerprint at `starting→running` (Linux `/proc/<pid>/stat` starttime or
+  `ps -o lstart=`). Before **each** cancel signal (SIGTERM and again before
+  SIGKILL), cancel revalidates pid/pgid both `> 1`, live `getpgid(pid)` vs
+  recorded PGID, and (when present) the fingerprint. Outcome is explicit:
+  OK → signal; GONE (dead / ProcessLookupError) → **no** signal,
+  continue cancel stamp; mismatch fail-closes with `E_JOB_PID_REUSED` /
+  `E_JOB_PGID_MISMATCH` and does **not** signal. Null fingerprint (probe
+  failed at start) still falls back to pid/pgid + live PGID checks only —
+  **not** full OmO-style lease/nonce ownership; deferred to a later #68 slice.
+- **#68 PR1 launch ownership:** parent alone commits `starting→running`
+  (pid/pgid/handle); child readiness barrier polls `job.json` until that
+  commit (or terminal/timeout) before `ProviderAdapter.run`, and stamps
+  only `running→succeeded|failed`. Immediate post-spawn child exit and
+  cancel-during-uncommitted-window fail closed (never durable `running`
+  without a live handle).
 - **#105 PR3 review:** `omg team resume --provider-session` evaluates
   `session_resume` with `required=False` so missing cap yields reachable
   `LEGACY` (+ `next_action`), not unconditional BLOCKED; `provider_session_result`
   fail-closes on non-`session_resume` gate capability ids.
 
 ### Added
+- **Partial work for issue 68 (PR1 / jobs MVP):** durable `.omg/jobs/<id>/`
+  store + `omg job start|status|wait|collect|cancel|list` with JSON CLI
+  envelopes. Subprocess job runner owns `ProviderAdapter.run` (no second
+  launcher). Hermetic `FakeProvider` worker (`--provider fake`);
+  `--provider antigravity` returns clear `E_JOB_PROVIDER` (live spawn
+  deferred). Atomic start (queued→starting before launch; launch failure →
+  failed, never running with null pid). Cancel by recorded PID/PGID only
+  (sibling-safe; never `pkill`/`killall`). Large outputs as
+  `artifacts/` descriptors only. Does **not** close #68 (retry/GC/lease
+  recovery/`ask --background` later).
 - **Partial work for issue 67 (slice D / #67-D):** Team Antigravity panes
   route through adapter-owned `ProviderLaunchRequest` /
   `ProviderLaunchEnvelope` + `AntigravityProvider.build_launch_envelope`
@@ -53,7 +79,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   re-parse versions). Outcomes stay independent: reconcile / provider_session
   (`available`|`legacy`|`blocked`) / tmux view — attach success never implies
   provider resume. Absent resume → LEGACY (actionable `next_action`); BLOCKED
-  still fails closed when it occurs. No ACP transport, no `live_verified`.
+  still fails closed when it occurs. No ACP transport; hermetic/fixture
+  host-probe scope only — no live Antigravity CI claim.
   See `docs/host-compat.md`.
 - **#105 host doctor/capability probe (PR2):** canonical
   `omg_cli/host_probe.py` + `host_models.py` report active Grok version,
@@ -65,7 +92,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   auth/session/transcript/home leaks. Hermetic fixtures under
   `tests/fixtures/host/`; operator note in `docs/host-compat.md`.
   Pin ≠ forced minimum — does not require every install to run v0.2.121;
-  no `live_verified` claim in this change.
+  hermetic fixtures only, no live Antigravity CI claim in this change.
 - **#105 Grok Build host-baseline gate (PR1):** independent host catalogue at
   `docs/parity/upstream-snapshots/grok-build.json` for pin
   `a5589e958437d79e13db026eedcb1720bffd4063` (`0.2.121`), fail-closed
@@ -222,8 +249,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **Parity release claim gate (PR #91 Pro re-audit round 3):** durable release
   base (previous `v*` tag / `--base-ref` / `OMG_PARITY_BASE_REF`, not `HEAD^`);
   scan intermediate pin transitions; require git-tracked HEAD-blob-matching
-  review ledgers; own `docs/parity/reviews/**` under OMG-W0; keep live-* phrase
-  scan active unless every capability is `live_verified`; expose
+  review ledgers; own `docs/parity/reviews/**` under OMG-W0; keep live-maturity
+  phrase scan active unless every capability reaches the top live-maturity tier;
+  expose
   `--base-inventory` / `--base-ref` on `omg parity check`.
 - **Parity release claim gate (PR #91 Pro re-audit round 4):** `--release` rejects
   file-only `--base-inventory` (no git provenance → endpoint-only A→A miss on
@@ -232,14 +260,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **Parity release claim gate (PR #91 Pro re-audit round 2):** require committed
   pin-transition reviews under `docs/parity/reviews/`; bind deleted-change
   fingerprints; validate upstream snapshot capability schema (no duplicate /
-  malformed silent skip); forbid `live-proven` / `live-tested` doc phrases and
+  malformed silent skip); forbid live-evidence marketing phrases in docs and
   scrub historical CHANGELOG wording.
 
 ### Added
 - **Parity full upstream inventory (#78-B):** expand the v2 catalogue with
   `source_status` (OMC/OMX/OmO/Antigravity), the #78-B category taxonomy,
   minimum OMC/OMX/OmO/Antigravity capability rows (mostly `catalogued`; no
-  fake `live_verified`), generated per-source matrices + SUMMARY (EN/zh/zh-TW),
+  fake top-tier live-maturity labels), generated per-source matrices + SUMMARY (EN/zh/zh-TW),
   and NON-AUTHORITATIVE banners on historical research matrices. Inventory
   completeness ≠ product parity — `inventory_status` stays `bootstrapping` while
   `parity_governance` / `platform_live_evidence` remain open. Issue #78 stays
@@ -248,7 +276,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   catalogues (`docs/parity/upstream-snapshots/`), `omg parity refresh --plan`
   review workflow, release claim gate (`--strict --release` in `release.yml`),
   and live-evidence freshness enforcement. Completeness promotion and issue #78
-  remain open — no fake `live_verified` product claims.
+  remain open — hermetic catalogue only; no fake top-tier live-maturity product claims.
 
 ## [0.7.5] - 2026-08-05
 
@@ -267,7 +295,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   cannot positive-claim when the target is host_impossible/excluded/
   optional_unclaimed); `--strict` requires non-empty `omg_paths` for claimable
   classifications and repo-verifiable `healthy_evidence` for `healthy` /
-  `live_verified`.
+  top live-maturity tiers.
 - **Process-fanout cancel linearization (Round 18 / R18-1):** each
   ``run_process_fanout`` worker's cancel recheck → ``Popen`` → PID publish
   runs under the same per-run ``transition_guard`` as ``_launch_grok``
