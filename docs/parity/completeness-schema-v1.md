@@ -91,9 +91,12 @@ Committed layout (when a source is later promoted):
   `git rev-parse HEAD` must equal the pin, the path must be its own
   work-tree root, `git status --porcelain` must be empty, and every pin
   blob OID must match `git hash-object` of the worktree path (so
-  `skip-worktree` / `assume-unchanged` mutations fail closed). Registry and
-  surface digests are read via `git cat-file` at the pin — not from possibly
-  skewed worktree bytes. Provenance is stamped into `checkout_provenance`.
+  `skip-worktree` / `assume-unchanged` mutations fail closed). All
+  completeness git calls use `--no-replace-objects` /
+  `GIT_NO_REPLACE_OBJECTS=1` so `refs/replace/<pin>` cannot rebind the
+  pin. Registry and surface digests are read via `git cat-file` at the pin —
+  not from possibly skewed worktree bytes. Provenance is stamped into
+  `checkout_provenance`.
 - Source paths must be relative, confined under the checkout root, regular
   files, and non-symlinks.
 - Mapping a discovered surface to an alias-only row, unknown capability,

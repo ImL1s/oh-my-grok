@@ -162,20 +162,31 @@ def _file_digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _git_subprocess_env() -> dict[str, str]:
+    """Env for completeness git calls — always disable replace-object resolution."""
+    env = os.environ.copy()
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    return env
+
+
 def _run_git(root: Path, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    # ``--no-replace-objects`` + GIT_NO_REPLACE_OBJECTS block refs/replace/
+    # from rewriting pin/HEAD/tree/blob resolution.
     return subprocess.run(
-        ["git", "-C", str(root), *args],
+        ["git", "--no-replace-objects", "-C", str(root), *args],
         capture_output=True,
         text=True,
         check=False,
+        env=_git_subprocess_env(),
     )
 
 
 def _run_git_bytes(root: Path, args: Sequence[str]) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
-        ["git", "-C", str(root), *args],
+        ["git", "--no-replace-objects", "-C", str(root), *args],
         capture_output=True,
         check=False,
+        env=_git_subprocess_env(),
     )
 
 

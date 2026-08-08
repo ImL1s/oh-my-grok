@@ -480,6 +480,80 @@ def test_skip_worktree_or_assume_unchanged_mutation_fails(tmp_path: Path) -> Non
         assert _git(upstream, "checkout", "--", target).returncode == 0
 
 
+def test_replace_ref_cannot_rebind_pin_to_alternate_tree(tmp_path: Path) -> None:
+    """refs/replace/<pin>→alternate must not authenticate as pin_revision."""
+    upstream = tmp_path / "replace-repo"
+    _write_source_tree(
+        upstream,
+        surfaces=[
+            {
+                "id": "cmd.hello",
+                "path": "commands/hello.md",
+                "content": "# pin A content\n",
+            }
+        ],
+    )
+    pin_a = _commit_tree(upstream)
+
+    # Alternate commit B with different tracked bytes.
+    (upstream / "commands" / "hello.md").write_text("# pin B content\n", encoding="utf-8")
+    assert _git(upstream, "add", "-A").returncode == 0
+    commit_b = _git(upstream, "-c", "commit.gpgsign=false", "commit", "-m", "B")
+    assert commit_b.returncode == 0, commit_b.stderr
+    pin_b = _git(upstream, "rev-parse", "HEAD").stdout.strip().lower()
+    assert pin_b != pin_a
+
+    # Move HEAD back to A, then install replace A→B and sync worktree to B.
+    assert _git(upstream, "checkout", "-f", pin_a).returncode == 0
+    assert _git(upstream, "rev-parse", "HEAD").stdout.strip().lower() == pin_a
+    replace = _git(upstream, "replace", pin_a, pin_b)
+    assert replace.returncode == 0, replace.stderr
+    # With replace enabled (test helper git, not completeness helpers), checkout
+    # of A materializes B's tree while HEAD name stays A.
+    assert _git(upstream, "checkout", "-f", pin_a).returncode == 0
+    head = _git(upstream, "rev-parse", "HEAD").stdout.strip().lower()
+    assert head == pin_a
+    assert (upstream / "commands" / "hello.md").read_text(encoding="utf-8") == (
+        "# pin B content\n"
+    )
+
+    inventory = _mini_inventory(pin=pin_a, gaps=[])
+    seed = _seed(pin=pin_a)
+    policy = _policy()
+
+    with pytest.raises(
+        ContractValidationError,
+        match="dirty|diverges from pin|differs from pin|does not match pin",
+    ):
+        authenticate_pinned_checkout(upstream, pin_a)
+
+    with pytest.raises(ContractValidationError):
+        build_completeness_proof(
+            policy=policy,
+            inventory=inventory,
+            upstream_root=upstream,
+            seed=seed,
+            surface_mappings=_mappings(),
+        )
+
+    # Control: with replace resolution enabled, porcelain can look clean while
+    # HEAD still names pin A — proving why --no-replace-objects is required.
+    status_replaced = subprocess.run(
+        ["git", "-C", str(upstream), "status", "--porcelain=v1"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert status_replaced.returncode == 0
+    head_replaced = subprocess.run(
+        ["git", "-C", str(upstream), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert head_replaced.stdout.strip().lower() == pin_a
+
+
 def test_source_proof_binds_repository_pin_policy_seed_and_inventory(
     tmp_path: Path,
 ) -> None:

@@ -31,6 +31,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **#78-D P0 pin blob binding:** discovery digests use `git cat-file` at the
   pin; auth also compares worktree `hash-object` OIDs to pin blobs so
   `skip-worktree` / `assume-unchanged` mutations fail closed.
+- **#78-D P0 replace-ref binding:** completeness git invocations set
+  `GIT_NO_REPLACE_OBJECTS=1` and `git --no-replace-objects` so
+  `refs/replace/<pin>` cannot rebind pin trees/blobs.
 - **#68 PR1 PID ownership (best-effort):** cancel records a `pid_starttime`
   fingerprint at `starting→running` (Linux `/proc/<pid>/stat` starttime or
   `ps -o lstart=`). Before **each** cancel signal (SIGTERM and again before
