@@ -18,6 +18,7 @@ Machine-readable claimability contract for oh-my-grok cross-runtime parity.
 | [`MATRIX-Antigravity.md`](MATRIX-Antigravity.md) | Generated `Antigravity` matrix |
 | [`GAPS.md`](GAPS.md) | Generated open / tracked gaps |
 | [`upstream-snapshots/`](upstream-snapshots/) | Pinned upstream capability catalogues for release drift gate |
+| [`completeness-schema-v1.md`](completeness-schema-v1.md) | Completeness policy/proof schemas (promotion gate) |
 | [`upstream-snapshots/grok-build.json`](upstream-snapshots/grok-build.json) | Independent Grok Build **host-baseline** catalogue (not a parity source) |
 | [`generated/host-baseline.md`](generated/host-baseline.md) | Generated host-baseline summary |
 | [`generated/host-capability-matrix.md`](generated/host-capability-matrix.md) | Generated host capability matrix |
@@ -63,7 +64,17 @@ python3 scripts/check_parity_inventory.py --strict --release  # release tags
 ./bin/omg parity check --strict --release --json
 ```
 
-Seeding snapshots does **not** promote `inventory_status`, `source_status`, or `category_status` to `complete` — that requires a separate completeness promotion (#78 follow-up).
+Seeding snapshots does **not** promote `inventory_status`, `source_status`, or `category_status` to `complete` — promotion remains unperformed and is proof-gated (see [completeness-schema-v1.md](completeness-schema-v1.md)).
+
+## Completeness: seed vs policy vs proof
+
+| Artifact | Role |
+| --- | --- |
+| Upstream seed (`upstream-snapshots/*.json`) | Catalogue at a pin for refresh/release drift — **not** a completeness proof |
+| Completeness policy | Reviewed discovery boundary for one source (registries, category rules, exceptions) |
+| Completeness proof | Deterministic reproduction binding pin + policy digest + seed digest + inventory coverage + discovered surfaces |
+
+Strict checks invoke the promotion gate. Bootstrapping inventories need no proofs; any `complete` status without a valid proof fails closed.
 
 ## Header
 
@@ -102,7 +113,7 @@ Each row binds upstream pin + source paths, OMG implementation paths, per-runtim
 
 While the inventory header, any `category_status`, or any `source_status` is `bootstrapping`, generators must not emit parity percentages or green checkmark glyphs (`%` / checkmark / `✓`). Open gaps are expected and listed honestly in [`GAPS.md`](GAPS.md). Do not treat historical research matrices as claimability truth — prefer this inventory.
 
-`complete` on `source_status` / `category_status` requires a **reproducible upstream completeness gate** (catalogue seed ≠ completeness). #78-C landed plan-only refresh + the release claim gate; completeness promotion remains manual — until then the canonical inventory stays `bootstrapping`.
+`complete` on `source_status` / `category_status` requires a **reproducible upstream completeness proof** (catalogue seed ≠ completeness). #78-C landed plan-only refresh + the release claim gate; #78-D landed the proof gate — **promotion remains unperformed and is proof-gated**. Canonical inventory stays `bootstrapping` until real-source policies/proofs are authored and statuses are explicitly promoted.
 
 ## Migration
 

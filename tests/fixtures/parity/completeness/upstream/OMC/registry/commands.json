@@ -1,0 +1,10 @@
+{
+  "kind": "command",
+  "entries": [
+    {
+      "id": "cmd.hello",
+      "path": "commands/hello.md",
+      "anchor": "cmd.hello"
+    }
+  ]
+}

@@ -22,7 +22,7 @@ Authoritative validator: `omg_cli.contracts.parity_schema.validate_parity_invent
 
 `inventory_is_complete` / `inventory_completion_claims_allowed` require `inventory_status == complete` **and** every `category_status` **and** every `source_status` value == `complete`. Percent / green-check claims stay forbidden while any source or category is still bootstrapping.
 
-`complete` is not a catalogue-seed claim: it requires a reproducible upstream completeness gate plus manual completeness promotion. The #78-C refresh + release claim gate is landed; **completeness promotion remains manual** — keep sources and categories `bootstrapping` until explicitly promoted.
+`complete` is not a catalogue-seed claim: it requires a reproducible upstream completeness **proof** (see [`completeness-schema-v1.md`](completeness-schema-v1.md)). The #78-C refresh + release claim gate is landed; the #78-D promotion proof gate is landed — **promotion remains unperformed and is proof-gated**. Keep sources and categories `bootstrapping` until explicitly promoted with valid proofs.
 
 ## Upstream snapshots
 

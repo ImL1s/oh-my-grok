@@ -8,7 +8,7 @@ Inventory status: **bootstrapping**.
 | --- | --- | --- | --- | --- | --- |
 | `gap.antigravity.provider` | P0 | open | #67 | `antigravity.provider.adapter` | A–D landed (probe/run/ask/Team envelope); dual review+CI before close |
 | `gap.jobs.durable` | P0 | open | #68 | `jobs.durable_background` | Durable jobs PR1 MVP landed; retry/GC/lease/ask--background and live Antigravity still open |
-| `gap.parity.governance.remaining` | P0 | open | #78 | `parity.inventory.governance` | #78-B inventory landed; #78-C refresh+claim gate landed; completeness promotion still manual |
+| `gap.parity.governance.remaining` | P0 | open | #78 | `parity.inventory.governance` | #78-B inventory landed; #78-C refresh+claim gate landed; #78-D proof gate landed; promotion remains unperformed and is proof-gated |
 | `gap.team.v3` | P0 | open | #69 | `team.plane_v3` | Team plane v3 not implemented; depends on #67/#68 |
 | `gap.omo.todo_continuation` | P1 | open | #78 | `omo.goal.todo_continuation` | OmO todo-continuation inject is host_impossible on Grok (no session.prompt API) |
 | `gap.parity.platform_live_evidence` | P1 | open | #78 | `antigravity.platform.version_matrix` | Platform/runtime live-evidence gate shipped (#78-C); completeness promotion still manual |
@@ -20,5 +20,5 @@ Inventory status: **bootstrapping**.
 
 - `gap.antigravity.provider` (#67): A–D landed (probe/run/ask/Team envelope); dual review+CI before close
 - `gap.jobs.durable` (#68): Durable jobs PR1 MVP landed; retry/GC/lease/ask--background and live Antigravity still open
-- `gap.parity.governance.remaining` (#78): #78-B inventory landed; #78-C refresh+claim gate landed; completeness promotion still manual
+- `gap.parity.governance.remaining` (#78): #78-B inventory landed; #78-C refresh+claim gate landed; #78-D proof gate landed; promotion remains unperformed and is proof-gated
 - `gap.team.v3` (#69): Team plane v3 not implemented; depends on #67/#68

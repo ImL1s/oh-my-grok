@@ -146,18 +146,32 @@
         "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
         "source_paths": ["README.md"]
       },
-      "omg_paths": ["omg_cli/contracts/parity_schema.py", "docs/parity/omg-parity.json", "scripts/check_parity_inventory.py"],
+      "omg_paths": [
+        "omg_cli/contracts/parity_schema.py",
+        "omg_cli/parity_completeness.py",
+        "docs/parity/omg-parity.json",
+        "scripts/check_parity_inventory.py",
+        "scripts/check_parity_completeness.py"
+      ],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
       },
       "evidence": {
-        "tests": ["tests/test_parity_inventory.py", "tests/test_parity_inventory_v2.py"],
-        "docs": ["docs/parity/README.md", "docs/parity/schema-v2.md"],
+        "tests": [
+          "tests/test_parity_inventory.py",
+          "tests/test_parity_inventory_v2.py",
+          "tests/test_parity_completeness.py"
+        ],
+        "docs": [
+          "docs/parity/README.md",
+          "docs/parity/schema-v2.md",
+          "docs/parity/completeness-schema-v1.md"
+        ],
         "live": []
       },
       "issues": ["#78"],
-      "gap": "#78-B catalogue inventory landed; #78-C refresh+claim gate landed; completeness promotion still manual."
+      "gap": "#78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; promotion remains unperformed and is proof-gated."
     },
     {
       "id": "omc.cli.session_surfaces",
@@ -1010,7 +1024,7 @@
       "status": "open",
       "issues": ["#78"],
       "capability_ids": ["parity.inventory.governance"],
-      "summary": "#78-B inventory landed; #78-C refresh+claim gate landed; completeness promotion still manual"
+      "summary": "#78-B inventory landed; #78-C refresh+claim gate landed; #78-D proof gate landed; promotion remains unperformed and is proof-gated"
     },
     {
       "id": "gap.parity.platform_live_evidence",

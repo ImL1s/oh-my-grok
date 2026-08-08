@@ -1,0 +1,2 @@
+# hello
+anchor: cmd.hello
