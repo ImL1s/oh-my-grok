@@ -343,12 +343,29 @@ def test_missing_artifact_fail_closed(root: Path) -> None:
     assert ei.value.code == "E_JOB_ARTIFACT"
 
 
-def test_antigravity_provider_refused(root: Path) -> None:
+def test_antigravity_provider_preflight_without_binary_is_missing(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a discoverable agy binary, admission fails before materialization."""
+    monkeypatch.setenv("PATH", "/nonexistent-omg-path")
+    monkeypatch.delenv("OMG_AGY_BIN", raising=False)
     prompt = _prompt(root)
     with pytest.raises(JobStoreError) as ei:
         start_job(
             root,
             provider="antigravity",
+            role="researcher",
+            prompt_file=prompt,
+        )
+    assert ei.value.code == "E_JOB_PROVIDER_MISSING"
+
+
+def test_unknown_provider_still_refused(root: Path) -> None:
+    prompt = _prompt(root)
+    with pytest.raises(JobStoreError) as ei:
+        start_job(
+            root,
+            provider="claude",
             role="researcher",
             prompt_file=prompt,
         )
@@ -1579,3 +1596,168 @@ def test_cancel_getpgid_lookup_error_is_gone_no_signal(
     out = cancel_job(root, rec.job_id, reason="lookup-gone", grace_s=0.05)
     assert signals == []
     assert out.state == JobState.CANCELLED
+
+
+def test_cancel_provisional_cancelled_stamp_requires_disappearance(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CANCELLED stamped while runner still alive must not return success.
+
+    Simulates the runner writing CANCELLED while ``_pid_alive`` stays True and
+    ``_wait_until_gone`` returns False — cancel_job must raise
+    ``E_JOB_CANCEL_UNPROVEN`` (or force-kill to real disappearance), never
+    treat the durable stamp alone as proof.
+    """
+    import signal as signal_mod
+
+    from omg_cli.jobs import runtime as runtime_mod
+
+    prompt = _prompt(root)
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    transition_job(
+        root,
+        rec.job_id,
+        JobState.RUNNING,
+        updates={
+            "pid": 4242,
+            "pgid": 4242,
+            "handle": f"fake:{rec.job_id}:pid=4242",
+            "pid_starttime": None,
+            "provider_process": {
+                "state": "exited",  # mark_provider_exited cleared "bound"
+                "pid": 4243,
+                "pgid": 4243,
+                "pid_starttime": None,
+                "handle": "provider:x",
+                "bound_at": "t0",
+                "exited_at": "t1",
+            },
+        },
+    )
+
+    # Mid-cancel: runner stamps CANCELLED while processes still "alive".
+    def stamp_cancelled_on_mark(*_a, **_k):
+        from omg_cli.jobs.store import transition_job as real_tj
+
+        # Already running → cancelled (provisional stamp).
+        return real_tj(
+            root,
+            rec.job_id,
+            JobState.CANCELLED,
+            updates={
+                "cancel_reason": "runner",
+                "exit": {"class": "cancelled", "cancelled": True},
+            },
+        )
+
+    monkeypatch.setattr(runtime_mod, "mark_cancel_requested", stamp_cancelled_on_mark)
+    monkeypatch.setattr(runtime_mod, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(runtime_mod, "_wait_until_gone", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        runtime_mod,
+        "_assert_cancel_ownership",
+        lambda *_a, **_k: runtime_mod.CancelOwnership.OK,
+    )
+    signals: list[tuple[int, int]] = []
+
+    def spy_kill(pgid_arg: int, signum: int) -> bool:
+        signals.append((int(pgid_arg), int(signum)))
+        return True
+
+    monkeypatch.setattr(runtime_mod, "_kill_pgid", spy_kill)
+
+    with pytest.raises(JobStoreError) as ei:
+        cancel_job(root, rec.job_id, reason="provisional", grace_s=0.0)
+    assert ei.value.code == "E_JOB_CANCEL_UNPROVEN"
+    # Full inner-then-outer force sequence: outer SIGKILL must still run even
+    # when inner wait_until_gone fails (must not raise before outer force).
+    assert (4243, signal_mod.SIGKILL) in signals, (
+        f"expected inner provider SIGKILL; got {signals}"
+    )
+    assert (4242, signal_mod.SIGKILL) in signals, (
+        f"expected outer runner SIGKILL after inner wait failure; got {signals}"
+    )
+
+
+def test_cancel_inner_wait_failure_still_force_kills_outer(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inner SIGKILL wait failure must not skip outer force-kill."""
+    import signal as signal_mod
+
+    from omg_cli.jobs import runtime as runtime_mod
+
+    prompt = _prompt(root)
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    transition_job(
+        root,
+        rec.job_id,
+        JobState.RUNNING,
+        updates={
+            "pid": 5252,
+            "pgid": 5252,
+            "handle": f"fake:{rec.job_id}:pid=5252",
+            "pid_starttime": None,
+            "provider_process": {
+                "state": "bound",
+                "pid": 5253,
+                "pgid": 5253,
+                "pid_starttime": None,
+                "handle": "provider:y",
+                "bound_at": "t0",
+                "exited_at": None,
+            },
+        },
+    )
+
+    killed_outer = {"done": False}
+    signals: list[tuple[int, int]] = []
+
+    def selective_wait(pid: int, *, timeout_s: float = 2.0, poll_s: float = 0.05) -> bool:
+        del timeout_s, poll_s
+        # Outer only disappears after its force SIGKILL; inner never does.
+        return int(pid) == 5252 and killed_outer["done"]
+
+    def pid_alive_after_outer_kill(pid: int) -> bool:
+        if int(pid) == 5252 and killed_outer["done"]:
+            return False
+        return True
+
+    def spy_kill(pgid_arg: int, signum: int) -> bool:
+        signals.append((int(pgid_arg), int(signum)))
+        if int(pgid_arg) == 5252 and int(signum) == int(signal_mod.SIGKILL):
+            killed_outer["done"] = True
+        return True
+
+    monkeypatch.setattr(runtime_mod, "_wait_until_gone", selective_wait)
+    monkeypatch.setattr(runtime_mod, "_pid_alive", pid_alive_after_outer_kill)
+    monkeypatch.setattr(
+        runtime_mod,
+        "_assert_cancel_ownership",
+        lambda *_a, **_k: runtime_mod.CancelOwnership.OK,
+    )
+    monkeypatch.setattr(runtime_mod, "_kill_pgid", spy_kill)
+
+    with pytest.raises(JobStoreError) as ei:
+        cancel_job(root, rec.job_id, reason="inner-stuck", grace_s=0.0)
+    assert ei.value.code == "E_JOB_CANCEL_UNPROVEN"
+    assert (5253, signal_mod.SIGKILL) in signals
+    assert (5252, signal_mod.SIGKILL) in signals, (
+        f"outer SIGKILL must run after inner wait failure; got {signals}"
+    )
+    # Inner force before outer force.
+    inner_i = signals.index((5253, signal_mod.SIGKILL))
+    outer_i = signals.index((5252, signal_mod.SIGKILL))
+    assert inner_i < outer_i, f"inner-then-outer order required; got {signals}"

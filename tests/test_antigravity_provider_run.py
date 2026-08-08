@@ -13,23 +13,13 @@ from pathlib import Path
 
 import pytest
 
+from tests.antigravity_testutil import clear_fake_agy_run_env, install_fake_agy
+
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "antigravity"
-FAKE_AGY = FIXTURES / "fake_agy.py"
 
 
 def _install_fake_agy(bin_dir: Path) -> Path:
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    target = bin_dir / "agy"
-    py = sys.executable
-    script = (
-        f"#!{py}\n"
-        "import runpy, sys\n"
-        f"sys.argv[0] = {str(target)!r}\n"
-        f"raise SystemExit(runpy.run_path({str(FAKE_AGY)!r}, run_name='__main__'))\n"
-    )
-    target.write_text(script, encoding="utf-8")
-    target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return target
+    return install_fake_agy(bin_dir)
 
 
 @pytest.fixture
@@ -38,10 +28,7 @@ def fake_agy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = _install_fake_agy(bin_dir)
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
     monkeypatch.delenv("OMG_AGY_BIN", raising=False)
-    # Clear run overrides between tests.
-    for key in list(os.environ):
-        if key.startswith("FAKE_AGY_RUN_") or key.startswith("FAKE_AGY_ECHO_"):
-            monkeypatch.delenv(key, raising=False)
+    clear_fake_agy_run_env(monkeypatch)
     return path
 
 

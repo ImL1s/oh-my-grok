@@ -1,0 +1,327 @@
+"""Jobs-scoped provider registry and Antigravity preflight (#68 PR2).
+
+Exact-name registry shared by parent ``start_job`` and child ``runner``.
+No aliases, no import-by-user-string, no fallback provider.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable, Final, Mapping
+
+from omg_cli.jobs.models import JobStoreError
+from omg_cli.providers.base import ProviderAdapter
+from omg_cli.providers.errors import (
+    ProviderBinaryMissing,
+    ProviderProbeError,
+    ProviderVersionError,
+)
+
+ProviderFactory = Callable[[], ProviderAdapter]
+
+# Canonical Antigravity default for jobs (preserves events/usage/session).
+DEFAULT_ANTIGRAVITY_OUTPUT_FORMAT: Final[str] = "stream-json"
+ALLOWED_ANTIGRAVITY_OUTPUT_FORMATS: Final[frozenset[str]] = frozenset(
+    {"text", "json", "stream-json"}
+)
+FAKE_ONLY_FLAGS: Final[frozenset[str]] = frozenset(
+    {"sleep_s", "fail", "large_output", "ignore_sigterm"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class JobProviderMeta:
+    """Registry metadata for one jobs provider."""
+
+    name: str
+    factory: ProviderFactory
+    allow_fake_flags: bool
+    default_output_format: str
+    requires_preflight: bool
+
+
+def _make_fake() -> ProviderAdapter:
+    from omg_cli.jobs.fake import FakeProvider
+
+    return FakeProvider()
+
+
+def _make_antigravity() -> ProviderAdapter:
+    from omg_cli.providers.antigravity import AntigravityProvider
+
+    return AntigravityProvider()
+
+
+_REGISTRY: Final[Mapping[str, JobProviderMeta]] = {
+    "fake": JobProviderMeta(
+        name="fake",
+        factory=_make_fake,
+        allow_fake_flags=True,
+        default_output_format="text",
+        requires_preflight=False,
+    ),
+    "antigravity": JobProviderMeta(
+        name="antigravity",
+        factory=_make_antigravity,
+        allow_fake_flags=False,
+        default_output_format=DEFAULT_ANTIGRAVITY_OUTPUT_FORMAT,
+        requires_preflight=True,
+    ),
+}
+
+
+def registered_provider_names() -> tuple[str, ...]:
+    return tuple(_REGISTRY.keys())
+
+
+def get_provider_meta(name: str) -> JobProviderMeta:
+    key = (name or "").strip().lower()
+    meta = _REGISTRY.get(key)
+    if meta is None:
+        raise JobStoreError(
+            f"unknown job provider {name!r}; supported: "
+            f"{', '.join(registered_provider_names())}",
+            code="E_JOB_PROVIDER",
+        )
+    if key != meta.name:
+        # Defensive: registry keys must equal canonical names (no aliases).
+        raise JobStoreError(
+            f"unknown job provider {name!r}",
+            code="E_JOB_PROVIDER",
+        )
+    return meta
+
+
+def resolve_job_provider(name: str) -> tuple[ProviderAdapter, JobProviderMeta]:
+    """Resolve exact registry name → adapter; verify adapter.name matches."""
+    meta = get_provider_meta(name)
+    try:
+        adapter = meta.factory()
+    except Exception as exc:  # noqa: BLE001 — fail closed before materialization
+        raise JobStoreError(
+            f"job provider {meta.name!r} factory failed: {exc}",
+            code="E_JOB_PROVIDER",
+        ) from exc
+    if not isinstance(adapter, ProviderAdapter):
+        raise JobStoreError(
+            f"job provider {meta.name!r} factory did not return ProviderAdapter",
+            code="E_JOB_PROVIDER",
+        )
+    adapter_name = getattr(adapter, "name", None)
+    if adapter_name != meta.name:
+        raise JobStoreError(
+            f"job provider registry name mismatch: "
+            f"registered={meta.name!r} adapter.name={adapter_name!r}",
+            code="E_JOB_PROVIDER",
+        )
+    return adapter, meta
+
+
+@dataclass(frozen=True, slots=True)
+class AntigravityPreflight:
+    """Immutable snapshot produced by successful Antigravity admission."""
+
+    provider_binary: str
+    provider_version: str
+    provider_compat: str
+    provider_pin_revision: str
+    output_format: str
+    model: str | None
+    effort: str | None
+    mode: str | None
+    timeout_s: float
+    observed_formats: tuple[str, ...]
+
+
+def _reject_fake_flags(*, sleep_s: float | None, fail: bool, large_output: bool, ignore_sigterm: bool) -> None:
+    if sleep_s is not None or fail or large_output or ignore_sigterm:
+        raise JobStoreError(
+            "fake-only flags (--sleep/--fail/--large-output/--ignore-sigterm) "
+            "are not allowed with provider=antigravity",
+            code="E_JOB_PROVIDER_OPTIONS",
+        )
+
+
+def preflight_antigravity(
+    *,
+    output_format: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
+    mode: str | None = None,
+    timeout_s: float | None = None,
+    sleep_s: float | None = None,
+    fail: bool = False,
+    large_output: bool = False,
+    ignore_sigterm: bool = False,
+) -> AntigravityPreflight:
+    """Fail-closed Antigravity admission before job directory materialization.
+
+    Does **not** require authenticated=True or live_call_ready=True.
+    """
+    _reject_fake_flags(
+        sleep_s=sleep_s,
+        fail=fail,
+        large_output=large_output,
+        ignore_sigterm=ignore_sigterm,
+    )
+
+    adapter, meta = resolve_job_provider("antigravity")
+    fmt = (output_format or meta.default_output_format).strip().lower()
+    if fmt not in ALLOWED_ANTIGRAVITY_OUTPUT_FORMATS:
+        raise JobStoreError(
+            f"unsupported Antigravity output format {fmt!r}; "
+            f"allowed: {', '.join(sorted(ALLOWED_ANTIGRAVITY_OUTPUT_FORMATS))}",
+            code="E_JOB_PROVIDER_OPTIONS",
+        )
+
+    # Resolve exact binary.
+    try:
+        binary = adapter.discover_binary()
+    except ProviderBinaryMissing as exc:
+        raise JobStoreError(
+            f"Antigravity binary missing: {exc}",
+            code="E_JOB_PROVIDER_MISSING",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise JobStoreError(
+            f"Antigravity binary discovery failed: {exc}",
+            code="E_JOB_PROVIDER_MISSING",
+        ) from exc
+    if not isinstance(binary, str) or not binary.strip():
+        raise JobStoreError(
+            "Antigravity binary discovery returned empty path",
+            code="E_JOB_PROVIDER_MISSING",
+        )
+
+    # Hermetic capability/version/help probe.
+    try:
+        caps = adapter.probe_capabilities(binary)
+    except (ProviderProbeError, ProviderVersionError) as exc:
+        raise JobStoreError(
+            f"Antigravity probe failed: {exc}",
+            code="E_JOB_PROVIDER_PROBE",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise JobStoreError(
+            f"Antigravity probe failed: {exc}",
+            code="E_JOB_PROVIDER_PROBE",
+        ) from exc
+
+    compat = str(getattr(caps, "compat_status", "") or "")
+    if compat != "compatible":
+        raise JobStoreError(
+            f"Antigravity binary incompatible (compat_status={compat!r})",
+            code="E_JOB_PROVIDER_COMPAT",
+        )
+
+    if not bool(getattr(caps, "print_mode", False)):
+        raise JobStoreError(
+            "Antigravity binary lacks headless print mode (--print)",
+            code="E_JOB_PROVIDER_CAPABILITY",
+        )
+
+    observed = tuple(getattr(caps, "output_formats", ()) or ())
+    if fmt not in observed:
+        raise JobStoreError(
+            f"Antigravity output format {fmt!r} not observed in capabilities "
+            f"(observed={list(observed)!r})",
+            code="E_JOB_PROVIDER_CAPABILITY",
+        )
+
+    version = str(getattr(caps, "version", "") or "")
+    pin = str(getattr(caps, "pin_revision", "") or "")
+    timeout = float(timeout_s) if timeout_s is not None else 3600.0
+    if timeout <= 0:
+        raise JobStoreError(
+            "provider timeout must be positive",
+            code="E_JOB_PROVIDER_OPTIONS",
+        )
+
+    return AntigravityPreflight(
+        provider_binary=str(binary),
+        provider_version=version,
+        provider_compat=compat,
+        provider_pin_revision=pin,
+        output_format=fmt,
+        model=str(model) if model else None,
+        effort=str(effort) if effort else None,
+        mode=str(mode) if mode else None,
+        timeout_s=timeout,
+        observed_formats=tuple(str(x) for x in observed),
+    )
+
+
+def build_request_snapshot(
+    provider: str,
+    *,
+    preflight: AntigravityPreflight | None = None,
+    output_format: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
+    mode: str | None = None,
+    timeout_s: float | None = None,
+) -> dict[str, Any]:
+    """Build the immutable ``request`` object stored on JobRecord."""
+    if provider == "antigravity":
+        if preflight is None:
+            raise JobStoreError(
+                "antigravity request snapshot requires successful preflight",
+                code="E_JOB_PROVIDER",
+            )
+        return {
+            "output_format": preflight.output_format,
+            "model": preflight.model,
+            "effort": preflight.effort,
+            "mode": preflight.mode,
+            "timeout_s": preflight.timeout_s,
+            "provider_binary": preflight.provider_binary,
+            "provider_version": preflight.provider_version,
+            "provider_compat": preflight.provider_compat,
+            "provider_pin_revision": preflight.provider_pin_revision,
+        }
+    # fake / default
+    meta = get_provider_meta(provider)
+    return {
+        "output_format": (output_format or meta.default_output_format),
+        "model": str(model) if model else None,
+        "effort": str(effort) if effort else None,
+        "mode": str(mode) if mode else None,
+        "timeout_s": float(timeout_s) if timeout_s is not None else 3600.0,
+        "provider_binary": None,
+        "provider_version": None,
+        "provider_compat": None,
+        "provider_pin_revision": None,
+    }
+
+
+def public_request_summary(request: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Sanitize request for CLI/status envelopes (no absolute binary path)."""
+    if not request:
+        return None
+    out = {
+        "output_format": request.get("output_format"),
+        "model": request.get("model"),
+        "effort": request.get("effort"),
+        "mode": request.get("mode"),
+        "timeout_s": request.get("timeout_s"),
+        "provider_version": request.get("provider_version"),
+        "provider_compat": request.get("provider_compat"),
+        "provider_pin_revision": request.get("provider_pin_revision"),
+        "has_provider_binary": bool(request.get("provider_binary")),
+    }
+    return out
+
+
+__all__ = [
+    "ALLOWED_ANTIGRAVITY_OUTPUT_FORMATS",
+    "DEFAULT_ANTIGRAVITY_OUTPUT_FORMAT",
+    "FAKE_ONLY_FLAGS",
+    "AntigravityPreflight",
+    "JobProviderMeta",
+    "build_request_snapshot",
+    "get_provider_meta",
+    "preflight_antigravity",
+    "public_request_summary",
+    "registered_provider_names",
+    "resolve_job_provider",
+]

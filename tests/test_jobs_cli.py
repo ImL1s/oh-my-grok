@@ -10,7 +10,7 @@ import pytest
 from omg_cli.cli_envelope import SCHEMA_VERSION
 from omg_cli.main import build_parser, main
 
-pytest_plugins = ["tests.jobs_testutil"]
+pytest_plugins = ["tests.jobs_testutil", "tests.antigravity_testutil"]
 
 
 @pytest.fixture
@@ -136,9 +136,11 @@ def test_cli_wait_timeout_envelope(
     _out(capsys)
 
 
-def test_cli_antigravity_refused(
-    project: Path, capsys: pytest.CaptureFixture[str]
+def test_cli_antigravity_preflight_error_has_no_job_id(
+    project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("PATH", "/nonexistent-omg-path")
+    monkeypatch.delenv("OMG_AGY_BIN", raising=False)
     prompt = project / "task.md"
     rc = main(
         [
@@ -155,9 +157,34 @@ def test_cli_antigravity_refused(
     payload = _out(capsys)
     assert payload["ok"] is False
     err = payload.get("error") or {}
-    assert err.get("code") == "E_JOB_PROVIDER" or payload.get("error_code") == (
-        "E_JOB_PROVIDER"
+    code = err.get("code") or payload.get("error_code")
+    assert code == "E_JOB_PROVIDER_MISSING"
+    assert "job_id" not in payload or payload.get("job_id") in (None, "")
+
+
+def test_cli_antigravity_fake_flags_are_usage_error(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prompt = project / "task.md"
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "antigravity",
+            "--prompt-file",
+            str(prompt),
+            "--sleep",
+            "1",
+        ]
     )
+    assert rc == 2
+    payload = _out(capsys)
+    assert payload["ok"] is False
+    err = payload.get("error") or {}
+    code = err.get("code") or payload.get("error_code")
+    assert code == "E_JOB_PROVIDER_OPTIONS"
 
 
 def test_cli_unknown_job(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -242,3 +269,107 @@ def test_cli_large_output_descriptors(
     assert coll["result"] == "artifacts/result.md"
     raw = json.dumps(coll)
     assert "x" * 500 not in raw
+
+
+def test_cli_antigravity_start_wait_collect_json_hermetic(
+    project: Path, capsys: pytest.CaptureFixture[str], fake_agy_path: Path
+) -> None:
+    del fake_agy_path
+    prompt = project / "task.md"
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "antigravity",
+            "--prompt-file",
+            str(prompt),
+            "--output-format",
+            "text",
+            "--provider-timeout",
+            "30",
+        ]
+    )
+    assert rc == 0
+    started = _out(capsys)
+    assert started["ok"] is True
+    job_id = started["job_id"]
+    assert started.get("request", {}).get("has_provider_binary") is True
+    assert "provider_binary" not in (started.get("request") or {})
+
+    rc = main(["--json", "job", "wait", job_id, "--timeout", "30"])
+    assert rc == 0
+    waited = _out(capsys)
+    assert waited["job"]["state"] == "succeeded"
+
+    rc = main(["--json", "job", "collect", job_id])
+    assert rc == 0
+    collected = _out(capsys)
+    assert collected["ok"] is True
+    assert collected["collect"]["result"] == "artifacts/result.md"
+
+
+def test_cli_antigravity_auth_blocked_failure_envelope(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    fake_agy_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del fake_agy_path
+    monkeypatch.setenv("FAKE_AGY_RUN_AUTH_BLOCK", "1")
+    monkeypatch.setenv("FAKE_AGY_RUN_AUTH_EXIT0", "1")
+    prompt = project / "task.md"
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "antigravity",
+            "--prompt-file",
+            str(prompt),
+            "--provider-timeout",
+            "30",
+        ]
+    )
+    assert rc == 0
+    job_id = _out(capsys)["job_id"]
+    rc = main(["--json", "job", "wait", job_id, "--timeout", "30"])
+    assert rc == 0
+    waited = _out(capsys)
+    assert waited["job"]["state"] == "failed"
+    assert (waited["job"].get("exit") or {}).get("class") == "auth_blocked"
+
+
+def test_cli_antigravity_status_does_not_expose_binary_path(
+    project: Path, capsys: pytest.CaptureFixture[str], fake_agy_path: Path
+) -> None:
+    del fake_agy_path
+    prompt = project / "task.md"
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "antigravity",
+            "--prompt-file",
+            str(prompt),
+            "--provider-timeout",
+            "30",
+        ]
+    )
+    assert rc == 0
+    job_id = _out(capsys)["job_id"]
+    rc = main(["--json", "job", "status", job_id])
+    assert rc == 0
+    status = _out(capsys)
+    blob = json.dumps(status)
+    assert '"provider_binary"' not in blob
+    job = status.get("job") or status
+    req = job.get("request") or {}
+    assert "provider_binary" not in req
+    assert req.get("has_provider_binary") is True
+    main(["--json", "job", "wait", job_id, "--timeout", "30"])
+    _out(capsys)

@@ -25,6 +25,8 @@ from omg_cli.jobs.models import (
     JobState,
     JobStoreError,
     assert_transition,
+    default_provider_process,
+    default_request,
 )
 
 try:
@@ -182,6 +184,7 @@ def create_job_dir(
     prompt_text: str,
     run_id: str | None = None,
     worker: dict[str, Any] | None = None,
+    request: dict[str, Any] | None = None,
     job_id: str | None = None,
 ) -> JobRecord:
     """Materialize job directory + initial ``queued`` job.json."""
@@ -206,8 +209,8 @@ def create_job_dir(
         mode=DATA_FILE_MODE,
         replace=False,
     )
-    # Touch empty event / stdout ledgers
-    for name in ("events.jsonl", "stdout.jsonl"):
+    # Touch empty event / stdout / stderr ledgers
+    for name in ("events.jsonl", "stdout.jsonl", "stderr.jsonl"):
         atomic_write_bytes(
             jdir / name,
             b"",
@@ -216,6 +219,7 @@ def create_job_dir(
         )
 
     now = utc_now()
+    req = dict(request) if isinstance(request, dict) else default_request()
     record = JobRecord(
         job_id=jid,
         created_at=now,
@@ -225,10 +229,13 @@ def create_job_dir(
         attempt=1,
         prompt="prompt.md",
         stdout="stdout.jsonl",
+        stderr="stderr.jsonl",
         events="events.jsonl",
         run_id=run_id,
         updated_at=now,
         worker=dict(worker or {}),
+        request=req,
+        provider_process=default_provider_process(),
     )
     with job_lock(project_root, jid):
         write_job_record(project_root, record)
@@ -301,6 +308,153 @@ def update_job_fields(
         ) from exc
 
 
+def mark_provider_launching(
+    project_root: Path,
+    job_id: str,
+    *,
+    expected_runner_pid: int,
+    expected_attempt: int = 1,
+) -> JobRecord:
+    """Set provider_process.state=launching under lock (pre-adapter)."""
+    with job_lock(project_root, job_id):
+        record = read_job_record(project_root, job_id)
+        if record.state != JobState.RUNNING:
+            raise JobStoreError(
+                f"cannot mark provider launching: job state={record.state.value}",
+                code="E_JOB_STORE",
+            )
+        if int(record.attempt) != int(expected_attempt):
+            raise JobStoreError(
+                "cannot mark provider launching: attempt mismatch",
+                code="E_JOB_STORE",
+            )
+        if record.pid is None or int(record.pid) != int(expected_runner_pid):
+            raise JobStoreError(
+                "cannot mark provider launching: runner pid mismatch",
+                code="E_JOB_STORE",
+            )
+        if record.cancel_requested_at:
+            raise JobStoreError(
+                "cannot mark provider launching: cancel already requested",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        pp = dict(record.provider_process or default_provider_process())
+        if pp.get("state") not in {"pending", "launching"}:
+            raise JobStoreError(
+                f"cannot mark provider launching from state={pp.get('state')!r}",
+                code="E_JOB_STORE",
+            )
+        pp["state"] = "launching"
+        record.provider_process = pp
+        write_job_record(project_root, record)
+        return read_job_record(project_root, job_id)
+
+
+def bind_provider_process(
+    project_root: Path,
+    job_id: str,
+    *,
+    pid: int,
+    pgid: int,
+    pid_starttime: str | None,
+    handle: str,
+    expected_runner_pid: int,
+    expected_attempt: int = 1,
+) -> JobRecord:
+    """Transactionally bind inner provider PID/PGID under lock.
+
+    Fail-closed when job is not running, attempt/runner mismatch, cancel won,
+    or a provider process is already bound.
+    """
+    with job_lock(project_root, job_id):
+        record = read_job_record(project_root, job_id)
+        if record.state != JobState.RUNNING:
+            raise JobStoreError(
+                f"cannot bind provider process: job state={record.state.value}",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        if int(record.attempt) != int(expected_attempt):
+            raise JobStoreError(
+                "cannot bind provider process: attempt mismatch",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        if record.pid is None or int(record.pid) != int(expected_runner_pid):
+            raise JobStoreError(
+                "cannot bind provider process: runner pid mismatch",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        if record.cancel_requested_at:
+            raise JobStoreError(
+                "cannot bind provider process: cancel already requested",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        pp = dict(record.provider_process or default_provider_process())
+        if pp.get("state") == "bound" and pp.get("pid") is not None:
+            raise JobStoreError(
+                "cannot bind provider process: already bound",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        if pp.get("state") not in {"pending", "launching"}:
+            raise JobStoreError(
+                f"cannot bind provider process from state={pp.get('state')!r}",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        if int(pid) <= 1 or int(pgid) <= 1:
+            raise JobStoreError(
+                f"cannot bind provider process: pid={pid} pgid={pgid} must be > 1",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        now = utc_now()
+        record.provider_process = {
+            "state": "bound",
+            "pid": int(pid),
+            "pgid": int(pgid),
+            "pid_starttime": pid_starttime,
+            "handle": handle,
+            "bound_at": now,
+            "exited_at": None,
+        }
+        write_job_record(project_root, record)
+        return read_job_record(project_root, job_id)
+
+
+def mark_provider_exited(project_root: Path, job_id: str) -> JobRecord:
+    """Mark provider_process.state=exited after adapter.run returns."""
+    with job_lock(project_root, job_id):
+        record = read_job_record(project_root, job_id)
+        pp = dict(record.provider_process or default_provider_process())
+        if pp.get("state") in {"bound", "launching", "exited"}:
+            pp["state"] = "exited"
+            pp["exited_at"] = utc_now()
+            record.provider_process = pp
+            write_job_record(project_root, record)
+        return read_job_record(project_root, job_id)
+
+
+def mark_cancel_requested(
+    project_root: Path,
+    job_id: str,
+    *,
+    reason: str | None = None,
+) -> JobRecord:
+    """Persist cancel_requested_at under lock (before signalling)."""
+    with job_lock(project_root, job_id):
+        record = read_job_record(project_root, job_id)
+        if record.state in (
+            JobState.SUCCEEDED,
+            JobState.FAILED,
+            JobState.CANCELLED,
+            JobState.LOST,
+        ):
+            return record
+        if not record.cancel_requested_at:
+            record.cancel_requested_at = utc_now()
+        if reason:
+            record.cancel_reason = reason
+        write_job_record(project_root, record)
+        return read_job_record(project_root, job_id)
+
+
 def list_job_ids(project_root: Path) -> list[str]:
     root = jobs_root(project_root)
     if not root.is_dir():
@@ -334,6 +488,7 @@ def append_jsonl(path: Path, obj: dict[str, Any]) -> None:
 __all__ = [
     "append_jsonl",
     "artifacts_dir",
+    "bind_provider_process",
     "create_job_dir",
     "ensure_jobs_root",
     "job_dir",
@@ -342,6 +497,9 @@ __all__ = [
     "jobs_root",
     "list_job_ids",
     "make_job_id",
+    "mark_cancel_requested",
+    "mark_provider_exited",
+    "mark_provider_launching",
     "read_job_record",
     "safe_job_id",
     "transition_job",
