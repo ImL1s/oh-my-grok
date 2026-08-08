@@ -810,6 +810,7 @@ def cancel_job(
 
     if need_force:
         record = read_job_record(project_root, job_id)
+        # Inner first — never abort the outer force attempt if inner wait fails.
         if captured_provider is not None and not provider_gone and _pid_alive(
             captured_provider.pid
         ):
@@ -819,13 +820,11 @@ def cancel_job(
             if ownership is OwnershipOutcome.GONE:
                 provider_gone = True
             elif ownership is OwnershipOutcome.OK:
-                if not _wait_until_gone(captured_provider.pid, timeout_s=2.0):
-                    raise JobStoreError(
-                        f"job {job_id} provider process did not disappear after SIGKILL",
-                        code="E_JOB_CANCEL_UNPROVEN",
-                    )
-                provider_gone = True
+                if _wait_until_gone(captured_provider.pid, timeout_s=2.0):
+                    provider_gone = True
+                # else: leave provider_gone False; still force-kill outer below.
 
+        # Outer next — always attempt when still alive, even if inner wait failed.
         record = read_job_record(project_root, job_id)
         if captured_runner is not None and not runner_gone and _pid_alive(
             captured_runner.pid
@@ -836,14 +835,12 @@ def cancel_job(
             if ownership is OwnershipOutcome.GONE:
                 runner_gone = True
             elif ownership is OwnershipOutcome.OK:
-                if not _wait_until_gone(captured_runner.pid, timeout_s=2.0):
-                    raise JobStoreError(
-                        f"job {job_id} runner process did not disappear after SIGKILL",
-                        code="E_JOB_CANCEL_UNPROVEN",
-                    )
-                runner_gone = True
+                if _wait_until_gone(captured_runner.pid, timeout_s=2.0):
+                    runner_gone = True
+                # else: leave runner_gone False for the final UNPROVEN gate.
 
     # Final observation gate — CANCELLED stamp alone is never enough.
+    # Raise UNPROVEN only after the full inner-then-outer force sequence.
     record = read_job_record(project_root, job_id)
     if record.state in {JobState.SUCCEEDED, JobState.FAILED, JobState.LOST}:
         # Non-cancel race winner: still require captured targets gone if any.

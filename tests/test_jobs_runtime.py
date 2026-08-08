@@ -1608,6 +1608,8 @@ def test_cancel_provisional_cancelled_stamp_requires_disappearance(
     ``E_JOB_CANCEL_UNPROVEN`` (or force-kill to real disappearance), never
     treat the durable stamp alone as proof.
     """
+    import signal as signal_mod
+
     from omg_cli.jobs import runtime as runtime_mod
 
     prompt = _prompt(root)
@@ -1662,10 +1664,10 @@ def test_cancel_provisional_cancelled_stamp_requires_disappearance(
         "_assert_cancel_ownership",
         lambda *_a, **_k: runtime_mod.CancelOwnership.OK,
     )
-    signals: list[int] = []
+    signals: list[tuple[int, int]] = []
 
     def spy_kill(pgid_arg: int, signum: int) -> bool:
-        signals.append(int(signum))
+        signals.append((int(pgid_arg), int(signum)))
         return True
 
     monkeypatch.setattr(runtime_mod, "_kill_pgid", spy_kill)
@@ -1673,5 +1675,89 @@ def test_cancel_provisional_cancelled_stamp_requires_disappearance(
     with pytest.raises(JobStoreError) as ei:
         cancel_job(root, rec.job_id, reason="provisional", grace_s=0.0)
     assert ei.value.code == "E_JOB_CANCEL_UNPROVEN"
-    # Force path must have attempted signals (stamp alone was insufficient).
-    assert signals, "expected force-path signals when wait_until_gone fails"
+    # Full inner-then-outer force sequence: outer SIGKILL must still run even
+    # when inner wait_until_gone fails (must not raise before outer force).
+    assert (4243, signal_mod.SIGKILL) in signals, (
+        f"expected inner provider SIGKILL; got {signals}"
+    )
+    assert (4242, signal_mod.SIGKILL) in signals, (
+        f"expected outer runner SIGKILL after inner wait failure; got {signals}"
+    )
+
+
+def test_cancel_inner_wait_failure_still_force_kills_outer(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inner SIGKILL wait failure must not skip outer force-kill."""
+    import signal as signal_mod
+
+    from omg_cli.jobs import runtime as runtime_mod
+
+    prompt = _prompt(root)
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    transition_job(
+        root,
+        rec.job_id,
+        JobState.RUNNING,
+        updates={
+            "pid": 5252,
+            "pgid": 5252,
+            "handle": f"fake:{rec.job_id}:pid=5252",
+            "pid_starttime": None,
+            "provider_process": {
+                "state": "bound",
+                "pid": 5253,
+                "pgid": 5253,
+                "pid_starttime": None,
+                "handle": "provider:y",
+                "bound_at": "t0",
+                "exited_at": None,
+            },
+        },
+    )
+
+    killed_outer = {"done": False}
+    signals: list[tuple[int, int]] = []
+
+    def selective_wait(pid: int, *, timeout_s: float = 2.0, poll_s: float = 0.05) -> bool:
+        del timeout_s, poll_s
+        # Outer only disappears after its force SIGKILL; inner never does.
+        return int(pid) == 5252 and killed_outer["done"]
+
+    def pid_alive_after_outer_kill(pid: int) -> bool:
+        if int(pid) == 5252 and killed_outer["done"]:
+            return False
+        return True
+
+    def spy_kill(pgid_arg: int, signum: int) -> bool:
+        signals.append((int(pgid_arg), int(signum)))
+        if int(pgid_arg) == 5252 and int(signum) == int(signal_mod.SIGKILL):
+            killed_outer["done"] = True
+        return True
+
+    monkeypatch.setattr(runtime_mod, "_wait_until_gone", selective_wait)
+    monkeypatch.setattr(runtime_mod, "_pid_alive", pid_alive_after_outer_kill)
+    monkeypatch.setattr(
+        runtime_mod,
+        "_assert_cancel_ownership",
+        lambda *_a, **_k: runtime_mod.CancelOwnership.OK,
+    )
+    monkeypatch.setattr(runtime_mod, "_kill_pgid", spy_kill)
+
+    with pytest.raises(JobStoreError) as ei:
+        cancel_job(root, rec.job_id, reason="inner-stuck", grace_s=0.0)
+    assert ei.value.code == "E_JOB_CANCEL_UNPROVEN"
+    assert (5253, signal_mod.SIGKILL) in signals
+    assert (5252, signal_mod.SIGKILL) in signals, (
+        f"outer SIGKILL must run after inner wait failure; got {signals}"
+    )
+    # Inner force before outer force.
+    inner_i = signals.index((5253, signal_mod.SIGKILL))
+    outer_i = signals.index((5252, signal_mod.SIGKILL))
+    assert inner_i < outer_i, f"inner-then-outer order required; got {signals}"
