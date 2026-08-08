@@ -144,6 +144,141 @@ def test_public_start_rejects_internal_via_start_job(root: Path) -> None:
     assert ei.value.code == "E_JOB_PROVIDER_INTERNAL"
 
 
+def test_handshaking_bind_write_failure_no_orphan_sidecar(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P0: failed ensuring→handshaking publish must not orphan a live sidecar.
+
+    Fault only the handshaking promotion write after start_job returns RUNNING.
+    Cancel is unproven → durable job-bearing recovery binding; second ensure
+    must not spawn another; stop cannot complete until disappearance is proven.
+    """
+    import subprocess
+
+    from omg_cli.jobs import runtime as rt
+    from omg_cli.jobs.runtime import (
+        _job_is_live_sidecar,
+        list_jobs,
+        read_acp_sidecar_binding,
+    )
+    from omg_cli.team.plane import EXPERIMENTAL_ENV, start_team, stop_team
+
+    monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
+
+    # Team stop path needs a git repo + team meta.
+    subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.com"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "t"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    (root / "README").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README"], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+
+    run_id = _seed_run(root)
+    # Align team run_id with the seeded host-session run for stop coverage.
+    meta = start_team(
+        "handshaking bind fault",
+        [{"task_id": "w1", "owned_files": ["lane_a/"]}],
+        root=root,
+        dry_run=True,
+        run_id=run_id,
+    )
+    assert str(meta["run_id"]) == run_id
+
+    real_write = rt._write_json_file
+    handshaking_writes = {"n": 0}
+
+    def _fault_handshaking_once(path: Path, data: Mapping[str, Any]) -> None:
+        if (
+            isinstance(data, Mapping)
+            and str(data.get("state") or "") == "handshaking"
+            and data.get("job_id")
+            and not data.get("recovery")
+        ):
+            handshaking_writes["n"] += 1
+            if handshaking_writes["n"] == 1:
+                raise OSError("simulated handshaking binding publish failure")
+        real_write(path, data)
+
+    monkeypatch.setattr(rt, "_write_json_file", _fault_handshaking_once)
+
+    def _cancel_unproven(project_root, job_id, *, reason=""):  # noqa: ANN001
+        raise JobStoreError(
+            "cancel disappearance unproven",
+            code="E_JOB_CANCEL_UNPROVEN",
+        )
+
+    monkeypatch.setattr(rt, "cancel_job", _cancel_unproven)
+
+    before_ids = {
+        str(j.get("job_id"))
+        for j in list_jobs(root)
+        if isinstance(j, Mapping) and j.get("job_id")
+    }
+    with pytest.raises(JobStoreError) as ei:
+        ensure_acp_session_sidecar(root, run_id=run_id, ready_timeout_s=10.0)
+    assert ei.value.code == "E_JOB_CANCEL_UNPROVEN"
+    assert handshaking_writes["n"] >= 1
+
+    bind = read_acp_sidecar_binding(root, run_id)
+    assert isinstance(bind, dict)
+    retained = bind.get("job_id")
+    assert isinstance(retained, str) and retained
+    assert bind.get("state") in {"handshaking", "ensuring"}
+    # Sidecar must remain tracked (RUNNING / handshake-viable), not abandoned.
+    rec = job_status(root, retained)
+    assert rec.state == JobState.RUNNING
+    assert rt._job_handshake_still_viable(root, retained) or _job_is_live_sidecar(
+        root, retained
+    )
+
+    after_ids = {
+        str(j.get("job_id"))
+        for j in list_jobs(root)
+        if isinstance(j, Mapping) and j.get("job_id")
+    }
+    spawned = after_ids - before_ids
+    assert retained in spawned
+    # Exactly one new sidecar for this failure path (the start_job result).
+    assert len(spawned) == 1
+
+    # Second ensure must not spawn another untracked sidecar.
+    try:
+        second = ensure_acp_session_sidecar(root, run_id=run_id, ready_timeout_s=5.0)
+        assert second.get("job_id") == retained
+    except JobStoreError:
+        pass
+    after2 = {
+        str(j.get("job_id"))
+        for j in list_jobs(root)
+        if isinstance(j, Mapping) and j.get("job_id")
+    }
+    assert after2 - before_ids == spawned
+
+    # Stop cannot complete while cancel remains unproven / binding retained.
+    stop_out = stop_team(root, run_id)
+    assert stop_out.get("stop_completed") is False, stop_out
+    kept = read_acp_sidecar_binding(root, run_id)
+    assert isinstance(kept, dict)
+    assert kept.get("job_id") == retained
+    # Still tracked — not reaped as abandoned ensuring/null.
+    assert job_status(root, retained).state == JobState.RUNNING
+
+
 def test_ensure_acp_session_for_team_available_envelope(root: Path) -> None:
     from omg_cli.host_models import FeatureGateResult
 

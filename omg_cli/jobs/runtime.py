@@ -1806,17 +1806,72 @@ def ensure_acp_session_sidecar(
                 pass
             raise
         job_id = start.record.job_id
-        # Promote ensuring → handshaking with concrete job_id.
-        _write_json_file(
-            bind_path,
-            {
+        # Promote ensuring → handshaking with concrete job_id. A failed write
+        # must not leave ensuring/job_id=null beside a live RUNNING sidecar
+        # (later ensure/stop would treat that marker as abandoned and orphan).
+        handshake_binding = {
+            "run_id": rid,
+            "job_id": job_id,
+            "session_id_hash": sid_hash,
+            "cwd_hash": cwd_hash,
+            "state": "handshaking",
+        }
+        try:
+            _write_json_file(bind_path, handshake_binding)
+        except Exception as write_exc:
+            cancel_err: Exception | None = None
+            try:
+                cancel_job(root, job_id, reason="acp_handshaking_bind_failed")
+            except Exception as cancel_exc:
+                cancel_err = cancel_exc
+            else:
+                try:
+                    if bind_path.is_file():
+                        bind_path.unlink()
+                except OSError:
+                    pass
+                raise JobStoreError(
+                    f"ACP handshaking binding publish failed after start_job; "
+                    f"sidecar cancelled: {write_exc}",
+                    code="E_ACP_BINDING",
+                ) from write_exc
+
+            # Cancel unproven — durable job-bearing recovery ref required.
+            # Never leave ensuring/job_id=null after start_job succeeded.
+            recovery_payload = {
                 "run_id": rid,
                 "job_id": job_id,
                 "session_id_hash": sid_hash,
                 "cwd_hash": cwd_hash,
                 "state": "handshaking",
-            },
-        )
+                "recovery": "handshaking_publish_failed",
+            }
+            recovery_err: Exception | None = None
+            try:
+                _write_json_file(bind_path, recovery_payload)
+            except Exception as hand_exc:
+                recovery_err = hand_exc
+                # ensuring+job_id still blocks abandoned reclaim / second spawn.
+                try:
+                    _write_json_file(
+                        bind_path,
+                        {
+                            **recovery_payload,
+                            "state": "ensuring",
+                        },
+                    )
+                    recovery_err = None
+                except Exception as ens_exc:
+                    recovery_err = ens_exc
+            code = getattr(cancel_err, "code", None) or "E_JOB_CANCEL_UNPROVEN"
+            detail = f"cancel not proven: {cancel_err}"
+            if recovery_err is not None:
+                detail = f"{detail}; recovery bind failed: {recovery_err}"
+            raise JobStoreError(
+                f"ACP handshaking binding publish failed after start_job ({write_exc}); "
+                f"{detail}; binding retained with job_id={job_id}",
+                code=str(code),
+            ) from cancel_err
         try:
             validated = _wait_acp_ready(
                 root,
