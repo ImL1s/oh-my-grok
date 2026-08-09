@@ -243,7 +243,7 @@
       "issues": [
         "#78"
       ],
-      "gap": "#78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; #78-E README↔JSON managed-snapshot drift gate landed; #78-F real pinned OMC discovery policy/mapping/proof landed; promotion remains unperformed and is proof-gated; OMX/OmO/Antigravity real-source proofs still open."
+      "gap": "#78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; #78-E README↔JSON managed-snapshot drift gate landed; #78-F/#78-G real pinned OMC+OMX discovery policy/mapping/proof landed; promotion remains unperformed and is proof-gated; OmO and Antigravity real-source proofs still open."
     },
     {
       "id": "omc.cli.session_surfaces",
