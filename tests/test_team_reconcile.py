@@ -474,6 +474,46 @@ def test_leader_reconcile_refuses_non_string_token_before_any_mutation(
     assert _task_bytes(tmp_path, run_id, task["id"]) == before
 
 
+def test_leader_reconcile_refuses_padded_token_before_any_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(team_api, "_now_utc", lambda: FIXED_NOW)
+    run_id = _seed(tmp_path, monkeypatch)
+    _token, task = _create_and_claim(tmp_path, run_id)
+    row = _read_task_row(tmp_path, run_id, task["id"])
+    claim = dict(row["claim"])
+    claim["token"] = f" {_token} "
+    row["claim"] = claim
+    _write_task_row(tmp_path, run_id, task["id"], row)
+    before = _task_bytes(tmp_path, run_id, task["id"])
+
+    with pytest.raises(TeamApiError) as excinfo:
+        reconcile_task_claims(tmp_path, run_id=run_id, team_id=TEAM)
+    assert excinfo.value.details.get("error") == "corrupt_claim"
+    assert excinfo.value.details.get("invariant") == "non_string_token"
+    assert _task_bytes(tmp_path, run_id, task["id"]) == before
+
+
+def test_leader_reconcile_refuses_whitespace_only_token_before_any_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(team_api, "_now_utc", lambda: FIXED_NOW)
+    run_id = _seed(tmp_path, monkeypatch)
+    _token, task = _create_and_claim(tmp_path, run_id)
+    row = _read_task_row(tmp_path, run_id, task["id"])
+    claim = dict(row["claim"])
+    claim["token"] = "   "
+    row["claim"] = claim
+    _write_task_row(tmp_path, run_id, task["id"], row)
+    before = _task_bytes(tmp_path, run_id, task["id"])
+
+    with pytest.raises(TeamApiError) as excinfo:
+        reconcile_task_claims(tmp_path, run_id=run_id, team_id=TEAM)
+    assert excinfo.value.details.get("error") == "corrupt_claim"
+    assert excinfo.value.details.get("invariant") == "non_string_token"
+    assert _task_bytes(tmp_path, run_id, task["id"]) == before
+
+
 def test_leader_reconcile_refuses_filename_body_id_mismatch_before_any_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

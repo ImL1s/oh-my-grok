@@ -18,8 +18,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   (IDs/counts only). Hermetic coverage in `tests/test_team_reconcile.py`.
   Does **not** close #69 (no job-backed workers / attempts / Hyperplan /
   catalog-v1 reconcile op / maturity promotion). Fail-closed preflight
-  rejects non-string/unsafe owners, non-string tokens, filename/body id
-  mismatches, and duplicate embedded task ids (zero mutation; aborts resume).
+  rejects non-string/unsafe owners, non-string / padded / whitespace-only
+  tokens, filename/body id mismatches, and duplicate embedded task ids
+  (zero mutation; aborts resume).
 
 - **Partial work for issue 68 (PR3 / retry+GC+ask --background):** explicit
   `omg job retry JOB_ID --attempt N` with immutable `attempt_budget`, attempt

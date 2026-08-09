@@ -666,8 +666,15 @@ def _classify_claim_for_reconcile(
             require_safe_id(claim_owner, label="claim.owner")
         except ContractValidationError:
             _refuse("unsafe_owner")
-        # Token must be a nonempty string (reject false/non-string poison).
-        if not isinstance(token, str) or not token:
+        # Token must be a canonical nonempty string (reject false/non-string,
+        # whitespace-only, or padded tokens). Public claim ops normalize via
+        # _require_str → strip(), so a padded/ws-only stored token can be
+        # "preserved" by resume but never authenticated publicly.
+        if (
+            not isinstance(token, str)
+            or not token.strip()
+            or token != token.strip()
+        ):
             _refuse("non_string_token")
         stamp = _parse_leased_until(claim_map)
         if stamp is None or stamp <= cutoff:
