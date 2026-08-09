@@ -148,6 +148,8 @@ def _v2_policy(*, repository: str = FIXTURE_REPO) -> dict:
         "schema_version": 1,
         "source": "OmO",
         "repository": repository,
+        "proof_kind": "implementation_registry",
+        "promotion_sufficient": True,
         "discovery_rules": {
             "version": 2,
             "authoritative_registries": [

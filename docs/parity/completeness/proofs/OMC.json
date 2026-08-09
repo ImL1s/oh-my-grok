@@ -3,7 +3,7 @@
     "method": "git_head_clean",
     "observed_revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa"
   },
-  "coverage_digest": "ba828818c6359ea0a308174ed3889655a31eaca6de7c1dd7eb1d73f6a345b3b0",
+  "coverage_digest": "a9522e006f5e1905bc9cb290c4e605a13b40ab4b0e2190ea3105b533354b29d9",
   "discovered_surfaces": [
     {
       "anchor": "agent:analyst",
@@ -1883,8 +1883,10 @@
     "platform_live_evidence"
   ],
   "pin_revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
-  "policy_digest": "f61be7f8c9f04f19040900ee0ea3ee8ece5836f21f256287c3df5f04e63f88f3",
+  "policy_digest": "99d5f735058fda2a6b6dcef23325c6902c068f9fd4752530da5382c1a06d8ecd",
   "repository": "https://github.com/Yeachan-Heo/oh-my-claudecode",
+  "proof_kind": "implementation_registry",
+  "promotion_sufficient": true,
   "schema_version": 1,
   "seed_digest": "b8a3e881c04f334f9341c41335a6fdb36074b45dce6eb32c316b145391950c3e",
   "source": "OMC",

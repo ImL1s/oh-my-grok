@@ -10,6 +10,33 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Fixed
+- **Parity #78-I Antigravity docs-only promotion false-green:** encode
+  `proof_kind` + `promotion_sufficient` on completeness policy/proof
+  schema; Antigravity is `documentation_catalog_seed` /
+  `promotion_sufficient: false`. Promotion gate refuses
+  `source_status.Antigravity=complete` (and category/inventory promotions
+  that depend on it) even when digests verify. OMC/OMX/OmO remain
+  `implementation_registry` / promotion-sufficient. Refs #78 (does not
+  close).
+
+### Added
+- **Parity #78-I real pinned Antigravity discovery evidence:** committed
+  discovery_rules v2 policy, surface→capability mapping, and completeness
+  proof under `docs/parity/completeness/{policies,mappings,proofs}/Antigravity.json`
+  for pin `bfab12da…` (https://github.com/google-antigravity/antigravity-cli).
+  Documentation-only extractors cover README/CHANGELOG/examples/ISSUE_TEMPLATE
+  (fail-closed; no package.json/TS/plugin/hooks/agent registries). Hermetic
+  fixture under `tests/fixtures/parity/completeness/real_source/Antigravity/`.
+  Canonical `source_status.Antigravity` (and inventory/categories) stay
+  **bootstrapping** — docs/catalog seed only, **no promotion**. Stronger
+  upstream still needed for implementation-level completeness. Refs #78
+  (does not close).
+
+### Fixed
+- **Parity #78-I OMC coverage_digest after governance gap sync:** gap text for
+  `parity.inventory.governance` (and GAPS/MATRIX) now includes #78-I; refresh
+  OMC proof `coverage_digest` only (no policy/mapping/status changes). Refs #78
+  (does not close).
 - **Parity #78-H OMC Commander alias proof drift:** after shared
   `commander_command_graph_v1` began emitting static `.alias()` surfaces,
   regenerate the OMC mapping/proof at pin `67dddfc…` to include `cli.rm` and

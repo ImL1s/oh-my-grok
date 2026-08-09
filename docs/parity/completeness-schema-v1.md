@@ -33,6 +33,9 @@ Required fields:
 
 - `store_kind`, `schema_version`
 - `source`, `repository`
+- `proof_kind` — `implementation_registry` \| `documentation_catalog_seed`
+- `promotion_sufficient` — boolean; must be `false` for
+  `documentation_catalog_seed` and `true` for `implementation_registry`
 - `discovery_rules` (versioned):
   - `version` — `1` (JSON registry) or `2` (real-source extractors)
   - `authoritative_registries[]` — relative paths + `extraction_method`
@@ -66,14 +69,23 @@ execution). Admitted methods:
 - `omo_agent_names_schema_v1`
 - `omo_zod_string_enum_v1`
 - `omo_command_tree_v1`
+- `antigravity_readme_catalog_v1`
+- `antigravity_changelog_releases_v1`
+- `antigravity_examples_tree_v1`
+- `antigravity_issue_templates_v1`
 
 V2 requires a committed **mapping store** and bidirectional
 surface↔inventory coverage (every discovered surface mapped; every
 non-alias inventory row for that source referenced).
 
-Committed OMC, OMX, and OmO proofs exist at their inventory pins but
-`source_status` for each remains `bootstrapping` (unpromoted). Antigravity
-remains without a committed real-source triple.
+Committed OMC, OMX, OmO, and Antigravity proofs exist at their inventory
+pins but `source_status` for each remains `bootstrapping` (unpromoted).
+The Antigravity pin is documentation/catalog seed only
+(`proof_kind: documentation_catalog_seed`, `promotion_sufficient: false`;
+no implementation registries); stronger upstream is still required before
+any promotion. Artifact verification still succeeds for that triple;
+promotion of `source_status.Antigravity` (or any category/inventory that
+depends on it) is refused by the gate even when digests verify.
 ## Mapping (`parity-completeness-mapping/v1`)
 
 Committed under `docs/parity/completeness/mappings/{SOURCE}.json`.
@@ -95,6 +107,8 @@ at the exact pinned revision.
 Required bindings:
 
 - `source`, `repository`, `pin_revision`
+- `proof_kind`, `promotion_sufficient` — must match the paired policy;
+  docs-only proofs set `promotion_sufficient: false` and cannot promote
 - `checkout_provenance` — `{ method: "git_head_clean", observed_revision }`
   (must equal `pin_revision`)
 - `policy_digest`, `seed_digest`, `coverage_digest`
@@ -115,10 +129,13 @@ Shared by `omg parity check --strict` and
 `scripts/check_parity_inventory.py --strict`:
 
 1. `source_status[source] == complete` requires a valid proof for that
-   source with **no** unresolved surfaces.
-2. `category_status[category] == complete` requires valid proofs for
-   **all four** parity sources and either discovered surfaces or an
-   explicit empty partition for that category in each proof.
+   source with **no** unresolved surfaces **and**
+   `promotion_sufficient: true` (documentation/catalog seed proofs are
+   refused even when digests verify).
+2. `category_status[category] == complete` requires valid
+   promotion-sufficient proofs for **all four** parity sources and either
+   discovered surfaces or an explicit empty partition for that category
+   in each proof.
 3. `inventory_status == complete` requires every source and category
    status to be complete (and therefore proof-gated).
 4. A matching upstream seed catalogue alone is **insufficient**.
@@ -132,9 +149,14 @@ Committed layout:
 - `docs/parity/completeness/proofs/{SOURCE}.json`
 
 OMC currently has a committed policy/mapping/proof triple that is
-technically sufficient for source promotion, while canonical
+technically sufficient for source promotion (`proof_kind:
+implementation_registry`, `promotion_sufficient: true`), while canonical
 `source_status.OMC` (and categories / inventory) remain `bootstrapping`.
 OMX and OmO likewise have committed triples that remain unpromoted.
+Antigravity has a committed documentation-only triple
+(`proof_kind: documentation_catalog_seed`, `promotion_sufficient: false`)
+that remains unpromoted and is **not** implementation-complete — the gate
+rejects promoting it.
 
 ## Artifact consistency vs source reproduction vs promotion
 
@@ -178,6 +200,11 @@ Hermetic fixtures live under `tests/fixtures/parity/completeness/`:
 - `upstream/OMC/` — tiny v1 `json_registry_v1` tree
 - `real_source/OMC/` — synthetic v2 registry-syntax tree (not a copy of
   upstream OMC)
+- `real_source/OMX/` — synthetic OMX catalog/plugin tree
+- `real_source/OmO/` — synthetic OmO schema/CLI tree
+- `real_source/Antigravity/` — documentation-only subset mirroring the
+  pinned antigravity-cli surfaces (README/CHANGELOG/examples/ISSUE_TEMPLATE;
+  no package.json/src)
 
 They remain explicitly bootstrapping examples for the gate; they do **not**
 promote the canonical inventory.

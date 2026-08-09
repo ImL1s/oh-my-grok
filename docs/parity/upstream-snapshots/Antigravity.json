@@ -5,56 +5,112 @@
     {
       "id": "antigravity.agents.markdown_custom",
       "source_paths": [
-        "README.md"
+        "README.md",
+        "CHANGELOG.md",
+        "examples/title/README.md",
+        "examples/title/title.sh",
+        "examples/statusline/README.md",
+        "examples/statusline/statusline.sh",
+        ".github/ISSUE_TEMPLATE/bug_report.yml",
+        ".github/ISSUE_TEMPLATE/feature_request.yml"
       ],
       "promise": "Markdown-defined custom agents for Antigravity-style agent catalogs"
     },
     {
       "id": "antigravity.headless.structured_execution",
       "source_paths": [
-        "README.md"
+        "README.md",
+        "CHANGELOG.md",
+        "examples/title/README.md",
+        "examples/title/title.sh",
+        "examples/statusline/README.md",
+        "examples/statusline/statusline.sh",
+        ".github/ISSUE_TEMPLATE/bug_report.yml",
+        ".github/ISSUE_TEMPLATE/feature_request.yml"
       ],
       "promise": "Headless Antigravity structured execution with typed outputs and fail-closed exit codes"
     },
     {
       "id": "antigravity.jobs.background_tasks",
       "source_paths": [
-        "README.md"
+        "README.md",
+        "CHANGELOG.md",
+        "examples/title/README.md",
+        "examples/title/title.sh",
+        "examples/statusline/README.md",
+        "examples/statusline/statusline.sh",
+        ".github/ISSUE_TEMPLATE/bug_report.yml",
+        ".github/ISSUE_TEMPLATE/feature_request.yml"
       ],
       "promise": "Antigravity background tasks / durable job execution"
     },
     {
       "id": "antigravity.platform.version_matrix",
       "source_paths": [
-        "README.md"
+        "README.md",
+        "CHANGELOG.md",
+        "examples/title/README.md",
+        "examples/title/title.sh",
+        "examples/statusline/README.md",
+        "examples/statusline/statusline.sh",
+        ".github/ISSUE_TEMPLATE/bug_report.yml",
+        ".github/ISSUE_TEMPLATE/feature_request.yml"
       ],
       "promise": "Platform/runtime version matrix with live-evidence freshness policy"
     },
     {
       "id": "antigravity.provider.adapter",
       "source_paths": [
-        "README.md"
+        "README.md",
+        "CHANGELOG.md",
+        "examples/title/README.md",
+        "examples/title/title.sh",
+        "examples/statusline/README.md",
+        "examples/statusline/statusline.sh",
+        ".github/ISSUE_TEMPLATE/bug_report.yml",
+        ".github/ISSUE_TEMPLATE/feature_request.yml"
       ],
       "promise": "First-class Antigravity provider adapter with typed capabilities and fail-closed ask/Team integration"
     },
     {
       "id": "antigravity.runtime.model_effort_mode_perms",
       "source_paths": [
-        "README.md"
+        "README.md",
+        "CHANGELOG.md",
+        "examples/title/README.md",
+        "examples/title/title.sh",
+        "examples/statusline/README.md",
+        "examples/statusline/statusline.sh",
+        ".github/ISSUE_TEMPLATE/bug_report.yml",
+        ".github/ISSUE_TEMPLATE/feature_request.yml"
       ],
       "promise": "Model, effort, mode, and permission controls for Antigravity runtime"
     },
     {
       "id": "antigravity.session.history_resume",
       "source_paths": [
-        "README.md"
+        "README.md",
+        "CHANGELOG.md",
+        "examples/title/README.md",
+        "examples/title/title.sh",
+        "examples/statusline/README.md",
+        "examples/statusline/statusline.sh",
+        ".github/ISSUE_TEMPLATE/bug_report.yml",
+        ".github/ISSUE_TEMPLATE/feature_request.yml"
       ],
       "promise": "Session history and resume continuity for Antigravity-shaped workflows"
     },
     {
       "id": "antigravity.skills.hooks_subagents_plugins_mcp",
       "source_paths": [
-        "README.md"
+        "README.md",
+        "CHANGELOG.md",
+        "examples/title/README.md",
+        "examples/title/title.sh",
+        "examples/statusline/README.md",
+        "examples/statusline/statusline.sh",
+        ".github/ISSUE_TEMPLATE/bug_report.yml",
+        ".github/ISSUE_TEMPLATE/feature_request.yml"
       ],
       "promise": "Skills, hooks, subagents, plugins, and MCP surfaces for Antigravity-shaped extension"
     }

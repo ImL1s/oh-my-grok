@@ -1,0 +1,65 @@
+name:  Antigravity CLI - Bug Template
+description: File a bug report for the Antigravity CLI
+title: "[Bug]: "
+labels: ["bug"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > [!IMPORTANT]
+        > Thanks for taking the time to fill out this bug report!
+        >
+        > Please search **[existing issues](https://github.com/google-antigravity/antigravity-cli/issues)** to see if an issue already exists for the bug you encountered
+  - type: input
+    id: cli-version
+    attributes:
+      label: Antigravity CLI Version
+      description: Run `agy --version` or `antigravity --version` and paste the output
+      placeholder: e.g., 1.1.5
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment Context
+      value: |
+        - **OS:** 
+        - **Shell:**
+        - **Terminal Emulator:** 
+        - **Runtime Version:** 
+        - **Hardware Details:** 
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Explain the steps required to replicate the problem
+      value: |
+        1. Go to '...'
+        2. Run command '...'
+        3. See error '...'
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: A clear and concise description of what you expected to happen
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior / Error Screenshots
+      description: What actually happened? (Include screenshots, CLI exit code or terminal output)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs & Configurations
+      description: Note that this output may contain your email address. Please remove them before submitting
+    validations:
+      required: false

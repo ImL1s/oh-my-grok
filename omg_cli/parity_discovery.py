@@ -1,4 +1,4 @@
-"""Static upstream discovery extractors for parity completeness (#78-F/#78-G).
+"""Static upstream discovery extractors for parity completeness (#78-F/#78-G/#78-H/#78-I).
 
 Discovery-rules v2 methods parse only admitted static syntax from git pin
 blobs. Never executes upstream JavaScript/TypeScript/npm.
@@ -48,6 +48,10 @@ EXTRACTION_CODEX_PLUGIN_MANIFEST_V1 = "codex_plugin_manifest_v1"
 EXTRACTION_OMO_ZOD_STRING_ENUM_V1 = "omo_zod_string_enum_v1"
 EXTRACTION_OMO_COMMAND_TREE_V1 = "omo_command_tree_v1"
 EXTRACTION_OMO_AGENT_NAMES_SCHEMA_V1 = "omo_agent_names_schema_v1"
+EXTRACTION_ANTIGRAVITY_README_CATALOG_V1 = "antigravity_readme_catalog_v1"
+EXTRACTION_ANTIGRAVITY_CHANGELOG_RELEASES_V1 = "antigravity_changelog_releases_v1"
+EXTRACTION_ANTIGRAVITY_EXAMPLES_TREE_V1 = "antigravity_examples_tree_v1"
+EXTRACTION_ANTIGRAVITY_ISSUE_TEMPLATES_V1 = "antigravity_issue_templates_v1"
 
 EXTRACTION_METHODS_V2 = frozenset(
     {
@@ -65,6 +69,10 @@ EXTRACTION_METHODS_V2 = frozenset(
         EXTRACTION_OMO_ZOD_STRING_ENUM_V1,
         EXTRACTION_OMO_COMMAND_TREE_V1,
         EXTRACTION_OMO_AGENT_NAMES_SCHEMA_V1,
+        EXTRACTION_ANTIGRAVITY_README_CATALOG_V1,
+        EXTRACTION_ANTIGRAVITY_CHANGELOG_RELEASES_V1,
+        EXTRACTION_ANTIGRAVITY_EXAMPLES_TREE_V1,
+        EXTRACTION_ANTIGRAVITY_ISSUE_TEMPLATES_V1,
     }
 )
 
@@ -96,6 +104,10 @@ _METHOD_OPTION_KEYS: dict[str, frozenset[str]] = {
     ),
     EXTRACTION_OMO_COMMAND_TREE_V1: frozenset(),
     EXTRACTION_OMO_AGENT_NAMES_SCHEMA_V1: frozenset(),
+    EXTRACTION_ANTIGRAVITY_README_CATALOG_V1: frozenset(),
+    EXTRACTION_ANTIGRAVITY_CHANGELOG_RELEASES_V1: frozenset(),
+    EXTRACTION_ANTIGRAVITY_EXAMPLES_TREE_V1: frozenset(),
+    EXTRACTION_ANTIGRAVITY_ISSUE_TEMPLATES_V1: frozenset(),
 }
 
 
@@ -1489,6 +1501,32 @@ def extract_surfaces_v2(
                 file_digest=file_digest,
                 read_blob=read_blob,
             )
+        elif method == EXTRACTION_ANTIGRAVITY_EXAMPLES_TREE_V1:
+            from omg_cli.parity_discovery_antigravity import (
+                extract_antigravity_examples_tree_v1,
+            )
+
+            surfaces, inputs = extract_antigravity_examples_tree_v1(
+                registry_path=path,
+                category_assignment=category_assignment,
+                pin_paths=pin_paths,
+                file_digest=file_digest,
+                read_blob=read_blob,
+                options=options,
+            )
+        elif method == EXTRACTION_ANTIGRAVITY_ISSUE_TEMPLATES_V1:
+            from omg_cli.parity_discovery_antigravity import (
+                extract_antigravity_issue_templates_v1,
+            )
+
+            surfaces, inputs = extract_antigravity_issue_templates_v1(
+                registry_path=path,
+                category_assignment=category_assignment,
+                pin_paths=pin_paths,
+                file_digest=file_digest,
+                read_blob=read_blob,
+                options=options,
+            )
         else:
             if path not in pin_paths:
                 raise ContractValidationError(
@@ -1629,6 +1667,30 @@ def extract_surfaces_v2(
                 from omg_cli.parity_discovery_omo import extract_omo_agent_names_schema_v1
 
                 surfaces, inputs = extract_omo_agent_names_schema_v1(
+                    registry_path=path,
+                    registry_bytes=raw,
+                    category_assignment=category_assignment,
+                    file_digest=file_digest,
+                    options=options,
+                )
+            elif method == EXTRACTION_ANTIGRAVITY_README_CATALOG_V1:
+                from omg_cli.parity_discovery_antigravity import (
+                    extract_antigravity_readme_catalog_v1,
+                )
+
+                surfaces, inputs = extract_antigravity_readme_catalog_v1(
+                    registry_path=path,
+                    registry_bytes=raw,
+                    category_assignment=category_assignment,
+                    file_digest=file_digest,
+                    options=options,
+                )
+            elif method == EXTRACTION_ANTIGRAVITY_CHANGELOG_RELEASES_V1:
+                from omg_cli.parity_discovery_antigravity import (
+                    extract_antigravity_changelog_releases_v1,
+                )
+
+                surfaces, inputs = extract_antigravity_changelog_releases_v1(
                     registry_path=path,
                     registry_bytes=raw,
                     category_assignment=category_assignment,

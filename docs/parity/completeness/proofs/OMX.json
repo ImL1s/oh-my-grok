@@ -3,12 +3,14 @@
   "schema_version": 1,
   "source": "OMX",
   "repository": "https://github.com/code-yeongyu/oh-my-codex",
+  "proof_kind": "implementation_registry",
+  "promotion_sufficient": true,
   "pin_revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
   "checkout_provenance": {
     "method": "git_head_clean",
     "observed_revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca"
   },
-  "policy_digest": "36a990683db40b35cbe7b212a74a0fd5f189183759a4680b0f2dfd5136c8952e",
+  "policy_digest": "3ec58e794a99e28abacbe625e71f02533c676d537f90a87e8b4094601794be13",
   "seed_digest": "c534e88c1748b258236fad2b96a73985eaea842d3a63106258a07af6fd33d131",
   "coverage_digest": "f78126eb3a56830a33cf8e109bb096205f1566f2de254505fd89314ce25cb2dc",
   "source_input_digest": "7147cdf431377d8d5bdf714fd6eef6be6c94060700146659f046657bf0252e0f",

@@ -1,0 +1,329 @@
+{
+  "store_kind": "parity-completeness-mapping",
+  "schema_version": 1,
+  "source": "Antigravity",
+  "surfaces": [
+    {
+      "surface_id": "doc.binary.agy",
+      "category": "antigravity",
+      "capability_ids": [
+        "antigravity.provider.adapter"
+      ]
+    },
+    {
+      "surface_id": "doc.catalog.changelog",
+      "category": "skills",
+      "capability_ids": [
+        "antigravity.skills.hooks_subagents_plugins_mcp"
+      ]
+    },
+    {
+      "surface_id": "doc.catalog.readme",
+      "category": "antigravity",
+      "capability_ids": [
+        "antigravity.headless.structured_execution"
+      ]
+    },
+    {
+      "surface_id": "doc.feature.agent-engine",
+      "category": "antigravity",
+      "capability_ids": [
+        "antigravity.runtime.model_effort_mode_perms"
+      ]
+    },
+    {
+      "surface_id": "doc.feature.interface",
+      "category": "antigravity",
+      "capability_ids": [
+        "antigravity.provider.adapter"
+      ]
+    },
+    {
+      "surface_id": "doc.feature.primary-focus",
+      "category": "antigravity",
+      "capability_ids": [
+        "antigravity.headless.structured_execution"
+      ]
+    },
+    {
+      "surface_id": "doc.feature.workflows",
+      "category": "antigravity",
+      "capability_ids": [
+        "antigravity.runtime.model_effort_mode_perms"
+      ]
+    },
+    {
+      "surface_id": "doc.section.authentication",
+      "category": "antigravity",
+      "capability_ids": [
+        "antigravity.provider.adapter"
+      ]
+    },
+    {
+      "surface_id": "doc.section.features-at-a-glance",
+      "category": "jobs",
+      "capability_ids": [
+        "antigravity.jobs.background_tasks"
+      ]
+    },
+    {
+      "surface_id": "doc.section.installation",
+      "category": "antigravity",
+      "capability_ids": [
+        "antigravity.headless.structured_execution"
+      ]
+    },
+    {
+      "surface_id": "doc.section.integration",
+      "category": "agents_routing",
+      "capability_ids": [
+        "antigravity.agents.markdown_custom"
+      ]
+    },
+    {
+      "surface_id": "doc.section.terms-of-service-data-use",
+      "category": "antigravity",
+      "capability_ids": [
+        "antigravity.runtime.model_effort_mode_perms"
+      ]
+    },
+    {
+      "surface_id": "doc.section.usage",
+      "category": "antigravity",
+      "capability_ids": [
+        "antigravity.provider.adapter"
+      ]
+    },
+    {
+      "surface_id": "example.statusline",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "antigravity.session.history_resume"
+      ]
+    },
+    {
+      "surface_id": "example.statusline.script.statusline",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "antigravity.session.history_resume"
+      ]
+    },
+    {
+      "surface_id": "example.title",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "antigravity.session.history_resume"
+      ]
+    },
+    {
+      "surface_id": "example.title.script.title",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "antigravity.session.history_resume"
+      ]
+    },
+    {
+      "surface_id": "issue-template.bug_report",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "issue-template.feature_request",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.0",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.1",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.10",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.11",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.12",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.13",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.14",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.15",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.16",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.2",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.3",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.4",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.5",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.6",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.7",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.8",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.0.9",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.1.0",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.1.1",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.1.10",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.1.2",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.1.3",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.1.5",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.1.6",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.1.7",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.1.8",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    },
+    {
+      "surface_id": "release.1.1.9",
+      "category": "platform_live_evidence",
+      "capability_ids": [
+        "antigravity.platform.version_matrix"
+      ]
+    }
+  ]
+}

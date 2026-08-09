@@ -3,6 +3,8 @@
   "schema_version": 1,
   "source": "OMC",
   "repository": "https://github.com/Yeachan-Heo/oh-my-claudecode",
+  "proof_kind": "implementation_registry",
+  "promotion_sufficient": true,
   "discovery_rules": {
     "version": 2,
     "authoritative_registries": [

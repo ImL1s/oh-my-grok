@@ -3,6 +3,8 @@
   "schema_version": 1,
   "source": "OMX",
   "repository": "https://github.com/code-yeongyu/oh-my-codex",
+  "proof_kind": "implementation_registry",
+  "promotion_sufficient": true,
   "discovery_rules": {
     "version": 2,
     "authoritative_registries": [
