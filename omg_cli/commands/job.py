@@ -1,6 +1,6 @@
 """omg job — durable background jobs CLI (#68).
 
-Commands: ``omg job {start,status,wait,collect,cancel,list}``.
+Commands: ``omg job {start,status,wait,collect,cancel,list,retry,gc}``.
 """
 
 from __future__ import annotations
@@ -14,8 +14,10 @@ from omg_cli.jobs.models import JobStoreError
 from omg_cli.jobs.runtime import (
     cancel_job,
     collect_job,
+    gc_jobs,
     job_status,
     list_jobs,
+    retry_job,
     start_job,
     wait_job,
 )
@@ -44,8 +46,12 @@ def cmd_job(args: argparse.Namespace) -> int:
         return _cmd_cancel(args)
     if action == "list":
         return _cmd_list(args)
+    if action == "retry":
+        return _cmd_retry(args)
+    if action == "gc":
+        return _cmd_gc(args)
     print(
-        "usage: omg job {start,status,wait,collect,cancel,list}",
+        "usage: omg job {start,status,wait,collect,cancel,list,retry,gc}",
         file=sys.stderr,
     )
     return 2
@@ -104,6 +110,7 @@ def _cmd_start(args: argparse.Namespace) -> int:
             mode=getattr(args, "mode", None) or None,
             output_format=getattr(args, "output_format", None) or None,
             provider_timeout_s=getattr(args, "provider_timeout", None),
+            attempt_budget=int(getattr(args, "attempt_budget", 1) or 1),
         )
     except JobStoreError as exc:
         emit_json(
@@ -128,6 +135,8 @@ def _cmd_start(args: argparse.Namespace) -> int:
         "handle": rec.handle,
         "created_at": rec.created_at,
         "attempt": rec.attempt,
+        "attempt_budget": rec.attempt_budget,
+        "remaining_attempts": rec.remaining_attempts(),
         "request": public_request_summary(rec.request),
     }
     if wants_json(args):
@@ -286,8 +295,106 @@ def _cmd_list(args: argparse.Namespace) -> int:
         for j in jobs:
             print(
                 f"{j.get('job_id')} state={j.get('state')} "
-                f"provider={j.get('provider')} role={j.get('role')}"
+                f"provider={j.get('provider')} role={j.get('role')} "
+                f"attempt={j.get('attempt')}/{j.get('attempt_budget')}"
             )
+    return 0
+
+
+def _cmd_retry(args: argparse.Namespace) -> int:
+    cmd = "job.retry"
+    job_id = getattr(args, "job_id", None)
+    attempt = getattr(args, "attempt", None)
+    if not job_id:
+        emit_json(failure(cmd, "E_JOB_UNKNOWN", "JOB_ID required"))
+        return 2
+    if attempt is None:
+        emit_json(
+            failure(
+                cmd,
+                "E_JOB_RETRY_ATTEMPT",
+                "require --attempt N (exact next attempt)",
+                next_action="Pass --attempt current+1",
+            )
+        )
+        return 2
+    try:
+        result = retry_job(
+            _root(args),
+            str(job_id),
+            attempt=int(attempt),
+        )
+    except JobStoreError as exc:
+        emit_json(
+            failure(
+                cmd,
+                getattr(exc, "code", None) or "E_JOB_RETRY",
+                redact_text(str(exc)),
+            )
+        )
+        return 1
+    rec = result.record
+    payload = {
+        "job_id": rec.job_id,
+        "state": rec.state.value,
+        "provider": rec.provider,
+        "role": rec.role,
+        "attempt": rec.attempt,
+        "attempt_budget": rec.attempt_budget,
+        "remaining_attempts": rec.remaining_attempts(),
+        "pid": rec.pid,
+        "pgid": rec.pgid,
+        "handle": rec.handle,
+        "retry_class": rec.retry_class,
+    }
+    if wants_json(args):
+        emit_json(success(cmd, **redact_value(payload)))
+    else:
+        print(
+            f"job {rec.job_id} retried attempt={rec.attempt} "
+            f"state={rec.state.value} pid={rec.pid}"
+        )
+    return 0
+
+
+def _cmd_gc(args: argparse.Namespace) -> int:
+    cmd = "job.gc"
+    retention = getattr(args, "retention_days", None)
+    if retention is None:
+        emit_json(
+            failure(
+                cmd,
+                "E_JOB_GC",
+                "require --retention-days N",
+                next_action="Pass --retention-days N",
+            )
+        )
+        return 2
+    try:
+        result = gc_jobs(_root(args), retention_days=float(retention))
+    except JobStoreError as exc:
+        emit_json(
+            failure(
+                cmd,
+                getattr(exc, "code", None) or "E_JOB_GC",
+                redact_text(str(exc)),
+            )
+        )
+        return 1
+    payload = {
+        "deleted": list(result.deleted),
+        "skipped": list(result.skipped),
+        "deleted_count": len(result.deleted),
+        "skipped_count": len(result.skipped),
+        "retention_days": float(retention),
+    }
+    if wants_json(args):
+        emit_json(success(cmd, **redact_value(payload)))
+    else:
+        print(
+            f"gc deleted={len(result.deleted)} skipped={len(result.skipped)} "
+            f"retention_days={retention}"
+        )
     return 0
 
 
@@ -295,11 +402,14 @@ def register_job_parsers(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
 ) -> None:
-    """Register ``job`` family parsers (#68 PR1)."""
+    """Register ``job`` family parsers (#68 PR1–PR3)."""
     p_job = sub.add_parser(
         "job",
         parents=[common],
-        help="durable background jobs (start/status/wait/collect/cancel/list; #68 PR1+PR2)",
+        help=(
+            "durable background jobs "
+            "(start/status/wait/collect/cancel/list/retry/gc; #68 PR1–PR3)"
+        ),
     )
     job_sub = p_job.add_subparsers(dest="job_action")
 
@@ -329,6 +439,12 @@ def register_job_parsers(
         dest="run_id",
         default=None,
         help="optional parent run id",
+    )
+    p_start.add_argument(
+        "--attempt-budget",
+        type=int,
+        default=1,
+        help="immutable max attempts including the first (default 1)",
     )
     p_start.add_argument(
         "--model",
@@ -445,6 +561,33 @@ def register_job_parsers(
         help="filter by parent run id",
     )
     p_list.set_defaults(func=cmd_job, job_action="list")
+
+    p_retry = job_sub.add_parser(
+        "retry",
+        parents=[common],
+        help="explicit retry of a terminal job (--attempt current+1)",
+    )
+    p_retry.add_argument("job_id", help="job id")
+    p_retry.add_argument(
+        "--attempt",
+        type=int,
+        required=True,
+        help="exact next attempt number (must be current+1)",
+    )
+    p_retry.set_defaults(func=cmd_job, job_action="retry")
+
+    p_gc = job_sub.add_parser(
+        "gc",
+        parents=[common],
+        help="garbage-collect terminal jobs older than retention",
+    )
+    p_gc.add_argument(
+        "--retention-days",
+        type=float,
+        required=True,
+        help="delete terminal jobs with terminal_at older than N days",
+    )
+    p_gc.set_defaults(func=cmd_job, job_action="gc")
 
     p_job.set_defaults(func=cmd_job)
 

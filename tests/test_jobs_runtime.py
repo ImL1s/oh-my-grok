@@ -1761,3 +1761,226 @@ def test_cancel_inner_wait_failure_still_force_kills_outer(
     inner_i = signals.index((5253, signal_mod.SIGKILL))
     outer_i = signals.index((5252, signal_mod.SIGKILL))
     assert inner_i < outer_i, f"inner-then-outer order required; got {signals}"
+
+
+# ---------------------------------------------------------------------------
+# #68 PR3 — explicit retry / attempt budget
+# ---------------------------------------------------------------------------
+
+
+def test_retry_requires_exact_next_attempt(root: Path) -> None:
+    from omg_cli.jobs.runtime import retry_job
+
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        fail=True,
+        sleep_s=0.02,
+        attempt_budget=3,
+    )
+    terminal, timed_out = wait_job(root, started.record.job_id, timeout_s=15)
+    assert timed_out is False
+    assert terminal.state == JobState.FAILED
+    with pytest.raises(JobStoreError) as ei:
+        retry_job(root, terminal.job_id, attempt=terminal.attempt + 2)
+    assert ei.value.code == "E_JOB_RETRY_ATTEMPT"
+    with pytest.raises(JobStoreError) as ei2:
+        retry_job(root, terminal.job_id, attempt=terminal.attempt)
+    assert ei2.value.code == "E_JOB_RETRY_ATTEMPT"
+
+
+def test_retry_budget_exhaustion_fail_closed(root: Path) -> None:
+    from omg_cli.jobs.runtime import retry_job
+
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        fail=True,
+        sleep_s=0.02,
+        attempt_budget=1,
+    )
+    terminal, _ = wait_job(root, started.record.job_id, timeout_s=15)
+    assert terminal.attempt_budget == 1
+    with pytest.raises(JobStoreError) as ei:
+        retry_job(root, terminal.job_id, attempt=2)
+    assert ei.value.code == "E_JOB_RETRY_BUDGET"
+
+
+def test_retry_archives_attempt_history(root: Path) -> None:
+    from omg_cli.jobs.runtime import retry_job
+    from omg_cli.jobs.store import attempt_dir
+
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        fail=True,
+        sleep_s=0.02,
+        attempt_budget=3,
+    )
+    terminal, _ = wait_job(root, started.record.job_id, timeout_s=15)
+    assert terminal.retry_class == "automatic"
+    retried = retry_job(root, terminal.job_id, attempt=2)
+    assert retried.record.attempt == 2
+    archive = attempt_dir(root, terminal.job_id, 1)
+    assert (archive / "attempt.json").is_file()
+    assert (archive / "stdout.jsonl").is_file()
+    assert (archive / "events.jsonl").is_file()
+    snap = json.loads((archive / "attempt.json").read_text(encoding="utf-8"))
+    assert snap["attempt"] == 1
+    assert snap["state"] == "failed"
+    # Active prompt.md immutable at job root.
+    assert (job_dir(root, terminal.job_id) / "prompt.md").is_file()
+    wait_job(root, retried.record.job_id, timeout_s=15)
+
+
+def test_retry_preserves_previous_artifacts(root: Path) -> None:
+    from omg_cli.jobs.runtime import retry_job
+    from omg_cli.jobs.store import attempt_dir
+
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        fail=True,
+        large_output=True,
+        sleep_s=0.02,
+        attempt_budget=3,
+    )
+    terminal, _ = wait_job(root, started.record.job_id, timeout_s=15)
+    # Large result should exist before retry.
+    assert (job_dir(root, terminal.job_id) / "artifacts" / "result.md").is_file() or any(
+        (a.get("path") or "").endswith("result.md") for a in (terminal.artifacts or [])
+    )
+    retry_job(root, terminal.job_id, attempt=2)
+    archived = attempt_dir(root, terminal.job_id, 1) / "artifacts" / "result.md"
+    assert archived.is_file()
+    assert archived.stat().st_size >= 100 * 1024
+    # Active artifacts cleared for next attempt (history not overwritten).
+    active_art = job_dir(root, terminal.job_id) / "artifacts" / "result.md"
+    assert not active_art.is_file()
+
+
+def test_retry_reuses_existing_runner_path(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.jobs import runtime as runtime_mod
+    from omg_cli.jobs.runtime import retry_job
+
+    calls: list[str] = []
+    real_launch = runtime_mod.launch_job_runner
+
+    def _wrap(project_root: Path, job_id: str, **kwargs: object):
+        calls.append(str(job_id))
+        return real_launch(project_root, job_id, **kwargs)
+
+    monkeypatch.setattr(runtime_mod, "launch_job_runner", _wrap)
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        fail=True,
+        sleep_s=0.02,
+        attempt_budget=3,
+    )
+    assert started.record.job_id in calls
+    terminal, _ = wait_job(root, started.record.job_id, timeout_s=15)
+    calls.clear()
+    retried = retry_job(root, terminal.job_id, attempt=2)
+    assert calls == [retried.record.job_id]
+    wait_job(root, retried.record.job_id, timeout_s=15)
+
+
+def test_retry_rejects_internal_acp_provider(root: Path) -> None:
+    from omg_cli.jobs.runtime import retry_job
+    from omg_cli.jobs.store import update_job_fields, write_job_record
+    from omg_cli.jobs.models import JobState
+
+    prompt = _prompt(root)
+    # Materialize a fake job then forge provider to internal ACP (unit only).
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        fail=True,
+        sleep_s=0.02,
+        attempt_budget=3,
+        launch=False,
+    )
+    from omg_cli.jobs.store import job_lock, read_job_record
+
+    with job_lock(root, started.record.job_id):
+        rec = read_job_record(root, started.record.job_id)
+        # Force terminal failed with internal provider stamp (immutable provider
+        # field normally blocked — write via raw to_dict / atomic path for test).
+        data = rec.to_dict()
+        data["provider"] = "grok-acp-session"
+        data["state"] = "failed"
+        data["exit"] = {"class": "nonzero", "retryable": True, "ok": False}
+        data["attempt"] = 1
+        path = job_json_path(root, rec.job_id)
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    with pytest.raises(JobStoreError) as ei:
+        retry_job(root, started.record.job_id, attempt=2)
+    assert ei.value.code == "E_JOB_PROVIDER_INTERNAL"
+
+
+def test_retry_rejects_live_process_identity(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.jobs.ownership import OwnershipOutcome
+    from omg_cli.jobs.runtime import retry_job
+    from omg_cli.jobs.store import job_lock, write_job_record
+
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        fail=True,
+        sleep_s=0.02,
+        attempt_budget=3,
+    )
+    terminal, _ = wait_job(root, started.record.job_id, timeout_s=15)
+
+    with job_lock(root, terminal.job_id):
+        rec = read_job_record(root, terminal.job_id)
+        rec.pid = 424242
+        rec.pgid = 424242
+        rec.pid_starttime = "fingerprint"
+        write_job_record(root, rec)
+
+    monkeypatch.setattr("omg_cli.jobs.runtime._pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "omg_cli.jobs.runtime._assert_cancel_ownership",
+        lambda *a, **k: OwnershipOutcome.OK,
+    )
+    with pytest.raises(JobStoreError) as ei:
+        retry_job(root, terminal.job_id, attempt=2)
+    assert ei.value.code == "E_JOB_RETRY_LIVE"
+
+
+def test_retry_auth_blocked_is_manual_only() -> None:
+    from omg_cli.jobs.retry import classify_retry
+
+    cls, reason = classify_retry(
+        state=JobState.FAILED,
+        exit_obj={"class": "auth_blocked", "ok": False, "retryable": False},
+    )
+    assert cls == "manual_only"
+    assert reason == "auth_blocked"

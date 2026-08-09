@@ -52,7 +52,29 @@ LEGAL_TRANSITIONS: dict[JobState, frozenset[JobState]] = {
 }
 
 IMMUTABLE_FIELDS: frozenset[str] = frozenset(
-    {"job_id", "created_at", "provider", "role", "schema", "request"}
+    {
+        "job_id",
+        "created_at",
+        "provider",
+        "role",
+        "schema",
+        "request",
+        "attempt_budget",
+    }
+)
+
+# Retry classification values (schema v1 additive; public retry remains explicit).
+RETRY_CLASS_AUTOMATIC = "automatic"
+RETRY_CLASS_MANUAL_ONLY = "manual_only"
+RETRY_CLASS_NEVER = "never"
+RETRY_CLASS_UNKNOWN = "unknown"
+RETRY_CLASSES: frozenset[str] = frozenset(
+    {
+        RETRY_CLASS_AUTOMATIC,
+        RETRY_CLASS_MANUAL_ONLY,
+        RETRY_CLASS_NEVER,
+        RETRY_CLASS_UNKNOWN,
+    }
 )
 
 PROVIDER_PROCESS_STATES: frozenset[str] = frozenset(
@@ -152,6 +174,12 @@ class JobRecord:
     provider_process: dict[str, Any] = field(default_factory=default_provider_process)
     # Bounded session / resume metadata from provider result (not Team).
     session: dict[str, Any] | None = None
+    # #68 PR3 — additive retry / retention metadata (schema v1; no bump).
+    attempt_budget: int = 1
+    retry_class: str | None = None
+    retry_reason: str | None = None
+    terminal_at: str | None = None
+    attempt_started_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -162,6 +190,7 @@ class JobRecord:
             "role": self.role,
             "state": self.state.value,
             "attempt": int(self.attempt),
+            "attempt_budget": int(self.attempt_budget),
             "generation": int(self.generation),
             "pid": self.pid,
             "pgid": self.pgid,
@@ -188,6 +217,10 @@ class JobRecord:
                 else default_provider_process()
             ),
             "session": dict(self.session) if isinstance(self.session, dict) else self.session,
+            "retry_class": self.retry_class,
+            "retry_reason": self.retry_reason,
+            "terminal_at": self.terminal_at,
+            "attempt_started_at": self.attempt_started_at,
         }
 
     @classmethod
@@ -225,11 +258,17 @@ class JobRecord:
         try:
             attempt = int(data.get("attempt", 1))
             generation = int(data.get("generation", 0))
+            attempt_budget = int(data.get("attempt_budget", 1))
         except (TypeError, ValueError) as exc:
             raise JobStoreError(
-                "job.json attempt/generation invalid",
+                "job.json attempt/generation/attempt_budget invalid",
                 code="E_JOB_MALFORMED",
             ) from exc
+        if attempt < 1 or attempt_budget < 1:
+            raise JobStoreError(
+                "job.json attempt/attempt_budget must be >= 1",
+                code="E_JOB_MALFORMED",
+            )
 
         pid = data.get("pid")
         pgid = data.get("pgid")
@@ -291,6 +330,14 @@ class JobRecord:
         if session is not None and not isinstance(session, dict):
             raise JobStoreError("job.json session must be an object", code="E_JOB_MALFORMED")
 
+        retry_class = data.get("retry_class")
+        if retry_class is not None:
+            if not isinstance(retry_class, str) or retry_class not in RETRY_CLASSES:
+                raise JobStoreError(
+                    f"job.json retry_class invalid: {retry_class!r}",
+                    code="E_JOB_MALFORMED",
+                )
+
         return cls(
             job_id=str(job_id),
             created_at=str(created_at),
@@ -298,6 +345,7 @@ class JobRecord:
             role=str(role),
             state=state,
             attempt=attempt,
+            attempt_budget=attempt_budget,
             schema=schema,
             generation=generation,
             pid=pid,
@@ -337,7 +385,24 @@ class JobRecord:
             request=request,
             provider_process=provider_process,
             session=dict(session) if isinstance(session, dict) else None,
+            retry_class=str(retry_class) if retry_class is not None else None,
+            retry_reason=(
+                str(data["retry_reason"])
+                if data.get("retry_reason") is not None
+                else None
+            ),
+            terminal_at=(
+                str(data["terminal_at"]) if data.get("terminal_at") is not None else None
+            ),
+            attempt_started_at=(
+                str(data["attempt_started_at"])
+                if data.get("attempt_started_at") is not None
+                else None
+            ),
         )
+
+    def remaining_attempts(self) -> int:
+        return max(0, int(self.attempt_budget) - int(self.attempt))
 
     def public_status(self) -> dict[str, Any]:
         """Status surface (no large payloads; no provider_binary)."""
@@ -349,6 +414,12 @@ class JobRecord:
             "provider": self.provider,
             "role": self.role,
             "attempt": self.attempt,
+            "attempt_budget": self.attempt_budget,
+            "remaining_attempts": self.remaining_attempts(),
+            "retry_class": self.retry_class,
+            "retry_reason": self.retry_reason,
+            "terminal_at": self.terminal_at,
+            "attempt_started_at": self.attempt_started_at,
             "pid": self.pid,
             "pgid": self.pgid,
             "handle": self.handle,
@@ -385,6 +456,11 @@ __all__ = [
     "JOB_SCHEMA",
     "LEGAL_TRANSITIONS",
     "PROVIDER_PROCESS_STATES",
+    "RETRY_CLASSES",
+    "RETRY_CLASS_AUTOMATIC",
+    "RETRY_CLASS_MANUAL_ONLY",
+    "RETRY_CLASS_NEVER",
+    "RETRY_CLASS_UNKNOWN",
     "TERMINAL_STATES",
     "JobRecord",
     "JobState",

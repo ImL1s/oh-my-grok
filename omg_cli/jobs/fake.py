@@ -196,6 +196,7 @@ class FakeProvider:
                 usage=usage,
                 artifacts=tuple(artifacts),
                 error_message="fake worker failed",
+                retryable=True,
             )
 
         return ProviderRunResult(

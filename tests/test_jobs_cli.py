@@ -373,3 +373,193 @@ def test_cli_antigravity_status_does_not_expose_binary_path(
     assert req.get("has_provider_binary") is True
     main(["--json", "job", "wait", job_id, "--timeout", "30"])
     _out(capsys)
+
+
+def test_cli_job_retry_json(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prompt = project / "task.md"
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "fake",
+            "--prompt-file",
+            str(prompt),
+            "--fail",
+            "--sleep",
+            "0.05",
+            "--attempt-budget",
+            "3",
+        ]
+    )
+    assert rc == 0
+    start = _out(capsys)
+    job_id = start["job_id"]
+    rc = main(["--json", "job", "wait", job_id, "--timeout", "15"])
+    assert rc == 0
+    _out(capsys)
+    rc = main(["--json", "job", "retry", job_id, "--attempt", "2"])
+    assert rc == 0
+    retried = _out(capsys)
+    assert retried["ok"] is True
+    assert retried["command"] == "job.retry"
+    assert retried["attempt"] == 2
+    assert retried["job_id"] == job_id
+    main(["--json", "job", "wait", job_id, "--timeout", "15"])
+    _out(capsys)
+
+
+def test_cli_job_retry_budget_failure(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prompt = project / "task.md"
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "fake",
+            "--prompt-file",
+            str(prompt),
+            "--fail",
+            "--sleep",
+            "0.05",
+            "--attempt-budget",
+            "1",
+        ]
+    )
+    assert rc == 0
+    job_id = _out(capsys)["job_id"]
+    main(["--json", "job", "wait", job_id, "--timeout", "15"])
+    _out(capsys)
+    rc = main(["--json", "job", "retry", job_id, "--attempt", "2"])
+    assert rc == 1
+    body = _out(capsys)
+    assert body["ok"] is False
+    assert body["error"]["code"] == "E_JOB_RETRY_BUDGET"
+
+
+def test_cli_job_gc_retention(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from omg_cli.jobs.store import job_lock, read_job_record, write_job_record
+
+    prompt = project / "task.md"
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "fake",
+            "--prompt-file",
+            str(prompt),
+            "--sleep",
+            "0.05",
+        ]
+    )
+    assert rc == 0
+    job_id = _out(capsys)["job_id"]
+    main(["--json", "job", "wait", job_id, "--timeout", "15"])
+    _out(capsys)
+
+    old = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+    with job_lock(project, job_id):
+        rec = read_job_record(project, job_id)
+        rec.terminal_at = old
+        write_job_record(project, rec)
+
+    rc = main(["--json", "job", "gc", "--retention-days", "7"])
+    assert rc == 0
+    body = _out(capsys)
+    assert body["ok"] is True
+    assert body["command"] == "job.gc"
+    assert job_id in body["deleted"]
+    assert not (project / ".omg" / "jobs" / job_id).exists()
+
+
+def test_cli_job_gc_skips_running(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prompt = project / "task.md"
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "fake",
+            "--prompt-file",
+            str(prompt),
+            "--sleep",
+            "2.0",
+        ]
+    )
+    assert rc == 0
+    job_id = _out(capsys)["job_id"]
+    rc = main(["--json", "job", "gc", "--retention-days", "0"])
+    assert rc == 0
+    body = _out(capsys)
+    assert job_id not in body["deleted"]
+    # Still present (nonterminal).
+    assert (project / ".omg" / "jobs" / job_id / "job.json").is_file()
+    main(["--json", "job", "cancel", job_id])
+    _out(capsys)
+
+
+def test_cli_job_gc_refuses_acp_binding(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from omg_cli.jobs.store import (
+        ensure_jobs_root,
+        job_lock,
+        read_job_record,
+        write_job_record,
+    )
+
+    prompt = project / "task.md"
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "fake",
+            "--prompt-file",
+            str(prompt),
+            "--sleep",
+            "0.05",
+        ]
+    )
+    assert rc == 0
+    job_id = _out(capsys)["job_id"]
+    main(["--json", "job", "wait", job_id, "--timeout", "15"])
+    _out(capsys)
+
+    old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    with job_lock(project, job_id):
+        rec = read_job_record(project, job_id)
+        rec.terminal_at = old
+        write_job_record(project, rec)
+
+    bind_dir = ensure_jobs_root(project) / "acp_bindings"
+    bind_dir.mkdir(parents=True, exist_ok=True)
+    (bind_dir / "run-x.json").write_text(
+        json.dumps({"run_id": "run-x", "job_id": job_id, "state": "ready"}),
+        encoding="utf-8",
+    )
+
+    rc = main(["--json", "job", "gc", "--retention-days", "1"])
+    assert rc == 0
+    body = _out(capsys)
+    assert job_id not in body["deleted"]
+    assert any(s.get("job_id") == job_id for s in body["skipped"])
+    assert (project / ".omg" / "jobs" / job_id / "job.json").is_file()

@@ -84,12 +84,41 @@ def _jobs_test_env_isolation(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
     monkeypatch.setattr(runtime_mod, "start_job", _tracking_start)
     monkeypatch.setattr(job_cmd, "start_job", _tracking_start)
+
+    real_launch = runtime_mod.launch_job_runner
+
+    def _tracking_launch(*args: object, **kwargs: object):  # noqa: ANN001
+        result = real_launch(*args, **kwargs)
+        rec = getattr(result, "record", None)
+        pid = getattr(rec, "pid", None) if rec is not None else None
+        pgid = getattr(rec, "pgid", None) if rec is not None else None
+        if pid is not None:
+            register_spawned_job(
+                pid=int(pid),
+                pgid=int(pgid) if pgid is not None else None,
+            )
+        return result
+
+    monkeypatch.setattr(runtime_mod, "launch_job_runner", _tracking_launch)
+
+    # Also track retry_job which uses launch_job_runner after prepare.
+    if hasattr(job_cmd, "retry_job"):
+        real_retry = runtime_mod.retry_job
+
+        def _tracking_retry(*args: object, **kwargs: object):  # noqa: ANN001
+            return real_retry(*args, **kwargs)
+
+        monkeypatch.setattr(runtime_mod, "retry_job", _tracking_retry)
+        monkeypatch.setattr(job_cmd, "retry_job", _tracking_retry)
+
     import sys
 
     for mod_name in ("tests.test_jobs_runtime", "test_jobs_runtime"):
         mod = sys.modules.get(mod_name)
         if mod is not None and hasattr(mod, "start_job"):
             monkeypatch.setattr(mod, "start_job", _tracking_start)
+        if mod is not None and hasattr(mod, "launch_job_runner"):
+            monkeypatch.setattr(mod, "launch_job_runner", _tracking_launch)
 
     yield
     kill_registered_jobs()

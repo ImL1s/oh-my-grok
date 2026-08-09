@@ -181,12 +181,19 @@ def _stamp_running_terminal(
         )
         return
     target = _map_terminal_state(ok=ok, cancelled=cancelled, exit_class=exit_class)
+    from omg_cli.jobs.retry import classify_retry
+    from omg_cli.jobs.store import utc_now
+
+    retry_class, retry_reason = classify_retry(state=target, exit_obj=exit_obj)
     updates: dict = {
         "exit": exit_obj,
         "usage": usage,
         "artifacts": artifacts,
         "result": result_desc,
         "error_message": error_message if target != JobState.SUCCEEDED else None,
+        "terminal_at": utc_now(),
+        "retry_class": retry_class,
+        "retry_reason": retry_reason,
     }
     if session is not None:
         updates["session"] = session
@@ -260,6 +267,17 @@ def _run_job_with_env(
         _append_event(project_root, job_id, "runner.barrier_abort")
         # Terminal already, or parent never committed — exit without Adapter.run.
         return 0
+
+    try:
+        from omg_cli.jobs.store import update_job_fields, utc_now
+
+        update_job_fields(
+            project_root,
+            job_id,
+            attempt_started_at=utc_now(),
+        )
+    except JobStoreError:
+        pass
 
     worker = ready.worker or {}
     fake_env: dict[str, str | None] = {

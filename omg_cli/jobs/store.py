@@ -8,7 +8,7 @@ import re
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -186,6 +186,7 @@ def create_job_dir(
     worker: dict[str, Any] | None = None,
     request: dict[str, Any] | None = None,
     job_id: str | None = None,
+    attempt_budget: int = 1,
 ) -> JobRecord:
     """Materialize job directory + initial ``queued`` job.json."""
     ensure_jobs_root(project_root)
@@ -195,6 +196,19 @@ def create_job_dir(
         jid = make_job_id()
         if not _JOB_ID_RE.fullmatch(jid):
             raise JobStoreError(f"invalid job_id {jid!r}", code="E_JOB_STORE")
+
+    try:
+        budget = int(attempt_budget)
+    except (TypeError, ValueError) as exc:
+        raise JobStoreError(
+            f"invalid attempt_budget {attempt_budget!r}",
+            code="E_JOB_RETRY_BUDGET",
+        ) from exc
+    if budget < 1:
+        raise JobStoreError(
+            "attempt_budget must be >= 1",
+            code="E_JOB_RETRY_BUDGET",
+        )
 
     jdir = jobs_root(project_root) / jid
     if jdir.exists():
@@ -227,6 +241,7 @@ def create_job_dir(
         role=role,
         state=JobState.QUEUED,
         attempt=1,
+        attempt_budget=budget,
         prompt="prompt.md",
         stdout="stdout.jsonl",
         stderr="stderr.jsonl",
@@ -485,12 +500,254 @@ def append_jsonl(path: Path, obj: dict[str, Any]) -> None:
             pass
 
 
+def attempts_dir(project_root: Path, job_id: str) -> Path:
+    return job_dir(project_root, job_id) / "attempts"
+
+
+def attempt_dir(project_root: Path, job_id: str, attempt: int) -> Path:
+    return attempts_dir(project_root, job_id) / f"{int(attempt):04d}"
+
+
+def create_attempt_dir(project_root: Path, job_id: str, attempt: int) -> Path:
+    """Create ``attempts/NNNN/`` (+ artifacts/) for an immutable archive slot."""
+    adir = attempt_dir(project_root, job_id, attempt)
+    if adir.exists():
+        raise JobStoreError(
+            f"attempt archive already exists for attempt={attempt}",
+            code="E_JOB_RETRY_ARCHIVE",
+        )
+    ensure_managed_dir(adir)
+    ensure_managed_dir(adir / "artifacts")
+    return adir
+
+
+def _copy_file_if_present(src: Path, dst: Path) -> None:
+    if not src.is_file():
+        atomic_write_bytes(dst, b"", mode=DATA_FILE_MODE, replace=False)
+        return
+    try:
+        data = src.read_bytes()
+    except OSError as exc:
+        raise JobStoreError(
+            f"cannot archive {src.name}: {exc}",
+            code="E_JOB_RETRY_ARCHIVE",
+        ) from exc
+    atomic_write_bytes(dst, data, mode=DATA_FILE_MODE, replace=False)
+
+
+def _copy_tree_files(src: Path, dst: Path) -> None:
+    """Copy regular files under *src* into *dst* (no symlink follow escape)."""
+    if not src.is_dir():
+        return
+    ensure_managed_dir(dst)
+    try:
+        entries = list(src.iterdir())
+    except OSError as exc:
+        raise JobStoreError(
+            f"cannot list artifacts for archive: {exc}",
+            code="E_JOB_RETRY_ARCHIVE",
+        ) from exc
+    for entry in entries:
+        if entry.is_symlink():
+            continue
+        if entry.is_file():
+            _copy_file_if_present(entry, dst / entry.name)
+        elif entry.is_dir():
+            _copy_tree_files(entry, dst / entry.name)
+
+
+def archive_attempt(project_root: Path, job_id: str, record: JobRecord) -> Path:
+    """Snapshot the completed attempt under ``attempts/NNNN/`` (immutable).
+
+    Does **not** mutate ``prompt.md`` at the job root. Caller must hold the
+    job lock (or accept a race). Evidence files are copied then truncated so
+    the next attempt starts with empty ledgers without overwriting history.
+    """
+    jid = safe_job_id(job_id)
+    jdir = job_dir(project_root, jid)
+    adir = create_attempt_dir(project_root, jid, int(record.attempt))
+
+    snapshot = record.to_dict()
+    snapshot["archived_at"] = utc_now()
+    snapshot["archived_attempt"] = int(record.attempt)
+    _atomic_write_json(adir / "attempt.json", snapshot)
+
+    _copy_file_if_present(jdir / "stdout.jsonl", adir / "stdout.jsonl")
+    _copy_file_if_present(jdir / "stderr.jsonl", adir / "stderr.jsonl")
+    _copy_file_if_present(jdir / "events.jsonl", adir / "events.jsonl")
+    _copy_tree_files(jdir / "artifacts", adir / "artifacts")
+
+    # Reset active ledgers / artifacts for the next attempt (history preserved).
+    for name in ("stdout.jsonl", "stderr.jsonl", "events.jsonl"):
+        atomic_write_bytes(
+            jdir / name,
+            b"",
+            mode=DATA_FILE_MODE,
+            replace=True,
+        )
+    art = jdir / "artifacts"
+    if art.is_dir():
+        try:
+            for entry in list(art.iterdir()):
+                if entry.is_symlink():
+                    continue
+                if entry.is_file():
+                    try:
+                        entry.unlink()
+                    except OSError:
+                        pass
+                elif entry.is_dir():
+                    # Nested dirs from prior attempt — best-effort clear files.
+                    try:
+                        for nested in entry.rglob("*"):
+                            if nested.is_file() and not nested.is_symlink():
+                                nested.unlink(missing_ok=True)  # type: ignore[call-arg]
+                        # remove empty dirs bottom-up
+                        for nested in sorted(
+                            (p for p in entry.rglob("*") if p.is_dir()),
+                            key=lambda p: len(p.parts),
+                            reverse=True,
+                        ):
+                            try:
+                                nested.rmdir()
+                            except OSError:
+                                pass
+                        entry.rmdir()
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    ensure_managed_dir(art)
+    return adir
+
+
+def prepare_retry(
+    project_root: Path,
+    job_id: str,
+    *,
+    next_attempt: int,
+) -> JobRecord:
+    """Dedicated terminal→queued retry transaction (not a generic transition).
+
+    Archives the prior attempt, then atomically resets mutable runtime fields
+    and sets ``state=queued`` with ``attempt=next_attempt``. Does **not** launch.
+    """
+    from omg_cli.jobs.retry import assert_retry_admission
+
+    jid = safe_job_id(job_id)
+    with job_lock(project_root, jid):
+        record = read_job_record(project_root, jid)
+        assert_retry_admission(record, attempt=next_attempt)
+        archive_attempt(project_root, jid, record)
+
+        # Reset runtime fields for the new attempt; keep immutable request/budget.
+        record.state = JobState.QUEUED
+        record.attempt = int(next_attempt)
+        record.pid = None
+        record.pgid = None
+        record.handle = None
+        record.pid_starttime = None
+        record.result = None
+        record.artifacts = []
+        record.exit = None
+        record.usage = None
+        record.error_message = None
+        record.cancel_reason = None
+        record.cancel_requested_at = None
+        record.session = None
+        record.retry_class = None
+        record.retry_reason = None
+        record.terminal_at = None
+        record.attempt_started_at = None
+        record.provider_process = default_provider_process()
+        # Keep worker knobs (fake flags / timeout) for the requeue.
+        write_job_record(project_root, record)
+        return read_job_record(project_root, jid)
+
+
+def _parse_iso_ts(raw: str | None) -> datetime | None:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
+def gc_candidates(
+    project_root: Path,
+    *,
+    retention_days: float,
+    now: datetime | None = None,
+) -> list[str]:
+    """Return job ids that *appear* eligible for GC (caller revalidates under lock).
+
+    Never includes nonterminal or unreadable records. Retention clock uses
+    ``terminal_at`` when present, else ``updated_at`` / ``created_at``.
+    """
+    if retention_days < 0:
+        raise JobStoreError(
+            "retention_days must be >= 0",
+            code="E_JOB_GC",
+        )
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=float(retention_days))
+    out: list[str] = []
+    for jid in list_job_ids(project_root):
+        try:
+            rec = read_job_record(project_root, jid)
+        except JobStoreError:
+            continue
+        if rec.state not in (
+            JobState.SUCCEEDED,
+            JobState.FAILED,
+            JobState.CANCELLED,
+            JobState.LOST,
+        ):
+            continue
+        stamp = (
+            _parse_iso_ts(rec.terminal_at)
+            or _parse_iso_ts(rec.updated_at)
+            or _parse_iso_ts(rec.created_at)
+        )
+        if stamp is None:
+            continue
+        if stamp <= cutoff:
+            out.append(jid)
+    return out
+
+
+def delete_job_dir(project_root: Path, job_id: str) -> None:
+    """Remove a job directory tree (caller must have revalidated under lock)."""
+    import shutil
+
+    jid = safe_job_id(job_id)
+    jdir = job_dir(project_root, jid)
+    if not jdir.exists():
+        return
+    try:
+        shutil.rmtree(jdir)
+    except OSError as exc:
+        raise JobStoreError(
+            f"failed to delete job dir {jid}: {exc}",
+            code="E_JOB_GC",
+        ) from exc
+
+
 __all__ = [
     "append_jsonl",
+    "archive_attempt",
     "artifacts_dir",
+    "attempt_dir",
+    "attempts_dir",
     "bind_provider_process",
+    "create_attempt_dir",
     "create_job_dir",
+    "delete_job_dir",
     "ensure_jobs_root",
+    "gc_candidates",
     "job_dir",
     "job_json_path",
     "job_lock",
@@ -500,6 +757,7 @@ __all__ = [
     "mark_cancel_requested",
     "mark_provider_exited",
     "mark_provider_launching",
+    "prepare_retry",
     "read_job_record",
     "safe_job_id",
     "transition_job",
