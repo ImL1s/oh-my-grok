@@ -5,8 +5,10 @@
 **Target branch:** `main`  
 **Tracking issue:** [ImL1s/oh-my-grok#131](https://github.com/ImL1s/oh-my-grok/issues/131)  
 **Architecture/docs issue:** [ImL1s/oh-my-grok#133](https://github.com/ImL1s/oh-my-grok/issues/133)  
+**Dual-host UX:** [ImL1s/oh-my-grok#134](https://github.com/ImL1s/oh-my-grok/issues/134)  
 **Optional Medley host contract:** [ImL1s/medley#287](https://github.com/ImL1s/medley/issues/287)  
 **Medley architecture/docs:** [ImL1s/medley#289](https://github.com/ImL1s/medley/issues/289)  
+**Medley TUI/UX:** [ImL1s/medley#290](https://github.com/ImL1s/medley/issues/290)  
 **Counterpart plan PR:** [ImL1s/medley#288](https://github.com/ImL1s/medley/pull/288)
 
 ## Decision
@@ -320,7 +322,7 @@ omg team status [--json]
 - narrow/normal/wide, no-color, keyboard-only, mouse, resize, and large-catalog behavior are tested;
 - no secret value, raw header/query, account identifier, prompt, or full response appears.
 
-A dedicated UX issue must own these Medley and dual-host projections; #131 must link it before closure.
+[#134](https://github.com/ImL1s/oh-my-grok/issues/134) owns the host-neutral policy/CLI projection; [Medley #290](https://github.com/ImL1s/medley/issues/290) owns the native `/agents` and lifecycle TUI projection.
 
 ## Team integration
 
