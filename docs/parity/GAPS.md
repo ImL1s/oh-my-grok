@@ -9,7 +9,7 @@ Inventory status: **bootstrapping**.
 | `gap.antigravity.provider` | P0 | open | #67 | `antigravity.provider.adapter` | A–D landed (probe/run/ask/Team envelope); dual review+CI before close |
 | `gap.jobs.durable` | P0 | open | #68 | `jobs.durable_background` | Durable jobs PR3 retry/GC/ask--background landed; lease recovery and authenticated live Antigravity still open |
 | `gap.parity.governance.remaining` | P0 | open | #78 | `parity.inventory.governance` | #78-B inventory landed; #78-C refresh+claim gate landed; #78-D proof gate landed; #78-E README↔JSON managed-snapshot drift gate landed; promotion remains unperformed and is proof-gated; real-source policies/proofs still open |
-| `gap.team.v3` | P0 | open | #69 | `team.plane_v3` | Team plane v3 not implemented; depends on #67/#68 |
+| `gap.team.v3` | P0 | open | #69 | `team.plane_v3` | PR3 leader-resume claim reconciliation landed via omg team resume; job-backed workers, replacement attempts, compositions, and full OMX operation surface remain open (#69). Depends on #67/#68 for remainder. |
 | `gap.omo.todo_continuation` | P1 | open | #78 | `omo.goal.todo_continuation` | OmO todo-continuation inject is host_impossible on Grok (no session.prompt API) |
 | `gap.parity.platform_live_evidence` | P1 | open | #78 | `antigravity.platform.version_matrix` | Platform/runtime live-evidence gate shipped (#78-C); completeness promotion still manual |
 | `gap.antigravity.headless_execution` | P2 | open | #67, #78 | `antigravity.headless.structured_execution`, `antigravity.runtime.model_effort_mode_perms` | Ask+Team routed (#67-C/D); typed runtime model/effort/mode controls still unclaimed |
@@ -21,4 +21,4 @@ Inventory status: **bootstrapping**.
 - `gap.antigravity.provider` (#67): A–D landed (probe/run/ask/Team envelope); dual review+CI before close
 - `gap.jobs.durable` (#68): Durable jobs PR3 retry/GC/ask--background landed; lease recovery and authenticated live Antigravity still open
 - `gap.parity.governance.remaining` (#78): #78-B inventory landed; #78-C refresh+claim gate landed; #78-D proof gate landed; #78-E README↔JSON managed-snapshot drift gate landed; promotion remains unperformed and is proof-gated; real-source policies/proofs still open
-- `gap.team.v3` (#69): Team plane v3 not implemented; depends on #67/#68
+- `gap.team.v3` (#69): PR3 leader-resume claim reconciliation landed via omg team resume; job-backed workers, replacement attempts, compositions, and full OMX operation surface remain open (#69). Depends on #67/#68 for remainder.
