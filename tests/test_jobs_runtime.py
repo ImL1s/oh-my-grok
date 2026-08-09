@@ -2830,3 +2830,48 @@ def test_gc_accepts_released_lost_job_only_after_identity_proof(
     )
     out = gc_jobs(root, retention_days=1)
     assert result.record.job_id in out.deleted
+
+
+def test_explicit_retry_still_defaults_to_explicit_intent(root: Path) -> None:
+    """#68 PR5: public retry_job defaults remain RetryIntent.EXPLICIT."""
+    from omg_cli.jobs.runtime import retry_job
+    from omg_cli.jobs.store import attempt_dir
+
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        fail=True,
+        sleep_s=0.02,
+        attempt_budget=3,
+    )
+    terminal, _ = wait_job(root, started.record.job_id, timeout_s=15)
+    retried = retry_job(root, terminal.job_id, attempt=2, launch=False)
+    assert retried.record.attempt == 2
+    snap = json.loads(
+        (attempt_dir(root, terminal.job_id, 1) / "attempt.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert snap["retry_dispatch"]["intent"] == "explicit"
+
+
+def test_preflight_retry_job_is_side_effect_free(root: Path) -> None:
+    from omg_cli.jobs.runtime import preflight_retry_job
+    from omg_cli.jobs.store import attempt_dir, job_json_path
+
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        fail=True,
+        sleep_s=0.02,
+        attempt_budget=3,
+    )
+    terminal, _ = wait_job(root, started.record.job_id, timeout_s=15)
+    before = job_json_path(root, terminal.job_id).read_bytes()
+    preflight_retry_job(root, terminal.job_id, attempt=2)
+    assert job_json_path(root, terminal.job_id).read_bytes() == before
+    assert not attempt_dir(root, terminal.job_id, 1).exists()

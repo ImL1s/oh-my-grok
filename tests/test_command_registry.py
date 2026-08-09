@@ -24,3 +24,11 @@ def test_command_specs_unique_and_cover_known() -> None:
     assert command_names() == tuple(names)
     assert "install-hook" in KNOWN_SUBCOMMANDS
     assert "autopilot" in KNOWN_SUBCOMMANDS
+
+
+def test_job_help_mentions_auto_retry_pr5() -> None:
+    from omg_cli.command_registry import COMMAND_SPECS
+
+    job = next(s for s in COMMAND_SPECS if s.name == "job")
+    assert "auto-retry" in job.help
+    assert "PR5" in job.help or "PR1–PR5" in job.help

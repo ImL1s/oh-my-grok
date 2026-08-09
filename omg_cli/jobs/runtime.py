@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -24,6 +25,7 @@ from omg_cli.jobs.ownership import (
     IdentityProbeOutcome,
     OwnershipOutcome,
     ProcessIdentity,
+    parse_process_identity,
     probe_identity_liveness,
     probe_pid_starttime,
     reap_child,
@@ -620,22 +622,13 @@ def _read_spawn_identity_recovery(
     data = _read_json_file(_spawn_identity_path(project_root, job_id))
     if not isinstance(data, Mapping):
         return None
-    pid = data.get("pid")
-    pgid = data.get("pgid")
-    if pid is None or pgid is None:
+    if data.get("job_id") != job_id:
         return None
-    try:
-        return ProcessIdentity(
-            pid=int(pid),
-            pgid=int(pgid),
-            pid_starttime=(
-                str(data["pid_starttime"])
-                if data.get("pid_starttime") is not None
-                else None
-            ),
-        )
-    except (TypeError, ValueError):
-        return None
+    return parse_process_identity(
+        pid=data.get("pid"),
+        pgid=data.get("pgid"),
+        pid_starttime=data.get("pid_starttime"),
+    )
 
 
 def _clear_spawn_identity_recovery(project_root: Path, job_id: str) -> None:
@@ -721,6 +714,13 @@ def _gc_identities_block_reason(
 
     if _spawn_uncertain(project_root, record.job_id):
         return "spawn_uncertain"
+
+    from omg_cli.jobs.recovery import provider_launch_unbound, spawn_identity_unproven
+
+    if spawn_identity_unproven(project_root, record.job_id):
+        return "spawn_identity_malformed"
+    if provider_launch_unbound(record):
+        return "provider_identity_incomplete"
 
     runner = _runner_identity(record)
     if runner is None:
@@ -1137,16 +1137,13 @@ def _provider_identity(record: JobRecord) -> ProcessIdentity | None:
 
     Any recorded pid/pgid remains in the gate (bound *or* exited). Clearing the
     durable ``state`` to ``exited`` must not drop the cancel target without
-    OS-level disappearance proof.
+    OS-level disappearance proof. Malformed float/bool IDs never coerce into
+    a probeable identity — callers gate via ``provider_launch_unbound``.
     """
     pp = record.provider_process or {}
-    pid = pp.get("pid")
-    pgid = pp.get("pgid")
-    if pid is None or pgid is None:
-        return None
-    return ProcessIdentity(
-        pid=int(pid),
-        pgid=int(pgid),
+    return parse_process_identity(
+        pid=pp.get("pid"),
+        pgid=pp.get("pgid"),
         pid_starttime=pp.get("pid_starttime"),
     )
 
@@ -1155,9 +1152,9 @@ def _runner_identity(record: JobRecord) -> ProcessIdentity | None:
     if record.pid is None:
         return None
     pgid = record.pgid if record.pgid is not None else record.pid
-    return ProcessIdentity(
-        pid=int(record.pid),
-        pgid=int(pgid),
+    return parse_process_identity(
+        pid=record.pid,
+        pgid=pgid,
         pid_starttime=record.pid_starttime,
     )
 
@@ -1247,14 +1244,29 @@ def cancel_job(
         if record.state in {JobState.SUCCEEDED, JobState.FAILED, JobState.LOST}:
             return record
 
-    # Fail-closed: launching but unbound — do not speculative-kill outer
-    # (would orphan agy) and do not claim cancelled. Same gate as recover.
-    from omg_cli.jobs.recovery import provider_launch_unbound
+    # Fail-closed: claimed launch/bind without complete PID/PGID — do not
+    # speculative-kill outer (would orphan agy) and do not claim cancelled.
+    # Covers launching-unbound and bound-but-incomplete (same as recover/retry).
+    from omg_cli.jobs.recovery import (
+        provider_incomplete_reason,
+        provider_launch_unbound,
+        spawn_identity_unproven,
+    )
 
-    if provider_launch_unbound(record):
+    incomplete = provider_incomplete_reason(record)
+    if incomplete is not None or provider_launch_unbound(record):
+        reason = incomplete or "provider_launch_unbound"
         raise JobStoreError(
-            f"job {job_id} provider process is launching but unbound; "
+            f"job {job_id} provider identity incomplete ({reason}); "
             "refusing speculative cancel (E_JOB_CANCEL_UNPROVEN)",
+            code="E_JOB_CANCEL_UNPROVEN",
+        )
+
+    if spawn_identity_unproven(project_root, job_id):
+        raise JobStoreError(
+            f"job {job_id} spawn_identity.json present but "
+            "malformed/incomplete; refusing speculative cancel "
+            "(E_JOB_CANCEL_UNPROVEN)",
             code="E_JOB_CANCEL_UNPROVEN",
         )
 
@@ -1473,13 +1485,18 @@ def _assert_prior_attempt_gone(project_root: Path, record: JobRecord) -> None:
     - LIVE → ``E_JOB_RETRY_LIVE``
     - UNPROVEN → ``E_JOB_CANCEL_UNPROVEN``
 
-    Also refuse ``provider_process.state == launching`` without a complete
-    durable PID/PGID (or proven disappearance) — same unbound-launch window
-    that cancel/recover treat as ``E_JOB_CANCEL_UNPROVEN`` / recovery-unproven.
+    Also refuse claimed provider launch/bind without a complete durable
+    PID/PGID (``launching`` unbound *or* ``bound`` incomplete), and
+    present-but-malformed ``spawn_identity.json`` — same fail-closed
+    semantics as cancel/recover (never treat incomplete as absent).
     Malformed or wrongly-marked ``lost`` records must not bypass this gate.
     """
     from omg_cli.jobs.ownership import probe_identity_for_recovery
-    from omg_cli.jobs.recovery import provider_launch_unbound
+    from omg_cli.jobs.recovery import (
+        provider_incomplete_reason,
+        provider_launch_unbound,
+        spawn_identity_unproven,
+    )
 
     if _spawn_uncertain(project_root, record.job_id):
         raise JobStoreError(
@@ -1487,10 +1504,19 @@ def _assert_prior_attempt_gone(project_root: Path, record: JobRecord) -> None:
             code="E_JOB_CANCEL_UNPROVEN",
         )
 
-    if provider_launch_unbound(record):
+    if spawn_identity_unproven(project_root, record.job_id):
         raise JobStoreError(
-            f"job {record.job_id} provider launch unbound (incomplete "
-            "PID/PGID); refusing retry until identity is proven gone",
+            f"job {record.job_id} spawn_identity.json present but "
+            "malformed/incomplete; refusing retry",
+            code="E_JOB_CANCEL_UNPROVEN",
+        )
+
+    incomplete = provider_incomplete_reason(record)
+    if incomplete is not None or provider_launch_unbound(record):
+        reason = incomplete or "provider_launch_unbound"
+        raise JobStoreError(
+            f"job {record.job_id} provider identity incomplete "
+            f"({reason}); refusing retry until identity is proven gone",
             code="E_JOB_CANCEL_UNPROVEN",
         )
 
@@ -1535,6 +1561,34 @@ def _assert_prior_attempt_gone(project_root: Path, record: JobRecord) -> None:
         )
 
 
+def preflight_retry_job(
+    project_root: Path,
+    job_id: str,
+    *,
+    attempt: int,
+    intent: Any = None,
+    now: datetime | None = None,
+) -> JobRecord:
+    """Pre-mutation retry admission (no archive / state change / launch).
+
+    Sequence: validate id → read → assert_retry_admission → prior-gone →
+    revalidate_stored_request. Returns the validated current record.
+    """
+    from omg_cli.jobs.providers import revalidate_stored_request
+    from omg_cli.jobs.retry import RetryIntent, assert_retry_admission
+
+    resolved = intent if intent is not None else RetryIntent.EXPLICIT
+    if not isinstance(resolved, RetryIntent):
+        resolved = RetryIntent(str(resolved))
+
+    jid = safe_job_id(job_id)
+    record = read_job_record(project_root, jid)
+    assert_retry_admission(record, attempt=attempt, intent=resolved, now=now)
+    _assert_prior_attempt_gone(project_root, record)
+    revalidate_stored_request(record.provider, record.request)
+    return record
+
+
 def retry_job(
     project_root: Path,
     job_id: str,
@@ -1542,24 +1596,37 @@ def retry_job(
     attempt: int,
     launch: bool = True,
     runner_python: str | None = None,
+    intent: Any = None,
+    now: datetime | None = None,
 ) -> StartResult:
-    """Explicit retry: archive prior attempt, requeue, relaunch via shared path.
+    """Retry via shared path: preflight → prepare_retry → starting → launch.
 
-    Requires ``--attempt`` == current+1. No auto-scheduler. Public CLI never
-    retries ``grok-acp-session``.
+    Default ``intent=explicit`` preserves public ``omg job retry`` semantics.
+    Automatic intent is used by the bounded scheduler (#68 PR5) only.
     """
-    from omg_cli.jobs.providers import revalidate_stored_request
-    from omg_cli.jobs.retry import assert_retry_admission
+    from omg_cli.jobs.retry import RetryIntent
     from omg_cli.jobs.store import prepare_retry
 
-    jid = safe_job_id(job_id)
-    record = read_job_record(project_root, jid)
-    assert_retry_admission(record, attempt=attempt)
-    _assert_prior_attempt_gone(project_root, record)
-    # Provider preflight BEFORE consuming another attempt / archive.
-    revalidate_stored_request(record.provider, record.request)
+    resolved = intent if intent is not None else RetryIntent.EXPLICIT
+    if not isinstance(resolved, RetryIntent):
+        resolved = RetryIntent(str(resolved))
 
-    queued = prepare_retry(project_root, jid, next_attempt=int(attempt))
+    jid = safe_job_id(job_id)
+    preflight_retry_job(
+        project_root,
+        jid,
+        attempt=attempt,
+        intent=resolved,
+        now=now,
+    )
+
+    queued = prepare_retry(
+        project_root,
+        jid,
+        next_attempt=int(attempt),
+        intent=resolved,
+        now=now,
+    )
     # queued → starting before launch (same as start_job).
     starting = transition_job(project_root, queued.job_id, JobState.STARTING)
     if not launch:
@@ -2221,11 +2288,13 @@ def _outer_runner_alive(record: JobRecord) -> bool:
     if record.pid is None:
         return False
     pgid = record.pgid if record.pgid is not None else record.pid
-    identity = ProcessIdentity(
-        pid=int(record.pid),
-        pgid=int(pgid),
+    identity = parse_process_identity(
+        pid=record.pid,
+        pgid=pgid,
         pid_starttime=record.pid_starttime,
     )
+    if identity is None:
+        return False
     try:
         from omg_cli.jobs.ownership import assert_ownership
 
@@ -2246,17 +2315,13 @@ def _provider_process_bound_alive(record: JobRecord) -> bool:
     pp = record.provider_process or default_provider_process()
     if str(pp.get("state") or "") != "bound":
         return False
-    pid = pp.get("pid")
-    pgid = pp.get("pgid")
-    if pid is None or pgid is None:
-        return False
-    identity = ProcessIdentity(
-        pid=int(pid),
-        pgid=int(pgid),
-        pid_starttime=(
-            str(pp["pid_starttime"]) if pp.get("pid_starttime") is not None else None
-        ),
+    identity = parse_process_identity(
+        pid=pp.get("pid"),
+        pgid=pp.get("pgid"),
+        pid_starttime=pp.get("pid_starttime"),
     )
+    if identity is None:
+        return False
     try:
         from omg_cli.jobs.ownership import assert_ownership
 
@@ -2980,6 +3045,7 @@ __all__ = [
     "launch_job_runner",
     "list_jobs",
     "observe_job",
+    "preflight_retry_job",
     "read_acp_sidecar_binding",
     "recover_job",
     "recover_jobs",

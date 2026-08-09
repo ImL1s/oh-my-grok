@@ -9,7 +9,50 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Added
+- **Partial work for #68 PR5 / bounded auto-retry scheduler:** caller-driven
+  `omg job auto-retry JOB_ID|--all` one-pass tick over the existing
+  `retry_job` / exact-next-attempt path (deterministic backoff, `--limit`
+  default 1 / max 32, project `auto-retry.lock`, dry-run admission without
+  mutation). Automatic intent admits only `state=failed` with persisted and
+  recomputed `retry_class=automatic`; preserves PR4 live/unproven/
+  spawn-uncertain/provider-unbound gates; never recovers, signals, or
+  auto-retries `lost`/`cancelled`/`manual_only`. Hermetic coverage in
+  `tests/test_jobs_auto_retry.py`. Docs: `docs/durable-jobs.md`. Does **not**
+  close #68 (authenticated live Antigravity evidence remains open; Team
+  job-backed workers stay on #69).
+
 ### Fixed
+- **#68 PR5 P1 safe-conflict fail-closed reread:** `_is_safe_conflict`
+  returns false when the post-error job reread fails (`cur is None`) —
+  never `ok=True` conflict without proof that attempt advanced or state
+  became nonterminal. Hermetic coverage in `tests/test_jobs_auto_retry.py`.
+  Refs #68 (does not close).
+
+- **#68 PR5 P1 strict process-identity JSON:** PID/PGID must be JSON
+  integers (not bool/float), fingerprints/`pid_starttime` null-or-string
+  only, and `spawn_identity.json.job_id` must exactly equal the enclosing
+  job id. Malformed claims in any recorded state (including `exited`) map
+  to `E_JOB_CANCEL_UNPROVEN` / `IDENTITY_UNPROVEN` — never GONE/REUSED via
+  `int()`/`str()` coercion. Hermetic coverage in
+  `tests/test_jobs_auto_retry.py`. Refs #68 (does not close).
+
+- **#68 PR5 P1 classify_retry strict booleans:** `timed_out` / `overflow` must
+  be JSON booleans (`true`/`false`/absent). String `"false"` / `"0"` / other
+  truthy non-bools fail closed as `unknown` (`malformed_timed_out` /
+  `malformed_overflow`); primary `spawn_error`/`malformed`/`parse_error`/
+  `unknown` classes are classified before flag trust so contradictory
+  envelopes cannot auto-retry. Hermetic coverage in
+  `tests/test_jobs_auto_retry.py`. Refs #68 (does not close).
+
+- **#68 PR5 P1 present-but-malformed / bound-but-incomplete identity:**
+  `provider_process.state=bound` (or `launching`) with missing/malformed
+  PID/PGID, and present-but-unparseable `spawn_identity.json`, map to
+  `E_JOB_CANCEL_UNPROVEN` / `IDENTITY_UNPROVEN` — never absent/reclaimable.
+  Aligns auto-retry/cancel/observe/recover/GC with PR4 unbound-launch
+  semantics. Hermetic coverage in `tests/test_jobs_auto_retry.py` and
+  `tests/test_jobs_recovery.py`. Refs #68 (does not close).
+
 - **#68 PR4 cancel_requested beats racing success:** once `cancel_requested_at`
   is durable (persist-before-signal), `transition_job` /
   `transition_owned_job` / CAS remap racing `succeeded`/`failed` stamps to

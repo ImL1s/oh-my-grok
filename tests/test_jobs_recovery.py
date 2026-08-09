@@ -427,6 +427,67 @@ def test_expired_dead_runner_launching_unbound_provider_is_unproven_zero_mutatio
     assert signal_calls == []
 
 
+def test_expired_dead_runner_bound_incomplete_provider_is_unproven(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P0: bound + missing pid/pgid is UNPROVEN — never reclaimable_lost."""
+    result = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        sleep_s=30.0,
+    )
+    jid = result.record.job_id
+    try:
+        os.kill(int(result.record.pid), signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        os.waitpid(int(result.record.pid), 0)
+    except ChildProcessError:
+        pass
+    time.sleep(0.05)
+
+    with job_lock(root, jid):
+        rec = read_job_record(root, jid)
+        rec.provider_process = {
+            "state": "bound",
+            "pid": None,
+            "pgid": None,
+            "pid_starttime": None,
+            "handle": "provider:test",
+            "bound_at": "2026-01-01T00:00:00+00:00",
+            "exited_at": None,
+        }
+        write_job_record(root, rec)
+    _force_lease_expired_on_disk(root, jid)
+
+    monkeypatch.setattr(
+        "omg_cli.jobs.recovery.probe_identity_for_recovery",
+        lambda identity: IdentityProbeOutcome.GONE,
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.probe_identity_for_recovery",
+        lambda identity: IdentityProbeOutcome.GONE,
+    )
+
+    path = job_json_path(root, jid)
+    raw_before = path.read_bytes()
+    obs = observe_job(root, jid)
+    assert obs.health == JobHealth.IDENTITY_UNPROVEN
+    assert obs.recoverable is False
+    assert obs.reason == "provider_identity_incomplete"
+    assert obs.provider_identity == "unproven"
+    assert path.read_bytes() == raw_before
+
+    out = recover_job(root, jid)
+    assert out.ok is False
+    assert out.error_code == "E_JOB_RECOVERY_UNPROVEN"
+    assert path.read_bytes() == raw_before
+    assert read_job_record(root, jid).state == JobState.RUNNING
+
+
 def test_retry_lost_launching_unbound_provider_refuses(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1024,3 +1085,37 @@ def test_wait_returns_recovery_required_not_timeout(root: Path) -> None:
         )
     assert ei.value.code == "E_JOB_RECOVERY_REQUIRED"
     cancel_job(root, result.record.job_id, reason="test")
+
+
+def test_auto_retry_does_not_recover_active_or_lost_jobs(root: Path) -> None:
+    """#68 PR5: scheduler never calls recover; lost stays manual."""
+    from omg_cli.jobs.scheduler import auto_retry_jobs, evaluate_auto_retry
+    from datetime import datetime, timezone
+
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        sleep_s=30.0,
+        attempt_budget=3,
+    )
+    batch = auto_retry_jobs(root, limit=32, now=datetime.now(timezone.utc))
+    assert all(r.action == "skipped" for r in batch.results if r.job_id == started.record.job_id)
+    cancel_job(root, started.record.job_id)
+
+    # Lost classification is never automatic-eligible.
+    lost_like = read_job_record(root, started.record.job_id)
+    # After cancel it may be cancelled — force lost metadata for evaluate.
+    with job_lock(root, started.record.job_id):
+        rec = read_job_record(root, started.record.job_id)
+        rec.state = JobState.LOST
+        rec.retry_class = "unknown"
+        rec.retry_reason = "lost"
+        write_job_record(root, rec)
+    d = evaluate_auto_retry(
+        read_job_record(root, started.record.job_id),
+        now=datetime.now(timezone.utc),
+    )
+    assert d.action == "skipped"
+    del lost_like

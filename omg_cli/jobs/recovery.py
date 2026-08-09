@@ -25,7 +25,10 @@ from omg_cli.jobs.models import TERMINAL_STATES, JobRecord, JobState, JobStoreEr
 from omg_cli.jobs.ownership import (
     IdentityProbeOutcome,
     ProcessIdentity,
+    parse_process_identity,
     probe_identity_for_recovery,
+    process_fingerprint_ok,
+    process_identity_id_in_range,
 )
 from omg_cli.jobs.providers import ACP_SESSION_PROVIDER
 from omg_cli.jobs.store import (
@@ -173,65 +176,98 @@ def _probe_label(identity: ProcessIdentity | None) -> tuple[str, IdentityProbeOu
 
 
 def _runner_identity_from_record(record: JobRecord) -> ProcessIdentity | None:
-    if record.pid is None or record.pgid is None:
-        return None
-    try:
-        return ProcessIdentity(
-            pid=int(record.pid),
-            pgid=int(record.pgid),
-            pid_starttime=record.pid_starttime,
-        )
-    except (TypeError, ValueError):
-        return None
+    return parse_process_identity(
+        pid=record.pid,
+        pgid=record.pgid,
+        pid_starttime=record.pid_starttime,
+    )
+
+
+def _provider_ids_complete(pp: Mapping[str, Any]) -> bool:
+    """True when pid/pgid are strict JSON ints in range and fingerprint is typed."""
+    if not process_fingerprint_ok(pp.get("pid_starttime")):
+        return False
+    handle = pp.get("handle")
+    if handle is not None and not isinstance(handle, str):
+        return False
+    return process_identity_id_in_range(pp.get("pid")) and process_identity_id_in_range(
+        pp.get("pgid")
+    )
 
 
 def provider_launch_unbound(record: JobRecord) -> bool:
-    """True when provider is launching without a complete durable PID/PGID.
+    """True when provider claimed identity is incomplete or malformed.
 
-    Shared by cancel / observe / recover / retry: the Popen→bind crash window
-    may leave a live inner process group with no identity on the job record.
-    Incomplete launching must never be treated as provider-absent.
+    Shared by cancel / observe / recover / retry. Covers:
+
+    - ``state=launching`` without PID/PGID (Popen→bind crash window)
+    - ``state=bound`` with missing or malformed PID/PGID (bound-but-incomplete)
+    - any recorded state including ``exited`` with non-null but non-strict
+      PID/PGID/fingerprint (float/bool/coercible junk must not become
+      GONE/REUSED via ``int()`` / ``str()``)
+
+    Incomplete claimed identity is *unproven*, never provider-absent /
+    reclaimable. Callers must gate on this before treating ``None`` from
+    identity helpers as absence.
     """
     pp = record.provider_process or {}
     if not isinstance(pp, Mapping):
         return False
-    if pp.get("state") != "launching":
+    if not process_fingerprint_ok(pp.get("pid_starttime")):
+        return True
+    handle = pp.get("handle")
+    if handle is not None and not isinstance(handle, str):
+        return True
+    state = pp.get("state")
+    pid = pp.get("pid")
+    pgid = pp.get("pgid")
+    if state in {"launching", "bound"}:
+        return not _provider_ids_complete(pp)
+    # exited / pending / unknown: any non-null id claim must be a complete
+    # strict pair — never coerce floats/bools into a probeable identity.
+    if pid is None and pgid is None:
         return False
-    return pp.get("pid") is None or pp.get("pgid") is None
+    return not _provider_ids_complete(pp)
+
+
+def provider_incomplete_reason(record: JobRecord) -> str | None:
+    """Reason token when :func:`provider_launch_unbound` is True, else None."""
+    if not provider_launch_unbound(record):
+        return None
+    pp = record.provider_process or {}
+    state = pp.get("state") if isinstance(pp, Mapping) else None
+    if state == "bound":
+        return "provider_identity_incomplete"
+    if state == "launching":
+        return "provider_launch_unbound"
+    return "provider_identity_malformed"
 
 
 def _provider_identity_from_record(record: JobRecord) -> ProcessIdentity | None:
     """Return durable provider identity, or None when absent/incomplete.
 
-    Callers that need fail-closed launch-window semantics must also check
-    :func:`provider_launch_unbound` — incomplete ``launching`` is *unproven*,
-    not absent (``None`` alone would falsely recover to ``lost``).
+    Callers that need fail-closed launch/bind semantics must also check
+    :func:`provider_launch_unbound` — incomplete ``launching`` / ``bound`` /
+    malformed ``exited`` is *unproven*, not absent (``None`` alone would
+    falsely recover to ``lost``).
     """
     pp = record.provider_process or {}
     if not isinstance(pp, Mapping):
         return None
-    # Launching without complete PID/PGID is unproven (not absent) — identity
-    # helpers return None; decide_observation / cancel / retry gate separately.
+    # Claimed launch/bind / malformed recorded ids are unproven (not absent) —
+    # identity helpers return None; decide_observation / cancel / retry gate
+    # separately via provider_launch_unbound.
     if provider_launch_unbound(record):
         return None
     if pp.get("state") not in {"bound", "launching", "exited"}:
         # pending / unknown — no recorded inner identity
         if pp.get("pid") is None:
             return None
-    pid = pp.get("pid")
-    pgid = pp.get("pgid")
-    if pid is None or pgid is None:
-        return None
-    try:
-        return ProcessIdentity(
-            pid=int(pid),
-            pgid=int(pgid),
-            pid_starttime=(
-                str(pp["pid_starttime"]) if pp.get("pid_starttime") is not None else None
-            ),
-        )
-    except (TypeError, ValueError):
-        return None
+    return parse_process_identity(
+        pid=pp.get("pid"),
+        pgid=pp.get("pgid"),
+        pid_starttime=pp.get("pid_starttime"),
+    )
 
 
 def _spawn_identity_path(project_root: Path, job_id: str) -> Path:
@@ -246,6 +282,33 @@ def _spawn_uncertain_path(project_root: Path, job_id: str) -> Path:
     return job_dir(project_root, job_id) / "spawn_uncertain.json"
 
 
+def spawn_identity_unproven(project_root: Path, job_id: str) -> bool:
+    """True when ``spawn_identity.json`` exists but is incomplete or unparseable.
+
+    Present-but-malformed must never be treated as absent (reclaimable).
+    Embedded ``job_id`` must exactly equal the enclosing job id.
+    """
+    import json
+
+    path = _spawn_identity_path(project_root, job_id)
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return True
+    if not isinstance(data, Mapping):
+        return True
+    if data.get("job_id") != job_id:
+        return True
+    if not process_fingerprint_ok(data.get("pid_starttime")):
+        return True
+    handle = data.get("handle")
+    if handle is not None and not isinstance(handle, str):
+        return True
+    return not _provider_ids_complete(data)
+
+
 def _read_spawn_identity(project_root: Path, job_id: str) -> ProcessIdentity | None:
     import json
 
@@ -258,22 +321,13 @@ def _read_spawn_identity(project_root: Path, job_id: str) -> ProcessIdentity | N
         return None
     if not isinstance(data, Mapping):
         return None
-    pid = data.get("pid")
-    pgid = data.get("pgid")
-    if pid is None or pgid is None:
+    if data.get("job_id") != job_id:
         return None
-    try:
-        return ProcessIdentity(
-            pid=int(pid),
-            pgid=int(pgid),
-            pid_starttime=(
-                str(data["pid_starttime"])
-                if data.get("pid_starttime") is not None
-                else None
-            ),
-        )
-    except (TypeError, ValueError):
-        return None
+    return parse_process_identity(
+        pid=data.get("pid"),
+        pgid=data.get("pgid"),
+        pid_starttime=data.get("pid_starttime"),
+    )
 
 
 def _spawn_uncertain(project_root: Path, job_id: str) -> bool:
@@ -361,6 +415,22 @@ def decide_observation(
         if spawn_uncertain is not None
         else _spawn_uncertain(root, record.job_id)
     )
+
+    # Present-but-malformed spawn_identity.json is UNPROVEN, never absent.
+    if spawn_identity is None and spawn_identity_unproven(root, record.job_id):
+        return _obs(
+            health=JobHealth.IDENTITY_UNPROVEN,
+            now=stamp,
+            lease_is_expired=False,
+            runner=_UNPROVEN,
+            provider=_UNPROVEN,
+            recoverable=False,
+            action="none",
+            reason="spawn_identity_malformed",
+            record=record,
+        )
+
+    incomplete_reason = provider_incomplete_reason(record)
 
     runner_id = _runner_identity_from_record(record)
     if runner_id is None:
@@ -512,8 +582,8 @@ def decide_observation(
                 reason="starting_provider_unproven",
                 record=record,
             )
-        # Launching without durable PID/PGID is unproven — never recoverable_lost.
-        if provider_launch_unbound(record):
+        # Claimed launch/bind without durable PID/PGID is unproven — never lost.
+        if incomplete_reason is not None:
             return _obs(
                 health=JobHealth.IDENTITY_UNPROVEN,
                 now=stamp,
@@ -522,7 +592,7 @@ def decide_observation(
                 provider=_UNPROVEN,
                 recoverable=False,
                 action="none",
-                reason="provider_launch_unbound",
+                reason=incomplete_reason,
                 record=record,
             )
         return _obs(
@@ -609,7 +679,7 @@ def decide_observation(
                     reason="legacy_no_identity",
                     record=record,
                 )
-            if provider_launch_unbound(record):
+            if incomplete_reason is not None:
                 return _obs(
                     health=JobHealth.IDENTITY_UNPROVEN,
                     now=stamp,
@@ -618,7 +688,7 @@ def decide_observation(
                     provider=_UNPROVEN,
                     recoverable=False,
                     action="none",
-                    reason="provider_launch_unbound",
+                    reason=incomplete_reason,
                     record=record,
                 )
             return _obs(
@@ -778,9 +848,9 @@ def decide_observation(
                 reason="expired_provider_unproven",
                 record=record,
             )
-        # Crash window: launching with no durable PID/PGID — cancel parity.
-        # Outer may be GONE but an orphan provider can still exist; never lost.
-        if provider_launch_unbound(record):
+        # Crash window / bound-but-incomplete — cancel parity. Outer may be
+        # GONE but an orphan provider can still exist; never lost.
+        if incomplete_reason is not None:
             return _obs(
                 health=JobHealth.IDENTITY_UNPROVEN,
                 now=stamp,
@@ -789,7 +859,7 @@ def decide_observation(
                 provider=_UNPROVEN,
                 recoverable=False,
                 action="none",
-                reason="provider_launch_unbound",
+                reason=incomplete_reason,
                 record=record,
             )
         return _obs(
@@ -1181,7 +1251,9 @@ __all__ = [
     "RecoveryResult",
     "decide_observation",
     "observe_job",
+    "provider_incomplete_reason",
     "provider_launch_unbound",
     "recover_job",
     "recover_jobs",
+    "spawn_identity_unproven",
 ]
