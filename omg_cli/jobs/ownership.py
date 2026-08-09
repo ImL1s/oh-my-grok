@@ -21,6 +21,21 @@ class OwnershipOutcome(enum.Enum):
     GONE = "gone"  # Target already exited; do not signal.
 
 
+class IdentityProbeOutcome(enum.Enum):
+    """Tri-state (+ reused) identity probe for GC — never conflate probe failure with reuse.
+
+    ``UNPROVEN`` — fingerprint/pgid probe unavailable; do **not** treat as gone.
+    ``REUSED`` — non-null fingerprint mismatch or live pgid mismatch (verified).
+    ``LIVE`` — recorded identity still matches the live process.
+    ``GONE`` — process lookup failure / not alive.
+    """
+
+    LIVE = "live"
+    GONE = "gone"
+    REUSED = "reused"
+    UNPROVEN = "unproven"
+
+
 @dataclass(frozen=True, slots=True)
 class ProcessIdentity:
     """Durable process identity used for fail-closed cancel signalling."""
@@ -132,6 +147,44 @@ def pid_alive(pid: int) -> bool:
     return not out.upper().startswith("Z")
 
 
+def probe_identity_liveness(identity: ProcessIdentity) -> IdentityProbeOutcome:
+    """Classify live identity for GC without treating probe failure as reuse.
+
+    Unlike ``assert_ownership`` (cancel fail-closed: raise on mismatch *or*
+    unavailable fingerprint), this distinguishes:
+
+    - fingerprint unavailable / getpgid OSError → ``UNPROVEN``
+    - non-null fingerprint mismatch / pgid mismatch → ``REUSED``
+    - exact match (or no expected fingerprint) → ``LIVE``
+    - process lookup failure / not alive → ``GONE``
+    """
+    target_pid = int(identity.pid)
+    target_pgid = int(identity.pgid)
+    if target_pid <= 1 or target_pgid <= 1:
+        # Refuse to treat init/invalid targets as reclaimable for GC.
+        return IdentityProbeOutcome.UNPROVEN
+    if not pid_alive(target_pid):
+        return IdentityProbeOutcome.GONE
+    try:
+        live_pgid = int(os.getpgid(target_pid))
+    except ProcessLookupError:
+        return IdentityProbeOutcome.GONE
+    except OSError:
+        # Probe unavailable — not proof of reuse.
+        return IdentityProbeOutcome.UNPROVEN
+    if live_pgid != target_pgid:
+        return IdentityProbeOutcome.REUSED
+    expected = identity.pid_starttime
+    if expected is None or expected == "":
+        return IdentityProbeOutcome.LIVE
+    live = probe_pid_starttime(target_pid)
+    if live is None:
+        return IdentityProbeOutcome.UNPROVEN
+    if live != expected:
+        return IdentityProbeOutcome.REUSED
+    return IdentityProbeOutcome.LIVE
+
+
 def assert_ownership(
     identity: ProcessIdentity,
     *,
@@ -225,12 +278,14 @@ def wait_until_gone(pid: int, *, timeout_s: float = 2.0, poll_s: float = 0.05) -
 
 
 __all__ = [
+    "IdentityProbeOutcome",
     "OwnershipOutcome",
     "ProcessIdentity",
     "assert_ownership",
     "capture_identity",
     "kill_pgid",
     "pid_alive",
+    "probe_identity_liveness",
     "probe_pid_starttime",
     "reap_child",
     "wait_until_gone",

@@ -21,8 +21,10 @@ from omg_cli.jobs.models import (
 )
 # Remove unused direct imports that bypass monkeypatch wrappers
 from omg_cli.jobs.ownership import (
+    IdentityProbeOutcome,
     OwnershipOutcome,
     ProcessIdentity,
+    probe_identity_liveness,
     probe_pid_starttime,
     reap_child,
 )
@@ -54,6 +56,11 @@ CancelOwnership = OwnershipOutcome
 
 def _probe_pid_starttime(pid: int) -> str | None:
     return probe_pid_starttime(pid)
+
+
+def _probe_gc_identity(identity: ProcessIdentity) -> IdentityProbeOutcome:
+    """Monkeypatchable GC identity probe (tri-state + reused)."""
+    return probe_identity_liveness(identity)
 
 
 def _assert_cancel_ownership(
@@ -697,7 +704,13 @@ def _acp_binding_references_job(project_root: Path, job_id: str) -> bool:
 def _gc_identities_block_reason(
     project_root: Path, record: JobRecord
 ) -> str | None:
-    """Return a skip reason when recorded identities are live/unproven; else None."""
+    """Return a skip reason when recorded identities are live/unproven; else None.
+
+    Once ``_pid_alive`` is true, only explicit ``GONE`` (or a subsequent
+    not-alive observation) or verified ``REUSED`` may permit quarantine.
+    Probe-unavailable / getpgid errors are ``UNPROVEN`` and **block** GC —
+    never treat them as safe reclaim.
+    """
     if _spawn_uncertain(project_root, record.job_id):
         return "spawn_uncertain"
 
@@ -712,35 +725,25 @@ def _gc_identities_block_reason(
         if not _pid_alive(identity.pid):
             _reap_child(identity.pid)
             continue
+        # PID observed alive — ownership uncertainty must block GC.
         try:
-            if label == "provider":
-                view = JobRecord(
-                    job_id=record.job_id,
-                    created_at=record.created_at,
-                    provider=record.provider,
-                    role=record.role,
-                    state=record.state,
-                    attempt=record.attempt,
-                    schema=record.schema,
-                    generation=record.generation,
-                    pid=record.pid,
-                    pgid=record.pgid,
-                    handle=record.handle,
-                    pid_starttime=identity.pid_starttime,
-                )
-                own = _assert_cancel_ownership(view, identity.pid, identity.pgid)
-            else:
-                own = _assert_cancel_ownership(record, identity.pid, identity.pgid)
-        except JobStoreError as exc:
-            # PID reuse / pgid mismatch ⇒ recorded process is gone; safe for GC
-            # (we are not signalling). Other codes stay fail-closed.
-            code = getattr(exc, "code", None)
-            if code in {"E_JOB_PID_REUSED", "E_JOB_PGID_MISMATCH"}:
-                continue
+            outcome = _probe_gc_identity(identity)
+        except JobStoreError:
+            # Any raise from a patched/legacy ownership path: fail closed.
             return f"identity_unproven:{label}"
-        if own is OwnershipOutcome.OK:
+        if outcome is IdentityProbeOutcome.LIVE:
             return f"live_identity:{label}"
-        if own is OwnershipOutcome.GONE:
+        if outcome is IdentityProbeOutcome.UNPROVEN:
+            return f"identity_unproven:{label}"
+        if outcome is IdentityProbeOutcome.REUSED:
+            # Verified different occupant — recorded process is gone for GC.
+            continue
+        if outcome is IdentityProbeOutcome.GONE:
+            # Died between the alive check and the probe.
+            continue
+        # Fresh liveness recheck: only not-alive permits quarantine.
+        if not _pid_alive(identity.pid):
+            _reap_child(identity.pid)
             continue
         return f"identity_unproven:{label}"
     return None

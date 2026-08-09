@@ -2040,7 +2040,7 @@ def test_gc_never_deletes_terminal_job_with_live_identity(
 ) -> None:
     from datetime import datetime, timedelta, timezone
 
-    from omg_cli.jobs.ownership import OwnershipOutcome
+    from omg_cli.jobs.ownership import IdentityProbeOutcome
     from omg_cli.jobs.runtime import gc_jobs
     from omg_cli.jobs.store import job_dir, job_lock, write_job_record
 
@@ -2068,8 +2068,8 @@ def test_gc_never_deletes_terminal_job_with_live_identity(
 
     monkeypatch.setattr("omg_cli.jobs.runtime._pid_alive", lambda pid: True)
     monkeypatch.setattr(
-        "omg_cli.jobs.runtime._assert_cancel_ownership",
-        lambda *a, **k: OwnershipOutcome.OK,
+        "omg_cli.jobs.runtime._probe_gc_identity",
+        lambda *_a, **_k: IdentityProbeOutcome.LIVE,
     )
 
     result = gc_jobs(root, retention_days=0)
@@ -2079,6 +2079,166 @@ def test_gc_never_deletes_terminal_job_with_live_identity(
         s.get("job_id") == jid and str(s.get("reason", "")).startswith("live_identity")
         for s in result.skipped
     )
+
+
+def test_gc_live_identity_fingerprint_probe_unavailable_is_not_deleted(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fingerprint probe None must be UNPROVEN — not treated as PID reuse for GC."""
+    from datetime import datetime, timedelta, timezone
+
+    import omg_cli.jobs.ownership as ownership_mod
+    import omg_cli.jobs.runtime as runtime_mod
+    from omg_cli.jobs.runtime import gc_jobs
+    from omg_cli.jobs.store import job_dir, job_lock, write_job_record
+
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        fail=True,
+        sleep_s=0.02,
+        attempt_budget=1,
+    )
+    terminal, _ = wait_job(root, started.record.job_id, timeout_s=15)
+    jid = terminal.job_id
+
+    old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    with job_lock(root, jid):
+        rec = read_job_record(root, jid)
+        rec.terminal_at = old
+        rec.pid = 424242
+        rec.pgid = 424242
+        rec.pid_starttime = "fingerprint"
+        write_job_record(root, rec)
+
+    monkeypatch.setattr(runtime_mod, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(ownership_mod, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        ownership_mod.os, "getpgid", lambda pid: 424242
+    )
+    monkeypatch.setattr(ownership_mod, "probe_pid_starttime", lambda pid: None)
+    monkeypatch.setattr(runtime_mod, "_probe_pid_starttime", lambda pid: None)
+
+    result = gc_jobs(root, retention_days=0)
+    assert jid not in result.deleted
+    assert job_dir(root, jid).is_dir()
+    assert (job_dir(root, jid) / "job.json").is_file()
+    assert any(
+        s.get("job_id") == jid
+        and str(s.get("reason", "")).startswith("identity_unproven")
+        for s in result.skipped
+    )
+
+
+def test_gc_live_identity_getpgid_error_is_not_deleted(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """os.getpgid OSError must be UNPROVEN — not E_JOB_PGID_MISMATCH reclaim."""
+    from datetime import datetime, timedelta, timezone
+
+    import omg_cli.jobs.ownership as ownership_mod
+    import omg_cli.jobs.runtime as runtime_mod
+    from omg_cli.jobs.runtime import gc_jobs
+    from omg_cli.jobs.store import job_dir, job_lock, write_job_record
+
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        fail=True,
+        sleep_s=0.02,
+        attempt_budget=1,
+    )
+    terminal, _ = wait_job(root, started.record.job_id, timeout_s=15)
+    jid = terminal.job_id
+
+    old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    with job_lock(root, jid):
+        rec = read_job_record(root, jid)
+        rec.terminal_at = old
+        rec.pid = 424242
+        rec.pgid = 424242
+        rec.pid_starttime = "fingerprint"
+        write_job_record(root, rec)
+
+    monkeypatch.setattr(runtime_mod, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(ownership_mod, "pid_alive", lambda pid: True)
+
+    def _boom(_pid: int) -> int:
+        raise OSError("getpgid probe failed")
+
+    monkeypatch.setattr(ownership_mod.os, "getpgid", _boom)
+
+    result = gc_jobs(root, retention_days=0)
+    assert jid not in result.deleted
+    assert job_dir(root, jid).is_dir()
+    assert (job_dir(root, jid) / "job.json").is_file()
+    assert any(
+        s.get("job_id") == jid
+        and str(s.get("reason", "")).startswith("identity_unproven")
+        for s in result.skipped
+    )
+
+
+def test_gc_terminal_runner_cannot_recreate_job_dir_after_quarantine(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live+unproven identity blocks quarantine so a late runner append cannot
+    recreate a ghost ``.omg/jobs/<id>/`` (events only, no job.json).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    import omg_cli.jobs.ownership as ownership_mod
+    import omg_cli.jobs.runtime as runtime_mod
+    from omg_cli.jobs.runtime import gc_jobs
+    from omg_cli.jobs.store import append_jsonl, job_dir, job_lock, write_job_record
+
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        fail=True,
+        sleep_s=0.02,
+        attempt_budget=1,
+    )
+    terminal, _ = wait_job(root, started.record.job_id, timeout_s=15)
+    jid = terminal.job_id
+    jdir = job_dir(root, jid)
+
+    old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    with job_lock(root, jid):
+        rec = read_job_record(root, jid)
+        rec.terminal_at = old
+        rec.pid = 424242
+        rec.pgid = 424242
+        rec.pid_starttime = "fingerprint"
+        write_job_record(root, rec)
+
+    # Simulate the terminal→exit window: pid still "alive", fingerprint probe down.
+    monkeypatch.setattr(runtime_mod, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(ownership_mod, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(ownership_mod.os, "getpgid", lambda pid: 424242)
+    monkeypatch.setattr(ownership_mod, "probe_pid_starttime", lambda pid: None)
+
+    result = gc_jobs(root, retention_days=0)
+    assert jid not in result.deleted
+    assert jdir.is_dir()
+    assert (jdir / "job.json").is_file()
+
+    # Late runner.terminal-style append must land on the real tree, not a ghost.
+    events = jdir / "events.jsonl"
+    append_jsonl(events, {"event": "runner.terminal", "job_id": jid, "state": "failed"})
+    assert jdir.is_dir()
+    assert (jdir / "job.json").is_file()
+    assert events.is_file()
+    assert "runner.terminal" in events.read_text(encoding="utf-8")
 
 
 def test_gc_binding_created_during_collection_is_protected(
