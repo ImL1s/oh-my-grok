@@ -350,7 +350,13 @@ def _result_from_decision(
 
 
 def _is_safe_conflict(exc: JobStoreError, before_attempt: int, cur: JobRecord | None) -> bool:
-    """True when another retry/scheduler advanced the job (do not double-launch)."""
+    """True when another retry/scheduler advanced the job (do not double-launch).
+
+    Only treat retry-state/attempt races as safe conflicts when the job has
+    actually progressed: attempt advanced, or state became nonterminal.
+    Same-attempt terminal mutations (e.g. cancel-marker while still ``failed``)
+    remain blocked (``ok=False``), not soft-conflict ``ok=True``.
+    """
     code = getattr(exc, "code", None) or ""
     if code not in {"E_JOB_RETRY_ATTEMPT", "E_JOB_RETRY_STATE"}:
         return False
@@ -362,7 +368,7 @@ def _is_safe_conflict(exc: JobStoreError, before_attempt: int, cur: JobRecord | 
         return True
     if int(cur.attempt) > int(before_attempt):
         return True
-    return True  # admission race on automatic path → conflict, not re-launch
+    return False
 
 
 def _dispatch_one(

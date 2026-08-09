@@ -941,6 +941,40 @@ def test_auto_retry_state_change_before_prepare_returns_conflict(
     del real_prepare
 
 
+def test_auto_retry_cancel_marker_same_attempt_not_safe_conflict(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancel-marker race: still failed + same attempt must block, not ok=True conflict."""
+    terminal = _failed_automatic(root)
+    now = _due_now(terminal)
+    before_attempt = int(terminal.attempt)
+
+    import omg_cli.jobs.store as store_mod
+
+    def _cancel_race(project_root, job_id, **kwargs):  # noqa: ANN001
+        # Operator cancel lands between evaluate and prepare; state stays failed,
+        # attempt unchanged — incompatible mutation, not a safe scheduler conflict.
+        with job_lock(project_root, job_id):
+            rec = read_job_record(project_root, job_id)
+            rec.cancel_requested_at = datetime.now(timezone.utc).isoformat()
+            rec.cancel_reason = "operator"
+            write_job_record(project_root, rec)
+        raise JobStoreError(
+            "automatic retry refuses cancelled terminal records",
+            code="E_JOB_RETRY_STATE",
+        )
+
+    monkeypatch.setattr(store_mod, "prepare_retry", _cancel_race)
+    result = auto_retry_job(root, terminal.job_id, now=now)
+    assert result.ok is False
+    assert result.action == "blocked"
+    assert result.error_code == "E_JOB_RETRY_STATE"
+    final = read_job_record(root, terminal.job_id)
+    assert final.state == JobState.FAILED
+    assert int(final.attempt) == before_attempt
+    assert final.cancel_requested_at is not None
+
+
 def test_auto_retry_vs_gc_never_recreates_quarantined_job(root: Path) -> None:
     from omg_cli.jobs.runtime import gc_jobs
 
