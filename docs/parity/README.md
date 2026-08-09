@@ -148,10 +148,24 @@ Seeding snapshots does **not** promote `inventory_status`, `source_status`, or `
 | Artifact | Role |
 | --- | --- |
 | Upstream seed (`upstream-snapshots/*.json`) | Catalogue at a pin for refresh/release drift — **not** a completeness proof |
-| Completeness policy | Reviewed discovery boundary for one source (registries, category rules, exceptions) |
-| Completeness proof | Deterministic reproduction binding pin + policy digest + seed digest + inventory coverage + discovered surfaces |
+| Completeness policy (`completeness/policies/`) | Reviewed discovery boundary for one source (registries, category rules, exceptions) |
+| Completeness mapping (`completeness/mappings/`) | Surface → capability binding (required for discovery_rules v2) |
+| Completeness proof (`completeness/proofs/`) | Deterministic reproduction binding pin + policy digest + seed digest + inventory coverage + discovered surfaces |
 
-Strict checks invoke the promotion gate. Bootstrapping inventories need no proofs; any `complete` status without a valid proof fails closed.
+OMC has a committed policy/mapping/proof triple at the pinned revision; canonical `source_status.OMC` remains **bootstrapping** (proof present, unpromoted). See [completeness-schema-v1.md](completeness-schema-v1.md) for artifact consistency vs source reproduction vs promotion.
+
+```bash
+# Network-free artifact consistency (no checkout; source_reproduced=false):
+python3 scripts/check_parity_completeness.py --check --source OMC --json
+# Full reproduction against an authenticated checkout:
+python3 scripts/check_parity_completeness.py --check --source OMC \
+  --upstream-root /path/to/pinned/omc --json
+# Candidate proof only (stdout; never writes inventory/proof):
+python3 scripts/check_parity_completeness.py --plan --source OMC \
+  --upstream-root /path/to/pinned/omc --proof-only
+```
+
+Strict checks invoke the promotion gate **and** verify committed completeness artifact triples when present. Bootstrapping inventories need no promotion proofs; any `complete` status without a valid proof fails closed. Artifact verification alone does not promote.
 
 ## Header
 
@@ -190,7 +204,7 @@ Each row binds upstream pin + source paths, OMG implementation paths, per-runtim
 
 While the inventory header, any `category_status`, or any `source_status` is `bootstrapping`, generators must not emit parity percentages or green checkmark glyphs (`%` / checkmark / `✓`). Open gaps are expected and listed honestly in [`GAPS.md`](GAPS.md). Do not treat historical research matrices as claimability truth — prefer this inventory.
 
-`complete` on `source_status` / `category_status` requires a **reproducible upstream completeness proof** (catalogue seed ≠ completeness). Promotion remains unperformed and is proof-gated; see the inventory snapshot and [`GAPS.md`](GAPS.md) for current status. Canonical statuses stay `bootstrapping` until real-source policies/proofs are authored and statuses are explicitly promoted.
+`complete` on `source_status` / `category_status` requires a **reproducible upstream completeness proof** (catalogue seed ≠ completeness). OMC discovery evidence is committed under `completeness/{policies,mappings,proofs}/OMC.json` but remains unpromoted. See the inventory snapshot and [`GAPS.md`](GAPS.md) for current status. Canonical statuses stay `bootstrapping` until statuses are explicitly promoted.
 
 ## Migration
 

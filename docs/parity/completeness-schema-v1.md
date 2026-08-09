@@ -17,7 +17,11 @@ Maintainer entrypoint: `scripts/check_parity_completeness.py` (`--plan` /
 | Artifact | `store_kind` | `schema_version` |
 | --- | --- | --- |
 | Policy | `parity-completeness-policy` | `1` |
+| Mapping | `parity-completeness-mapping` | `1` |
 | Proof | `parity-completeness-proof` | `1` |
+
+Top-level policy/mapping/proof `schema_version` stays `1`. Only
+`discovery_rules.version` may be `1` or `2`.
 
 ## Policy (`parity-completeness-policy/v1`)
 
@@ -30,14 +34,48 @@ Required fields:
 - `store_kind`, `schema_version`
 - `source`, `repository`
 - `discovery_rules` (versioned):
+  - `version` — `1` (JSON registry) or `2` (real-source extractors)
   - `authoritative_registries[]` — relative paths + `extraction_method`
+    (v2 also requires `id` + `options`)
   - `category_assignment` — registry `kind` → inventory category
   - `non_surface_exceptions[]` — path + rationale + issue reference
 
-Supported extraction method in v1: `json_registry_v1` (JSON object with
+### discovery_rules v1
+
+Supported extraction method: `json_registry_v1` (JSON object with
 `kind` + `entries[{id,path,anchor}]`). Discovery enumerates
 **user-observable** registered surfaces — not file counts, README heading
 counts, or inventory row counts.
+
+### discovery_rules v2
+
+Static extractors in `omg_cli/parity_discovery.py` (no upstream JS/TS/npm
+execution). Admitted methods:
+
+- `claude_plugin_skills_v1`
+- `markdown_command_tree_v1`
+- `typescript_agent_registry_v1`
+- `commander_command_graph_v1`
+- `claude_hooks_manifest_v1`
+- `typescript_tool_family_graph_v1`
+- `package_surface_v1`
+
+V2 requires a committed **mapping store** and bidirectional
+surface↔inventory coverage (every discovered surface mapped; every
+non-alias inventory row for that source referenced).
+
+## Mapping (`parity-completeness-mapping/v1`)
+
+Committed under `docs/parity/completeness/mappings/{SOURCE}.json`.
+
+- `store_kind`, `schema_version`, `source`
+- `surfaces[]` sorted by `surface_id`, each with `category` and sorted
+  non-empty `capability_ids[]`
+
+Legacy `{surface_id: [capability_id, …]}` dicts remain accepted by the
+plan/build APIs for hermetic fixtures; committed artifacts use the store
+form. For v2, the normalized mapping projection is part of
+`coverage_digest`.
 
 ## Proof (`parity-completeness-proof/v1`)
 
@@ -77,10 +115,30 @@ Shared by `omg parity check --strict` and
 5. Drift in pin, policy digest, seed digest, coverage digest, mapping, or
    source input fails closed.
 
-Committed layout (when a source is later promoted):
+Committed layout:
 
 - `docs/parity/completeness/policies/{SOURCE}.json`
+- `docs/parity/completeness/mappings/{SOURCE}.json`
 - `docs/parity/completeness/proofs/{SOURCE}.json`
+
+OMC currently has a committed policy/mapping/proof triple that is
+technically sufficient for source promotion, while canonical
+`source_status.OMC` (and categories / inventory) remain `bootstrapping`.
+
+## Artifact consistency vs source reproduction vs promotion
+
+Three distinct outcomes — do not conflate them:
+
+| Outcome | What it means | When |
+| --- | --- | --- |
+| Artifact consistency | Committed policy + mapping + proof digest-bind to inventory/seed; no orphan members | Network-free `--check` / strict inventory (no `--upstream-root`) |
+| Source reproduction | Re-run extractors against an authenticated checkout at `pin_revision` | Maintainer `--plan` / `--check --upstream-root` or hermetic fixtures |
+| Promotion | `source_status` / `category_status` / `inventory_status` set to `complete` | Explicit inventory edit + promotion gate; **not** implied by artifacts |
+
+Network-free checks report `artifact_consistency_verified: true` and
+`source_reproduced: false`. Only an explicitly supplied authenticated
+checkout may report `source_reproduced: true`. Artifact verification never
+mutates maturity or live evidence.
 
 ## Reproducibility boundary
 
@@ -104,7 +162,11 @@ Committed layout (when a source is later promoted):
 
 ## Bootstrapping example
 
-Hermetic fixtures live under `tests/fixtures/parity/completeness/` (tiny
-fake upstream — not a copy of real OMC/OMX/OmO/Antigravity trees). They
-remain explicitly bootstrapping examples for the gate; they do **not**
+Hermetic fixtures live under `tests/fixtures/parity/completeness/`:
+
+- `upstream/OMC/` — tiny v1 `json_registry_v1` tree
+- `real_source/OMC/` — synthetic v2 registry-syntax tree (not a copy of
+  upstream OMC)
+
+They remain explicitly bootstrapping examples for the gate; they do **not**
 promote the canonical inventory.

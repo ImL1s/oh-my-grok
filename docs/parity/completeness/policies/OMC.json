@@ -1,0 +1,87 @@
+{
+  "store_kind": "parity-completeness-policy",
+  "schema_version": 1,
+  "source": "OMC",
+  "repository": "https://github.com/Yeachan-Heo/oh-my-claudecode",
+  "discovery_rules": {
+    "version": 2,
+    "authoritative_registries": [
+      {
+        "id": "plugin-skills",
+        "path": ".claude-plugin/plugin.json",
+        "extraction_method": "claude_plugin_skills_v1",
+        "options": {}
+      },
+      {
+        "id": "session-commands",
+        "path": "commands",
+        "extraction_method": "markdown_command_tree_v1",
+        "options": {}
+      },
+      {
+        "id": "agent-registry",
+        "path": "src/agents/definitions.ts",
+        "extraction_method": "typescript_agent_registry_v1",
+        "options": {
+          "prompt_dir": "agents"
+        }
+      },
+      {
+        "id": "terminal-cli",
+        "path": "src/cli/index.ts",
+        "extraction_method": "commander_command_graph_v1",
+        "options": {}
+      },
+      {
+        "id": "lifecycle-hooks",
+        "path": "hooks/hooks.json",
+        "extraction_method": "claude_hooks_manifest_v1",
+        "options": {}
+      },
+      {
+        "id": "mcp-tool-families",
+        "path": "src/mcp/tool-registry.ts",
+        "extraction_method": "typescript_tool_family_graph_v1",
+        "options": {}
+      },
+      {
+        "id": "package-surface",
+        "path": "package.json",
+        "extraction_method": "package_surface_v1",
+        "options": {
+          "governance_scripts": [
+            "plugin:shipping:verify",
+            "sync-metadata:verify"
+          ],
+          "required_files_roots": [
+            ".claude-plugin",
+            "agents",
+            "bin",
+            "commands",
+            "hooks",
+            "skills"
+          ]
+        }
+      }
+    ],
+    "category_assignment": {
+      "agent": "agents_routing",
+      "agent_catalog": "agents_routing",
+      "bin": "runtime_orchestration",
+      "catalog": "skills",
+      "cli": "runtime_orchestration",
+      "command": "runtime_orchestration",
+      "hook": "hooks",
+      "mcp-family": "tools_mcp",
+      "npm-script": "parity_governance",
+      "skill": "skills"
+    },
+    "non_surface_exceptions": [
+      {
+        "path": "README.md",
+        "rationale": "Narrative README is not a registered user-facing surface for OMC discovery",
+        "issue": "#78"
+      }
+    ]
+  }
+}

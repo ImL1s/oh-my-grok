@@ -10,6 +10,15 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **Parity #78-F real pinned OMC discovery evidence:** committed
+  discovery_rules v2 policy, surface→capability mapping, and completeness
+  proof under `docs/parity/completeness/{policies,mappings,proofs}/OMC.json`
+  at the existing OMC pin, plus hermetic synthetic registry fixtures and
+  `tests/test_parity_real_source_omc.py`. Network-free artifact consistency
+  verifies without claiming source reproduction. Canonical
+  `source_status.OMC` / categories / `inventory_status` stay bootstrapping
+  — proof present, **no promotion**. Refs #78 (does not close).
+
 - **Partial work for #68 PR5 / bounded auto-retry scheduler:** caller-driven
   `omg job auto-retry JOB_ID|--all` one-pass tick over the existing
   `retry_job` / exact-next-attempt path (deterministic backoff, `--limit`

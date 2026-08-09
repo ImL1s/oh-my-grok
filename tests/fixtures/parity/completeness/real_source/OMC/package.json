@@ -1,0 +1,19 @@
+{
+  "name": "fixture-omc-real",
+  "version": "0.0.0",
+  "bin": {
+    "omc": "bin/omc.js"
+  },
+  "scripts": {
+    "sync-metadata:verify": "node -e \"process.exit(0)\"",
+    "plugin:shipping:verify": "node -e \"process.exit(0)\""
+  },
+  "files": [
+    ".claude-plugin",
+    "agents",
+    "bin",
+    "commands",
+    "hooks",
+    "skills"
+  ]
+}
