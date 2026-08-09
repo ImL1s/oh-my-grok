@@ -124,7 +124,7 @@
         "source": "OMX",
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": [
-          "README.md"
+          "src/cli/index.ts"
         ]
       },
       "omg_paths": [
@@ -243,7 +243,7 @@
       "issues": [
         "#78"
       ],
-      "gap": "#78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; #78-E README\u2194JSON managed-snapshot drift gate landed; #78-F real pinned OMC discovery policy/mapping/proof landed; promotion remains unperformed and is proof-gated; OMX/OmO/Antigravity real-source proofs still open."
+      "gap": "#78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; #78-E README↔JSON managed-snapshot drift gate landed; #78-F/#78-G real pinned OMC+OMX discovery policy/mapping/proof landed; promotion remains unperformed and is proof-gated; OmO and Antigravity real-source proofs still open."
     },
     {
       "id": "omc.cli.session_surfaces",
@@ -743,7 +743,13 @@
         "source": "OMX",
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": [
-          "README.md"
+          "skills/git-master/SKILL.md",
+          "skills/hud/SKILL.md",
+          "skills/note/SKILL.md",
+          "skills/trace/SKILL.md",
+          "skills/wiki/SKILL.md",
+          "src/cli/index.ts",
+          "src/cli/omx.ts"
         ]
       },
       "omg_paths": [
@@ -783,7 +789,23 @@
         "source": "OMX",
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": [
-          "README.md"
+          "skills/ask-claude/SKILL.md",
+          "skills/ask-gemini/SKILL.md",
+          "skills/autopilot/SKILL.md",
+          "skills/deep-interview/SKILL.md",
+          "skills/ecomode/SKILL.md",
+          "skills/performance-goal/SKILL.md",
+          "skills/pipeline/SKILL.md",
+          "skills/plan/SKILL.md",
+          "skills/prometheus-strict/SKILL.md",
+          "skills/ralph-init/SKILL.md",
+          "skills/ralph/SKILL.md",
+          "skills/ralplan/SKILL.md",
+          "skills/swarm/SKILL.md",
+          "skills/ultragoal/SKILL.md",
+          "skills/ultrawork/SKILL.md",
+          "src/cli/index.ts",
+          "templates/catalog-manifest.json"
         ]
       },
       "omg_paths": [
@@ -820,7 +842,12 @@
         "source": "OMX",
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": [
-          "README.md"
+          "skills/analyze/SKILL.md",
+          "skills/autoresearch-goal/SKILL.md",
+          "skills/autoresearch/SKILL.md",
+          "skills/best-practice-research/SKILL.md",
+          "skills/deepsearch/SKILL.md",
+          "src/cli/index.ts"
         ]
       },
       "omg_paths": [],
@@ -847,7 +874,10 @@
         "source": "OMX",
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": [
-          "README.md"
+          "skills/ask/SKILL.md",
+          "skills/team/SKILL.md",
+          "skills/worker/SKILL.md",
+          "src/cli/index.ts"
         ]
       },
       "omg_paths": [
@@ -886,7 +916,41 @@
         "source": "OMX",
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": [
-          "README.md"
+          "prompts/analyst.md",
+          "prompts/api-reviewer.md",
+          "prompts/architect.md",
+          "prompts/build-fixer.md",
+          "prompts/code-reviewer.md",
+          "prompts/code-simplifier.md",
+          "prompts/critic.md",
+          "prompts/debugger.md",
+          "prompts/dependency-expert.md",
+          "prompts/designer.md",
+          "prompts/executor.md",
+          "prompts/explore.md",
+          "prompts/git-master.md",
+          "prompts/information-architect.md",
+          "prompts/performance-reviewer.md",
+          "prompts/planner.md",
+          "prompts/product-analyst.md",
+          "prompts/product-manager.md",
+          "prompts/prometheus-strict-metis.md",
+          "prompts/prometheus-strict-momus.md",
+          "prompts/prometheus-strict-oracle.md",
+          "prompts/qa-tester.md",
+          "prompts/quality-reviewer.md",
+          "prompts/quality-strategist.md",
+          "prompts/researcher.md",
+          "prompts/scholastic.md",
+          "prompts/security-reviewer.md",
+          "prompts/style-reviewer.md",
+          "prompts/team-executor.md",
+          "prompts/test-engineer.md",
+          "prompts/ux-researcher.md",
+          "prompts/verifier.md",
+          "prompts/vision.md",
+          "prompts/writer.md",
+          "templates/catalog-manifest.json"
         ]
       },
       "omg_paths": [
@@ -922,7 +986,8 @@
         "source": "OMX",
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": [
-          "README.md"
+          "plugins/oh-my-codex/hooks/codex-native-hook.mjs",
+          "src/cli/index.ts"
         ]
       },
       "omg_paths": [
@@ -960,7 +1025,16 @@
         "source": "OMX",
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": [
-          "README.md"
+          "package.json",
+          "plugins/oh-my-codex/.codex-plugin/plugin.json",
+          "skills/cancel/SKILL.md",
+          "skills/configure-notifications/SKILL.md",
+          "skills/doctor/SKILL.md",
+          "skills/help/SKILL.md",
+          "skills/omx-setup/SKILL.md",
+          "skills/skill/SKILL.md",
+          "src/cli/index.ts",
+          "templates/catalog-manifest.json"
         ]
       },
       "omg_paths": [
@@ -996,7 +1070,18 @@
         "source": "OMX",
         "revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
         "source_paths": [
-          "README.md"
+          "skills/ai-slop-cleaner/SKILL.md",
+          "skills/build-fix/SKILL.md",
+          "skills/code-review/SKILL.md",
+          "skills/design/SKILL.md",
+          "skills/frontend-ui-ux/SKILL.md",
+          "skills/review/SKILL.md",
+          "skills/security-review/SKILL.md",
+          "skills/tdd/SKILL.md",
+          "skills/ultraqa/SKILL.md",
+          "skills/visual-ralph/SKILL.md",
+          "skills/visual-verdict/SKILL.md",
+          "skills/web-clone/SKILL.md"
         ]
       },
       "omg_paths": [
@@ -1623,7 +1708,7 @@
       "capability_ids": [
         "antigravity.provider.adapter"
       ],
-      "summary": "A\u2013D landed (probe/run/ask/Team envelope); dual review+CI before close"
+      "summary": "A–D landed (probe/run/ask/Team envelope); dual review+CI before close"
     },
     {
       "id": "gap.jobs.durable",
@@ -1659,7 +1744,7 @@
       "capability_ids": [
         "parity.inventory.governance"
       ],
-      "summary": "#78-F real pinned OMC discovery policy/mapping/proof landed; OMX, OmO, and Antigravity real-source proofs and all explicit status promotions remain open"
+      "summary": "#78-F/#78-G real pinned OMC+OMX discovery policy/mapping/proof landed; OmO and Antigravity real-source proofs and all explicit status promotions remain open"
     },
     {
       "id": "gap.parity.platform_live_evidence",

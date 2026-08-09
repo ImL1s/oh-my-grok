@@ -56,14 +56,20 @@ execution). Admitted methods:
 - `markdown_command_tree_v1`
 - `typescript_agent_registry_v1`
 - `commander_command_graph_v1`
-- `claude_hooks_manifest_v1`
+- `claude_hooks_manifest_v1` (also admits `${PLUGIN_ROOT}` + optional `plugin_root`)
 - `typescript_tool_family_graph_v1`
-- `package_surface_v1`
+- `package_surface_v1` (optional `include_bins`)
+- `omx_catalog_manifest_v1`
+- `omx_help_surface_v1`
+- `omx_launcher_bin_v1`
+- `codex_plugin_manifest_v1`
 
 V2 requires a committed **mapping store** and bidirectional
 surface↔inventory coverage (every discovered surface mapped; every
 non-alias inventory row for that source referenced).
 
+Committed OMC and OMX proofs exist at their inventory pins but
+`source_status` for both remains `bootstrapping` (unpromoted).
 ## Mapping (`parity-completeness-mapping/v1`)
 
 Committed under `docs/parity/completeness/mappings/{SOURCE}.json`.

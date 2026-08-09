@@ -1,0 +1,108 @@
+{
+  "store_kind": "parity-completeness-policy",
+  "schema_version": 1,
+  "source": "OMX",
+  "repository": "https://github.com/code-yeongyu/oh-my-codex",
+  "discovery_rules": {
+    "version": 2,
+    "authoritative_registries": [
+      {
+        "id": "omx-catalog",
+        "path": "templates/catalog-manifest.json",
+        "extraction_method": "omx_catalog_manifest_v1",
+        "options": {
+          "skills_dir": "skills",
+          "prompts_dir": "prompts"
+        }
+      },
+      {
+        "id": "omx-help-cli",
+        "path": "src/cli/index.ts",
+        "extraction_method": "omx_help_surface_v1",
+        "options": {}
+      },
+      {
+        "id": "omx-launcher",
+        "path": "src/cli/omx.ts",
+        "extraction_method": "omx_launcher_bin_v1",
+        "options": {
+          "bin_name": "omx"
+        }
+      },
+      {
+        "id": "codex-plugin",
+        "path": "plugins/oh-my-codex/.codex-plugin/plugin.json",
+        "extraction_method": "codex_plugin_manifest_v1",
+        "options": {}
+      },
+      {
+        "id": "codex-hooks",
+        "path": "plugins/oh-my-codex/hooks/hooks.json",
+        "extraction_method": "claude_hooks_manifest_v1",
+        "options": {
+          "plugin_root": "plugins/oh-my-codex"
+        }
+      },
+      {
+        "id": "package-surface",
+        "path": "package.json",
+        "extraction_method": "package_surface_v1",
+        "options": {
+          "include_bins": false,
+          "governance_scripts": [
+            "sync:plugin:check",
+            "verify:native-agents",
+            "verify:plugin-bundle"
+          ],
+          "required_files_roots": [
+            ".agents/plugins/marketplace.json",
+            "plugins",
+            "prompts",
+            "skills",
+            "templates"
+          ]
+        }
+      }
+    ],
+    "category_assignment": {
+      "agent": "agents_routing",
+      "agent_alias": "agents_routing",
+      "agent_catalog": "agents_routing",
+      "agent_deprecated": "agents_routing",
+      "agent_internal": "agents_routing",
+      "agent_merged": "agents_routing",
+      "bin": "runtime_orchestration",
+      "catalog": "skills",
+      "cli": "runtime_orchestration",
+      "hook": "hooks",
+      "npm-script": "parity_governance",
+      "skill": "skills",
+      "skill_alias": "skills",
+      "skill_deprecated": "skills",
+      "skill_internal": "skills",
+      "skill_merged": "skills"
+    },
+    "non_surface_exceptions": [
+      {
+        "path": "README.md",
+        "rationale": "Narrative README is not a registered user-facing surface for OMX discovery; catalog-manifest is authoritative",
+        "issue": "#78"
+      },
+      {
+        "path": "prompts/explore-harness.md",
+        "rationale": "Harness prompt present in tree but not catalogued as an installable agent",
+        "issue": "#78"
+      },
+      {
+        "path": "prompts/sisyphus-lite.md",
+        "rationale": "Lite prompt present in tree but not catalogued as an installable agent",
+        "issue": "#78"
+      },
+      {
+        "path": "prompts/team-orchestrator.md",
+        "rationale": "Team orchestrator prompt present in tree but not catalogued as an installable agent",
+        "issue": "#78"
+      }
+    ]
+  }
+}
