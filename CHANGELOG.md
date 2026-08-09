@@ -10,6 +10,18 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#69 PR3 leader-resume task-claim reconciliation:** `omg team resume`
+  (`resume_for_identity`) reconciles Team API task claims under the existing
+  scale.lock after pane reconcile/relaunch — preserve coherent unexpired
+  claims; release only coherent expired claims to `pending` (version +1;
+  old token fenced). Additive `claim_reconcile` on resume output
+  (IDs/counts only). Hermetic coverage in `tests/test_team_reconcile.py`.
+  Does **not** close #69 (no job-backed workers / attempts / Hyperplan /
+  catalog-v1 reconcile op / maturity promotion). Fail-closed preflight
+  rejects non-string/unsafe owners, non-string / padded / whitespace-only
+  tokens, filename/body id mismatches, and duplicate embedded task ids
+  (zero mutation; aborts resume).
+
 - **Partial work for issue 68 (PR3 / retry+GC+ask --background):** explicit
   `omg job retry JOB_ID --attempt N` with immutable `attempt_budget`, attempt
   archives under `.omg/jobs/<id>/attempts/NNNN/`, retry classification

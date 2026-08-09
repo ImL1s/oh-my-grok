@@ -1224,8 +1224,10 @@ def resume_for_identity(
 
     Combines :func:`omg_cli.team.scaling.resume_team` with
     :func:`omg_cli.team.scaling.relaunch_dead_incomplete_workers`. Generation
-    increments only when at least one worker is safely respawned.
+    increments only when at least one worker is safely respawned. After pane
+    reconcile/relaunch, reconciles Team API task claims under the same lock.
     """
+    from omg_cli.team.api import reconcile_task_claims
     from omg_cli.team.scaling import (
         _relaunch_dead_incomplete_workers_locked,
         _resume_team_locked_impl,
@@ -1267,6 +1269,16 @@ def resume_for_identity(
                 run_id,
                 env=env,
             )
+        # Claim reconciliation shares the lifecycle lock; never materializes
+        # a Team API board. team_id comes only from persisted meta (legacy
+        # default "team").
+        meta_for_claims = load_team_meta(root_path, run_id)
+        team_id = str(meta_for_claims.get("team_id") or "team")
+        claim_reconcile = reconcile_task_claims(
+            root_path,
+            run_id=run_id,
+            team_id=team_id,
+        )
     out = dict(reconciled)
     out.update(
         {
@@ -1278,6 +1290,7 @@ def resume_for_identity(
                 reconciled.get("identity_generation"),
             ),
             "relaunch_note": relaunch.get("note"),
+            "claim_reconcile": claim_reconcile,
         }
     )
     # Prefer combined note when workers were touched.

@@ -21,7 +21,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from omg_cli.contracts.path_keys import (
     DATA_FILE_MODE,
@@ -620,6 +620,190 @@ def _lease_expired(claim: Mapping[str, Any] | None) -> bool:
     return stamp <= _now_utc()
 
 
+def _classify_claim_for_reconcile(
+    task: Mapping[str, Any],
+    *,
+    cutoff: datetime,
+) -> Literal["unchanged", "preserve_unexpired", "release_expired"]:
+    """Classify one normalized task for leader-resume claim reconciliation.
+
+    Raises :class:`TeamApiError` on inconsistent claim/status shapes. Never
+    infers worker liveness; lease authority alone decides preserve vs release.
+    """
+    task_id = str(task.get("id") or "")
+    status = str(task.get("status") or "")
+    claim = task.get("claim")
+    owner = task.get("owner")
+
+    def _refuse(invariant: str) -> None:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            f"task {task_id!r}: {invariant}",
+            details={
+                "error": "corrupt_claim",
+                "task_id": task_id,
+                "invariant": invariant,
+            },
+        )
+
+    if status == "in_progress":
+        if not isinstance(claim, Mapping) or not claim:
+            _refuse("in_progress_missing_claim")
+            raise AssertionError("unreachable")  # pragma: no cover
+        claim_map = claim
+        claim_owner = claim_map.get("owner")
+        token = claim_map.get("token")
+        # Fail closed: owner + claim.owner must be identical nonempty safe
+        # string worker IDs (reject int/bool/path-like poison).
+        if not isinstance(owner, str) or not owner:
+            _refuse("non_string_owner")
+        if not isinstance(claim_owner, str) or not claim_owner:
+            _refuse("non_string_claim_owner")
+        if owner != claim_owner:
+            _refuse("owner_claim_mismatch")
+        try:
+            require_safe_id(owner, label="owner")
+            require_safe_id(claim_owner, label="claim.owner")
+        except ContractValidationError:
+            _refuse("unsafe_owner")
+        # Token must be a canonical nonempty string (reject false/non-string,
+        # whitespace-only, or padded tokens). Public claim ops normalize via
+        # _require_str → strip(), so a padded/ws-only stored token can be
+        # "preserved" by resume but never authenticated publicly.
+        if (
+            not isinstance(token, str)
+            or not token.strip()
+            or token != token.strip()
+        ):
+            _refuse("non_string_token")
+        stamp = _parse_leased_until(claim_map)
+        if stamp is None or stamp <= cutoff:
+            return "release_expired"
+        return "preserve_unexpired"
+
+    if status in {"pending", "blocked", "completed", "failed"}:
+        if claim is not None:
+            _refuse(f"{status}_has_claim")
+        return "unchanged"
+
+    _refuse(f"unsupported_status:{status}")
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def reconcile_task_claims(
+    root: Path | str,
+    *,
+    run_id: str,
+    team_id: str,
+) -> dict[str, Any]:
+    """Reconcile Team API task claims after leader restart (resume lifecycle).
+
+    Not a catalog/MCP operation — invoked only from ``resume_for_identity``.
+    Returns IDs and counts only (never claim tokens). Does not create API
+    config or task directories.
+    """
+    root_path = Path(root).resolve()
+    rid = require_safe_id(run_id, label="run_id")
+    tid = require_safe_id(team_id, label="team_id")
+    cutoff = _now_utc()
+
+    empty = {
+        "status": "not_materialized",
+        "scanned": 0,
+        "preserved_unexpired": [],
+        "released_expired": [],
+        "unchanged": [],
+    }
+    config_path = _api_config_path(root_path, rid, tid)
+    tasks_directory = _tasks_dir(root_path, rid, tid)
+    config_exists = config_path.exists()
+    tasks_dir_exists = tasks_directory.exists()
+
+    if not config_exists and not tasks_dir_exists:
+        return empty
+
+    if not config_exists and tasks_dir_exists:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            "detached task files without api-config",
+            details={
+                "error": "detached_tasks",
+                "run_id": rid,
+                "team_id": tid,
+            },
+        )
+
+    config = _load_config(root_path, rid, tid)
+    if config is None:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            "api-config missing after existence check",
+            details={"error": "corrupt_config", "run_id": rid, "team_id": tid},
+        )
+
+    # Snapshot + normalize every task before any mutation (all-stop preflight).
+    snapshot = _list_tasks(root_path, rid, tid)
+    preflight: list[tuple[dict[str, Any], str]] = []
+    for task in snapshot:
+        action = _classify_claim_for_reconcile(task, cutoff=cutoff)
+        preflight.append((task, action))
+
+    preserved: list[str] = []
+    released: list[str] = []
+    unchanged: list[str] = []
+
+    for task, action in preflight:
+        task_id = str(task["id"])
+        if action == "unchanged":
+            unchanged.append(task_id)
+            continue
+        if action == "preserve_unexpired":
+            preserved.append(task_id)
+            continue
+
+        # Candidate mutation: lock, reread, reclassify (renew may win).
+        path = _task_path(root_path, rid, tid, task_id)
+        with exclusive_lock(path.with_suffix(".lock")):
+            current = _read_task(root_path, rid, tid, task_id)
+            if current is None:
+                raise TeamApiError(
+                    "E_TEAM_API_FAILED",
+                    f"task {task_id!r}: disappeared under lock",
+                    details={
+                        "error": "corrupt_claim",
+                        "task_id": task_id,
+                        "invariant": "task_missing_under_lock",
+                    },
+                )
+            locked_action = _classify_claim_for_reconcile(current, cutoff=cutoff)
+            if locked_action == "release_expired":
+                _write_task(
+                    root_path,
+                    rid,
+                    tid,
+                    {
+                        **current,
+                        "status": "pending",
+                        "owner": None,
+                        "claim": None,
+                        "version": int(current["version"]) + 1,
+                    },
+                )
+                released.append(task_id)
+            elif locked_action == "preserve_unexpired":
+                preserved.append(task_id)
+            else:
+                unchanged.append(task_id)
+
+    return {
+        "status": "ok",
+        "scanned": len(snapshot),
+        "preserved_unexpired": sorted(preserved, key=int),
+        "released_expired": sorted(released, key=int),
+        "unchanged": sorted(unchanged, key=int),
+    }
+
+
 def _normalize_task(raw: Mapping[str, Any]) -> dict[str, Any]:
     row = dict(raw)
     status = str(row.get("status") or "pending")
@@ -699,19 +883,72 @@ def _read_task(
             "task file is corrupt",
             details={"error": "corrupt_task"},
         )
-    return _normalize_task(parsed)
+    task = _normalize_task(parsed)
+    if task["id"] != task_id:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            f"task file stem {task_id!r} mismatches embedded id {task['id']!r}",
+            details={
+                "error": "corrupt_task",
+                "invariant": "filename_body_id_mismatch",
+                "task_id": task_id,
+                "embedded_id": task["id"],
+            },
+        )
+    return task
 
 
 def _list_tasks(root: Path, run_id: str, team_id: str) -> list[dict[str, Any]]:
     directory = _tasks_dir(root, run_id, team_id)
     if not directory.exists():
         return []
-    tasks: list[dict[str, Any]] = []
+    loaded: list[tuple[str, dict[str, Any]]] = []
     for path in sorted(directory.glob("task-*.json")):
         stem = path.name[len("task-") : -len(".json")]
-        task = _read_task(root, run_id, team_id, stem)
-        if task is not None:
-            tasks.append(task)
+        _validate_task_id(stem)
+        parsed = parse_canonical_json_bytes(path.read_bytes())
+        if not isinstance(parsed, dict):
+            raise TeamApiError(
+                "E_TEAM_API_FAILED",
+                "task file is corrupt",
+                details={"error": "corrupt_task", "task_id": stem},
+            )
+        task = _normalize_task(parsed)
+        loaded.append((stem, task))
+
+    # Duplicate embedded IDs across files (checked before stem bind so a
+    # pair of mismatched files sharing one id still fail closed distinctly).
+    seen_ids: dict[str, str] = {}
+    for stem, task in loaded:
+        embedded = task["id"]
+        prior = seen_ids.get(embedded)
+        if prior is not None:
+            raise TeamApiError(
+                "E_TEAM_API_FAILED",
+                f"duplicate task id {embedded!r} in stems {prior!r} and {stem!r}",
+                details={
+                    "error": "corrupt_task",
+                    "invariant": "duplicate_task_id",
+                    "task_id": embedded,
+                    "stems": [prior, stem],
+                },
+            )
+        seen_ids[embedded] = stem
+
+    tasks: list[dict[str, Any]] = []
+    for stem, task in loaded:
+        if task["id"] != stem:
+            raise TeamApiError(
+                "E_TEAM_API_FAILED",
+                f"task file stem {stem!r} mismatches embedded id {task['id']!r}",
+                details={
+                    "error": "corrupt_task",
+                    "invariant": "filename_body_id_mismatch",
+                    "task_id": stem,
+                    "embedded_id": task["id"],
+                },
+            )
+        tasks.append(task)
     tasks.sort(key=lambda item: int(item["id"]))
     return tasks
 

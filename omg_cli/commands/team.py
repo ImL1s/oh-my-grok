@@ -593,7 +593,9 @@ def cmd_team(args: argparse.Namespace) -> int:
                 )
             return 0
         if action == "resume":
+            from omg_cli.cli_envelope import wants_json
             from omg_cli.host_probe import evaluate_feature_gate, probe_host
+            from omg_cli.team.api import TeamApiError
             from omg_cli.team.operator import OperatorError
             from omg_cli.team.runtime import resume_for_identity, resume_with_view
 
@@ -672,8 +674,44 @@ def cmd_team(args: argparse.Namespace) -> int:
                     },
                 )
                 return exc.exit_code
+            except TeamApiError as exc:
+                emit_data(
+                    args,
+                    "team.resume",
+                    {
+                        "ok": False,
+                        "error": {
+                            "code": exc.code,
+                            "message": exc.message,
+                            **(
+                                {"details": exc.details} if exc.details else {}
+                            ),
+                        },
+                    },
+                )
+                if not wants_json(args) and not as_json:
+                    print(f"omg team resume: {exc.message}", file=sys.stderr)
+                return int(exc.exit_code)
             # Always JSON (operator machine-readable); --json kept for symmetry.
             emit_data(args, "team", result)
+            claim_reconcile = result.get("claim_reconcile")
+            if not isinstance(claim_reconcile, dict):
+                nested = result.get("reconcile")
+                if isinstance(nested, dict):
+                    claim_reconcile = nested.get("claim_reconcile")
+            if (
+                isinstance(claim_reconcile, dict)
+                and not wants_json(args)
+                and not as_json
+            ):
+                print(
+                    "claims: preserved="
+                    f"{len(claim_reconcile.get('preserved_unexpired') or [])} "
+                    "released_expired="
+                    f"{len(claim_reconcile.get('released_expired') or [])} "
+                    f"scanned={int(claim_reconcile.get('scanned') or 0)}",
+                    file=sys.stderr,
+                )
             if result.get("layout_repair_needed") or (
                 isinstance(result.get("reconcile"), dict)
                 and result["reconcile"].get("layout_repair_needed")
