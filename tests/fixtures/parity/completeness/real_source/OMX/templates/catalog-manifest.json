@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "fixture",
+  "skills": [
+    {
+      "name": "demo",
+      "category": "execution",
+      "status": "active",
+      "core": true,
+      "internalRequired": false
+    },
+    {
+      "name": "deep-interview",
+      "category": "planning",
+      "status": "active",
+      "core": true,
+      "internalRequired": false
+    },
+    {
+      "name": "ralplan",
+      "category": "planning",
+      "status": "active",
+      "canonical": "plan",
+      "core": true,
+      "internalRequired": false
+    },
+    {
+      "name": "plan",
+      "category": "planning",
+      "status": "active",
+      "core": true,
+      "internalRequired": false
+    },
+    {
+      "name": "legacy-merged",
+      "category": "utility",
+      "status": "merged",
+      "canonical": "demo",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "git-master",
+      "category": "shortcut",
+      "status": "alias",
+      "canonical": "explore",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "old-skill",
+      "category": "utility",
+      "status": "deprecated",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "worker",
+      "category": "execution",
+      "status": "internal",
+      "core": false,
+      "internalRequired": true
+    }
+  ],
+  "agents": [
+    {
+      "name": "explore",
+      "category": "build",
+      "status": "active"
+    },
+    {
+      "name": "code-reviewer",
+      "category": "review",
+      "status": "active"
+    },
+    {
+      "name": "style-reviewer",
+      "category": "review",
+      "status": "merged",
+      "canonical": "code-reviewer"
+    },
+    {
+      "name": "team-executor",
+      "category": "build",
+      "status": "internal"
+    }
+  ]
+}

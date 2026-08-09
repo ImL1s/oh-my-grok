@@ -385,8 +385,8 @@ def test_committed_omc_artifacts_validate_without_network() -> None:
     inventory = load_json_object(CANONICAL)
     artifacts = check_committed_completeness_artifacts(inventory, repo_root=ROOT)
     assert artifacts["completeness_artifacts_checked"] is True
-    assert artifacts["completeness_artifacts_verified"] == 1
-    assert artifacts["completeness_artifact_sources"] == ["OMC"]
+    assert artifacts["completeness_artifacts_verified"] >= 1
+    assert "OMC" in artifacts["completeness_artifact_sources"]
     assert artifacts["promoted_sources"] == []
 
     # Maintainer --check path (no --upstream-root) must never claim reproduction.
@@ -442,7 +442,7 @@ def test_strict_bootstrapping_check_verifies_committed_proof() -> None:
     )
     assert payload["ok"] is True
     assert payload["completeness_artifacts_checked"] is True
-    assert payload["completeness_artifacts_verified"] == 1
+    assert payload["completeness_artifacts_verified"] >= 1
     assert payload["promoted_sources"] == []
     assert payload["completeness_proofs_required"] is False
     inventory = load_json_object(CANONICAL)

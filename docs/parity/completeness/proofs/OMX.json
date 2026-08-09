@@ -1,0 +1,1622 @@
+{
+  "store_kind": "parity-completeness-proof",
+  "schema_version": 1,
+  "source": "OMX",
+  "repository": "https://github.com/code-yeongyu/oh-my-codex",
+  "pin_revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca",
+  "checkout_provenance": {
+    "method": "git_head_clean",
+    "observed_revision": "435d4a9cc982ffaf83fabbfbb8711ae6c178ffca"
+  },
+  "policy_digest": "36a990683db40b35cbe7b212a74a0fd5f189183759a4680b0f2dfd5136c8952e",
+  "seed_digest": "c534e88c1748b258236fad2b96a73985eaea842d3a63106258a07af6fd33d131",
+  "coverage_digest": "f78126eb3a56830a33cf8e109bb096205f1566f2de254505fd89314ce25cb2dc",
+  "source_input_digest": "7147cdf431377d8d5bdf714fd6eef6be6c94060700146659f046657bf0252e0f",
+  "surface_index_digest": "d31c62167c7c8ec37482f3d06854dd21f313d53a3de6adc24291309ba3252568",
+  "discovered_surfaces": [
+    {
+      "surface_id": "agent.analyst",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/analyst.md",
+      "anchor": "agent:analyst",
+      "content_digest": "df4f90d10549e66ce33e9fad097ecd9ea8fcf08e7a6d7085550c8c95b5336d77",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.api-reviewer",
+      "kind": "agent_merged",
+      "category": "agents_routing",
+      "source_path": "prompts/api-reviewer.md",
+      "anchor": "agent:api-reviewer",
+      "content_digest": "9b3aab70cd1b990ab07b291a4e385af2c96d12050988eeb3a996822d2d15808f",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.architect",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/architect.md",
+      "anchor": "agent:architect",
+      "content_digest": "1d1f53da3cd02bcd914dcc21804ffc81402ca7df08676f832a40999bd72a15bc",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.build-fixer",
+      "kind": "agent_deprecated",
+      "category": "agents_routing",
+      "source_path": "prompts/build-fixer.md",
+      "anchor": "agent:build-fixer",
+      "content_digest": "0a7f080af951632f77326cf0b1c83ea8c21d2cc62edb3f4c7cf73d9110e5012c",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.code-reviewer",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/code-reviewer.md",
+      "anchor": "agent:code-reviewer",
+      "content_digest": "3c29d7060d852aae2a57402e9527fa865b9464cb62ca2bcba7e193106c8d9b73",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.code-simplifier",
+      "kind": "agent_internal",
+      "category": "agents_routing",
+      "source_path": "prompts/code-simplifier.md",
+      "anchor": "agent:code-simplifier",
+      "content_digest": "168e8424fd87342c0bc8338c415a888b993ed899ff7450d642162fcbaf45709f",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.critic",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/critic.md",
+      "anchor": "agent:critic",
+      "content_digest": "454e42760521e97ca7559b2d5da8dcff997ea54a369dd9a4b64b1f3460149a95",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.debugger",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/debugger.md",
+      "anchor": "agent:debugger",
+      "content_digest": "9760e4089f99616c8963975ba4b7d75347c132cbcb62241e2b1927acba981dad",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.dependency-expert",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/dependency-expert.md",
+      "anchor": "agent:dependency-expert",
+      "content_digest": "643bc342ffe08e540b0df5c4c936396cc9624cd0b0bef4f3986224c9b06b3cdd",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.designer",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/designer.md",
+      "anchor": "agent:designer",
+      "content_digest": "5c4da738867658fd8daf8af50c3208024fdef2bca5ebb40b74b2dfd131478167",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.executor",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/executor.md",
+      "anchor": "agent:executor",
+      "content_digest": "d74f32aac5824828c36abffa896d2bd2f3a54ee90f04971b8a724fb58bbf51a4",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.explore",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/explore.md",
+      "anchor": "agent:explore",
+      "content_digest": "38101af5220cc3f8ea01f9637bb3ef92092882dc9a2084193e26b84dc5883910",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.git-master",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/git-master.md",
+      "anchor": "agent:git-master",
+      "content_digest": "8d4d0871382892ce72d72af7b14f923a0e20af6ffbcd7e48dc43fb15cd54c431",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.information-architect",
+      "kind": "agent_merged",
+      "category": "agents_routing",
+      "source_path": "prompts/information-architect.md",
+      "anchor": "agent:information-architect",
+      "content_digest": "6ba3dfee85712504c46f548f442a6a1c53c2914ea8bcfb63ddf77f06b2c69199",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.performance-reviewer",
+      "kind": "agent_merged",
+      "category": "agents_routing",
+      "source_path": "prompts/performance-reviewer.md",
+      "anchor": "agent:performance-reviewer",
+      "content_digest": "52f8211ee26375e2ae51b97f0719e8d600170dca28177faf60b9d19157e86dd6",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.planner",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/planner.md",
+      "anchor": "agent:planner",
+      "content_digest": "a6312eb91dc046f1c2c29568733cb3c06a925d90641b9a5ab54a0a717bc60902",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.product-analyst",
+      "kind": "agent_merged",
+      "category": "agents_routing",
+      "source_path": "prompts/product-analyst.md",
+      "anchor": "agent:product-analyst",
+      "content_digest": "40b39fd90f117a719f2bb2e655df2a9d563c145809b484de3d5a0891bcc2f675",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.product-manager",
+      "kind": "agent_merged",
+      "category": "agents_routing",
+      "source_path": "prompts/product-manager.md",
+      "anchor": "agent:product-manager",
+      "content_digest": "5be0afcd4497fa33a90474a2e7d3b7e71a3dcf36db9a2755172d31f3125633ec",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.prometheus-strict-metis",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/prometheus-strict-metis.md",
+      "anchor": "agent:prometheus-strict-metis",
+      "content_digest": "1ffb593edcb40ca89e2cffeb6e567af1df19ad5da19564cb21fe49f8db557a78",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.prometheus-strict-momus",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/prometheus-strict-momus.md",
+      "anchor": "agent:prometheus-strict-momus",
+      "content_digest": "3202c0c36c2e759833ee7af4ce9c8620471f80249ba1e0da74beb65e354295e5",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.prometheus-strict-oracle",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/prometheus-strict-oracle.md",
+      "anchor": "agent:prometheus-strict-oracle",
+      "content_digest": "745f2d4563e4f0eeeefbee3ab53dc3daa9ecdea57d749cda7ccdef33e57ee4de",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.qa-tester",
+      "kind": "agent_merged",
+      "category": "agents_routing",
+      "source_path": "prompts/qa-tester.md",
+      "anchor": "agent:qa-tester",
+      "content_digest": "5e8a183c3c4ab7bae3b83f70a50f10aa6025a6654f25958ae02fd28fde3d3c23",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.quality-reviewer",
+      "kind": "agent_merged",
+      "category": "agents_routing",
+      "source_path": "prompts/quality-reviewer.md",
+      "anchor": "agent:quality-reviewer",
+      "content_digest": "fe3da1a9b85601cb51883bca7158947b17ef2dd19c07d77fe14e2d91dad21f79",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.quality-strategist",
+      "kind": "agent_merged",
+      "category": "agents_routing",
+      "source_path": "prompts/quality-strategist.md",
+      "anchor": "agent:quality-strategist",
+      "content_digest": "9297e99746cd939187b5b1c627d212b0844e0bd8bcd1aadea1c18dd580b9ba86",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.researcher",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/researcher.md",
+      "anchor": "agent:researcher",
+      "content_digest": "34ae0143e3f071caf3bf55e027fe14cc713725229ef385409dfa1c3285921d2b",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.scholastic",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/scholastic.md",
+      "anchor": "agent:scholastic",
+      "content_digest": "cc54ccec7352e0616c56009c6ffc9b207f5dfd335fb0b02d445cb3e0d04ba856",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.security-reviewer",
+      "kind": "agent_deprecated",
+      "category": "agents_routing",
+      "source_path": "prompts/security-reviewer.md",
+      "anchor": "agent:security-reviewer",
+      "content_digest": "9cf46f8a1c21ef3383be79bfd0430d7ba0ff97120c46011f74d811e6d1d67c9d",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.style-reviewer",
+      "kind": "agent_merged",
+      "category": "agents_routing",
+      "source_path": "prompts/style-reviewer.md",
+      "anchor": "agent:style-reviewer",
+      "content_digest": "8dc0ea45e9edcc294487fa3f6c4988069b58692eee094329b1b454707a1e8b97",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.team-executor",
+      "kind": "agent_internal",
+      "category": "agents_routing",
+      "source_path": "prompts/team-executor.md",
+      "anchor": "agent:team-executor",
+      "content_digest": "0e13c0e5a755881756476bc48ba5f38c6e02506d8db4d96cf543c96343336b62",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.test-engineer",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/test-engineer.md",
+      "anchor": "agent:test-engineer",
+      "content_digest": "14744da0ded006eec494e2069eaeb2a51f69fbc474fd3a8b1e701e3a9edaf80f",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.ux-researcher",
+      "kind": "agent_merged",
+      "category": "agents_routing",
+      "source_path": "prompts/ux-researcher.md",
+      "anchor": "agent:ux-researcher",
+      "content_digest": "783b77204a4e7b0c24414dee76c25ee2d1457e4350672123b70f4acf6d02108f",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.verifier",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/verifier.md",
+      "anchor": "agent:verifier",
+      "content_digest": "393a231e8651f230fe4d7906624118bae68d35f88eacd77f2b14962797430cef",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.vision",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/vision.md",
+      "anchor": "agent:vision",
+      "content_digest": "357ce4f1c9b4b88bcd82ebde3b69f29899ddc4d4bf45398491c982cfec0e2bfb",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.writer",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "prompts/writer.md",
+      "anchor": "agent:writer",
+      "content_digest": "20a40dd88fc1d8dbe3f088c50919598340336339ce9975dd9956eb604c3b4cac",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "bin.omx",
+      "kind": "bin",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/omx.ts",
+      "anchor": "bin:omx",
+      "content_digest": "59549fccd012fdc2b5755970f8b55e68caf577e56bff5d70ad64d051cbadffba",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "catalog.agents",
+      "kind": "catalog",
+      "category": "agents_routing",
+      "source_path": "templates/catalog-manifest.json",
+      "anchor": "catalog:agents",
+      "content_digest": "9ae0422c3b03aabf91005b25ceb349be7464255ae217851d1a0252808cf164bc",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "catalog.codex_plugin.oh-my-codex",
+      "kind": "catalog",
+      "category": "install_update",
+      "source_path": "plugins/oh-my-codex/.codex-plugin/plugin.json",
+      "anchor": "catalog:codex_plugin:oh-my-codex",
+      "content_digest": "57efc212bc3590fbef4eb7aad510756de742e2cd80d8093a0ff0bea3e294afe1",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "catalog.skills",
+      "kind": "catalog",
+      "category": "runtime_orchestration",
+      "source_path": "templates/catalog-manifest.json",
+      "anchor": "catalog:skills",
+      "content_digest": "9ae0422c3b03aabf91005b25ceb349be7464255ae217851d1a0252808cf164bc",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "cli.adapt",
+      "kind": "cli",
+      "category": "install_update",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:adapt",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.agents",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:agents",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "cli.agents-init",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:agents-init",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "cli.api",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:api",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "cli.ask",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:ask",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "cli.auth",
+      "kind": "cli",
+      "category": "install_update",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:auth",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.autoresearch",
+      "kind": "cli",
+      "category": "runtime_orchestration",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:autoresearch",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.research.modes"
+      ]
+    },
+    {
+      "surface_id": "cli.autoresearch-goal",
+      "kind": "cli",
+      "category": "runtime_orchestration",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:autoresearch-goal",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.research.modes"
+      ]
+    },
+    {
+      "surface_id": "cli.cancel",
+      "kind": "cli",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:cancel",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.capabilities",
+      "kind": "cli",
+      "category": "install_update",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:capabilities",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.cleanup",
+      "kind": "cli",
+      "category": "install_update",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:cleanup",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.code-intel",
+      "kind": "cli",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:code-intel",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.deepinit",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:deepinit",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "cli.doctor",
+      "kind": "cli",
+      "category": "install_update",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:doctor",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.exec",
+      "kind": "cli",
+      "category": "runtime_orchestration",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:exec",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "cli.explore",
+      "kind": "cli",
+      "category": "runtime_orchestration",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:explore",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "cli.help",
+      "kind": "cli",
+      "category": "install_update",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:help",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.hooks",
+      "kind": "cli",
+      "category": "install_update",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:hooks",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.hud",
+      "kind": "cli",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:hud",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.imagegen",
+      "kind": "cli",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:imagegen",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.launch",
+      "kind": "cli",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:launch",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.list",
+      "kind": "cli",
+      "category": "install_update",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:list",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.mcp-serve",
+      "kind": "cli",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:mcp-serve",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.mission",
+      "kind": "cli",
+      "category": "runtime_orchestration",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:mission",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "cli.notepad",
+      "kind": "cli",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:notepad",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.performance-goal",
+      "kind": "cli",
+      "category": "runtime_orchestration",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:performance-goal",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "cli.project-memory",
+      "kind": "cli",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:project-memory",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.question",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:question",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "cli.ralph",
+      "kind": "cli",
+      "category": "runtime_orchestration",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:ralph",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "cli.ralplan",
+      "kind": "cli",
+      "category": "runtime_orchestration",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:ralplan",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "cli.reasoning",
+      "kind": "cli",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:reasoning",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.resume",
+      "kind": "cli",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:resume",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.session",
+      "kind": "cli",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:session",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.setup",
+      "kind": "cli",
+      "category": "install_update",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:setup",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.sidecar",
+      "kind": "cli",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:sidecar",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.sparkshell",
+      "kind": "cli",
+      "category": "runtime_orchestration",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:sparkshell",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "cli.state",
+      "kind": "cli",
+      "category": "jobs",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:state",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "jobs.durable_background"
+      ]
+    },
+    {
+      "surface_id": "cli.status",
+      "kind": "cli",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:status",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.team",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:team",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "cli.tmux-hook",
+      "kind": "cli",
+      "category": "install_update",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:tmux-hook",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.trace",
+      "kind": "cli",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:trace",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.ultragoal",
+      "kind": "cli",
+      "category": "runtime_orchestration",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:ultragoal",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "cli.uninstall",
+      "kind": "cli",
+      "category": "install_update",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:uninstall",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.update",
+      "kind": "cli",
+      "category": "install_update",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:update",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.url",
+      "kind": "cli",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:url",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.version",
+      "kind": "cli",
+      "category": "install_update",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:version",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.wiki",
+      "kind": "cli",
+      "category": "state_memory_observability",
+      "source_path": "src/cli/index.ts",
+      "anchor": "cli:wiki",
+      "content_digest": "406bb34734380ae776ecb47e489ce8d73c37918f485b16d2d8063fb1285bc8f6",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "hook.PostCompact.*.codex-native-hook.mjs",
+      "kind": "hook",
+      "category": "runtime_orchestration",
+      "source_path": "plugins/oh-my-codex/hooks/codex-native-hook.mjs",
+      "anchor": "hook.PostCompact.*.codex-native-hook.mjs",
+      "content_digest": "64cd558c7a92401b31b461ae86c7e310b84d6dfb90fbbd351e292f7f1868df22",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "hook.PostToolUse.*.codex-native-hook.mjs",
+      "kind": "hook",
+      "category": "runtime_orchestration",
+      "source_path": "plugins/oh-my-codex/hooks/codex-native-hook.mjs",
+      "anchor": "hook.PostToolUse.*.codex-native-hook.mjs",
+      "content_digest": "64cd558c7a92401b31b461ae86c7e310b84d6dfb90fbbd351e292f7f1868df22",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "hook.PreCompact.*.codex-native-hook.mjs",
+      "kind": "hook",
+      "category": "runtime_orchestration",
+      "source_path": "plugins/oh-my-codex/hooks/codex-native-hook.mjs",
+      "anchor": "hook.PreCompact.*.codex-native-hook.mjs",
+      "content_digest": "64cd558c7a92401b31b461ae86c7e310b84d6dfb90fbbd351e292f7f1868df22",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "hook.PreToolUse.*.codex-native-hook.mjs",
+      "kind": "hook",
+      "category": "runtime_orchestration",
+      "source_path": "plugins/oh-my-codex/hooks/codex-native-hook.mjs",
+      "anchor": "hook.PreToolUse.*.codex-native-hook.mjs",
+      "content_digest": "64cd558c7a92401b31b461ae86c7e310b84d6dfb90fbbd351e292f7f1868df22",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "hook.SessionStart.startup+resume+clear.codex-native-hook.mjs",
+      "kind": "hook",
+      "category": "runtime_orchestration",
+      "source_path": "plugins/oh-my-codex/hooks/codex-native-hook.mjs",
+      "anchor": "hook.SessionStart.startup+resume+clear.codex-native-hook.mjs",
+      "content_digest": "64cd558c7a92401b31b461ae86c7e310b84d6dfb90fbbd351e292f7f1868df22",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "hook.Stop.*.codex-native-hook.mjs",
+      "kind": "hook",
+      "category": "runtime_orchestration",
+      "source_path": "plugins/oh-my-codex/hooks/codex-native-hook.mjs",
+      "anchor": "hook.Stop.*.codex-native-hook.mjs",
+      "content_digest": "64cd558c7a92401b31b461ae86c7e310b84d6dfb90fbbd351e292f7f1868df22",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "hook.UserPromptSubmit.*.codex-native-hook.mjs",
+      "kind": "hook",
+      "category": "runtime_orchestration",
+      "source_path": "plugins/oh-my-codex/hooks/codex-native-hook.mjs",
+      "anchor": "hook.UserPromptSubmit.*.codex-native-hook.mjs",
+      "content_digest": "64cd558c7a92401b31b461ae86c7e310b84d6dfb90fbbd351e292f7f1868df22",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "npm-script.sync:plugin:check",
+      "kind": "npm-script",
+      "category": "install_update",
+      "source_path": "package.json",
+      "anchor": "npm-script:sync:plugin:check",
+      "content_digest": "b6c9164688bf80b13a65e49e430bbf195738d4a8f75096126f9b641fa1f84001",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "npm-script.verify:native-agents",
+      "kind": "npm-script",
+      "category": "install_update",
+      "source_path": "package.json",
+      "anchor": "npm-script:verify:native-agents",
+      "content_digest": "b6c9164688bf80b13a65e49e430bbf195738d4a8f75096126f9b641fa1f84001",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "npm-script.verify:plugin-bundle",
+      "kind": "npm-script",
+      "category": "install_update",
+      "source_path": "package.json",
+      "anchor": "npm-script:verify:plugin-bundle",
+      "content_digest": "b6c9164688bf80b13a65e49e430bbf195738d4a8f75096126f9b641fa1f84001",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.ai-slop-cleaner",
+      "kind": "skill",
+      "category": "quality_visual_edit_safety",
+      "source_path": "skills/ai-slop-cleaner/SKILL.md",
+      "anchor": "skill:ai-slop-cleaner",
+      "content_digest": "4f1b7a5f096e846e51c57362bb5e06c908b17861f75a53057391f87c817285fe",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.analyze",
+      "kind": "skill",
+      "category": "runtime_orchestration",
+      "source_path": "skills/analyze/SKILL.md",
+      "anchor": "skill:analyze",
+      "content_digest": "3f64b3f5b888a75e9d6d043b3b87b6961cc780a997ee22f44d77dbb1716dcae5",
+      "capability_ids": [
+        "omx.research.modes"
+      ]
+    },
+    {
+      "surface_id": "skill.ask",
+      "kind": "skill",
+      "category": "team",
+      "source_path": "skills/ask/SKILL.md",
+      "anchor": "skill:ask",
+      "content_digest": "5301bee75b021060a7021bb27782c904e4bebff1217e158a3107285e649c65ed",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "skill.ask-claude",
+      "kind": "skill_deprecated",
+      "category": "runtime_orchestration",
+      "source_path": "skills/ask-claude/SKILL.md",
+      "anchor": "skill:ask-claude",
+      "content_digest": "496e7a4dedcb55860b38e126d270e08f331d4f695e2dc22fb0249b6104517d0e",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.ask-gemini",
+      "kind": "skill_deprecated",
+      "category": "runtime_orchestration",
+      "source_path": "skills/ask-gemini/SKILL.md",
+      "anchor": "skill:ask-gemini",
+      "content_digest": "04f4dbf8f289f2be15cb986b5aed5b46a7974e5f4655eacbc38696ee3a7f1082",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.autopilot",
+      "kind": "skill",
+      "category": "runtime_orchestration",
+      "source_path": "skills/autopilot/SKILL.md",
+      "anchor": "skill:autopilot",
+      "content_digest": "55f05e82682133fd7c42f524d69d54ff73b1f1e9d4e65333bead4fa146410197",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.autoresearch",
+      "kind": "skill",
+      "category": "runtime_orchestration",
+      "source_path": "skills/autoresearch/SKILL.md",
+      "anchor": "skill:autoresearch",
+      "content_digest": "5620155f31222fc0b2b76fce133aa7a77ca7d6e89607c65495f9efbb48d53eb2",
+      "capability_ids": [
+        "omx.research.modes"
+      ]
+    },
+    {
+      "surface_id": "skill.autoresearch-goal",
+      "kind": "skill",
+      "category": "runtime_orchestration",
+      "source_path": "skills/autoresearch-goal/SKILL.md",
+      "anchor": "skill:autoresearch-goal",
+      "content_digest": "6ca757600cd96cb2c1fe3fe9dac83dbec9a65aa98f12a05abe49e03bb9b3ae6d",
+      "capability_ids": [
+        "omx.research.modes"
+      ]
+    },
+    {
+      "surface_id": "skill.best-practice-research",
+      "kind": "skill",
+      "category": "runtime_orchestration",
+      "source_path": "skills/best-practice-research/SKILL.md",
+      "anchor": "skill:best-practice-research",
+      "content_digest": "3d5904298db7125184742e86d075eb331954586e45d2647c09249a3dac38e010",
+      "capability_ids": [
+        "omx.research.modes"
+      ]
+    },
+    {
+      "surface_id": "skill.build-fix",
+      "kind": "skill_deprecated",
+      "category": "quality_visual_edit_safety",
+      "source_path": "skills/build-fix/SKILL.md",
+      "anchor": "skill:build-fix",
+      "content_digest": "aafbdee5a0c1df78850f1db9ee078f818d63cc442371ca822ec0df2d52c34e40",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.cancel",
+      "kind": "skill",
+      "category": "install_update",
+      "source_path": "skills/cancel/SKILL.md",
+      "anchor": "skill:cancel",
+      "content_digest": "9dc56f2817d218c696c7de198dc21b7666e8c37d8a78373cc1b04869586ba96b",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.code-review",
+      "kind": "skill",
+      "category": "quality_visual_edit_safety",
+      "source_path": "skills/code-review/SKILL.md",
+      "anchor": "skill:code-review",
+      "content_digest": "52cd2a7bed15900e23e9850542dc83e7f26a499745d97401445712f354e94ccc",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.configure-discord",
+      "kind": "skill_merged",
+      "category": "install_update",
+      "source_path": "templates/catalog-manifest.json",
+      "anchor": "skill:configure-discord",
+      "content_digest": "9ae0422c3b03aabf91005b25ceb349be7464255ae217851d1a0252808cf164bc",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.configure-notifications",
+      "kind": "skill",
+      "category": "install_update",
+      "source_path": "skills/configure-notifications/SKILL.md",
+      "anchor": "skill:configure-notifications",
+      "content_digest": "c6aa441dda9be9389e8069c8d6e6817f9f4183beaf7cabec22ca4dc793a02d1e",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.configure-openclaw",
+      "kind": "skill_merged",
+      "category": "install_update",
+      "source_path": "templates/catalog-manifest.json",
+      "anchor": "skill:configure-openclaw",
+      "content_digest": "9ae0422c3b03aabf91005b25ceb349be7464255ae217851d1a0252808cf164bc",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.configure-slack",
+      "kind": "skill_merged",
+      "category": "install_update",
+      "source_path": "templates/catalog-manifest.json",
+      "anchor": "skill:configure-slack",
+      "content_digest": "9ae0422c3b03aabf91005b25ceb349be7464255ae217851d1a0252808cf164bc",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.configure-telegram",
+      "kind": "skill_merged",
+      "category": "install_update",
+      "source_path": "templates/catalog-manifest.json",
+      "anchor": "skill:configure-telegram",
+      "content_digest": "9ae0422c3b03aabf91005b25ceb349be7464255ae217851d1a0252808cf164bc",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.deep-interview",
+      "kind": "skill",
+      "category": "runtime_orchestration",
+      "source_path": "skills/deep-interview/SKILL.md",
+      "anchor": "skill:deep-interview",
+      "content_digest": "9979d0d4aef4e917af9559ce952f51530c525263d545c01f4780372078523bb0",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.deepsearch",
+      "kind": "skill_deprecated",
+      "category": "runtime_orchestration",
+      "source_path": "skills/deepsearch/SKILL.md",
+      "anchor": "skill:deepsearch",
+      "content_digest": "2dc38ba1be7baacb09edf09df30d394d7ec24428cc6055ecef23ebb0b7b92fd9",
+      "capability_ids": [
+        "omx.research.modes"
+      ]
+    },
+    {
+      "surface_id": "skill.design",
+      "kind": "skill",
+      "category": "quality_visual_edit_safety",
+      "source_path": "skills/design/SKILL.md",
+      "anchor": "skill:design",
+      "content_digest": "793d9fb7ce9fbcb238ee27c96d31dc2c0edf4d77cdaf28d023138a4197b1f956",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.doctor",
+      "kind": "skill",
+      "category": "install_update",
+      "source_path": "skills/doctor/SKILL.md",
+      "anchor": "skill:doctor",
+      "content_digest": "75acd48ed891b72a5c6be5ecd6606343961830f064e933a6a1650a9f2cef7bdd",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.ecomode",
+      "kind": "skill_deprecated",
+      "category": "runtime_orchestration",
+      "source_path": "skills/ecomode/SKILL.md",
+      "anchor": "skill:ecomode",
+      "content_digest": "0fab8ea1c8cb5696578ef3b350b45f72177a8074563b5750cc29564bd28613c3",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.frontend-ui-ux",
+      "kind": "skill_deprecated",
+      "category": "quality_visual_edit_safety",
+      "source_path": "skills/frontend-ui-ux/SKILL.md",
+      "anchor": "skill:frontend-ui-ux",
+      "content_digest": "70e692291e8f1c58bdf8a42cc1809d9f8d987a900e9b816fb2f51d34869111d0",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.git-master",
+      "kind": "skill_alias",
+      "category": "state_memory_observability",
+      "source_path": "skills/git-master/SKILL.md",
+      "anchor": "skill:git-master",
+      "content_digest": "d917dbd61c1476133a6fa2e5c3ff3fbd4d56a458fea71aa0594c16b8d998f2b7",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "skill.help",
+      "kind": "skill_deprecated",
+      "category": "install_update",
+      "source_path": "skills/help/SKILL.md",
+      "anchor": "skill:help",
+      "content_digest": "84fda285c398f5a496ce221e931f8395a8864fc592fbf4cb5ef7322f8c5a8785",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.hud",
+      "kind": "skill",
+      "category": "state_memory_observability",
+      "source_path": "skills/hud/SKILL.md",
+      "anchor": "skill:hud",
+      "content_digest": "d5c30b632149f1fc06e9945872e3eb02a5efeb93ba66bf512ecae558d1e3b4ea",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "skill.note",
+      "kind": "skill_deprecated",
+      "category": "state_memory_observability",
+      "source_path": "skills/note/SKILL.md",
+      "anchor": "skill:note",
+      "content_digest": "4c842f56d349dd03ce1d69fff55c0389cd4158f3c802620b936967b41677c687",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "skill.omx-setup",
+      "kind": "skill",
+      "category": "install_update",
+      "source_path": "skills/omx-setup/SKILL.md",
+      "anchor": "skill:omx-setup",
+      "content_digest": "21e56ba3e2cf070f2d8de7384185c0af2bf587d6090b6597a8062c4d102b2123",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.performance-goal",
+      "kind": "skill",
+      "category": "runtime_orchestration",
+      "source_path": "skills/performance-goal/SKILL.md",
+      "anchor": "skill:performance-goal",
+      "content_digest": "5adac796c4d807e4d30506a67dd9f39fc8812a0675536140e4566771e4806dfd",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.pipeline",
+      "kind": "skill",
+      "category": "runtime_orchestration",
+      "source_path": "skills/pipeline/SKILL.md",
+      "anchor": "skill:pipeline",
+      "content_digest": "f23018b67d7ea59bfca4e5321bfd0c5584f34d547598334fba625869fbdd7a37",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.plan",
+      "kind": "skill",
+      "category": "runtime_orchestration",
+      "source_path": "skills/plan/SKILL.md",
+      "anchor": "skill:plan",
+      "content_digest": "24ddfa88be1efd06baf8fd93373be6d19ade207a6d2c37822d8dcc08835770ac",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.prometheus-strict",
+      "kind": "skill",
+      "category": "runtime_orchestration",
+      "source_path": "skills/prometheus-strict/SKILL.md",
+      "anchor": "skill:prometheus-strict",
+      "content_digest": "d5232220005de50d3a7fe1440d71bfa2e6519c09c07566e3193522fe1a1be47b",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.ralph",
+      "kind": "skill",
+      "category": "runtime_orchestration",
+      "source_path": "skills/ralph/SKILL.md",
+      "anchor": "skill:ralph",
+      "content_digest": "d0deea711929dc2797803f6940f666ee95d3d59308750667331c3f242da2e1db",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.ralph-init",
+      "kind": "skill_deprecated",
+      "category": "runtime_orchestration",
+      "source_path": "skills/ralph-init/SKILL.md",
+      "anchor": "skill:ralph-init",
+      "content_digest": "b81b0739c103e044c97ad808739a83c252d92f486084202374fec69eeb8a194e",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.ralplan",
+      "kind": "skill",
+      "category": "runtime_orchestration",
+      "source_path": "skills/ralplan/SKILL.md",
+      "anchor": "skill:ralplan",
+      "content_digest": "94112c682fa83b700c8cd649bb9921320e79e644a27f661b64f4f3bbd0a6ab83",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.review",
+      "kind": "skill_deprecated",
+      "category": "quality_visual_edit_safety",
+      "source_path": "skills/review/SKILL.md",
+      "anchor": "skill:review",
+      "content_digest": "6099f7c30780c96c0bea1a339319e6324eeddabe84003a6d928ccc877bc4d0ec",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.security-review",
+      "kind": "skill_deprecated",
+      "category": "quality_visual_edit_safety",
+      "source_path": "skills/security-review/SKILL.md",
+      "anchor": "skill:security-review",
+      "content_digest": "007ac9f94b8d246f64a5c0360408f5682ae43d5468c4415ca9c2f6623e82321c",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.skill",
+      "kind": "skill",
+      "category": "install_update",
+      "source_path": "skills/skill/SKILL.md",
+      "anchor": "skill:skill",
+      "content_digest": "b459ca43f1cefbf9a367a39dd0b76283408cdef8cf52ad1890d806359d5bb9bb",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.swarm",
+      "kind": "skill_deprecated",
+      "category": "runtime_orchestration",
+      "source_path": "skills/swarm/SKILL.md",
+      "anchor": "skill:swarm",
+      "content_digest": "9806ce3dff32a149edc61bc62ee20ecadc1cce6fdc9f997f3abc5ec4cc1633d4",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.tdd",
+      "kind": "skill_deprecated",
+      "category": "quality_visual_edit_safety",
+      "source_path": "skills/tdd/SKILL.md",
+      "anchor": "skill:tdd",
+      "content_digest": "b94bc25930af9f996be7f892b161b53ef9f8cf951784d31806548f5ad45e142c",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.team",
+      "kind": "skill",
+      "category": "team",
+      "source_path": "skills/team/SKILL.md",
+      "anchor": "skill:team",
+      "content_digest": "2e80b184f48a04ee685839a7085b73549dd90d70b2d13d6f5ba79adf8ed53057",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "skill.trace",
+      "kind": "skill_deprecated",
+      "category": "state_memory_observability",
+      "source_path": "skills/trace/SKILL.md",
+      "anchor": "skill:trace",
+      "content_digest": "c39af0c40fddb921bff9f6e34bc8c85f736265c2935e664709de7b33e2ea94bb",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "skill.ultragoal",
+      "kind": "skill",
+      "category": "runtime_orchestration",
+      "source_path": "skills/ultragoal/SKILL.md",
+      "anchor": "skill:ultragoal",
+      "content_digest": "c6d8d253dd0f3041c0c671838a346218a03c1479169777ede02734dffe8d3c73",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.ultraqa",
+      "kind": "skill",
+      "category": "quality_visual_edit_safety",
+      "source_path": "skills/ultraqa/SKILL.md",
+      "anchor": "skill:ultraqa",
+      "content_digest": "7c5296ae3961274d26a2c3ed05636c63f745250f37c25017cf854e0151cff7b2",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.ultrawork",
+      "kind": "skill",
+      "category": "runtime_orchestration",
+      "source_path": "skills/ultrawork/SKILL.md",
+      "anchor": "skill:ultrawork",
+      "content_digest": "b363978ba2db76b700f51472f963388f686d19e8b8def976b5d7b9b64bfa1b13",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.visual-ralph",
+      "kind": "skill",
+      "category": "quality_visual_edit_safety",
+      "source_path": "skills/visual-ralph/SKILL.md",
+      "anchor": "skill:visual-ralph",
+      "content_digest": "ed55aee5968859d4655679f6e7a7dfee1a2a2e9313fdb2c71a2e90824f79f6d7",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.visual-verdict",
+      "kind": "skill_deprecated",
+      "category": "quality_visual_edit_safety",
+      "source_path": "skills/visual-verdict/SKILL.md",
+      "anchor": "skill:visual-verdict",
+      "content_digest": "abeaa514ff016d8e84db48aa58e278bcf1f62848147d556114e60e4039399c3f",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.web-clone",
+      "kind": "skill_deprecated",
+      "category": "quality_visual_edit_safety",
+      "source_path": "skills/web-clone/SKILL.md",
+      "anchor": "skill:web-clone",
+      "content_digest": "b4baf27613f89cea1096845f66398e206f88b4eb82252b2c4b4cd8bcd5551f28",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.wiki",
+      "kind": "skill",
+      "category": "state_memory_observability",
+      "source_path": "skills/wiki/SKILL.md",
+      "anchor": "skill:wiki",
+      "content_digest": "94c4715d92451a6ae4281bc1690564a659ad68cb58b0938004a49b1079a14241",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "skill.worker",
+      "kind": "skill_internal",
+      "category": "team",
+      "source_path": "skills/worker/SKILL.md",
+      "anchor": "skill:worker",
+      "content_digest": "d0d46a07b7675ac854d993be56565bc96d0f3c8c0776ec38a58955df3003fe51",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    }
+  ],
+  "unresolved_surfaces": [],
+  "empty_category_partitions": [
+    "antigravity",
+    "hooks",
+    "parity_governance",
+    "platform_live_evidence",
+    "skills",
+    "tools_mcp"
+  ]
+}

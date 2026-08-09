@@ -1,0 +1,6 @@
+{
+  "name": "oh-my-codex",
+  "version": "0.0.0-fixture",
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json"
+}

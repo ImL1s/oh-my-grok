@@ -5,63 +5,148 @@
     {
       "id": "jobs.durable_background",
       "source_paths": [
-        "README.md"
+        "src/cli/index.ts"
       ],
       "promise": "Durable background job plane with start/list/status/wait/collect and fail-closed reconcile"
     },
     {
       "id": "omx.agents.reviewer_product_catalog",
       "source_paths": [
-        "README.md"
+        "prompts/analyst.md",
+        "prompts/api-reviewer.md",
+        "prompts/architect.md",
+        "prompts/build-fixer.md",
+        "prompts/code-reviewer.md",
+        "prompts/code-simplifier.md",
+        "prompts/critic.md",
+        "prompts/debugger.md",
+        "prompts/dependency-expert.md",
+        "prompts/designer.md",
+        "prompts/executor.md",
+        "prompts/explore.md",
+        "prompts/git-master.md",
+        "prompts/information-architect.md",
+        "prompts/performance-reviewer.md",
+        "prompts/planner.md",
+        "prompts/product-analyst.md",
+        "prompts/product-manager.md",
+        "prompts/prometheus-strict-metis.md",
+        "prompts/prometheus-strict-momus.md",
+        "prompts/prometheus-strict-oracle.md",
+        "prompts/qa-tester.md",
+        "prompts/quality-reviewer.md",
+        "prompts/quality-strategist.md",
+        "prompts/researcher.md",
+        "prompts/scholastic.md",
+        "prompts/security-reviewer.md",
+        "prompts/style-reviewer.md",
+        "prompts/team-executor.md",
+        "prompts/test-engineer.md",
+        "prompts/ux-researcher.md",
+        "prompts/verifier.md",
+        "prompts/vision.md",
+        "prompts/writer.md",
+        "templates/catalog-manifest.json"
       ],
       "promise": "Reviewer and product-oriented agent catalog for multi-agent review"
     },
     {
       "id": "omx.goal.stop_lock_recovery",
       "source_paths": [
-        "README.md"
+        "plugins/oh-my-codex/hooks/codex-native-hook.mjs",
+        "src/cli/index.ts"
       ],
       "promise": "Goal persistence with Stop soft-pin, locking, and session recovery"
     },
     {
       "id": "omx.launch.worktree_tmux_hud",
       "source_paths": [
-        "README.md"
+        "skills/git-master/SKILL.md",
+        "skills/hud/SKILL.md",
+        "skills/note/SKILL.md",
+        "skills/trace/SKILL.md",
+        "skills/wiki/SKILL.md",
+        "src/cli/index.ts",
+        "src/cli/omx.ts"
       ],
       "promise": "Launch surfaces with worktree isolation, tmux team panes, and HUD observability"
     },
     {
       "id": "omx.plugin.setup_update_migrate",
       "source_paths": [
-        "README.md"
+        "package.json",
+        "plugins/oh-my-codex/.codex-plugin/plugin.json",
+        "skills/cancel/SKILL.md",
+        "skills/configure-notifications/SKILL.md",
+        "skills/doctor/SKILL.md",
+        "skills/help/SKILL.md",
+        "skills/omx-setup/SKILL.md",
+        "skills/skill/SKILL.md",
+        "src/cli/index.ts",
+        "templates/catalog-manifest.json"
       ],
       "promise": "Plugin setup, update, and migration surfaces for host install"
     },
     {
       "id": "omx.quality.visual_modes",
       "source_paths": [
-        "README.md"
+        "skills/ai-slop-cleaner/SKILL.md",
+        "skills/build-fix/SKILL.md",
+        "skills/code-review/SKILL.md",
+        "skills/design/SKILL.md",
+        "skills/frontend-ui-ux/SKILL.md",
+        "skills/review/SKILL.md",
+        "skills/security-review/SKILL.md",
+        "skills/tdd/SKILL.md",
+        "skills/ultraqa/SKILL.md",
+        "skills/visual-ralph/SKILL.md",
+        "skills/visual-verdict/SKILL.md",
+        "skills/web-clone/SKILL.md"
       ],
       "promise": "Visual and quality modes (dual-review / verdict / UltraQA)"
     },
     {
       "id": "omx.research.modes",
       "source_paths": [
-        "README.md"
+        "skills/analyze/SKILL.md",
+        "skills/autoresearch-goal/SKILL.md",
+        "skills/autoresearch/SKILL.md",
+        "skills/best-practice-research/SKILL.md",
+        "skills/deepsearch/SKILL.md",
+        "src/cli/index.ts"
       ],
       "promise": "Dedicated research / autoresearch mode surfaces"
     },
     {
       "id": "omx.team.worker_mailbox_question",
       "source_paths": [
-        "README.md"
+        "skills/ask/SKILL.md",
+        "skills/team/SKILL.md",
+        "skills/worker/SKILL.md",
+        "src/cli/index.ts"
       ],
       "promise": "Team workers, mailbox, and structured question operations"
     },
     {
       "id": "omx.workflow.deep_interview_ralplan",
       "source_paths": [
-        "README.md"
+        "skills/ask-claude/SKILL.md",
+        "skills/ask-gemini/SKILL.md",
+        "skills/autopilot/SKILL.md",
+        "skills/deep-interview/SKILL.md",
+        "skills/ecomode/SKILL.md",
+        "skills/performance-goal/SKILL.md",
+        "skills/pipeline/SKILL.md",
+        "skills/plan/SKILL.md",
+        "skills/prometheus-strict/SKILL.md",
+        "skills/ralph-init/SKILL.md",
+        "skills/ralph/SKILL.md",
+        "skills/ralplan/SKILL.md",
+        "skills/swarm/SKILL.md",
+        "skills/ultragoal/SKILL.md",
+        "skills/ultrawork/SKILL.md",
+        "src/cli/index.ts",
+        "templates/catalog-manifest.json"
       ],
       "promise": "Deep-interview plus ralplan consensus workflow for planning gates"
     }

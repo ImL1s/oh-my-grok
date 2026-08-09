@@ -1,0 +1,1022 @@
+{
+  "store_kind": "parity-completeness-mapping",
+  "schema_version": 1,
+  "source": "OMX",
+  "surfaces": [
+    {
+      "surface_id": "agent.analyst",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.api-reviewer",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.architect",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.build-fixer",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.code-reviewer",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.code-simplifier",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.critic",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.debugger",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.dependency-expert",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.designer",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.executor",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.explore",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.git-master",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.information-architect",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.performance-reviewer",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.planner",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.product-analyst",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.product-manager",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.prometheus-strict-metis",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.prometheus-strict-momus",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.prometheus-strict-oracle",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.qa-tester",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.quality-reviewer",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.quality-strategist",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.researcher",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.scholastic",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.security-reviewer",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.style-reviewer",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.team-executor",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.test-engineer",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.ux-researcher",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.verifier",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.vision",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "agent.writer",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "bin.omx",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "catalog.agents",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omx.agents.reviewer_product_catalog"
+      ]
+    },
+    {
+      "surface_id": "catalog.codex_plugin.oh-my-codex",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "catalog.skills",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "cli.adapt",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.agents",
+      "category": "team",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "cli.agents-init",
+      "category": "team",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "cli.api",
+      "category": "team",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "cli.ask",
+      "category": "team",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "cli.auth",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.autoresearch",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.research.modes"
+      ]
+    },
+    {
+      "surface_id": "cli.autoresearch-goal",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.research.modes"
+      ]
+    },
+    {
+      "surface_id": "cli.cancel",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.capabilities",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.cleanup",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.code-intel",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.deepinit",
+      "category": "team",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "cli.doctor",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.exec",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "cli.explore",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "cli.help",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.hooks",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.hud",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.imagegen",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.launch",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.list",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.mcp-serve",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.mission",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "cli.notepad",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.performance-goal",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "cli.project-memory",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.question",
+      "category": "team",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "cli.ralph",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "cli.ralplan",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "cli.reasoning",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.resume",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.session",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.setup",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.sidecar",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.sparkshell",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "cli.state",
+      "category": "jobs",
+      "capability_ids": [
+        "jobs.durable_background"
+      ]
+    },
+    {
+      "surface_id": "cli.status",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.team",
+      "category": "team",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "cli.tmux-hook",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.trace",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.ultragoal",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "cli.uninstall",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.update",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.url",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "cli.version",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "cli.wiki",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "hook.PostCompact.*.codex-native-hook.mjs",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "hook.PostToolUse.*.codex-native-hook.mjs",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "hook.PreCompact.*.codex-native-hook.mjs",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "hook.PreToolUse.*.codex-native-hook.mjs",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "hook.SessionStart.startup+resume+clear.codex-native-hook.mjs",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "hook.Stop.*.codex-native-hook.mjs",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "hook.UserPromptSubmit.*.codex-native-hook.mjs",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.goal.stop_lock_recovery"
+      ]
+    },
+    {
+      "surface_id": "npm-script.sync:plugin:check",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "npm-script.verify:native-agents",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "npm-script.verify:plugin-bundle",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.ai-slop-cleaner",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.analyze",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.research.modes"
+      ]
+    },
+    {
+      "surface_id": "skill.ask",
+      "category": "team",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "skill.ask-claude",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.ask-gemini",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.autopilot",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.autoresearch",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.research.modes"
+      ]
+    },
+    {
+      "surface_id": "skill.autoresearch-goal",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.research.modes"
+      ]
+    },
+    {
+      "surface_id": "skill.best-practice-research",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.research.modes"
+      ]
+    },
+    {
+      "surface_id": "skill.build-fix",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.cancel",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.code-review",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.configure-discord",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.configure-notifications",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.configure-openclaw",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.configure-slack",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.configure-telegram",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.deep-interview",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.deepsearch",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.research.modes"
+      ]
+    },
+    {
+      "surface_id": "skill.design",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.doctor",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.ecomode",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.frontend-ui-ux",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.git-master",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "skill.help",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.hud",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "skill.note",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "skill.omx-setup",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.performance-goal",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.pipeline",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.plan",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.prometheus-strict",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.ralph",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.ralph-init",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.ralplan",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.review",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.security-review",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.skill",
+      "category": "install_update",
+      "capability_ids": [
+        "omx.plugin.setup_update_migrate"
+      ]
+    },
+    {
+      "surface_id": "skill.swarm",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.tdd",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.team",
+      "category": "team",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    },
+    {
+      "surface_id": "skill.trace",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "skill.ultragoal",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.ultraqa",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.ultrawork",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omx.workflow.deep_interview_ralplan"
+      ]
+    },
+    {
+      "surface_id": "skill.visual-ralph",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.visual-verdict",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.web-clone",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omx.quality.visual_modes"
+      ]
+    },
+    {
+      "surface_id": "skill.wiki",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omx.launch.worktree_tmux_hud"
+      ]
+    },
+    {
+      "surface_id": "skill.worker",
+      "category": "team",
+      "capability_ids": [
+        "omx.team.worker_mailbox_question"
+      ]
+    }
+  ]
+}

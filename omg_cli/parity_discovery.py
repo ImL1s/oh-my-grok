@@ -1,4 +1,4 @@
-"""Static upstream discovery extractors for parity completeness (#78-F).
+"""Static upstream discovery extractors for parity completeness (#78-F/#78-G).
 
 Discovery-rules v2 methods parse only admitted static syntax from git pin
 blobs. Never executes upstream JavaScript/TypeScript/npm.
@@ -41,6 +41,10 @@ EXTRACTION_COMMANDER_COMMAND_GRAPH_V1 = "commander_command_graph_v1"
 EXTRACTION_CLAUDE_HOOKS_MANIFEST_V1 = "claude_hooks_manifest_v1"
 EXTRACTION_TYPESCRIPT_TOOL_FAMILY_GRAPH_V1 = "typescript_tool_family_graph_v1"
 EXTRACTION_PACKAGE_SURFACE_V1 = "package_surface_v1"
+EXTRACTION_OMX_CATALOG_MANIFEST_V1 = "omx_catalog_manifest_v1"
+EXTRACTION_OMX_HELP_SURFACE_V1 = "omx_help_surface_v1"
+EXTRACTION_OMX_LAUNCHER_BIN_V1 = "omx_launcher_bin_v1"
+EXTRACTION_CODEX_PLUGIN_MANIFEST_V1 = "codex_plugin_manifest_v1"
 
 EXTRACTION_METHODS_V2 = frozenset(
     {
@@ -51,6 +55,10 @@ EXTRACTION_METHODS_V2 = frozenset(
         EXTRACTION_CLAUDE_HOOKS_MANIFEST_V1,
         EXTRACTION_TYPESCRIPT_TOOL_FAMILY_GRAPH_V1,
         EXTRACTION_PACKAGE_SURFACE_V1,
+        EXTRACTION_OMX_CATALOG_MANIFEST_V1,
+        EXTRACTION_OMX_HELP_SURFACE_V1,
+        EXTRACTION_OMX_LAUNCHER_BIN_V1,
+        EXTRACTION_CODEX_PLUGIN_MANIFEST_V1,
     }
 )
 
@@ -60,11 +68,17 @@ _METHOD_OPTION_KEYS: dict[str, frozenset[str]] = {
     EXTRACTION_MARKDOWN_COMMAND_TREE_V1: frozenset(),
     EXTRACTION_TYPESCRIPT_AGENT_REGISTRY_V1: frozenset({"prompt_dir"}),
     EXTRACTION_COMMANDER_COMMAND_GRAPH_V1: frozenset(),
-    EXTRACTION_CLAUDE_HOOKS_MANIFEST_V1: frozenset(),
+    EXTRACTION_CLAUDE_HOOKS_MANIFEST_V1: frozenset({"plugin_root"}),
     EXTRACTION_TYPESCRIPT_TOOL_FAMILY_GRAPH_V1: frozenset(),
     EXTRACTION_PACKAGE_SURFACE_V1: frozenset(
-        {"governance_scripts", "required_files_roots"}
+        {"governance_scripts", "required_files_roots", "include_bins"}
     ),
+    EXTRACTION_OMX_CATALOG_MANIFEST_V1: frozenset(
+        {"skills_dir", "prompts_dir"}
+    ),
+    EXTRACTION_OMX_HELP_SURFACE_V1: frozenset(),
+    EXTRACTION_OMX_LAUNCHER_BIN_V1: frozenset({"bin_name"}),
+    EXTRACTION_CODEX_PLUGIN_MANIFEST_V1: frozenset(),
 }
 
 
@@ -184,6 +198,34 @@ def validate_v2_registry_entry(
                 _require_relative_posix(str(r), label=f"{label}.required_files_roots[]")
                 for r in roots
             }
+        )
+        include_bins = options.get("include_bins", True)
+        if "include_bins" in options_raw:
+            if not isinstance(include_bins, bool):
+                raise ContractValidationError(
+                    f"{label}.options.include_bins must be a boolean"
+                )
+            options["include_bins"] = include_bins
+        # When omitted, extractors default include_bins=True without rewriting policy.
+    if method == EXTRACTION_CLAUDE_HOOKS_MANIFEST_V1:
+        plugin_root = options.get("plugin_root")
+        if plugin_root is not None:
+            options["plugin_root"] = _require_relative_posix(
+                str(plugin_root), label=f"{label}.options.plugin_root"
+            ).rstrip("/")
+    if method == EXTRACTION_OMX_CATALOG_MANIFEST_V1:
+        skills_dir = options.get("skills_dir", "skills")
+        prompts_dir = options.get("prompts_dir", "prompts")
+        options["skills_dir"] = _require_relative_posix(
+            str(skills_dir), label=f"{label}.options.skills_dir"
+        ).rstrip("/")
+        options["prompts_dir"] = _require_relative_posix(
+            str(prompts_dir), label=f"{label}.options.prompts_dir"
+        ).rstrip("/")
+    if method == EXTRACTION_OMX_LAUNCHER_BIN_V1:
+        bin_name = options.get("bin_name", "omx")
+        options["bin_name"] = require_safe_id(
+            bin_name, label=f"{label}.options.bin_name"
         )
     return {
         "id": reg_id,
@@ -546,18 +588,25 @@ def _commander_command_names(source: str) -> list[str]:
     return names
 
 
-def _hook_plugin_paths(command: str) -> list[str]:
-    """Extract relative paths referenced via $CLAUDE_PLUGIN_ROOT."""
+def _hook_plugin_paths(
+    command: str, *, plugin_root: str | None = None
+) -> list[str]:
+    """Extract relative repo paths from $CLAUDE_PLUGIN_ROOT / ${PLUGIN_ROOT}."""
     paths: list[str] = []
-    for m in re.finditer(
-        r'\$CLAUDE_PLUGIN_ROOT["\']?\s*/\s*["\']?([A-Za-z0-9_./-]+)',
-        command,
-    ):
-        paths.append(m.group(1).replace("\\", "/"))
-    # Also tolerate "$CLAUDE_PLUGIN_ROOT"/path form already covered.
+    patterns = (
+        r'\$\{?CLAUDE_PLUGIN_ROOT\}?["\']?\s*/\s*["\']?([A-Za-z0-9_./-]+)',
+        r'\$\{PLUGIN_ROOT\}["\']?\s*/\s*["\']?([A-Za-z0-9_./-]+)',
+    )
+    for pattern in patterns:
+        for m in re.finditer(pattern, command):
+            rel = m.group(1).replace("\\", "/")
+            if plugin_root:
+                rel = f"{plugin_root.rstrip('/')}/{rel.lstrip('./')}"
+            paths.append(rel)
     if not paths:
         raise ContractValidationError(
-            "claude_hooks_manifest_v1: hook command missing $CLAUDE_PLUGIN_ROOT path"
+            "claude_hooks_manifest_v1: hook command missing "
+            "$CLAUDE_PLUGIN_ROOT or ${PLUGIN_ROOT} path"
         )
     for p in paths:
         _require_relative_posix(p, label="hook.command_path")
@@ -875,6 +924,7 @@ def extract_claude_hooks_manifest_v1(
     pin_paths: set[str],
     file_digest: Callable[[bytes], str],
     read_blob: Callable[[str], bytes],
+    options: Mapping[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     try:
         payload = json.loads(registry_bytes.decode("utf-8"))
@@ -888,6 +938,11 @@ def extract_claude_hooks_manifest_v1(
         raise ContractValidationError(
             f"{registry_path}.hooks must be a non-empty object"
         )
+    plugin_root = None
+    if options:
+        raw_root = options.get("plugin_root")
+        if raw_root is not None:
+            plugin_root = str(raw_root).rstrip("/")
     category = _category_for_kind("hook", category_assignment, label=registry_path)
     surfaces: list[dict[str, Any]] = []
     input_parts: list[dict[str, str]] = [
@@ -902,9 +957,13 @@ def extract_claude_hooks_manifest_v1(
             )
         for idx, matcher_obj in enumerate(matchers):
             mobj = require_object(matcher_obj, label=f"hooks[{event_s}][{idx}]")
-            matcher = require_nonempty_string(
-                mobj.get("matcher"), label=f"hooks[{event_s}][{idx}].matcher"
-            )
+            raw_matcher = mobj.get("matcher")
+            if raw_matcher is None:
+                matcher = "*"
+            else:
+                matcher = require_nonempty_string(
+                    raw_matcher, label=f"hooks[{event_s}][{idx}].matcher"
+                )
             hook_list = mobj.get("hooks")
             if not isinstance(hook_list, list) or not hook_list:
                 raise ContractValidationError(
@@ -925,17 +984,22 @@ def extract_claude_hooks_manifest_v1(
                         f"hooks[{event_s}][{idx}].hooks[{h_idx}].command "
                         "must be a string"
                     )
-                if ".." in command or command.strip().startswith("/"):
-                    # absolute host paths outside plugin root rejected via path extract
-                    pass
-                paths = _hook_plugin_paths(command)
+                paths = _hook_plugin_paths(command, plugin_root=plugin_root)
                 script = paths[-1]
                 if script not in pin_paths:
                     raise ContractValidationError(
                         f"hook script missing at pin: {script}"
                     )
                 basename = PurePosixPath(script).name
-                surface_id = f"hook.{event_s}.{matcher}.{basename}"
+                matcher_token = matcher.replace("|", "+")
+                if not matcher_token or any(
+                    ch not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._*:@+/-"
+                    for ch in matcher_token
+                ):
+                    raise ContractValidationError(
+                        f"hooks[{event_s}][{idx}]: matcher {matcher!r} not encodable as surface_id"
+                    )
+                surface_id = f"hook.{event_s}.{matcher_token}.{basename}"
                 norm = surface_id.lower()
                 if norm in seen:
                     raise ContractValidationError(
@@ -1041,31 +1105,37 @@ def extract_package_surface_v1_full(
         {"path": registry_path, "content_digest": reg_digest}
     ]
     bins = body.get("bin")
-    if not isinstance(bins, Mapping) or not bins:
-        raise ContractValidationError(f"{registry_path}.bin must be a non-empty object")
-    seen: set[str] = set()
-    for name, target in bins.items():
-        name_s = require_nonempty_string(name, label="bin.name")
-        norm = name_s.lower()
-        if norm in seen:
-            raise ContractValidationError(f"duplicate bin name: {name_s}")
-        seen.add(norm)
-        target_s = _require_relative_posix(str(target), label=f"bin[{name_s}]")
-        if target_s not in pin_paths:
-            raise ContractValidationError(f"bin target missing at pin: {target_s}")
-        raw = read_blob(target_s)
-        digest = file_digest(raw)
-        surfaces.append(
-            {
-                "surface_id": f"bin.{name_s}",
-                "kind": "bin",
-                "category": bin_category,
-                "source_path": target_s,
-                "anchor": f"bin:{name_s}",
-                "content_digest": digest,
-            }
-        )
-        input_parts.append({"path": target_s, "content_digest": digest})
+    include_bins = bool(options.get("include_bins", True))
+    if include_bins:
+        if not isinstance(bins, Mapping) or not bins:
+            raise ContractValidationError(
+                f"{registry_path}.bin must be a non-empty object"
+            )
+        seen: set[str] = set()
+        for name, target in bins.items():
+            name_s = require_nonempty_string(name, label="bin.name")
+            norm = name_s.lower()
+            if norm in seen:
+                raise ContractValidationError(f"duplicate bin name: {name_s}")
+            seen.add(norm)
+            target_s = _require_relative_posix(str(target), label=f"bin[{name_s}]")
+            if target_s not in pin_paths:
+                raise ContractValidationError(f"bin target missing at pin: {target_s}")
+            raw = read_blob(target_s)
+            digest = file_digest(raw)
+            surfaces.append(
+                {
+                    "surface_id": f"bin.{name_s}",
+                    "kind": "bin",
+                    "category": bin_category,
+                    "source_path": target_s,
+                    "anchor": f"bin:{name_s}",
+                    "content_digest": digest,
+                }
+            )
+            input_parts.append({"path": target_s, "content_digest": digest})
+    elif bins is not None and not isinstance(bins, Mapping):
+        raise ContractValidationError(f"{registry_path}.bin must be an object when present")
 
     scripts = body.get("scripts")
     if not isinstance(scripts, Mapping):
@@ -1243,6 +1313,7 @@ def extract_surfaces_v2(
                     pin_paths=pin_paths,
                     file_digest=file_digest,
                     read_blob=read_blob,
+                    options=options,
                 )
             elif method == EXTRACTION_TYPESCRIPT_TOOL_FAMILY_GRAPH_V1:
                 surfaces, inputs = extract_typescript_tool_family_graph_v1(
@@ -1264,6 +1335,49 @@ def extract_surfaces_v2(
                     file_digest=file_digest,
                     read_blob=read_blob,
                     options=options,
+                )
+            elif method == EXTRACTION_OMX_CATALOG_MANIFEST_V1:
+                from omg_cli.parity_discovery_omx import extract_omx_catalog_manifest_v1
+
+                surfaces, inputs, consumed = extract_omx_catalog_manifest_v1(
+                    registry_path=path,
+                    registry_bytes=raw,
+                    category_assignment=category_assignment,
+                    pin_paths=pin_paths,
+                    file_digest=file_digest,
+                    read_blob=read_blob,
+                    options=options,
+                    exceptions=exc_paths,
+                )
+                consumed_exceptions.update(consumed)
+            elif method == EXTRACTION_OMX_HELP_SURFACE_V1:
+                from omg_cli.parity_discovery_omx import extract_omx_help_surface_v1
+
+                surfaces, inputs = extract_omx_help_surface_v1(
+                    registry_path=path,
+                    registry_bytes=raw,
+                    category_assignment=category_assignment,
+                    file_digest=file_digest,
+                )
+            elif method == EXTRACTION_OMX_LAUNCHER_BIN_V1:
+                from omg_cli.parity_discovery_omx import extract_omx_launcher_bin_v1
+
+                surfaces, inputs = extract_omx_launcher_bin_v1(
+                    registry_path=path,
+                    registry_bytes=raw,
+                    category_assignment=category_assignment,
+                    file_digest=file_digest,
+                    options=options,
+                )
+            elif method == EXTRACTION_CODEX_PLUGIN_MANIFEST_V1:
+                from omg_cli.parity_discovery_omx import extract_codex_plugin_manifest_v1
+
+                surfaces, inputs = extract_codex_plugin_manifest_v1(
+                    registry_path=path,
+                    registry_bytes=raw,
+                    category_assignment=category_assignment,
+                    pin_paths=pin_paths,
+                    file_digest=file_digest,
                 )
             else:
                 raise ContractValidationError(f"unhandled extraction_method {method}")

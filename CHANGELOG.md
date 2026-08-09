@@ -10,6 +10,15 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **Parity #78-G real pinned OMX discovery evidence:** committed
+  discovery_rules v2 policy, surface→capability mapping, and completeness
+  proof under `docs/parity/completeness/{policies,mappings,proofs}/OMX.json`
+  at pin `435d4a9…` (catalog-manifest-first extractors), plus hermetic
+  registry fixtures and `tests/test_parity_real_source_omx.py`. Network-free
+  artifact consistency verifies without claiming source reproduction.
+  Canonical `source_status.OMX` / categories / `inventory_status` stay
+  bootstrapping — proof present, **no promotion**. Refs #78 (does not close).
+
 - **Parity #78-F real pinned OMC discovery evidence:** committed
   discovery_rules v2 policy, surface→capability mapping, and completeness
   proof under `docs/parity/completeness/{policies,mappings,proofs}/OMC.json`
