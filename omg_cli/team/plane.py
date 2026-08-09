@@ -5099,6 +5099,72 @@ def _stop_team_locked(
         except (TeamError, OSError, json.JSONDecodeError, TypeError) as exc:
             errors.append(f"linked_ralph cancel: {exc}")
 
+    # Cancel Team-linked / in-flight ACP session sidecar (#105 PR4).
+    # Stop acquires the ACP transaction lock, re-reads the binding, then
+    # CAS-unlinks ensuring/no-job_id or cancels job-bearing bindings.
+    # Unproven cancel → stop_completed=false; binding retained.
+    if stop_completed:
+        linked_acp = meta.get("linked_acp_session")
+        has_job = isinstance(linked_acp, Mapping) and bool(linked_acp.get("job_id"))
+        try:
+            from omg_cli.jobs.runtime import (
+                cancel_job,
+                resolve_acp_binding_for_team_stop,
+            )
+
+            resolved = resolve_acp_binding_for_team_stop(
+                root_path,
+                run_id,
+                reason="team_stop",
+                force=force,
+                linked_acp=linked_acp if isinstance(linked_acp, Mapping) else None,
+            )
+            for act in resolved.get("actions") or []:
+                actions.append(str(act))
+            for err in resolved.get("errors") or []:
+                errors.append(str(err))
+
+            if not resolved.get("stop_ok", True):
+                stop_completed = False
+            elif (
+                not resolved.get("attempted")
+                and not resolved.get("binding_cleared")
+                and resolved.get("status") == "no_binding"
+                and has_job
+                and isinstance(linked_acp, Mapping)
+            ):
+                # Meta still points at a job but binding was already gone under lock.
+                jid = str(linked_acp.get("job_id"))
+                try:
+                    cancel_job(root_path, jid, reason="team_stop")
+                    actions.append(
+                        "cancelled linked_acp_session sidecar "
+                        f"job_id={jid} "
+                        "(sidecar cancellation; not session/close)"
+                    )
+                except Exception as cancel_exc:  # noqa: BLE001
+                    code = getattr(cancel_exc, "code", None) or "E_ACP_CANCEL"
+                    if code in {"E_JOB_UNKNOWN", "E_JOB_NOT_FOUND"}:
+                        actions.append(
+                            "cancelled linked_acp_session sidecar "
+                            f"job_id={jid} (already absent {code})"
+                        )
+                    else:
+                        stop_completed = False
+                        errors.append(
+                            f"linked_acp_session cancel: {cancel_exc} ({code})"
+                        )
+                        actions.append(
+                            "linked_acp_session cancel unproven; "
+                            "stop_refused (binding retained)"
+                        )
+        except Exception as exc:  # noqa: BLE001 — fail closed on stop claim
+            stop_completed = False
+            errors.append(f"linked_acp_session cancel: {exc}")
+            actions.append(
+                "linked_acp_session cancel raised; stop_refused (binding retained)"
+            )
+
     # Update team.json without hiding live or uncertain process truth.
     # Locked + generation-fenced publication (#21). Refuse publication when a
     # concurrent scale mutated the task set after we verified identities.
@@ -5127,6 +5193,8 @@ def _stop_team_locked(
         if stop_completed:
             updated["stopped_at"] = _utc_now()
             updated["stop_state"] = "stopped"
+            # stop_completed implies ACP gone or never present — drop the link.
+            updated.pop("linked_acp_session", None)
             tasks = []
             for rec in updated.get("tasks") or []:
                 if isinstance(rec, dict):

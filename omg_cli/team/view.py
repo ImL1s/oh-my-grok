@@ -320,11 +320,11 @@ def plan_team_view(request: ViewRequest) -> ViewPlan:
 
 
 def invoke_provider_session_resume(gate: FeatureGateResult) -> dict[str, Any]:
-    """Gate-allowed provider resume entry (no ACP transport in this slice).
+    """Default helper when CLI did not inject the ACP ensure function.
 
-    Called only when ``gate.state == "AVAILABLE"``. Real ``session/resume``
-    transport / session/load remain later #105 work — this helper records that
-    the host gate was consumed and the modern path is permitted.
+    Real transport is injected by ``commands/team.py`` via
+    :func:`omg_cli.jobs.runtime.ensure_acp_session_for_team`. This fallback
+    records gate consumption only (tests / non-CLI callers).
     """
     if gate.state != "AVAILABLE":
         raise ValueError(
@@ -333,11 +333,20 @@ def invoke_provider_session_resume(gate: FeatureGateResult) -> dict[str, Any]:
     return {
         "invoked": True,
         "transport_wired": False,
+        "ok": False,
         "hint": (
-            "host session_resume gate AVAILABLE; ACP session/resume transport "
-            "not wired in this OMG slice (tmux view remains independent; "
-            "no_replay=true, restore_code=false)"
+            "host session_resume gate AVAILABLE but ACP ensure was not injected; "
+            "pass ensure_acp_session_for_team from omg team resume "
+            "(no_replay=true, restore_code=false)"
         ),
+        "execution": {
+            "status": "failed",
+            "transport": "acp_stdio_job",
+            "error": "ACP ensure helper not injected",
+            "connection_owned": False,
+            "no_replay": True,
+            "restore_code": False,
+        },
     }
 
 
@@ -400,11 +409,28 @@ def provider_session_result(
     if gate.state == "AVAILABLE":
         helper = provider_resume or invoke_provider_session_resume
         helper_out = dict(helper(gate))
-        # Envelope owns status; helper must not downgrade AVAILABLE → success claim.
+        # Envelope owns capability status; helper may force_blocked on missing
+        # session binding (before any job spawn).
+        if helper_out.pop("force_blocked", False):
+            base["status"] = "blocked"
+            base["reason"] = helper_out.get("reason") or gate.reason
+            if helper_out.get("next_action"):
+                base["next_action"] = helper_out["next_action"]
+            base["invoked"] = bool(helper_out.get("invoked", False))
+            base["transport_wired"] = False
+            base["ok"] = False
+            return base
         helper_out.pop("status", None)
         base["reason"] = gate.reason
         base.update(helper_out)
         base["status"] = "available"
+        # Execution failure keeps capability available but marks ok false.
+        execution = base.get("execution")
+        if isinstance(execution, dict) and execution.get("status") == "failed":
+            base["ok"] = False
+            base["transport_wired"] = False
+        elif base.get("transport_wired") is True:
+            base["ok"] = True
         return base
 
     if gate.state == "LEGACY":

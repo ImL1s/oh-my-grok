@@ -610,6 +610,7 @@ def cmd_team(args: argparse.Namespace) -> int:
             worker = getattr(args, "worker_id", None)
             want_provider = bool(getattr(args, "provider_session", False))
             session_resume_gate = None
+            provider_resume = None
             if want_provider:
                 # CLI owns probe → gate; runtime must not re-parse versions.
                 # required=False so absent session_resume yields LEGACY (safe
@@ -620,6 +621,11 @@ def cmd_team(args: argparse.Namespace) -> int:
                     host_report.capabilities,
                     required=False,
                 )
+                # Inject real ACP sidecar ensure only after AVAILABLE is possible;
+                # LEGACY/BLOCKED never call ensure (provider_session_result short-circuits).
+                from omg_cli.jobs.runtime import ensure_acp_session_for_team
+
+                provider_resume = ensure_acp_session_for_team
             if print_only and not want_view:
                 # resume --print implies view print without reconcile? No —
                 # --print on resume only makes sense with --view.
@@ -647,6 +653,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                         worker_id=str(worker) if worker else None,
                         request_provider_session=want_provider,
                         session_resume_gate=session_resume_gate,
+                        provider_resume=provider_resume,
                     )
                 else:
                     # Default: reconcile-only; never touches tmux clients.
@@ -685,10 +692,18 @@ def cmd_team(args: argparse.Namespace) -> int:
             if (
                 isinstance(provider, dict)
                 and provider.get("requested")
-                and provider.get("status") == "blocked"
+                and (
+                    provider.get("status") == "blocked"
+                    or provider.get("ok") is False
+                    or (
+                        isinstance(provider.get("execution"), dict)
+                        and provider["execution"].get("status") == "failed"
+                    )
+                )
             ):
-                # Fail closed: required provider resume refused by host gate.
-                # tmux view success must not flip this to success.
+                # Fail closed: required provider resume refused by host gate
+                # or ACP transport execution failed. tmux view success must
+                # not flip this to success.
                 return 1
             if want_view or print_only:
                 view = result.get("view") or {}

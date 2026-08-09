@@ -1090,3 +1090,123 @@ def test_normalize_topology_feeds_view_target(
     target = resolve_view_target(snap)
     assert target.session_id == live["session_id"]
     assert target.leader_pane_id == live["leader_pane_id"]
+
+
+
+def test_team_resume_legacy_starts_no_acp_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.host_models import FeatureGateResult
+    from omg_cli.team import runtime as runtime_mod
+
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(
+        runtime_mod,
+        "resume_for_identity",
+        lambda *a, **k: {
+            "run_id": "run-lg",
+            "note": "ok",
+            "relaunched": [],
+            "blocked": [],
+        },
+    )
+    started: list[str] = []
+
+    def _ensure(gate, *, root, run_id):  # noqa: ANN001
+        started.append(run_id)
+        return {"invoked": True, "transport_wired": True}
+
+    gate = FeatureGateResult(
+        capability="session_resume",
+        state="LEGACY",
+        reason="old host",
+        next_action="upgrade",
+        required=False,
+    )
+    out = resume_with_view(
+        tmp_path,
+        "run-lg",
+        view=False,
+        as_json=True,
+        request_provider_session=True,
+        session_resume_gate=gate,
+        provider_resume=_ensure,
+    )
+    assert out["provider_session"]["status"] == "legacy"
+    assert started == []
+    assert out["ok"] is True
+
+
+def test_team_resume_available_transport_failure_preserves_reconcile_and_view_truth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.host_models import FeatureGateResult
+    from omg_cli.team import runtime as runtime_mod
+
+    _enable_team(monkeypatch)
+    monkeypatch.setattr(
+        runtime_mod,
+        "resume_for_identity",
+        lambda *a, **k: {
+            "run_id": "run-fail",
+            "note": "reconcile-ok",
+            "relaunched": ["w1"],
+            "blocked": [],
+            "layout_repair_needed": False,
+        },
+    )
+    gate = FeatureGateResult(
+        capability="session_resume",
+        state="AVAILABLE",
+        reason="ok",
+        required=False,
+    )
+
+    def _fail(gate, *, root, run_id):  # noqa: ANN001
+        return {
+            "invoked": True,
+            "transport_wired": False,
+            "ok": False,
+            "execution": {
+                "status": "failed",
+                "transport": "acp_stdio_job",
+                "error": "boom",
+                "no_replay": True,
+                "restore_code": False,
+            },
+        }
+
+    out = resume_with_view(
+        tmp_path,
+        "run-fail",
+        view=False,
+        as_json=True,
+        request_provider_session=True,
+        session_resume_gate=gate,
+        provider_resume=_fail,
+    )
+    assert out["reconcile"]["relaunched"] == ["w1"]
+    assert out["provider_session"]["status"] == "available"
+    assert out["provider_session"]["execution"]["status"] == "failed"
+    assert out["view"]["status"] == "none"
+    assert out["ok"] is False
+
+
+def test_team_stop_cancels_only_linked_acp_sidecar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit: cancel_linked_acp_sidecar never claims session_close."""
+    from omg_cli.jobs.runtime import cancel_linked_acp_sidecar
+
+    calls: list[tuple] = []
+
+    def _fake_cancel(root, job_id, *, reason=None, grace_s=2.0):  # noqa: ANN001
+        calls.append((str(job_id), reason))
+        class R:
+            state = type("S", (), {"value": "cancelled"})()
+        return R()
+
+    monkeypatch.setattr("omg_cli.jobs.runtime.cancel_job", _fake_cancel)
+    # No binding file → no cancel
+    out = cancel_linked_acp_sidecar(Path("/tmp"), "missing-run")
+    assert out["session_close"] is False
+    assert out["attempted"] is False
+    assert calls == []

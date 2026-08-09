@@ -10,6 +10,15 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#105 PR4 hermetic ACP resume sidecar:** Team `--provider-session` on an
+  AVAILABLE `session_resume` gate starts/reuses an internal jobs-plane
+  `grok-acp-session` sidecar (`grok agent stdio`, initialize → one
+  `session/resume`, no-replay quiet window, atomic content-free receipt).
+  Public `omg job start` still admits only `fake`/`antigravity`. Cancel is
+  dual process-group teardown (not `session/close`). Hermetic fake-peer
+  coverage only — no live-host maturity promotion. #105 stays open for
+  close/restore-code/search/background deltas.
+
 - **#78-E README↔JSON managed-snapshot drift gate:** hand-authored
   `docs/parity/README.md` keeps exactly one managed block between
   `BEGIN/END GENERATED PARITY INVENTORY SNAPSHOT` markers.
@@ -48,6 +57,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   Does **not** close #78 (real-source policies/proofs still outstanding).
 
 ### Fixed
+- **#105 PR4 P0 unproven spawn identity persist:**
+  `_persist_unproven_spawn_identity` no longer swallows `update_job_fields`
+  failure after an unproven post-spawn cleanup. Runner pid/pgid/starttime is
+  retained in durable `spawn_identity.json` (written at Popen, before RUNNING
+  commit); when job.json stays `starting`+`pid=null`, `cancel_job` uses the
+  recovery identity or refuses with `E_JOB_CANCEL_UNPROVEN` for job-bearing ACP
+  bindings / uncertain markers — Team stop cannot publish stopped over an
+  orphan. Hermetic regression in `tests/test_jobs_acp_session.py`.
 - **#78-D P0 checkout/pin binding:** completeness proofs authenticate
   `--upstream-root` to `pin_revision` (`HEAD` match + clean porcelain) and
   stamp `checkout_provenance` before hashing registry/surface bytes. Wrong

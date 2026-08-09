@@ -1,7 +1,10 @@
-"""Jobs-scoped provider registry and Antigravity preflight (#68 PR2).
+"""Jobs-scoped provider registry and Antigravity preflight (#68 PR2 + #105 PR4).
 
 Exact-name registry shared by parent ``start_job`` and child ``runner``.
 No aliases, no import-by-user-string, no fallback provider.
+
+Public admission: ``fake`` and ``antigravity`` only.
+Internal-only: ``grok-acp-session`` (Team ACP sidecar; rejected by public start).
 """
 
 from __future__ import annotations
@@ -28,6 +31,10 @@ FAKE_ONLY_FLAGS: Final[frozenset[str]] = frozenset(
     {"sleep_s", "fail", "large_output", "ignore_sigterm"}
 )
 
+PUBLIC_PROVIDER_NAMES: Final[tuple[str, ...]] = ("fake", "antigravity")
+INTERNAL_PROVIDER_NAMES: Final[tuple[str, ...]] = ("grok-acp-session",)
+ACP_SESSION_PROVIDER: Final[str] = "grok-acp-session"
+
 
 @dataclass(frozen=True, slots=True)
 class JobProviderMeta:
@@ -38,6 +45,7 @@ class JobProviderMeta:
     allow_fake_flags: bool
     default_output_format: str
     requires_preflight: bool
+    internal: bool = False
 
 
 def _make_fake() -> ProviderAdapter:
@@ -52,6 +60,12 @@ def _make_antigravity() -> ProviderAdapter:
     return AntigravityProvider()
 
 
+def _make_acp_session() -> ProviderAdapter:
+    from omg_cli.jobs.acp_provider import GrokAcpSessionProvider
+
+    return GrokAcpSessionProvider()
+
+
 _REGISTRY: Final[Mapping[str, JobProviderMeta]] = {
     "fake": JobProviderMeta(
         name="fake",
@@ -59,6 +73,7 @@ _REGISTRY: Final[Mapping[str, JobProviderMeta]] = {
         allow_fake_flags=True,
         default_output_format="text",
         requires_preflight=False,
+        internal=False,
     ),
     "antigravity": JobProviderMeta(
         name="antigravity",
@@ -66,25 +81,46 @@ _REGISTRY: Final[Mapping[str, JobProviderMeta]] = {
         allow_fake_flags=False,
         default_output_format=DEFAULT_ANTIGRAVITY_OUTPUT_FORMAT,
         requires_preflight=True,
+        internal=False,
+    ),
+    ACP_SESSION_PROVIDER: JobProviderMeta(
+        name=ACP_SESSION_PROVIDER,
+        factory=_make_acp_session,
+        allow_fake_flags=False,
+        default_output_format="text",
+        requires_preflight=False,
+        internal=True,
     ),
 }
 
 
-def registered_provider_names() -> tuple[str, ...]:
-    return tuple(_REGISTRY.keys())
+def registered_provider_names(*, include_internal: bool = False) -> tuple[str, ...]:
+    """Public names by default; set ``include_internal`` for Team/runtime paths."""
+    if include_internal:
+        return tuple(_REGISTRY.keys())
+    return tuple(n for n, m in _REGISTRY.items() if not m.internal)
 
 
-def get_provider_meta(name: str) -> JobProviderMeta:
+def public_provider_names() -> tuple[str, ...]:
+    return PUBLIC_PROVIDER_NAMES
+
+
+def get_provider_meta(name: str, *, allow_internal: bool = False) -> JobProviderMeta:
     key = (name or "").strip().lower()
     meta = _REGISTRY.get(key)
     if meta is None:
         raise JobStoreError(
             f"unknown job provider {name!r}; supported: "
-            f"{', '.join(registered_provider_names())}",
+            f"{', '.join(registered_provider_names(include_internal=False))}",
             code="E_JOB_PROVIDER",
         )
+    if meta.internal and not allow_internal:
+        raise JobStoreError(
+            f"job provider {meta.name!r} is internal-only "
+            f"(not admitted by public omg job start)",
+            code="E_JOB_PROVIDER_INTERNAL",
+        )
     if key != meta.name:
-        # Defensive: registry keys must equal canonical names (no aliases).
         raise JobStoreError(
             f"unknown job provider {name!r}",
             code="E_JOB_PROVIDER",
@@ -92,9 +128,11 @@ def get_provider_meta(name: str) -> JobProviderMeta:
     return meta
 
 
-def resolve_job_provider(name: str) -> tuple[ProviderAdapter, JobProviderMeta]:
+def resolve_job_provider(
+    name: str, *, allow_internal: bool = False
+) -> tuple[ProviderAdapter, JobProviderMeta]:
     """Resolve exact registry name → adapter; verify adapter.name matches."""
-    meta = get_provider_meta(name)
+    meta = get_provider_meta(name, allow_internal=allow_internal)
     try:
         adapter = meta.factory()
     except Exception as exc:  # noqa: BLE001 — fail closed before materialization
@@ -174,7 +212,6 @@ def preflight_antigravity(
             code="E_JOB_PROVIDER_OPTIONS",
         )
 
-    # Resolve exact binary.
     try:
         binary = adapter.discover_binary()
     except ProviderBinaryMissing as exc:
@@ -193,7 +230,6 @@ def preflight_antigravity(
             code="E_JOB_PROVIDER_MISSING",
         )
 
-    # Hermetic capability/version/help probe.
     try:
         caps = adapter.probe_capabilities(binary)
     except (ProviderProbeError, ProviderVersionError) as exc:
@@ -260,6 +296,12 @@ def build_request_snapshot(
     effort: str | None = None,
     mode: str | None = None,
     timeout_s: float | None = None,
+    provider_binary: str | None = None,
+    session_id: str | None = None,
+    parent_run_id: str | None = None,
+    cwd: str | None = None,
+    session_id_hash: str | None = None,
+    cwd_hash: str | None = None,
 ) -> dict[str, Any]:
     """Build the immutable ``request`` object stored on JobRecord."""
     if provider == "antigravity":
@@ -279,7 +321,24 @@ def build_request_snapshot(
             "provider_compat": preflight.provider_compat,
             "provider_pin_revision": preflight.provider_pin_revision,
         }
-    # fake / default
+    if provider == ACP_SESSION_PROVIDER:
+        return {
+            "output_format": "text",
+            "model": None,
+            "effort": None,
+            "mode": None,
+            "timeout_s": float(timeout_s) if timeout_s is not None else 30.0,
+            "provider_binary": provider_binary,
+            "provider_version": None,
+            "provider_compat": None,
+            "provider_pin_revision": None,
+            "session_id": session_id,
+            "parent_run_id": parent_run_id,
+            "cwd": cwd,
+            "session_id_hash": session_id_hash,
+            "cwd_hash": cwd_hash,
+            "long_lived": True,
+        }
     meta = get_provider_meta(provider)
     return {
         "output_format": (output_format or meta.default_output_format),
@@ -308,19 +367,25 @@ def public_request_summary(request: Mapping[str, Any] | None) -> dict[str, Any] 
         "provider_compat": request.get("provider_compat"),
         "provider_pin_revision": request.get("provider_pin_revision"),
         "has_provider_binary": bool(request.get("provider_binary")),
+        "long_lived": bool(request.get("long_lived")),
+        "has_session_binding": bool(request.get("session_id_hash")),
     }
     return out
 
 
 __all__ = [
+    "ACP_SESSION_PROVIDER",
     "ALLOWED_ANTIGRAVITY_OUTPUT_FORMATS",
     "DEFAULT_ANTIGRAVITY_OUTPUT_FORMAT",
     "FAKE_ONLY_FLAGS",
+    "INTERNAL_PROVIDER_NAMES",
+    "PUBLIC_PROVIDER_NAMES",
     "AntigravityPreflight",
     "JobProviderMeta",
     "build_request_snapshot",
     "get_provider_meta",
     "preflight_antigravity",
+    "public_provider_names",
     "public_request_summary",
     "registered_provider_names",
     "resolve_job_provider",

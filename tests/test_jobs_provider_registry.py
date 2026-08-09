@@ -200,3 +200,34 @@ def test_get_provider_meta_exact() -> None:
     assert meta.allow_fake_flags is True
     meta2 = get_provider_meta("antigravity")
     assert meta2.requires_preflight is True
+
+
+
+def test_public_job_start_rejects_internal_acp_provider(root: Path) -> None:
+    from omg_cli.jobs.providers import (
+        ACP_SESSION_PROVIDER,
+        get_provider_meta,
+        registered_provider_names,
+        resolve_job_provider,
+    )
+
+    assert ACP_SESSION_PROVIDER not in registered_provider_names()
+    assert "grok-acp-session" not in registered_provider_names()
+    with pytest.raises(JobStoreError) as ei:
+        resolve_job_provider("grok-acp-session")
+    assert ei.value.code == "E_JOB_PROVIDER_INTERNAL"
+    with pytest.raises(JobStoreError):
+        get_provider_meta("grok-acp-session", allow_internal=False)
+    adapter, meta = resolve_job_provider("grok-acp-session", allow_internal=True)
+    assert meta.internal is True
+    assert adapter.name == "grok-acp-session"
+
+    prompt = _prompt(root)
+    with pytest.raises(JobStoreError) as ei2:
+        start_job(
+            root,
+            provider="grok-acp-session",
+            role="researcher",
+            prompt_file=prompt,
+        )
+    assert ei2.value.code == "E_JOB_PROVIDER_INTERNAL"
