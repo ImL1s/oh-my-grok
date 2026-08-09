@@ -10,6 +10,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Fixed
+- **Parity #78-H OmO upstream snapshot fingerprint sync:** add
+  `cli-program.ts` to `omo.tools.lsp_ast_codegraph_mcp` in
+  `docs/parity/upstream-snapshots/OmO.json` and refresh OmO proof
+  `seed_digest` so release-gate catalog fingerprints match the inventory
+  enrichment (fail-closed drift gate unchanged; no promotion). Refs #78
+  (does not close).
+- **Jobs recovery reused-PID test under CI load:** plant a RUNNING+lease
+  fixture without a live heartbeat so `recover_job` CAS cannot race
+  generation (`E_JOB_RECOVERY_CONFLICT`) while still asserting no signal
+  on REUSED identity. Refs #78 (does not close).
 - **Parity #78-H OmO Commander/Zod discovery fail-closed:** resolve
   `addCommand(factory())` (emit `cli.mcp` from `createMcpOAuthCommand()`),
   emit Commander `.alias()` surfaces (`cli.setup`, `cli.uninstall`), and

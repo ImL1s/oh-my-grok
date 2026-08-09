@@ -70,6 +70,7 @@
     {
       "id": "omo.tools.lsp_ast_codegraph_mcp",
       "source_paths": [
+        "packages/omo-opencode/src/cli/cli-program.ts",
         "packages/omo-opencode/src/cli/mcp-oauth/index.ts",
         "packages/omo-opencode/src/mcp/types.ts"
       ],
