@@ -41,7 +41,6 @@ from omg_cli.jobs.store import (
     safe_job_id,
     transition_job,
     update_job_fields,
-    utc_now,
 )
 
 # Grace between SIGTERM and SIGKILL for cancel (seconds).
@@ -155,7 +154,8 @@ def start_job(
     *,
     provider: str,
     role: str,
-    prompt_file: Path | str,
+    prompt_file: Path | str | None = None,
+    prompt_text: str | None = None,
     run_id: str | None = None,
     sleep_s: float | None = None,
     fail: bool = False,
@@ -178,6 +178,10 @@ def start_job(
     Antigravity admission is fail-closed (no job ID / no partial dir on probe
     failure). Fake-only flags with Antigravity raise ``E_JOB_PROVIDER_OPTIONS``.
     Internal providers (``grok-acp-session``) require ``allow_internal=True``.
+
+    Pass either ``prompt_file`` or ``prompt_text`` (not both). Prefer
+    ``prompt_text`` for concurrent callers (e.g. ask --background) so a shared
+    temp path cannot cross-contaminate prompts.
     """
     provider = (provider or "").strip().lower()
     role = (role or "").strip() or "researcher"
@@ -246,8 +250,22 @@ def start_job(
             timeout_s=provider_timeout_s,
         )
 
-    prompt_path = Path(prompt_file)
-    prompt_text = _read_prompt_file(prompt_path)
+    if prompt_text is not None and prompt_file is not None:
+        raise JobStoreError(
+            "pass prompt_file or prompt_text, not both",
+            code="E_JOB_PROMPT",
+        )
+    if prompt_text is not None:
+        resolved_prompt = str(prompt_text)
+        if not resolved_prompt.strip():
+            raise JobStoreError("prompt_text is empty", code="E_JOB_PROMPT")
+    elif prompt_file is not None:
+        resolved_prompt = _read_prompt_file(Path(prompt_file))
+    else:
+        raise JobStoreError(
+            "prompt_file or prompt_text is required",
+            code="E_JOB_PROMPT",
+        )
 
     worker: dict[str, Any] = {}
     if sleep_s is not None:
@@ -269,7 +287,7 @@ def start_job(
         project_root,
         provider=provider,
         role=role,
-        prompt_text=prompt_text,
+        prompt_text=resolved_prompt,
         run_id=run_id,
         worker=worker,
         request=request_snapshot,
@@ -344,17 +362,20 @@ def launch_job_runner(
             stderr=subprocess.DEVNULL,
         )
     except OSError as exc:
+        from omg_cli.jobs.retry import classified_terminal_updates
+
         transition_job(
             project_root,
             record.job_id,
             JobState.FAILED,
-            updates={
-                "exit": {"class": "spawn_error", "returncode": 1},
-                "error_message": f"launch failed: {exc}",
-                "pid": None,
-                "pgid": None,
-                "handle": None,
-            },
+            updates=classified_terminal_updates(
+                state=JobState.FAILED,
+                exit_obj={"class": "spawn_error", "returncode": 1},
+                error_message=f"launch failed: {exc}",
+                pid=None,
+                pgid=None,
+                handle=None,
+            ),
         )
         err = JobStoreError(
             f"failed to launch job runner: {exc}",
@@ -382,6 +403,8 @@ def launch_job_runner(
     if early_rc is not None:
         _reap_child(pid)
         try:
+            from omg_cli.jobs.retry import classified_terminal_updates
+
             cur = read_job_record(project_root, record.job_id)
             if cur.state not in TERMINAL_STATES:
                 if cur.state == JobState.QUEUED:
@@ -390,18 +413,19 @@ def launch_job_runner(
                     project_root,
                     record.job_id,
                     JobState.FAILED,
-                    updates={
-                        "exit": {
+                    updates=classified_terminal_updates(
+                        state=JobState.FAILED,
+                        exit_obj={
                             "class": "spawn_error",
                             "returncode": int(early_rc),
                         },
-                        "error_message": (
+                        error_message=(
                             f"job runner exited immediately with code {early_rc}"
                         ),
-                        "pid": None,
-                        "pgid": None,
-                        "handle": None,
-                    },
+                        pid=None,
+                        pgid=None,
+                        handle=None,
+                    ),
                 )
         except JobStoreError:
             pass
@@ -638,7 +662,11 @@ def _clear_spawn_uncertain(project_root: Path, job_id: str) -> None:
 
 
 def _acp_binding_references_job(project_root: Path, job_id: str) -> bool:
-    """True when any ACP singleton binding points at *job_id* (job-bearing)."""
+    """True when any ACP singleton binding points at *job_id*, or is unreadable.
+
+    Fail closed: a malformed / unreadable binding entry protects *all* jobs from
+    GC (corruption is not treated as absence).
+    """
     from omg_cli.jobs.store import ensure_jobs_root
 
     try:
@@ -651,15 +679,88 @@ def _acp_binding_references_job(project_root: Path, job_id: str) -> bool:
     try:
         entries = list(bind_dir.iterdir())
     except OSError:
-        # Unreadable binding dir — fail closed for cancel callers that care.
+        # Unreadable binding dir — fail closed.
         return True
     for path in entries:
         if not path.is_file() or path.suffix != ".json":
             continue
         data = _read_json_file(path)
-        if isinstance(data, Mapping) and str(data.get("job_id") or "") == jid:
+        if data is None:
+            # Malformed / unreadable JSON — cannot prove it does not reference
+            # this job; protect against GC deletion.
+            return True
+        if str(data.get("job_id") or "") == jid:
             return True
     return False
+
+
+def _gc_identities_block_reason(
+    project_root: Path, record: JobRecord
+) -> str | None:
+    """Return a skip reason when recorded identities are live/unproven; else None."""
+    if _spawn_uncertain(project_root, record.job_id):
+        return "spawn_uncertain"
+
+    runner = _runner_identity(record)
+    if runner is None:
+        runner = _read_spawn_identity_recovery(project_root, record.job_id)
+    provider = _provider_identity(record)
+
+    for identity, label in ((runner, "runner"), (provider, "provider")):
+        if identity is None:
+            continue
+        if not _pid_alive(identity.pid):
+            _reap_child(identity.pid)
+            continue
+        try:
+            if label == "provider":
+                view = JobRecord(
+                    job_id=record.job_id,
+                    created_at=record.created_at,
+                    provider=record.provider,
+                    role=record.role,
+                    state=record.state,
+                    attempt=record.attempt,
+                    schema=record.schema,
+                    generation=record.generation,
+                    pid=record.pid,
+                    pgid=record.pgid,
+                    handle=record.handle,
+                    pid_starttime=identity.pid_starttime,
+                )
+                own = _assert_cancel_ownership(view, identity.pid, identity.pgid)
+            else:
+                own = _assert_cancel_ownership(record, identity.pid, identity.pgid)
+        except JobStoreError as exc:
+            # PID reuse / pgid mismatch ⇒ recorded process is gone; safe for GC
+            # (we are not signalling). Other codes stay fail-closed.
+            code = getattr(exc, "code", None)
+            if code in {"E_JOB_PID_REUSED", "E_JOB_PGID_MISMATCH"}:
+                continue
+            return f"identity_unproven:{label}"
+        if own is OwnershipOutcome.OK:
+            return f"live_identity:{label}"
+        if own is OwnershipOutcome.GONE:
+            continue
+        return f"identity_unproven:{label}"
+    return None
+
+
+def _write_acp_binding_for_job(
+    project_root: Path,
+    job_id: str,
+    bind_path: Path,
+    payload: Mapping[str, Any],
+) -> None:
+    """Publish an ACP binding that references *job_id* under the external job lock.
+
+    Coordinates with ``gc_jobs`` quarantine so a binding cannot appear in the
+    unlocked window between GC eligibility and deletion.
+    """
+    from omg_cli.jobs.store import job_lock
+
+    with job_lock(project_root, job_id):
+        _write_json_file(bind_path, payload)
 
 
 def _persist_unproven_spawn_identity(
@@ -804,6 +905,8 @@ def _best_effort_stamp_failed(
     spawn_handle: str | None = None,
 ) -> None:
     """Stamp failed from queued/starting/running(this spawn). Never leaves dead-running."""
+    from omg_cli.jobs.retry import classified_terminal_updates
+
     try:
         cur = read_job_record(project_root, job_id)
         if cur.state in TERMINAL_STATES:
@@ -816,13 +919,14 @@ def _best_effort_stamp_failed(
                 project_root,
                 job_id,
                 JobState.FAILED,
-                updates={
-                    "exit": {"class": "spawn_error", "returncode": 1},
-                    "error_message": message,
-                    "pid": None,
-                    "pgid": None,
-                    "handle": None,
-                },
+                updates=classified_terminal_updates(
+                    state=JobState.FAILED,
+                    exit_obj={"class": "spawn_error", "returncode": 1},
+                    error_message=message,
+                    pid=None,
+                    pgid=None,
+                    handle=None,
+                ),
             )
             _clear_spawn_identity_recovery(project_root, job_id)
             _clear_spawn_uncertain(project_root, job_id)
@@ -852,11 +956,12 @@ def _best_effort_stamp_failed(
                     project_root,
                     job_id,
                     JobState.FAILED,
-                    updates={
-                        "exit": {"class": "spawn_error", "returncode": 1},
-                        "error_message": message,
+                    updates=classified_terminal_updates(
+                        state=JobState.FAILED,
+                        exit_obj={"class": "spawn_error", "returncode": 1},
+                        error_message=message,
                         # Keep pid/pgid for forensics; child is already killed.
-                    },
+                    ),
                 )
                 _clear_spawn_identity_recovery(project_root, job_id)
                 _clear_spawn_uncertain(project_root, job_id)
@@ -1240,20 +1345,20 @@ def cancel_job(
         _clear_spawn_uncertain(project_root, job_id)
         return record
 
-    updates: dict[str, Any] = {
-        "cancel_reason": reason or record.cancel_reason or "operator",
-        "exit": {
+    from omg_cli.jobs.retry import classified_terminal_updates
+
+    updates = classified_terminal_updates(
+        state=JobState.CANCELLED,
+        exit_obj={
             "class": "cancelled",
             "returncode": -signal.SIGKILL,
             "ok": False,
             "timed_out": False,
             "cancelled": True,
         },
-        "error_message": None,
-        "terminal_at": utc_now(),
-        "retry_class": "manual_only",
-        "retry_reason": "cancelled",
-    }
+        cancel_reason=reason or record.cancel_reason or "operator",
+        error_message=None,
+    )
 
     try:
         if record.state in {JobState.STARTING, JobState.RUNNING}:
@@ -1441,24 +1546,30 @@ def gc_jobs(
 ) -> GcResult:
     """Delete terminal jobs older than retention; never touch nonterminal/ACP.
 
-    Re-validates under the job lock immediately before each delete. Malformed
-    records are skipped, never deleted.
+    Under the external job lock: re-read, recheck terminal/retention/bindings,
+    prove recorded identities are gone, then atomically rename into
+    ``.gc-quarantine/``. Delete the quarantined tree only after releasing the
+    lock so retry cannot relaunch into a directory mid-rmtree.
     """
     from datetime import datetime, timedelta, timezone
 
     from omg_cli.jobs.store import (
-        delete_job_dir,
+        _validate_retention_days,
+        delete_quarantined_tree,
         gc_candidates,
         job_lock,
+        quarantine_job_dir,
     )
 
     root = Path(project_root).resolve()
     deleted: list[str] = []
     skipped: list[dict[str, str]] = []
+    days = _validate_retention_days(retention_days)
     now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=float(retention_days))
+    cutoff = now - timedelta(days=days)
 
-    for jid in gc_candidates(root, retention_days=retention_days, now=now):
+    for jid in gc_candidates(root, retention_days=days, now=now):
+        quarantined: Path | None = None
         try:
             if _acp_binding_references_job(root, jid):
                 skipped.append({"job_id": jid, "reason": "acp_binding"})
@@ -1499,14 +1610,27 @@ def gc_jobs(
                 if stamp > cutoff:
                     skipped.append({"job_id": jid, "reason": "within_retention"})
                     continue
-                # Still holding lock — delete after releasing? rmtree while
-                # flock open can be problematic; drop lock first via context exit.
-            # Re-check ACP after lock release, then delete.
-            if _acp_binding_references_job(root, jid):
-                skipped.append({"job_id": jid, "reason": "acp_binding"})
-                continue
-            delete_job_dir(root, jid)
-            deleted.append(jid)
+                block = _gc_identities_block_reason(root, rec)
+                if block is not None:
+                    skipped.append({"job_id": jid, "reason": block})
+                    continue
+                # Final binding recheck immediately before quarantine — covers a
+                # binding that appeared after the earlier under-lock checks.
+                if _acp_binding_references_job(root, jid):
+                    skipped.append({"job_id": jid, "reason": "acp_binding"})
+                    continue
+                if _team_binding_protects_job(root, jid):
+                    skipped.append({"job_id": jid, "reason": "team_binding"})
+                    continue
+                # Still holding lock — quarantine (rename) so retry cannot
+                # requeue into this tree; delete only after unlock.
+                quarantined = quarantine_job_dir(root, jid)
+                if quarantined is None:
+                    skipped.append({"job_id": jid, "reason": "already_absent"})
+                    continue
+            if quarantined is not None:
+                delete_quarantined_tree(quarantined)
+                deleted.append(jid)
         except JobStoreError as exc:
             skipped.append(
                 {
@@ -1796,7 +1920,9 @@ def resolve_acp_binding_for_team_stop(
                         "recovery": "stop_repaired_null_ensuring",
                     }
                     try:
-                        _write_json_file(
+                        _write_acp_binding_for_job(
+                            root,
+                            job_id,
                             bind_path,
                             {
                                 "run_id": rid,
@@ -2262,7 +2388,9 @@ def ensure_acp_session_sidecar(
             if live_ids:
                 # Repair binding to the live job — do not orphan via unlink.
                 repaired_id = live_ids[0]
-                _write_json_file(
+                _write_acp_binding_for_job(
+                    root,
+                    repaired_id,
                     bind_path,
                     {
                         "run_id": rid,
@@ -2408,7 +2536,9 @@ def ensure_acp_session_sidecar(
         # start_job launches a runner — never leave reclaimable ensuring+null
         # beside a RUNNING sidecar if a later handshaking/recovery write fails.
         job_id = make_job_id()
-        _write_json_file(
+        _write_acp_binding_for_job(
+            root,
+            job_id,
             bind_path,
             {
                 "run_id": rid,
@@ -2501,7 +2631,7 @@ def ensure_acp_session_sidecar(
             "state": "handshaking",
         }
         try:
-            _write_json_file(bind_path, handshake_binding)
+            _write_acp_binding_for_job(root, job_id, bind_path, handshake_binding)
         except Exception as write_exc:
             cancel_err: Exception | None = None
             try:
@@ -2531,10 +2661,12 @@ def ensure_acp_session_sidecar(
                 "recovery": "handshaking_publish_failed",
             }
             try:
-                _write_json_file(bind_path, recovery_payload)
+                _write_acp_binding_for_job(root, job_id, bind_path, recovery_payload)
             except Exception:
                 try:
-                    _write_json_file(
+                    _write_acp_binding_for_job(
+                        root,
+                        job_id,
                         bind_path,
                         {**recovery_payload, "state": "ensuring"},
                     )
@@ -2611,7 +2743,9 @@ def ensure_acp_session_sidecar(
                 code="E_ACP_ENSURE_ABORTED_STOP",
             )
 
-        _write_json_file(
+        _write_acp_binding_for_job(
+            root,
+            job_id,
             bind_path,
             {
                 "run_id": rid,

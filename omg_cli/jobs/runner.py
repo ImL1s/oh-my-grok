@@ -181,20 +181,16 @@ def _stamp_running_terminal(
         )
         return
     target = _map_terminal_state(ok=ok, cancelled=cancelled, exit_class=exit_class)
-    from omg_cli.jobs.retry import classify_retry
-    from omg_cli.jobs.store import utc_now
+    from omg_cli.jobs.retry import classified_terminal_updates
 
-    retry_class, retry_reason = classify_retry(state=target, exit_obj=exit_obj)
-    updates: dict = {
-        "exit": exit_obj,
-        "usage": usage,
-        "artifacts": artifacts,
-        "result": result_desc,
-        "error_message": error_message if target != JobState.SUCCEEDED else None,
-        "terminal_at": utc_now(),
-        "retry_class": retry_class,
-        "retry_reason": retry_reason,
-    }
+    updates: dict = classified_terminal_updates(
+        state=target,
+        exit_obj=exit_obj,
+        usage=usage,
+        artifacts=artifacts,
+        result=result_desc,
+        error_message=error_message if target != JobState.SUCCEEDED else None,
+    )
     if session is not None:
         updates["session"] = session
     if target == JobState.CANCELLED and not cur.cancel_reason:

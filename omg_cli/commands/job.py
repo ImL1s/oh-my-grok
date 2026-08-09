@@ -95,6 +95,19 @@ def _cmd_start(args: argparse.Namespace) -> int:
         return 2
 
     try:
+        raw_budget = getattr(args, "attempt_budget", 1)
+        try:
+            budget = int(raw_budget) if raw_budget is not None else 1
+        except (TypeError, ValueError) as exc:
+            raise JobStoreError(
+                f"invalid attempt_budget {raw_budget!r}",
+                code="E_JOB_RETRY_BUDGET",
+            ) from exc
+        if budget < 1:
+            raise JobStoreError(
+                "attempt_budget must be >= 1",
+                code="E_JOB_RETRY_BUDGET",
+            )
         result = start_job(
             _root(args),
             provider=str(provider),
@@ -110,7 +123,7 @@ def _cmd_start(args: argparse.Namespace) -> int:
             mode=getattr(args, "mode", None) or None,
             output_format=getattr(args, "output_format", None) or None,
             provider_timeout_s=getattr(args, "provider_timeout", None),
-            attempt_budget=int(getattr(args, "attempt_budget", 1) or 1),
+            attempt_budget=budget,
         )
     except JobStoreError as exc:
         emit_json(
@@ -371,7 +384,15 @@ def _cmd_gc(args: argparse.Namespace) -> int:
         )
         return 2
     try:
-        result = gc_jobs(_root(args), retention_days=float(retention))
+        import math
+
+        days = float(retention)
+        if not math.isfinite(days):
+            raise JobStoreError(
+                "retention_days must be a finite number >= 0",
+                code="E_JOB_GC",
+            )
+        result = gc_jobs(_root(args), retention_days=days)
     except JobStoreError as exc:
         emit_json(
             failure(

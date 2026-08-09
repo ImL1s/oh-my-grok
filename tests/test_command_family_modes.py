@@ -141,3 +141,71 @@ def test_ask_background_rejects_non_job_provider(
     body = json.loads(capsys.readouterr().out)
     assert body["ok"] is False
     assert body["error"]["code"] == "E_JOB_PROVIDER"
+
+
+def test_ask_background_concurrent_prompts_do_not_cross_contaminate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Concurrent ask --background must not share a prompt file across jobs."""
+    import threading
+
+    from omg_cli.commands.modes import _cmd_ask_background
+    from omg_cli.jobs.runtime import start_job, wait_job
+    from omg_cli.jobs.store import job_dir
+
+    (tmp_path / ".omg").mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OMG_PROJECT_ROOT", str(tmp_path))
+
+    prompts = {
+        "A": "PROMPT_ALPHA_UNIQUE_" + ("x" * 64),
+        "B": "PROMPT_BRAVO_UNIQUE_" + ("y" * 64),
+    }
+    results: dict[str, str] = {}
+    errors: list[BaseException] = []
+
+    def _run(label: str) -> None:
+        try:
+            res = start_job(
+                tmp_path,
+                provider="fake",
+                role="researcher",
+                prompt_text=prompts[label],
+                sleep_s=0.05,
+            )
+            wait_job(tmp_path, res.record.job_id, timeout_s=15)
+            results[label] = res.record.job_id
+        except BaseException as exc:  # noqa: BLE001 — collect for main thread
+            errors.append(exc)
+
+    t1 = threading.Thread(target=_run, args=("A",))
+    t2 = threading.Thread(target=_run, args=("B",))
+    t1.start()
+    t2.start()
+    t1.join(timeout=30)
+    t2.join(timeout=30)
+    assert not errors, errors
+    assert set(results) == {"A", "B"}
+    assert results["A"] != results["B"]
+
+    for label, jid in results.items():
+        body = (job_dir(tmp_path, jid) / "prompt.md").read_text(encoding="utf-8")
+        assert prompts[label] in body
+        other = "B" if label == "A" else "A"
+        assert prompts[other] not in body
+
+    legacy = tmp_path / ".omg" / "jobs" / ".ask-background-prompt.md"
+    assert not legacy.is_file()
+
+    class _Args:
+        provider = "fake"
+        role = "researcher"
+        attempt_budget = 1
+        timeout = None
+        run_id = None
+        model = None
+        json = True
+
+    rc = _cmd_ask_background(_Args(), "CLI_SEAM_PROMPT_ONLY")
+    assert rc == 0
+    assert not legacy.is_file()

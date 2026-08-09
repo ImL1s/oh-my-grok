@@ -563,3 +563,38 @@ def test_cli_job_gc_refuses_acp_binding(
     assert job_id not in body["deleted"]
     assert any(s.get("job_id") == job_id for s in body["skipped"])
     assert (project / ".omg" / "jobs" / job_id / "job.json").is_file()
+
+
+def test_cli_job_start_rejects_zero_attempt_budget(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prompt = project / "task.md"
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "fake",
+            "--prompt-file",
+            str(prompt),
+            "--attempt-budget",
+            "0",
+            "--sleep",
+            "0.01",
+        ]
+    )
+    assert rc == 1
+    body = _out(capsys)
+    assert body["ok"] is False
+    assert body["error"]["code"] == "E_JOB_RETRY_BUDGET"
+
+
+def test_cli_job_gc_rejects_nonfinite_retention(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = main(["--json", "job", "gc", "--retention-days", "nan"])
+    assert rc == 1
+    body = _out(capsys)
+    assert body["ok"] is False
+    assert body["error"]["code"] == "E_JOB_GC"

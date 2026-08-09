@@ -80,8 +80,14 @@ def artifacts_dir(project_root: Path, job_id: str) -> Path:
     return job_dir(project_root, job_id) / "artifacts"
 
 
+def job_locks_dir(project_root: Path) -> Path:
+    """Stable lock directory *outside* deletable job trees (``.omg/jobs/.locks/``)."""
+    return jobs_root(project_root) / ".locks"
+
+
 def _lock_path(project_root: Path, job_id: str) -> Path:
-    return job_dir(project_root, job_id) / "job.lock"
+    """External serialization lock — survives GC quarantine of the job dir."""
+    return job_locks_dir(project_root) / f"{safe_job_id(job_id)}.lock"
 
 
 def _require_flock() -> None:
@@ -94,11 +100,21 @@ def _require_flock() -> None:
 
 @contextmanager
 def job_lock(project_root: Path, job_id: str) -> Iterator[None]:
-    """Exclusive flock on ``job.lock`` (bounded wait)."""
+    """Exclusive flock on ``.omg/jobs/.locks/<job_id>.lock`` (bounded wait).
+
+    Lock lives outside the job directory so GC can rename/delete the job tree
+    without dropping serialization against retry / ACP binding writers.
+    """
     _require_flock()
-    jdir = job_dir(project_root, job_id)
-    ensure_managed_dir(jdir)
-    path = _lock_path(project_root, job_id)
+    jid = safe_job_id(job_id)
+    ensure_jobs_root(project_root)
+    locks = job_locks_dir(project_root)
+    ensure_managed_dir(locks)
+    try:
+        os.chmod(locks, MANAGED_DIR_MODE)
+    except OSError:
+        pass
+    path = _lock_path(project_root, jid)
     path.touch(exist_ok=True)
     os.chmod(path, DATA_FILE_MODE)
     deadline = time.monotonic() + _LOCK_TIMEOUT_S
@@ -677,6 +693,25 @@ def _parse_iso_ts(raw: str | None) -> datetime | None:
     return ts
 
 
+def _validate_retention_days(retention_days: float) -> float:
+    """Fail closed on negative / non-finite retention."""
+    import math
+
+    try:
+        days = float(retention_days)
+    except (TypeError, ValueError) as exc:
+        raise JobStoreError(
+            f"invalid retention_days {retention_days!r}",
+            code="E_JOB_GC",
+        ) from exc
+    if not math.isfinite(days) or days < 0:
+        raise JobStoreError(
+            "retention_days must be a finite number >= 0",
+            code="E_JOB_GC",
+        )
+    return days
+
+
 def gc_candidates(
     project_root: Path,
     *,
@@ -688,12 +723,8 @@ def gc_candidates(
     Never includes nonterminal or unreadable records. Retention clock uses
     ``terminal_at`` when present, else ``updated_at`` / ``created_at``.
     """
-    if retention_days < 0:
-        raise JobStoreError(
-            "retention_days must be >= 0",
-            code="E_JOB_GC",
-        )
-    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=float(retention_days))
+    days = _validate_retention_days(retention_days)
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
     out: list[str] = []
     for jid in list_job_ids(project_root):
         try:
@@ -719,8 +750,54 @@ def gc_candidates(
     return out
 
 
+def gc_quarantine_dir(project_root: Path) -> Path:
+    return jobs_root(project_root) / ".gc-quarantine"
+
+
+def quarantine_job_dir(project_root: Path, job_id: str) -> Path | None:
+    """Atomically rename job dir into ``.gc-quarantine/`` (caller holds ``job_lock``).
+
+    Returns the quarantine path, or ``None`` if the job dir is already absent.
+    Does **not** delete; caller deletes the quarantined tree after releasing the lock.
+    """
+    jid = safe_job_id(job_id)
+    jdir = job_dir(project_root, jid)
+    if not jdir.exists():
+        return None
+    qroot = gc_quarantine_dir(project_root)
+    ensure_managed_dir(qroot)
+    try:
+        os.chmod(qroot, MANAGED_DIR_MODE)
+    except OSError:
+        pass
+    dest = qroot / f"{jid}.{uuid.uuid4().hex[:8]}"
+    try:
+        os.rename(jdir, dest)
+    except OSError as exc:
+        raise JobStoreError(
+            f"failed to quarantine job dir {jid}: {exc}",
+            code="E_JOB_GC",
+        ) from exc
+    return dest
+
+
+def delete_quarantined_tree(path: Path) -> None:
+    """``rmtree`` a previously quarantined job tree (lock already released)."""
+    import shutil
+
+    if path is None or not path.exists():
+        return
+    try:
+        shutil.rmtree(path)
+    except OSError as exc:
+        raise JobStoreError(
+            f"failed to delete quarantined job tree {path}: {exc}",
+            code="E_JOB_GC",
+        ) from exc
+
+
 def delete_job_dir(project_root: Path, job_id: str) -> None:
-    """Remove a job directory tree (caller must have revalidated under lock)."""
+    """Remove a job directory tree (legacy helper; prefer quarantine+delete)."""
     import shutil
 
     jid = safe_job_id(job_id)
@@ -746,11 +823,14 @@ __all__ = [
     "create_attempt_dir",
     "create_job_dir",
     "delete_job_dir",
+    "delete_quarantined_tree",
     "ensure_jobs_root",
     "gc_candidates",
+    "gc_quarantine_dir",
     "job_dir",
     "job_json_path",
     "job_lock",
+    "job_locks_dir",
     "jobs_root",
     "list_job_ids",
     "make_job_id",
@@ -758,6 +838,7 @@ __all__ = [
     "mark_provider_exited",
     "mark_provider_launching",
     "prepare_retry",
+    "quarantine_job_dir",
     "read_job_record",
     "safe_job_id",
     "transition_job",

@@ -28,6 +28,15 @@ RETRYABLE_TERMINAL_STATES: frozenset[JobState] = frozenset(
     }
 )
 
+_KNOWN_RETRY_CLASSES = frozenset(
+    {
+        RETRY_CLASS_AUTOMATIC,
+        RETRY_CLASS_MANUAL_ONLY,
+        RETRY_CLASS_NEVER,
+        RETRY_CLASS_UNKNOWN,
+    }
+)
+
 
 def classify_retry(
     *,
@@ -92,6 +101,31 @@ def classify_retry(
     return RETRY_CLASS_UNKNOWN, f"unclassified:{exit_class}"
 
 
+def classified_terminal_updates(
+    *,
+    state: JobState | str,
+    exit_obj: Mapping[str, Any] | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Build terminal transition updates that always stamp retry metadata.
+
+    Every parent/runner path that lands a terminal state must merge these
+    fields so ``retry_class`` is never left ``None`` on a fresh stamp.
+    """
+    from omg_cli.jobs.store import utc_now
+
+    retry_class, retry_reason = classify_retry(state=state, exit_obj=exit_obj)
+    updates: dict[str, Any] = {
+        "terminal_at": utc_now(),
+        "retry_class": retry_class,
+        "retry_reason": retry_reason,
+    }
+    if exit_obj is not None and "exit" not in extra:
+        updates["exit"] = dict(exit_obj)
+    updates.update(extra)
+    return updates
+
+
 def assert_retry_admission(
     record: JobRecord,
     *,
@@ -133,13 +167,15 @@ def assert_retry_admission(
             code="E_JOB_RETRY_BUDGET",
         )
 
-    # Malformed retry metadata → refuse.
-    if record.retry_class is not None and record.retry_class not in {
-        RETRY_CLASS_AUTOMATIC,
-        RETRY_CLASS_MANUAL_ONLY,
-        RETRY_CLASS_NEVER,
-        RETRY_CLASS_UNKNOWN,
-    }:
+    # Explicit classification required — missing class fails closed.
+    # (Legacy schema-v1 records default attempt_budget=1 so they cannot retry.)
+    if record.retry_class is None:
+        raise JobStoreError(
+            "job missing retry_class; refusing retry (fail closed)",
+            code="E_JOB_RETRY_CLASS",
+        )
+
+    if record.retry_class not in _KNOWN_RETRY_CLASSES:
         raise JobStoreError(
             f"malformed retry_class {record.retry_class!r}",
             code="E_JOB_RETRY_META",
@@ -156,4 +192,5 @@ __all__ = [
     "RETRYABLE_TERMINAL_STATES",
     "assert_retry_admission",
     "classify_retry",
+    "classified_terminal_updates",
 ]

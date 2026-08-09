@@ -314,14 +314,30 @@ def _cmd_ask_background(args: argparse.Namespace, prompt: str) -> int:
         return 2
 
     root = project_root()
-    # Materialize prompt under a temp file for start_job (copied into job dir).
-    # Never writes ask artifacts / never invokes the sync broker.
-    prompt_path = root / ".omg" / "jobs" / ".ask-background-prompt.md"
-    prompt_path.parent.mkdir(parents=True, exist_ok=True)
-    prompt_path.write_text(prompt, encoding="utf-8")
-
+    # Pass prompt text directly — never a shared predictable path that concurrent
+    # ask --background callers could overwrite mid-flight.
     role = str(getattr(args, "role", None) or "researcher")
-    budget = int(getattr(args, "attempt_budget", 1) or 1)
+    raw_budget = getattr(args, "attempt_budget", 1)
+    try:
+        budget = int(raw_budget) if raw_budget is not None else 1
+    except (TypeError, ValueError):
+        emit_json(
+            failure(
+                cmd,
+                "E_JOB_RETRY_BUDGET",
+                f"invalid attempt_budget {raw_budget!r}",
+            )
+        )
+        return 2
+    if budget < 1:
+        emit_json(
+            failure(
+                cmd,
+                "E_JOB_RETRY_BUDGET",
+                "attempt_budget must be >= 1",
+            )
+        )
+        return 2
     timeout = getattr(args, "timeout", None)
     provider_timeout = float(timeout) if timeout is not None else None
 
@@ -330,7 +346,7 @@ def _cmd_ask_background(args: argparse.Namespace, prompt: str) -> int:
             root,
             provider=job_provider,
             role=role,
-            prompt_file=prompt_path,
+            prompt_text=prompt,
             run_id=getattr(args, "run_id", None) or None,
             model=getattr(args, "model", None) or None,
             provider_timeout_s=provider_timeout,
