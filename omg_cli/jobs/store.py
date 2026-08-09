@@ -525,7 +525,11 @@ def attempt_dir(project_root: Path, job_id: str, attempt: int) -> Path:
 
 
 def create_attempt_dir(project_root: Path, job_id: str, attempt: int) -> Path:
-    """Create ``attempts/NNNN/`` (+ artifacts/) for an immutable archive slot."""
+    """Create ``attempts/NNNN/`` (+ artifacts/) for an immutable archive slot.
+
+    Prefer :func:`archive_attempt`, which stages into a sibling temp dir and
+    atomically renames so incomplete archives never look final.
+    """
     adir = attempt_dir(project_root, job_id, attempt)
     if adir.exists():
         raise JobStoreError(
@@ -572,28 +576,40 @@ def _copy_tree_files(src: Path, dst: Path) -> None:
             _copy_tree_files(entry, dst / entry.name)
 
 
-def archive_attempt(project_root: Path, job_id: str, record: JobRecord) -> Path:
-    """Snapshot the completed attempt under ``attempts/NNNN/`` (immutable).
+def _attempt_archive_complete(adir: Path, attempt: int) -> bool:
+    """True when ``attempts/NNNN/`` looks like a finished published archive."""
+    marker = adir / "attempt.json"
+    if not marker.is_file():
+        return False
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    archived = data.get("archived_attempt")
+    try:
+        return int(archived) == int(attempt)
+    except (TypeError, ValueError):
+        return False
 
-    Does **not** mutate ``prompt.md`` at the job root. Caller must hold the
-    job lock (or accept a race). Evidence files are copied then truncated so
-    the next attempt starts with empty ledgers without overwriting history.
-    """
-    jid = safe_job_id(job_id)
-    jdir = job_dir(project_root, jid)
-    adir = create_attempt_dir(project_root, jid, int(record.attempt))
 
-    snapshot = record.to_dict()
-    snapshot["archived_at"] = utc_now()
-    snapshot["archived_attempt"] = int(record.attempt)
-    _atomic_write_json(adir / "attempt.json", snapshot)
+def _rmtree_best_effort(path: Path) -> None:
+    import shutil
 
-    _copy_file_if_present(jdir / "stdout.jsonl", adir / "stdout.jsonl")
-    _copy_file_if_present(jdir / "stderr.jsonl", adir / "stderr.jsonl")
-    _copy_file_if_present(jdir / "events.jsonl", adir / "events.jsonl")
-    _copy_tree_files(jdir / "artifacts", adir / "artifacts")
+    if not path.exists():
+        return
+    try:
+        shutil.rmtree(path)
+    except OSError as exc:
+        raise JobStoreError(
+            f"cannot remove incomplete attempt archive {path.name}: {exc}",
+            code="E_JOB_RETRY_ARCHIVE",
+        ) from exc
 
-    # Reset active ledgers / artifacts for the next attempt (history preserved).
+
+def _reset_active_attempt_ledgers(jdir: Path) -> None:
+    """Clear live ledgers/artifacts so the next attempt starts empty."""
     for name in ("stdout.jsonl", "stderr.jsonl", "events.jsonl"):
         atomic_write_bytes(
             jdir / name,
@@ -634,6 +650,75 @@ def archive_attempt(project_root: Path, job_id: str, record: JobRecord) -> Path:
         except OSError:
             pass
     ensure_managed_dir(art)
+
+
+def archive_attempt(project_root: Path, job_id: str, record: JobRecord) -> Path:
+    """Snapshot the completed attempt under ``attempts/NNNN/`` (immutable).
+
+    Stages into a temporary sibling directory, then atomically renames into
+    ``attempts/NNNN/`` so a crash mid-copy never leaves a final-looking
+    partial archive. A complete published archive for the same attempt is
+    treated as idempotent (retry after crash between rename and job.json
+    persist). Incomplete/legacy final dirs are removed and replaced.
+
+    Does **not** mutate ``prompt.md`` at the job root. Caller must hold the
+    job lock (or accept a race). Evidence files are copied then truncated so
+    the next attempt starts with empty ledgers without overwriting history.
+    """
+    jid = safe_job_id(job_id)
+    jdir = job_dir(project_root, jid)
+    attempt_n = int(record.attempt)
+    adir = attempt_dir(project_root, jid, attempt_n)
+    aroot = attempts_dir(project_root, jid)
+    ensure_managed_dir(aroot)
+
+    # Crash after publish + before job.json reset: reuse complete archive.
+    if _attempt_archive_complete(adir, attempt_n):
+        _reset_active_attempt_ledgers(jdir)
+        return adir
+
+    # Incomplete/legacy final slot (missing attempt.json) — recoverable.
+    if adir.exists():
+        _rmtree_best_effort(adir)
+
+    staging = aroot / f".staging-{attempt_n:04d}-{uuid.uuid4().hex[:8]}"
+    try:
+        ensure_managed_dir(staging)
+        ensure_managed_dir(staging / "artifacts")
+
+        snapshot = record.to_dict()
+        snapshot["archived_at"] = utc_now()
+        snapshot["archived_attempt"] = attempt_n
+        _atomic_write_json(staging / "attempt.json", snapshot)
+
+        _copy_file_if_present(jdir / "stdout.jsonl", staging / "stdout.jsonl")
+        _copy_file_if_present(jdir / "stderr.jsonl", staging / "stderr.jsonl")
+        _copy_file_if_present(jdir / "events.jsonl", staging / "events.jsonl")
+        _copy_tree_files(jdir / "artifacts", staging / "artifacts")
+
+        try:
+            os.rename(staging, adir)
+        except OSError as exc:
+            # Racing publish already complete — treat as success.
+            if _attempt_archive_complete(adir, attempt_n):
+                try:
+                    _rmtree_best_effort(staging)
+                except JobStoreError:
+                    pass
+            else:
+                raise JobStoreError(
+                    f"failed to publish attempt archive for attempt={attempt_n}: {exc}",
+                    code="E_JOB_RETRY_ARCHIVE",
+                ) from exc
+    except Exception:
+        try:
+            _rmtree_best_effort(staging)
+        except JobStoreError:
+            pass
+        raise
+
+    # Reset active ledgers / artifacts for the next attempt (history preserved).
+    _reset_active_attempt_ledgers(jdir)
     return adir
 
 

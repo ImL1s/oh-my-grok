@@ -1842,6 +1842,49 @@ def test_retry_archives_attempt_history(root: Path) -> None:
     wait_job(root, retried.record.job_id, timeout_s=15)
 
 
+def test_retry_recovers_from_partial_attempt_archive(root: Path) -> None:
+    """Incomplete attempts/NNNN/ must not permanently block retry (E_JOB_RETRY_ARCHIVE)."""
+    from omg_cli.jobs.runtime import retry_job
+    from omg_cli.jobs.store import attempt_dir, attempts_dir
+
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        fail=True,
+        sleep_s=0.02,
+        attempt_budget=3,
+    )
+    terminal, _ = wait_job(root, started.record.job_id, timeout_s=15)
+    assert terminal.state == JobState.FAILED
+
+    # Simulate crash after creating final-looking attempts/0001/ but before
+    # attempt.json publish (legacy partial / incomplete archive).
+    partial = attempt_dir(root, terminal.job_id, 1)
+    partial.mkdir(parents=True)
+    (partial / "artifacts").mkdir()
+    (partial / "stdout.jsonl").write_text("partial\n", encoding="utf-8")
+    assert not (partial / "attempt.json").is_file()
+
+    retried = retry_job(root, terminal.job_id, attempt=2)
+    assert retried.record.attempt == 2
+    archive = attempt_dir(root, terminal.job_id, 1)
+    assert (archive / "attempt.json").is_file()
+    snap = json.loads((archive / "attempt.json").read_text(encoding="utf-8"))
+    assert snap["archived_attempt"] == 1
+    assert snap["state"] == "failed"
+    # Staging leftovers must not look like published attempts.
+    leftover = [
+        p
+        for p in attempts_dir(root, terminal.job_id).iterdir()
+        if p.name.startswith(".staging-")
+    ]
+    assert leftover == []
+    wait_job(root, retried.record.job_id, timeout_s=15)
+
+
 def test_retry_preserves_previous_artifacts(root: Path) -> None:
     from omg_cli.jobs.runtime import retry_job
     from omg_cli.jobs.store import attempt_dir

@@ -111,6 +111,51 @@ def test_ask_background_returns_job_id(
     assert (tmp_path / ".omg" / "jobs" / body["job_id"] / "job.json").is_file()
 
 
+def test_ask_background_dry_run_does_not_start_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--dry-run must not call start_job / materialize a durable job."""
+    import json
+
+    from omg_cli.main import main
+
+    (tmp_path / ".omg").mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OMG_PROJECT_ROOT", str(tmp_path))
+
+    def _boom(*_a: object, **_k: object) -> object:
+        raise AssertionError("start_job must not be called on ask --background --dry-run")
+
+    monkeypatch.setattr("omg_cli.jobs.runtime.start_job", _boom)
+    rc = main(
+        [
+            "--json",
+            "ask",
+            "fake",
+            "dry background",
+            "--background",
+            "--dry-run",
+            "--attempt-budget",
+            "3",
+            "--role",
+            "explorer",
+        ]
+    )
+    assert rc == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is True
+    assert body["command"] == "ask.background"
+    assert body["dry_run"] is True
+    assert body["background"] is True
+    assert body["provider"] == "fake"
+    assert body["role"] == "explorer"
+    assert body["attempt_budget"] == 3
+    assert "job_id" not in body
+    jobs = tmp_path / ".omg" / "jobs"
+    if jobs.is_dir():
+        assert not any(jobs.glob("*/job.json"))
+
+
 def test_ask_background_preserves_sync_default(monkeypatch: pytest.MonkeyPatch) -> None:
     called: list[str] = []
 

@@ -341,6 +341,27 @@ def _cmd_ask_background(args: argparse.Namespace, prompt: str) -> int:
     timeout = getattr(args, "timeout", None)
     provider_timeout = float(timeout) if timeout is not None else None
 
+    # Honor --dry-run: never materialize / launch a durable job.
+    if bool(getattr(args, "dry_run", False)):
+        payload = {
+            "dry_run": True,
+            "background": True,
+            "provider": job_provider,
+            "role": role,
+            "attempt_budget": budget,
+            "run_id": getattr(args, "run_id", None) or None,
+            "model": getattr(args, "model", None) or None,
+            "provider_timeout_s": provider_timeout,
+        }
+        if wants_json(args):
+            emit_json(success(cmd, **redact_value(payload)))
+        else:
+            print(
+                f"ask background dry-run provider={job_provider} "
+                f"role={role} attempt_budget={budget}"
+            )
+        return 0
+
     try:
         result = start_job(
             root,
