@@ -653,12 +653,22 @@ def _classify_claim_for_reconcile(
         claim_map = claim
         claim_owner = claim_map.get("owner")
         token = claim_map.get("token")
-        if owner is None or str(owner).strip() == "":
-            _refuse("in_progress_missing_owner")
-        if claim_owner != owner:
+        # Fail closed: owner + claim.owner must be identical nonempty safe
+        # string worker IDs (reject int/bool/path-like poison).
+        if not isinstance(owner, str) or not owner:
+            _refuse("non_string_owner")
+        if not isinstance(claim_owner, str) or not claim_owner:
+            _refuse("non_string_claim_owner")
+        if owner != claim_owner:
             _refuse("owner_claim_mismatch")
-        if token is None or str(token).strip() == "":
-            _refuse("in_progress_empty_token")
+        try:
+            require_safe_id(owner, label="owner")
+            require_safe_id(claim_owner, label="claim.owner")
+        except ContractValidationError:
+            _refuse("unsafe_owner")
+        # Token must be a nonempty string (reject false/non-string poison).
+        if not isinstance(token, str) or not token:
+            _refuse("non_string_token")
         stamp = _parse_leased_until(claim_map)
         if stamp is None or stamp <= cutoff:
             return "release_expired"
@@ -866,19 +876,72 @@ def _read_task(
             "task file is corrupt",
             details={"error": "corrupt_task"},
         )
-    return _normalize_task(parsed)
+    task = _normalize_task(parsed)
+    if task["id"] != task_id:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            f"task file stem {task_id!r} mismatches embedded id {task['id']!r}",
+            details={
+                "error": "corrupt_task",
+                "invariant": "filename_body_id_mismatch",
+                "task_id": task_id,
+                "embedded_id": task["id"],
+            },
+        )
+    return task
 
 
 def _list_tasks(root: Path, run_id: str, team_id: str) -> list[dict[str, Any]]:
     directory = _tasks_dir(root, run_id, team_id)
     if not directory.exists():
         return []
-    tasks: list[dict[str, Any]] = []
+    loaded: list[tuple[str, dict[str, Any]]] = []
     for path in sorted(directory.glob("task-*.json")):
         stem = path.name[len("task-") : -len(".json")]
-        task = _read_task(root, run_id, team_id, stem)
-        if task is not None:
-            tasks.append(task)
+        _validate_task_id(stem)
+        parsed = parse_canonical_json_bytes(path.read_bytes())
+        if not isinstance(parsed, dict):
+            raise TeamApiError(
+                "E_TEAM_API_FAILED",
+                "task file is corrupt",
+                details={"error": "corrupt_task", "task_id": stem},
+            )
+        task = _normalize_task(parsed)
+        loaded.append((stem, task))
+
+    # Duplicate embedded IDs across files (checked before stem bind so a
+    # pair of mismatched files sharing one id still fail closed distinctly).
+    seen_ids: dict[str, str] = {}
+    for stem, task in loaded:
+        embedded = task["id"]
+        prior = seen_ids.get(embedded)
+        if prior is not None:
+            raise TeamApiError(
+                "E_TEAM_API_FAILED",
+                f"duplicate task id {embedded!r} in stems {prior!r} and {stem!r}",
+                details={
+                    "error": "corrupt_task",
+                    "invariant": "duplicate_task_id",
+                    "task_id": embedded,
+                    "stems": [prior, stem],
+                },
+            )
+        seen_ids[embedded] = stem
+
+    tasks: list[dict[str, Any]] = []
+    for stem, task in loaded:
+        if task["id"] != stem:
+            raise TeamApiError(
+                "E_TEAM_API_FAILED",
+                f"task file stem {stem!r} mismatches embedded id {task['id']!r}",
+                details={
+                    "error": "corrupt_task",
+                    "invariant": "filename_body_id_mismatch",
+                    "task_id": stem,
+                    "embedded_id": task["id"],
+                },
+            )
+        tasks.append(task)
     tasks.sort(key=lambda item: int(item["id"]))
     return tasks
 
