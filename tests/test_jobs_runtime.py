@@ -22,6 +22,7 @@ from omg_cli.jobs.store import (
     create_job_dir,
     job_dir,
     job_json_path,
+    mark_cancel_requested,
     read_job_record,
     transition_job,
 )
@@ -217,7 +218,7 @@ def test_cancel_force_ignore_sigterm(root: Path) -> None:
         role="researcher",
         prompt_file=prompt,
         ignore_sigterm=True,
-        sleep_s=2.0,
+        sleep_s=3.0,
     )
     pid = started.record.pid
     assert pid
@@ -228,6 +229,86 @@ def test_cancel_force_ignore_sigterm(root: Path) -> None:
     assert rec.state == JobState.CANCELLED
     time.sleep(0.15)
     assert not _pid_alive(pid)
+
+
+def test_cancel_requested_beats_racing_success_stamp(root: Path) -> None:
+    """Durable cancel_requested remaps runner success → cancelled under lock.
+
+    Reproduces the CI flake where ignore_sigterm fake finishes Adapter.run
+    during SIGTERM→grace→SIGKILL and would otherwise stamp succeeded.
+    """
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        ignore_sigterm=True,
+        sleep_s=0.6,
+    )
+    jid = started.record.job_id
+    # Persist cancel intent without signalling — same window as slow force-kill.
+    marked = mark_cancel_requested(root, jid, reason="race-success")
+    assert marked.cancel_requested_at
+    assert marked.state == JobState.RUNNING
+
+    deadline = time.monotonic() + 5.0
+    terminal = marked
+    while time.monotonic() < deadline:
+        terminal = read_job_record(root, jid)
+        if terminal.state in {
+            JobState.SUCCEEDED,
+            JobState.FAILED,
+            JobState.CANCELLED,
+            JobState.LOST,
+        }:
+            break
+        time.sleep(0.05)
+    assert terminal.state == JobState.CANCELLED
+    assert terminal.cancel_reason == "race-success"
+    assert terminal.exit and terminal.exit.get("cancelled") is True
+    assert terminal.exit.get("class") == "cancelled"
+
+
+def test_transition_succeeded_after_cancel_requested_coerces(
+    root: Path,
+) -> None:
+    """Direct store gate: succeeded/failed cannot land after cancel_requested."""
+    from omg_cli.jobs.retry import classified_terminal_updates
+
+    prompt = _prompt(root)
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    transition_job(
+        root,
+        rec.job_id,
+        JobState.RUNNING,
+        updates={
+            "pid": os.getpid(),
+            "pgid": os.getpgid(0),
+            "handle": f"fake:{rec.job_id}:pid={os.getpid()}",
+        },
+    )
+    mark_cancel_requested(root, rec.job_id, reason="coerce")
+    out = transition_job(
+        root,
+        rec.job_id,
+        JobState.SUCCEEDED,
+        updates=classified_terminal_updates(
+            state=JobState.SUCCEEDED,
+            exit_obj={"class": "success", "returncode": 0, "ok": True, "cancelled": False},
+        ),
+    )
+    assert out.state == JobState.CANCELLED
+    assert out.cancel_reason == "coerce"
+    assert out.exit and out.exit.get("class") == "cancelled"
+    assert out.exit.get("cancelled") is True
+    assert out.retry_class == "manual_only"
 
 
 def test_cancel_idempotent(root: Path) -> None:
@@ -584,7 +665,7 @@ def test_collect_rejects_absolute_and_dotdot_descriptors(root: Path) -> None:
 def test_cancel_race_with_terminal_idempotent(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If runner stamps succeeded before cancel's transition, return that record."""
+    """Racing succeeded stamp after cancel_requested is coerced to cancelled."""
     import signal
     import subprocess
     import sys
@@ -641,10 +722,12 @@ def test_cancel_race_with_terminal_idempotent(
         updates: dict | None = None,
     ):
         if new_state == JobState.CANCELLED:
-            # Runner wins: stamp succeeded, then cancel's transition would fail.
+            # Runner races a success stamp after cancel_requested — store remaps
+            # it to cancelled (persist-before-signal). Then cancel's own
+            # transition sees already-terminal and raises.
             cur = read_job_record(project_root, job_id)
             if cur.state == JobState.RUNNING:
-                real_transition(
+                stamped = real_transition(
                     project_root,
                     job_id,
                     JobState.SUCCEEDED,
@@ -652,8 +735,9 @@ def test_cancel_race_with_terminal_idempotent(
                         "exit": {"class": "success", "returncode": 0, "ok": True},
                     },
                 )
+                assert stamped.state == JobState.CANCELLED
             raise TransitionError(
-                "illegal job transition succeeded -> cancelled",
+                "illegal job transition cancelled -> cancelled",
                 code="E_JOB_TRANSITION",
             )
         return real_transition(project_root, job_id, new_state, updates=updates)
@@ -667,8 +751,9 @@ def test_cancel_race_with_terminal_idempotent(
     # Dead owned pid: cancel skip-kills, then hits the race on stamp.
     out = cancel_job(root, rec.job_id, reason="race", grace_s=0.05)
     assert signals == [], "dead-pid cancel must not signal"
-    assert out.state == JobState.SUCCEEDED
-    assert out.exit and out.exit.get("class") == "success"
+    assert out.state == JobState.CANCELLED
+    assert out.exit and out.exit.get("class") == "cancelled"
+    assert out.exit.get("cancelled") is True
 
 
 def test_immediate_child_exit_stamps_failed_never_running(

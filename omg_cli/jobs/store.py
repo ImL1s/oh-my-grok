@@ -273,6 +273,52 @@ def create_job_dir(
     return read_job_record(project_root, jid)
 
 
+def _coerce_terminal_under_cancel_request(
+    record: JobRecord,
+    new_state: JobState,
+    updates: dict[str, Any] | None,
+) -> tuple[JobState, dict[str, Any]]:
+    """Persist-before-signal: cancel_requested beats racing success/fail.
+
+    Once ``cancel_requested_at`` is durable, a runner that finishes Adapter.run
+    (including ignore_sigterm fakes that ignore cancel_event) must not stamp
+    ``succeeded``/``failed``. Remap under the transition lock so cancel_job's
+    request wins without weakening disappearance / UNPROVEN gates.
+    """
+    merged = dict(updates or {})
+    if not record.cancel_requested_at:
+        return new_state, merged
+    if new_state not in {JobState.SUCCEEDED, JobState.FAILED}:
+        return new_state, merged
+
+    from omg_cli.jobs.retry import classified_terminal_updates
+
+    prior_exit = merged.get("exit") if isinstance(merged.get("exit"), dict) else {}
+    exit_obj = dict(prior_exit)
+    exit_obj.update(
+        {
+            "class": "cancelled",
+            "ok": False,
+            "cancelled": True,
+        }
+    )
+    if "returncode" not in exit_obj or exit_obj.get("returncode") is None:
+        exit_obj["returncode"] = -15
+
+    coerced = classified_terminal_updates(
+        state=JobState.CANCELLED,
+        exit_obj=exit_obj,
+        cancel_reason=record.cancel_reason or merged.get("cancel_reason") or "operator",
+    )
+    out = dict(merged)
+    out.update(coerced)
+    # Never clobber list/optional fields with explicit None overlays.
+    out = {k: v for k, v in out.items() if v is not None or k in (updates or {})}
+    if not out.get("cancel_reason"):
+        out["cancel_reason"] = record.cancel_reason or "operator"
+    return JobState.CANCELLED, out
+
+
 def transition_job(
     project_root: Path,
     job_id: str,
@@ -287,8 +333,10 @@ def transition_job(
     try:
         with job_lock(project_root, job_id):
             record = read_job_record(project_root, job_id)
+            new_state, merged = _coerce_terminal_under_cancel_request(
+                record, new_state, updates
+            )
             assert_transition(record.state, new_state)
-            merged = dict(updates or {})
             if new_state in TERMINAL_STATES and "owner_lease" not in merged:
                 if record.owner_lease is not None:
                     merged["owner_lease"] = release_lease_dict(record.owner_lease)
@@ -403,8 +451,11 @@ def compare_and_transition_job(
                         "job owner_token changed during recovery CAS",
                         code="E_JOB_RECOVERY_CONFLICT",
                     )
+            new_state, merged = _coerce_terminal_under_cancel_request(
+                record, new_state, updates
+            )
             assert_transition(record.state, new_state)
-            _apply_field_updates(record, updates)
+            _apply_field_updates(record, merged)
             record.state = new_state
             write_job_record(project_root, record)
             return read_job_record(project_root, job_id)
@@ -514,8 +565,10 @@ def transition_owned_job(
                 expected_owner_token=expected_owner_token,
                 expected_runner_pid=expected_runner_pid,
             )
+            new_state, merged = _coerce_terminal_under_cancel_request(
+                record, new_state, updates
+            )
             assert_transition(record.state, new_state)
-            merged = dict(updates or {})
             if new_state in TERMINAL_STATES and "owner_lease" not in merged:
                 merged["owner_lease"] = release_lease_dict(record.owner_lease)
             _apply_field_updates(record, merged)

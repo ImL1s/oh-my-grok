@@ -10,6 +10,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Fixed
+- **#68 PR4 cancel_requested beats racing success:** once `cancel_requested_at`
+  is durable (persist-before-signal), `transition_job` /
+  `transition_owned_job` / CAS remap racing `succeeded`/`failed` stamps to
+  `cancelled` under the same lock. Closes the CI flake where an
+  `ignore_sigterm` fake finished Adapter.run during SIGTERM→grace→SIGKILL and
+  `cancel_job` returned `succeeded`. Hermetic coverage in
+  `tests/test_jobs_runtime.py`. Refs #68 (does not close).
+
 - **#68 PR4 P0 unbound provider launch window:** `provider_process.state=launching`
   with incomplete PID/PGID is never treated as provider-absent
   (`recoverable_lost`). Observe/recover classify it as `IDENTITY_UNPROVEN`
