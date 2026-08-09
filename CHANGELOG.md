@@ -10,6 +10,17 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **Parity #78-H real pinned OmO discovery evidence:** committed
+  discovery_rules v2 policy, surface→capability mapping, and completeness
+  proof under `docs/parity/completeness/{policies,mappings,proofs}/OmO.json`
+  at pin `4ca872b…` (zod schema enum + CLI/command/package extractors against
+  the real oh-my-openagent tree), plus hermetic registry fixtures and
+  `tests/test_parity_real_source_omo.py`. Network-free artifact consistency
+  verifies without claiming source reproduction. Canonical
+  `source_status.OmO` / categories / `inventory_status` stay bootstrapping —
+  proof present, **no promotion**. Antigravity real-source proof remains
+  open. Refs #78 (does not close).
+
 - **Parity #78-G real pinned OMX discovery evidence:** committed
   discovery_rules v2 policy, surface→capability mapping, and completeness
   proof under `docs/parity/completeness/{policies,mappings,proofs}/OMX.json`

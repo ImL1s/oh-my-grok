@@ -45,6 +45,9 @@ EXTRACTION_OMX_CATALOG_MANIFEST_V1 = "omx_catalog_manifest_v1"
 EXTRACTION_OMX_HELP_SURFACE_V1 = "omx_help_surface_v1"
 EXTRACTION_OMX_LAUNCHER_BIN_V1 = "omx_launcher_bin_v1"
 EXTRACTION_CODEX_PLUGIN_MANIFEST_V1 = "codex_plugin_manifest_v1"
+EXTRACTION_OMO_ZOD_STRING_ENUM_V1 = "omo_zod_string_enum_v1"
+EXTRACTION_OMO_COMMAND_TREE_V1 = "omo_command_tree_v1"
+EXTRACTION_OMO_AGENT_NAMES_SCHEMA_V1 = "omo_agent_names_schema_v1"
 
 EXTRACTION_METHODS_V2 = frozenset(
     {
@@ -59,6 +62,9 @@ EXTRACTION_METHODS_V2 = frozenset(
         EXTRACTION_OMX_HELP_SURFACE_V1,
         EXTRACTION_OMX_LAUNCHER_BIN_V1,
         EXTRACTION_CODEX_PLUGIN_MANIFEST_V1,
+        EXTRACTION_OMO_ZOD_STRING_ENUM_V1,
+        EXTRACTION_OMO_COMMAND_TREE_V1,
+        EXTRACTION_OMO_AGENT_NAMES_SCHEMA_V1,
     }
 )
 
@@ -79,6 +85,17 @@ _METHOD_OPTION_KEYS: dict[str, frozenset[str]] = {
     EXTRACTION_OMX_HELP_SURFACE_V1: frozenset(),
     EXTRACTION_OMX_LAUNCHER_BIN_V1: frozenset({"bin_name"}),
     EXTRACTION_CODEX_PLUGIN_MANIFEST_V1: frozenset(),
+    EXTRACTION_OMO_ZOD_STRING_ENUM_V1: frozenset(
+        {
+            "export_name",
+            "kind",
+            "surface_prefix",
+            "emit_catalog",
+            "catalog_kind",
+        }
+    ),
+    EXTRACTION_OMO_COMMAND_TREE_V1: frozenset(),
+    EXTRACTION_OMO_AGENT_NAMES_SCHEMA_V1: frozenset(),
 }
 
 
@@ -227,6 +244,29 @@ def validate_v2_registry_entry(
         options["bin_name"] = require_safe_id(
             bin_name, label=f"{label}.options.bin_name"
         )
+    if method == EXTRACTION_OMO_ZOD_STRING_ENUM_V1:
+        options["export_name"] = require_nonempty_string(
+            options.get("export_name"), label=f"{label}.options.export_name"
+        )
+        options["kind"] = require_nonempty_string(
+            options.get("kind"), label=f"{label}.options.kind"
+        )
+        options["surface_prefix"] = require_safe_id(
+            options.get("surface_prefix"), label=f"{label}.options.surface_prefix"
+        )
+        emit_catalog = options.get("emit_catalog", False)
+        if "emit_catalog" in options_raw and not isinstance(emit_catalog, bool):
+            raise ContractValidationError(
+                f"{label}.options.emit_catalog must be a boolean"
+            )
+        options["emit_catalog"] = bool(emit_catalog)
+        if "catalog_kind" in options_raw or options.get("catalog_kind") is not None:
+            options["catalog_kind"] = require_nonempty_string(
+                options.get("catalog_kind", "catalog"),
+                label=f"{label}.options.catalog_kind",
+            )
+        elif options["emit_catalog"]:
+            options["catalog_kind"] = "catalog"
     return {
         "id": reg_id,
         "path": path,
@@ -573,14 +613,25 @@ def _commander_command_names(source: str) -> list[str]:
     imports = _parse_static_imports(cleaned)
     for m in re.finditer(r"\.addCommand\s*\(\s*([A-Za-z_][\w]*)\s*\)", cleaned):
         binding = m.group(1)
-        if binding not in imports:
-            raise ContractValidationError(
-                f"commander_command_graph_v1: unresolved addCommand import {binding!r}"
-            )
-        # Imported module must itself expose a static .command or .name — handled
-        # by caller when resolving modules; here we only record the binding name
-        # as unresolved-without-module. Caller expands via module parse.
-        names.append(f"__import__:{binding}")
+        if binding in imports:
+            names.append(f"__import__:{binding}")
+            continue
+        # Local Command construction: const oauth = new Command("oauth")
+        local = re.search(
+            rf"(?:const|let|var)\s+{re.escape(binding)}\s*=\s*new\s+Command\s*\(\s*(['\"])([^'\"]+)\1",
+            cleaned,
+        )
+        if local:
+            token = local.group(2).split()[0]
+            if not token or not re.fullmatch(r"[A-Za-z0-9][\w:-]*", token):
+                raise ContractValidationError(
+                    f"commander_command_graph_v1: invalid local Command name {token!r}"
+                )
+            names.append(token)
+            continue
+        raise ContractValidationError(
+            f"commander_command_graph_v1: unresolved addCommand import {binding!r}"
+        )
     if not names:
         raise ContractValidationError(
             "commander_command_graph_v1: no static .command() declarations found"
@@ -1253,6 +1304,16 @@ def extract_surfaces_v2(
                 file_digest=file_digest,
                 read_blob=read_blob,
             )
+        elif method == EXTRACTION_OMO_COMMAND_TREE_V1:
+            from omg_cli.parity_discovery_omo import extract_omo_command_tree_v1
+
+            surfaces, inputs = extract_omo_command_tree_v1(
+                registry_path=path,
+                category_assignment=category_assignment,
+                pin_paths=pin_paths,
+                file_digest=file_digest,
+                read_blob=read_blob,
+            )
         else:
             if path not in pin_paths:
                 raise ContractValidationError(
@@ -1378,6 +1439,26 @@ def extract_surfaces_v2(
                     category_assignment=category_assignment,
                     pin_paths=pin_paths,
                     file_digest=file_digest,
+                )
+            elif method == EXTRACTION_OMO_ZOD_STRING_ENUM_V1:
+                from omg_cli.parity_discovery_omo import extract_omo_zod_string_enum_v1
+
+                surfaces, inputs = extract_omo_zod_string_enum_v1(
+                    registry_path=path,
+                    registry_bytes=raw,
+                    category_assignment=category_assignment,
+                    file_digest=file_digest,
+                    options=options,
+                )
+            elif method == EXTRACTION_OMO_AGENT_NAMES_SCHEMA_V1:
+                from omg_cli.parity_discovery_omo import extract_omo_agent_names_schema_v1
+
+                surfaces, inputs = extract_omo_agent_names_schema_v1(
+                    registry_path=path,
+                    registry_bytes=raw,
+                    category_assignment=category_assignment,
+                    file_digest=file_digest,
+                    options=options,
                 )
             else:
                 raise ContractValidationError(f"unhandled extraction_method {method}")

@@ -1,0 +1,812 @@
+{
+  "store_kind": "parity-completeness-mapping",
+  "schema_version": 1,
+  "source": "OmO",
+  "surfaces": [
+    {
+      "surface_id": "agent.atlas",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.explore",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.hephaestus",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.librarian",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.metis",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.momus",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.multimodal-looker",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.oracle",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.prometheus",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.sisyphus",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.sisyphus-junior",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "bin.lazycodex",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "bin.lazycodex-ai",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "bin.oh-my-openagent",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "bin.oh-my-opencode",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "bin.omo",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "catalog.agent",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "catalog.skill",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "cli.boulder",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omo.ulw.ultrawork_loop"
+      ]
+    },
+    {
+      "surface_id": "cli.cleanup",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "cli.config",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "cli.doctor",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "cli.get-local-version",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "cli.install",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "cli.login",
+      "category": "tools_mcp",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "cli.logout",
+      "category": "tools_mcp",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "cli.migrate",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "cli.oauth",
+      "category": "tools_mcp",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "cli.refresh-model-capabilities",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "cli.run",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omo.ulw.ultrawork_loop"
+      ]
+    },
+    {
+      "surface_id": "cli.status",
+      "category": "tools_mcp",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "cli.ulw-loop",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omo.ulw.ultrawork_loop"
+      ]
+    },
+    {
+      "surface_id": "cli.version",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "command.get-unpublished-changes",
+      "category": "team",
+      "capability_ids": [
+        "omo.team.hyperplan_security"
+      ]
+    },
+    {
+      "surface_id": "command.omomomo",
+      "category": "team",
+      "capability_ids": [
+        "omo.team.hyperplan_security"
+      ]
+    },
+    {
+      "surface_id": "command.publish",
+      "category": "team",
+      "capability_ids": [
+        "omo.team.hyperplan_security"
+      ]
+    },
+    {
+      "surface_id": "command.remove-deadcode",
+      "category": "team",
+      "capability_ids": [
+        "omo.team.hyperplan_security"
+      ]
+    },
+    {
+      "surface_id": "command.security-research",
+      "category": "team",
+      "capability_ids": [
+        "omo.team.hyperplan_security"
+      ]
+    },
+    {
+      "surface_id": "hook.agent-usage-reminder",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.anthropic-context-window-limit-recovery",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.ast-grep-sg-provision",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.atlas",
+      "category": "team",
+      "capability_ids": [
+        "omo.team.hyperplan_security"
+      ]
+    },
+    {
+      "surface_id": "hook.auto-slash-command",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.auto-update-checker",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.background-notification",
+      "category": "jobs",
+      "capability_ids": [
+        "omo.agents.background"
+      ]
+    },
+    {
+      "surface_id": "hook.bash-file-read-guard",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.category-skill-reminder",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.claude-code-hooks",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.codegraph-bootstrap",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.comment-checker",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omo.quality.comment_hygiene"
+      ]
+    },
+    {
+      "surface_id": "hook.compaction-context-injector",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.compaction-todo-preserver",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.delegate-task-retry",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.directory-agents-injector",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.directory-readme-injector",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.edit-error-recovery",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.empty-task-response-detector",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.fsync-skip-warning",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.goal",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.hashline-read-enhancer",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omo.edit.hash_anchored"
+      ]
+    },
+    {
+      "surface_id": "hook.hephaestus-agents-md-injector",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.interactive-bash-session",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.json-error-recovery",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.keyword-detector",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.legacy-plugin-toast",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.model-fallback",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.monitor-status-injector",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.no-hephaestus-non-gpt",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.no-sisyphus-gpt",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.non-interactive-env",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.notepad-write-guard",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.plan-format-validator",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.preemptive-compaction",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.prometheus-md-only",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.question-label-truncator",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.read-image-resizer",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.rules-injector",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.runtime-fallback",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.session-notification",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.sisyphus-junior-notepad",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.start-work",
+      "category": "team",
+      "capability_ids": [
+        "omo.team.hyperplan_security"
+      ]
+    },
+    {
+      "surface_id": "hook.startup-toast",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.stop-continuation-guard",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.task-resume-info",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.tasks-todowrite-disabler",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.team-tool-gating",
+      "category": "team",
+      "capability_ids": [
+        "omo.team.hyperplan_security"
+      ]
+    },
+    {
+      "surface_id": "hook.think-mode",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.todo-continuation-enforcer",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omo.goal.todo_continuation"
+      ]
+    },
+    {
+      "surface_id": "hook.todo-description-override",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.tool-output-truncator",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.tool-pair-validator",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.unstable-agent-babysitter",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.webfetch-redirect-guard",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.write-existing-file-guard",
+      "category": "hooks",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "mcp.codegraph",
+      "category": "tools_mcp",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "mcp.context7",
+      "category": "tools_mcp",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "mcp.grep_app",
+      "category": "tools_mcp",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "mcp.lsp",
+      "category": "tools_mcp",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "mcp.websearch",
+      "category": "tools_mcp",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "npm-script.build:schema",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "npm-script.build:shared-skills-assets",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "npm-script.typecheck",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "skill.agent-browser",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.debugging",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.dev-browser",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.frontend",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.git-master",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.init-deep",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.playwright",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.remove-ai-slops",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.review-work",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.security-research",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.security-review",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.team-mode",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.visual-qa",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "fixture-omo-real",
+  "version": "0.0.0",
+  "bin": {
+    "omo": "bin/oh-my-opencode.js",
+    "oh-my-opencode": "bin/oh-my-opencode.js"
+  },
+  "scripts": {
+    "typecheck": "node -e \"process.exit(0)\"",
+    "build:schema": "node -e \"process.exit(0)\"",
+    "build:shared-skills-assets": "node -e \"process.exit(0)\""
+  },
+  "files": [
+    ".agents/command",
+    ".agents/skills",
+    "bin",
+    "packages/shared-skills"
+  ]
+}

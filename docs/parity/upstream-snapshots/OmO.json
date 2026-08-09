@@ -5,70 +5,81 @@
     {
       "id": "omo.agents.background",
       "source_paths": [
-        "README.md"
+        "packages/omo-opencode/src/config/schema/hooks.ts"
       ],
       "promise": "Background agent / durable task execution plane"
     },
     {
       "id": "omo.agents.discipline_routing",
       "source_paths": [
-        "README.md"
+        "packages/omo-opencode/src/config/schema/agent-names.ts"
       ],
       "promise": "Discipline agents with category routing for specialized work"
     },
     {
       "id": "omo.compat.tmux_plugin",
       "source_paths": [
-        "README.md"
+        "bin/oh-my-opencode.js",
+        "package.json",
+        "packages/omo-opencode/src/cli/cleanup-command.ts",
+        "packages/omo-opencode/src/cli/cli-program.ts",
+        "packages/omo-opencode/src/cli/runtime-commands.ts"
       ],
       "promise": "tmux and plugin compatibility for team / multi-pane execution"
     },
     {
       "id": "omo.edit.hash_anchored",
       "source_paths": [
-        "README.md"
+        "packages/omo-opencode/src/config/schema/hooks.ts"
       ],
       "promise": "Hash-anchored edit safety for precise patch application"
     },
     {
       "id": "omo.goal.todo_continuation",
       "source_paths": [
-        "README.md"
+        "packages/omo-opencode/src/config/schema/hooks.ts"
       ],
       "promise": "Todo-continuation enforcer that injects prompts when todos remain incomplete"
     },
     {
       "id": "omo.quality.comment_hygiene",
       "source_paths": [
-        "README.md"
+        "packages/omo-opencode/src/config/schema/hooks.ts"
       ],
       "promise": "Comment checker / code hygiene quality gates"
     },
     {
       "id": "omo.rules.intent_gate",
       "source_paths": [
-        "README.md"
+        "packages/omo-opencode/src/config/schema/hooks.ts"
       ],
       "promise": "IntentGate / rules injection before tool use"
     },
     {
       "id": "omo.team.hyperplan_security",
       "source_paths": [
-        "README.md"
+        ".agents/command/get-unpublished-changes.md",
+        ".agents/command/omomomo.md",
+        ".agents/command/publish.md",
+        ".agents/command/remove-deadcode.md",
+        ".agents/command/security-research.md",
+        "packages/omo-opencode/src/config/schema/hooks.ts"
       ],
       "promise": "Team Mode with hyperplan and security-research workflows"
     },
     {
       "id": "omo.tools.lsp_ast_codegraph_mcp",
       "source_paths": [
-        "README.md"
+        "packages/omo-opencode/src/cli/mcp-oauth/index.ts",
+        "packages/omo-opencode/src/mcp/types.ts"
       ],
       "promise": "LSP/AST/CodeGraph MCP tooling for code intelligence"
     },
     {
       "id": "omo.ulw.ultrawork_loop",
       "source_paths": [
-        "README.md"
+        "packages/omo-opencode/src/cli/cli-program.ts",
+        "packages/omo-opencode/src/cli/runtime-commands.ts"
       ],
       "promise": "Ultrawork / ULW parallel worker loop with fan-out and integrate"
     }
