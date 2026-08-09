@@ -9,7 +9,36 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Fixed
+- **#68 PR4 cancel_requested beats racing success:** once `cancel_requested_at`
+  is durable (persist-before-signal), `transition_job` /
+  `transition_owned_job` / CAS remap racing `succeeded`/`failed` stamps to
+  `cancelled` under the same lock. Closes the CI flake where an
+  `ignore_sigterm` fake finished Adapter.run during SIGTERM→grace→SIGKILL and
+  `cancel_job` returned `succeeded`. Hermetic coverage in
+  `tests/test_jobs_runtime.py`. Refs #68 (does not close).
+
+- **#68 PR4 P0 unbound provider launch window:** `provider_process.state=launching`
+  with incomplete PID/PGID is never treated as provider-absent
+  (`recoverable_lost`). Observe/recover classify it as `IDENTITY_UNPROVEN`
+  (`provider_launch_unbound`, same gate as `cancel_job`);
+  `_assert_prior_attempt_gone` refuses retry on such records so a duplicate
+  attempt cannot start while an orphan provider may still be alive. Hermetic
+  coverage in `tests/test_jobs_recovery.py`. Refs #68 (does not close).
+
 ### Added
+- **Partial work for #68 PR4 / lease recovery:** attempt-scoped owner lease +
+  runner heartbeat; read-only liveness observation on `omg job status|list|wait`;
+  explicit `omg job recover` / `recover --all` reconciles expired abandoned jobs
+  to `lost` after OS identity proof (CAS/generation-safe; concurrent recover one
+  winner). Lost jobs reclaim only via existing exact-next-attempt
+  `omg job retry` (no auto-retry scheduler). Fail-closed for live/unproven/
+  orphan-provider identities; public surfaces never expose owner tokens.
+  Hermetic coverage in `tests/test_jobs_lease.py` and
+  `tests/test_jobs_recovery.py`. Docs: `docs/durable-jobs.md`. Does **not**
+  close #68 (automatic retry scheduling and authenticated live Antigravity
+  remain open).
+
 - **#69 PR3 leader-resume task-claim reconciliation:** `omg team resume`
   (`resume_for_identity`) reconciles Team API task claims under the existing
   scale.lock after pane reconcile/relaunch — preserve coherent unexpired

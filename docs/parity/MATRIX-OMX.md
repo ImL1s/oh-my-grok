@@ -7,7 +7,7 @@
 
 | Capability | Category | Classification | Maturity | Marker | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `jobs.durable_background` | jobs | omg_native | grok=catalogued | catalogued | PR3 retry/GC/ask--background landed; lease recovery and authenticated live Antigravity still open (#68). |
+| `jobs.durable_background` | jobs | omg_native | grok=catalogued | catalogued | PR4 owner lease/heartbeat observation and explicit lost-job reconciliation landed. Automatic retry scheduling, Team job-backed workers (#69), and authenticated live Antigravity evidence remain open (#68). |
 | `omx.launch.worktree_tmux_hud` | state_memory_observability | omg_native | grok=catalogued | catalogued | HUD/worktree/tmux substitutes exist; OMX launch UX polish and Team v3 remain under #69/#78. |
 | `omx.workflow.deep_interview_ralplan` | runtime_orchestration | omg_native | grok=catalogued | catalogued | Interview + ralplan CLI/skills exist; OMX prometheus-strict / ultragoal canonical chain breadth is partial. |
 | `omx.research.modes` | runtime_orchestration | optional_unclaimed | grok=catalogued | optional_unclaimed | No first-class OMX-style research/autoresearch mode in OMG; ulw/ralph/ralplan/autopilot only (#78). |

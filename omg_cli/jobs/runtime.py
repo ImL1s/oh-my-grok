@@ -493,6 +493,8 @@ def launch_job_runner(
         err.disappearance_proven = True
         raise err from id_exc
     try:
+        from omg_cli.jobs.lease import acquire_owner_lease
+
         record = transition_job(
             project_root,
             record.job_id,
@@ -502,6 +504,7 @@ def launch_job_runner(
                 "pgid": pgid,
                 "handle": handle,
                 "pid_starttime": pid_starttime,
+                "owner_lease": acquire_owner_lease(attempt=int(record.attempt)),
             },
         )
     except Exception as commit_exc:
@@ -709,8 +712,13 @@ def _gc_identities_block_reason(
     Once ``_pid_alive`` is true, only explicit ``GONE`` (or a subsequent
     not-alive observation) or verified ``REUSED`` may permit quarantine.
     Probe-unavailable / getpgid errors are ``UNPROVEN`` and **block** GC —
-    never treat them as safe reclaim.
+    never treat them as gone.
     """
+    from omg_cli.jobs.lease import lease_is_active
+
+    if lease_is_active(record.owner_lease):
+        return "active_owner_lease"
+
     if _spawn_uncertain(project_root, record.job_id):
         return "spawn_uncertain"
 
@@ -982,20 +990,68 @@ def wait_job(
     *,
     timeout_s: float,
     poll_s: float = DEFAULT_WAIT_POLL_S,
+    stop_on_recovery_required: bool = False,
 ) -> tuple[JobRecord, bool]:
     """Poll until terminal or timeout. Timeout does **not** cancel.
 
     Returns ``(record, timed_out)``.
+
+    When ``stop_on_recovery_required`` is True (CLI default), raises
+    ``E_JOB_RECOVERY_REQUIRED`` if observation health requires operator action.
     """
+    from omg_cli.jobs.recovery import RECOVERY_REQUIRED_HEALTH, observe_job
+
     job_id = safe_job_id(job_id)
     deadline = time.monotonic() + max(0.0, float(timeout_s))
     while True:
         record = read_job_record(project_root, job_id)
         if record.state in TERMINAL_STATES:
             return record, False
+        if stop_on_recovery_required:
+            obs = observe_job(project_root, job_id)
+            if obs.health in RECOVERY_REQUIRED_HEALTH:
+                err = JobStoreError(
+                    f"job {job_id} requires recovery "
+                    f"(health={obs.health.value})",
+                    code="E_JOB_RECOVERY_REQUIRED",
+                )
+                err.observation = obs  # type: ignore[attr-defined]
+                raise err
         if time.monotonic() >= deadline:
             return record, True
         time.sleep(max(0.01, float(poll_s)))
+
+
+def list_jobs(
+    project_root: Path,
+    *,
+    state: str | None = None,
+    provider: str | None = None,
+    run_id: str | None = None,
+    observe: bool = False,
+) -> list[dict[str, Any]]:
+    from omg_cli.jobs.recovery import observe_job
+
+    out: list[dict[str, Any]] = []
+    for jid in list_job_ids(project_root):
+        try:
+            rec = read_job_record(project_root, jid)
+        except JobStoreError:
+            continue
+        if state and rec.state.value != state:
+            continue
+        if provider and rec.provider != provider:
+            continue
+        if run_id and (rec.run_id or "") != run_id:
+            continue
+        body = rec.public_status()
+        if observe:
+            try:
+                body["observation"] = observe_job(project_root, jid).to_public_dict()
+            except JobStoreError:
+                body["observation"] = None
+        out.append(body)
+    return out
 
 
 def _confined_job_path(jdir: Path, descriptor: str) -> Path:
@@ -1191,12 +1247,11 @@ def cancel_job(
         if record.state in {JobState.SUCCEEDED, JobState.FAILED, JobState.LOST}:
             return record
 
-    pp = record.provider_process or default_provider_process()
-    pp_state = str(pp.get("state") or "pending")
-
     # Fail-closed: launching but unbound — do not speculative-kill outer
-    # (would orphan agy) and do not claim cancelled.
-    if pp_state == "launching" and pp.get("pid") is None:
+    # (would orphan agy) and do not claim cancelled. Same gate as recover.
+    from omg_cli.jobs.recovery import provider_launch_unbound
+
+    if provider_launch_unbound(record):
         raise JobStoreError(
             f"job {job_id} provider process is launching but unbound; "
             "refusing speculative cancel (E_JOB_CANCEL_UNPROVEN)",
@@ -1410,34 +1465,32 @@ def cancel_job(
     return record
 
 
-def list_jobs(
-    project_root: Path,
-    *,
-    state: str | None = None,
-    provider: str | None = None,
-    run_id: str | None = None,
-) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for jid in list_job_ids(project_root):
-        try:
-            rec = read_job_record(project_root, jid)
-        except JobStoreError:
-            continue
-        if state and rec.state.value != state:
-            continue
-        if provider and rec.provider != provider:
-            continue
-        if run_id and (rec.run_id or "") != run_id:
-            continue
-        out.append(rec.public_status())
-    return out
-
-
 def _assert_prior_attempt_gone(project_root: Path, record: JobRecord) -> None:
-    """Refuse retry while prior runner/provider identity may still be live."""
+    """Refuse retry while prior runner/provider identity may still be live.
+
+    Tri-state probe:
+    - GONE / verified REUSED → proceed
+    - LIVE → ``E_JOB_RETRY_LIVE``
+    - UNPROVEN → ``E_JOB_CANCEL_UNPROVEN``
+
+    Also refuse ``provider_process.state == launching`` without a complete
+    durable PID/PGID (or proven disappearance) — same unbound-launch window
+    that cancel/recover treat as ``E_JOB_CANCEL_UNPROVEN`` / recovery-unproven.
+    Malformed or wrongly-marked ``lost`` records must not bypass this gate.
+    """
+    from omg_cli.jobs.ownership import probe_identity_for_recovery
+    from omg_cli.jobs.recovery import provider_launch_unbound
+
     if _spawn_uncertain(project_root, record.job_id):
         raise JobStoreError(
             f"job {record.job_id} has uncertain spawn identity; refusing retry",
+            code="E_JOB_CANCEL_UNPROVEN",
+        )
+
+    if provider_launch_unbound(record):
+        raise JobStoreError(
+            f"job {record.job_id} provider launch unbound (incomplete "
+            "PID/PGID); refusing retry until identity is proven gone",
             code="E_JOB_CANCEL_UNPROVEN",
         )
 
@@ -1449,43 +1502,35 @@ def _assert_prior_attempt_gone(project_root: Path, record: JobRecord) -> None:
     for identity, label in ((runner, "runner"), (provider, "provider")):
         if identity is None:
             continue
-        if not _pid_alive(identity.pid):
+        outcome = probe_identity_for_recovery(identity)
+        if outcome is IdentityProbeOutcome.GONE:
             _reap_child(identity.pid)
             continue
-        # Terminal stamp can race the runner unwind — wait briefly for exit.
-        if _wait_until_gone(identity.pid, timeout_s=2.0):
+        if outcome is IdentityProbeOutcome.REUSED:
+            # Verified different occupant — never signal; allow reclaim.
             continue
-        # Still live after wait — confirm ownership before refusing.
-        try:
-            if label == "provider":
-                view = JobRecord(
-                    job_id=record.job_id,
-                    created_at=record.created_at,
-                    provider=record.provider,
-                    role=record.role,
-                    state=record.state,
-                    attempt=record.attempt,
-                    schema=record.schema,
-                    generation=record.generation,
-                    pid=record.pid,
-                    pgid=record.pgid,
-                    handle=record.handle,
-                    pid_starttime=identity.pid_starttime,
+        if outcome is IdentityProbeOutcome.LIVE:
+            # Terminal stamp can race the runner unwind — wait briefly.
+            if _wait_until_gone(identity.pid, timeout_s=2.0):
+                continue
+            # Re-probe after wait.
+            outcome2 = probe_identity_for_recovery(identity)
+            if outcome2 is IdentityProbeOutcome.GONE:
+                continue
+            if outcome2 is IdentityProbeOutcome.REUSED:
+                continue
+            if outcome2 is IdentityProbeOutcome.LIVE:
+                raise JobStoreError(
+                    f"job {record.job_id} {label} process still live; refusing retry",
+                    code="E_JOB_RETRY_LIVE",
                 )
-                own = _assert_cancel_ownership(view, identity.pid, identity.pgid)
-            else:
-                own = _assert_cancel_ownership(record, identity.pid, identity.pgid)
-        except JobStoreError:
-            raise
-        if own is OwnershipOutcome.OK:
             raise JobStoreError(
-                f"job {record.job_id} {label} process still live; refusing retry",
-                code="E_JOB_RETRY_LIVE",
+                f"job {record.job_id} {label} identity unproven; refusing retry",
+                code="E_JOB_CANCEL_UNPROVEN",
             )
-        if own is OwnershipOutcome.GONE:
-            continue
+        # UNPROVEN
         raise JobStoreError(
-            f"job {record.job_id} {label} ownership not proven gone; refusing retry",
+            f"job {record.job_id} {label} identity unproven; refusing retry",
             code="E_JOB_CANCEL_UNPROVEN",
         )
 
@@ -2934,10 +2979,21 @@ __all__ = [
     "job_status",
     "launch_job_runner",
     "list_jobs",
+    "observe_job",
     "read_acp_sidecar_binding",
+    "recover_job",
+    "recover_jobs",
     "resolve_acp_binding_for_team_stop",
     "resolve_acp_session_identity",
     "retry_job",
     "start_job",
     "wait_job",
 ]
+
+
+# Re-export observation / recovery APIs (public Python surface).
+from omg_cli.jobs.recovery import (  # noqa: E402
+    observe_job,
+    recover_job,
+    recover_jobs,
+)

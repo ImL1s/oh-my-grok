@@ -598,3 +598,143 @@ def test_cli_job_gc_rejects_nonfinite_retention(
     body = _out(capsys)
     assert body["ok"] is False
     assert body["error"]["code"] == "E_JOB_GC"
+
+
+def test_cli_recover_xor_and_filter_rules(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = main(["--json", "job", "recover"])
+    assert rc == 2
+    body = _out(capsys)
+    assert body["ok"] is False
+    assert body["error"]["code"] == "E_JOB_RECOVER_USAGE"
+
+    rc = main(["--json", "job", "recover", "--all", "some-id"])
+    # argparse may accept positional with --all; our handler still XOR-checks
+    assert rc in {1, 2}
+    _out(capsys)
+
+    rc = main(["--json", "job", "recover", "nope", "--run", "r1"])
+    assert rc == 2
+    body = _out(capsys)
+    assert body["error"]["code"] == "E_JOB_RECOVER_USAGE"
+
+
+def test_cli_recover_success_and_status_observation(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import os
+    import signal
+    from datetime import datetime, timedelta, timezone
+
+    from omg_cli.jobs.lease import format_lease_ts
+    from omg_cli.jobs.store import job_lock, read_job_record, write_job_record
+
+    prompt = project / "task.md"
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "fake",
+            "--prompt-file",
+            str(prompt),
+            "--sleep",
+            "30",
+        ]
+    )
+    assert rc == 0
+    job_id = _out(capsys)["job_id"]
+
+    rc = main(["--json", "job", "status", job_id])
+    assert rc == 0
+    status = _out(capsys)
+    assert "observation" in status["job"]
+    assert status["job"]["observation"]["health"] == "running_healthy"
+    assert "owner_token" not in json.dumps(status)
+
+    # Expire lease + kill runner
+    with job_lock(project, job_id):
+        rec = read_job_record(project, job_id)
+        past = datetime.now(timezone.utc) - timedelta(seconds=120)
+        lease = dict(rec.owner_lease)
+        lease["acquired_at"] = format_lease_ts(past)
+        lease["heartbeat_at"] = format_lease_ts(past)
+        lease["expires_at"] = format_lease_ts(past + timedelta(seconds=30))
+        rec.owner_lease = lease
+        write_job_record(project, rec)
+        pid = rec.pid
+    if pid:
+        try:
+            os.kill(int(pid), signal.SIGKILL)
+        except OSError:
+            pass
+
+    rc = main(["--json", "job", "recover", job_id])
+    assert rc == 0
+    body = _out(capsys)
+    assert body["ok"] is True
+    assert body["command"] == "job.recover"
+    assert body["action"] == "marked_lost"
+    assert "owner_token" not in json.dumps(body)
+
+    rc = main(["--json", "job", "list"])
+    assert rc == 0
+    listed = _out(capsys)
+    assert listed["ok"] is True
+    assert any(j.get("observation") for j in listed["jobs"])
+
+
+def test_cli_recover_all_partial_and_wait_recovery_required(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import os
+    import signal
+    from datetime import datetime, timedelta, timezone
+
+    from omg_cli.jobs.lease import format_lease_ts
+    from omg_cli.jobs.store import job_lock, read_job_record, write_job_record
+
+    prompt = project / "task.md"
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "fake",
+            "--prompt-file",
+            str(prompt),
+            "--sleep",
+            "30",
+        ]
+    )
+    assert rc == 0
+    job_id = _out(capsys)["job_id"]
+
+    with job_lock(project, job_id):
+        rec = read_job_record(project, job_id)
+        past = datetime.now(timezone.utc) - timedelta(seconds=120)
+        lease = dict(rec.owner_lease)
+        lease["acquired_at"] = format_lease_ts(past)
+        lease["heartbeat_at"] = format_lease_ts(past)
+        lease["expires_at"] = format_lease_ts(past + timedelta(seconds=30))
+        rec.owner_lease = lease
+        write_job_record(project, rec)
+
+    # Live runner → wait should return recovery required
+    rc = main(["--json", "job", "wait", job_id, "--timeout", "2"])
+    assert rc == 1
+    waited = _out(capsys)
+    assert waited["error"]["code"] == "E_JOB_RECOVERY_REQUIRED"
+
+    # Kill then recover --all
+    try:
+        os.kill(int(read_job_record(project, job_id).pid), signal.SIGKILL)
+    except OSError:
+        pass
+    rc = main(["--json", "job", "recover", "--all"])
+    assert rc == 0
+    body = _out(capsys)
+    assert body["ok"] is True

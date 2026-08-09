@@ -22,6 +22,7 @@ from omg_cli.jobs.store import (
     create_job_dir,
     job_dir,
     job_json_path,
+    mark_cancel_requested,
     read_job_record,
     transition_job,
 )
@@ -217,7 +218,7 @@ def test_cancel_force_ignore_sigterm(root: Path) -> None:
         role="researcher",
         prompt_file=prompt,
         ignore_sigterm=True,
-        sleep_s=2.0,
+        sleep_s=3.0,
     )
     pid = started.record.pid
     assert pid
@@ -228,6 +229,86 @@ def test_cancel_force_ignore_sigterm(root: Path) -> None:
     assert rec.state == JobState.CANCELLED
     time.sleep(0.15)
     assert not _pid_alive(pid)
+
+
+def test_cancel_requested_beats_racing_success_stamp(root: Path) -> None:
+    """Durable cancel_requested remaps runner success → cancelled under lock.
+
+    Reproduces the CI flake where ignore_sigterm fake finishes Adapter.run
+    during SIGTERM→grace→SIGKILL and would otherwise stamp succeeded.
+    """
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        ignore_sigterm=True,
+        sleep_s=0.6,
+    )
+    jid = started.record.job_id
+    # Persist cancel intent without signalling — same window as slow force-kill.
+    marked = mark_cancel_requested(root, jid, reason="race-success")
+    assert marked.cancel_requested_at
+    assert marked.state == JobState.RUNNING
+
+    deadline = time.monotonic() + 5.0
+    terminal = marked
+    while time.monotonic() < deadline:
+        terminal = read_job_record(root, jid)
+        if terminal.state in {
+            JobState.SUCCEEDED,
+            JobState.FAILED,
+            JobState.CANCELLED,
+            JobState.LOST,
+        }:
+            break
+        time.sleep(0.05)
+    assert terminal.state == JobState.CANCELLED
+    assert terminal.cancel_reason == "race-success"
+    assert terminal.exit and terminal.exit.get("cancelled") is True
+    assert terminal.exit.get("class") == "cancelled"
+
+
+def test_transition_succeeded_after_cancel_requested_coerces(
+    root: Path,
+) -> None:
+    """Direct store gate: succeeded/failed cannot land after cancel_requested."""
+    from omg_cli.jobs.retry import classified_terminal_updates
+
+    prompt = _prompt(root)
+    rec = create_job_dir(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_text=prompt.read_text(encoding="utf-8"),
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    transition_job(
+        root,
+        rec.job_id,
+        JobState.RUNNING,
+        updates={
+            "pid": os.getpid(),
+            "pgid": os.getpgid(0),
+            "handle": f"fake:{rec.job_id}:pid={os.getpid()}",
+        },
+    )
+    mark_cancel_requested(root, rec.job_id, reason="coerce")
+    out = transition_job(
+        root,
+        rec.job_id,
+        JobState.SUCCEEDED,
+        updates=classified_terminal_updates(
+            state=JobState.SUCCEEDED,
+            exit_obj={"class": "success", "returncode": 0, "ok": True, "cancelled": False},
+        ),
+    )
+    assert out.state == JobState.CANCELLED
+    assert out.cancel_reason == "coerce"
+    assert out.exit and out.exit.get("class") == "cancelled"
+    assert out.exit.get("cancelled") is True
+    assert out.retry_class == "manual_only"
 
 
 def test_cancel_idempotent(root: Path) -> None:
@@ -584,7 +665,7 @@ def test_collect_rejects_absolute_and_dotdot_descriptors(root: Path) -> None:
 def test_cancel_race_with_terminal_idempotent(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If runner stamps succeeded before cancel's transition, return that record."""
+    """Racing succeeded stamp after cancel_requested is coerced to cancelled."""
     import signal
     import subprocess
     import sys
@@ -641,10 +722,12 @@ def test_cancel_race_with_terminal_idempotent(
         updates: dict | None = None,
     ):
         if new_state == JobState.CANCELLED:
-            # Runner wins: stamp succeeded, then cancel's transition would fail.
+            # Runner races a success stamp after cancel_requested — store remaps
+            # it to cancelled (persist-before-signal). Then cancel's own
+            # transition sees already-terminal and raises.
             cur = read_job_record(project_root, job_id)
             if cur.state == JobState.RUNNING:
-                real_transition(
+                stamped = real_transition(
                     project_root,
                     job_id,
                     JobState.SUCCEEDED,
@@ -652,8 +735,9 @@ def test_cancel_race_with_terminal_idempotent(
                         "exit": {"class": "success", "returncode": 0, "ok": True},
                     },
                 )
+                assert stamped.state == JobState.CANCELLED
             raise TransitionError(
-                "illegal job transition succeeded -> cancelled",
+                "illegal job transition cancelled -> cancelled",
                 code="E_JOB_TRANSITION",
             )
         return real_transition(project_root, job_id, new_state, updates=updates)
@@ -667,8 +751,9 @@ def test_cancel_race_with_terminal_idempotent(
     # Dead owned pid: cancel skip-kills, then hits the race on stamp.
     out = cancel_job(root, rec.job_id, reason="race", grace_s=0.05)
     assert signals == [], "dead-pid cancel must not signal"
-    assert out.state == JobState.SUCCEEDED
-    assert out.exit and out.exit.get("class") == "success"
+    assert out.state == JobState.CANCELLED
+    assert out.exit and out.exit.get("class") == "cancelled"
+    assert out.exit.get("cancelled") is True
 
 
 def test_immediate_child_exit_stamps_failed_never_running(
@@ -2068,7 +2153,7 @@ def test_retry_rejects_internal_acp_provider(root: Path) -> None:
 def test_retry_rejects_live_process_identity(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from omg_cli.jobs.ownership import OwnershipOutcome
+    from omg_cli.jobs.ownership import IdentityProbeOutcome
     from omg_cli.jobs.runtime import retry_job
     from omg_cli.jobs.store import job_lock, write_job_record
 
@@ -2091,10 +2176,13 @@ def test_retry_rejects_live_process_identity(
         rec.pid_starttime = "fingerprint"
         write_job_record(root, rec)
 
-    monkeypatch.setattr("omg_cli.jobs.runtime._pid_alive", lambda pid: True)
     monkeypatch.setattr(
-        "omg_cli.jobs.runtime._assert_cancel_ownership",
-        lambda *a, **k: OwnershipOutcome.OK,
+        "omg_cli.jobs.ownership.probe_identity_for_recovery",
+        lambda identity: IdentityProbeOutcome.LIVE,
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.runtime._wait_until_gone",
+        lambda *a, **k: False,
     )
     with pytest.raises(JobStoreError) as ei:
         retry_job(root, terminal.job_id, attempt=2)
@@ -2582,3 +2670,163 @@ def test_launch_commit_failure_stamps_terminal_retry_metadata(
     with pytest.raises(JobStoreError) as ei:
         retry_job(root, jid, attempt=2)
     assert ei.value.code == "E_JOB_RETRY_CLASS"
+
+
+def test_retry_allows_verified_reused_prior_identity(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.jobs.ownership import IdentityProbeOutcome
+    from omg_cli.jobs.runtime import retry_job
+
+    result = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        sleep_s=0.05,
+        attempt_budget=3,
+        fail=True,
+    )
+    failed, _ = wait_job(root, result.record.job_id, timeout_s=10.0)
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.probe_identity_for_recovery",
+        lambda identity: IdentityProbeOutcome.REUSED,
+    )
+    retried = retry_job(root, failed.job_id, attempt=2, launch=False)
+    assert retried.record.attempt == 2
+    assert retried.record.state == JobState.STARTING
+
+
+def test_retry_blocks_live_prior_identity(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.jobs.ownership import IdentityProbeOutcome
+    from omg_cli.jobs.runtime import retry_job
+
+    result = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        sleep_s=0.05,
+        attempt_budget=3,
+        fail=True,
+    )
+    failed, _ = wait_job(root, result.record.job_id, timeout_s=10.0)
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.probe_identity_for_recovery",
+        lambda identity: IdentityProbeOutcome.LIVE,
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.runtime._wait_until_gone",
+        lambda *a, **k: False,
+    )
+    with pytest.raises(JobStoreError) as ei:
+        retry_job(root, failed.job_id, attempt=2, launch=False)
+    assert ei.value.code == "E_JOB_RETRY_LIVE"
+
+
+def test_retry_blocks_unproven_prior_identity(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.jobs.ownership import IdentityProbeOutcome
+    from omg_cli.jobs.runtime import retry_job
+
+    result = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        sleep_s=0.05,
+        attempt_budget=3,
+        fail=True,
+    )
+    failed, _ = wait_job(root, result.record.job_id, timeout_s=10.0)
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.probe_identity_for_recovery",
+        lambda identity: IdentityProbeOutcome.UNPROVEN,
+    )
+    with pytest.raises(JobStoreError) as ei:
+        retry_job(root, failed.job_id, attempt=2, launch=False)
+    assert ei.value.code == "E_JOB_CANCEL_UNPROVEN"
+
+
+def test_gc_still_blocks_active_or_unproven_owner_lease(root: Path) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from omg_cli.jobs.runtime import gc_jobs
+
+    result = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        sleep_s=0.05,
+    )
+    terminal, _ = wait_job(root, result.record.job_id, timeout_s=10.0)
+    # Force retention eligible but re-activate lease (malformed for from_dict —
+    # write raw JSON instead).
+    path = job_json_path(root, terminal.job_id)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["terminal_at"] = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    lease = data.get("owner_lease") or {}
+    lease["released_at"] = None
+    data["owner_lease"] = lease
+    # Use raw write to bypass from_dict terminal+active check on write path
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    # GC candidate scan uses read_job_record which may reject — either skip or block
+    try:
+        out = gc_jobs(root, retention_days=1)
+    except JobStoreError:
+        return
+    assert terminal.job_id not in out.deleted
+
+
+def test_gc_accepts_released_lost_job_only_after_identity_proof(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from omg_cli.jobs.ownership import IdentityProbeOutcome
+    from omg_cli.jobs.recovery import recover_job
+    from omg_cli.jobs.runtime import gc_jobs
+    from omg_cli.jobs.store import job_lock, read_job_record, write_job_record
+
+    result = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        sleep_s=30.0,
+    )
+    import os
+    import signal
+
+    os.kill(int(result.record.pid), signal.SIGKILL)
+    try:
+        os.waitpid(int(result.record.pid), 0)
+    except ChildProcessError:
+        pass
+    # Expire lease
+    with job_lock(root, result.record.job_id):
+        rec = read_job_record(root, result.record.job_id)
+        past = datetime.now(timezone.utc) - timedelta(seconds=120)
+        from omg_cli.jobs.lease import format_lease_ts
+
+        lease = dict(rec.owner_lease)
+        lease["acquired_at"] = format_lease_ts(past)
+        lease["heartbeat_at"] = format_lease_ts(past)
+        lease["expires_at"] = format_lease_ts(past + timedelta(seconds=30))
+        rec.owner_lease = lease
+        write_job_record(root, rec)
+    assert recover_job(root, result.record.job_id).action == "marked_lost"
+    with job_lock(root, result.record.job_id):
+        rec = read_job_record(root, result.record.job_id)
+        rec.terminal_at = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        write_job_record(root, rec)
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.probe_identity_liveness",
+        lambda identity: IdentityProbeOutcome.GONE,
+    )
+    out = gc_jobs(root, retention_days=1)
+    assert result.record.job_id in out.deleted

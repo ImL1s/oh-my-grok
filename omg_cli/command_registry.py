@@ -57,7 +57,7 @@ COMMAND_SPECS: Final[tuple[CommandSpec, ...]] = (
     ),
     CommandSpec(
         "job",
-        "durable background jobs (start/status/wait/collect/cancel/list/retry/gc; #68 PR1–PR3)",
+        "durable background jobs (start/status/wait/collect/cancel/list/retry/gc/recover; #68 PR1–PR4)",
         "run",
     ),
     CommandSpec("interview", "deep-interview gate", "workflow"),
