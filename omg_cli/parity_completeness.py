@@ -279,6 +279,12 @@ def _assert_worktree_matches_pin_blobs(root: Path, pin: str) -> None:
     ``git status --porcelain`` is insufficient: ``skip-worktree`` /
     ``assume-unchanged`` can hide tracked mutations. Compare each pin blob to
     ``git hash-object`` of the worktree path.
+
+    Pin trees may contain git symlinks (mode ``120000``) used for install-time
+    mirrors (e.g. OmO ``.claude/commands`` → ``.agents/command``). Those entries
+    must still match the worktree symlink target OID. Discovery extractors reject
+    symlink paths as authoritative registry / surface inputs via
+    ``_git_blob_bytes``.
     """
     ls = _run_git(root, ["ls-tree", "-r", "-z", "--full-tree", pin])
     if ls.returncode != 0:
@@ -286,15 +292,35 @@ def _assert_worktree_matches_pin_blobs(root: Path, pin: str) -> None:
             f"git ls-tree failed for pin {pin}: {ls.stderr.strip()}"
         )
     for mode, obj_type, sha, path in _parse_ls_tree_z(ls.stdout):
+        # Gitlinks (submodules) are recorded as commit entries; OmO ships nested
+        # upstream skill mirrors under packages/shared-skills/upstreams/*. They
+        # are never admitted as discovery registry inputs — skip blob compare.
+        if obj_type == "commit" and mode == "160000":
+            continue
         if obj_type != "blob":
             raise ContractValidationError(
                 f"pin tree contains non-blob entry {path!r} ({obj_type})"
             )
-        if mode == "120000":
-            raise ContractValidationError(
-                f"pin tree must not contain symlink: {path}"
-            )
         wt = root / path
+        if mode == "120000":
+            if not (os.path.lexists(wt) and os.path.islink(wt)):
+                raise ContractValidationError(
+                    f"upstream_root missing symlink for pin {pin}: {path}"
+                )
+            # ``git hash-object -- PATH`` may refuse symlinks; compare the
+            # symlink target bytes to the pin blob (git stores the target).
+            target = os.readlink(wt).encode("utf-8", errors="surrogateescape")
+            blob = _run_git_bytes(root, ["cat-file", "blob", f"{pin}:{path}"])
+            if blob.returncode != 0:
+                err = blob.stderr.decode("utf-8", errors="replace").strip()
+                raise ContractValidationError(
+                    f"git cat-file blob failed for symlink {pin}:{path}: {err}"
+                )
+            if blob.stdout != target:
+                raise ContractValidationError(
+                    f"upstream_root symlink diverges from pin_revision {pin} at {path}"
+                )
+            continue
         if os.path.lexists(wt) and os.path.islink(wt):
             raise ContractValidationError(
                 f"upstream_root worktree path must not be a symlink: {path}"
@@ -977,15 +1003,21 @@ def _reproduce_source_index_v2(
         run_git=_run_git,
     )
     pin_paths: set[str] = set()
+    symlink_paths: set[str] = set()
     for mode, obj_type, path in tree_entries:
         if obj_type == "blob":
             if mode.startswith("120"):  # symlink
-                raise ContractValidationError(
-                    f"pin tree contains symlink blob (unsupported): {path}"
-                )
+                # Keep path visible for existence checks; read_blob fails closed.
+                symlink_paths.add(path)
+                pin_paths.add(path)
+                continue
             pin_paths.add(path)
 
     def read_blob(rel: str) -> bytes:
+        if rel in symlink_paths:
+            raise ContractValidationError(
+                f"blob must not be a symlink: {rel}"
+            )
         return _git_blob_bytes(root, pin, rel, label=f"blob:{rel}")
 
     surfaces, input_parts = extract_surfaces_v2(

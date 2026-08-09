@@ -1,0 +1,1325 @@
+{
+  "store_kind": "parity-completeness-proof",
+  "schema_version": 1,
+  "source": "OmO",
+  "repository": "https://github.com/code-yeongyu/oh-my-openagent",
+  "pin_revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
+  "checkout_provenance": {
+    "method": "git_head_clean",
+    "observed_revision": "4ca872b57e45281a9a81190bb73637729288ffc3"
+  },
+  "policy_digest": "035db144350e13706cad5ac0a00df7a8dfa1110e28ee59876d484b279ca88002",
+  "seed_digest": "1acbe81d2c9c3d3a6b3a9c124da0efe703fd89a4918d3f876df9842f79b96582",
+  "coverage_digest": "7f880e2323c706cd56391263e99a0b1f806f03f491947f4251a182d5c9a60bf2",
+  "source_input_digest": "72955797083919e9a71ea4bcca18d37e55d8fb7b2c18b08cca37d02ab20c424c",
+  "surface_index_digest": "f6e73f22fe530097fd938c7e74c2129aaf43930e7703dcda299fc75a9e8427c0",
+  "discovered_surfaces": [
+    {
+      "surface_id": "agent.atlas",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "agent:atlas",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.explore",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "agent:explore",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.hephaestus",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "agent:hephaestus",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.librarian",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "agent:librarian",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.metis",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "agent:metis",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.momus",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "agent:momus",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.multimodal-looker",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "agent:multimodal-looker",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.oracle",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "agent:oracle",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.prometheus",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "agent:prometheus",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.sisyphus",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "agent:sisyphus",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.sisyphus-junior",
+      "kind": "agent",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "agent:sisyphus-junior",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "bin.lazycodex",
+      "kind": "bin",
+      "category": "team",
+      "source_path": "bin/oh-my-opencode.js",
+      "anchor": "bin:lazycodex",
+      "content_digest": "0987fbc11fe02c8cb222d8ea9dcbb62bef06f7980443d984ac42759158fbcd70",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "bin.lazycodex-ai",
+      "kind": "bin",
+      "category": "team",
+      "source_path": "bin/oh-my-opencode.js",
+      "anchor": "bin:lazycodex-ai",
+      "content_digest": "0987fbc11fe02c8cb222d8ea9dcbb62bef06f7980443d984ac42759158fbcd70",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "bin.oh-my-openagent",
+      "kind": "bin",
+      "category": "team",
+      "source_path": "bin/oh-my-opencode.js",
+      "anchor": "bin:oh-my-openagent",
+      "content_digest": "0987fbc11fe02c8cb222d8ea9dcbb62bef06f7980443d984ac42759158fbcd70",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "bin.oh-my-opencode",
+      "kind": "bin",
+      "category": "team",
+      "source_path": "bin/oh-my-opencode.js",
+      "anchor": "bin:oh-my-opencode",
+      "content_digest": "0987fbc11fe02c8cb222d8ea9dcbb62bef06f7980443d984ac42759158fbcd70",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "bin.omo",
+      "kind": "bin",
+      "category": "team",
+      "source_path": "bin/oh-my-opencode.js",
+      "anchor": "bin:omo",
+      "content_digest": "0987fbc11fe02c8cb222d8ea9dcbb62bef06f7980443d984ac42759158fbcd70",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "catalog.agent",
+      "kind": "catalog",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "catalog:agent",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "catalog.skill",
+      "kind": "catalog",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "catalog:skill",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "cli.boulder",
+      "kind": "cli",
+      "category": "runtime_orchestration",
+      "source_path": "packages/omo-opencode/src/cli/runtime-commands.ts",
+      "anchor": "cli:boulder",
+      "content_digest": "34ba9fe002e8839f77e5fd32b72ff7f669538267f4b2aa9e90628ec7b970e662",
+      "capability_ids": [
+        "omo.ulw.ultrawork_loop"
+      ]
+    },
+    {
+      "surface_id": "cli.cleanup",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "packages/omo-opencode/src/cli/cleanup-command.ts",
+      "anchor": "cli:cleanup",
+      "content_digest": "9daa5242db0169e8c148d1ba1d00c3af9806c51b35013288f8f3ce4c62fb4ccb",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "cli.config",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "packages/omo-opencode/src/cli/cli-program.ts",
+      "anchor": "cli:config",
+      "content_digest": "33f911a9dc7e48fc72e464230575431eb6059ea00c80bfec3589483f1e011693",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "cli.doctor",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "packages/omo-opencode/src/cli/cli-program.ts",
+      "anchor": "cli:doctor",
+      "content_digest": "33f911a9dc7e48fc72e464230575431eb6059ea00c80bfec3589483f1e011693",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "cli.get-local-version",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "packages/omo-opencode/src/cli/cli-program.ts",
+      "anchor": "cli:get-local-version",
+      "content_digest": "33f911a9dc7e48fc72e464230575431eb6059ea00c80bfec3589483f1e011693",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "cli.install",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "packages/omo-opencode/src/cli/cli-program.ts",
+      "anchor": "cli:install",
+      "content_digest": "33f911a9dc7e48fc72e464230575431eb6059ea00c80bfec3589483f1e011693",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "cli.login",
+      "kind": "cli",
+      "category": "tools_mcp",
+      "source_path": "packages/omo-opencode/src/cli/mcp-oauth/index.ts",
+      "anchor": "cli:login",
+      "content_digest": "7e27ad25efb1f3cc3005415e4a811f52bfafc846dcd68cc207abbc554f2ee69c",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "cli.logout",
+      "kind": "cli",
+      "category": "tools_mcp",
+      "source_path": "packages/omo-opencode/src/cli/mcp-oauth/index.ts",
+      "anchor": "cli:logout",
+      "content_digest": "7e27ad25efb1f3cc3005415e4a811f52bfafc846dcd68cc207abbc554f2ee69c",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "cli.mcp",
+      "kind": "cli",
+      "category": "tools_mcp",
+      "source_path": "packages/omo-opencode/src/cli/cli-program.ts",
+      "anchor": "cli:mcp",
+      "content_digest": "33f911a9dc7e48fc72e464230575431eb6059ea00c80bfec3589483f1e011693",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "cli.migrate",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "packages/omo-opencode/src/cli/cli-program.ts",
+      "anchor": "cli:migrate",
+      "content_digest": "33f911a9dc7e48fc72e464230575431eb6059ea00c80bfec3589483f1e011693",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "cli.oauth",
+      "kind": "cli",
+      "category": "tools_mcp",
+      "source_path": "packages/omo-opencode/src/cli/mcp-oauth/index.ts",
+      "anchor": "cli:oauth",
+      "content_digest": "7e27ad25efb1f3cc3005415e4a811f52bfafc846dcd68cc207abbc554f2ee69c",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "cli.refresh-model-capabilities",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "packages/omo-opencode/src/cli/runtime-commands.ts",
+      "anchor": "cli:refresh-model-capabilities",
+      "content_digest": "34ba9fe002e8839f77e5fd32b72ff7f669538267f4b2aa9e90628ec7b970e662",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "cli.run",
+      "kind": "cli",
+      "category": "runtime_orchestration",
+      "source_path": "packages/omo-opencode/src/cli/cli-program.ts",
+      "anchor": "cli:run",
+      "content_digest": "33f911a9dc7e48fc72e464230575431eb6059ea00c80bfec3589483f1e011693",
+      "capability_ids": [
+        "omo.ulw.ultrawork_loop"
+      ]
+    },
+    {
+      "surface_id": "cli.setup",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "packages/omo-opencode/src/cli/cli-program.ts",
+      "anchor": "cli:setup",
+      "content_digest": "33f911a9dc7e48fc72e464230575431eb6059ea00c80bfec3589483f1e011693",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "cli.status",
+      "kind": "cli",
+      "category": "tools_mcp",
+      "source_path": "packages/omo-opencode/src/cli/mcp-oauth/index.ts",
+      "anchor": "cli:status",
+      "content_digest": "7e27ad25efb1f3cc3005415e4a811f52bfafc846dcd68cc207abbc554f2ee69c",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "cli.ulw-loop",
+      "kind": "cli",
+      "category": "runtime_orchestration",
+      "source_path": "packages/omo-opencode/src/cli/runtime-commands.ts",
+      "anchor": "cli:ulw-loop",
+      "content_digest": "34ba9fe002e8839f77e5fd32b72ff7f669538267f4b2aa9e90628ec7b970e662",
+      "capability_ids": [
+        "omo.ulw.ultrawork_loop"
+      ]
+    },
+    {
+      "surface_id": "cli.uninstall",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "packages/omo-opencode/src/cli/cleanup-command.ts",
+      "anchor": "cli:uninstall",
+      "content_digest": "9daa5242db0169e8c148d1ba1d00c3af9806c51b35013288f8f3ce4c62fb4ccb",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "cli.version",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "packages/omo-opencode/src/cli/runtime-commands.ts",
+      "anchor": "cli:version",
+      "content_digest": "34ba9fe002e8839f77e5fd32b72ff7f669538267f4b2aa9e90628ec7b970e662",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "command.get-unpublished-changes",
+      "kind": "command",
+      "category": "team",
+      "source_path": ".agents/command/get-unpublished-changes.md",
+      "anchor": "command:get-unpublished-changes",
+      "content_digest": "1865dbff96035f510a4a14cbaaf4ba9ae60f5314efa11d017c7f6e4cf015b1cf",
+      "capability_ids": [
+        "omo.team.hyperplan_security"
+      ]
+    },
+    {
+      "surface_id": "command.omomomo",
+      "kind": "command",
+      "category": "team",
+      "source_path": ".agents/command/omomomo.md",
+      "anchor": "command:omomomo",
+      "content_digest": "35518d8c550f1e057ba8652c17ea844ad98fa880599c67d3cb8a4a473f6d92ca",
+      "capability_ids": [
+        "omo.team.hyperplan_security"
+      ]
+    },
+    {
+      "surface_id": "command.publish",
+      "kind": "command",
+      "category": "team",
+      "source_path": ".agents/command/publish.md",
+      "anchor": "command:publish",
+      "content_digest": "231795774370f9ca9b2538af9469d21e0c45dc6e232a4c4cb1ce0db29ba7f80b",
+      "capability_ids": [
+        "omo.team.hyperplan_security"
+      ]
+    },
+    {
+      "surface_id": "command.remove-deadcode",
+      "kind": "command",
+      "category": "team",
+      "source_path": ".agents/command/remove-deadcode.md",
+      "anchor": "command:remove-deadcode",
+      "content_digest": "30c7037581ce26b09c19ab11b3a4e8b8a01b1a51e07b629a6142326ec77f028a",
+      "capability_ids": [
+        "omo.team.hyperplan_security"
+      ]
+    },
+    {
+      "surface_id": "command.security-research",
+      "kind": "command",
+      "category": "team",
+      "source_path": ".agents/command/security-research.md",
+      "anchor": "command:security-research",
+      "content_digest": "db67150e904173f18376994888f96475e5ec3fb8c9070209fa8d7deac6dee4e2",
+      "capability_ids": [
+        "omo.team.hyperplan_security"
+      ]
+    },
+    {
+      "surface_id": "hook.agent-usage-reminder",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:agent-usage-reminder",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.anthropic-context-window-limit-recovery",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:anthropic-context-window-limit-recovery",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.ast-grep-sg-provision",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:ast-grep-sg-provision",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.atlas",
+      "kind": "hook",
+      "category": "team",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:atlas",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.team.hyperplan_security"
+      ]
+    },
+    {
+      "surface_id": "hook.auto-slash-command",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:auto-slash-command",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.auto-update-checker",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:auto-update-checker",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.background-notification",
+      "kind": "hook",
+      "category": "jobs",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:background-notification",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.agents.background"
+      ]
+    },
+    {
+      "surface_id": "hook.bash-file-read-guard",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:bash-file-read-guard",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.category-skill-reminder",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:category-skill-reminder",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.claude-code-hooks",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:claude-code-hooks",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.codegraph-bootstrap",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:codegraph-bootstrap",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.comment-checker",
+      "kind": "hook",
+      "category": "quality_visual_edit_safety",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:comment-checker",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.quality.comment_hygiene"
+      ]
+    },
+    {
+      "surface_id": "hook.compaction-context-injector",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:compaction-context-injector",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.compaction-todo-preserver",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:compaction-todo-preserver",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.delegate-task-retry",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:delegate-task-retry",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.directory-agents-injector",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:directory-agents-injector",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.directory-readme-injector",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:directory-readme-injector",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.edit-error-recovery",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:edit-error-recovery",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.empty-task-response-detector",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:empty-task-response-detector",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.fsync-skip-warning",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:fsync-skip-warning",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.goal",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:goal",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.hashline-read-enhancer",
+      "kind": "hook",
+      "category": "quality_visual_edit_safety",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:hashline-read-enhancer",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.edit.hash_anchored"
+      ]
+    },
+    {
+      "surface_id": "hook.hephaestus-agents-md-injector",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:hephaestus-agents-md-injector",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.interactive-bash-session",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:interactive-bash-session",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.json-error-recovery",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:json-error-recovery",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.keyword-detector",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:keyword-detector",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.legacy-plugin-toast",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:legacy-plugin-toast",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.model-fallback",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:model-fallback",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.monitor-status-injector",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:monitor-status-injector",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.no-hephaestus-non-gpt",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:no-hephaestus-non-gpt",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.no-sisyphus-gpt",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:no-sisyphus-gpt",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.non-interactive-env",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:non-interactive-env",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.notepad-write-guard",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:notepad-write-guard",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.plan-format-validator",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:plan-format-validator",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.preemptive-compaction",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:preemptive-compaction",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.prometheus-md-only",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:prometheus-md-only",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.question-label-truncator",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:question-label-truncator",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.read-image-resizer",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:read-image-resizer",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.rules-injector",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:rules-injector",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.runtime-fallback",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:runtime-fallback",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.session-notification",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:session-notification",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.sisyphus-junior-notepad",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:sisyphus-junior-notepad",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.start-work",
+      "kind": "hook",
+      "category": "team",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:start-work",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.team.hyperplan_security"
+      ]
+    },
+    {
+      "surface_id": "hook.startup-toast",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:startup-toast",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.stop-continuation-guard",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:stop-continuation-guard",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.task-resume-info",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:task-resume-info",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.tasks-todowrite-disabler",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:tasks-todowrite-disabler",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.team-tool-gating",
+      "kind": "hook",
+      "category": "team",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:team-tool-gating",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.team.hyperplan_security"
+      ]
+    },
+    {
+      "surface_id": "hook.think-mode",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:think-mode",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.todo-continuation-enforcer",
+      "kind": "hook",
+      "category": "runtime_orchestration",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:todo-continuation-enforcer",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.goal.todo_continuation"
+      ]
+    },
+    {
+      "surface_id": "hook.todo-description-override",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:todo-description-override",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.tool-output-truncator",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:tool-output-truncator",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.tool-pair-validator",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:tool-pair-validator",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.unstable-agent-babysitter",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:unstable-agent-babysitter",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.webfetch-redirect-guard",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:webfetch-redirect-guard",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "hook.write-existing-file-guard",
+      "kind": "hook",
+      "category": "hooks",
+      "source_path": "packages/omo-opencode/src/config/schema/hooks.ts",
+      "anchor": "hook:write-existing-file-guard",
+      "content_digest": "22b935eab32fa2c7886352ed1a31e4e61e5938871f15de907676651eb5cde3a5",
+      "capability_ids": [
+        "omo.rules.intent_gate"
+      ]
+    },
+    {
+      "surface_id": "mcp.codegraph",
+      "kind": "mcp-family",
+      "category": "tools_mcp",
+      "source_path": "packages/omo-opencode/src/mcp/types.ts",
+      "anchor": "mcp:codegraph",
+      "content_digest": "f45d55683e9bea8c79ecec63ddcc828bd44116b98660038ddbab785eb261849a",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "mcp.context7",
+      "kind": "mcp-family",
+      "category": "tools_mcp",
+      "source_path": "packages/omo-opencode/src/mcp/types.ts",
+      "anchor": "mcp:context7",
+      "content_digest": "f45d55683e9bea8c79ecec63ddcc828bd44116b98660038ddbab785eb261849a",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "mcp.grep_app",
+      "kind": "mcp-family",
+      "category": "tools_mcp",
+      "source_path": "packages/omo-opencode/src/mcp/types.ts",
+      "anchor": "mcp:grep_app",
+      "content_digest": "f45d55683e9bea8c79ecec63ddcc828bd44116b98660038ddbab785eb261849a",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "mcp.lsp",
+      "kind": "mcp-family",
+      "category": "tools_mcp",
+      "source_path": "packages/omo-opencode/src/mcp/types.ts",
+      "anchor": "mcp:lsp",
+      "content_digest": "f45d55683e9bea8c79ecec63ddcc828bd44116b98660038ddbab785eb261849a",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "mcp.websearch",
+      "kind": "mcp-family",
+      "category": "tools_mcp",
+      "source_path": "packages/omo-opencode/src/mcp/types.ts",
+      "anchor": "mcp:websearch",
+      "content_digest": "f45d55683e9bea8c79ecec63ddcc828bd44116b98660038ddbab785eb261849a",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
+      "surface_id": "npm-script.build:schema",
+      "kind": "npm-script",
+      "category": "team",
+      "source_path": "package.json",
+      "anchor": "npm-script:build:schema",
+      "content_digest": "3ae1b3c637968bf327aed8dd6881e0bdf4f6d7fc0fdfdfa18113248158151375",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "npm-script.build:shared-skills-assets",
+      "kind": "npm-script",
+      "category": "team",
+      "source_path": "package.json",
+      "anchor": "npm-script:build:shared-skills-assets",
+      "content_digest": "3ae1b3c637968bf327aed8dd6881e0bdf4f6d7fc0fdfdfa18113248158151375",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "npm-script.typecheck",
+      "kind": "npm-script",
+      "category": "team",
+      "source_path": "package.json",
+      "anchor": "npm-script:typecheck",
+      "content_digest": "3ae1b3c637968bf327aed8dd6881e0bdf4f6d7fc0fdfdfa18113248158151375",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
+      "surface_id": "skill.agent-browser",
+      "kind": "skill",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "skill:agent-browser",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.debugging",
+      "kind": "skill",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "skill:debugging",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.dev-browser",
+      "kind": "skill",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "skill:dev-browser",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.frontend",
+      "kind": "skill",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "skill:frontend",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.git-master",
+      "kind": "skill",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "skill:git-master",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.init-deep",
+      "kind": "skill",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "skill:init-deep",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.playwright",
+      "kind": "skill",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "skill:playwright",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.remove-ai-slops",
+      "kind": "skill",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "skill:remove-ai-slops",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.review-work",
+      "kind": "skill",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "skill:review-work",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.security-research",
+      "kind": "skill",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "skill:security-research",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.security-review",
+      "kind": "skill",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "skill:security-review",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.team-mode",
+      "kind": "skill",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "skill:team-mode",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    },
+    {
+      "surface_id": "skill.visual-qa",
+      "kind": "skill",
+      "category": "agents_routing",
+      "source_path": "packages/omo-opencode/src/config/schema/agent-names.ts",
+      "anchor": "skill:visual-qa",
+      "content_digest": "aa931dd91e0e537cbf053a854540da3e3bc91f198e32087449db92383e00c656",
+      "capability_ids": [
+        "omo.agents.discipline_routing"
+      ]
+    }
+  ],
+  "unresolved_surfaces": [],
+  "empty_category_partitions": [
+    "antigravity",
+    "install_update",
+    "parity_governance",
+    "platform_live_evidence",
+    "skills",
+    "state_memory_observability"
+  ]
+}

@@ -243,7 +243,7 @@
       "issues": [
         "#78"
       ],
-      "gap": "#78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; #78-E README↔JSON managed-snapshot drift gate landed; #78-F/#78-G real pinned OMC+OMX discovery policy/mapping/proof landed; promotion remains unperformed and is proof-gated; OmO and Antigravity real-source proofs still open."
+      "gap": "#78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; #78-E README↔JSON managed-snapshot drift gate landed; #78-F/#78-G/#78-H real pinned OMC+OMX+OmO discovery policy/mapping/proof landed; promotion remains unperformed and is proof-gated; Antigravity real-source proof still open."
     },
     {
       "id": "omc.cli.session_surfaces",
@@ -1118,7 +1118,7 @@
         "source": "OmO",
         "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
         "source_paths": [
-          "README.md"
+          "packages/omo-opencode/src/config/schema/agent-names.ts"
         ]
       },
       "omg_paths": [
@@ -1152,7 +1152,7 @@
         "source": "OmO",
         "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
         "source_paths": [
-          "README.md"
+          "packages/omo-opencode/src/config/schema/hooks.ts"
         ]
       },
       "omg_paths": [
@@ -1188,7 +1188,7 @@
         "source": "OmO",
         "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
         "source_paths": [
-          "README.md"
+          "packages/omo-opencode/src/config/schema/hooks.ts"
         ]
       },
       "omg_paths": [],
@@ -1218,7 +1218,12 @@
         "source": "OmO",
         "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
         "source_paths": [
-          "README.md"
+          ".agents/command/get-unpublished-changes.md",
+          ".agents/command/omomomo.md",
+          ".agents/command/publish.md",
+          ".agents/command/remove-deadcode.md",
+          ".agents/command/security-research.md",
+          "packages/omo-opencode/src/config/schema/hooks.ts"
         ]
       },
       "omg_paths": [
@@ -1257,7 +1262,7 @@
         "source": "OmO",
         "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
         "source_paths": [
-          "README.md"
+          "packages/omo-opencode/src/config/schema/hooks.ts"
         ]
       },
       "omg_paths": [],
@@ -1286,7 +1291,7 @@
         "source": "OmO",
         "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
         "source_paths": [
-          "README.md"
+          "packages/omo-opencode/src/config/schema/hooks.ts"
         ]
       },
       "omg_paths": [],
@@ -1313,7 +1318,9 @@
         "source": "OmO",
         "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
         "source_paths": [
-          "README.md"
+          "packages/omo-opencode/src/cli/cli-program.ts",
+          "packages/omo-opencode/src/cli/mcp-oauth/index.ts",
+          "packages/omo-opencode/src/mcp/types.ts"
         ]
       },
       "omg_paths": [
@@ -1349,7 +1356,7 @@
         "source": "OmO",
         "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
         "source_paths": [
-          "README.md"
+          "packages/omo-opencode/src/config/schema/hooks.ts"
         ]
       },
       "omg_paths": [],
@@ -1376,7 +1383,8 @@
         "source": "OmO",
         "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
         "source_paths": [
-          "README.md"
+          "packages/omo-opencode/src/cli/cli-program.ts",
+          "packages/omo-opencode/src/cli/runtime-commands.ts"
         ]
       },
       "omg_paths": [
@@ -1415,7 +1423,11 @@
         "source": "OmO",
         "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
         "source_paths": [
-          "README.md"
+          "bin/oh-my-opencode.js",
+          "package.json",
+          "packages/omo-opencode/src/cli/cleanup-command.ts",
+          "packages/omo-opencode/src/cli/cli-program.ts",
+          "packages/omo-opencode/src/cli/runtime-commands.ts"
         ]
       },
       "omg_paths": [
@@ -1744,7 +1756,7 @@
       "capability_ids": [
         "parity.inventory.governance"
       ],
-      "summary": "#78-F/#78-G real pinned OMC+OMX discovery policy/mapping/proof landed; OmO and Antigravity real-source proofs and all explicit status promotions remain open"
+      "summary": "#78-F/#78-G/#78-H real pinned OMC+OMX+OmO discovery policy/mapping/proof landed; Antigravity real-source proof and all explicit status promotions remain open"
     },
     {
       "id": "gap.parity.platform_live_evidence",

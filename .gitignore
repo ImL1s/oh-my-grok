@@ -44,7 +44,9 @@ progress.md
 
 
 # prior-session research scratch (not part of the plugin)
-.agents/
+/.agents/
+# Hermetic OmO completeness fixtures may include upstream `.agents/command`
+# (root `/.agents/` stay ignored)
 
 # Python packaging build artifacts (pyproject/setuptools)
 *.egg-info/

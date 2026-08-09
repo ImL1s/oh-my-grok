@@ -179,14 +179,32 @@ def test_expired_dead_runner_no_provider_marks_lost(root: Path) -> None:
 def test_expired_reused_pid_marks_old_owner_lost_without_signal(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    result = start_job(
+    """REUSED + expired lease → marked_lost without signaling the pid.
+
+    Plant a RUNNING+lease fixture without a live runner/heartbeat so CAS
+    cannot race generation under CI load (E_JOB_RECOVERY_CONFLICT flake).
+    """
+    from omg_cli.jobs.store import create_job_dir
+
+    planted_pid = 1_000_087
+    rec = create_job_dir(
         root,
         provider="fake",
         role="researcher",
-        prompt_file=_prompt(root),
-        sleep_s=30.0,
+        prompt_text="reused pid recover plant",
     )
-    rec = result.record
+    lease = acquire_owner_lease(attempt=1)
+    with job_lock(root, rec.job_id):
+        cur = read_job_record(root, rec.job_id)
+        cur.state = JobState.RUNNING
+        cur.pid = planted_pid
+        cur.pgid = planted_pid
+        cur.handle = f"planted:{rec.job_id}"
+        cur.pid_starttime = "lstart:planted-reused"
+        cur.owner_lease = lease
+        write_job_record(root, cur)
+    _force_lease_expired_on_disk(root, rec.job_id)
+
     signals: list[int] = []
     real_kill = os.kill
 
@@ -201,16 +219,16 @@ def test_expired_reused_pid_marks_old_owner_lost_without_signal(
         "omg_cli.jobs.recovery.probe_identity_for_recovery",
         lambda identity: IdentityProbeOutcome.REUSED,
     )
-    far_future = datetime.now(timezone.utc) + timedelta(hours=2)
-    out = recover_job(root, rec.job_id, now=far_future)
-    assert out.ok is True
+    out = recover_job(root, rec.job_id)
+    assert out.ok is True, (
+        f"expected marked_lost, got ok={out.ok} action={out.action} "
+        f"error={out.error_code}:{out.error_message}"
+    )
     assert out.action == "marked_lost"
     assert signals == []
-    monkeypatch.undo()
-    try:
-        os.kill(int(rec.pid), signal.SIGKILL)
-    except OSError:
-        pass
+    after = read_job_record(root, rec.job_id)
+    assert after.state == JobState.LOST
+    assert after.exit and after.exit.get("class") == "lease_lost"
 
 
 def test_probe_unavailable_blocks_recovery_zero_mutation(

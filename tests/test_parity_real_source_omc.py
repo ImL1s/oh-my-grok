@@ -352,6 +352,9 @@ def test_omc_v2_policy_discovers_all_registry_kinds(tmp_path: Path) -> None:
     assert any(s["surface_id"].startswith("command.") for s in by_kind["command"])
     assert any(s["surface_id"] == "agent.explore" for s in by_kind["agent"])
     assert any(s["surface_id"].startswith("cli.") for s in by_kind["cli"])
+    # Shared commander_command_graph_v1 emits static .alias() as first-class surfaces.
+    assert any(s["surface_id"] == "cli.rm" for s in by_kind["cli"])
+    assert any(s["surface_id"] == "cli.sessions" for s in by_kind["cli"])
     assert any(s["surface_id"].startswith("hook.") for s in by_kind["hook"])
     assert any(s["surface_id"].startswith("mcp-family.") for s in by_kind["mcp-family"])
     assert any(s["surface_id"].startswith("bin.") for s in by_kind["bin"])

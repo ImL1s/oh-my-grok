@@ -63,13 +63,17 @@ execution). Admitted methods:
 - `omx_help_surface_v1`
 - `omx_launcher_bin_v1`
 - `codex_plugin_manifest_v1`
+- `omo_agent_names_schema_v1`
+- `omo_zod_string_enum_v1`
+- `omo_command_tree_v1`
 
 V2 requires a committed **mapping store** and bidirectional
 surface↔inventory coverage (every discovered surface mapped; every
 non-alias inventory row for that source referenced).
 
-Committed OMC and OMX proofs exist at their inventory pins but
-`source_status` for both remains `bootstrapping` (unpromoted).
+Committed OMC, OMX, and OmO proofs exist at their inventory pins but
+`source_status` for each remains `bootstrapping` (unpromoted). Antigravity
+remains without a committed real-source triple.
 ## Mapping (`parity-completeness-mapping/v1`)
 
 Committed under `docs/parity/completeness/mappings/{SOURCE}.json`.
@@ -130,6 +134,7 @@ Committed layout:
 OMC currently has a committed policy/mapping/proof triple that is
 technically sufficient for source promotion, while canonical
 `source_status.OMC` (and categories / inventory) remain `bootstrapping`.
+OMX and OmO likewise have committed triples that remain unpromoted.
 
 ## Artifact consistency vs source reproduction vs promotion
 

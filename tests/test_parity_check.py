@@ -154,16 +154,16 @@ def test_filter_parity_gaps_defaults_to_open_only() -> None:
 def test_strict_check_invokes_completeness_promotion_gate(tmp_path: Path) -> None:
     """Closing P0s and flipping status strings is no longer enough for --strict.
 
-    Promote a source that still lacks a committed completeness triple (OmO).
-    OMC/OMX now have committed artifacts, so flipping those alone is insufficient to
-    prove the gate still fails closed for unproven sources.
+    Promote a source that still lacks a committed completeness triple (Antigravity).
+    OMC/OMX/OmO now have committed artifacts, so flipping those alone is insufficient
+    to prove the gate still fails closed for unproven sources.
     """
     inventory = load_json_object(INVENTORY)
     broken = copy.deepcopy(inventory)
     for gap in broken["gaps"]:
         if gap.get("priority") == "P0":
             gap["status"] = "closed"
-    broken["source_status"]["OmO"] = "complete"
+    broken["source_status"]["Antigravity"] = "complete"
     path = tmp_path / "omg-parity.json"
     path.write_text(json.dumps(broken), encoding="utf-8")
 

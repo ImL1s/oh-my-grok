@@ -9,7 +9,42 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Fixed
+- **Parity #78-H OMC Commander alias proof drift:** after shared
+  `commander_command_graph_v1` began emitting static `.alias()` surfaces,
+  regenerate the OMC mapping/proof at pin `67dddfc…` to include `cli.rm` and
+  `cli.sessions`, and extend the hermetic OMC CLI fixture so alias discovery
+  cannot silently diverge from the committed real-source triple. Statuses
+  remain bootstrapping (no promotion). Refs #78 (does not close).
+- **Parity #78-H OmO upstream snapshot fingerprint sync:** add
+  `cli-program.ts` to `omo.tools.lsp_ast_codegraph_mcp` in
+  `docs/parity/upstream-snapshots/OmO.json` and refresh OmO proof
+  `seed_digest` so release-gate catalog fingerprints match the inventory
+  enrichment (fail-closed drift gate unchanged; no promotion). Refs #78
+  (does not close).
+- **Jobs recovery reused-PID test under CI load:** plant a RUNNING+lease
+  fixture without a live heartbeat so `recover_job` CAS cannot race
+  generation (`E_JOB_RECOVERY_CONFLICT`) while still asserting no signal
+  on REUSED identity. Refs #78 (does not close).
+- **Parity #78-H OmO Commander/Zod discovery fail-closed:** resolve
+  `addCommand(factory())` (emit `cli.mcp` from `createMcpOAuthCommand()`),
+  emit Commander `.alias()` surfaces (`cli.setup`, `cli.uninstall`), and
+  reject non-string-literal Zod enum elements instead of partial extract.
+  Regenerated OmO mapping/proof at pin `4ca872b…`; statuses remain
+  bootstrapping. Refs #78 (does not close).
+
 ### Added
+- **Parity #78-H real pinned OmO discovery evidence:** committed
+  discovery_rules v2 policy, surface→capability mapping, and completeness
+  proof under `docs/parity/completeness/{policies,mappings,proofs}/OmO.json`
+  at pin `4ca872b…` (zod schema enum + CLI/command/package extractors against
+  the real oh-my-openagent tree), plus hermetic registry fixtures and
+  `tests/test_parity_real_source_omo.py`. Network-free artifact consistency
+  verifies without claiming source reproduction. Canonical
+  `source_status.OmO` / categories / `inventory_status` stay bootstrapping —
+  proof present, **no promotion**. Antigravity real-source proof remains
+  open. Refs #78 (does not close).
+
 - **Parity #78-G real pinned OMX discovery evidence:** committed
   discovery_rules v2 policy, surface→capability mapping, and completeness
   proof under `docs/parity/completeness/{policies,mappings,proofs}/OMX.json`

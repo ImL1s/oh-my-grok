@@ -1,1873 +1,1895 @@
 {
-  "store_kind": "parity-completeness-proof",
-  "schema_version": 1,
-  "source": "OMC",
-  "repository": "https://github.com/Yeachan-Heo/oh-my-claudecode",
-  "pin_revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
   "checkout_provenance": {
     "method": "git_head_clean",
     "observed_revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa"
   },
-  "policy_digest": "f61be7f8c9f04f19040900ee0ea3ee8ece5836f21f256287c3df5f04e63f88f3",
-  "seed_digest": "b8a3e881c04f334f9341c41335a6fdb36074b45dce6eb32c316b145391950c3e",
-  "coverage_digest": "bfa2eb0aa9a554dc5b3c8179579a4706cf1c6af6346519be18df47d08c066f18",
-  "source_input_digest": "35d85a69b26b49be0d2c14cc8ae55e516283076a9125a9515d055d5285806fbc",
-  "surface_index_digest": "fbc7d6010207c23499f653c30de6b1e6d23cacdcdfa2855f6b871a4722c68ee8",
+  "coverage_digest": "ba828818c6359ea0a308174ed3889655a31eaca6de7c1dd7eb1d73f6a345b3b0",
   "discovered_surfaces": [
     {
-      "surface_id": "agent.analyst",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/analyst.md",
       "anchor": "agent:analyst",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "b08225a9bd349c84697a63b9e7e4e1016c01dafec5b3337bb95f70fce495ceb1",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/analyst.md",
+      "surface_id": "agent.analyst"
     },
     {
-      "surface_id": "agent.architect",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/architect.md",
       "anchor": "agent:architect",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "054854158e573b95efc0022bf4ebdd1c947d02e4cbf0f820d8a37bb155e104b7",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/architect.md",
+      "surface_id": "agent.architect"
     },
     {
-      "surface_id": "agent.code-reviewer",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/code-reviewer.md",
       "anchor": "agent:code-reviewer",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "0194fe714d4dcd61cf049322ae1f737deda5e59356eba4faca51ad38d025e9fc",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/code-reviewer.md",
+      "surface_id": "agent.code-reviewer"
     },
     {
-      "surface_id": "agent.code-simplifier",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/code-simplifier.md",
       "anchor": "agent:code-simplifier",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "44a797ce76724e94821e6434cf9d578c6775ddd9eb233a3b4c071e2cb5f7f0cc",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/code-simplifier.md",
+      "surface_id": "agent.code-simplifier"
     },
     {
-      "surface_id": "agent.critic",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/critic.md",
       "anchor": "agent:critic",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "7ac22331649f07805eca351e784629520a831d6a7ff8596628c66e6d4703b072",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/critic.md",
+      "surface_id": "agent.critic"
     },
     {
-      "surface_id": "agent.debugger",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/debugger.md",
       "anchor": "agent:debugger",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "14714f2a4671411e006c604291e0551cc38cc45c18e0665de2f30ef6996047c6",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/debugger.md",
+      "surface_id": "agent.debugger"
     },
     {
-      "surface_id": "agent.designer",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/designer.md",
       "anchor": "agent:designer",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "61e77f70753e09e87d2ef4e549c4459c1572cab3eddd72e2a0a430169bb256c8",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/designer.md",
+      "surface_id": "agent.designer"
     },
     {
-      "surface_id": "agent.document-specialist",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/document-specialist.md",
       "anchor": "agent:document-specialist",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "d6f01d210e5e74bb8e6f534657fd77eb39ca5feebc2bb451088cbe6b7790fd74",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/document-specialist.md",
+      "surface_id": "agent.document-specialist"
     },
     {
-      "surface_id": "agent.executor",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/executor.md",
       "anchor": "agent:executor",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "996bfa5ed0b560285c0ca020e75f02a60a4ef97062ecaac7b285699f57711865",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/executor.md",
+      "surface_id": "agent.executor"
     },
     {
-      "surface_id": "agent.explore",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/explore.md",
       "anchor": "agent:explore",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "a629637a20d2848e459c581057da0d258125e03eb243d8c984e98a0ed6636bcb",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/explore.md",
+      "surface_id": "agent.explore"
     },
     {
-      "surface_id": "agent.git-master",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/git-master.md",
       "anchor": "agent:git-master",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "40fbc2b31b1b1e0f957dcc7343e8b3a9e92422927c868db68d46cbb07f4abb58",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/git-master.md",
+      "surface_id": "agent.git-master"
     },
     {
-      "surface_id": "agent.planner",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/planner.md",
       "anchor": "agent:planner",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "20186e7bb9cc8298838cf2bd7caf187c79d9b9cb8ed941a9600b9c98454a09e5",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/planner.md",
+      "surface_id": "agent.planner"
     },
     {
-      "surface_id": "agent.qa-tester",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/qa-tester.md",
       "anchor": "agent:qa-tester",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "f34416b12bfc9c4071ee034c4e481733334b05e8e42d604cd84d579c557832ce",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/qa-tester.md",
+      "surface_id": "agent.qa-tester"
     },
     {
-      "surface_id": "agent.scientist",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/scientist.md",
       "anchor": "agent:scientist",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "cbe304e00b334c4c6035325542e522f66f8671b631dbc5fff4db9383bbefcd23",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/scientist.md",
+      "surface_id": "agent.scientist"
     },
     {
-      "surface_id": "agent.security-reviewer",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/security-reviewer.md",
       "anchor": "agent:security-reviewer",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "ede4e0af76067168dc3aecacffc73f330a950bf79ec187471950cb2d985de8e9",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/security-reviewer.md",
+      "surface_id": "agent.security-reviewer"
     },
     {
-      "surface_id": "agent.test-engineer",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/test-engineer.md",
       "anchor": "agent:test-engineer",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "6edcaf059b9cccc7eaa1ddde385bd23467d3e0ec798d0de153a3b6f03e5de939",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/test-engineer.md",
+      "surface_id": "agent.test-engineer"
     },
     {
-      "surface_id": "agent.tracer",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/tracer.md",
       "anchor": "agent:tracer",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "948875149f833317423510482ac7c5f7b7fad845422986e87fdcd30c440232d7",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
+      "kind": "agent",
+      "source_path": "agents/tracer.md",
+      "surface_id": "agent.tracer"
     },
     {
-      "surface_id": "agent.verifier",
-      "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/verifier.md",
       "anchor": "agent:verifier",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ],
+      "category": "agents_routing",
       "content_digest": "8560d3a986199809497866a4fedbf9417cecca7cb670d0ba4aad70a7891e9a25",
-      "capability_ids": [
-        "omc.agents.catalog_routing"
-      ]
-    },
-    {
-      "surface_id": "agent.writer",
       "kind": "agent",
-      "category": "agents_routing",
-      "source_path": "agents/writer.md",
+      "source_path": "agents/verifier.md",
+      "surface_id": "agent.verifier"
+    },
+    {
       "anchor": "agent:writer",
-      "content_digest": "ccbf8dc3957f1c633c95c5b99a0e74237ed1a393c562474cc3443c62abbc47c0",
       "capability_ids": [
         "omc.agents.catalog_routing"
-      ]
-    },
-    {
-      "surface_id": "bin.oh-my-claudecode",
-      "kind": "bin",
-      "category": "runtime_orchestration",
-      "source_path": "bin/oh-my-claudecode.js",
-      "anchor": "bin:oh-my-claudecode",
-      "content_digest": "982db9c3eaa3c9aaaeae1f5a04de9b62c5835222b47768913a0c0cd0eafaedd5",
-      "capability_ids": [
-        "omc.cli.session_surfaces"
-      ]
-    },
-    {
-      "surface_id": "bin.omc",
-      "kind": "bin",
-      "category": "runtime_orchestration",
-      "source_path": "bin/oh-my-claudecode.js",
-      "anchor": "bin:omc",
-      "content_digest": "982db9c3eaa3c9aaaeae1f5a04de9b62c5835222b47768913a0c0cd0eafaedd5",
-      "capability_ids": [
-        "omc.cli.session_surfaces"
-      ]
-    },
-    {
-      "surface_id": "bin.omc-cli",
-      "kind": "bin",
-      "category": "runtime_orchestration",
-      "source_path": "bridge/cli.cjs",
-      "anchor": "bin:omc-cli",
-      "content_digest": "1cfa2c83942f2c6628854630113de83004d53263a427a0d4f0a83b6a5eded6cd",
-      "capability_ids": [
-        "omc.cli.session_surfaces"
-      ]
-    },
-    {
-      "surface_id": "catalog.agents",
-      "kind": "catalog",
+      ],
       "category": "agents_routing",
-      "source_path": "src/agents/definitions.ts",
+      "content_digest": "ccbf8dc3957f1c633c95c5b99a0e74237ed1a393c562474cc3443c62abbc47c0",
+      "kind": "agent",
+      "source_path": "agents/writer.md",
+      "surface_id": "agent.writer"
+    },
+    {
+      "anchor": "bin:oh-my-claudecode",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "982db9c3eaa3c9aaaeae1f5a04de9b62c5835222b47768913a0c0cd0eafaedd5",
+      "kind": "bin",
+      "source_path": "bin/oh-my-claudecode.js",
+      "surface_id": "bin.oh-my-claudecode"
+    },
+    {
+      "anchor": "bin:omc",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "982db9c3eaa3c9aaaeae1f5a04de9b62c5835222b47768913a0c0cd0eafaedd5",
+      "kind": "bin",
+      "source_path": "bin/oh-my-claudecode.js",
+      "surface_id": "bin.omc"
+    },
+    {
+      "anchor": "bin:omc-cli",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "1cfa2c83942f2c6628854630113de83004d53263a427a0d4f0a83b6a5eded6cd",
+      "kind": "bin",
+      "source_path": "bridge/cli.cjs",
+      "surface_id": "bin.omc-cli"
+    },
+    {
       "anchor": "catalog:agents",
-      "content_digest": "7436764521dfaf9d60b5c62eff014100ded972b60c054103da77635247ddd554",
       "capability_ids": [
         "omc.agents.catalog_routing"
-      ]
-    },
-    {
-      "surface_id": "catalog.skills",
+      ],
+      "category": "agents_routing",
+      "content_digest": "7436764521dfaf9d60b5c62eff014100ded972b60c054103da77635247ddd554",
       "kind": "catalog",
-      "category": "skills",
-      "source_path": ".claude-plugin/plugin.json",
+      "source_path": "src/agents/definitions.ts",
+      "surface_id": "catalog.agents"
+    },
+    {
       "anchor": "catalog:skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
       "content_digest": "e6d87273308afe29e42748f8fd45349794c240c8193d154fa516630e7f4ecea7",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
+      "kind": "catalog",
+      "source_path": ".claude-plugin/plugin.json",
+      "surface_id": "catalog.skills"
     },
     {
-      "surface_id": "cli.ask",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:ask",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.ask"
     },
     {
-      "surface_id": "cli.autoresearch",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:autoresearch",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.goal.ralph_autopilot_ultra"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.autoresearch"
     },
     {
-      "surface_id": "cli.capabilities",
-      "kind": "cli",
-      "category": "parity_governance",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:capabilities",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "parity.inventory.governance"
-      ]
+      ],
+      "category": "parity_governance",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.capabilities"
     },
     {
-      "surface_id": "cli.check",
-      "kind": "cli",
-      "category": "parity_governance",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:check",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "parity.inventory.governance"
-      ]
+      ],
+      "category": "parity_governance",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.check"
     },
     {
-      "surface_id": "cli.config",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:config",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.config"
     },
     {
-      "surface_id": "cli.config-notify-profile",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:config-notify-profile",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.config-notify-profile"
     },
     {
-      "surface_id": "cli.config-stop-callback",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:config-stop-callback",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.config-stop-callback"
     },
     {
-      "surface_id": "cli.conflicts",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:conflicts",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.conflicts"
     },
     {
-      "surface_id": "cli.daemon",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:daemon",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.daemon"
     },
     {
-      "surface_id": "cli.detect",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:detect",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.detect"
     },
     {
-      "surface_id": "cli.doctor",
-      "kind": "cli",
-      "category": "parity_governance",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:doctor",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "parity.inventory.governance"
-      ]
+      ],
+      "category": "parity_governance",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.doctor"
     },
     {
-      "surface_id": "cli.friction",
-      "kind": "cli",
-      "category": "state_memory_observability",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:friction",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.session.search_replay"
-      ]
+      ],
+      "category": "state_memory_observability",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.friction"
     },
     {
-      "surface_id": "cli.hud",
-      "kind": "cli",
-      "category": "state_memory_observability",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:hud",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.memory.wiki_hud_notify"
-      ]
+      ],
+      "category": "state_memory_observability",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.hud"
     },
     {
-      "surface_id": "cli.info",
-      "kind": "cli",
-      "category": "parity_governance",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:info",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "parity.inventory.governance"
-      ]
+      ],
+      "category": "parity_governance",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.info"
     },
     {
-      "surface_id": "cli.install",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:install",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.install"
     },
     {
-      "surface_id": "cli.interop",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:interop",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.interop"
     },
     {
-      "surface_id": "cli.launch",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:launch",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.launch"
     },
     {
-      "surface_id": "cli.list",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:list",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.list"
     },
     {
-      "surface_id": "cli.lock",
-      "kind": "cli",
-      "category": "parity_governance",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:lock",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "parity.inventory.governance"
-      ]
+      ],
+      "category": "parity_governance",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.lock"
     },
     {
-      "surface_id": "cli.mission-board",
-      "kind": "cli",
-      "category": "state_memory_observability",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:mission-board",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.memory.wiki_hud_notify"
-      ]
+      ],
+      "category": "state_memory_observability",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.mission-board"
     },
     {
-      "surface_id": "cli.postinstall",
-      "kind": "cli",
-      "category": "parity_governance",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:postinstall",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "parity.inventory.governance"
-      ]
+      ],
+      "category": "parity_governance",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.postinstall"
     },
     {
-      "surface_id": "cli.ralphthon",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:ralphthon",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.goal.ralph_autopilot_ultra"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.ralphthon"
     },
     {
-      "surface_id": "cli.remove",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:remove",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.remove"
     },
     {
-      "surface_id": "cli.report",
-      "kind": "cli",
-      "category": "state_memory_observability",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:report",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.session.search_replay"
-      ]
+      ],
+      "category": "state_memory_observability",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.report"
     },
     {
-      "surface_id": "cli.search",
+      "anchor": "cli:rm",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "kind": "cli",
-      "category": "state_memory_observability",
       "source_path": "src/cli/index.ts",
+      "surface_id": "cli.rm"
+    },
+    {
       "anchor": "cli:search",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.session.search_replay"
-      ]
+      ],
+      "category": "state_memory_observability",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.search"
     },
     {
-      "surface_id": "cli.session",
-      "kind": "cli",
-      "category": "state_memory_observability",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:session",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.session.search_replay"
-      ]
+      ],
+      "category": "state_memory_observability",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.session"
     },
     {
-      "surface_id": "cli.setup",
+      "anchor": "cli:sessions",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ],
+      "category": "state_memory_observability",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "kind": "cli",
-      "category": "parity_governance",
       "source_path": "src/cli/index.ts",
+      "surface_id": "cli.sessions"
+    },
+    {
       "anchor": "cli:setup",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "parity.inventory.governance"
-      ]
+      ],
+      "category": "parity_governance",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.setup"
     },
     {
-      "surface_id": "cli.status",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:status",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.status"
     },
     {
-      "surface_id": "cli.team",
-      "kind": "cli",
-      "category": "team",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:team",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "team.plane_v3"
-      ]
+      ],
+      "category": "team",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.team"
     },
     {
-      "surface_id": "cli.team-routing",
-      "kind": "cli",
-      "category": "team",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:team-routing",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "team.plane_v3"
-      ]
+      ],
+      "category": "team",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.team-routing"
     },
     {
-      "surface_id": "cli.teleport",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:teleport",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.teleport"
     },
     {
-      "surface_id": "cli.test-prompt",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:test-prompt",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.test-prompt"
     },
     {
-      "surface_id": "cli.ultragoal",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:ultragoal",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.goal.ralph_autopilot_ultra"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.ultragoal"
     },
     {
-      "surface_id": "cli.update",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:update",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.update"
     },
     {
-      "surface_id": "cli.update-reconcile",
-      "kind": "cli",
-      "category": "runtime_orchestration",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:update-reconcile",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.update-reconcile"
     },
     {
-      "surface_id": "cli.version",
-      "kind": "cli",
-      "category": "parity_governance",
-      "source_path": "src/cli/index.ts",
       "anchor": "cli:version",
-      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "capability_ids": [
         "parity.inventory.governance"
-      ]
-    },
-    {
-      "surface_id": "cli.wait",
+      ],
+      "category": "parity_governance",
+      "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
       "kind": "cli",
-      "category": "runtime_orchestration",
       "source_path": "src/cli/index.ts",
+      "surface_id": "cli.version"
+    },
+    {
       "anchor": "cli:wait",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ],
+      "category": "runtime_orchestration",
       "content_digest": "3d9dde18114de28000fa23da3df4087611e55df4886ced1b6e5fc8add6dd125d",
-      "capability_ids": [
-        "omc.cli.session_surfaces"
-      ]
+      "kind": "cli",
+      "source_path": "src/cli/index.ts",
+      "surface_id": "cli.wait"
     },
     {
-      "surface_id": "command.ask",
-      "kind": "command",
-      "category": "runtime_orchestration",
-      "source_path": "commands/ask.md",
       "anchor": "command:ask",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ],
+      "category": "runtime_orchestration",
       "content_digest": "1bf802feaf779fdd11571d586281c342115868ad90e00ecd793b2c53c5742c6d",
-      "capability_ids": [
-        "omc.cli.session_surfaces"
-      ]
+      "kind": "command",
+      "source_path": "commands/ask.md",
+      "surface_id": "command.ask"
     },
     {
-      "surface_id": "command.autoresearch",
-      "kind": "command",
-      "category": "runtime_orchestration",
-      "source_path": "commands/autoresearch.md",
       "anchor": "command:autoresearch",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ],
+      "category": "runtime_orchestration",
       "content_digest": "cff1782951deb2f4c25bb45e806d1d8fc499f8cd16b15a5b15b5d6c75d87616d",
-      "capability_ids": [
-        "omc.goal.ralph_autopilot_ultra"
-      ]
+      "kind": "command",
+      "source_path": "commands/autoresearch.md",
+      "surface_id": "command.autoresearch"
     },
     {
-      "surface_id": "command.ccg",
-      "kind": "command",
-      "category": "runtime_orchestration",
-      "source_path": "commands/ccg.md",
       "anchor": "command:ccg",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ],
+      "category": "runtime_orchestration",
       "content_digest": "e628e9c682064e213a1669999ff027e4f219e826bdc5694529cb375cbb817ec3",
-      "capability_ids": [
-        "omc.cli.session_surfaces"
-      ]
+      "kind": "command",
+      "source_path": "commands/ccg.md",
+      "surface_id": "command.ccg"
     },
     {
-      "surface_id": "command.compact",
-      "kind": "command",
-      "category": "state_memory_observability",
-      "source_path": "commands/compact.md",
       "anchor": "command:compact",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "43215472efda371d38414814ca5967b2db8e5305cbd0a399e3491ba6829b0b9c",
-      "capability_ids": [
-        "omc.session.search_replay"
-      ]
+      "kind": "command",
+      "source_path": "commands/compact.md",
+      "surface_id": "command.compact"
     },
     {
-      "surface_id": "command.configure-notifications",
-      "kind": "command",
-      "category": "state_memory_observability",
-      "source_path": "commands/configure-notifications.md",
       "anchor": "command:configure-notifications",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "019405f9b282c46cb0a51a4026d31bd47d4d2f8bfcfbbb034b63d4791ad01c41",
-      "capability_ids": [
-        "omc.memory.wiki_hud_notify"
-      ]
+      "kind": "command",
+      "source_path": "commands/configure-notifications.md",
+      "surface_id": "command.configure-notifications"
     },
     {
-      "surface_id": "command.debug",
-      "kind": "command",
-      "category": "runtime_orchestration",
-      "source_path": "commands/debug.md",
       "anchor": "command:debug",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ],
+      "category": "runtime_orchestration",
       "content_digest": "eb11e65b7a13363017462061dc08943c456ae75bcb8797c4e6ad9a2963fba76d",
-      "capability_ids": [
-        "omc.cli.session_surfaces"
-      ]
+      "kind": "command",
+      "source_path": "commands/debug.md",
+      "surface_id": "command.debug"
     },
     {
-      "surface_id": "command.deep-dive",
-      "kind": "command",
-      "category": "state_memory_observability",
-      "source_path": "commands/deep-dive.md",
       "anchor": "command:deep-dive",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "0a933a0a7fc6e807068bf24ef42b91e3bdf8483ac458684cfa4e1b42e992e638",
-      "capability_ids": [
-        "omc.session.search_replay"
-      ]
+      "kind": "command",
+      "source_path": "commands/deep-dive.md",
+      "surface_id": "command.deep-dive"
     },
     {
-      "surface_id": "command.deepinit",
-      "kind": "command",
-      "category": "state_memory_observability",
-      "source_path": "commands/deepinit.md",
       "anchor": "command:deepinit",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "0605c05e0a29fe45553ba4f2793c1dda08631b1b0c904bd210106ba165524937",
-      "capability_ids": [
-        "omc.session.search_replay"
-      ]
+      "kind": "command",
+      "source_path": "commands/deepinit.md",
+      "surface_id": "command.deepinit"
     },
     {
-      "surface_id": "command.external-context",
-      "kind": "command",
-      "category": "runtime_orchestration",
-      "source_path": "commands/external-context.md",
       "anchor": "command:external-context",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ],
+      "category": "runtime_orchestration",
       "content_digest": "cacf720b3783f8402003d4d963a05ce87cdeceacea7fd9869303d5b260bf0bb7",
-      "capability_ids": [
-        "omc.cli.session_surfaces"
-      ]
+      "kind": "command",
+      "source_path": "commands/external-context.md",
+      "surface_id": "command.external-context"
     },
     {
-      "surface_id": "command.hud",
-      "kind": "command",
-      "category": "state_memory_observability",
-      "source_path": "commands/hud.md",
       "anchor": "command:hud",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "64443fa3286d2ab42b10feff72d33348a8c9721ece84edf7ddfeebcb40ef012a",
-      "capability_ids": [
-        "omc.memory.wiki_hud_notify"
-      ]
+      "kind": "command",
+      "source_path": "commands/hud.md",
+      "surface_id": "command.hud"
     },
     {
-      "surface_id": "command.learner",
-      "kind": "command",
-      "category": "quality_visual_edit_safety",
-      "source_path": "commands/learner.md",
       "anchor": "command:learner",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ],
+      "category": "quality_visual_edit_safety",
       "content_digest": "ab022a50de3da3b4e91fe20ab23f871bb5d04014de2f03e1343b18983f177d54",
-      "capability_ids": [
-        "omc.quality.visual_release"
-      ]
+      "kind": "command",
+      "source_path": "commands/learner.md",
+      "surface_id": "command.learner"
     },
     {
-      "surface_id": "command.mcp-setup",
-      "kind": "command",
-      "category": "runtime_orchestration",
-      "source_path": "commands/mcp-setup.md",
       "anchor": "command:mcp-setup",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ],
+      "category": "runtime_orchestration",
       "content_digest": "3413ea4d2bd6cd8809e2a2bff4c9f7b53f63e4b5e2996ba6b2b2435846469855",
-      "capability_ids": [
-        "omc.cli.session_surfaces"
-      ]
+      "kind": "command",
+      "source_path": "commands/mcp-setup.md",
+      "surface_id": "command.mcp-setup"
     },
     {
-      "surface_id": "command.omc-doctor",
-      "kind": "command",
-      "category": "runtime_orchestration",
-      "source_path": "commands/omc-doctor.md",
       "anchor": "command:omc-doctor",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ],
+      "category": "runtime_orchestration",
       "content_digest": "6b5e15367dfa8386c60f1bf1fe40a4b4b6d8dc27ff607c557ddc14205b303d22",
-      "capability_ids": [
-        "omc.cli.session_surfaces"
-      ]
+      "kind": "command",
+      "source_path": "commands/omc-doctor.md",
+      "surface_id": "command.omc-doctor"
     },
     {
-      "surface_id": "command.omc-setup",
-      "kind": "command",
-      "category": "runtime_orchestration",
-      "source_path": "commands/omc-setup.md",
       "anchor": "command:omc-setup",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ],
+      "category": "runtime_orchestration",
       "content_digest": "4fa9c438e32159daff12f7ce2482a61497b2e5d97c98dd4e316967964749d76a",
-      "capability_ids": [
-        "omc.cli.session_surfaces"
-      ]
+      "kind": "command",
+      "source_path": "commands/omc-setup.md",
+      "surface_id": "command.omc-setup"
     },
     {
-      "surface_id": "command.omc-teams",
-      "kind": "command",
-      "category": "team",
-      "source_path": "commands/omc-teams.md",
       "anchor": "command:omc-teams",
+      "capability_ids": [
+        "team.plane_v3"
+      ],
+      "category": "team",
       "content_digest": "fbffff772246e6943282d0819b667c253652bb6053091e9b7be3bcb4f749b2c6",
-      "capability_ids": [
-        "team.plane_v3"
-      ]
+      "kind": "command",
+      "source_path": "commands/omc-teams.md",
+      "surface_id": "command.omc-teams"
     },
     {
-      "surface_id": "command.project-session-manager",
-      "kind": "command",
-      "category": "state_memory_observability",
-      "source_path": "commands/project-session-manager.md",
       "anchor": "command:project-session-manager",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "316113ad704d987e20495cbb7081c374bdc2fc2c03be79117d28642e070ffac3",
-      "capability_ids": [
-        "omc.session.search_replay"
-      ]
+      "kind": "command",
+      "source_path": "commands/project-session-manager.md",
+      "surface_id": "command.project-session-manager"
     },
     {
-      "surface_id": "command.psm",
-      "kind": "command",
-      "category": "state_memory_observability",
-      "source_path": "commands/psm.md",
       "anchor": "command:psm",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "9927683eaa5b28f1828545033133f8d093f9540cb9d2cbfd28a42fd537de8403",
-      "capability_ids": [
-        "omc.session.search_replay"
-      ]
+      "kind": "command",
+      "source_path": "commands/psm.md",
+      "surface_id": "command.psm"
     },
     {
-      "surface_id": "command.release",
-      "kind": "command",
-      "category": "quality_visual_edit_safety",
-      "source_path": "commands/release.md",
       "anchor": "command:release",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ],
+      "category": "quality_visual_edit_safety",
       "content_digest": "57377d2a7c2eb902a33d99d23f2a547b7d5591faa151282bde8201aef6a89e7c",
-      "capability_ids": [
-        "omc.quality.visual_release"
-      ]
+      "kind": "command",
+      "source_path": "commands/release.md",
+      "surface_id": "command.release"
     },
     {
-      "surface_id": "command.remember",
-      "kind": "command",
-      "category": "state_memory_observability",
-      "source_path": "commands/remember.md",
       "anchor": "command:remember",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "59210e4d293058c556d53d3593b5476cd63f1d0724f9bab694c3d5bf1d4aedf0",
-      "capability_ids": [
-        "omc.memory.wiki_hud_notify"
-      ]
+      "kind": "command",
+      "source_path": "commands/remember.md",
+      "surface_id": "command.remember"
     },
     {
-      "surface_id": "command.sciomc",
-      "kind": "command",
-      "category": "state_memory_observability",
-      "source_path": "commands/sciomc.md",
       "anchor": "command:sciomc",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "b8833310f869737c33215532002df195278ba5f5ca09307500ee3dee30786c18",
-      "capability_ids": [
-        "omc.session.search_replay"
-      ]
+      "kind": "command",
+      "source_path": "commands/sciomc.md",
+      "surface_id": "command.sciomc"
     },
     {
-      "surface_id": "command.self-improve",
-      "kind": "command",
-      "category": "quality_visual_edit_safety",
-      "source_path": "commands/self-improve.md",
       "anchor": "command:self-improve",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ],
+      "category": "quality_visual_edit_safety",
       "content_digest": "19c502ce009690c31b9675d5a43df3b0ca3350ec97d4efbb6aa3c8017e58fe93",
-      "capability_ids": [
-        "omc.quality.visual_release"
-      ]
+      "kind": "command",
+      "source_path": "commands/self-improve.md",
+      "surface_id": "command.self-improve"
     },
     {
-      "surface_id": "command.skill",
-      "kind": "command",
-      "category": "runtime_orchestration",
-      "source_path": "commands/skill.md",
       "anchor": "command:skill",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ],
+      "category": "runtime_orchestration",
       "content_digest": "0eddab14cf647a0ce837f3330058c9f5da9c23842f34d55cb9682a59ac057517",
-      "capability_ids": [
-        "omc.cli.session_surfaces"
-      ]
+      "kind": "command",
+      "source_path": "commands/skill.md",
+      "surface_id": "command.skill"
     },
     {
-      "surface_id": "command.skillify",
-      "kind": "command",
-      "category": "quality_visual_edit_safety",
-      "source_path": "commands/skillify.md",
       "anchor": "command:skillify",
-      "content_digest": "384c58984aba0d89541cba2903418d4a30170c66a2012bd17f9469e146ab0313",
       "capability_ids": [
         "omc.quality.visual_release"
-      ]
+      ],
+      "category": "quality_visual_edit_safety",
+      "content_digest": "384c58984aba0d89541cba2903418d4a30170c66a2012bd17f9469e146ab0313",
+      "kind": "command",
+      "source_path": "commands/skillify.md",
+      "surface_id": "command.skillify"
     },
     {
-      "surface_id": "command.trace",
-      "kind": "command",
-      "category": "state_memory_observability",
-      "source_path": "commands/trace.md",
       "anchor": "command:trace",
-      "content_digest": "35dd181c7dbc75b1bee54fbc9c65d0a3e4cfe048c6d3f0740de868bd29c95b7f",
       "capability_ids": [
         "omc.session.search_replay"
-      ]
+      ],
+      "category": "state_memory_observability",
+      "content_digest": "35dd181c7dbc75b1bee54fbc9c65d0a3e4cfe048c6d3f0740de868bd29c95b7f",
+      "kind": "command",
+      "source_path": "commands/trace.md",
+      "surface_id": "command.trace"
     },
     {
-      "surface_id": "command.verify",
-      "kind": "command",
-      "category": "runtime_orchestration",
-      "source_path": "commands/verify.md",
       "anchor": "command:verify",
-      "content_digest": "776af73def6d6b6f1cbb53bf7c7f98e2424918a02d959ed4687ff5146ac6cb3b",
       "capability_ids": [
         "omc.cli.session_surfaces"
-      ]
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "776af73def6d6b6f1cbb53bf7c7f98e2424918a02d959ed4687ff5146ac6cb3b",
+      "kind": "command",
+      "source_path": "commands/verify.md",
+      "surface_id": "command.verify"
     },
     {
-      "surface_id": "command.visual-verdict",
-      "kind": "command",
-      "category": "quality_visual_edit_safety",
-      "source_path": "commands/visual-verdict.md",
       "anchor": "command:visual-verdict",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ],
+      "category": "quality_visual_edit_safety",
       "content_digest": "da5d222b7d297a40862c15f2bb3e755e7890837b9c56d03583c66204e8fae559",
-      "capability_ids": [
-        "omc.quality.visual_release"
-      ]
+      "kind": "command",
+      "source_path": "commands/visual-verdict.md",
+      "surface_id": "command.visual-verdict"
     },
     {
-      "surface_id": "command.wiki",
-      "kind": "command",
-      "category": "state_memory_observability",
-      "source_path": "commands/wiki.md",
       "anchor": "command:wiki",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "6dc12f9bf07daa93db7f7643da67ff76bb9445c1eeb709f543b6a4699438078b",
-      "capability_ids": [
-        "omc.memory.wiki_hud_notify"
-      ]
-    },
-    {
-      "surface_id": "command.writer-memory",
       "kind": "command",
-      "category": "state_memory_observability",
-      "source_path": "commands/writer-memory.md",
+      "source_path": "commands/wiki.md",
+      "surface_id": "command.wiki"
+    },
+    {
       "anchor": "command:writer-memory",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "011605abb8c0c30a71c44ce0db5843646dd33f716ddbf9d08a27f31fc0cd4cb8",
-      "capability_ids": [
-        "omc.memory.wiki_hud_notify"
-      ]
+      "kind": "command",
+      "source_path": "commands/writer-memory.md",
+      "surface_id": "command.writer-memory"
     },
     {
-      "surface_id": "hook.PermissionRequest.Bash.permission-handler.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/permission-handler.mjs",
       "anchor": "hook.PermissionRequest.Bash.permission-handler.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "ffebe9374e82df9a711b209b664c6b64c1499d89d45d444660fa8d893f360420",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/permission-handler.mjs",
+      "surface_id": "hook.PermissionRequest.Bash.permission-handler.mjs"
     },
     {
-      "surface_id": "hook.PostToolUse.*.post-tool-rules-injector.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/post-tool-rules-injector.mjs",
       "anchor": "hook.PostToolUse.*.post-tool-rules-injector.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "a20bf6af6e3a7b66b026d4af7c0b2a2ffbcb7c9a32e0980ce2cec90c884cb898",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/post-tool-rules-injector.mjs",
+      "surface_id": "hook.PostToolUse.*.post-tool-rules-injector.mjs"
     },
     {
-      "surface_id": "hook.PostToolUse.*.post-tool-verifier.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/post-tool-verifier.mjs",
       "anchor": "hook.PostToolUse.*.post-tool-verifier.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "be4f248c1231443f07ccf4e5f5f590f64d2e0681e12ec6edc99c592c42dbcf1d",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/post-tool-verifier.mjs",
+      "surface_id": "hook.PostToolUse.*.post-tool-verifier.mjs"
     },
     {
-      "surface_id": "hook.PostToolUse.*.project-memory-posttool.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/project-memory-posttool.mjs",
       "anchor": "hook.PostToolUse.*.project-memory-posttool.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "41f7c62553969bd59bb78bf63eeb162800009d2daea34c225ad4ac1da18d1fb0",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/project-memory-posttool.mjs",
+      "surface_id": "hook.PostToolUse.*.project-memory-posttool.mjs"
     },
     {
-      "surface_id": "hook.PostToolUseFailure.*.post-tool-use-failure.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/post-tool-use-failure.mjs",
       "anchor": "hook.PostToolUseFailure.*.post-tool-use-failure.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "001c2b5fa56d946a84431227bddd1bde95e2b574616eeab7ebc52e21b9aec408",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/post-tool-use-failure.mjs",
+      "surface_id": "hook.PostToolUseFailure.*.post-tool-use-failure.mjs"
     },
     {
-      "surface_id": "hook.PreCompact.*.pre-compact.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/pre-compact.mjs",
       "anchor": "hook.PreCompact.*.pre-compact.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "e753cd1aeabaf85cddff0acefe6be8c1aa7abebf06821a944dca44dcfae38061",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/pre-compact.mjs",
+      "surface_id": "hook.PreCompact.*.pre-compact.mjs"
     },
     {
-      "surface_id": "hook.PreCompact.*.project-memory-precompact.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/project-memory-precompact.mjs",
       "anchor": "hook.PreCompact.*.project-memory-precompact.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "6c7672316af320f16835795d2bd3a61fd0ae2eed960cb1c8c237eb42a4cab891",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/project-memory-precompact.mjs",
+      "surface_id": "hook.PreCompact.*.project-memory-precompact.mjs"
     },
     {
-      "surface_id": "hook.PreCompact.*.wiki-pre-compact.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/wiki-pre-compact.mjs",
       "anchor": "hook.PreCompact.*.wiki-pre-compact.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "266d26169c29bdf64fcd3c4ad7f868e27633973621a4931ee0205808adafa3ef",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/wiki-pre-compact.mjs",
+      "surface_id": "hook.PreCompact.*.wiki-pre-compact.mjs"
     },
     {
-      "surface_id": "hook.PreToolUse.*.pre-tool-enforcer.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/pre-tool-enforcer.mjs",
       "anchor": "hook.PreToolUse.*.pre-tool-enforcer.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "6890abba53adde741e97e0e1587e6600c3215528999205a00beb2f8fb47b6a36",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/pre-tool-enforcer.mjs",
+      "surface_id": "hook.PreToolUse.*.pre-tool-enforcer.mjs"
     },
     {
-      "surface_id": "hook.SessionEnd.*.session-end.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/session-end.mjs",
       "anchor": "hook.SessionEnd.*.session-end.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "5a9f357caeadb1d35d95aed3db4d9c51f6fd0b057ebca527bb2ef491c0aa2dda",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/session-end.mjs",
+      "surface_id": "hook.SessionEnd.*.session-end.mjs"
     },
     {
-      "surface_id": "hook.SessionEnd.*.wiki-session-end.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/wiki-session-end.mjs",
       "anchor": "hook.SessionEnd.*.wiki-session-end.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "e6b863361dc6626126317eaf6113a1840c8f5d620d287b9ca6097688f2931cde",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/wiki-session-end.mjs",
+      "surface_id": "hook.SessionEnd.*.wiki-session-end.mjs"
     },
     {
-      "surface_id": "hook.SessionStart.*.project-memory-session.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/project-memory-session.mjs",
       "anchor": "hook.SessionStart.*.project-memory-session.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "fbdca335d980be5433557682473f3fd7fd4a7a8c0d6a2610b434ef6fae1e45b4",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/project-memory-session.mjs",
+      "surface_id": "hook.SessionStart.*.project-memory-session.mjs"
     },
     {
-      "surface_id": "hook.SessionStart.*.session-start.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/session-start.mjs",
       "anchor": "hook.SessionStart.*.session-start.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "0f4c86957e426e8b5dddf7ac8757e4f1b54f2b312c92f8027bf45bd9986af2e1",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/session-start.mjs",
+      "surface_id": "hook.SessionStart.*.session-start.mjs"
     },
     {
-      "surface_id": "hook.SessionStart.*.wiki-session-start.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/wiki-session-start.mjs",
       "anchor": "hook.SessionStart.*.wiki-session-start.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "3ed7a22e728640497f4b04271169a24015831077e9e21b61428511c933738934",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/wiki-session-start.mjs",
+      "surface_id": "hook.SessionStart.*.wiki-session-start.mjs"
     },
     {
-      "surface_id": "hook.SessionStart.init.setup-init.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/setup-init.mjs",
       "anchor": "hook.SessionStart.init.setup-init.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "d16b2b47f8f815c55f85758c93394b13691b2b1015053403f2fb8046d2ce8fc8",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/setup-init.mjs",
+      "surface_id": "hook.SessionStart.init.setup-init.mjs"
     },
     {
-      "surface_id": "hook.SessionStart.maintenance.setup-maintenance.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/setup-maintenance.mjs",
       "anchor": "hook.SessionStart.maintenance.setup-maintenance.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "645ba3cd5efe78aac268312e78eb97ac4aa849bd22b642349dd5c94276eebfee",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/setup-maintenance.mjs",
+      "surface_id": "hook.SessionStart.maintenance.setup-maintenance.mjs"
     },
     {
-      "surface_id": "hook.Stop.*.code-simplifier.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/code-simplifier.mjs",
       "anchor": "hook.Stop.*.code-simplifier.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "8464ef9e533141e0716261b270ced18838f79a51feff8ae2e23f8a8c38ac38d8",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/code-simplifier.mjs",
+      "surface_id": "hook.Stop.*.code-simplifier.mjs"
     },
     {
-      "surface_id": "hook.Stop.*.context-guard-stop.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/context-guard-stop.mjs",
       "anchor": "hook.Stop.*.context-guard-stop.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "a9445d0f81d4248ad3901dcdd59994950836bf1c370c7984ec87e2b2c07af95c",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/context-guard-stop.mjs",
+      "surface_id": "hook.Stop.*.context-guard-stop.mjs"
     },
     {
-      "surface_id": "hook.Stop.*.persistent-mode.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/persistent-mode.mjs",
       "anchor": "hook.Stop.*.persistent-mode.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "fcd5e75418a03f33ee609a793e5c4b152507667784cb598952107dc40fbe0897",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/persistent-mode.mjs",
+      "surface_id": "hook.Stop.*.persistent-mode.mjs"
     },
     {
-      "surface_id": "hook.Stop.*.workflow-drift-guard.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/workflow-drift-guard.mjs",
       "anchor": "hook.Stop.*.workflow-drift-guard.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "60923ece327db649d8af302bb917cca4ac15618d6c4735c34c6044284a59e3d2",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/workflow-drift-guard.mjs",
+      "surface_id": "hook.Stop.*.workflow-drift-guard.mjs"
     },
     {
-      "surface_id": "hook.SubagentStart.*.subagent-tracker.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/subagent-tracker.mjs",
       "anchor": "hook.SubagentStart.*.subagent-tracker.mjs",
-      "content_digest": "bfd719c960a1288464a946702b125fafee11c02ae042ac9d21603e4b00e387a1",
       "capability_ids": [
         "omc.hooks.lifecycle"
-      ]
-    },
-    {
-      "surface_id": "hook.SubagentStop.*.subagent-tracker.mjs",
-      "kind": "hook",
+      ],
       "category": "hooks",
+      "content_digest": "bfd719c960a1288464a946702b125fafee11c02ae042ac9d21603e4b00e387a1",
+      "kind": "hook",
       "source_path": "scripts/subagent-tracker.mjs",
+      "surface_id": "hook.SubagentStart.*.subagent-tracker.mjs"
+    },
+    {
       "anchor": "hook.SubagentStop.*.subagent-tracker.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "bfd719c960a1288464a946702b125fafee11c02ae042ac9d21603e4b00e387a1",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/subagent-tracker.mjs",
+      "surface_id": "hook.SubagentStop.*.subagent-tracker.mjs"
     },
     {
-      "surface_id": "hook.SubagentStop.*.verify-deliverables.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/verify-deliverables.mjs",
       "anchor": "hook.SubagentStop.*.verify-deliverables.mjs",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ],
+      "category": "hooks",
       "content_digest": "409ad42127f0fd4abb1ce32cde6da069b7067c08d92c628c00974e91ff540df7",
-      "capability_ids": [
-        "omc.hooks.lifecycle"
-      ]
+      "kind": "hook",
+      "source_path": "scripts/verify-deliverables.mjs",
+      "surface_id": "hook.SubagentStop.*.verify-deliverables.mjs"
     },
     {
-      "surface_id": "hook.UserPromptSubmit.*.keyword-detector.mjs",
-      "kind": "hook",
-      "category": "hooks",
-      "source_path": "scripts/keyword-detector.mjs",
       "anchor": "hook.UserPromptSubmit.*.keyword-detector.mjs",
-      "content_digest": "643f437059748bdbe20ef1fce2fe230c095291c7abf32a00f398af7f33689837",
       "capability_ids": [
         "omc.hooks.lifecycle"
-      ]
-    },
-    {
-      "surface_id": "hook.UserPromptSubmit.*.skill-injector.mjs",
-      "kind": "hook",
+      ],
       "category": "hooks",
-      "source_path": "scripts/skill-injector.mjs",
+      "content_digest": "643f437059748bdbe20ef1fce2fe230c095291c7abf32a00f398af7f33689837",
+      "kind": "hook",
+      "source_path": "scripts/keyword-detector.mjs",
+      "surface_id": "hook.UserPromptSubmit.*.keyword-detector.mjs"
+    },
+    {
       "anchor": "hook.UserPromptSubmit.*.skill-injector.mjs",
-      "content_digest": "6b3817e9fb7d22436664d1c1ab4f0bc94bb1f70a534fee7c889824903175b3ce",
       "capability_ids": [
         "omc.hooks.lifecycle"
-      ]
+      ],
+      "category": "hooks",
+      "content_digest": "6b3817e9fb7d22436664d1c1ab4f0bc94bb1f70a534fee7c889824903175b3ce",
+      "kind": "hook",
+      "source_path": "scripts/skill-injector.mjs",
+      "surface_id": "hook.UserPromptSubmit.*.skill-injector.mjs"
     },
     {
-      "surface_id": "mcp-family.astTools",
-      "kind": "mcp-family",
-      "category": "tools_mcp",
-      "source_path": "src/tools/ast-tools.ts",
       "anchor": "mcp-family:astTools",
+      "capability_ids": [
+        "omc.tools.lsp_ast"
+      ],
+      "category": "tools_mcp",
       "content_digest": "29e395fbfb7305f95bd474be0a894a8d4636d58623bc39f1a88926c80fa8b164",
-      "capability_ids": [
-        "omc.tools.lsp_ast"
-      ]
+      "kind": "mcp-family",
+      "source_path": "src/tools/ast-tools.ts",
+      "surface_id": "mcp-family.astTools"
     },
     {
-      "surface_id": "mcp-family.deepinitManifestTool",
-      "kind": "mcp-family",
-      "category": "state_memory_observability",
-      "source_path": "src/tools/deepinit-manifest.ts",
       "anchor": "mcp-family:deepinitManifestTool",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "053487569ce48d362a881840d207e485b7f1b1255ad8cf2be41f124a234f85a4",
-      "capability_ids": [
-        "omc.session.search_replay"
-      ]
+      "kind": "mcp-family",
+      "source_path": "src/tools/deepinit-manifest.ts",
+      "surface_id": "mcp-family.deepinitManifestTool"
     },
     {
-      "surface_id": "mcp-family.lspTools",
-      "kind": "mcp-family",
-      "category": "tools_mcp",
-      "source_path": "src/tools/lsp-tools.ts",
       "anchor": "mcp-family:lspTools",
-      "content_digest": "caab8785f677cad297cf085906e5e381781b5925a9593e40060b32307d45f94f",
       "capability_ids": [
         "omc.tools.lsp_ast"
-      ]
-    },
-    {
-      "surface_id": "mcp-family.memoryTools",
-      "kind": "mcp-family",
-      "category": "state_memory_observability",
-      "source_path": "src/tools/memory-tools.ts",
-      "anchor": "mcp-family:memoryTools",
-      "content_digest": "2167c45a930a29a35f3aa6185812f0f25b7c17ed4a4cb6650b9c151d61784b1e",
-      "capability_ids": [
-        "omc.memory.wiki_hud_notify"
-      ]
-    },
-    {
-      "surface_id": "mcp-family.notepadTools",
-      "kind": "mcp-family",
-      "category": "state_memory_observability",
-      "source_path": "src/tools/notepad-tools.ts",
-      "anchor": "mcp-family:notepadTools",
-      "content_digest": "9a46fa51dc22005edfa158bd803b1d0da717b1eec7b01c40407387b8d5232861",
-      "capability_ids": [
-        "omc.memory.wiki_hud_notify"
-      ]
-    },
-    {
-      "surface_id": "mcp-family.pythonReplTool",
-      "kind": "mcp-family",
+      ],
       "category": "tools_mcp",
-      "source_path": "src/tools/python-repl/tool.ts",
+      "content_digest": "caab8785f677cad297cf085906e5e381781b5925a9593e40060b32307d45f94f",
+      "kind": "mcp-family",
+      "source_path": "src/tools/lsp-tools.ts",
+      "surface_id": "mcp-family.lspTools"
+    },
+    {
+      "anchor": "mcp-family:memoryTools",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ],
+      "category": "state_memory_observability",
+      "content_digest": "2167c45a930a29a35f3aa6185812f0f25b7c17ed4a4cb6650b9c151d61784b1e",
+      "kind": "mcp-family",
+      "source_path": "src/tools/memory-tools.ts",
+      "surface_id": "mcp-family.memoryTools"
+    },
+    {
+      "anchor": "mcp-family:notepadTools",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ],
+      "category": "state_memory_observability",
+      "content_digest": "9a46fa51dc22005edfa158bd803b1d0da717b1eec7b01c40407387b8d5232861",
+      "kind": "mcp-family",
+      "source_path": "src/tools/notepad-tools.ts",
+      "surface_id": "mcp-family.notepadTools"
+    },
+    {
       "anchor": "mcp-family:pythonReplTool",
-      "content_digest": "fb7663e56832c1c3dae9a3b46c7199315f6b3877a14daae9ea423cb28a900d27",
       "capability_ids": [
         "omc.tools.lsp_ast"
-      ]
+      ],
+      "category": "tools_mcp",
+      "content_digest": "fb7663e56832c1c3dae9a3b46c7199315f6b3877a14daae9ea423cb28a900d27",
+      "kind": "mcp-family",
+      "source_path": "src/tools/python-repl/tool.ts",
+      "surface_id": "mcp-family.pythonReplTool"
     },
     {
-      "surface_id": "mcp-family.sharedMemoryTools",
-      "kind": "mcp-family",
-      "category": "state_memory_observability",
-      "source_path": "src/tools/shared-memory-tools.ts",
       "anchor": "mcp-family:sharedMemoryTools",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "c5510627a53ac53df36a8fbc4bf82859a697dba57ad9343fcb1c131a90a56c75",
-      "capability_ids": [
-        "omc.memory.wiki_hud_notify"
-      ]
+      "kind": "mcp-family",
+      "source_path": "src/tools/shared-memory-tools.ts",
+      "surface_id": "mcp-family.sharedMemoryTools"
     },
     {
-      "surface_id": "mcp-family.skillsTools",
-      "kind": "mcp-family",
-      "category": "skills",
-      "source_path": "src/tools/skills-tools.ts",
       "anchor": "mcp-family:skillsTools",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
       "content_digest": "1f5ad27db2f2dc9cad9ad64e518a70025feccd050e638588d9c10ce1ab40d832",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
+      "kind": "mcp-family",
+      "source_path": "src/tools/skills-tools.ts",
+      "surface_id": "mcp-family.skillsTools"
     },
     {
-      "surface_id": "mcp-family.stateTools",
-      "kind": "mcp-family",
-      "category": "state_memory_observability",
-      "source_path": "src/tools/state-tools.ts",
       "anchor": "mcp-family:stateTools",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "9243ec002ee2515c83a818927f3504b0608260b526f7c42946d51c18904540c8",
-      "capability_ids": [
-        "omc.memory.wiki_hud_notify"
-      ]
+      "kind": "mcp-family",
+      "source_path": "src/tools/state-tools.ts",
+      "surface_id": "mcp-family.stateTools"
     },
     {
-      "surface_id": "mcp-family.traceTools",
-      "kind": "mcp-family",
-      "category": "state_memory_observability",
-      "source_path": "src/tools/trace-tools.ts",
       "anchor": "mcp-family:traceTools",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "441f0519f345478dcbd980e45278743dfefe8a5061462691528a44dc8761d966",
-      "capability_ids": [
-        "omc.session.search_replay"
-      ]
-    },
-    {
-      "surface_id": "mcp-family.wikiTools",
       "kind": "mcp-family",
-      "category": "state_memory_observability",
-      "source_path": "src/tools/wiki-tools.ts",
+      "source_path": "src/tools/trace-tools.ts",
+      "surface_id": "mcp-family.traceTools"
+    },
+    {
       "anchor": "mcp-family:wikiTools",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "c5b7608c68a0f911c77274dd86743cebfdfd46f92a9cdcbff04d75dbb4bfed59",
-      "capability_ids": [
-        "omc.memory.wiki_hud_notify"
-      ]
+      "kind": "mcp-family",
+      "source_path": "src/tools/wiki-tools.ts",
+      "surface_id": "mcp-family.wikiTools"
     },
     {
-      "surface_id": "npm-script.plugin:shipping:verify",
-      "kind": "npm-script",
-      "category": "parity_governance",
-      "source_path": "package.json",
       "anchor": "npm-script:plugin:shipping:verify",
-      "content_digest": "4cd183e16b1406ad4fa9878570e9fa5a3aeb965fabf7fa2310e5e1a4a9af045c",
       "capability_ids": [
         "parity.inventory.governance"
-      ]
-    },
-    {
-      "surface_id": "npm-script.sync-metadata:verify",
-      "kind": "npm-script",
+      ],
       "category": "parity_governance",
-      "source_path": "package.json",
-      "anchor": "npm-script:sync-metadata:verify",
       "content_digest": "4cd183e16b1406ad4fa9878570e9fa5a3aeb965fabf7fa2310e5e1a4a9af045c",
+      "kind": "npm-script",
+      "source_path": "package.json",
+      "surface_id": "npm-script.plugin:shipping:verify"
+    },
+    {
+      "anchor": "npm-script:sync-metadata:verify",
       "capability_ids": [
         "parity.inventory.governance"
-      ]
+      ],
+      "category": "parity_governance",
+      "content_digest": "4cd183e16b1406ad4fa9878570e9fa5a3aeb965fabf7fa2310e5e1a4a9af045c",
+      "kind": "npm-script",
+      "source_path": "package.json",
+      "surface_id": "npm-script.sync-metadata:verify"
     },
     {
-      "surface_id": "skill.ai-slop-cleaner",
-      "kind": "skill",
-      "category": "quality_visual_edit_safety",
-      "source_path": "skills/ai-slop-cleaner/SKILL.md",
       "anchor": "skill:ai-slop-cleaner",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ],
+      "category": "quality_visual_edit_safety",
       "content_digest": "266ed0e1f36214b844dcba4a1c2f6b82dadfc48d09a0cfffe348f7353db77d2c",
-      "capability_ids": [
-        "omc.quality.visual_release"
-      ]
+      "kind": "skill",
+      "source_path": "skills/ai-slop-cleaner/SKILL.md",
+      "surface_id": "skill.ai-slop-cleaner"
     },
     {
-      "surface_id": "skill.ask",
-      "kind": "skill",
-      "category": "skills",
-      "source_path": "skills/ask/SKILL.md",
       "anchor": "skill:ask",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
       "content_digest": "3c39831d3a3de45d5ba692efaef554633e4cd73088b55315f930a174d770a8df",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
+      "kind": "skill",
+      "source_path": "skills/ask/SKILL.md",
+      "surface_id": "skill.ask"
     },
     {
-      "surface_id": "skill.autopilot",
-      "kind": "skill",
-      "category": "runtime_orchestration",
-      "source_path": "skills/autopilot/SKILL.md",
       "anchor": "skill:autopilot",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ],
+      "category": "runtime_orchestration",
       "content_digest": "89ab935a4b7d45dc5a382e3ba837b595ee1c25d8044f54177941401fe14a431f",
-      "capability_ids": [
-        "omc.goal.ralph_autopilot_ultra"
-      ]
+      "kind": "skill",
+      "source_path": "skills/autopilot/SKILL.md",
+      "surface_id": "skill.autopilot"
     },
     {
-      "surface_id": "skill.autoresearch",
-      "kind": "skill",
-      "category": "runtime_orchestration",
-      "source_path": "skills/autoresearch/SKILL.md",
       "anchor": "skill:autoresearch",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ],
+      "category": "runtime_orchestration",
       "content_digest": "f98736d700b4bff63a6bad4abe0ee4c44eba0f43c1d6c0ca15089c8b9799d9a5",
-      "capability_ids": [
-        "omc.goal.ralph_autopilot_ultra"
-      ]
+      "kind": "skill",
+      "source_path": "skills/autoresearch/SKILL.md",
+      "surface_id": "skill.autoresearch"
     },
     {
-      "surface_id": "skill.cancel",
-      "kind": "skill",
-      "category": "skills",
-      "source_path": "skills/cancel/SKILL.md",
       "anchor": "skill:cancel",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
       "content_digest": "3d16a4d21d73cabee2f3826849afb158402f780e37df392295e53d07b0638b5f",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
+      "kind": "skill",
+      "source_path": "skills/cancel/SKILL.md",
+      "surface_id": "skill.cancel"
     },
     {
-      "surface_id": "skill.ccg",
-      "kind": "skill",
-      "category": "skills",
-      "source_path": "skills/ccg/SKILL.md",
       "anchor": "skill:ccg",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
       "content_digest": "e5b470abc06cb56158092ed08b370c1da88e0ad3667ccec380a8581a0e2d9b28",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
+      "kind": "skill",
+      "source_path": "skills/ccg/SKILL.md",
+      "surface_id": "skill.ccg"
     },
     {
-      "surface_id": "skill.configure-notifications",
-      "kind": "skill",
-      "category": "state_memory_observability",
-      "source_path": "skills/configure-notifications/SKILL.md",
       "anchor": "skill:configure-notifications",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "0fde7b710487f0c1e1376a704261ab0e53b74680fec3dd200c948a2cd94fcda0",
-      "capability_ids": [
-        "omc.memory.wiki_hud_notify"
-      ]
+      "kind": "skill",
+      "source_path": "skills/configure-notifications/SKILL.md",
+      "surface_id": "skill.configure-notifications"
     },
     {
-      "surface_id": "skill.debug",
-      "kind": "skill",
-      "category": "skills",
-      "source_path": "skills/debug/SKILL.md",
       "anchor": "skill:debug",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
       "content_digest": "b54c1263f4a9d0e40fbb5025cf25468737c3e92fcad31f97f67d6c368a52fdc2",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
+      "kind": "skill",
+      "source_path": "skills/debug/SKILL.md",
+      "surface_id": "skill.debug"
     },
     {
-      "surface_id": "skill.deep-dive",
-      "kind": "skill",
-      "category": "state_memory_observability",
-      "source_path": "skills/deep-dive/SKILL.md",
       "anchor": "skill:deep-dive",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "c08ce5be26385d34fbc79aae2a28d88e3641fda3c370033abbb420d71ab5d0fc",
-      "capability_ids": [
-        "omc.session.search_replay"
-      ]
+      "kind": "skill",
+      "source_path": "skills/deep-dive/SKILL.md",
+      "surface_id": "skill.deep-dive"
     },
     {
-      "surface_id": "skill.deep-interview",
-      "kind": "skill",
-      "category": "skills",
-      "source_path": "skills/deep-interview/SKILL.md",
       "anchor": "skill:deep-interview",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
       "content_digest": "d897923d4c15b4a10ece40e00c51d774c0a31857adb93ab98f7c37e47347f05e",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
+      "kind": "skill",
+      "source_path": "skills/deep-interview/SKILL.md",
+      "surface_id": "skill.deep-interview"
     },
     {
-      "surface_id": "skill.deepinit",
-      "kind": "skill",
-      "category": "state_memory_observability",
-      "source_path": "skills/deepinit/SKILL.md",
       "anchor": "skill:deepinit",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "99d13c92dfcca1564f3412cabab3afd07d036a13a0fa9813cd336bfc0686fb20",
-      "capability_ids": [
-        "omc.session.search_replay"
-      ]
+      "kind": "skill",
+      "source_path": "skills/deepinit/SKILL.md",
+      "surface_id": "skill.deepinit"
     },
     {
-      "surface_id": "skill.external-context",
-      "kind": "skill",
-      "category": "skills",
-      "source_path": "skills/external-context/SKILL.md",
       "anchor": "skill:external-context",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
       "content_digest": "34303b3e62f5f5643a735ea640425ab221b2b8900bb1e8005a486becb0fe73eb",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
+      "kind": "skill",
+      "source_path": "skills/external-context/SKILL.md",
+      "surface_id": "skill.external-context"
     },
     {
-      "surface_id": "skill.hud",
-      "kind": "skill",
-      "category": "state_memory_observability",
-      "source_path": "skills/hud/SKILL.md",
       "anchor": "skill:hud",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ],
+      "category": "state_memory_observability",
       "content_digest": "a3611f878bc34b155360a6cdfe3bf8d3a99ff0fc5663662888d1efcf3866f4f2",
-      "capability_ids": [
-        "omc.memory.wiki_hud_notify"
-      ]
+      "kind": "skill",
+      "source_path": "skills/hud/SKILL.md",
+      "surface_id": "skill.hud"
     },
     {
-      "surface_id": "skill.learner",
-      "kind": "skill",
-      "category": "quality_visual_edit_safety",
-      "source_path": "skills/learner/SKILL.md",
       "anchor": "skill:learner",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ],
+      "category": "quality_visual_edit_safety",
       "content_digest": "1336c2dab405bc151de05e76406e6a0c2da927b66006ef020a82ec2b450c1fec",
-      "capability_ids": [
-        "omc.quality.visual_release"
-      ]
+      "kind": "skill",
+      "source_path": "skills/learner/SKILL.md",
+      "surface_id": "skill.learner"
     },
     {
-      "surface_id": "skill.local-build-reminder",
-      "kind": "skill",
-      "category": "skills",
-      "source_path": "skills/local-build-reminder/SKILL.md",
       "anchor": "skill:local-build-reminder",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
       "content_digest": "99e99de22da7907a1244fd1842c5d2907982638381d9ff49164e670ad36c68c1",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
+      "kind": "skill",
+      "source_path": "skills/local-build-reminder/SKILL.md",
+      "surface_id": "skill.local-build-reminder"
     },
     {
-      "surface_id": "skill.mcp-setup",
-      "kind": "skill",
-      "category": "skills",
-      "source_path": "skills/mcp-setup/SKILL.md",
       "anchor": "skill:mcp-setup",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
       "content_digest": "431e349667d652585e2adee4b714ed635c65a4320735171463792dfc43b79060",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
+      "kind": "skill",
+      "source_path": "skills/mcp-setup/SKILL.md",
+      "surface_id": "skill.mcp-setup"
     },
     {
-      "surface_id": "skill.merge-readiness",
-      "kind": "skill",
-      "category": "skills",
-      "source_path": "skills/merge-readiness/SKILL.md",
       "anchor": "skill:merge-readiness",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
       "content_digest": "361645fdc5f3e9eef474749f262ae3cf00c9f5a39142ab705fd7ef1dfd5836d6",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
+      "kind": "skill",
+      "source_path": "skills/merge-readiness/SKILL.md",
+      "surface_id": "skill.merge-readiness"
     },
     {
-      "surface_id": "skill.omc-doctor",
-      "kind": "skill",
-      "category": "skills",
-      "source_path": "skills/omc-doctor/SKILL.md",
       "anchor": "skill:omc-doctor",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
       "content_digest": "cc5d6114891bad8c753d0e13de579f2c6aa95504dba4d29941abe564d1fec7bf",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
+      "kind": "skill",
+      "source_path": "skills/omc-doctor/SKILL.md",
+      "surface_id": "skill.omc-doctor"
     },
     {
-      "surface_id": "skill.omc-reference",
-      "kind": "skill",
-      "category": "skills",
-      "source_path": "skills/omc-reference/SKILL.md",
       "anchor": "skill:omc-reference",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
       "content_digest": "4927570c78586249557888ac985449136315d0602f53037f9d66627b0e90dee3",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
+      "kind": "skill",
+      "source_path": "skills/omc-reference/SKILL.md",
+      "surface_id": "skill.omc-reference"
     },
     {
-      "surface_id": "skill.omc-setup",
-      "kind": "skill",
-      "category": "skills",
-      "source_path": "skills/omc-setup/SKILL.md",
       "anchor": "skill:omc-setup",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
       "content_digest": "1c3841aaea732a9d2a9138df2374ddccc96382c483dd29ca5d690a3565df821e",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
+      "kind": "skill",
+      "source_path": "skills/omc-setup/SKILL.md",
+      "surface_id": "skill.omc-setup"
     },
     {
-      "surface_id": "skill.omc-teams",
-      "kind": "skill",
-      "category": "team",
-      "source_path": "skills/omc-teams/SKILL.md",
       "anchor": "skill:omc-teams",
-      "content_digest": "bc95e96ffe87d8048ae83fa6617f75f050a0c55a6e6c2d0e7ff6f55bfd5096a5",
       "capability_ids": [
         "team.plane_v3"
-      ]
-    },
-    {
-      "surface_id": "skill.plan",
-      "kind": "skill",
-      "category": "skills",
-      "source_path": "skills/plan/SKILL.md",
-      "anchor": "skill:plan",
-      "content_digest": "79816a5b95d39ef6b433ab1491c5bcbe60a4ca7c627d54fcd46ab13cdbc8b5a2",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
-    },
-    {
-      "surface_id": "skill.project-session-manager",
-      "kind": "skill",
-      "category": "state_memory_observability",
-      "source_path": "skills/project-session-manager/SKILL.md",
-      "anchor": "skill:project-session-manager",
-      "content_digest": "e5ab819e7fcf4aee63f55569f5f84199cb9ed7d9b9d2e88e5ee56059e0acf72c",
-      "capability_ids": [
-        "omc.session.search_replay"
-      ]
-    },
-    {
-      "surface_id": "skill.ralph",
-      "kind": "skill",
-      "category": "runtime_orchestration",
-      "source_path": "skills/ralph/SKILL.md",
-      "anchor": "skill:ralph",
-      "content_digest": "7de3f960f37d7ff886597b79d7865330e64c6aeb802d18546373c6e0bed393f3",
-      "capability_ids": [
-        "omc.goal.ralph_autopilot_ultra"
-      ]
-    },
-    {
-      "surface_id": "skill.ralplan",
-      "kind": "skill",
-      "category": "runtime_orchestration",
-      "source_path": "skills/ralplan/SKILL.md",
-      "anchor": "skill:ralplan",
-      "content_digest": "70c98aa2ab0a1577cef3c0e0a9d285eea061885832245bdc1a29bb1fc63b7581",
-      "capability_ids": [
-        "omc.goal.ralph_autopilot_ultra"
-      ]
-    },
-    {
-      "surface_id": "skill.release",
-      "kind": "skill",
-      "category": "quality_visual_edit_safety",
-      "source_path": "skills/release/SKILL.md",
-      "anchor": "skill:release",
-      "content_digest": "6042cc1c8ee04124cf9ac2add9009000321a7ddac27182a39687629e8236c23f",
-      "capability_ids": [
-        "omc.quality.visual_release"
-      ]
-    },
-    {
-      "surface_id": "skill.remember",
-      "kind": "skill",
-      "category": "state_memory_observability",
-      "source_path": "skills/remember/SKILL.md",
-      "anchor": "skill:remember",
-      "content_digest": "611e56e4eb0167d3cb7c244bdba8d6a3915e25745577e98cc8785d279099de21",
-      "capability_ids": [
-        "omc.memory.wiki_hud_notify"
-      ]
-    },
-    {
-      "surface_id": "skill.sciomc",
-      "kind": "skill",
-      "category": "state_memory_observability",
-      "source_path": "skills/sciomc/SKILL.md",
-      "anchor": "skill:sciomc",
-      "content_digest": "924954b1a1ddd65004a443e442f19455c5a457d49fa831c74d1ca153147291fd",
-      "capability_ids": [
-        "omc.session.search_replay"
-      ]
-    },
-    {
-      "surface_id": "skill.self-improve",
-      "kind": "skill",
-      "category": "quality_visual_edit_safety",
-      "source_path": "skills/self-improve/SKILL.md",
-      "anchor": "skill:self-improve",
-      "content_digest": "faba8ae209767582d1133741cc99ad7e6781c82d57b17bfe29213413f7935fc4",
-      "capability_ids": [
-        "omc.quality.visual_release"
-      ]
-    },
-    {
-      "surface_id": "skill.setup",
-      "kind": "skill",
-      "category": "skills",
-      "source_path": "skills/setup/SKILL.md",
-      "anchor": "skill:setup",
-      "content_digest": "feeae6ab9cbbf7b23ecbe71ca1bd7691a0117a74eb63c56ff8f5653206eead41",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
-    },
-    {
-      "surface_id": "skill.skill",
-      "kind": "skill",
-      "category": "skills",
-      "source_path": "skills/skill/SKILL.md",
-      "anchor": "skill:skill",
-      "content_digest": "80a28b72430a006c252839ead5d8fe402a8b1fc5a7dad9c0966062048f2f62c6",
-      "capability_ids": [
-        "omc.skills.catalog_aliases"
-      ]
-    },
-    {
-      "surface_id": "skill.skillify",
-      "kind": "skill",
-      "category": "quality_visual_edit_safety",
-      "source_path": "skills/skillify/SKILL.md",
-      "anchor": "skill:skillify",
-      "content_digest": "7360b1ab0453ee0730134ccf7409382678ff5da98b92630bc3bd7732ef21455c",
-      "capability_ids": [
-        "omc.quality.visual_release"
-      ]
-    },
-    {
-      "surface_id": "skill.team",
-      "kind": "skill",
+      ],
       "category": "team",
-      "source_path": "skills/team/SKILL.md",
-      "anchor": "skill:team",
-      "content_digest": "47c1f676fc0edc09f8b4e53df1b11e1256da70a76ee3f69f005411d3ba7db3a8",
-      "capability_ids": [
-        "team.plane_v3"
-      ]
+      "content_digest": "bc95e96ffe87d8048ae83fa6617f75f050a0c55a6e6c2d0e7ff6f55bfd5096a5",
+      "kind": "skill",
+      "source_path": "skills/omc-teams/SKILL.md",
+      "surface_id": "skill.omc-teams"
     },
     {
-      "surface_id": "skill.trace",
-      "kind": "skill",
-      "category": "state_memory_observability",
-      "source_path": "skills/trace/SKILL.md",
-      "anchor": "skill:trace",
-      "content_digest": "e82ccaa563f703803ad92093766ada969188df44b9ee91298a26b8c3d0792b0e",
-      "capability_ids": [
-        "omc.session.search_replay"
-      ]
-    },
-    {
-      "surface_id": "skill.ultragoal",
-      "kind": "skill",
-      "category": "runtime_orchestration",
-      "source_path": "skills/ultragoal/SKILL.md",
-      "anchor": "skill:ultragoal",
-      "content_digest": "95937a1cde6232a3202846778454bd6ce7159a9b833fc48356340157f055399f",
-      "capability_ids": [
-        "omc.goal.ralph_autopilot_ultra"
-      ]
-    },
-    {
-      "surface_id": "skill.ultraqa",
-      "kind": "skill",
-      "category": "runtime_orchestration",
-      "source_path": "skills/ultraqa/SKILL.md",
-      "anchor": "skill:ultraqa",
-      "content_digest": "772795925d7f6ad5444f0eccb82153ce0fee44b84da157de5c48c2afaa7f5a30",
-      "capability_ids": [
-        "omc.goal.ralph_autopilot_ultra"
-      ]
-    },
-    {
-      "surface_id": "skill.ultrawork",
-      "kind": "skill",
-      "category": "runtime_orchestration",
-      "source_path": "skills/ultrawork/SKILL.md",
-      "anchor": "skill:ultrawork",
-      "content_digest": "79d3661d0ef21a2bcfbb3cd642bee578268649577532364707c5dc4a397484e7",
-      "capability_ids": [
-        "omc.goal.ralph_autopilot_ultra"
-      ]
-    },
-    {
-      "surface_id": "skill.verify",
-      "kind": "skill",
-      "category": "skills",
-      "source_path": "skills/verify/SKILL.md",
-      "anchor": "skill:verify",
-      "content_digest": "6cd36805efb8bf6b85b2f249041dfa6941354322a8716dc7b898c84c154a024c",
+      "anchor": "skill:plan",
       "capability_ids": [
         "omc.skills.catalog_aliases"
-      ]
+      ],
+      "category": "skills",
+      "content_digest": "79816a5b95d39ef6b433ab1491c5bcbe60a4ca7c627d54fcd46ab13cdbc8b5a2",
+      "kind": "skill",
+      "source_path": "skills/plan/SKILL.md",
+      "surface_id": "skill.plan"
     },
     {
-      "surface_id": "skill.visual-verdict",
+      "anchor": "skill:project-session-manager",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ],
+      "category": "state_memory_observability",
+      "content_digest": "e5ab819e7fcf4aee63f55569f5f84199cb9ed7d9b9d2e88e5ee56059e0acf72c",
       "kind": "skill",
-      "category": "quality_visual_edit_safety",
-      "source_path": "skills/visual-verdict/SKILL.md",
-      "anchor": "skill:visual-verdict",
-      "content_digest": "c123870970056561cc8e92313532993c6d2aaa9599629b9e185b8db4c69454f9",
+      "source_path": "skills/project-session-manager/SKILL.md",
+      "surface_id": "skill.project-session-manager"
+    },
+    {
+      "anchor": "skill:ralph",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "7de3f960f37d7ff886597b79d7865330e64c6aeb802d18546373c6e0bed393f3",
+      "kind": "skill",
+      "source_path": "skills/ralph/SKILL.md",
+      "surface_id": "skill.ralph"
+    },
+    {
+      "anchor": "skill:ralplan",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "70c98aa2ab0a1577cef3c0e0a9d285eea061885832245bdc1a29bb1fc63b7581",
+      "kind": "skill",
+      "source_path": "skills/ralplan/SKILL.md",
+      "surface_id": "skill.ralplan"
+    },
+    {
+      "anchor": "skill:release",
       "capability_ids": [
         "omc.quality.visual_release"
-      ]
+      ],
+      "category": "quality_visual_edit_safety",
+      "content_digest": "6042cc1c8ee04124cf9ac2add9009000321a7ddac27182a39687629e8236c23f",
+      "kind": "skill",
+      "source_path": "skills/release/SKILL.md",
+      "surface_id": "skill.release"
     },
     {
-      "surface_id": "skill.wiki",
-      "kind": "skill",
+      "anchor": "skill:remember",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ],
       "category": "state_memory_observability",
-      "source_path": "skills/wiki/SKILL.md",
+      "content_digest": "611e56e4eb0167d3cb7c244bdba8d6a3915e25745577e98cc8785d279099de21",
+      "kind": "skill",
+      "source_path": "skills/remember/SKILL.md",
+      "surface_id": "skill.remember"
+    },
+    {
+      "anchor": "skill:sciomc",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ],
+      "category": "state_memory_observability",
+      "content_digest": "924954b1a1ddd65004a443e442f19455c5a457d49fa831c74d1ca153147291fd",
+      "kind": "skill",
+      "source_path": "skills/sciomc/SKILL.md",
+      "surface_id": "skill.sciomc"
+    },
+    {
+      "anchor": "skill:self-improve",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ],
+      "category": "quality_visual_edit_safety",
+      "content_digest": "faba8ae209767582d1133741cc99ad7e6781c82d57b17bfe29213413f7935fc4",
+      "kind": "skill",
+      "source_path": "skills/self-improve/SKILL.md",
+      "surface_id": "skill.self-improve"
+    },
+    {
+      "anchor": "skill:setup",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
+      "content_digest": "feeae6ab9cbbf7b23ecbe71ca1bd7691a0117a74eb63c56ff8f5653206eead41",
+      "kind": "skill",
+      "source_path": "skills/setup/SKILL.md",
+      "surface_id": "skill.setup"
+    },
+    {
+      "anchor": "skill:skill",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
+      "content_digest": "80a28b72430a006c252839ead5d8fe402a8b1fc5a7dad9c0966062048f2f62c6",
+      "kind": "skill",
+      "source_path": "skills/skill/SKILL.md",
+      "surface_id": "skill.skill"
+    },
+    {
+      "anchor": "skill:skillify",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ],
+      "category": "quality_visual_edit_safety",
+      "content_digest": "7360b1ab0453ee0730134ccf7409382678ff5da98b92630bc3bd7732ef21455c",
+      "kind": "skill",
+      "source_path": "skills/skillify/SKILL.md",
+      "surface_id": "skill.skillify"
+    },
+    {
+      "anchor": "skill:team",
+      "capability_ids": [
+        "team.plane_v3"
+      ],
+      "category": "team",
+      "content_digest": "47c1f676fc0edc09f8b4e53df1b11e1256da70a76ee3f69f005411d3ba7db3a8",
+      "kind": "skill",
+      "source_path": "skills/team/SKILL.md",
+      "surface_id": "skill.team"
+    },
+    {
+      "anchor": "skill:trace",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ],
+      "category": "state_memory_observability",
+      "content_digest": "e82ccaa563f703803ad92093766ada969188df44b9ee91298a26b8c3d0792b0e",
+      "kind": "skill",
+      "source_path": "skills/trace/SKILL.md",
+      "surface_id": "skill.trace"
+    },
+    {
+      "anchor": "skill:ultragoal",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "95937a1cde6232a3202846778454bd6ce7159a9b833fc48356340157f055399f",
+      "kind": "skill",
+      "source_path": "skills/ultragoal/SKILL.md",
+      "surface_id": "skill.ultragoal"
+    },
+    {
+      "anchor": "skill:ultraqa",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "772795925d7f6ad5444f0eccb82153ce0fee44b84da157de5c48c2afaa7f5a30",
+      "kind": "skill",
+      "source_path": "skills/ultraqa/SKILL.md",
+      "surface_id": "skill.ultraqa"
+    },
+    {
+      "anchor": "skill:ultrawork",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ],
+      "category": "runtime_orchestration",
+      "content_digest": "79d3661d0ef21a2bcfbb3cd642bee578268649577532364707c5dc4a397484e7",
+      "kind": "skill",
+      "source_path": "skills/ultrawork/SKILL.md",
+      "surface_id": "skill.ultrawork"
+    },
+    {
+      "anchor": "skill:verify",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ],
+      "category": "skills",
+      "content_digest": "6cd36805efb8bf6b85b2f249041dfa6941354322a8716dc7b898c84c154a024c",
+      "kind": "skill",
+      "source_path": "skills/verify/SKILL.md",
+      "surface_id": "skill.verify"
+    },
+    {
+      "anchor": "skill:visual-verdict",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ],
+      "category": "quality_visual_edit_safety",
+      "content_digest": "c123870970056561cc8e92313532993c6d2aaa9599629b9e185b8db4c69454f9",
+      "kind": "skill",
+      "source_path": "skills/visual-verdict/SKILL.md",
+      "surface_id": "skill.visual-verdict"
+    },
+    {
       "anchor": "skill:wiki",
-      "content_digest": "1b95d2da6a18d8fc2a274b34b75e681bf0d69897fe8daf2fafa0b303f34db423",
       "capability_ids": [
         "omc.memory.wiki_hud_notify"
-      ]
+      ],
+      "category": "state_memory_observability",
+      "content_digest": "1b95d2da6a18d8fc2a274b34b75e681bf0d69897fe8daf2fafa0b303f34db423",
+      "kind": "skill",
+      "source_path": "skills/wiki/SKILL.md",
+      "surface_id": "skill.wiki"
     },
     {
-      "surface_id": "skill.writer-memory",
-      "kind": "skill",
-      "category": "state_memory_observability",
-      "source_path": "skills/writer-memory/SKILL.md",
       "anchor": "skill:writer-memory",
-      "content_digest": "f8da9933ed403caa7b142023367d950a71e0e4ccea9c859696b277e7eb5f5ebd",
       "capability_ids": [
         "omc.memory.wiki_hud_notify"
-      ]
+      ],
+      "category": "state_memory_observability",
+      "content_digest": "f8da9933ed403caa7b142023367d950a71e0e4ccea9c859696b277e7eb5f5ebd",
+      "kind": "skill",
+      "source_path": "skills/writer-memory/SKILL.md",
+      "surface_id": "skill.writer-memory"
     }
   ],
-  "unresolved_surfaces": [],
   "empty_category_partitions": [
     "antigravity",
     "install_update",
     "jobs",
     "platform_live_evidence"
-  ]
+  ],
+  "pin_revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
+  "policy_digest": "f61be7f8c9f04f19040900ee0ea3ee8ece5836f21f256287c3df5f04e63f88f3",
+  "repository": "https://github.com/Yeachan-Heo/oh-my-claudecode",
+  "schema_version": 1,
+  "seed_digest": "b8a3e881c04f334f9341c41335a6fdb36074b45dce6eb32c316b145391950c3e",
+  "source": "OMC",
+  "source_input_digest": "35d85a69b26b49be0d2c14cc8ae55e516283076a9125a9515d055d5285806fbc",
+  "store_kind": "parity-completeness-proof",
+  "surface_index_digest": "8ab61e84f5ccc86d04377083aac85f82097c84789002349ca35c047888579222",
+  "unresolved_surfaces": []
 }
