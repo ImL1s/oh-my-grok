@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
-from omg_cli.jobs.models import JobRecord, JobState, JobStoreError
+from omg_cli.jobs.models import JobState, JobStoreError
 from omg_cli.jobs.runtime import cancel_job, job_status, start_job
 from omg_cli.jobs.store import read_job_record
 
