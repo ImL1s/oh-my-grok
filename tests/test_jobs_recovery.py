@@ -335,6 +335,153 @@ def test_live_inner_provider_orphan_blocks_recover(
     assert read_job_record(root, result.record.job_id).state == JobState.RUNNING
 
 
+def test_expired_dead_runner_launching_unbound_provider_is_unproven_zero_mutation(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P0: launching + pid/pgid null must not recover to lost (cancel parity).
+
+    Outer runner gone + lease expired while provider is still in the
+    Popen→bind window — observe/recover must stay IDENTITY_UNPROVEN with
+    zero job.json mutation and no kill / relaunch.
+    """
+    result = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        sleep_s=30.0,
+    )
+    jid = result.record.job_id
+    try:
+        os.kill(int(result.record.pid), signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        os.waitpid(int(result.record.pid), 0)
+    except ChildProcessError:
+        pass
+    time.sleep(0.05)
+
+    with job_lock(root, jid):
+        rec = read_job_record(root, jid)
+        rec.provider_process = {
+            "state": "launching",
+            "pid": None,
+            "pgid": None,
+            "pid_starttime": None,
+            "handle": None,
+            "bound_at": None,
+            "exited_at": None,
+        }
+        write_job_record(root, rec)
+    _force_lease_expired_on_disk(root, jid)
+
+    signal_calls: list[object] = []
+
+    def _no_kill_pgid(*args, **kwargs):  # noqa: ANN002, ANN003
+        signal_calls.append((args, kwargs))
+        raise AssertionError("recover must not kill during unbound launch")
+
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.kill_pgid",
+        _no_kill_pgid,
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.recovery.probe_identity_for_recovery",
+        lambda identity: IdentityProbeOutcome.GONE,
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.probe_identity_for_recovery",
+        lambda identity: IdentityProbeOutcome.GONE,
+    )
+
+    path = job_json_path(root, jid)
+    raw_before = path.read_bytes()
+    before = read_job_record(root, jid)
+    assert before.state == JobState.RUNNING
+    gen_before = before.generation
+
+    obs = observe_job(root, jid)
+    assert obs.health == JobHealth.IDENTITY_UNPROVEN
+    assert obs.recoverable is False
+    assert obs.reason == "provider_launch_unbound"
+    assert obs.provider_identity == "unproven"
+    assert path.read_bytes() == raw_before
+    assert read_job_record(root, jid).generation == gen_before
+
+    dry = recover_job(root, jid, dry_run=True)
+    assert dry.ok is False
+    assert dry.error_code == "E_JOB_RECOVERY_UNPROVEN"
+    assert dry.action == "blocked"
+    assert path.read_bytes() == raw_before
+    assert read_job_record(root, jid).state == JobState.RUNNING
+    assert read_job_record(root, jid).generation == gen_before
+
+    out = recover_job(root, jid)
+    assert out.ok is False
+    assert out.error_code == "E_JOB_RECOVERY_UNPROVEN"
+    assert out.action == "blocked"
+    assert path.read_bytes() == raw_before
+    assert read_job_record(root, jid).state == JobState.RUNNING
+    assert read_job_record(root, jid).generation == gen_before
+    assert signal_calls == []
+
+
+def test_retry_lost_launching_unbound_provider_refuses(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defensive: lost + launching unbound must not start a duplicate attempt."""
+    from omg_cli.jobs.runtime import retry_job
+    from omg_cli.jobs.store import create_job_dir, transition_job
+
+    launch_calls: list[str] = []
+
+    def _no_launch(*_a, **_k):  # noqa: ANN002, ANN003
+        launch_calls.append("launched")
+        raise AssertionError("retry must not launch after unbound launching prior")
+
+    monkeypatch.setattr("omg_cli.jobs.runtime.launch_job_runner", _no_launch)
+
+    rec = create_job_dir(
+        root, provider="fake", role="researcher", prompt_text="unbound-retry"
+    )
+    transition_job(root, rec.job_id, JobState.STARTING)
+    with job_lock(root, rec.job_id):
+        cur = read_job_record(root, rec.job_id)
+        cur.state = JobState.LOST
+        cur.attempt = 1
+        cur.attempt_budget = 3
+        cur.pid = None
+        cur.pgid = None
+        cur.owner_lease = None
+        cur.exit = {
+            "class": "lease_lost",
+            "ok": False,
+            "cancelled": False,
+            "timed_out": False,
+            "retryable": False,
+        }
+        cur.retry_class = "unknown"
+        cur.retry_reason = "lost"
+        cur.provider_process = {
+            "state": "launching",
+            "pid": None,
+            "pgid": None,
+            "pid_starttime": None,
+            "handle": None,
+            "bound_at": None,
+            "exited_at": None,
+        }
+        write_job_record(root, cur)
+
+    with pytest.raises(JobStoreError) as ei:
+        retry_job(root, rec.job_id, attempt=2, launch=True)
+    assert ei.value.code == "E_JOB_CANCEL_UNPROVEN"
+    assert launch_calls == []
+    assert read_job_record(root, rec.job_id).state == JobState.LOST
+    assert read_job_record(root, rec.job_id).attempt == 1
+
+
 def test_dead_outer_and_dead_inner_mark_lost(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

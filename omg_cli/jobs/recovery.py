@@ -185,9 +185,34 @@ def _runner_identity_from_record(record: JobRecord) -> ProcessIdentity | None:
         return None
 
 
-def _provider_identity_from_record(record: JobRecord) -> ProcessIdentity | None:
+def provider_launch_unbound(record: JobRecord) -> bool:
+    """True when provider is launching without a complete durable PID/PGID.
+
+    Shared by cancel / observe / recover / retry: the Popen→bind crash window
+    may leave a live inner process group with no identity on the job record.
+    Incomplete launching must never be treated as provider-absent.
+    """
     pp = record.provider_process or {}
     if not isinstance(pp, Mapping):
+        return False
+    if pp.get("state") != "launching":
+        return False
+    return pp.get("pid") is None or pp.get("pgid") is None
+
+
+def _provider_identity_from_record(record: JobRecord) -> ProcessIdentity | None:
+    """Return durable provider identity, or None when absent/incomplete.
+
+    Callers that need fail-closed launch-window semantics must also check
+    :func:`provider_launch_unbound` — incomplete ``launching`` is *unproven*,
+    not absent (``None`` alone would falsely recover to ``lost``).
+    """
+    pp = record.provider_process or {}
+    if not isinstance(pp, Mapping):
+        return None
+    # Launching without complete PID/PGID is unproven (not absent) — identity
+    # helpers return None; decide_observation / cancel / retry gate separately.
+    if provider_launch_unbound(record):
         return None
     if pp.get("state") not in {"bound", "launching", "exited"}:
         # pending / unknown — no recorded inner identity
@@ -487,6 +512,19 @@ def decide_observation(
                 reason="starting_provider_unproven",
                 record=record,
             )
+        # Launching without durable PID/PGID is unproven — never recoverable_lost.
+        if provider_launch_unbound(record):
+            return _obs(
+                health=JobHealth.IDENTITY_UNPROVEN,
+                now=stamp,
+                lease_is_expired=True,
+                runner=runner_label,
+                provider=_UNPROVEN,
+                recoverable=False,
+                action="none",
+                reason="provider_launch_unbound",
+                record=record,
+            )
         return _obs(
             health=JobHealth.RECOVERABLE_LOST,
             now=stamp,
@@ -569,6 +607,18 @@ def decide_observation(
                     recoverable=False,
                     action="none",
                     reason="legacy_no_identity",
+                    record=record,
+                )
+            if provider_launch_unbound(record):
+                return _obs(
+                    health=JobHealth.IDENTITY_UNPROVEN,
+                    now=stamp,
+                    lease_is_expired=True,
+                    runner=runner_label,
+                    provider=_UNPROVEN,
+                    recoverable=False,
+                    action="none",
+                    reason="provider_launch_unbound",
                     record=record,
                 )
             return _obs(
@@ -726,6 +776,20 @@ def decide_observation(
                 recoverable=False,
                 action="none",
                 reason="expired_provider_unproven",
+                record=record,
+            )
+        # Crash window: launching with no durable PID/PGID — cancel parity.
+        # Outer may be GONE but an orphan provider can still exist; never lost.
+        if provider_launch_unbound(record):
+            return _obs(
+                health=JobHealth.IDENTITY_UNPROVEN,
+                now=stamp,
+                lease_is_expired=True,
+                runner=runner_label,
+                provider=_UNPROVEN,
+                recoverable=False,
+                action="none",
+                reason="provider_launch_unbound",
                 record=record,
             )
         return _obs(
@@ -1117,6 +1181,7 @@ __all__ = [
     "RecoveryResult",
     "decide_observation",
     "observe_job",
+    "provider_launch_unbound",
     "recover_job",
     "recover_jobs",
 ]

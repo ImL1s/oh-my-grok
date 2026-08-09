@@ -9,6 +9,15 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Fixed
+- **#68 PR4 P0 unbound provider launch window:** `provider_process.state=launching`
+  with incomplete PID/PGID is never treated as provider-absent
+  (`recoverable_lost`). Observe/recover classify it as `IDENTITY_UNPROVEN`
+  (`provider_launch_unbound`, same gate as `cancel_job`);
+  `_assert_prior_attempt_gone` refuses retry on such records so a duplicate
+  attempt cannot start while an orphan provider may still be alive. Hermetic
+  coverage in `tests/test_jobs_recovery.py`. Refs #68 (does not close).
+
 ### Added
 - **Partial work for #68 PR4 / lease recovery:** attempt-scoped owner lease +
   runner heartbeat; read-only liveness observation on `omg job status|list|wait`;

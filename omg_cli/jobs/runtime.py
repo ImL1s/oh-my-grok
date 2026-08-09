@@ -1247,12 +1247,11 @@ def cancel_job(
         if record.state in {JobState.SUCCEEDED, JobState.FAILED, JobState.LOST}:
             return record
 
-    pp = record.provider_process or default_provider_process()
-    pp_state = str(pp.get("state") or "pending")
-
     # Fail-closed: launching but unbound — do not speculative-kill outer
-    # (would orphan agy) and do not claim cancelled.
-    if pp_state == "launching" and pp.get("pid") is None:
+    # (would orphan agy) and do not claim cancelled. Same gate as recover.
+    from omg_cli.jobs.recovery import provider_launch_unbound
+
+    if provider_launch_unbound(record):
         raise JobStoreError(
             f"job {job_id} provider process is launching but unbound; "
             "refusing speculative cancel (E_JOB_CANCEL_UNPROVEN)",
@@ -1473,12 +1472,25 @@ def _assert_prior_attempt_gone(project_root: Path, record: JobRecord) -> None:
     - GONE / verified REUSED → proceed
     - LIVE → ``E_JOB_RETRY_LIVE``
     - UNPROVEN → ``E_JOB_CANCEL_UNPROVEN``
+
+    Also refuse ``provider_process.state == launching`` without a complete
+    durable PID/PGID (or proven disappearance) — same unbound-launch window
+    that cancel/recover treat as ``E_JOB_CANCEL_UNPROVEN`` / recovery-unproven.
+    Malformed or wrongly-marked ``lost`` records must not bypass this gate.
     """
     from omg_cli.jobs.ownership import probe_identity_for_recovery
+    from omg_cli.jobs.recovery import provider_launch_unbound
 
     if _spawn_uncertain(project_root, record.job_id):
         raise JobStoreError(
             f"job {record.job_id} has uncertain spawn identity; refusing retry",
+            code="E_JOB_CANCEL_UNPROVEN",
+        )
+
+    if provider_launch_unbound(record):
+        raise JobStoreError(
+            f"job {record.job_id} provider launch unbound (incomplete "
+            "PID/PGID); refusing retry until identity is proven gone",
             code="E_JOB_CANCEL_UNPROVEN",
         )
 
