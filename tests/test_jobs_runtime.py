@@ -1905,8 +1905,7 @@ def test_retry_reuses_existing_runner_path(
 
 def test_retry_rejects_internal_acp_provider(root: Path) -> None:
     from omg_cli.jobs.runtime import retry_job
-    from omg_cli.jobs.store import update_job_fields, write_job_record
-    from omg_cli.jobs.models import JobState
+    from omg_cli.jobs.store import job_lock, read_job_record
 
     prompt = _prompt(root)
     # Materialize a fake job then forge provider to internal ACP (unit only).
@@ -1920,12 +1919,9 @@ def test_retry_rejects_internal_acp_provider(root: Path) -> None:
         attempt_budget=3,
         launch=False,
     )
-    from omg_cli.jobs.store import job_lock, read_job_record
 
     with job_lock(root, started.record.job_id):
         rec = read_job_record(root, started.record.job_id)
-        # Force terminal failed with internal provider stamp (immutable provider
-        # field normally blocked — write via raw to_dict / atomic path for test).
         data = rec.to_dict()
         data["provider"] = "grok-acp-session"
         data["state"] = "failed"
