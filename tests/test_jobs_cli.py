@@ -738,3 +738,332 @@ def test_cli_recover_all_partial_and_wait_recovery_required(
     assert rc == 0
     body = _out(capsys)
     assert body["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# #68 PR5 — auto-retry CLI
+# ---------------------------------------------------------------------------
+
+
+def test_job_auto_retry_requires_job_id_xor_all(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = main(["--json", "job", "auto-retry"])
+    assert rc == 2
+    body = _out(capsys)
+    assert body["ok"] is False
+    assert body["error"]["code"] == "E_JOB_AUTO_RETRY_USAGE"
+
+    rc = main(
+        [
+            "--json",
+            "job",
+            "auto-retry",
+            "20260809T000000Z-abcd1234",
+            "--all",
+        ]
+    )
+    assert rc == 2
+    assert _out(capsys)["error"]["code"] == "E_JOB_AUTO_RETRY_USAGE"
+
+
+def test_job_auto_retry_filters_require_all(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = main(
+        [
+            "--json",
+            "job",
+            "auto-retry",
+            "20260809T000000Z-abcd1234",
+            "--provider",
+            "fake",
+        ]
+    )
+    assert rc == 2
+    assert _out(capsys)["error"]["code"] == "E_JOB_AUTO_RETRY_USAGE"
+
+
+def test_job_auto_retry_limit_range(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = main(["--json", "job", "auto-retry", "--all", "--limit", "0"])
+    assert rc == 2
+    assert _out(capsys)["error"]["code"] == "E_JOB_AUTO_RETRY_LIMIT"
+
+    rc = main(["--json", "job", "auto-retry", "--all", "--limit", "33"])
+    assert rc == 2
+    assert _out(capsys)["error"]["code"] == "E_JOB_AUTO_RETRY_LIMIT"
+
+
+def test_job_auto_retry_single_json(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from omg_cli.jobs.retry import auto_retry_delay_s
+    from omg_cli.jobs.store import read_job_record
+
+    prompt = project / "task.md"
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "fake",
+            "--prompt-file",
+            str(prompt),
+            "--fail",
+            "--sleep",
+            "0.02",
+            "--attempt-budget",
+            "3",
+        ]
+    )
+    assert rc == 0
+    job_id = _out(capsys)["job_id"]
+    rc = main(["--json", "job", "wait", job_id, "--timeout", "15"])
+    assert rc == 0
+    _out(capsys)
+    rec = read_job_record(project, job_id)
+    # Advance wall clock via rewriting terminal_at into the past.
+    from omg_cli.jobs.store import job_lock, write_job_record
+
+    with job_lock(project, job_id):
+        rec = read_job_record(project, job_id)
+        past = datetime.now(timezone.utc) - timedelta(
+            seconds=auto_retry_delay_s(rec.attempt) + 5
+        )
+        rec.terminal_at = past.isoformat()
+        write_job_record(project, rec)
+
+    rc = main(["--json", "job", "auto-retry", job_id])
+    assert rc == 0
+    body = _out(capsys)
+    assert body["ok"] is True
+    assert body["command"] == "job.auto_retry"
+    assert body["results"][0]["action"] == "launched"
+    main(["--json", "job", "wait", job_id, "--timeout", "15"])
+    _out(capsys)
+
+
+def test_job_auto_retry_all_filters_and_limit(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from omg_cli.jobs.retry import auto_retry_delay_s
+    from omg_cli.jobs.store import job_lock, read_job_record, write_job_record
+
+    prompt = project / "task.md"
+    ids = []
+    for _ in range(2):
+        rc = main(
+            [
+                "--json",
+                "job",
+                "start",
+                "--provider",
+                "fake",
+                "--prompt-file",
+                str(prompt),
+                "--fail",
+                "--sleep",
+                "0.02",
+                "--attempt-budget",
+                "3",
+                "--run",
+                "run-a",
+            ]
+        )
+        assert rc == 0
+        jid = _out(capsys)["job_id"]
+        ids.append(jid)
+        main(["--json", "job", "wait", jid, "--timeout", "15"])
+        _out(capsys)
+        with job_lock(project, jid):
+            rec = read_job_record(project, jid)
+            past = datetime.now(timezone.utc) - timedelta(
+                seconds=auto_retry_delay_s(rec.attempt) + 5
+            )
+            rec.terminal_at = past.isoformat()
+            write_job_record(project, rec)
+
+    rc = main(
+        [
+            "--json",
+            "job",
+            "auto-retry",
+            "--all",
+            "--run",
+            "run-a",
+            "--provider",
+            "fake",
+            "--limit",
+            "1",
+            "--dry-run",
+        ]
+    )
+    assert rc == 0
+    body = _out(capsys)
+    assert body["counts"]["would_launch"] == 1
+    assert body["counts"]["limit_reached"] == 1
+
+
+def test_job_auto_retry_dry_run_json(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from omg_cli.jobs.retry import auto_retry_delay_s
+    from omg_cli.jobs.store import (
+        attempt_dir,
+        job_lock,
+        job_json_path,
+        read_job_record,
+        write_job_record,
+    )
+
+    prompt = project / "task.md"
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "fake",
+            "--prompt-file",
+            str(prompt),
+            "--fail",
+            "--sleep",
+            "0.02",
+            "--attempt-budget",
+            "3",
+        ]
+    )
+    job_id = _out(capsys)["job_id"]
+    main(["--json", "job", "wait", job_id, "--timeout", "15"])
+    _out(capsys)
+    with job_lock(project, job_id):
+        rec = read_job_record(project, job_id)
+        past = datetime.now(timezone.utc) - timedelta(
+            seconds=auto_retry_delay_s(rec.attempt) + 5
+        )
+        rec.terminal_at = past.isoformat()
+        write_job_record(project, rec)
+    before = job_json_path(project, job_id).read_bytes()
+    rc = main(["--json", "job", "auto-retry", job_id, "--dry-run"])
+    assert rc == 0
+    body = _out(capsys)
+    assert body["results"][0]["action"] == "would_launch"
+    assert job_json_path(project, job_id).read_bytes() == before
+    assert not attempt_dir(project, job_id, 1).exists()
+
+
+def test_job_auto_retry_no_candidates_exit_zero(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = main(["--json", "job", "auto-retry", "--all"])
+    assert rc == 0
+    body = _out(capsys)
+    assert body["ok"] is True
+    assert body["counts"]["launched"] == 0
+
+
+def test_job_auto_retry_partial_failure_exit_one(
+    project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from omg_cli.jobs.ownership import IdentityProbeOutcome
+    from omg_cli.jobs.retry import auto_retry_delay_s
+    from omg_cli.jobs.store import job_lock, read_job_record, write_job_record
+
+    prompt = project / "task.md"
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "fake",
+            "--prompt-file",
+            str(prompt),
+            "--fail",
+            "--sleep",
+            "0.02",
+            "--attempt-budget",
+            "3",
+        ]
+    )
+    job_id = _out(capsys)["job_id"]
+    main(["--json", "job", "wait", job_id, "--timeout", "15"])
+    _out(capsys)
+    with job_lock(project, job_id):
+        rec = read_job_record(project, job_id)
+        past = datetime.now(timezone.utc) - timedelta(
+            seconds=auto_retry_delay_s(rec.attempt) + 5
+        )
+        rec.terminal_at = past.isoformat()
+        write_job_record(project, rec)
+
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.probe_identity_for_recovery",
+        lambda identity: IdentityProbeOutcome.UNPROVEN,
+    )
+    rc = main(["--json", "job", "auto-retry", "--all", "--limit", "1"])
+    assert rc == 1
+    body = _out(capsys)
+    assert body["ok"] is False
+    assert body["error"]["code"] == "E_JOB_AUTO_RETRY_PARTIAL"
+
+
+def test_job_auto_retry_output_redacts_owner_token_and_binary(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from omg_cli.jobs.retry import auto_retry_delay_s
+    from omg_cli.jobs.store import job_lock, read_job_record, write_job_record
+
+    prompt = project / "task.md"
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "fake",
+            "--prompt-file",
+            str(prompt),
+            "--fail",
+            "--sleep",
+            "0.02",
+            "--attempt-budget",
+            "3",
+        ]
+    )
+    job_id = _out(capsys)["job_id"]
+    main(["--json", "job", "wait", job_id, "--timeout", "15"])
+    _out(capsys)
+    with job_lock(project, job_id):
+        rec = read_job_record(project, job_id)
+        past = datetime.now(timezone.utc) - timedelta(
+            seconds=auto_retry_delay_s(rec.attempt) + 5
+        )
+        rec.terminal_at = past.isoformat()
+        if rec.owner_lease is None:
+            rec.owner_lease = {}
+        lease = dict(rec.owner_lease)
+        lease["owner_token"] = "secret-owner-token-value"
+        rec.owner_lease = lease
+        write_job_record(project, rec)
+
+    rc = main(["--json", "job", "auto-retry", job_id, "--dry-run"])
+    # May be blocked if lease malformed, or would_launch — either way redact.
+    assert rc in (0, 1)
+    body = _out(capsys)
+    dumped = json.dumps(body)
+    assert "secret-owner-token-value" not in dumped
+    assert "/usr/bin/" not in dumped or "provider_binary" not in dumped

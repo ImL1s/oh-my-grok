@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -1535,6 +1536,34 @@ def _assert_prior_attempt_gone(project_root: Path, record: JobRecord) -> None:
         )
 
 
+def preflight_retry_job(
+    project_root: Path,
+    job_id: str,
+    *,
+    attempt: int,
+    intent: Any = None,
+    now: datetime | None = None,
+) -> JobRecord:
+    """Pre-mutation retry admission (no archive / state change / launch).
+
+    Sequence: validate id → read → assert_retry_admission → prior-gone →
+    revalidate_stored_request. Returns the validated current record.
+    """
+    from omg_cli.jobs.providers import revalidate_stored_request
+    from omg_cli.jobs.retry import RetryIntent, assert_retry_admission
+
+    resolved = intent if intent is not None else RetryIntent.EXPLICIT
+    if not isinstance(resolved, RetryIntent):
+        resolved = RetryIntent(str(resolved))
+
+    jid = safe_job_id(job_id)
+    record = read_job_record(project_root, jid)
+    assert_retry_admission(record, attempt=attempt, intent=resolved, now=now)
+    _assert_prior_attempt_gone(project_root, record)
+    revalidate_stored_request(record.provider, record.request)
+    return record
+
+
 def retry_job(
     project_root: Path,
     job_id: str,
@@ -1542,24 +1571,37 @@ def retry_job(
     attempt: int,
     launch: bool = True,
     runner_python: str | None = None,
+    intent: Any = None,
+    now: datetime | None = None,
 ) -> StartResult:
-    """Explicit retry: archive prior attempt, requeue, relaunch via shared path.
+    """Retry via shared path: preflight → prepare_retry → starting → launch.
 
-    Requires ``--attempt`` == current+1. No auto-scheduler. Public CLI never
-    retries ``grok-acp-session``.
+    Default ``intent=explicit`` preserves public ``omg job retry`` semantics.
+    Automatic intent is used by the bounded scheduler (#68 PR5) only.
     """
-    from omg_cli.jobs.providers import revalidate_stored_request
-    from omg_cli.jobs.retry import assert_retry_admission
+    from omg_cli.jobs.retry import RetryIntent
     from omg_cli.jobs.store import prepare_retry
 
-    jid = safe_job_id(job_id)
-    record = read_job_record(project_root, jid)
-    assert_retry_admission(record, attempt=attempt)
-    _assert_prior_attempt_gone(project_root, record)
-    # Provider preflight BEFORE consuming another attempt / archive.
-    revalidate_stored_request(record.provider, record.request)
+    resolved = intent if intent is not None else RetryIntent.EXPLICIT
+    if not isinstance(resolved, RetryIntent):
+        resolved = RetryIntent(str(resolved))
 
-    queued = prepare_retry(project_root, jid, next_attempt=int(attempt))
+    jid = safe_job_id(job_id)
+    preflight_retry_job(
+        project_root,
+        jid,
+        attempt=attempt,
+        intent=resolved,
+        now=now,
+    )
+
+    queued = prepare_retry(
+        project_root,
+        jid,
+        next_attempt=int(attempt),
+        intent=resolved,
+        now=now,
+    )
     # queued → starting before launch (same as start_job).
     starting = transition_job(project_root, queued.job_id, JobState.STARTING)
     if not launch:
@@ -2980,6 +3022,7 @@ __all__ = [
     "launch_job_runner",
     "list_jobs",
     "observe_job",
+    "preflight_retry_job",
     "read_acp_sidecar_binding",
     "recover_job",
     "recover_jobs",

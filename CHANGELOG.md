@@ -9,6 +9,19 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Added
+- **Partial work for #68 PR5 / bounded auto-retry scheduler:** caller-driven
+  `omg job auto-retry JOB_ID|--all` one-pass tick over the existing
+  `retry_job` / exact-next-attempt path (deterministic backoff, `--limit`
+  default 1 / max 32, project `auto-retry.lock`, dry-run admission without
+  mutation). Automatic intent admits only `state=failed` with persisted and
+  recomputed `retry_class=automatic`; preserves PR4 live/unproven/
+  spawn-uncertain/provider-unbound gates; never recovers, signals, or
+  auto-retries `lost`/`cancelled`/`manual_only`. Hermetic coverage in
+  `tests/test_jobs_auto_retry.py`. Docs: `docs/durable-jobs.md`. Does **not**
+  close #68 (authenticated live Antigravity evidence remains open; Team
+  job-backed workers stay on #69).
+
 ### Fixed
 - **#68 PR4 cancel_requested beats racing success:** once `cancel_requested_at`
   is durable (persist-before-signal), `transition_job` /

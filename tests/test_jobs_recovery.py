@@ -1024,3 +1024,37 @@ def test_wait_returns_recovery_required_not_timeout(root: Path) -> None:
         )
     assert ei.value.code == "E_JOB_RECOVERY_REQUIRED"
     cancel_job(root, result.record.job_id, reason="test")
+
+
+def test_auto_retry_does_not_recover_active_or_lost_jobs(root: Path) -> None:
+    """#68 PR5: scheduler never calls recover; lost stays manual."""
+    from omg_cli.jobs.scheduler import auto_retry_jobs, evaluate_auto_retry
+    from datetime import datetime, timezone
+
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        sleep_s=30.0,
+        attempt_budget=3,
+    )
+    batch = auto_retry_jobs(root, limit=32, now=datetime.now(timezone.utc))
+    assert all(r.action == "skipped" for r in batch.results if r.job_id == started.record.job_id)
+    cancel_job(root, started.record.job_id)
+
+    # Lost classification is never automatic-eligible.
+    lost_like = read_job_record(root, started.record.job_id)
+    # After cancel it may be cancelled — force lost metadata for evaluate.
+    with job_lock(root, started.record.job_id):
+        rec = read_job_record(root, started.record.job_id)
+        rec.state = JobState.LOST
+        rec.retry_class = "unknown"
+        rec.retry_reason = "lost"
+        write_job_record(root, rec)
+    d = evaluate_auto_retry(
+        read_job_record(root, started.record.job_id),
+        now=datetime.now(timezone.utc),
+    )
+    assert d.action == "skipped"
+    del lost_like

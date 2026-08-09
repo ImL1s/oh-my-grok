@@ -1,6 +1,6 @@
 """omg job — durable background jobs CLI (#68).
 
-Commands: ``omg job {start,status,wait,collect,cancel,list,retry,gc,recover}``.
+Commands: ``omg job {start,status,wait,collect,cancel,list,retry,auto-retry,gc,recover}``.
 """
 
 from __future__ import annotations
@@ -21,6 +21,13 @@ from omg_cli.jobs.runtime import (
     retry_job,
     start_job,
     wait_job,
+)
+from omg_cli.jobs.scheduler import (
+    DEFAULT_AUTO_RETRY_LIMIT,
+    MAX_AUTO_RETRY_LIMIT,
+    auto_retry_job,
+    auto_retry_jobs,
+    validate_auto_retry_limit,
 )
 from omg_cli.project_root import project_root
 from omg_cli.redaction import redact_text, redact_value
@@ -49,12 +56,15 @@ def cmd_job(args: argparse.Namespace) -> int:
         return _cmd_list(args)
     if action == "retry":
         return _cmd_retry(args)
+    if action == "auto-retry":
+        return _cmd_auto_retry(args)
     if action == "gc":
         return _cmd_gc(args)
     if action == "recover":
         return _cmd_recover(args)
     print(
-        "usage: omg job {start,status,wait,collect,cancel,list,retry,gc,recover}",
+        "usage: omg job {start,status,wait,collect,cancel,list,retry,"
+        "auto-retry,gc,recover}",
         file=sys.stderr,
     )
     return 2
@@ -411,6 +421,137 @@ def _cmd_retry(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_auto_retry(args: argparse.Namespace) -> int:
+    cmd = "job.auto_retry"
+    job_id = getattr(args, "job_id", None)
+    auto_all = bool(getattr(args, "auto_retry_all", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    run_id = getattr(args, "run_id", None) or None
+    provider = getattr(args, "provider", None) or None
+    limit_raw = getattr(args, "limit", None)
+
+    if bool(job_id) == auto_all:
+        emit_json(
+            failure(
+                cmd,
+                "E_JOB_AUTO_RETRY_USAGE",
+                "exactly one of JOB_ID or --all is required",
+                next_action="Pass JOB_ID or --all",
+            )
+        )
+        return 2
+    if (run_id is not None or provider is not None or limit_raw is not None) and not auto_all:
+        emit_json(
+            failure(
+                cmd,
+                "E_JOB_AUTO_RETRY_USAGE",
+                "--run / --provider / --limit are only valid with --all",
+            )
+        )
+        return 2
+
+    root = _root(args)
+    try:
+        if auto_all:
+            limit = (
+                DEFAULT_AUTO_RETRY_LIMIT
+                if limit_raw is None
+                else validate_auto_retry_limit(limit_raw)
+            )
+            batch = auto_retry_jobs(
+                root,
+                run_id=run_id,
+                provider=provider,
+                limit=limit,
+                dry_run=dry_run,
+            )
+            payload = redact_value(batch.to_public_dict())
+            if not batch.ok:
+                emit_json(
+                    failure(
+                        cmd,
+                        "E_JOB_AUTO_RETRY_PARTIAL",
+                        "one or more jobs blocked or failed during auto-retry",
+                        details=payload,
+                    )
+                )
+                return 1
+            if wants_json(args):
+                emit_json(success(cmd, **payload))
+            else:
+                counts = batch.counts
+                print(
+                    f"auto-retry --all launched={counts['launched']} "
+                    f"would_launch={counts['would_launch']} "
+                    f"deferred={counts['deferred']} blocked={counts['blocked']} "
+                    f"dry_run={dry_run}"
+                )
+            return 0
+
+        result = auto_retry_job(root, str(job_id), dry_run=dry_run)
+        payload = redact_value(
+            {
+                "dry_run": dry_run,
+                "limit": 1,
+                "counts": {
+                    "scanned": 1,
+                    "considered": 1,
+                    "due": 1 if result.action in {"launched", "would_launch", "blocked", "conflict", "launch_failed"} else 0,
+                    "processed": 1
+                    if result.action
+                    in {
+                        "launched",
+                        "would_launch",
+                        "blocked",
+                        "conflict",
+                        "launch_failed",
+                    }
+                    else 0,
+                    "launched": 1 if result.action == "launched" else 0,
+                    "would_launch": 1 if result.action == "would_launch" else 0,
+                    "deferred": 1 if result.action == "deferred" else 0,
+                    "skipped": 1 if result.action == "skipped" else 0,
+                    "blocked": 1
+                    if result.action in {"blocked", "protected_internal"}
+                    else 0,
+                    "conflicts": 1 if result.action == "conflict" else 0,
+                    "launch_failed": 1 if result.action == "launch_failed" else 0,
+                    "limit_reached": 0,
+                },
+                "results": [result.to_public_dict()],
+            }
+        )
+        if not result.ok:
+            emit_json(
+                failure(
+                    cmd,
+                    result.error_code or "E_JOB_AUTO_RETRY",
+                    redact_text(result.error_message or "auto-retry blocked"),
+                    details=payload,
+                )
+            )
+            return 1
+        if wants_json(args):
+            emit_json(success(cmd, **payload))
+        else:
+            print(
+                f"job {result.job_id} auto-retry action={result.action} "
+                f"before={result.before_state} after={result.after_state} "
+                f"dry_run={dry_run}"
+            )
+        return 0
+    except JobStoreError as exc:
+        code = getattr(exc, "code", None) or "E_JOB_AUTO_RETRY"
+        if code == "E_JOB_AUTO_RETRY_LIMIT":
+            emit_json(failure(cmd, code, redact_text(str(exc))))
+            return 2
+        if code == "E_JOB_AUTO_RETRY_USAGE":
+            emit_json(failure(cmd, code, redact_text(str(exc))))
+            return 2
+        emit_json(failure(cmd, code, redact_text(str(exc))))
+        return 1
+
+
 def _cmd_gc(args: argparse.Namespace) -> int:
     cmd = "job.gc"
     retention = getattr(args, "retention_days", None)
@@ -561,13 +702,14 @@ def register_job_parsers(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
 ) -> None:
-    """Register ``job`` family parsers (#68 PR1–PR4)."""
+    """Register ``job`` family parsers (#68 PR1–PR5)."""
     p_job = sub.add_parser(
         "job",
         parents=[common],
         help=(
             "durable background jobs "
-            "(start/status/wait/collect/cancel/list/retry/gc/recover; #68 PR1–PR4)"
+            "(start/status/wait/collect/cancel/list/retry/auto-retry/gc/recover; "
+            "#68 PR1–PR5)"
         ),
     )
     job_sub = p_job.add_subparsers(dest="job_action")
@@ -734,6 +876,54 @@ def register_job_parsers(
         help="exact next attempt number (must be current+1)",
     )
     p_retry.set_defaults(func=cmd_job, job_action="retry")
+
+    p_auto = job_sub.add_parser(
+        "auto-retry",
+        parents=[common],
+        help=(
+            "bounded auto-retry scheduler tick "
+            "(automatic class only; one pass, no daemon)"
+        ),
+    )
+    p_auto.add_argument(
+        "job_id",
+        nargs="?",
+        default=None,
+        help="job id (xor with --all)",
+    )
+    p_auto.add_argument(
+        "--all",
+        dest="auto_retry_all",
+        action="store_true",
+        help="evaluate every public job (optionally filtered)",
+    )
+    p_auto.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="with --all: filter by run id",
+    )
+    p_auto.add_argument(
+        "--provider",
+        choices=("fake", "antigravity"),
+        default=None,
+        help="with --all: filter by provider",
+    )
+    p_auto.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help=(
+            f"with --all: max due candidates to process "
+            f"(default {DEFAULT_AUTO_RETRY_LIMIT}, max {MAX_AUTO_RETRY_LIMIT})"
+        ),
+    )
+    p_auto.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="full admission without archive/state mutation/launch",
+    )
+    p_auto.set_defaults(func=cmd_job, job_action="auto-retry")
 
     p_gc = job_sub.add_parser(
         "gc",

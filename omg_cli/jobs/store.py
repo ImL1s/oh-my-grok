@@ -90,12 +90,47 @@ def _lock_path(project_root: Path, job_id: str) -> Path:
     return job_locks_dir(project_root) / f"{safe_job_id(job_id)}.lock"
 
 
+def auto_retry_lock_path(project_root: Path) -> Path:
+    """Project-wide scheduler lock (``.omg/jobs/.locks/auto-retry.lock``)."""
+    return job_locks_dir(project_root) / "auto-retry.lock"
+
+
 def _require_flock() -> None:
     if fcntl is None or os.name != "posix":
         raise JobStoreError(
             "job store requires POSIX fcntl.flock",
             code="E_JOB_STORE",
         )
+
+
+def _acquire_named_lock(
+    path: Path,
+    *,
+    timeout_s: float,
+    busy_code: str,
+    busy_message: str,
+) -> Iterator[None]:
+    """Exclusive flock helper shared by per-job and scheduler locks."""
+    _require_flock()
+    path.touch(exist_ok=True)
+    os.chmod(path, DATA_FILE_MODE)
+    deadline = time.monotonic() + float(timeout_s)
+    with path.open("a+", encoding="utf-8") as lockf:
+        while True:
+            try:
+                fcntl.flock(lockf.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise JobStoreError(busy_message, code=busy_code) from None
+                time.sleep(0.02)
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
 
 
 @contextmanager
@@ -105,7 +140,6 @@ def job_lock(project_root: Path, job_id: str) -> Iterator[None]:
     Lock lives outside the job directory so GC can rename/delete the job tree
     without dropping serialization against retry / ACP binding writers.
     """
-    _require_flock()
     jid = safe_job_id(job_id)
     ensure_jobs_root(project_root)
     locks = job_locks_dir(project_root)
@@ -115,28 +149,38 @@ def job_lock(project_root: Path, job_id: str) -> Iterator[None]:
     except OSError:
         pass
     path = _lock_path(project_root, jid)
-    path.touch(exist_ok=True)
-    os.chmod(path, DATA_FILE_MODE)
-    deadline = time.monotonic() + _LOCK_TIMEOUT_S
-    with path.open("a+", encoding="utf-8") as lockf:
-        while True:
-            try:
-                fcntl.flock(lockf.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise JobStoreError(
-                        f"timed out acquiring job lock for {job_id}",
-                        code="E_JOB_STORE",
-                    ) from None
-                time.sleep(0.02)
-        try:
-            yield
-        finally:
-            try:
-                fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
-            except OSError:
-                pass
+    yield from _acquire_named_lock(
+        path,
+        timeout_s=_LOCK_TIMEOUT_S,
+        busy_code="E_JOB_STORE",
+        busy_message=f"timed out acquiring job lock for {job_id}",
+    )
+
+
+@contextmanager
+def auto_retry_lock(
+    project_root: Path,
+    *,
+    timeout_s: float = 5.0,
+) -> Iterator[None]:
+    """Exclusive project-wide auto-retry scheduler lock (bounded wait).
+
+    Always acquired before any per-job lock. Contention → ``E_JOB_AUTO_RETRY_BUSY``.
+    """
+    ensure_jobs_root(project_root)
+    locks = job_locks_dir(project_root)
+    ensure_managed_dir(locks)
+    try:
+        os.chmod(locks, MANAGED_DIR_MODE)
+    except OSError:
+        pass
+    path = auto_retry_lock_path(project_root)
+    yield from _acquire_named_lock(
+        path,
+        timeout_s=timeout_s,
+        busy_code="E_JOB_AUTO_RETRY_BUSY",
+        busy_message="timed out acquiring auto-retry scheduler lock",
+    )
 
 
 def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
@@ -964,7 +1008,13 @@ def _reset_active_attempt_ledgers(jdir: Path) -> None:
     ensure_managed_dir(art)
 
 
-def archive_attempt(project_root: Path, job_id: str, record: JobRecord) -> Path:
+def archive_attempt(
+    project_root: Path,
+    job_id: str,
+    record: JobRecord,
+    *,
+    retry_dispatch: dict[str, Any] | None = None,
+) -> Path:
     """Snapshot the completed attempt under ``attempts/NNNN/`` (immutable).
 
     Stages into a temporary sibling directory, writes ``archive.complete`` as
@@ -973,6 +1023,9 @@ def archive_attempt(project_root: Path, job_id: str, record: JobRecord) -> Path:
     A complete published archive for the same attempt is treated as idempotent
     (retry after crash between rename and job.json persist). Incomplete/legacy
     final dirs are removed and replaced.
+
+    Optional ``retry_dispatch`` (fixed keys only) records why the prior attempt
+    was replaced — never prompt/binary/owner-token content.
 
     Does **not** mutate ``prompt.md`` at the job root. Caller must hold the
     job lock (or accept a race). Evidence files are copied then truncated so
@@ -1002,6 +1055,15 @@ def archive_attempt(project_root: Path, job_id: str, record: JobRecord) -> Path:
         snapshot = record.to_dict()
         snapshot["archived_at"] = utc_now()
         snapshot["archived_attempt"] = attempt_n
+        if retry_dispatch is not None:
+            # Fixed-key provenance only; never prompt / binary / owner token.
+            snapshot["retry_dispatch"] = {
+                "intent": str(retry_dispatch.get("intent") or ""),
+                "requested_at": str(retry_dispatch.get("requested_at") or ""),
+                "next_attempt": int(retry_dispatch["next_attempt"]),
+                "retry_class": retry_dispatch.get("retry_class"),
+                "retry_reason": retry_dispatch.get("retry_reason"),
+            }
         _atomic_write_json(staging / "attempt.json", snapshot)
 
         _copy_file_if_present(jdir / "stdout.jsonl", staging / "stdout.jsonl")
@@ -1049,19 +1111,44 @@ def prepare_retry(
     job_id: str,
     *,
     next_attempt: int,
+    intent: Any = None,
+    now: datetime | None = None,
 ) -> JobRecord:
     """Dedicated terminal→queued retry transaction (not a generic transition).
 
     Archives the prior attempt, then atomically resets mutable runtime fields
     and sets ``state=queued`` with ``attempt=next_attempt``. Does **not** launch.
+    Re-runs admission under the job lock (closes scheduler evaluation races).
     """
-    from omg_cli.jobs.retry import assert_retry_admission
+    from omg_cli.jobs.retry import RetryIntent, assert_retry_admission
+
+    resolved_intent = intent if intent is not None else RetryIntent.EXPLICIT
+    if not isinstance(resolved_intent, RetryIntent):
+        resolved_intent = RetryIntent(str(resolved_intent))
 
     jid = safe_job_id(job_id)
     with job_lock(project_root, jid):
         record = read_job_record(project_root, jid)
-        assert_retry_admission(record, attempt=next_attempt)
-        archive_attempt(project_root, jid, record)
+        assert_retry_admission(
+            record,
+            attempt=next_attempt,
+            intent=resolved_intent,
+            now=now,
+        )
+        dispatch = {
+            "intent": resolved_intent.value,
+            "requested_at": utc_now()
+            if now is None
+            else (
+                now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+            )
+            .astimezone(timezone.utc)
+            .isoformat(),
+            "next_attempt": int(next_attempt),
+            "retry_class": record.retry_class,
+            "retry_reason": record.retry_reason,
+        }
+        archive_attempt(project_root, jid, record, retry_dispatch=dispatch)
 
         # Reset runtime fields for the new attempt; keep immutable request/budget.
         record.state = JobState.QUEUED
@@ -1229,6 +1316,8 @@ __all__ = [
     "artifacts_dir",
     "attempt_dir",
     "attempts_dir",
+    "auto_retry_lock",
+    "auto_retry_lock_path",
     "bind_provider_process",
     "compare_and_transition_job",
     "create_attempt_dir",
