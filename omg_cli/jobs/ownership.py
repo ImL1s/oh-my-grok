@@ -10,6 +10,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from omg_cli.jobs.models import JobStoreError
 
@@ -43,6 +44,52 @@ class ProcessIdentity:
     pid: int
     pgid: int
     pid_starttime: str | None = None
+
+
+def is_json_int(value: Any) -> bool:
+    """True when *value* is a JSON integer (Python ``int``, not ``bool``/float)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def process_identity_id_ok(value: Any) -> bool:
+    """PID/PGID is a strict JSON integer (bool/float rejected; range checked later)."""
+    return is_json_int(value)
+
+
+def process_identity_id_in_range(value: Any) -> bool:
+    """Strict JSON integer in the process-identity range (> 1)."""
+    return is_json_int(value) and int(value) > 1
+
+
+def process_fingerprint_ok(value: Any) -> bool:
+    """``pid_starttime`` / fingerprints: null or string only (never coerce)."""
+    return value is None or isinstance(value, str)
+
+
+def parse_process_identity(
+    *,
+    pid: Any,
+    pgid: Any,
+    pid_starttime: Any = None,
+) -> ProcessIdentity | None:
+    """Build a :class:`ProcessIdentity` only from type-strict fields.
+
+    Rejects bool/float/string PIDs and non-string fingerprints. Does **not**
+    coerce via ``int()`` / ``str()`` (which would false-green GONE/REUSED).
+    Out-of-range IDs (<= 1) still construct so ``assert_ownership`` /
+    probes can fail closed with their existing codes.
+    """
+    if not process_fingerprint_ok(pid_starttime):
+        return None
+    if pid is None or pgid is None:
+        return None
+    if not process_identity_id_ok(pid) or not process_identity_id_ok(pgid):
+        return None
+    return ProcessIdentity(
+        pid=int(pid),
+        pgid=int(pgid),
+        pid_starttime=pid_starttime if isinstance(pid_starttime, str) else None,
+    )
 
 
 def probe_pid_starttime(pid: int) -> str | None:
@@ -303,11 +350,16 @@ __all__ = [
     "ProcessIdentity",
     "assert_ownership",
     "capture_identity",
+    "is_json_int",
     "kill_pgid",
+    "parse_process_identity",
     "pid_alive",
     "probe_identity_for_recovery",
     "probe_identity_liveness",
     "probe_pid_starttime",
+    "process_fingerprint_ok",
+    "process_identity_id_in_range",
+    "process_identity_id_ok",
     "reap_child",
     "wait_until_gone",
 ]

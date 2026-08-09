@@ -289,15 +289,26 @@ class JobRecord:
         pid = data.get("pid")
         pgid = data.get("pgid")
         if pid is not None:
-            try:
-                pid = int(pid)
-            except (TypeError, ValueError) as exc:
-                raise JobStoreError("job.json pid invalid", code="E_JOB_MALFORMED") from exc
+            if not (isinstance(pid, int) and not isinstance(pid, bool)):
+                raise JobStoreError(
+                    "job.json pid must be a JSON integer or null",
+                    code="E_JOB_MALFORMED",
+                )
+            pid = int(pid)
         if pgid is not None:
-            try:
-                pgid = int(pgid)
-            except (TypeError, ValueError) as exc:
-                raise JobStoreError("job.json pgid invalid", code="E_JOB_MALFORMED") from exc
+            if not (isinstance(pgid, int) and not isinstance(pgid, bool)):
+                raise JobStoreError(
+                    "job.json pgid must be a JSON integer or null",
+                    code="E_JOB_MALFORMED",
+                )
+            pgid = int(pgid)
+
+        raw_starttime = data.get("pid_starttime")
+        if raw_starttime is not None and not isinstance(raw_starttime, str):
+            raise JobStoreError(
+                "job.json pid_starttime must be a string or null",
+                code="E_JOB_MALFORMED",
+            )
 
         artifacts = data.get("artifacts") or []
         if not isinstance(artifacts, list):
@@ -420,11 +431,7 @@ class JobRecord:
             pid=pid,
             pgid=pgid,
             handle=str(data["handle"]) if data.get("handle") is not None else None,
-            pid_starttime=(
-                str(data["pid_starttime"])
-                if data.get("pid_starttime") is not None
-                else None
-            ),
+            pid_starttime=raw_starttime if isinstance(raw_starttime, str) else None,
             prompt=str(data.get("prompt") or "prompt.md"),
             result=str(data["result"]) if data.get("result") is not None else None,
             artifacts=[a for a in artifacts if isinstance(a, dict)],

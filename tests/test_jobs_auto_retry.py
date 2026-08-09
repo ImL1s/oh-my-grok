@@ -1060,11 +1060,16 @@ def test_auto_retry_state_change_before_prepare_returns_conflict(
     real_prepare = store_mod.prepare_retry
 
     def _race(project_root, job_id, **kwargs):  # noqa: ANN001
-        # Simulate another winner already requeued.
+        # Simulate another winner already requeued with a consistent record
+        # (lease attempt must match, otherwise reread fails closed).
         with job_lock(project_root, job_id):
             rec = read_job_record(project_root, job_id)
             rec.state = JobState.QUEUED
             rec.attempt = 2
+            if isinstance(rec.owner_lease, dict):
+                lease = dict(rec.owner_lease)
+                lease["attempt"] = 2
+                rec.owner_lease = lease
             write_job_record(project_root, rec)
         raise JobStoreError(
             "job is not retryable from state=queued",
@@ -1112,6 +1117,146 @@ def test_auto_retry_cancel_marker_same_attempt_not_safe_conflict(
     assert final.state == JobState.FAILED
     assert int(final.attempt) == before_attempt
     assert final.cancel_requested_at is not None
+
+
+def test_auto_retry_post_error_reread_fail_not_safe_conflict(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Post-prepare reread failure must block — never ok=True conflict without proof."""
+    terminal = _failed_automatic(root)
+    now = _due_now(terminal)
+
+    import omg_cli.jobs.scheduler as sched_mod
+    import omg_cli.jobs.store as store_mod
+
+    real_read = sched_mod.read_job_record
+    fail_reread = {"armed": False}
+
+    def _prepare(project_root, job_id, **kwargs):  # noqa: ANN001
+        fail_reread["armed"] = True
+        raise JobStoreError(
+            "job is not retryable from state=failed",
+            code="E_JOB_RETRY_STATE",
+        )
+
+    def _read(project_root, job_id):  # noqa: ANN001
+        if fail_reread["armed"]:
+            raise JobStoreError(
+                "job record unreadable after retry race",
+                code="E_JOB_MALFORMED",
+            )
+        return real_read(project_root, job_id)
+
+    monkeypatch.setattr(store_mod, "prepare_retry", _prepare)
+    monkeypatch.setattr(sched_mod, "read_job_record", _read)
+    result = auto_retry_job(root, terminal.job_id, now=now)
+    assert result.ok is False
+    assert result.action == "blocked"
+    assert result.error_code == "E_JOB_RETRY_STATE"
+    assert result.action != "conflict"
+
+
+def test_auto_retry_float_provider_ids_block(root: Path) -> None:
+    """Float PID/PGID must not coerce via int() into GONE/reclaimable."""
+    terminal = _failed_automatic(root)
+    with job_lock(root, terminal.job_id):
+        rec = read_job_record(root, terminal.job_id)
+        rec.provider_process = {
+            "state": "exited",
+            "pid": 123.9,
+            "pgid": 123.9,
+            "pid_starttime": "lstart:provider",
+            "handle": "provider:test",
+            "bound_at": None,
+            "exited_at": "2026-01-01T00:00:00+00:00",
+        }
+        write_job_record(root, rec)
+    before = job_json_path(root, terminal.job_id).read_bytes()
+    result = auto_retry_job(root, terminal.job_id, now=_due_now(terminal))
+    assert result.ok is False
+    assert result.error_code == "E_JOB_CANCEL_UNPROVEN"
+    assert job_json_path(root, terminal.job_id).read_bytes() == before
+    assert not attempt_dir(root, terminal.job_id, 1).exists()
+
+
+def test_auto_retry_bool_provider_ids_block(root: Path) -> None:
+    """Boolean PID/PGID are not JSON integers — UNPROVEN, never reclaimable."""
+    terminal = _failed_automatic(root)
+    with job_lock(root, terminal.job_id):
+        rec = read_job_record(root, terminal.job_id)
+        rec.provider_process = {
+            "state": "bound",
+            "pid": True,
+            "pgid": True,
+            "pid_starttime": "lstart:provider",
+            "handle": "provider:test",
+            "bound_at": "2026-01-01T00:00:00+00:00",
+            "exited_at": None,
+        }
+        write_job_record(root, rec)
+    before = job_json_path(root, terminal.job_id).read_bytes()
+    result = auto_retry_job(root, terminal.job_id, now=_due_now(terminal))
+    assert result.ok is False
+    assert result.error_code == "E_JOB_CANCEL_UNPROVEN"
+    assert job_json_path(root, terminal.job_id).read_bytes() == before
+
+
+def test_auto_retry_non_string_fingerprint_blocks(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-string pid_starttime must be UNPROVEN — never REUSED via str() coerce."""
+    terminal = _failed_automatic(root)
+    with job_lock(root, terminal.job_id):
+        rec = read_job_record(root, terminal.job_id)
+        rec.provider_process = {
+            "state": "bound",
+            "pid": 424242,
+            "pgid": 424242,
+            "pid_starttime": {"ticks": 99},
+            "handle": "provider:test",
+            "bound_at": "2026-01-01T00:00:00+00:00",
+            "exited_at": None,
+        }
+        write_job_record(root, rec)
+    before = job_json_path(root, terminal.job_id).read_bytes()
+    # Even if a probe would claim REUSED on a coerced fingerprint, gate first.
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.probe_identity_for_recovery",
+        lambda identity: IdentityProbeOutcome.REUSED,
+    )
+    result = auto_retry_job(root, terminal.job_id, now=_due_now(terminal))
+    assert result.ok is False
+    assert result.error_code == "E_JOB_CANCEL_UNPROVEN"
+    assert job_json_path(root, terminal.job_id).read_bytes() == before
+
+
+def test_auto_retry_mismatched_spawn_identity_job_id_blocks(root: Path) -> None:
+    """spawn_identity.json.job_id must exactly equal the enclosing job id."""
+    terminal = _failed_automatic(root)
+    with job_lock(root, terminal.job_id):
+        rec = read_job_record(root, terminal.job_id)
+        rec.pid = None
+        rec.pgid = None
+        rec.pid_starttime = None
+        write_job_record(root, rec)
+    identity_path = job_dir(root, terminal.job_id) / "spawn_identity.json"
+    identity_path.write_text(
+        json.dumps(
+            {
+                "job_id": "other-job-id",
+                "pid": 999001,
+                "pgid": 999001,
+                "pid_starttime": "lstart:spawn",
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = job_json_path(root, terminal.job_id).read_bytes()
+    result = auto_retry_job(root, terminal.job_id, now=_due_now(terminal))
+    assert result.ok is False
+    assert result.error_code == "E_JOB_CANCEL_UNPROVEN"
+    assert job_json_path(root, terminal.job_id).read_bytes() == before
+    assert not attempt_dir(root, terminal.job_id, 1).exists()
 
 
 def test_auto_retry_vs_gc_never_recreates_quarantined_job(root: Path) -> None:

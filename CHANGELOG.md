@@ -23,6 +23,20 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   job-backed workers stay on #69).
 
 ### Fixed
+- **#68 PR5 P1 safe-conflict fail-closed reread:** `_is_safe_conflict`
+  returns false when the post-error job reread fails (`cur is None`) —
+  never `ok=True` conflict without proof that attempt advanced or state
+  became nonterminal. Hermetic coverage in `tests/test_jobs_auto_retry.py`.
+  Refs #68 (does not close).
+
+- **#68 PR5 P1 strict process-identity JSON:** PID/PGID must be JSON
+  integers (not bool/float), fingerprints/`pid_starttime` null-or-string
+  only, and `spawn_identity.json.job_id` must exactly equal the enclosing
+  job id. Malformed claims in any recorded state (including `exited`) map
+  to `E_JOB_CANCEL_UNPROVEN` / `IDENTITY_UNPROVEN` — never GONE/REUSED via
+  `int()`/`str()` coercion. Hermetic coverage in
+  `tests/test_jobs_auto_retry.py`. Refs #68 (does not close).
+
 - **#68 PR5 P1 classify_retry strict booleans:** `timed_out` / `overflow` must
   be JSON booleans (`true`/`false`/absent). String `"false"` / `"0"` / other
   truthy non-bools fail closed as `unknown` (`malformed_timed_out` /

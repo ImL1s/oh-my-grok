@@ -356,19 +356,15 @@ def _is_safe_conflict(exc: JobStoreError, before_attempt: int, cur: JobRecord | 
     actually progressed: attempt advanced, or state became nonterminal.
     Same-attempt terminal mutations (e.g. cancel-marker while still ``failed``)
     remain blocked (``ok=False``), not soft-conflict ``ok=True``.
+    An unreadable post-error reread (``cur is None``) is fail-closed —
+    never ``ok=True`` conflict without proof of progress.
     """
     code = getattr(exc, "code", None) or ""
     if code not in {"E_JOB_RETRY_ATTEMPT", "E_JOB_RETRY_STATE"}:
         return False
     if cur is None:
-        # Re-read failed after a racing mutation (e.g. lease/attempt skew) —
-        # still treat as conflict so we never launch a duplicate runner.
-        return True
-    if cur.state in _NONTERMINAL:
-        return True
-    if int(cur.attempt) > int(before_attempt):
-        return True
-    return False
+        return False
+    return cur.state in _NONTERMINAL or int(cur.attempt) > int(before_attempt)
 
 
 def _dispatch_one(

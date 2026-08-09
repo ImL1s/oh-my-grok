@@ -25,6 +25,7 @@ from omg_cli.jobs.ownership import (
     IdentityProbeOutcome,
     OwnershipOutcome,
     ProcessIdentity,
+    parse_process_identity,
     probe_identity_liveness,
     probe_pid_starttime,
     reap_child,
@@ -621,22 +622,13 @@ def _read_spawn_identity_recovery(
     data = _read_json_file(_spawn_identity_path(project_root, job_id))
     if not isinstance(data, Mapping):
         return None
-    pid = data.get("pid")
-    pgid = data.get("pgid")
-    if pid is None or pgid is None:
+    if data.get("job_id") != job_id:
         return None
-    try:
-        return ProcessIdentity(
-            pid=int(pid),
-            pgid=int(pgid),
-            pid_starttime=(
-                str(data["pid_starttime"])
-                if data.get("pid_starttime") is not None
-                else None
-            ),
-        )
-    except (TypeError, ValueError):
-        return None
+    return parse_process_identity(
+        pid=data.get("pid"),
+        pgid=data.get("pgid"),
+        pid_starttime=data.get("pid_starttime"),
+    )
 
 
 def _clear_spawn_identity_recovery(project_root: Path, job_id: str) -> None:
@@ -1145,16 +1137,13 @@ def _provider_identity(record: JobRecord) -> ProcessIdentity | None:
 
     Any recorded pid/pgid remains in the gate (bound *or* exited). Clearing the
     durable ``state`` to ``exited`` must not drop the cancel target without
-    OS-level disappearance proof.
+    OS-level disappearance proof. Malformed float/bool IDs never coerce into
+    a probeable identity — callers gate via ``provider_launch_unbound``.
     """
     pp = record.provider_process or {}
-    pid = pp.get("pid")
-    pgid = pp.get("pgid")
-    if pid is None or pgid is None:
-        return None
-    return ProcessIdentity(
-        pid=int(pid),
-        pgid=int(pgid),
+    return parse_process_identity(
+        pid=pp.get("pid"),
+        pgid=pp.get("pgid"),
         pid_starttime=pp.get("pid_starttime"),
     )
 
@@ -1163,9 +1152,9 @@ def _runner_identity(record: JobRecord) -> ProcessIdentity | None:
     if record.pid is None:
         return None
     pgid = record.pgid if record.pgid is not None else record.pid
-    return ProcessIdentity(
-        pid=int(record.pid),
-        pgid=int(pgid),
+    return parse_process_identity(
+        pid=record.pid,
+        pgid=pgid,
         pid_starttime=record.pid_starttime,
     )
 
@@ -2299,11 +2288,13 @@ def _outer_runner_alive(record: JobRecord) -> bool:
     if record.pid is None:
         return False
     pgid = record.pgid if record.pgid is not None else record.pid
-    identity = ProcessIdentity(
-        pid=int(record.pid),
-        pgid=int(pgid),
+    identity = parse_process_identity(
+        pid=record.pid,
+        pgid=pgid,
         pid_starttime=record.pid_starttime,
     )
+    if identity is None:
+        return False
     try:
         from omg_cli.jobs.ownership import assert_ownership
 
@@ -2324,17 +2315,13 @@ def _provider_process_bound_alive(record: JobRecord) -> bool:
     pp = record.provider_process or default_provider_process()
     if str(pp.get("state") or "") != "bound":
         return False
-    pid = pp.get("pid")
-    pgid = pp.get("pgid")
-    if pid is None or pgid is None:
-        return False
-    identity = ProcessIdentity(
-        pid=int(pid),
-        pgid=int(pgid),
-        pid_starttime=(
-            str(pp["pid_starttime"]) if pp.get("pid_starttime") is not None else None
-        ),
+    identity = parse_process_identity(
+        pid=pp.get("pid"),
+        pgid=pp.get("pgid"),
+        pid_starttime=pp.get("pid_starttime"),
     )
+    if identity is None:
+        return False
     try:
         from omg_cli.jobs.ownership import assert_ownership
 
