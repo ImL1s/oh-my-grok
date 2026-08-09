@@ -246,11 +246,16 @@ omg team stop --run RUN
 ```bash
 omg team start --goal "parallelize A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --plan-only
 omg team start --goal "parallelize A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --dry-run
+# job-backed workers via durable Jobs plane (#69 PR4; fake|antigravity):
+omg team start --goal "…" --tasks-json '[{"task_id":"t1","owned_files":["a.py"],"provider":"fake"}]' \
+  --worker-topology=job --dry-run
 # multi-CLI (role→provider); floors reject cursor-on-reviewer and unknown roles:
 omg team start --goal "…" --tasks-json '[{"task_id":"t1","role":"executor","owned_files":["a.py"]}]' \
   --routing '{"executor":{"provider":"codex"}}' --dry-run
 # staged pipeline (sequences existing lanes; no new planner):
 omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --dry-run --max-fix 3
+omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"],"provider":"fake"}]' \
+  --worker-topology=job --dry-run
 # ralph composition (bounded outer loop; never verified):
 omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --ralph --max-iter 2 --dry-run
 omg team scale --run RUN --add 2 --dry-run
@@ -265,6 +270,8 @@ omg team api send-message --input '{"run_id":"RUN","team_id":"t","from_worker":"
 # P0′ ops (mailbox/task claim+renew+release/reliability/events); catalog v1 = 36 named / 25 implemented (see docs/team-operation-catalog-v1.md)
 # disable: export OMG_DISABLE_TMUX_TEAM=1
 ```
+
+See also `docs/team.md` for job-backed worker invariants (#69 PR4).
 
 ---
 

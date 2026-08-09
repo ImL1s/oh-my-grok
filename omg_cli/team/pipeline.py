@@ -695,6 +695,7 @@ def _run_exec_stage(
     yolo: bool,
     safe: bool,
     routing: Mapping[str, Any] | None,
+    worker_topology: str | None = None,
 ) -> dict[str, Any]:
     """team-exec body: start_team, wait panes (non-dry), then collect.
 
@@ -721,6 +722,7 @@ def _run_exec_stage(
     prev_ws = plane_mod.write_status
     plane_mod.write_status = _plane_write_status_compat  # type: ignore[assignment]
     wait_info: dict[str, Any] | None = None
+    topo = worker_topology or state.get("worker_topology")
     try:
         meta = start_team(
             goal,
@@ -732,6 +734,7 @@ def _run_exec_stage(
             safe=safe,
             force=False,
             routing=routing,
+            worker_topology=topo if isinstance(topo, str) else None,
         )
         collect_result: dict[str, Any] | None = None
         if not dry_run:
@@ -930,6 +933,7 @@ def run_team_pipeline(
     routing: Mapping[str, Any] | None = None,
     ralph: bool = False,
     max_iter: int | None = None,
+    worker_topology: str | None = None,
 ) -> dict[str, Any]:
     """Drive the staged FSM to a terminal phase. Never sets verified/passes.
 
@@ -969,6 +973,7 @@ def run_team_pipeline(
             safe=safe,
             routing=routing,
             max_iter=max_iter,
+            worker_topology=worker_topology,
         )
 
     return _run_team_pipeline_core(
@@ -983,6 +988,7 @@ def run_team_pipeline(
         yolo=yolo,
         safe=safe,
         routing=routing,
+        worker_topology=worker_topology,
     )
 
 
@@ -999,6 +1005,7 @@ def _run_team_pipeline_core(
     yolo: bool = False,
     safe: bool = False,
     routing: Mapping[str, Any] | None = None,
+    worker_topology: str | None = None,
 ) -> dict[str, Any]:
     """Inner staged driver (plan→prd→exec→verify→fix). Never sets verified."""
     root_path = root.resolve()
@@ -1015,6 +1022,13 @@ def _run_team_pipeline_core(
     )
     rid = str(st["run_id"])
     max_fix_i = int(max_fix)
+
+    # Persist worker topology on pipeline state for exec-stage restart.
+    if worker_topology:
+        with execution_lease(root_path, rid, intent="team-pipeline-worker-topo") as lease:
+            state0 = load_team_pipeline(root_path, rid)
+            state0["worker_topology"] = worker_topology
+            _save(root_path, rid, state0, lease)
 
     # ---- team-plan (pass-through marker; tasks already recorded) ----
     transition(
@@ -1047,6 +1061,7 @@ def _run_team_pipeline_core(
                     yolo=yolo,
                     safe=safe,
                     routing=routing,
+                    worker_topology=worker_topology,
                 )
             except (TeamError, TeamGateError) as exc:
                 transition(
@@ -1146,6 +1161,7 @@ def _run_team_pipeline_ralph(
     safe: bool = False,
     routing: Mapping[str, Any] | None = None,
     max_iter: int | None = None,
+    worker_topology: str | None = None,
 ) -> dict[str, Any]:
     """Bounded ralph outer loop over the staged team pipeline.
 
@@ -1182,6 +1198,8 @@ def _run_team_pipeline_ralph(
         state = load_team_pipeline(root_path, rid)
         state["ralph"] = True
         state["ralph_max_iter"] = max_iter_i
+        if worker_topology:
+            state["worker_topology"] = worker_topology
         state["ralph_iteration"] = 0
         state["max_fix"] = max_fix_i
         _save(root_path, rid, state, lease)
@@ -1302,6 +1320,7 @@ def _run_team_pipeline_ralph(
                     yolo=yolo,
                     safe=safe,
                     routing=routing,
+                    worker_topology=worker_topology,
                 )
             except (TeamError, TeamGateError) as exc:
                 transition(

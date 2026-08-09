@@ -9,6 +9,18 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Added
+- **#69 PR4 job-backed Team workers:** unified `launch_worker` execution
+  abstraction (`omg_cli/team/launch.py`) with `--worker-topology=pane|job`
+  on `omg team start|run|launch`. Job topology reuses the #68 Jobs plane
+  (no second scheduler); Team persists only durable execution refs
+  (`topology` + XOR `job_id`/`pane_id` + `launch_generation`). Resume binds
+  existing jobs without relaunch; stop cancels via Jobs; stale/foreign
+  completions fail closed. Hermetic coverage in
+  `tests/test_team_job_workers.py`. Docs: `docs/team.md`. Does **not**
+  close #69 (no replacement attempts / Hyperplan / security compositions /
+  Antigravity live evidence / maturity promotion).
+
 ### Fixed
 - **Parity #78-I Antigravity docs-only promotion false-green:** encode
   `proof_kind` + `promotion_sufficient` on completeness policy/proof

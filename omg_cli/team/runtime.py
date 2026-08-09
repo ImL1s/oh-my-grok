@@ -982,6 +982,7 @@ def launch_team(
     executor: str | None = None,
     detach: bool = False,
     view_mode: str | None = None,
+    worker_topology: str | None = None,
 ) -> dict[str, Any]:
     """OMX-like shorthand launch: decompose → start_team(split) → seed api/ref.
 
@@ -1018,6 +1019,7 @@ def launch_team(
         executor=executor,
         detach=detach,
         view_mode=view_mode,
+        worker_topology=worker_topology,
     )
     rid = str(meta["run_id"])
     # start_team creates a new run unless --run was supplied.
@@ -1124,6 +1126,7 @@ def status_for_identity(
         st["team_id"] = meta.get("team_id")
         st["launch_mode"] = meta.get("launch_mode")
         st["topology"] = meta.get("topology")
+        st["worker_topology"] = meta.get("worker_topology") or "pane"
         st["view_mode"] = meta.get("view_mode")
         st["startup_acks"] = meta.get("startup_acks")
         st["startup_ack_workers"] = meta.get("startup_ack_workers")
@@ -1142,6 +1145,8 @@ def status_for_identity(
             st["layout_status"] = None
         if meta.get("team_id"):
             team_id = str(meta["team_id"])
+        from omg_cli.team.launch import worker_status_view
+
         worktrees: list[dict[str, Any]] = []
         for raw in meta.get("tasks") or []:
             if not isinstance(raw, Mapping):
@@ -1160,15 +1165,17 @@ def status_for_identity(
                         "logical_worker_index", raw.get("window_index")
                     ),
                     "attempt": raw.get("attempt", 1),
+                    "worker": worker_status_view(raw),
                 }
             )
         st["worktrees"] = worktrees
-        # Full-status workers annotation (#102) — not part of locked schema.
+        # Full-status workers annotation (#102 / #69 PR4) — not part of locked schema.
         st["workers"] = [
             {
                 "task_id": w.get("task_id"),
                 "logical_worker_index": w.get("logical_worker_index"),
                 "attempt": w.get("attempt"),
+                "worker": w.get("worker"),
             }
             for w in worktrees
         ]
@@ -1279,6 +1286,16 @@ def resume_for_identity(
             run_id=run_id,
             team_id=team_id,
         )
+        # Job-backed workers: bind existing Jobs without relaunch (#69 PR4).
+        job_bind: dict[str, Any] | None = None
+        if str(meta_for_claims.get("worker_topology") or "") == "job":
+            from omg_cli.team.launch import resume_bind_job_workers
+
+            job_bind = resume_bind_job_workers(
+                root_path,
+                list(meta_for_claims.get("tasks") or []),
+                team_id=team_id,
+            )
     out = dict(reconciled)
     out.update(
         {
@@ -1293,6 +1310,16 @@ def resume_for_identity(
             "claim_reconcile": claim_reconcile,
         }
     )
+    if job_bind is not None:
+        out["job_bind"] = job_bind
+        # Never relaunch job-backed workers on resume — Jobs owns process life.
+        if job_bind.get("bound") or job_bind.get("unproven"):
+            out["note"] = (
+                f"{out.get('note') or ''}; "
+                f"job-backed resume bound={len(job_bind.get('bound') or [])} "
+                f"unproven={len(job_bind.get('unproven') or [])} "
+                "(no relaunch)"
+            ).strip("; ")
     # Prefer combined note when workers were touched.
     if relaunch.get("relaunched") or relaunch.get("blocked"):
         out["note"] = (

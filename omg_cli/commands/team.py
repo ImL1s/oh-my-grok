@@ -409,6 +409,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                     "routing": routing,
                     "view_mode": resolved_view,
                     "detach": detach,
+                    "worker_topology": getattr(args, "worker_topology", None) or "pane",
                     "note": (
                         "plan-only: no .omg mutation, no worktrees, no tmux "
                         "(#27). Use --dry-run/--materialize-only to materialize "
@@ -434,6 +435,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 run_id=getattr(args, "run_id", None),
                 detach=detach,
                 view_mode=resolved_view,
+                worker_topology=getattr(args, "worker_topology", None),
             )
             emit_data(args, "team", meta)
             hint = meta.get("attach_hint")
@@ -496,6 +498,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                     "task_count": len(tasks),
                     "tasks": tasks,
                     "routing": routing,
+                    "worker_topology": getattr(args, "worker_topology", None) or "pane",
                     "note": (
                         "plan-only: no .omg mutation, no worktrees, no tmux "
                         "(#27). Use --dry-run/--materialize-only to materialize "
@@ -515,6 +518,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 safe=bool(getattr(args, "safe", False)),
                 force=bool(getattr(args, "force", False)),
                 routing=routing,
+                worker_topology=getattr(args, "worker_topology", None),
             )
             # #20: same readiness contract as team launch (shared wait service).
             meta = apply_start_readiness(
@@ -563,6 +567,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 routing=routing,
                 ralph=bool(getattr(args, "ralph", False)),
                 max_iter=getattr(args, "max_iter", None),
+                worker_topology=getattr(args, "worker_topology", None),
             )
             emit_data(args, "team", result)
             phase = str(result.get("phase") or "")
@@ -1610,6 +1615,16 @@ def register_team_parsers(
             "(default keeps leader + workers in the same window)"
         ),
     )
+    p_t_launch.add_argument(
+        "--worker-topology",
+        dest="worker_topology",
+        choices=("pane", "job"),
+        default="pane",
+        help=(
+            "worker execution topology (#69 PR4): pane (default tmux) or "
+            "job (durable Jobs plane; requires fake|antigravity provider)"
+        ),
+    )
     p_t_launch.set_defaults(func=cmd_team, team_action="launch")
 
     p_t_start = team_sub.add_parser(
@@ -1688,6 +1703,16 @@ def register_team_parsers(
         help=(
             "skip readiness ACK wait; persist startup_status=unverified_start "
             "and do not claim a proven Team started (#20)"
+        ),
+    )
+    p_t_start.add_argument(
+        "--worker-topology",
+        dest="worker_topology",
+        choices=("pane", "job"),
+        default="pane",
+        help=(
+            "worker execution topology (#69 PR4): pane (default tmux) or "
+            "job (durable Jobs plane; requires fake|antigravity provider)"
         ),
     )
     p_t_start.set_defaults(func=cmd_team, team_action="start")
@@ -1771,6 +1796,16 @@ def register_team_parsers(
         help=(
             "with --ralph: max outer iterations (default 3 from ralph); "
             "stop at team-verify APPROVE or max_iter → failed"
+        ),
+    )
+    p_t_run.add_argument(
+        "--worker-topology",
+        dest="worker_topology",
+        choices=("pane", "job"),
+        default="pane",
+        help=(
+            "worker execution topology for team-exec (#69 PR4): pane "
+            "(default) or job (durable Jobs plane)"
         ),
     )
     p_t_run.set_defaults(func=cmd_team, team_action="run")
