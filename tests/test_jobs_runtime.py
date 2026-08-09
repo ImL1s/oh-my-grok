@@ -2068,7 +2068,7 @@ def test_retry_rejects_internal_acp_provider(root: Path) -> None:
 def test_retry_rejects_live_process_identity(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from omg_cli.jobs.ownership import OwnershipOutcome
+    from omg_cli.jobs.ownership import IdentityProbeOutcome
     from omg_cli.jobs.runtime import retry_job
     from omg_cli.jobs.store import job_lock, write_job_record
 
@@ -2091,10 +2091,13 @@ def test_retry_rejects_live_process_identity(
         rec.pid_starttime = "fingerprint"
         write_job_record(root, rec)
 
-    monkeypatch.setattr("omg_cli.jobs.runtime._pid_alive", lambda pid: True)
     monkeypatch.setattr(
-        "omg_cli.jobs.runtime._assert_cancel_ownership",
-        lambda *a, **k: OwnershipOutcome.OK,
+        "omg_cli.jobs.ownership.probe_identity_for_recovery",
+        lambda identity: IdentityProbeOutcome.LIVE,
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.runtime._wait_until_gone",
+        lambda *a, **k: False,
     )
     with pytest.raises(JobStoreError) as ei:
         retry_job(root, terminal.job_id, attempt=2)
@@ -2582,3 +2585,163 @@ def test_launch_commit_failure_stamps_terminal_retry_metadata(
     with pytest.raises(JobStoreError) as ei:
         retry_job(root, jid, attempt=2)
     assert ei.value.code == "E_JOB_RETRY_CLASS"
+
+
+def test_retry_allows_verified_reused_prior_identity(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.jobs.ownership import IdentityProbeOutcome
+    from omg_cli.jobs.runtime import retry_job
+
+    result = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        sleep_s=0.05,
+        attempt_budget=3,
+        fail=True,
+    )
+    failed, _ = wait_job(root, result.record.job_id, timeout_s=10.0)
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.probe_identity_for_recovery",
+        lambda identity: IdentityProbeOutcome.REUSED,
+    )
+    retried = retry_job(root, failed.job_id, attempt=2, launch=False)
+    assert retried.record.attempt == 2
+    assert retried.record.state == JobState.STARTING
+
+
+def test_retry_blocks_live_prior_identity(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.jobs.ownership import IdentityProbeOutcome
+    from omg_cli.jobs.runtime import retry_job
+
+    result = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        sleep_s=0.05,
+        attempt_budget=3,
+        fail=True,
+    )
+    failed, _ = wait_job(root, result.record.job_id, timeout_s=10.0)
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.probe_identity_for_recovery",
+        lambda identity: IdentityProbeOutcome.LIVE,
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.runtime._wait_until_gone",
+        lambda *a, **k: False,
+    )
+    with pytest.raises(JobStoreError) as ei:
+        retry_job(root, failed.job_id, attempt=2, launch=False)
+    assert ei.value.code == "E_JOB_RETRY_LIVE"
+
+
+def test_retry_blocks_unproven_prior_identity(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.jobs.ownership import IdentityProbeOutcome
+    from omg_cli.jobs.runtime import retry_job
+
+    result = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        sleep_s=0.05,
+        attempt_budget=3,
+        fail=True,
+    )
+    failed, _ = wait_job(root, result.record.job_id, timeout_s=10.0)
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.probe_identity_for_recovery",
+        lambda identity: IdentityProbeOutcome.UNPROVEN,
+    )
+    with pytest.raises(JobStoreError) as ei:
+        retry_job(root, failed.job_id, attempt=2, launch=False)
+    assert ei.value.code == "E_JOB_CANCEL_UNPROVEN"
+
+
+def test_gc_still_blocks_active_or_unproven_owner_lease(root: Path) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from omg_cli.jobs.runtime import gc_jobs
+
+    result = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        sleep_s=0.05,
+    )
+    terminal, _ = wait_job(root, result.record.job_id, timeout_s=10.0)
+    # Force retention eligible but re-activate lease (malformed for from_dict —
+    # write raw JSON instead).
+    path = job_json_path(root, terminal.job_id)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["terminal_at"] = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    lease = data.get("owner_lease") or {}
+    lease["released_at"] = None
+    data["owner_lease"] = lease
+    # Use raw write to bypass from_dict terminal+active check on write path
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    # GC candidate scan uses read_job_record which may reject — either skip or block
+    try:
+        out = gc_jobs(root, retention_days=1)
+    except JobStoreError:
+        return
+    assert terminal.job_id not in out.deleted
+
+
+def test_gc_accepts_released_lost_job_only_after_identity_proof(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from omg_cli.jobs.ownership import IdentityProbeOutcome
+    from omg_cli.jobs.recovery import recover_job
+    from omg_cli.jobs.runtime import gc_jobs
+    from omg_cli.jobs.store import job_lock, read_job_record, write_job_record
+
+    result = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        sleep_s=30.0,
+    )
+    import os
+    import signal
+
+    os.kill(int(result.record.pid), signal.SIGKILL)
+    try:
+        os.waitpid(int(result.record.pid), 0)
+    except ChildProcessError:
+        pass
+    # Expire lease
+    with job_lock(root, result.record.job_id):
+        rec = read_job_record(root, result.record.job_id)
+        past = datetime.now(timezone.utc) - timedelta(seconds=120)
+        from omg_cli.jobs.lease import format_lease_ts
+
+        lease = dict(rec.owner_lease)
+        lease["acquired_at"] = format_lease_ts(past)
+        lease["heartbeat_at"] = format_lease_ts(past)
+        lease["expires_at"] = format_lease_ts(past + timedelta(seconds=30))
+        rec.owner_lease = lease
+        write_job_record(root, rec)
+    assert recover_job(root, result.record.job_id).action == "marked_lost"
+    with job_lock(root, result.record.job_id):
+        rec = read_job_record(root, result.record.job_id)
+        rec.terminal_at = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        write_job_record(root, rec)
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.probe_identity_liveness",
+        lambda identity: IdentityProbeOutcome.GONE,
+    )
+    out = gc_jobs(root, retention_days=1)
+    assert result.record.job_id in out.deleted

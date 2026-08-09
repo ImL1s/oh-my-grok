@@ -185,6 +185,26 @@ def probe_identity_liveness(identity: ProcessIdentity) -> IdentityProbeOutcome:
     return IdentityProbeOutcome.LIVE
 
 
+def probe_identity_for_recovery(identity: ProcessIdentity) -> IdentityProbeOutcome:
+    """Recovery-strict identity probe.
+
+    Same as :func:`probe_identity_liveness`, except a live process with a
+    missing expected start fingerprint is ``UNPROVEN`` — PID alone never
+    proves ownership after lease expiry.
+    """
+    expected = identity.pid_starttime
+    if expected is None or expected == "":
+        target_pid = int(identity.pid)
+        target_pgid = int(identity.pgid)
+        if target_pid <= 1 or target_pgid <= 1:
+            return IdentityProbeOutcome.UNPROVEN
+        if not pid_alive(target_pid):
+            return IdentityProbeOutcome.GONE
+        # Live without fingerprint — cannot prove this is the historical owner.
+        return IdentityProbeOutcome.UNPROVEN
+    return probe_identity_liveness(identity)
+
+
 def assert_ownership(
     identity: ProcessIdentity,
     *,
@@ -285,6 +305,7 @@ __all__ = [
     "capture_identity",
     "kill_pgid",
     "pid_alive",
+    "probe_identity_for_recovery",
     "probe_identity_liveness",
     "probe_pid_starttime",
     "reap_child",

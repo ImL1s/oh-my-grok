@@ -106,12 +106,12 @@
         "grok": "catalogued"
       },
       "evidence": {
-        "tests": ["tests/test_jobs_runtime.py", "tests/test_jobs_cli.py", "tests/test_jobs_provider_registry.py", "tests/test_jobs_antigravity.py"],
+        "tests": ["tests/test_jobs_runtime.py", "tests/test_jobs_cli.py", "tests/test_jobs_provider_registry.py", "tests/test_jobs_antigravity.py", "tests/test_jobs_lease.py", "tests/test_jobs_recovery.py"],
         "docs": ["docs/skills.md", "docs/durable-jobs.md", "CHANGELOG.md"],
         "live": []
       },
       "issues": ["#68"],
-      "gap": "PR3 retry/GC/ask--background landed; lease recovery and authenticated live Antigravity still open (#68)."
+      "gap": "PR4 owner lease/heartbeat observation and explicit lost-job reconciliation landed. Automatic retry scheduling, Team job-backed workers (#69), and authenticated live Antigravity evidence remain open (#68)."
     },
     {
       "id": "team.plane_v3",
@@ -1019,7 +1019,7 @@
       "status": "open",
       "issues": ["#68"],
       "capability_ids": ["jobs.durable_background"],
-      "summary": "Durable jobs PR3 retry/GC/ask--background landed; lease recovery and authenticated live Antigravity still open"
+      "summary": "PR4 owner lease/heartbeat observation and explicit lost-job reconciliation landed. Automatic retry scheduling, Team job-backed workers (#69), and authenticated live Antigravity evidence remain open (#68)."
     },
     {
       "id": "gap.team.v3",

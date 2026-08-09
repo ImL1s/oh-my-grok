@@ -39,7 +39,7 @@ Related: [cli-contract.md](./cli-contract.md) (exit codes + JSON envelopes).
 | `hud` | inspect | one-line HUD |
 | `lsp` | inspect | host-owned .lsp.json inspection |
 | `provider` | inspect | provider probe/run (Antigravity capabilities/doctor/run; #67) |
-| `job` | run | durable background jobs (start/status/wait/collect/cancel/list/retry/gc; #68 PR1–PR3) |
+| `job` | run | durable background jobs (start/status/wait/collect/cancel/list/retry/gc/recover; #68 PR1–PR4) |
 | `interview` | workflow | deep-interview gate |
 | `goal` | workflow | ultragoal ledger |
 | `accept` | team | acceptance + verified stamp |

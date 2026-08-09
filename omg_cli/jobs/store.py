@@ -281,23 +281,18 @@ def transition_job(
     updates: dict[str, Any] | None = None,
 ) -> JobRecord:
     """Locked immutable transition + optional field updates."""
+    from omg_cli.jobs.lease import release_lease_dict
+    from omg_cli.jobs.models import TERMINAL_STATES
+
     try:
         with job_lock(project_root, job_id):
             record = read_job_record(project_root, job_id)
             assert_transition(record.state, new_state)
-            if updates:
-                for key, value in updates.items():
-                    if key in IMMUTABLE_FIELDS:
-                        raise JobStoreError(
-                            f"cannot mutate immutable field {key!r}",
-                            code="E_JOB_STORE",
-                        )
-                    if not hasattr(record, key):
-                        raise JobStoreError(
-                            f"unknown job field {key!r}",
-                            code="E_JOB_STORE",
-                        )
-                    setattr(record, key, value)
+            merged = dict(updates or {})
+            if new_state in TERMINAL_STATES and "owner_lease" not in merged:
+                if record.owner_lease is not None:
+                    merged["owner_lease"] = release_lease_dict(record.owner_lease)
+            _apply_field_updates(record, merged)
             record.state = new_state
             write_job_record(project_root, record)
             return read_job_record(project_root, job_id)
@@ -339,14 +334,214 @@ def update_job_fields(
         ) from exc
 
 
+def _apply_field_updates(record: JobRecord, updates: dict[str, Any] | None) -> None:
+    if not updates:
+        return
+    for key, value in updates.items():
+        if key in IMMUTABLE_FIELDS:
+            raise JobStoreError(
+                f"cannot mutate immutable field {key!r}",
+                code="E_JOB_STORE",
+            )
+        if key == "state":
+            raise JobStoreError(
+                "cannot mutate state via field updates",
+                code="E_JOB_STORE",
+            )
+        if not hasattr(record, key):
+            raise JobStoreError(f"unknown job field {key!r}", code="E_JOB_STORE")
+        setattr(record, key, value)
+
+
+def compare_and_transition_job(
+    project_root: Path,
+    job_id: str,
+    new_state: JobState,
+    *,
+    expected_generation: int,
+    expected_state: JobState | None = None,
+    expected_attempt: int | None = None,
+    expected_owner_token: str | None = None,
+    expected_pid: int | None = None,
+    expected_pgid: int | None = None,
+    updates: dict[str, Any] | None = None,
+) -> JobRecord:
+    """CAS + transition under one lock (no nested ``transition_job``)."""
+    try:
+        with job_lock(project_root, job_id):
+            record = read_job_record(project_root, job_id)
+            if int(record.generation) != int(expected_generation):
+                raise JobStoreError(
+                    "job generation changed during recovery CAS",
+                    code="E_JOB_RECOVERY_CONFLICT",
+                )
+            if expected_state is not None and record.state != expected_state:
+                raise JobStoreError(
+                    f"job state changed during recovery CAS "
+                    f"(expected={expected_state.value} got={record.state.value})",
+                    code="E_JOB_RECOVERY_CONFLICT",
+                )
+            if expected_attempt is not None and int(record.attempt) != int(expected_attempt):
+                raise JobStoreError(
+                    "job attempt changed during recovery CAS",
+                    code="E_JOB_RECOVERY_CONFLICT",
+                )
+            if expected_pid is not None and record.pid != expected_pid:
+                raise JobStoreError(
+                    "job pid changed during recovery CAS",
+                    code="E_JOB_RECOVERY_CONFLICT",
+                )
+            if expected_pgid is not None and record.pgid != expected_pgid:
+                raise JobStoreError(
+                    "job pgid changed during recovery CAS",
+                    code="E_JOB_RECOVERY_CONFLICT",
+                )
+            if expected_owner_token is not None:
+                lease = record.owner_lease if isinstance(record.owner_lease, dict) else {}
+                if lease.get("owner_token") != expected_owner_token:
+                    raise JobStoreError(
+                        "job owner_token changed during recovery CAS",
+                        code="E_JOB_RECOVERY_CONFLICT",
+                    )
+            assert_transition(record.state, new_state)
+            _apply_field_updates(record, updates)
+            record.state = new_state
+            write_job_record(project_root, record)
+            return read_job_record(project_root, job_id)
+    except JobStoreError:
+        raise
+    except (OSError, ContractPathError) as exc:
+        raise JobStoreError(
+            f"job CAS transition durable failure: {exc}",
+            code="E_JOB_STORE",
+        ) from exc
+
+
+def renew_owner_lease(
+    project_root: Path,
+    job_id: str,
+    *,
+    expected_attempt: int,
+    expected_owner_token: str,
+    expected_runner_pid: int,
+    now: datetime | None = None,
+) -> JobRecord:
+    """Heartbeat-only mutation; exact attempt/token/runner PID must match."""
+    from omg_cli.jobs.lease import assert_owner_fence, renew_lease_dict
+
+    try:
+        with job_lock(project_root, job_id):
+            record = read_job_record(project_root, job_id)
+            assert_owner_fence(
+                record,
+                expected_attempt=expected_attempt,
+                expected_owner_token=expected_owner_token,
+                expected_runner_pid=expected_runner_pid,
+            )
+            record.owner_lease = renew_lease_dict(record.owner_lease or {}, now=now)
+            write_job_record(project_root, record)
+            return read_job_record(project_root, job_id)
+    except JobStoreError:
+        raise
+    except (OSError, ContractPathError) as exc:
+        raise JobStoreError(
+            f"owner lease renew durable failure: {exc}",
+            code="E_JOB_STORE",
+        ) from exc
+
+
+def update_owned_job_fields(
+    project_root: Path,
+    job_id: str,
+    *,
+    expected_attempt: int,
+    expected_owner_token: str,
+    expected_runner_pid: int,
+    **updates: Any,
+) -> JobRecord:
+    """Owner-fenced field update without state change."""
+    from omg_cli.jobs.lease import assert_owner_fence
+
+    try:
+        with job_lock(project_root, job_id):
+            record = read_job_record(project_root, job_id)
+            assert_owner_fence(
+                record,
+                expected_attempt=expected_attempt,
+                expected_owner_token=expected_owner_token,
+                expected_runner_pid=expected_runner_pid,
+            )
+            for key, value in updates.items():
+                if key in IMMUTABLE_FIELDS or key == "state":
+                    raise JobStoreError(
+                        f"cannot mutate field {key!r} via update_owned_job_fields",
+                        code="E_JOB_STORE",
+                    )
+                if not hasattr(record, key):
+                    raise JobStoreError(f"unknown job field {key!r}", code="E_JOB_STORE")
+                setattr(record, key, value)
+            write_job_record(project_root, record)
+            return read_job_record(project_root, job_id)
+    except JobStoreError:
+        raise
+    except (OSError, ContractPathError) as exc:
+        raise JobStoreError(
+            f"owned job update durable failure: {exc}",
+            code="E_JOB_STORE",
+        ) from exc
+
+
+def transition_owned_job(
+    project_root: Path,
+    job_id: str,
+    new_state: JobState,
+    *,
+    expected_attempt: int,
+    expected_owner_token: str,
+    expected_runner_pid: int,
+    updates: dict[str, Any] | None = None,
+) -> JobRecord:
+    """Owner-fenced terminal/state transition under one lock."""
+    from omg_cli.jobs.lease import assert_owner_fence, release_lease_dict
+    from omg_cli.jobs.models import TERMINAL_STATES
+
+    try:
+        with job_lock(project_root, job_id):
+            record = read_job_record(project_root, job_id)
+            assert_owner_fence(
+                record,
+                expected_attempt=expected_attempt,
+                expected_owner_token=expected_owner_token,
+                expected_runner_pid=expected_runner_pid,
+            )
+            assert_transition(record.state, new_state)
+            merged = dict(updates or {})
+            if new_state in TERMINAL_STATES and "owner_lease" not in merged:
+                merged["owner_lease"] = release_lease_dict(record.owner_lease)
+            _apply_field_updates(record, merged)
+            record.state = new_state
+            write_job_record(project_root, record)
+            return read_job_record(project_root, job_id)
+    except JobStoreError:
+        raise
+    except (OSError, ContractPathError) as exc:
+        raise JobStoreError(
+            f"owned job transition durable failure: {exc}",
+            code="E_JOB_STORE",
+        ) from exc
+
+
 def mark_provider_launching(
     project_root: Path,
     job_id: str,
     *,
     expected_runner_pid: int,
     expected_attempt: int = 1,
+    expected_owner_token: str | None = None,
 ) -> JobRecord:
     """Set provider_process.state=launching under lock (pre-adapter)."""
+    from omg_cli.jobs.lease import assert_owner_fence
+
     with job_lock(project_root, job_id):
         record = read_job_record(project_root, job_id)
         if record.state != JobState.RUNNING:
@@ -363,6 +558,21 @@ def mark_provider_launching(
             raise JobStoreError(
                 "cannot mark provider launching: runner pid mismatch",
                 code="E_JOB_STORE",
+            )
+        if expected_owner_token is not None or record.owner_lease is not None:
+            token = expected_owner_token
+            if token is None and isinstance(record.owner_lease, dict):
+                token = str(record.owner_lease.get("owner_token") or "")
+            if not token:
+                raise JobStoreError(
+                    "cannot mark provider launching: missing owner token",
+                    code="E_JOB_LEASE_FENCED",
+                )
+            assert_owner_fence(
+                record,
+                expected_attempt=expected_attempt,
+                expected_owner_token=token,
+                expected_runner_pid=expected_runner_pid,
             )
         if record.cancel_requested_at:
             raise JobStoreError(
@@ -391,12 +601,15 @@ def bind_provider_process(
     handle: str,
     expected_runner_pid: int,
     expected_attempt: int = 1,
+    expected_owner_token: str | None = None,
 ) -> JobRecord:
     """Transactionally bind inner provider PID/PGID under lock.
 
     Fail-closed when job is not running, attempt/runner mismatch, cancel won,
     or a provider process is already bound.
     """
+    from omg_cli.jobs.lease import assert_owner_fence
+
     with job_lock(project_root, job_id):
         record = read_job_record(project_root, job_id)
         if record.state != JobState.RUNNING:
@@ -413,6 +626,21 @@ def bind_provider_process(
             raise JobStoreError(
                 "cannot bind provider process: runner pid mismatch",
                 code="E_JOB_CANCEL_UNPROVEN",
+            )
+        if expected_owner_token is not None or record.owner_lease is not None:
+            token = expected_owner_token
+            if token is None and isinstance(record.owner_lease, dict):
+                token = str(record.owner_lease.get("owner_token") or "")
+            if not token:
+                raise JobStoreError(
+                    "cannot bind provider process: missing owner token",
+                    code="E_JOB_LEASE_FENCED",
+                )
+            assert_owner_fence(
+                record,
+                expected_attempt=expected_attempt,
+                expected_owner_token=token,
+                expected_runner_pid=expected_runner_pid,
             )
         if record.cancel_requested_at:
             raise JobStoreError(
@@ -801,6 +1029,9 @@ def prepare_retry(
         record.retry_reason = None
         record.terminal_at = None
         record.attempt_started_at = None
+        record.owner_lease = None
+        record.last_observed_at = None
+        record.recovery = None
         record.provider_process = default_provider_process()
         # Keep worker knobs (fake flags / timeout) for the requeue.
         write_job_record(project_root, record)
@@ -946,6 +1177,7 @@ __all__ = [
     "attempt_dir",
     "attempts_dir",
     "bind_provider_process",
+    "compare_and_transition_job",
     "create_attempt_dir",
     "create_job_dir",
     "delete_job_dir",
@@ -966,9 +1198,12 @@ __all__ = [
     "prepare_retry",
     "quarantine_job_dir",
     "read_job_record",
+    "renew_owner_lease",
     "safe_job_id",
     "transition_job",
+    "transition_owned_job",
     "update_job_fields",
+    "update_owned_job_fields",
     "utc_now",
     "write_job_record",
 ]

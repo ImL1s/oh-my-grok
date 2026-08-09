@@ -25,6 +25,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes, ensure_managed_dir
+from omg_cli.jobs.lease import DEFAULT_JOB_HEARTBEAT_INTERVAL_S
 from omg_cli.jobs.models import TERMINAL_STATES, JobRecord, JobState, JobStoreError
 from omg_cli.jobs.ownership import capture_identity
 from omg_cli.jobs.providers import resolve_job_provider
@@ -35,7 +36,9 @@ from omg_cli.jobs.store import (
     mark_provider_exited,
     mark_provider_launching,
     read_job_record,
+    renew_owner_lease,
     transition_job,
+    transition_owned_job,
     utc_now,
 )
 from omg_cli.providers.base import ProviderAdapter
@@ -46,6 +49,69 @@ from omg_cli.redaction import redact_text
 DEFAULT_READY_TIMEOUT_S = 15.0
 DEFAULT_READY_POLL_S = 0.02
 _MAX_STREAM_CHARS = 256_000
+
+
+class _HeartbeatStop(threading.Event):
+    """Sentinel event for stopping the owner-lease heartbeat thread."""
+
+
+def _owner_token_from(record: JobRecord) -> str | None:
+    lease = record.owner_lease
+    if not isinstance(lease, dict):
+        return None
+    token = lease.get("owner_token")
+    return str(token) if isinstance(token, str) and token else None
+
+
+def _start_heartbeat(
+    project_root: Path,
+    job_id: str,
+    *,
+    expected_attempt: int,
+    expected_owner_token: str,
+    expected_runner_pid: int,
+    interval_s: float = DEFAULT_JOB_HEARTBEAT_INTERVAL_S,
+) -> tuple[threading.Event, threading.Thread]:
+    stop = threading.Event()
+
+    def _loop() -> None:
+        while not stop.wait(timeout=max(0.05, float(interval_s))):
+            try:
+                renew_owner_lease(
+                    project_root,
+                    job_id,
+                    expected_attempt=expected_attempt,
+                    expected_owner_token=expected_owner_token,
+                    expected_runner_pid=expected_runner_pid,
+                )
+            except JobStoreError as exc:
+                code = getattr(exc, "code", None)
+                if code == "E_JOB_LEASE_FENCED":
+                    _append_event(
+                        project_root,
+                        job_id,
+                        "runner.heartbeat_fenced",
+                        code=code,
+                    )
+                    stop.set()
+                    return
+                # Soft failures: keep trying until fenced/terminal.
+                continue
+
+    thread = threading.Thread(
+        target=_loop,
+        name=f"omg-job-heartbeat-{job_id}",
+        daemon=True,
+    )
+    thread.start()
+    return stop, thread
+
+
+def _stop_heartbeat(stop: threading.Event | None, thread: threading.Thread | None) -> None:
+    if stop is not None:
+        stop.set()
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=1.0)
 
 
 @contextmanager
@@ -161,6 +227,9 @@ def _stamp_running_terminal(
     result_desc: str | None,
     error_message: str | None,
     session: dict | None = None,
+    expected_attempt: int | None = None,
+    expected_owner_token: str | None = None,
+    expected_runner_pid: int | None = None,
 ) -> None:
     cur = read_job_record(project_root, job_id)
     if cur.state in TERMINAL_STATES:
@@ -195,12 +264,36 @@ def _stamp_running_terminal(
         updates["session"] = session
     if target == JobState.CANCELLED and not cur.cancel_reason:
         updates["cancel_reason"] = "runner"
-    transition_job(
-        project_root,
-        job_id,
-        target,
-        updates=updates,
+
+    token = expected_owner_token or _owner_token_from(cur)
+    attempt = int(expected_attempt if expected_attempt is not None else cur.attempt)
+    runner_pid = int(
+        expected_runner_pid if expected_runner_pid is not None else (cur.pid or -1)
     )
+    if token is None:
+        # Legacy unmanaged runner — fall back to unfenced transition.
+        transition_job(project_root, job_id, target, updates=updates)
+    else:
+        try:
+            transition_owned_job(
+                project_root,
+                job_id,
+                target,
+                expected_attempt=attempt,
+                expected_owner_token=token,
+                expected_runner_pid=runner_pid,
+                updates=updates,
+            )
+        except JobStoreError as exc:
+            if getattr(exc, "code", None) == "E_JOB_LEASE_FENCED":
+                _append_event(
+                    project_root,
+                    job_id,
+                    "runner.terminal_fenced",
+                    code="E_JOB_LEASE_FENCED",
+                )
+                return
+            raise
     _append_event(
         project_root,
         job_id,
@@ -264,16 +357,30 @@ def _run_job_with_env(
         # Terminal already, or parent never committed — exit without Adapter.run.
         return 0
 
+    owner_token = _owner_token_from(ready)
+    runner_pid = os.getpid()
     try:
-        from omg_cli.jobs.store import update_job_fields, utc_now
+        from omg_cli.jobs.store import update_job_fields, update_owned_job_fields, utc_now
 
-        update_job_fields(
-            project_root,
-            job_id,
-            attempt_started_at=utc_now(),
-        )
-    except JobStoreError:
-        pass
+        if owner_token is not None:
+            update_owned_job_fields(
+                project_root,
+                job_id,
+                expected_attempt=int(ready.attempt),
+                expected_owner_token=owner_token,
+                expected_runner_pid=runner_pid,
+                attempt_started_at=utc_now(),
+            )
+        else:
+            update_job_fields(
+                project_root,
+                job_id,
+                attempt_started_at=utc_now(),
+            )
+    except JobStoreError as exc:
+        if getattr(exc, "code", None) == "E_JOB_LEASE_FENCED":
+            _append_event(project_root, job_id, "runner.fenced_before_start")
+            return 0
 
     worker = ready.worker or {}
     fake_env: dict[str, str | None] = {
@@ -286,7 +393,14 @@ def _run_job_with_env(
     }
     # Nested scope so fake flags do not leak past Adapter.run either.
     with _env_scope(fake_env):
-        return _execute_adapter(project_root, job_id, ready, jdir, worker)
+        return _execute_adapter(
+            project_root,
+            job_id,
+            ready,
+            jdir,
+            worker,
+            owner_token=owner_token,
+        )
 
 
 def _install_cancel_handlers(cancel_event: threading.Event) -> list[tuple[int, object]]:
@@ -331,14 +445,27 @@ def _execute_adapter(
     ready: JobRecord,
     jdir: Path,
     worker: dict,
+    *,
+    owner_token: str | None = None,
 ) -> int:
     prompt_path = jdir / "prompt.md"
     cancel_event = threading.Event()
     prev_handlers = _install_cancel_handlers(cancel_event)
     runner_pid = os.getpid()
+    hb_stop: threading.Event | None = None
+    hb_thread: threading.Thread | None = None
+    token = owner_token or _owner_token_from(ready)
 
     try:
         _append_event(project_root, job_id, "runner.start", provider=ready.provider)
+        if token is not None:
+            hb_stop, hb_thread = _start_heartbeat(
+                project_root,
+                job_id,
+                expected_attempt=int(ready.attempt),
+                expected_owner_token=token,
+                expected_runner_pid=runner_pid,
+            )
         adapter = resolve_adapter(ready.provider)
         assert isinstance(adapter, ProviderAdapter)
 
@@ -364,6 +491,7 @@ def _execute_adapter(
                 job_id,
                 expected_runner_pid=runner_pid,
                 expected_attempt=int(ready.attempt),
+                expected_owner_token=token,
             )
 
         def _on_process_started(proc: object) -> None:
@@ -383,6 +511,7 @@ def _execute_adapter(
                 handle=handle,
                 expected_runner_pid=runner_pid,
                 expected_attempt=int(ready.attempt),
+                expected_owner_token=token,
             )
 
         # ACP sidecar: inject binding env for the adapter (never logs session UUID).
@@ -515,6 +644,9 @@ def _execute_adapter(
         }
         # auth_blocked stays failed even if returncode==0
         ok = bool(result.ok) and result.exit_class == "success" and not result.cancelled
+        _stop_heartbeat(hb_stop, hb_thread)
+        hb_stop = None
+        hb_thread = None
         _stamp_running_terminal(
             project_root,
             job_id,
@@ -527,6 +659,9 @@ def _execute_adapter(
             result_desc=result_desc,
             error_message=result.error_message or None,
             session=session,
+            expected_attempt=int(ready.attempt),
+            expected_owner_token=token,
+            expected_runner_pid=runner_pid,
         )
         if result.cancelled or result.exit_class == "cancelled":
             return 0
@@ -568,12 +703,16 @@ def _execute_adapter(
                 artifacts=[],
                 result_desc=None,
                 error_message=str(exc),
+                expected_attempt=int(ready.attempt),
+                expected_owner_token=token,
+                expected_runner_pid=runner_pid,
             )
         except JobStoreError:
             pass
         print(f"omg job runner: {exc}", file=sys.stderr)
         return 1
     finally:
+        _stop_heartbeat(hb_stop, hb_thread)
         _restore_handlers(prev_handlers)
 
 

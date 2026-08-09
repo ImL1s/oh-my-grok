@@ -35,7 +35,12 @@ TERMINAL_STATES: frozenset[JobState] = frozenset(
 LEGAL_TRANSITIONS: dict[JobState, frozenset[JobState]] = {
     JobState.QUEUED: frozenset({JobState.STARTING}),
     JobState.STARTING: frozenset(
-        {JobState.RUNNING, JobState.FAILED, JobState.CANCELLED}
+        {
+            JobState.RUNNING,
+            JobState.FAILED,
+            JobState.CANCELLED,
+            JobState.LOST,  # #68 PR4 recovery after spawn-identity proof
+        }
     ),
     JobState.RUNNING: frozenset(
         {
@@ -180,6 +185,10 @@ class JobRecord:
     retry_reason: str | None = None
     terminal_at: str | None = None
     attempt_started_at: str | None = None
+    # #68 PR4 — additive owner lease / recovery metadata (schema v1; no bump).
+    owner_lease: dict[str, Any] | None = None
+    last_observed_at: str | None = None
+    recovery: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -221,6 +230,13 @@ class JobRecord:
             "retry_reason": self.retry_reason,
             "terminal_at": self.terminal_at,
             "attempt_started_at": self.attempt_started_at,
+            "owner_lease": (
+                dict(self.owner_lease) if isinstance(self.owner_lease, dict) else None
+            ),
+            "last_observed_at": self.last_observed_at,
+            "recovery": (
+                dict(self.recovery) if isinstance(self.recovery, dict) else None
+            ),
         }
 
     @classmethod
@@ -338,6 +354,59 @@ class JobRecord:
                     code="E_JOB_MALFORMED",
                 )
 
+        owner_lease_raw = data.get("owner_lease")
+        owner_lease: dict[str, Any] | None
+        if owner_lease_raw is None:
+            owner_lease = None
+        elif not isinstance(owner_lease_raw, Mapping):
+            raise JobStoreError(
+                "job.json owner_lease must be an object",
+                code="E_JOB_LEASE_MALFORMED",
+            )
+        else:
+            from omg_cli.jobs.lease import validate_owner_lease
+
+            owner_lease = validate_owner_lease(
+                owner_lease_raw,
+                expected_attempt=attempt,
+            )
+
+        last_observed_at = data.get("last_observed_at")
+        if last_observed_at is not None and not isinstance(last_observed_at, str):
+            raise JobStoreError(
+                "job.json last_observed_at must be a string or null",
+                code="E_JOB_LEASE_MALFORMED",
+            )
+
+        recovery_raw = data.get("recovery")
+        if recovery_raw is None:
+            recovery: dict[str, Any] | None = None
+        else:
+            from omg_cli.jobs.lease import validate_recovery_meta
+
+            recovery = validate_recovery_meta(recovery_raw)
+
+        # Terminal leases must be released when present.
+        if (
+            owner_lease is not None
+            and state in TERMINAL_STATES
+            and owner_lease.get("released_at") is None
+        ):
+            raise JobStoreError(
+                "terminal job owner_lease must have released_at set",
+                code="E_JOB_LEASE_MALFORMED",
+            )
+        # Active running lease must not be released.
+        if (
+            owner_lease is not None
+            and state == JobState.RUNNING
+            and owner_lease.get("released_at") is not None
+        ):
+            raise JobStoreError(
+                "running job owner_lease must have released_at=null",
+                code="E_JOB_LEASE_MALFORMED",
+            )
+
         return cls(
             job_id=str(job_id),
             created_at=str(created_at),
@@ -399,14 +468,27 @@ class JobRecord:
                 if data.get("attempt_started_at") is not None
                 else None
             ),
+            owner_lease=owner_lease,
+            last_observed_at=(
+                str(last_observed_at) if last_observed_at is not None else None
+            ),
+            recovery=recovery,
         )
 
     def remaining_attempts(self) -> int:
         return max(0, int(self.attempt_budget) - int(self.attempt))
 
     def public_status(self) -> dict[str, Any]:
-        """Status surface (no large payloads; no provider_binary)."""
+        """Status surface (no large payloads; no provider_binary; no owner_token)."""
+        from omg_cli.jobs.lease import public_lease_summary
         from omg_cli.jobs.providers import public_request_summary
+
+        lease_summary = None
+        if self.owner_lease is not None:
+            try:
+                lease_summary = public_lease_summary(self.owner_lease)
+            except JobStoreError:
+                lease_summary = None
 
         return {
             "job_id": self.job_id,
@@ -448,6 +530,17 @@ class JobRecord:
                 # intentionally omit pid_starttime / handle internals in public
             },
             "session": self.session,
+            "owner_lease": lease_summary,
+            "last_observed_at": self.last_observed_at,
+            "recovery": (
+                {
+                    "last_action": (self.recovery or {}).get("last_action"),
+                    "last_reason": (self.recovery or {}).get("last_reason"),
+                    "last_at": (self.recovery or {}).get("last_at"),
+                }
+                if self.recovery
+                else None
+            ),
         }
 
 

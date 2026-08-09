@@ -10,6 +10,18 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **Partial work for #68 PR4 / lease recovery:** attempt-scoped owner lease +
+  runner heartbeat; read-only liveness observation on `omg job status|list|wait`;
+  explicit `omg job recover` / `recover --all` reconciles expired abandoned jobs
+  to `lost` after OS identity proof (CAS/generation-safe; concurrent recover one
+  winner). Lost jobs reclaim only via existing exact-next-attempt
+  `omg job retry` (no auto-retry scheduler). Fail-closed for live/unproven/
+  orphan-provider identities; public surfaces never expose owner tokens.
+  Hermetic coverage in `tests/test_jobs_lease.py` and
+  `tests/test_jobs_recovery.py`. Docs: `docs/durable-jobs.md`. Does **not**
+  close #68 (automatic retry scheduling and authenticated live Antigravity
+  remain open).
+
 - **#69 PR3 leader-resume task-claim reconciliation:** `omg team resume`
   (`resume_for_identity`) reconciles Team API task claims under the existing
   scale.lock after pane reconcile/relaunch — preserve coherent unexpired

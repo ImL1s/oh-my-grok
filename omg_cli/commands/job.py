@@ -1,6 +1,6 @@
 """omg job — durable background jobs CLI (#68).
 
-Commands: ``omg job {start,status,wait,collect,cancel,list,retry,gc}``.
+Commands: ``omg job {start,status,wait,collect,cancel,list,retry,gc,recover}``.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from pathlib import Path
 
 from omg_cli.cli_envelope import emit_data, emit_json, failure, success, wants_json
 from omg_cli.jobs.models import JobStoreError
+from omg_cli.jobs.recovery import recover_job, recover_jobs
 from omg_cli.jobs.runtime import (
     cancel_job,
     collect_job,
@@ -50,8 +51,10 @@ def cmd_job(args: argparse.Namespace) -> int:
         return _cmd_retry(args)
     if action == "gc":
         return _cmd_gc(args)
+    if action == "recover":
+        return _cmd_recover(args)
     print(
-        "usage: omg job {start,status,wait,collect,cancel,list,retry,gc}",
+        "usage: omg job {start,status,wait,collect,cancel,list,retry,gc,recover}",
         file=sys.stderr,
     )
     return 2
@@ -162,6 +165,16 @@ def _cmd_start(args: argparse.Namespace) -> int:
     return 0
 
 
+def _status_with_observation(root: Path, job_id: str) -> dict:
+    from omg_cli.jobs.recovery import observe_job
+
+    rec = job_status(root, job_id)
+    body = redact_value(rec.public_status())
+    obs = observe_job(root, job_id)
+    body["observation"] = redact_value(obs.to_public_dict())
+    return body
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     cmd = "job.status"
     job_id = getattr(args, "job_id", None)
@@ -169,7 +182,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         emit_json(failure(cmd, "E_JOB_UNKNOWN", "JOB_ID required"))
         return 2
     try:
-        rec = job_status(_root(args), str(job_id))
+        body = _status_with_observation(_root(args), str(job_id))
     except JobStoreError as exc:
         emit_json(
             failure(
@@ -179,10 +192,14 @@ def _cmd_status(args: argparse.Namespace) -> int:
             )
         )
         return 1
-    body = redact_value(rec.public_status())
     if wants_json(args):
         emit_json(success(cmd, job=body))
     else:
+        health = (body.get("observation") or {}).get("health")
+        print(
+            f"job {body.get('job_id')} state={body.get('state')} "
+            f"health={health}"
+        )
         emit_data(args, cmd, body)
     return 0
 
@@ -199,18 +216,38 @@ def _cmd_wait(args: argparse.Namespace) -> int:
             _root(args),
             str(job_id),
             timeout_s=timeout,
+            stop_on_recovery_required=True,
         )
     except JobStoreError as exc:
+        code = getattr(exc, "code", None) or "E_JOB_UNKNOWN"
+        details: dict = {}
+        obs = getattr(exc, "observation", None)
+        if obs is not None:
+            try:
+                details["observation"] = redact_value(obs.to_public_dict())
+            except Exception:
+                pass
+            try:
+                details["job"] = _status_with_observation(_root(args), str(job_id))
+            except JobStoreError:
+                pass
         emit_json(
             failure(
                 cmd,
-                getattr(exc, "code", None) or "E_JOB_UNKNOWN",
+                code,
                 redact_text(str(exc)),
+                details=details or None,
+                next_action=(
+                    "Run omg job recover JOB_ID or omg job cancel JOB_ID "
+                    "as recommended by observation"
+                    if code == "E_JOB_RECOVERY_REQUIRED"
+                    else None
+                ),
             )
         )
         return 1
 
-    body = redact_value(rec.public_status())
+    body = _status_with_observation(_root(args), rec.job_id)
     if timed_out:
         emit_json(
             failure(
@@ -226,7 +263,8 @@ def _cmd_wait(args: argparse.Namespace) -> int:
     if wants_json(args):
         emit_json(success(cmd, timed_out=False, job=body))
     else:
-        print(f"job {rec.job_id} state={rec.state.value}")
+        health = (body.get("observation") or {}).get("health")
+        print(f"job {rec.job_id} state={rec.state.value} health={health}")
     return 0
 
 
@@ -289,6 +327,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
             state=getattr(args, "state", None) or None,
             provider=getattr(args, "provider", None) or None,
             run_id=getattr(args, "run_id", None) or None,
+            observe=True,
         )
     except JobStoreError as exc:
         emit_json(
@@ -306,8 +345,10 @@ def _cmd_list(args: argparse.Namespace) -> int:
         if not jobs:
             print("(no jobs)")
         for j in jobs:
+            health = (j.get("observation") or {}).get("health")
             print(
                 f"{j.get('job_id')} state={j.get('state')} "
+                f"health={health} "
                 f"provider={j.get('provider')} role={j.get('role')} "
                 f"attempt={j.get('attempt')}/{j.get('attempt_budget')}"
             )
@@ -419,17 +460,114 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_recover(args: argparse.Namespace) -> int:
+    cmd = "job.recover"
+    job_id = getattr(args, "job_id", None)
+    recover_all = bool(getattr(args, "recover_all", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    run_id = getattr(args, "run_id", None) or None
+    provider = getattr(args, "provider", None) or None
+
+    if bool(job_id) == recover_all:
+        emit_json(
+            failure(
+                cmd,
+                "E_JOB_RECOVER_USAGE",
+                "exactly one of JOB_ID or --all is required",
+                next_action="Pass JOB_ID or --all",
+            )
+        )
+        return 2
+    if (run_id is not None or provider is not None) and not recover_all:
+        emit_json(
+            failure(
+                cmd,
+                "E_JOB_RECOVER_USAGE",
+                "--run / --provider are only valid with --all",
+            )
+        )
+        return 2
+
+    root = _root(args)
+    try:
+        if recover_all:
+            batch = recover_jobs(
+                root,
+                run_id=run_id,
+                provider=provider,
+                dry_run=dry_run,
+            )
+            payload = redact_value(batch.to_public_dict())
+            if not batch.ok:
+                emit_json(
+                    failure(
+                        cmd,
+                        "E_JOB_RECOVERY_PARTIAL",
+                        "one or more jobs blocked or malformed during recover --all",
+                        details=payload,
+                    )
+                )
+                return 1
+            if wants_json(args):
+                emit_json(success(cmd, **payload))
+            else:
+                counts = batch.counts
+                print(
+                    f"recover --all ok={counts['ok']} blocked={counts['blocked']} "
+                    f"marked_lost={counts['marked_lost']} dry_run={dry_run}"
+                )
+            return 0
+
+        result = recover_job(root, str(job_id), dry_run=dry_run)
+        payload = redact_value(result.to_public_dict())
+        if not result.ok:
+            emit_json(
+                failure(
+                    cmd,
+                    result.error_code or "E_JOB_RECOVERY_UNPROVEN",
+                    redact_text(result.error_message or "recover blocked"),
+                    details=payload,
+                    next_action=(
+                        "omg job cancel JOB_ID"
+                        if result.error_code == "E_JOB_RECOVERY_ORPHAN_LIVE"
+                        else "omg job retry JOB_ID --attempt current+1"
+                        if result.action == "marked_lost"
+                        else None
+                    ),
+                )
+            )
+            return 1
+        if wants_json(args):
+            emit_json(success(cmd, **payload))
+        else:
+            print(
+                f"job {result.job_id} recover action={result.action} "
+                f"before={result.before_state} after={result.after_state} "
+                f"dry_run={dry_run}"
+            )
+        return 0
+    except JobStoreError as exc:
+        emit_json(
+            failure(
+                cmd,
+                getattr(exc, "code", None) or "E_JOB_RECOVERY_UNPROVEN",
+                redact_text(str(exc)),
+            )
+        )
+        return 1
+
+
 def register_job_parsers(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
 ) -> None:
-    """Register ``job`` family parsers (#68 PR1–PR3)."""
+    """Register ``job`` family parsers (#68 PR1–PR4)."""
     p_job = sub.add_parser(
         "job",
         parents=[common],
         help=(
             "durable background jobs "
-            "(start/status/wait/collect/cancel/list/retry/gc; #68 PR1–PR3)"
+            "(start/status/wait/collect/cancel/list/retry/gc/recover; #68 PR1–PR4)"
         ),
     )
     job_sub = p_job.add_subparsers(dest="job_action")
@@ -609,6 +747,45 @@ def register_job_parsers(
         help="delete terminal jobs with terminal_at older than N days",
     )
     p_gc.set_defaults(func=cmd_job, job_action="gc")
+
+    p_recover = job_sub.add_parser(
+        "recover",
+        parents=[common],
+        help=(
+            "reconcile expired/abandoned jobs to lost "
+            "(reclaim only via explicit retry)"
+        ),
+    )
+    p_recover.add_argument(
+        "job_id",
+        nargs="?",
+        default=None,
+        help="job id (xor with --all)",
+    )
+    p_recover.add_argument(
+        "--all",
+        dest="recover_all",
+        action="store_true",
+        help="recover every active public job (optionally filtered)",
+    )
+    p_recover.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="with --all: filter by run id",
+    )
+    p_recover.add_argument(
+        "--provider",
+        choices=("fake", "antigravity"),
+        default=None,
+        help="with --all: filter by provider",
+    )
+    p_recover.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="observe and decide without writing or signalling",
+    )
+    p_recover.set_defaults(func=cmd_job, job_action="recover")
 
     p_job.set_defaults(func=cmd_job)
 
