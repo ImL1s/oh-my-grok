@@ -54,8 +54,12 @@ WORKER_ALLOWED_OPS ∩ WORKER_DENIED_OPS == ∅
 
 v1 freezes the current OMX-shaped **names** surface (36 ops) with the
 shipped P0′ **implemented** subset (25 handlers). Reserved rows are not
-parity claims. Issue #69 remains open for reconcile, job-backed workers,
-Hyperplan, and further ops.
+parity claims. Leader-resume **task-claim reconciliation** ships through
+`omg team resume` (`resume_for_identity` → `reconcile_task_claims`) and is
+**not** a catalog-v1 / MCP operation — a public `omg team api reconcile`
+requires a future catalog version. Issue #69 remains open for job-backed
+workers, replacement attempts, Hyperplan/compositions, API/MCP breadth, and
+full OMX surface parity.
 
 ```bash
 omg team api catalog

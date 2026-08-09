@@ -123,18 +123,27 @@
         "revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa",
         "source_paths": ["README.md"]
       },
-      "omg_paths": ["omg_cli/team/plane.py", "omg_cli/team/cli.py"],
+      "omg_paths": [
+        "omg_cli/team/plane.py",
+        "omg_cli/team/cli.py",
+        "omg_cli/team/runtime.py",
+        "omg_cli/team/api.py"
+      ],
       "runtime_owner": "omg",
       "maturity": {
         "grok": "catalogued"
       },
       "evidence": {
-        "tests": ["tests/test_team_plane.py"],
-        "docs": ["docs/skills.md", "docs/security-model.md"],
+        "tests": [
+          "tests/test_team_plane.py",
+          "tests/test_team_reconcile.py",
+          "tests/test_team_runtime.py"
+        ],
+        "docs": ["docs/skills.md", "docs/security-model.md", "docs/team-operation-catalog-v1.md"],
         "live": []
       },
       "issues": ["#69"],
-      "gap": "Current Team plane is production-usable but not v3; blocked on #67/#68."
+      "gap": "PR3 leader-resume claim reconciliation landed via omg team resume; job-backed workers, replacement attempts, compositions, and full OMX operation surface remain open (#69). No maturity promotion; external-runtime evidence empty."
     },
     {
       "id": "parity.inventory.governance",

@@ -7,7 +7,7 @@
 
 | Capability | Category | Classification | Maturity | Marker | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `team.plane_v3` | team | omg_native | grok=catalogued | catalogued | Current Team plane is production-usable but not v3; blocked on #67/#68. |
+| `team.plane_v3` | team | omg_native | grok=catalogued | catalogued | PR3 leader-resume claim reconciliation landed via omg team resume; job-backed workers, replacement attempts, compositions, and full OMX operation surface remain open (#69). No maturity promotion; external-runtime evidence empty. |
 | `parity.inventory.governance` | parity_governance | omg_native | grok=catalogued | catalogued | #78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; #78-E README↔JSON managed-snapshot drift gate landed; promotion remains unperformed and is proof-gated; real-source policies/proofs still open. |
 | `omc.cli.session_surfaces` | runtime_orchestration | omg_native | grok=catalogued | catalogued | OMG substitutes via guidance + host_session; OMC in-session MCP/tool surfaces are not 1:1. |
 | `omc.agents.catalog_routing` | agents_routing | omg_native | grok=catalogued | catalogued | Grok plugin agents exist; OMC-style dynamic tier routing is not fully mirrored. |

@@ -37,8 +37,8 @@ def _init_repo(path: Path) -> None:
 @pytest.mark.parametrize(
     ("pending_operation", "expected_order"),
     [
-        ("relaunch", ["relaunch", "resume"]),
-        (None, ["resume", "relaunch"]),
+        ("relaunch", ["relaunch", "resume", "claims"]),
+        (None, ["resume", "relaunch", "claims"]),
     ],
 )
 def test_resume_for_identity_uses_one_lock_and_operation_aware_order(
@@ -67,7 +67,7 @@ def test_resume_for_identity_uses_one_lock_and_operation_aware_order(
     monkeypatch.setattr(
         runtime,
         "load_team_meta",
-        lambda *_args: {"identity_generation": 0},
+        lambda *_args: {"identity_generation": 0, "team_id": "team"},
     )
     monkeypatch.setattr(
         scaling,
@@ -99,18 +99,295 @@ def test_resume_for_identity_uses_one_lock_and_operation_aware_order(
             "note": "resume reconciled",
         }
 
+    def claims(*_args: object, **_kwargs: object) -> dict[str, object]:
+        assert lock_held
+        events.append("claims")
+        return {
+            "status": "not_materialized",
+            "scanned": 0,
+            "preserved_unexpired": [],
+            "released_expired": [],
+            "unchanged": [],
+        }
+
     monkeypatch.setattr(
         scaling,
         "_relaunch_dead_incomplete_workers_locked",
         recover,
     )
     monkeypatch.setattr(scaling, "_resume_team_locked_impl", reconcile)
+    monkeypatch.setattr(
+        "omg_cli.team.api.reconcile_task_claims",
+        claims,
+    )
 
     out = runtime.resume_for_identity(tmp_path, "team-name")
 
     assert events == ["lock-enter", *expected_order, "lock-exit"]
     assert out["identity_generation"] == 1
     assert out["relaunched"] == [{"task_id": "w2"}]
+    assert out["claim_reconcile"]["status"] == "not_materialized"
+
+
+def test_resume_for_identity_reconciles_claims_inside_existing_lifecycle_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lock_held = False
+    saw_claims_under_lock = False
+
+    class LifecycleLock:
+        def __enter__(self) -> None:
+            nonlocal lock_held
+            lock_held = True
+            return None
+
+        def __exit__(self, *_args: object) -> None:
+            nonlocal lock_held
+            lock_held = False
+
+    monkeypatch.setattr(runtime, "resolve_team_ref", lambda *_args: "run-1")
+    monkeypatch.setattr(
+        runtime,
+        "load_team_meta",
+        lambda *_args: {"identity_generation": 0, "team_id": "team"},
+    )
+    monkeypatch.setattr(
+        scaling,
+        "acquire_scale_lock",
+        lambda *_args: LifecycleLock(),
+    )
+    monkeypatch.setattr(
+        scaling,
+        "pending_identity_wal_operation",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        scaling,
+        "_resume_team_locked_impl",
+        lambda *_a, **_k: {"identity_generation": 0, "note": "ok"},
+    )
+    monkeypatch.setattr(
+        scaling,
+        "_relaunch_dead_incomplete_workers_locked",
+        lambda *_a, **_k: {
+            "relaunched": [],
+            "blocked": [],
+            "skipped": [],
+            "identity_generation": 0,
+            "note": "none",
+        },
+    )
+
+    def claims(*_args: object, **_kwargs: object) -> dict[str, object]:
+        nonlocal saw_claims_under_lock
+        saw_claims_under_lock = lock_held
+        return {
+            "status": "ok",
+            "scanned": 0,
+            "preserved_unexpired": [],
+            "released_expired": [],
+            "unchanged": [],
+        }
+
+    monkeypatch.setattr("omg_cli.team.api.reconcile_task_claims", claims)
+    runtime.resume_for_identity(tmp_path, "team-name")
+    assert saw_claims_under_lock is True
+
+
+def test_resume_for_identity_preserves_operation_aware_wal_order_before_claims(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class LifecycleLock:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(runtime, "resolve_team_ref", lambda *_args: "run-1")
+    monkeypatch.setattr(
+        runtime,
+        "load_team_meta",
+        lambda *_args: {"identity_generation": 1, "team_id": "team"},
+    )
+    monkeypatch.setattr(
+        scaling,
+        "acquire_scale_lock",
+        lambda *_args: LifecycleLock(),
+    )
+    monkeypatch.setattr(
+        scaling,
+        "pending_identity_wal_operation",
+        lambda *_args: "relaunch",
+    )
+    monkeypatch.setattr(
+        scaling,
+        "_relaunch_dead_incomplete_workers_locked",
+        lambda *_a, **_k: (
+            events.append("relaunch"),
+            {
+                "relaunched": [],
+                "blocked": [],
+                "skipped": [],
+                "identity_generation": 1,
+                "note": "wal",
+            },
+        )[1],
+    )
+    monkeypatch.setattr(
+        scaling,
+        "_resume_team_locked_impl",
+        lambda *_a, **_k: (
+            events.append("resume"),
+            {"identity_generation": 1, "note": "ok"},
+        )[1],
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.api.reconcile_task_claims",
+        lambda *_a, **_k: (
+            events.append("claims"),
+            {
+                "status": "ok",
+                "scanned": 0,
+                "preserved_unexpired": [],
+                "released_expired": [],
+                "unchanged": [],
+            },
+        )[1],
+    )
+    runtime.resume_for_identity(tmp_path, "x")
+    assert events == ["relaunch", "resume", "claims"]
+
+
+def test_resume_for_identity_reports_claim_reconcile_additively(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LifecycleLock:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(runtime, "resolve_team_ref", lambda *_args: "run-1")
+    monkeypatch.setattr(
+        runtime,
+        "load_team_meta",
+        lambda *_args: {"identity_generation": 0, "team_id": "team"},
+    )
+    monkeypatch.setattr(
+        scaling,
+        "acquire_scale_lock",
+        lambda *_args: LifecycleLock(),
+    )
+    monkeypatch.setattr(
+        scaling,
+        "pending_identity_wal_operation",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        scaling,
+        "_resume_team_locked_impl",
+        lambda *_a, **_k: {"identity_generation": 2, "note": "pane ok"},
+    )
+    monkeypatch.setattr(
+        scaling,
+        "_relaunch_dead_incomplete_workers_locked",
+        lambda *_a, **_k: {
+            "relaunched": [{"task_id": "w1"}],
+            "blocked": [{"task_id": "w2"}],
+            "skipped": [{"task_id": "w3"}],
+            "identity_generation": 3,
+            "note": "relaunched one",
+        },
+    )
+    claim_obj = {
+        "status": "ok",
+        "scanned": 2,
+        "preserved_unexpired": ["1"],
+        "released_expired": ["2"],
+        "unchanged": [],
+    }
+    monkeypatch.setattr(
+        "omg_cli.team.api.reconcile_task_claims",
+        lambda *_a, **_k: claim_obj,
+    )
+    out = runtime.resume_for_identity(tmp_path, "team-name")
+    assert out["claim_reconcile"] == claim_obj
+    assert out["relaunched"] == [{"task_id": "w1"}]
+    assert out["blocked"] == [{"task_id": "w2"}]
+    assert out["skipped"] == [{"task_id": "w3"}]
+    # Claims stay separate from process relaunch fields.
+    assert out["claim_reconcile"] is not out["relaunched"]
+    assert "preserved_unexpired" not in out["relaunched"][0]
+    assert "released_expired" not in (out["blocked"][0] if out["blocked"] else {})
+
+
+def test_resume_for_identity_claim_corruption_exits_without_claim_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.team.api import TeamApiError
+
+    class LifecycleLock:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(runtime, "resolve_team_ref", lambda *_args: "run-1")
+    monkeypatch.setattr(
+        runtime,
+        "load_team_meta",
+        lambda *_args: {"identity_generation": 0, "team_id": "team"},
+    )
+    monkeypatch.setattr(
+        scaling,
+        "acquire_scale_lock",
+        lambda *_args: LifecycleLock(),
+    )
+    monkeypatch.setattr(
+        scaling,
+        "pending_identity_wal_operation",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        scaling,
+        "_resume_team_locked_impl",
+        lambda *_a, **_k: {"identity_generation": 0, "note": "ok"},
+    )
+    monkeypatch.setattr(
+        scaling,
+        "_relaunch_dead_incomplete_workers_locked",
+        lambda *_a, **_k: {
+            "relaunched": [],
+            "blocked": [],
+            "skipped": [],
+            "identity_generation": 0,
+            "note": "none",
+        },
+    )
+
+    def boom(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            "task '1': owner_claim_mismatch",
+            details={
+                "error": "corrupt_claim",
+                "task_id": "1",
+                "invariant": "owner_claim_mismatch",
+            },
+        )
+
+    monkeypatch.setattr("omg_cli.team.api.reconcile_task_claims", boom)
+    with pytest.raises(TeamApiError, match="owner_claim_mismatch"):
+        runtime.resume_for_identity(tmp_path, "team-name")
 
 
 def test_launch_team_dry_run_seeds_ref_and_board(
