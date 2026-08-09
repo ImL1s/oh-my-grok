@@ -198,7 +198,8 @@ def test_refresh_plan_classifies_upstream_changed_capability() -> None:
     assert detail["before"]["promise"] != detail["after"]["promise"]
     assert detail["after"]["promise"] == "Updated promise text"
     assert detail["after"]["source_paths"] == ["README.md", "skills/team/SKILL.md"]
-    assert "README.md" in detail["before"]["source_paths"]
+    assert "skills/team/SKILL.md" in detail["before"]["source_paths"]
+    assert "commands/omc-teams.md" in detail["before"]["source_paths"]
 
     stubs = plan["proposed_inventory_patch"]["capabilities"]
     assert len(stubs) == 1
