@@ -1814,7 +1814,11 @@ def test_retry_budget_exhaustion_fail_closed(root: Path) -> None:
 
 def test_retry_archives_attempt_history(root: Path) -> None:
     from omg_cli.jobs.runtime import retry_job
-    from omg_cli.jobs.store import attempt_dir
+    from omg_cli.jobs.store import (
+        _ATTEMPT_ARCHIVE_COMPLETE_NAME,
+        _ATTEMPT_ARCHIVE_COMPLETE_VERSION,
+        attempt_dir,
+    )
 
     prompt = _prompt(root)
     started = start_job(
@@ -1832,11 +1836,17 @@ def test_retry_archives_attempt_history(root: Path) -> None:
     assert retried.record.attempt == 2
     archive = attempt_dir(root, terminal.job_id, 1)
     assert (archive / "attempt.json").is_file()
+    assert (archive / _ATTEMPT_ARCHIVE_COMPLETE_NAME).is_file()
     assert (archive / "stdout.jsonl").is_file()
     assert (archive / "events.jsonl").is_file()
     snap = json.loads((archive / "attempt.json").read_text(encoding="utf-8"))
     assert snap["attempt"] == 1
     assert snap["state"] == "failed"
+    marker = json.loads(
+        (archive / _ATTEMPT_ARCHIVE_COMPLETE_NAME).read_text(encoding="utf-8")
+    )
+    assert marker["archived_attempt"] == 1
+    assert marker["version"] == _ATTEMPT_ARCHIVE_COMPLETE_VERSION
     # Active prompt.md immutable at job root.
     assert (job_dir(root, terminal.job_id) / "prompt.md").is_file()
     wait_job(root, retried.record.job_id, timeout_s=15)
@@ -1845,7 +1855,11 @@ def test_retry_archives_attempt_history(root: Path) -> None:
 def test_retry_recovers_from_partial_attempt_archive(root: Path) -> None:
     """Incomplete attempts/NNNN/ must not permanently block retry (E_JOB_RETRY_ARCHIVE)."""
     from omg_cli.jobs.runtime import retry_job
-    from omg_cli.jobs.store import attempt_dir, attempts_dir
+    from omg_cli.jobs.store import (
+        _ATTEMPT_ARCHIVE_COMPLETE_NAME,
+        attempt_dir,
+        attempts_dir,
+    )
 
     prompt = _prompt(root)
     started = start_job(
@@ -1867,11 +1881,13 @@ def test_retry_recovers_from_partial_attempt_archive(root: Path) -> None:
     (partial / "artifacts").mkdir()
     (partial / "stdout.jsonl").write_text("partial\n", encoding="utf-8")
     assert not (partial / "attempt.json").is_file()
+    assert not (partial / _ATTEMPT_ARCHIVE_COMPLETE_NAME).is_file()
 
     retried = retry_job(root, terminal.job_id, attempt=2)
     assert retried.record.attempt == 2
     archive = attempt_dir(root, terminal.job_id, 1)
     assert (archive / "attempt.json").is_file()
+    assert (archive / _ATTEMPT_ARCHIVE_COMPLETE_NAME).is_file()
     snap = json.loads((archive / "attempt.json").read_text(encoding="utf-8"))
     assert snap["archived_attempt"] == 1
     assert snap["state"] == "failed"
@@ -1882,6 +1898,77 @@ def test_retry_recovers_from_partial_attempt_archive(root: Path) -> None:
         if p.name.startswith(".staging-")
     ]
     assert leftover == []
+    wait_job(root, retried.record.job_id, timeout_s=15)
+
+
+def test_retry_recovers_legacy_attempt_json_without_complete_marker(
+    root: Path,
+) -> None:
+    """attempt.json alone must not classify an archive complete (REV4 P0).
+
+    Legacy mid-copy could leave matching ``archived_attempt`` while later
+    archive files / the completion marker are missing. That must be treated as
+    incomplete/recoverable — never as idempotent reuse that would wipe intact
+    active evidence without a real archive.
+    """
+    from omg_cli.jobs.runtime import retry_job
+    from omg_cli.jobs.store import (
+        _ATTEMPT_ARCHIVE_COMPLETE_NAME,
+        _attempt_archive_complete,
+        attempt_dir,
+    )
+
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=prompt,
+        fail=True,
+        sleep_s=0.02,
+        attempt_budget=3,
+    )
+    terminal, _ = wait_job(root, started.record.job_id, timeout_s=15)
+    assert terminal.state == JobState.FAILED
+
+    jdir = job_dir(root, terminal.job_id)
+    active_stdout = (jdir / "stdout.jsonl").read_text(encoding="utf-8")
+    assert active_stdout  # intact active evidence to protect
+
+    # Legacy partial: attempt.json published early, later file + marker absent.
+    partial = attempt_dir(root, terminal.job_id, 1)
+    partial.mkdir(parents=True)
+    (partial / "artifacts").mkdir()
+    (partial / "attempt.json").write_text(
+        json.dumps(
+            {
+                "archived_attempt": 1,
+                "attempt": 1,
+                "state": "failed",
+                "job_id": terminal.job_id,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (partial / "stdout.jsonl").write_text("stale-partial-only\n", encoding="utf-8")
+    # Deliberately omit events.jsonl and archive.complete.
+    assert not (partial / _ATTEMPT_ARCHIVE_COMPLETE_NAME).is_file()
+    assert not (partial / "events.jsonl").is_file()
+    assert not _attempt_archive_complete(partial, 1)
+
+    retried = retry_job(root, terminal.job_id, attempt=2)
+    assert retried.record.attempt == 2
+
+    archive = attempt_dir(root, terminal.job_id, 1)
+    assert (archive / _ATTEMPT_ARCHIVE_COMPLETE_NAME).is_file()
+    assert (archive / "attempt.json").is_file()
+    assert (archive / "events.jsonl").is_file()
+    # Active evidence was archived (not wiped under a false-complete reuse).
+    archived_stdout = (archive / "stdout.jsonl").read_text(encoding="utf-8")
+    assert archived_stdout == active_stdout
+    assert "stale-partial-only" not in archived_stdout
     wait_job(root, retried.record.job_id, timeout_s=15)
 
 

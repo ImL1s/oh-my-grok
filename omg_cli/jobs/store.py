@@ -576,13 +576,44 @@ def _copy_tree_files(src: Path, dst: Path) -> None:
             _copy_tree_files(entry, dst / entry.name)
 
 
+# Written last in staging before rename. Presence (with matching attempt) is the
+# only signal that a published ``attempts/NNNN/`` is complete — ``attempt.json``
+# alone is insufficient (legacy mid-copy could leave it without ledgers).
+_ATTEMPT_ARCHIVE_COMPLETE_NAME = "archive.complete"
+_ATTEMPT_ARCHIVE_COMPLETE_VERSION = 1
+
+
 def _attempt_archive_complete(adir: Path, attempt: int) -> bool:
-    """True when ``attempts/NNNN/`` looks like a finished published archive."""
-    marker = adir / "attempt.json"
-    if not marker.is_file():
+    """True when ``attempts/NNNN/`` is a finished published archive.
+
+    Requires the staged-publication completion marker (written only after all
+    archive contents land in staging). ``attempt.json`` with matching
+    ``archived_attempt`` alone is never enough — that file can exist in a
+    partial/legacy archive and must not trigger idempotent reuse (which would
+    wipe intact active evidence).
+    """
+    complete = adir / _ATTEMPT_ARCHIVE_COMPLETE_NAME
+    if not complete.is_file():
         return False
     try:
-        data = json.loads(marker.read_text(encoding="utf-8"))
+        marker = json.loads(complete.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return False
+    if not isinstance(marker, dict):
+        return False
+    try:
+        if int(marker.get("version", -1)) != _ATTEMPT_ARCHIVE_COMPLETE_VERSION:
+            return False
+        if int(marker.get("archived_attempt", -1)) != int(attempt):
+            return False
+    except (TypeError, ValueError):
+        return False
+
+    snap_path = adir / "attempt.json"
+    if not snap_path.is_file():
+        return False
+    try:
+        data = json.loads(snap_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return False
     if not isinstance(data, dict):
@@ -655,11 +686,12 @@ def _reset_active_attempt_ledgers(jdir: Path) -> None:
 def archive_attempt(project_root: Path, job_id: str, record: JobRecord) -> Path:
     """Snapshot the completed attempt under ``attempts/NNNN/`` (immutable).
 
-    Stages into a temporary sibling directory, then atomically renames into
-    ``attempts/NNNN/`` so a crash mid-copy never leaves a final-looking
-    partial archive. A complete published archive for the same attempt is
-    treated as idempotent (retry after crash between rename and job.json
-    persist). Incomplete/legacy final dirs are removed and replaced.
+    Stages into a temporary sibling directory, writes ``archive.complete`` as
+    the last staging step, then atomically renames into ``attempts/NNNN/``.
+    Completeness requires that marker — ``attempt.json`` alone is never enough.
+    A complete published archive for the same attempt is treated as idempotent
+    (retry after crash between rename and job.json persist). Incomplete/legacy
+    final dirs are removed and replaced.
 
     Does **not** mutate ``prompt.md`` at the job root. Caller must hold the
     job lock (or accept a race). Evidence files are copied then truncated so
@@ -677,7 +709,7 @@ def archive_attempt(project_root: Path, job_id: str, record: JobRecord) -> Path:
         _reset_active_attempt_ledgers(jdir)
         return adir
 
-    # Incomplete/legacy final slot (missing attempt.json) — recoverable.
+    # Incomplete/legacy final slot (missing completion marker) — recoverable.
     if adir.exists():
         _rmtree_best_effort(adir)
 
@@ -695,6 +727,15 @@ def archive_attempt(project_root: Path, job_id: str, record: JobRecord) -> Path:
         _copy_file_if_present(jdir / "stderr.jsonl", staging / "stderr.jsonl")
         _copy_file_if_present(jdir / "events.jsonl", staging / "events.jsonl")
         _copy_tree_files(jdir / "artifacts", staging / "artifacts")
+
+        # Last staging write: publication is incomplete until this exists.
+        _atomic_write_json(
+            staging / _ATTEMPT_ARCHIVE_COMPLETE_NAME,
+            {
+                "archived_attempt": attempt_n,
+                "version": _ATTEMPT_ARCHIVE_COMPLETE_VERSION,
+            },
+        )
 
         try:
             os.rename(staging, adir)
