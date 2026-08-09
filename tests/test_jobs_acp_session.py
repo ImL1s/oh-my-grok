@@ -689,6 +689,203 @@ def test_start_job_commit_fail_unproven_kill_retains_binding(
         pass
 
 
+@pytest.mark.skipif(os.name != "posix", reason="killpg / ACP pgid ownership is POSIX")
+def test_persist_identity_store_fail_stop_refuses_until_os_proof(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P0: update_job_fields persist failure must not let stop false-cancel.
+
+    RUNNING commit fails, cleanup re-probe returns None, and job.json identity
+    persist via update_job_fields fails. Even after storage recovers, Team stop
+    must refuse while the child is alive and the ensuring binding remains —
+    cancel must not treat STARTING+pid=null as already-gone.
+    """
+    import subprocess
+
+    from omg_cli.jobs import runtime as runtime_mod
+    from omg_cli.jobs.models import JobState, JobStoreError
+    from omg_cli.jobs.runtime import (
+        cancel_job,
+        ensure_acp_session_sidecar,
+        read_acp_sidecar_binding,
+    )
+    from omg_cli.jobs.store import job_dir, read_job_record, update_job_fields
+    from omg_cli.team.plane import EXPERIMENTAL_ENV, start_team, stop_team
+
+    monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
+    subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.com"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "t"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    (root / "README").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README"], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+
+    run_id = _seed_run(root)
+    meta = start_team(
+        "persist identity store fail",
+        [{"task_id": "w1", "owned_files": ["lane_a/"]}],
+        root=root,
+        dry_run=True,
+        run_id=run_id,
+    )
+    assert str(meta["run_id"]) == run_id
+
+    bind_path = runtime_mod._acp_binding_path(root, run_id)
+    spawned: dict[str, object] = {}
+    real_popen = runtime_mod.subprocess.Popen
+    real_probe = runtime_mod._probe_pid_starttime
+    real_transition = runtime_mod.transition_job
+    real_update = update_job_fields
+    first_fp: dict[str, str | None] = {"v": None}
+
+    def sticky_popen(argv=None, *args, **kwargs):  # noqa: ANN001
+        import sys
+
+        argv_l = list(argv or ())
+        is_runner = any("omg_cli.jobs.runner" in str(part) for part in argv_l)
+        if is_runner:
+            proc = real_popen(  # noqa: S603
+                [sys.executable, "-c", "import time; time.sleep(120)"],
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            spawned["pid"] = int(proc.pid)
+            try:
+                spawned["pgid"] = int(os.getpgid(proc.pid))
+            except OSError:
+                spawned["pgid"] = int(proc.pid)
+            spawned["proc"] = proc
+            return proc
+        return real_popen(argv, *args, **kwargs)
+
+    def probe_once_then_none(pid: int) -> str | None:
+        if first_fp["v"] is None:
+            fp = real_probe(pid)
+            if fp is None:
+                return None
+            first_fp["v"] = fp
+            return fp
+        return None
+
+    def boom_running(
+        project_root: Path,
+        job_id: str,
+        new_state: JobState,
+        *,
+        updates: dict | None = None,
+    ):
+        if new_state == JobState.RUNNING:
+            raise JobStoreError("simulated RUNNING commit failure", code="E_JOB_STORE")
+        return real_transition(project_root, job_id, new_state, updates=updates)
+
+    def boom_update(project_root: Path, job_id: str, **updates: object):
+        raise JobStoreError("simulated identity persist failure", code="E_JOB_STORE")
+
+    monkeypatch.setattr(runtime_mod.subprocess, "Popen", sticky_popen)
+    monkeypatch.setattr(runtime_mod, "_probe_pid_starttime", probe_once_then_none)
+    monkeypatch.setattr(runtime_mod, "transition_job", boom_running)
+    monkeypatch.setattr(runtime_mod, "update_job_fields", boom_update)
+    monkeypatch.setattr(
+        "omg_cli.jobs.store.update_job_fields", boom_update
+    )
+
+    with pytest.raises(JobStoreError) as ei:
+        ensure_acp_session_sidecar(root, run_id=run_id, ready_timeout_s=5.0)
+    assert ei.value.code == "E_JOB_CANCEL_UNPROVEN"
+    assert bind_path.is_file()
+    assert "pid" in spawned
+    assert runtime_mod._pid_alive(int(spawned["pid"]))
+
+    bind = read_acp_sidecar_binding(root, run_id)
+    assert isinstance(bind, dict)
+    retained = str(bind.get("job_id") or "")
+    assert retained
+    assert bind.get("state") == "ensuring"
+    rec = read_job_record(root, retained)
+    assert rec.state == JobState.STARTING
+    # job.json identity persist failed — pid must stay null on the record.
+    assert rec.pid is None
+    # Durable recovery record retains cancel targets outside job.json.
+    identity_path = job_dir(root, retained) / runtime_mod._SPAWN_IDENTITY_REL
+    assert identity_path.is_file(), "spawn_identity.json must survive store failure"
+
+    # Storage "recovers" — restore real writers; identity still only in recovery
+    # file / ACP binding until OS disappearance is proven.
+    monkeypatch.setattr(runtime_mod.subprocess, "Popen", real_popen)
+    monkeypatch.setattr(runtime_mod, "transition_job", real_transition)
+    monkeypatch.setattr(runtime_mod, "update_job_fields", real_update)
+    monkeypatch.setattr("omg_cli.jobs.store.update_job_fields", real_update)
+    import omg_cli.jobs.ownership as ownership_mod
+
+    monkeypatch.setattr(ownership_mod, "probe_pid_starttime", lambda _pid: None)
+    monkeypatch.setattr(runtime_mod, "_probe_pid_starttime", lambda _pid: None)
+
+    # Strip recovery identity to force the ACP-binding fail-closed path
+    # (STARTING + pid=null + ensuring binding → must not speculative-cancel).
+    identity_path.unlink()
+    assert rec.pid is None
+
+    with pytest.raises(JobStoreError) as ei_cancel:
+        cancel_job(root, retained, reason="post_store_recover")
+    assert ei_cancel.value.code == "E_JOB_CANCEL_UNPROVEN"
+
+    stop_out = stop_team(root, run_id)
+    assert stop_out.get("stop_completed") is False, stop_out
+    assert bind_path.is_file(), "binding retained until OS disappearance proven"
+    assert runtime_mod._pid_alive(int(spawned["pid"]))
+
+    # Cleanup: restore probe and reap via recovery rewrite + cancel.
+    monkeypatch.setattr(runtime_mod, "_probe_pid_starttime", real_probe)
+    monkeypatch.setattr(ownership_mod, "probe_pid_starttime", real_probe)
+    runtime_mod._write_spawn_identity_recovery(
+        root,
+        retained,
+        pid=int(spawned["pid"]),
+        pgid=int(spawned["pgid"]),
+        handle=f"test:{retained}",
+        pid_starttime=first_fp["v"],
+        reason="test_cleanup",
+    )
+    try:
+        cancel_job(root, retained, reason="test_cleanup")
+    except JobStoreError:
+        pass
+    proc = spawned.get("proc")
+    if proc is not None and getattr(proc, "poll", lambda: 0)() is None:
+        try:
+            os.killpg(int(spawned["pgid"]), 9)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                proc.kill()  # type: ignore[union-attr]
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        try:
+            proc.wait(timeout=2)  # type: ignore[union-attr]
+        except Exception:
+            pass
+    try:
+        runtime_mod._reap_child(int(spawned["pid"]))
+    except Exception:
+        pass
+
+
 def test_stop_team_acp_cancel_unproven_clears_stop_completed() -> None:
     """Plane contract: unproven ACP cancel must refuse stop_completed publication."""
     # Mirrors omg_cli.team.plane._stop_team_locked linked_acp_session gate.

@@ -57,6 +57,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   Does **not** close #78 (real-source policies/proofs still outstanding).
 
 ### Fixed
+- **#105 PR4 P0 unproven spawn identity persist:**
+  `_persist_unproven_spawn_identity` no longer swallows `update_job_fields`
+  failure after an unproven post-spawn cleanup. Runner pid/pgid/starttime is
+  retained in durable `spawn_identity.json` (written at Popen, before RUNNING
+  commit); when job.json stays `starting`+`pid=null`, `cancel_job` uses the
+  recovery identity or refuses with `E_JOB_CANCEL_UNPROVEN` for job-bearing ACP
+  bindings / uncertain markers — Team stop cannot publish stopped over an
+  orphan. Hermetic regression in `tests/test_jobs_acp_session.py`.
 - **#78-D P0 checkout/pin binding:** completeness proofs authenticate
   `--upstream-root` to `pin_revision` (`HEAD` match + clean porcelain) and
   stamp `checkout_provenance` before hashing registry/surface bytes. Wrong

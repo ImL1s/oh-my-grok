@@ -387,6 +387,51 @@ def start_job(
     handle = f"{provider}:{record.job_id}:pid={pid}"
     # Best-effort ownership fingerprint; null when probe fails (PR1 honesty).
     pid_starttime = _probe_pid_starttime(pid)
+    # Durable spawn identity before RUNNING commit — job.json may remain
+    # STARTING/pid=null if the commit or a later update_job_fields fails.
+    try:
+        _write_spawn_identity_recovery(
+            project_root,
+            record.job_id,
+            pid=pid,
+            pgid=pgid,
+            handle=handle,
+            pid_starttime=pid_starttime,
+            reason="post_spawn_pre_running",
+        )
+    except Exception as id_exc:
+        proven = _kill_child_exact(pid, pgid, expected_starttime=pid_starttime)
+        if not proven:
+            try:
+                _mark_spawn_uncertain(
+                    project_root,
+                    record.job_id,
+                    detail=f"spawn identity write failed: {id_exc}",
+                )
+            except Exception:
+                pass
+            err = JobStoreError(
+                f"failed to persist spawn identity after spawn: {id_exc}",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+            err.spawned = True
+            err.disappearance_proven = False
+            raise err from id_exc
+        _best_effort_stamp_failed(
+            project_root,
+            record.job_id,
+            message=f"launch commit aborted; spawn identity write failed: {id_exc}",
+            spawn_pid=pid,
+            spawn_pgid=pgid,
+            spawn_handle=handle,
+        )
+        err = JobStoreError(
+            f"failed to persist spawn identity after spawn: {id_exc}",
+            code="E_JOB_LAUNCH",
+        )
+        err.spawned = True
+        err.disappearance_proven = True
+        raise err from id_exc
     try:
         record = transition_job(
             project_root,
@@ -403,15 +448,22 @@ def start_job(
         # Belt-and-suspenders: any post-spawn commit failure must kill the
         # exact child and reconcile durable state (never leave starting or
         # dead-running). SystemExit/KeyboardInterrupt are not caught.
-        proven = _cleanup_after_spawn_commit_failure(
-            project_root,
-            record.job_id,
-            pid=pid,
-            pgid=pgid,
-            handle=handle,
-            expected_starttime=pid_starttime,
-            exc=commit_exc,
-        )
+        try:
+            proven = _cleanup_after_spawn_commit_failure(
+                project_root,
+                record.job_id,
+                pid=pid,
+                pgid=pgid,
+                handle=handle,
+                expected_starttime=pid_starttime,
+                exc=commit_exc,
+            )
+        except JobStoreError as cleanup_exc:
+            # Unproven cleanup that could not durable-persist identity.
+            if getattr(cleanup_exc, "code", None) == "E_JOB_CANCEL_UNPROVEN":
+                cleanup_exc.spawned = True
+                cleanup_exc.disappearance_proven = False
+            raise
         err = JobStoreError(
             f"failed to commit running handle after spawn: {commit_exc}",
             code="E_JOB_LAUNCH",
@@ -458,6 +510,129 @@ def _kill_child_exact(
     return _wait_until_gone(pid, timeout_s=2.0)
 
 
+_SPAWN_IDENTITY_REL = "spawn_identity.json"
+_SPAWN_UNCERTAIN_REL = "spawn_uncertain.json"
+
+
+def _spawn_identity_path(project_root: Path, job_id: str) -> Path:
+    return job_dir(project_root, job_id) / _SPAWN_IDENTITY_REL
+
+
+def _spawn_uncertain_path(project_root: Path, job_id: str) -> Path:
+    return job_dir(project_root, job_id) / _SPAWN_UNCERTAIN_REL
+
+
+def _write_spawn_identity_recovery(
+    project_root: Path,
+    job_id: str,
+    *,
+    pid: int,
+    pgid: int,
+    handle: str | None = None,
+    pid_starttime: str | None = None,
+    reason: str | None = None,
+) -> None:
+    """Atomically retain runner identity outside job.json (cancel recovery)."""
+    from omg_cli.contracts.path_keys import ensure_managed_dir
+
+    jid = safe_job_id(job_id)
+    jdir = job_dir(project_root, jid)
+    ensure_managed_dir(jdir)
+    payload: dict[str, Any] = {
+        "job_id": jid,
+        "pid": int(pid),
+        "pgid": int(pgid),
+        "handle": handle,
+        "pid_starttime": pid_starttime,
+        "reason": reason or "unproven_spawn",
+    }
+    _write_json_file(_spawn_identity_path(project_root, jid), payload)
+    # Identity recovered — drop uncertain marker if present.
+    _clear_spawn_uncertain(project_root, jid)
+
+
+def _read_spawn_identity_recovery(
+    project_root: Path, job_id: str
+) -> ProcessIdentity | None:
+    data = _read_json_file(_spawn_identity_path(project_root, job_id))
+    if not isinstance(data, Mapping):
+        return None
+    pid = data.get("pid")
+    pgid = data.get("pgid")
+    if pid is None or pgid is None:
+        return None
+    try:
+        return ProcessIdentity(
+            pid=int(pid),
+            pgid=int(pgid),
+            pid_starttime=(
+                str(data["pid_starttime"])
+                if data.get("pid_starttime") is not None
+                else None
+            ),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _clear_spawn_identity_recovery(project_root: Path, job_id: str) -> None:
+    try:
+        _spawn_identity_path(project_root, job_id).unlink()
+    except OSError:
+        pass
+
+
+def _mark_spawn_uncertain(
+    project_root: Path, job_id: str, *, detail: str
+) -> None:
+    """Fail-closed marker when identity bytes cannot be persisted at all."""
+    from omg_cli.contracts.path_keys import ensure_managed_dir
+
+    jid = safe_job_id(job_id)
+    ensure_managed_dir(job_dir(project_root, jid))
+    _write_json_file(
+        _spawn_uncertain_path(project_root, jid),
+        {"uncertain": True, "detail": str(detail), "job_id": jid},
+    )
+
+
+def _spawn_uncertain(project_root: Path, job_id: str) -> bool:
+    data = _read_json_file(_spawn_uncertain_path(project_root, job_id))
+    return isinstance(data, Mapping) and bool(data.get("uncertain"))
+
+
+def _clear_spawn_uncertain(project_root: Path, job_id: str) -> None:
+    try:
+        _spawn_uncertain_path(project_root, job_id).unlink()
+    except OSError:
+        pass
+
+
+def _acp_binding_references_job(project_root: Path, job_id: str) -> bool:
+    """True when any ACP singleton binding points at *job_id* (job-bearing)."""
+    from omg_cli.jobs.store import ensure_jobs_root
+
+    try:
+        jid = safe_job_id(job_id)
+    except JobStoreError:
+        return False
+    bind_dir = ensure_jobs_root(project_root) / "acp_bindings"
+    if not bind_dir.is_dir():
+        return False
+    try:
+        entries = list(bind_dir.iterdir())
+    except OSError:
+        # Unreadable binding dir — fail closed for cancel callers that care.
+        return True
+    for path in entries:
+        if not path.is_file() or path.suffix != ".json":
+            continue
+        data = _read_json_file(path)
+        if isinstance(data, Mapping) and str(data.get("job_id") or "") == jid:
+            return True
+    return False
+
+
 def _persist_unproven_spawn_identity(
     project_root: Path,
     job_id: str,
@@ -472,28 +647,65 @@ def _persist_unproven_spawn_identity(
 
     Never stamp FAILED while the child may still be alive — cancel_job treats
     FAILED as terminal and would skip signalling the orphan.
+
+    Identity MUST be durable: prefer ``spawn_identity.json``, then job.json via
+    ``update_job_fields``. Swallowing a total persist failure is forbidden —
+    raises ``E_JOB_CANCEL_UNPROVEN`` so cancel/stop refuse until OS proof.
     """
+    durable = False
     try:
-        cur = read_job_record(project_root, job_id)
-    except JobStoreError:
-        return
-    if cur.state in TERMINAL_STATES:
-        return
-    try:
-        update_job_fields(
+        _write_spawn_identity_recovery(
             project_root,
             job_id,
             pid=int(pid),
             pgid=int(pgid),
             handle=str(handle),
             pid_starttime=expected_starttime,
-            error_message=(
-                f"launch commit failed after spawn; cleanup disappearance "
-                f"unproven: {exc}"
-            ),
+            reason=f"unproven_spawn:{exc}",
         )
+        durable = True
+    except Exception:
+        durable = False
+
+    try:
+        cur = read_job_record(project_root, job_id)
     except JobStoreError:
-        pass
+        cur = None
+    if cur is not None and cur.state not in TERMINAL_STATES:
+        try:
+            update_job_fields(
+                project_root,
+                job_id,
+                pid=int(pid),
+                pgid=int(pgid),
+                handle=str(handle),
+                pid_starttime=expected_starttime,
+                error_message=(
+                    f"launch commit failed after spawn; cleanup disappearance "
+                    f"unproven: {exc}"
+                ),
+            )
+            durable = True
+        except JobStoreError:
+            pass
+
+    if durable:
+        return
+
+    # Last resort: uncertain marker (no pid) so cancel_job cannot false-green.
+    try:
+        _mark_spawn_uncertain(
+            project_root,
+            job_id,
+            detail=f"identity persist failed after unproven spawn: {exc}",
+        )
+        return
+    except Exception as mark_exc:
+        raise JobStoreError(
+            f"job {job_id} unproven spawn identity could not be persisted "
+            f"(recovery+job.json+uncertain marker failed): {mark_exc}",
+            code="E_JOB_CANCEL_UNPROVEN",
+        ) from mark_exc
 
 
 def _cleanup_after_spawn_commit_failure(
@@ -583,6 +795,8 @@ def _best_effort_stamp_failed(
                     "handle": None,
                 },
             )
+            _clear_spawn_identity_recovery(project_root, job_id)
+            _clear_spawn_uncertain(project_root, job_id)
             return
         if cur.state == JobState.RUNNING:
             # Commit may have landed before the exception — fail this spawn's handle.
@@ -615,6 +829,8 @@ def _best_effort_stamp_failed(
                         # Keep pid/pgid for forensics; child is already killed.
                     },
                 )
+                _clear_spawn_identity_recovery(project_root, job_id)
+                _clear_spawn_uncertain(project_root, job_id)
     except JobStoreError:
         pass
 
@@ -852,8 +1068,33 @@ def cancel_job(
 
     # Capture identities once. Re-reads / mark_provider_exited must not drop
     # them from the cancel gate without OS-level disappearance proof.
+    # Fall back to spawn_identity.json when job.json still has pid=null after
+    # an unproven post-spawn commit (update_job_fields may have failed).
     captured_runner = _runner_identity(record)
+    if captured_runner is None:
+        captured_runner = _read_spawn_identity_recovery(project_root, job_id)
     captured_provider = _provider_identity(record)
+
+    # Fail-closed: nonterminal job with no durable runner identity cannot be
+    # speculative-cancelled when spawn was uncertain or an ACP binding still
+    # points at this job (STARTING+pid=null would otherwise stamp CANCELLED
+    # and orphan the live child).
+    if (
+        captured_runner is None
+        and captured_provider is None
+        and record.state not in TERMINAL_STATES
+        and record.state != JobState.QUEUED
+        and record.state != JobState.CANCELLED
+    ):
+        if _spawn_uncertain(project_root, job_id) or _acp_binding_references_job(
+            project_root, job_id
+        ):
+            raise JobStoreError(
+                f"job {job_id} has no durable runner identity while spawn is "
+                "uncertain or ACP-bound; refusing speculative cancel "
+                "(E_JOB_CANCEL_UNPROVEN)",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
 
     runner_gone = captured_runner is None
     provider_gone = captured_provider is None
@@ -962,8 +1203,12 @@ def cancel_job(
 
     # Proven gone — stamp CANCELLED if still non-terminal, else return idempotently.
     if record.state == JobState.CANCELLED:
+        _clear_spawn_identity_recovery(project_root, job_id)
+        _clear_spawn_uncertain(project_root, job_id)
         return record
     if record.state in {JobState.SUCCEEDED, JobState.FAILED, JobState.LOST}:
+        _clear_spawn_identity_recovery(project_root, job_id)
+        _clear_spawn_uncertain(project_root, job_id)
         return record
 
     updates: dict[str, Any] = {
@@ -980,25 +1225,33 @@ def cancel_job(
 
     try:
         if record.state in {JobState.STARTING, JobState.RUNNING}:
-            return transition_job(
+            out = transition_job(
                 project_root,
                 job_id,
                 JobState.CANCELLED,
                 updates=updates,
             )
+            _clear_spawn_identity_recovery(project_root, job_id)
+            _clear_spawn_uncertain(project_root, job_id)
+            return out
         if record.state == JobState.QUEUED:
             transition_job(project_root, job_id, JobState.STARTING)
-            return transition_job(
+            out = transition_job(
                 project_root,
                 job_id,
                 JobState.CANCELLED,
                 updates=updates,
             )
+            _clear_spawn_identity_recovery(project_root, job_id)
+            _clear_spawn_uncertain(project_root, job_id)
+            return out
     except TransitionError:
         # Runner may have stamped CANCELLED/succeeded concurrently — only
         # accept CANCELLED after re-proving disappearance with captured ids.
         cur = read_job_record(project_root, job_id)
         if cur.state in {JobState.SUCCEEDED, JobState.FAILED, JobState.LOST}:
+            _clear_spawn_identity_recovery(project_root, job_id)
+            _clear_spawn_uncertain(project_root, job_id)
             return cur
         if cur.state == JobState.CANCELLED:
             if not _prove_gone(
@@ -1010,6 +1263,8 @@ def cancel_job(
                     f"job {job_id} CANCELLED stamp without process disappearance",
                     code="E_JOB_CANCEL_UNPROVEN",
                 )
+            _clear_spawn_identity_recovery(project_root, job_id)
+            _clear_spawn_uncertain(project_root, job_id)
             return cur
         raise
     return record
