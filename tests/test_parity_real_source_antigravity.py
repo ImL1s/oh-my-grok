@@ -146,6 +146,8 @@ def _v2_policy(*, repository: str = FIXTURE_REPO) -> dict:
         "schema_version": 1,
         "source": "Antigravity",
         "repository": repository,
+        "proof_kind": "documentation_catalog_seed",
+        "promotion_sufficient": False,
         "discovery_rules": {
             "version": 2,
             "authoritative_registries": [
@@ -377,18 +379,33 @@ def test_check_script_artifact_only_antigravity() -> None:
     assert payload["promotion_performed"] is False
 
 
-def test_committed_antigravity_proof_is_source_promotion_sufficient_but_unpromoted() -> None:
+def test_committed_antigravity_proof_is_not_source_promotion_sufficient() -> None:
+    """Docs/catalog seed verifies as an artifact but must refuse promotion (#78)."""
     inventory = load_json_object(CANONICAL)
     before = copy.deepcopy(inventory["source_status"])
     assert before["Antigravity"] == "bootstrapping"
+
+    policy = validate_completeness_policy(
+        load_json_object(
+            ROOT / "docs" / "parity" / "completeness" / "policies" / "Antigravity.json"
+        )
+    )
+    proof = load_json_object(
+        ROOT / "docs" / "parity" / "completeness" / "proofs" / "Antigravity.json"
+    )
+    assert policy["proof_kind"] == "documentation_catalog_seed"
+    assert policy["promotion_sufficient"] is False
+    assert proof["proof_kind"] == "documentation_catalog_seed"
+    assert proof["promotion_sufficient"] is False
 
     promoted = copy.deepcopy(inventory)
     promoted["source_status"] = dict(promoted["source_status"])
     promoted["source_status"]["Antigravity"] = "complete"
 
-    result = assert_completeness_promotion(promoted, repo_root=ROOT)
-    assert result.completeness_gate_checked is True
-    assert "Antigravity" in result.promoted_sources
+    with pytest.raises(
+        ContractValidationError, match="not promotion-sufficient|documentation"
+    ):
+        assert_completeness_promotion(promoted, repo_root=ROOT)
 
     on_disk = load_json_object(CANONICAL)
     assert on_disk["source_status"]["Antigravity"] == "bootstrapping"

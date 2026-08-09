@@ -3,6 +3,8 @@
   "schema_version": 1,
   "source": "OMC",
   "repository": "https://example.invalid/fixture-omc",
+  "proof_kind": "implementation_registry",
+  "promotion_sufficient": true,
   "discovery_rules": {
     "version": 1,
     "authoritative_registries": [

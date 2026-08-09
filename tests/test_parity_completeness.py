@@ -226,12 +226,16 @@ def _policy_for(
     repository: str,
     *,
     category: str = "runtime_orchestration",
+    proof_kind: str = "implementation_registry",
+    promotion_sufficient: bool = True,
 ) -> dict:
     return {
         "store_kind": "parity-completeness-policy",
         "schema_version": 1,
         "source": source,
         "repository": repository,
+        "proof_kind": proof_kind,
+        "promotion_sufficient": promotion_sufficient,
         "discovery_rules": {
             "version": 1,
             "authoritative_registries": [
@@ -280,9 +284,9 @@ def test_bootstrapping_inventory_needs_no_completeness_proof() -> None:
 def test_status_promotion_is_proof_gated_not_gap_closure(
     tmp_path: Path,
 ) -> None:
-    """Closing P0 gaps alone never wrote proofs; with all four triples present the
-    gate *can* accept ``complete`` statuses, but the canonical inventory stays
-    bootstrapping (promotion remains unperformed).
+    """Closing P0 gaps alone never wrote proofs; committed triples verify, but
+    Antigravity's documentation_catalog_seed proof is not promotion-sufficient.
+    Canonical inventory stays bootstrapping (promotion remains unperformed).
     """
     inventory = load_json_object(CANONICAL)
     assert inventory["inventory_status"] == "bootstrapping"
@@ -300,15 +304,23 @@ def test_status_promotion_is_proof_gated_not_gap_closure(
     path = tmp_path / "omg-parity.json"
     path.write_text(json.dumps(candidate), encoding="utf-8")
 
-    # All four real-source triples exist → gate accepts complete statuses.
-    payload = check_parity_inventory(inventory_path=path, repo_root=ROOT, strict=True)
-    assert payload["ok"] is True
-    assert payload["completeness_proofs_verified"] == 4
-    assert sorted(payload["promoted_sources"]) == sorted(SOURCE_STATUS_IDS)
+    # Docs-only Antigravity proof must refuse promotion even when digests verify.
+    with pytest.raises(
+        ContractValidationError, match="not promotion-sufficient|documentation"
+    ):
+        check_parity_inventory(inventory_path=path, repo_root=ROOT, strict=True)
+    with pytest.raises(
+        ContractValidationError, match="not promotion-sufficient|documentation"
+    ):
+        assert_completeness_promotion(candidate, repo_root=ROOT)
 
-    result = assert_completeness_promotion(candidate, repo_root=ROOT)
-    assert result.completeness_proofs_verified == 4
-    assert sorted(result.promoted_sources) == sorted(SOURCE_STATUS_IDS)
+    # OMC/OMX/OmO remain promotion-sufficient individually.
+    for source in ("OMC", "OMX", "OmO"):
+        one = copy.deepcopy(inventory)
+        one["source_status"] = dict(one["source_status"])
+        one["source_status"][source] = "complete"
+        result = assert_completeness_promotion(one, repo_root=ROOT)
+        assert result.promoted_sources == (source,)
 
     # Canonical on-disk inventory remains unpromoted.
     on_disk = load_json_object(CANONICAL)
@@ -318,13 +330,13 @@ def test_status_promotion_is_proof_gated_not_gap_closure(
     )
 
     # Pin drift still fails closed (proofs are not ornamental).
-    drifted = copy.deepcopy(candidate)
+    drifted = copy.deepcopy(inventory)
+    drifted["source_status"] = dict(drifted["source_status"])
+    drifted["source_status"]["OMC"] = "complete"
     drifted["upstream_pins"] = dict(drifted["upstream_pins"])
-    drifted["upstream_pins"]["Antigravity"] = dict(
-        drifted["upstream_pins"]["Antigravity"]
-    )
-    drifted["upstream_pins"]["Antigravity"]["revision"] = "0" * 40
-    with pytest.raises(ContractValidationError, match="pin_revision|coverage_digest|Antigravity"):
+    drifted["upstream_pins"]["OMC"] = dict(drifted["upstream_pins"]["OMC"])
+    drifted["upstream_pins"]["OMC"]["revision"] = "0" * 40
+    with pytest.raises(ContractValidationError, match="pin_revision|coverage_digest|OMC"):
         assert_completeness_promotion(drifted, repo_root=ROOT)
 
 
@@ -350,6 +362,30 @@ def test_seed_catalogue_is_not_a_completeness_proof() -> None:
             policies_by_source={"OMC": _policy()},
             seeds_by_source={"OMC": seed},
         )
+
+
+def test_documentation_catalog_seed_cannot_be_promotion_sufficient() -> None:
+    bad = _policy_for(
+        "Antigravity",
+        "https://example.invalid/ag",
+        proof_kind="documentation_catalog_seed",
+        promotion_sufficient=True,
+    )
+    with pytest.raises(
+        ContractValidationError, match="documentation_catalog_seed.*promotion_sufficient"
+    ):
+        validate_completeness_policy(bad)
+
+    impl_false = _policy_for(
+        "OMC",
+        FIXTURE_REPO,
+        proof_kind="implementation_registry",
+        promotion_sufficient=False,
+    )
+    with pytest.raises(
+        ContractValidationError, match="implementation_registry.*promotion_sufficient"
+    ):
+        validate_completeness_policy(impl_false)
 
 
 def test_valid_hermetic_source_proof_passes(tmp_path: Path) -> None:

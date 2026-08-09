@@ -3,12 +3,14 @@
   "schema_version": 1,
   "source": "Antigravity",
   "repository": "https://github.com/google-antigravity/antigravity-cli",
+  "proof_kind": "documentation_catalog_seed",
+  "promotion_sufficient": false,
   "pin_revision": "bfab12dac5bd090015a89cf82e65093d13b567d9",
   "checkout_provenance": {
     "method": "git_head_clean",
     "observed_revision": "bfab12dac5bd090015a89cf82e65093d13b567d9"
   },
-  "policy_digest": "1761bf99f1350f9b002d457263c0f42cccc7ae8b6cc3cd01d018934fcb0ffebd",
+  "policy_digest": "1ca1cbee666e2d861276317ee46bf7f0cb0e49dc1cd1b775a45935b43362b64f",
   "seed_digest": "7e47c6f9e60e4618aa62821831b784aa869ac464692a0db1df5e9e24cbd2b4ef",
   "coverage_digest": "36afee75db3fec68f39203d32d9a56f3815dea74d415fcd90a884f576f893a42",
   "source_input_digest": "d7385a7100247191de449168ba5c471dfdaecefc433347ce5928bcfe69827141",

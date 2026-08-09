@@ -9,6 +9,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Fixed
+- **Parity #78-I Antigravity docs-only promotion false-green:** encode
+  `proof_kind` + `promotion_sufficient` on completeness policy/proof
+  schema; Antigravity is `documentation_catalog_seed` /
+  `promotion_sufficient: false`. Promotion gate refuses
+  `source_status.Antigravity=complete` (and category/inventory promotions
+  that depend on it) even when digests verify. OMC/OMX/OmO remain
+  `implementation_registry` / promotion-sufficient. Refs #78 (does not
+  close).
+
 ### Added
 - **Parity #78-I real pinned Antigravity discovery evidence:** committed
   discovery_rules v2 policy, surface→capability mapping, and completeness

@@ -3,6 +3,8 @@
   "schema_version": 1,
   "source": "OmO",
   "repository": "https://github.com/code-yeongyu/oh-my-openagent",
+  "proof_kind": "implementation_registry",
+  "promotion_sufficient": true,
   "discovery_rules": {
     "version": 2,
     "authoritative_registries": [

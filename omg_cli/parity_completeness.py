@@ -43,6 +43,9 @@ __all__ = [
     "DEFAULT_POLICY_DIR_RELATIVE",
     "DEFAULT_PROOF_DIR_RELATIVE",
     "EXTRACTION_JSON_REGISTRY_V1",
+    "PROOF_KIND_DOCUMENTATION_CATALOG_SEED",
+    "PROOF_KIND_IMPLEMENTATION_REGISTRY",
+    "PROOF_KINDS",
     "CompletenessGateResult",
     "assert_completeness_promotion",
     "authenticate_pinned_checkout",
@@ -72,6 +75,14 @@ DEFAULT_POLICY_DIR_RELATIVE = "docs/parity/completeness/policies"
 DEFAULT_PROOF_DIR_RELATIVE = "docs/parity/completeness/proofs"
 DEFAULT_MAPPING_DIR_RELATIVE = "docs/parity/completeness/mappings"
 EXTRACTION_JSON_REGISTRY_V1 = "json_registry_v1"
+PROOF_KIND_IMPLEMENTATION_REGISTRY = "implementation_registry"
+PROOF_KIND_DOCUMENTATION_CATALOG_SEED = "documentation_catalog_seed"
+PROOF_KINDS = frozenset(
+    {
+        PROOF_KIND_IMPLEMENTATION_REGISTRY,
+        PROOF_KIND_DOCUMENTATION_CATALOG_SEED,
+    }
+)
 
 _POLICY_TOP_KEYS = frozenset(
     {
@@ -79,6 +90,8 @@ _POLICY_TOP_KEYS = frozenset(
         "schema_version",
         "source",
         "repository",
+        "proof_kind",
+        "promotion_sufficient",
         "discovery_rules",
     }
 )
@@ -102,6 +115,8 @@ _PROOF_TOP_KEYS = frozenset(
         "schema_version",
         "source",
         "repository",
+        "proof_kind",
+        "promotion_sufficient",
         "pin_revision",
         "checkout_provenance",
         "policy_digest",
@@ -148,6 +163,51 @@ def require_surface_id(value, *, label: str) -> str:
     if not _SURFACE_ID_RE.fullmatch(text):
         raise ContractValidationError(f"{label} is not a valid surface_id")
     return text
+
+
+def _validate_proof_kind_and_promotion(
+    proof_kind: Any,
+    promotion_sufficient: Any,
+    *,
+    label: str,
+) -> tuple[str, bool]:
+    """Bind proof_kind ↔ promotion_sufficient (docs-only never promotes)."""
+    kind = require_nonempty_string(proof_kind, label=f"{label}.proof_kind")
+    if kind not in PROOF_KINDS:
+        raise ContractValidationError(
+            f"{label}.proof_kind must be one of {sorted(PROOF_KINDS)}; got {kind!r}"
+        )
+    if not isinstance(promotion_sufficient, bool):
+        raise ContractValidationError(
+            f"{label}.promotion_sufficient must be a boolean"
+        )
+    if kind == PROOF_KIND_DOCUMENTATION_CATALOG_SEED and promotion_sufficient:
+        raise ContractValidationError(
+            f"{label}: documentation_catalog_seed proofs cannot be "
+            "promotion_sufficient (docs/catalog seed alone is not parity credit)"
+        )
+    if kind == PROOF_KIND_IMPLEMENTATION_REGISTRY and not promotion_sufficient:
+        raise ContractValidationError(
+            f"{label}: implementation_registry proofs must set "
+            "promotion_sufficient=true"
+        )
+    return kind, promotion_sufficient
+
+
+def _require_promotion_sufficient(
+    proof: Mapping[str, Any],
+    *,
+    context: str,
+) -> None:
+    """Fail closed when a docs-only / non-sufficient proof is used to promote."""
+    if proof.get("promotion_sufficient") is True:
+        return
+    kind = proof.get("proof_kind")
+    raise ContractValidationError(
+        f"{context}: completeness proof is not promotion-sufficient "
+        f"(proof_kind={kind!r}; documentation/catalog seed alone cannot promote "
+        "per #78)"
+    )
 
 
 def _require_relative_posix(path_text: str, *, label: str) -> str:
@@ -562,6 +622,11 @@ def validate_completeness_policy(value: Mapping[str, Any]) -> dict[str, Any]:
     repository = require_nonempty_string(
         policy.get("repository"), label="policy.repository"
     )
+    proof_kind, promotion_sufficient = _validate_proof_kind_and_promotion(
+        policy.get("proof_kind"),
+        policy.get("promotion_sufficient"),
+        label="completeness_policy",
+    )
     rules = require_object(policy.get("discovery_rules"), label="discovery_rules")
     require_exact_keys(rules, required=_DISCOVERY_KEYS, label="discovery_rules")
     rules_version = rules.get("version")
@@ -669,6 +734,8 @@ def validate_completeness_policy(value: Mapping[str, Any]) -> dict[str, Any]:
         "schema_version": COMPLETENESS_SCHEMA_VERSION,
         "source": source,
         "repository": repository,
+        "proof_kind": proof_kind,
+        "promotion_sufficient": promotion_sufficient,
         "discovery_rules": {
             "version": int(rules_version),
             "authoritative_registries": normalized_regs,
@@ -1361,6 +1428,11 @@ def validate_completeness_proof(value: Mapping[str, Any]) -> dict[str, Any]:
     repository = require_nonempty_string(
         proof.get("repository"), label="proof.repository"
     )
+    proof_kind, promotion_sufficient = _validate_proof_kind_and_promotion(
+        proof.get("proof_kind"),
+        proof.get("promotion_sufficient"),
+        label="completeness_proof",
+    )
     pin = require_git_oid(proof.get("pin_revision"), label="proof.pin_revision")
     provenance_raw = require_object(
         proof.get("checkout_provenance"), label="checkout_provenance"
@@ -1472,6 +1544,8 @@ def validate_completeness_proof(value: Mapping[str, Any]) -> dict[str, Any]:
         "schema_version": COMPLETENESS_SCHEMA_VERSION,
         "source": source,
         "repository": repository,
+        "proof_kind": proof_kind,
+        "promotion_sufficient": promotion_sufficient,
         "pin_revision": pin,
         "checkout_provenance": {
             "method": method,
@@ -1537,6 +1611,8 @@ def build_completeness_proof(
         "schema_version": COMPLETENESS_SCHEMA_VERSION,
         "source": source,
         "repository": validated_policy["repository"],
+        "proof_kind": validated_policy["proof_kind"],
+        "promotion_sufficient": validated_policy["promotion_sufficient"],
         "pin_revision": pin["revision"],
         "checkout_provenance": dict(index["checkout_provenance"]),
         "policy_digest": digest_policy(validated_policy),
@@ -1607,6 +1683,17 @@ def verify_completeness_proof(
     if validated_policy["repository"] != validated_proof["repository"]:
         raise ContractValidationError(
             "proof.repository does not match policy.repository"
+        )
+    if validated_policy["proof_kind"] != validated_proof["proof_kind"]:
+        raise ContractValidationError(
+            "proof.proof_kind does not match policy.proof_kind"
+        )
+    if (
+        validated_policy["promotion_sufficient"]
+        != validated_proof["promotion_sufficient"]
+    ):
+        raise ContractValidationError(
+            "proof.promotion_sufficient does not match policy.promotion_sufficient"
         )
 
     expected_policy = digest_policy(validated_policy)
@@ -2171,6 +2258,11 @@ def assert_completeness_promotion(
             require_no_unresolved=True,
             mapping=mapping,
         )
+        validated = validate_completeness_proof(proof)
+        _require_promotion_sufficient(
+            validated,
+            context=f"source_status[{source}]==complete",
+        )
         verified += 1
         verified_sources.add(source)
 
@@ -2246,9 +2338,17 @@ def assert_completeness_promotion(
                 require_no_unresolved=True,
                 mapping=mapping,
             )
+            validated = validate_completeness_proof(proof)
+            _require_promotion_sufficient(
+                validated,
+                context=(
+                    "category_status complete requires promotion-sufficient "
+                    f"proofs for every source; {source} is not"
+                ),
+            )
             verified += 1
             verified_sources.add(source)
-            proofs_cache[source] = validate_completeness_proof(proof)
+            proofs_cache[source] = validated
 
         for category in promoted_categories:
             for source in needed_sources:

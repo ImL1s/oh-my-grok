@@ -3,12 +3,14 @@
   "schema_version": 1,
   "source": "OmO",
   "repository": "https://github.com/code-yeongyu/oh-my-openagent",
+  "proof_kind": "implementation_registry",
+  "promotion_sufficient": true,
   "pin_revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
   "checkout_provenance": {
     "method": "git_head_clean",
     "observed_revision": "4ca872b57e45281a9a81190bb73637729288ffc3"
   },
-  "policy_digest": "035db144350e13706cad5ac0a00df7a8dfa1110e28ee59876d484b279ca88002",
+  "policy_digest": "77c5f06294f7cf3e6af85e7039d181a826231a354f966d0706b07a64e3fa383d",
   "seed_digest": "1acbe81d2c9c3d3a6b3a9c124da0efe703fd89a4918d3f876df9842f79b96582",
   "coverage_digest": "7f880e2323c706cd56391263e99a0b1f806f03f491947f4251a182d5c9a60bf2",
   "source_input_digest": "72955797083919e9a71ea4bcca18d37e55d8fb7b2c18b08cca37d02ab20c424c",

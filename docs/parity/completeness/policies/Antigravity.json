@@ -3,6 +3,8 @@
   "schema_version": 1,
   "source": "Antigravity",
   "repository": "https://github.com/google-antigravity/antigravity-cli",
+  "proof_kind": "documentation_catalog_seed",
+  "promotion_sufficient": false,
   "discovery_rules": {
     "version": 2,
     "authoritative_registries": [
