@@ -558,3 +558,38 @@ def test_antigravity_cancel_completion_race_is_idempotent(
     assert terminal.state == JobState.SUCCEEDED
     again = cancel_job(root, terminal.job_id)
     assert again.state == JobState.SUCCEEDED
+
+
+def test_antigravity_retry_preflight_revalidated(
+    root: Path, fake_agy_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del fake_agy_path
+    from omg_cli.jobs import providers as prov
+    from omg_cli.jobs.runtime import retry_job
+
+    monkeypatch.setenv("FAKE_AGY_RUN_RC", "3")
+    prompt = _prompt(root)
+    started = start_job(
+        root,
+        provider="antigravity",
+        role="researcher",
+        prompt_file=prompt,
+        provider_timeout_s=30.0,
+        attempt_budget=3,
+    )
+    terminal, _ = wait_job(root, started.record.job_id, timeout_s=30.0)
+    assert terminal.state == JobState.FAILED
+    monkeypatch.delenv("FAKE_AGY_RUN_RC", raising=False)
+    calls: list[str] = []
+    real = prov.revalidate_stored_request
+
+    def _wrap(provider: str, request: object) -> None:
+        calls.append(str(provider))
+        return real(provider, request)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(prov, "revalidate_stored_request", _wrap)
+    retried = retry_job(root, terminal.job_id, attempt=2)
+    assert "antigravity" in calls
+    assert retried.record.attempt == 2
+    done, _ = wait_job(root, retried.record.job_id, timeout_s=30.0)
+    assert done.state in {JobState.SUCCEEDED, JobState.FAILED}

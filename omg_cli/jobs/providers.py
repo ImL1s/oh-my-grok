@@ -373,6 +373,56 @@ def public_request_summary(request: Mapping[str, Any] | None) -> dict[str, Any] 
     return out
 
 
+def revalidate_stored_request(provider: str, request: Mapping[str, Any] | None) -> None:
+    """Re-run provider preflight and ensure it still matches the stored snapshot.
+
+    Called before consuming another retry attempt. Fail closed on drift.
+    """
+    provider = (provider or "").strip().lower()
+    if provider == ACP_SESSION_PROVIDER:
+        raise JobStoreError(
+            f"job provider {ACP_SESSION_PROVIDER!r} cannot be retried via public CLI",
+            code="E_JOB_PROVIDER_INTERNAL",
+        )
+    req = dict(request or {})
+    if provider == "antigravity":
+        preflight = preflight_antigravity(
+            output_format=req.get("output_format"),
+            model=req.get("model"),
+            effort=req.get("effort"),
+            mode=req.get("mode"),
+            timeout_s=req.get("timeout_s"),
+        )
+        fresh = build_request_snapshot("antigravity", preflight=preflight)
+        # Immutable request must still match on identity-critical fields.
+        for key in (
+            "output_format",
+            "model",
+            "effort",
+            "mode",
+            "provider_binary",
+            "provider_version",
+            "provider_compat",
+            "provider_pin_revision",
+        ):
+            stored = req.get(key)
+            now = fresh.get(key)
+            if stored != now:
+                raise JobStoreError(
+                    f"immutable request field {key!r} no longer matches "
+                    f"preflight (stored={stored!r}, now={now!r})",
+                    code="E_JOB_RETRY_PREFLIGHT",
+                )
+        return
+    if provider == "fake":
+        resolve_job_provider("fake")
+        return
+    raise JobStoreError(
+        f"unknown job provider {provider!r} for retry preflight",
+        code="E_JOB_PROVIDER",
+    )
+
+
 __all__ = [
     "ACP_SESSION_PROVIDER",
     "ALLOWED_ANTIGRAVITY_OUTPUT_FORMATS",
@@ -389,4 +439,5 @@ __all__ = [
     "public_request_summary",
     "registered_provider_names",
     "resolve_job_provider",
+    "revalidate_stored_request",
 ]

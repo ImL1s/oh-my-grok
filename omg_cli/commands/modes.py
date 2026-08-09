@@ -242,8 +242,6 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
 
 def cmd_ask(args: argparse.Namespace) -> int:
     """User-invoked trusted broker for external advisor CLIs (never product executor)."""
-    from omg_cli.ask import run_ask_cli
-
     prompt_parts = list(args.prompt or [])
     prompt = " ".join(prompt_parts).strip()
     if getattr(args, "prompt_file", None):
@@ -257,6 +255,12 @@ def cmd_ask(args: argparse.Namespace) -> int:
     if not prompt:
         print("omg ask: prompt text required (args or --prompt-file)", file=sys.stderr)
         return 2
+
+    # #68 PR3 — thin durable-job seam (sync ask unchanged by default).
+    if bool(getattr(args, "background", False)):
+        return _cmd_ask_background(args, prompt)
+
+    from omg_cli.ask import run_ask_cli
 
     timeout = getattr(args, "timeout", None)
     if timeout is not None:
@@ -282,6 +286,118 @@ def cmd_ask(args: argparse.Namespace) -> int:
         write_json=bool(getattr(args, "json", True)),
         files=files or None,
     )
+
+
+def _cmd_ask_background(args: argparse.Namespace, prompt: str) -> int:
+    """Create a durable job and return job_id immediately (no sync broker)."""
+    from omg_cli.cli_envelope import emit_json, failure, success, wants_json
+    from omg_cli.jobs.models import JobStoreError
+    from omg_cli.jobs.runtime import start_job
+    from omg_cli.redaction import redact_text, redact_value
+
+    cmd = "ask.background"
+    provider_raw = str(getattr(args, "provider", "") or "").strip().lower()
+    # Background path admits ask aliases → jobs providers only.
+    if provider_raw == "fake":
+        job_provider = "fake"
+    elif provider_raw in {"agy", "antigravity"}:
+        job_provider = "antigravity"
+    else:
+        emit_json(
+            failure(
+                cmd,
+                "E_JOB_PROVIDER",
+                f"ask --background admits only fake|agy (got {provider_raw!r})",
+                next_action="Use provider fake or agy, or omit --background",
+            )
+        )
+        return 2
+
+    root = project_root()
+    # Pass prompt text directly — never a shared predictable path that concurrent
+    # ask --background callers could overwrite mid-flight.
+    role = str(getattr(args, "role", None) or "researcher")
+    raw_budget = getattr(args, "attempt_budget", 1)
+    try:
+        budget = int(raw_budget) if raw_budget is not None else 1
+    except (TypeError, ValueError):
+        emit_json(
+            failure(
+                cmd,
+                "E_JOB_RETRY_BUDGET",
+                f"invalid attempt_budget {raw_budget!r}",
+            )
+        )
+        return 2
+    if budget < 1:
+        emit_json(
+            failure(
+                cmd,
+                "E_JOB_RETRY_BUDGET",
+                "attempt_budget must be >= 1",
+            )
+        )
+        return 2
+    timeout = getattr(args, "timeout", None)
+    provider_timeout = float(timeout) if timeout is not None else None
+
+    # Honor --dry-run: never materialize / launch a durable job.
+    if bool(getattr(args, "dry_run", False)):
+        payload = {
+            "dry_run": True,
+            "background": True,
+            "provider": job_provider,
+            "role": role,
+            "attempt_budget": budget,
+            "run_id": getattr(args, "run_id", None) or None,
+            "model": getattr(args, "model", None) or None,
+            "provider_timeout_s": provider_timeout,
+        }
+        if wants_json(args):
+            emit_json(success(cmd, **redact_value(payload)))
+        else:
+            print(
+                f"ask background dry-run provider={job_provider} "
+                f"role={role} attempt_budget={budget}"
+            )
+        return 0
+
+    try:
+        result = start_job(
+            root,
+            provider=job_provider,
+            role=role,
+            prompt_text=prompt,
+            run_id=getattr(args, "run_id", None) or None,
+            model=getattr(args, "model", None) or None,
+            provider_timeout_s=provider_timeout,
+            attempt_budget=budget,
+        )
+    except JobStoreError as exc:
+        emit_json(
+            failure(
+                cmd,
+                getattr(exc, "code", None) or "E_JOB_START",
+                redact_text(str(exc)),
+            )
+        )
+        return 1
+
+    rec = result.record
+    payload = {
+        "job_id": rec.job_id,
+        "state": rec.state.value,
+        "provider": rec.provider,
+        "role": rec.role,
+        "attempt": rec.attempt,
+        "attempt_budget": rec.attempt_budget,
+        "background": True,
+    }
+    if wants_json(args):
+        emit_json(success(cmd, **redact_value(payload)))
+    else:
+        print(f"ask background job_id={rec.job_id} state={rec.state.value}")
+    return 0
 
 
 def cmd_pipeline(args: argparse.Namespace) -> int:
@@ -709,6 +825,28 @@ def register_modes_parsers(
             "passthrough arg after fixed template (disabled by default; "
             "set OMG_ASK_ALLOW_EXTRA=1; elevation flags always denied)"
         ),
+    )
+    p_ask.add_argument(
+        "--background",
+        dest="background",
+        action="store_true",
+        help=(
+            "create a durable job and return job_id immediately "
+            "(providers: fake|agy only; sync ask unchanged by default)"
+        ),
+    )
+    p_ask.add_argument(
+        "--attempt-budget",
+        dest="attempt_budget",
+        type=int,
+        default=1,
+        help="immutable max attempts for --background jobs (default 1)",
+    )
+    p_ask.add_argument(
+        "--role",
+        dest="role",
+        default="researcher",
+        help="job role label for --background (default researcher)",
     )
     p_ask.set_defaults(func=cmd_ask)
 

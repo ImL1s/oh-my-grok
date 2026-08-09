@@ -231,3 +231,26 @@ def test_public_job_start_rejects_internal_acp_provider(root: Path) -> None:
             prompt_file=prompt,
         )
     assert ei2.value.code == "E_JOB_PROVIDER_INTERNAL"
+
+
+def test_retry_rejects_internal_provider() -> None:
+    from omg_cli.jobs.providers import ACP_SESSION_PROVIDER, revalidate_stored_request
+    from omg_cli.jobs.retry import assert_retry_admission
+    from omg_cli.jobs.models import JobRecord, JobState
+
+    rec = JobRecord(
+        job_id="20260809T000000Z-deadbeef",
+        created_at="2026-08-09T00:00:00+00:00",
+        provider=ACP_SESSION_PROVIDER,
+        role="acp-session",
+        state=JobState.FAILED,
+        attempt=1,
+        attempt_budget=3,
+        exit={"class": "nonzero", "retryable": True},
+    )
+    with pytest.raises(JobStoreError) as ei:
+        assert_retry_admission(rec, attempt=2)
+    assert ei.value.code == "E_JOB_PROVIDER_INTERNAL"
+    with pytest.raises(JobStoreError) as ei2:
+        revalidate_stored_request(ACP_SESSION_PROVIDER, {})
+    assert ei2.value.code == "E_JOB_PROVIDER_INTERNAL"

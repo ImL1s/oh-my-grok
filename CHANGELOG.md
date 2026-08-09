@@ -10,6 +10,17 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **Partial work for issue 68 (PR3 / retry+GC+ask --background):** explicit
+  `omg job retry JOB_ID --attempt N` with immutable `attempt_budget`, attempt
+  archives under `.omg/jobs/<id>/attempts/NNNN/`, retry classification
+  (automatic/manual_only/never/unknown; no auto-scheduler), terminal
+  `omg job gc --retention-days N` (never deletes nonterminal; refuses
+  ACP-bound; skips malformed; revalidates under lock), and
+  `omg ask --background` thin seam (`fake`|`agy` → durable job + immediate
+  `job_id`; sync ask unchanged). Reuses the existing `start_job` /
+  `launch_job_runner` path. Docs: `docs/durable-jobs.md`. Does **not** close
+  #68 (lease recovery / auto-retry / authenticated Antigravity still open).
+
 - **#105 PR4 hermetic ACP resume sidecar:** Team `--provider-session` on an
   AVAILABLE `session_resume` gate starts/reuses an internal jobs-plane
   `grok-acp-session` sidecar (`grok agent stdio`, initialize → one
