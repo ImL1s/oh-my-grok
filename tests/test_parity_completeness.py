@@ -277,25 +277,55 @@ def test_bootstrapping_inventory_needs_no_completeness_proof() -> None:
     assert payload["completeness_proofs_required"] is False
 
 
-def test_status_promotion_without_proof_fails_even_after_p0_gaps_close(
+def test_status_promotion_is_proof_gated_not_gap_closure(
     tmp_path: Path,
 ) -> None:
+    """Closing P0 gaps alone never wrote proofs; with all four triples present the
+    gate *can* accept ``complete`` statuses, but the canonical inventory stays
+    bootstrapping (promotion remains unperformed).
+    """
     inventory = load_json_object(CANONICAL)
-    broken = copy.deepcopy(inventory)
-    for gap in broken["gaps"]:
+    assert inventory["inventory_status"] == "bootstrapping"
+    assert all(
+        inventory["source_status"][s] == "bootstrapping" for s in SOURCE_STATUS_IDS
+    )
+
+    candidate = copy.deepcopy(inventory)
+    for gap in candidate["gaps"]:
         if gap.get("priority") == "P0":
             gap["status"] = "closed"
-    broken["inventory_status"] = "complete"
-    broken["category_status"] = {k: "complete" for k in broken["category_status"]}
-    broken["source_status"] = {k: "complete" for k in broken["source_status"]}
+    candidate["inventory_status"] = "complete"
+    candidate["category_status"] = {k: "complete" for k in candidate["category_status"]}
+    candidate["source_status"] = {k: "complete" for k in candidate["source_status"]}
     path = tmp_path / "omg-parity.json"
-    path.write_text(json.dumps(broken), encoding="utf-8")
+    path.write_text(json.dumps(candidate), encoding="utf-8")
 
-    with pytest.raises(ContractValidationError, match="completeness proof"):
-        check_parity_inventory(inventory_path=path, repo_root=ROOT, strict=True)
+    # All four real-source triples exist → gate accepts complete statuses.
+    payload = check_parity_inventory(inventory_path=path, repo_root=ROOT, strict=True)
+    assert payload["ok"] is True
+    assert payload["completeness_proofs_verified"] == 4
+    assert sorted(payload["promoted_sources"]) == sorted(SOURCE_STATUS_IDS)
 
-    with pytest.raises(ContractValidationError, match="completeness proof"):
-        assert_completeness_promotion(broken, repo_root=ROOT)
+    result = assert_completeness_promotion(candidate, repo_root=ROOT)
+    assert result.completeness_proofs_verified == 4
+    assert sorted(result.promoted_sources) == sorted(SOURCE_STATUS_IDS)
+
+    # Canonical on-disk inventory remains unpromoted.
+    on_disk = load_json_object(CANONICAL)
+    assert on_disk["inventory_status"] == "bootstrapping"
+    assert all(
+        on_disk["source_status"][s] == "bootstrapping" for s in SOURCE_STATUS_IDS
+    )
+
+    # Pin drift still fails closed (proofs are not ornamental).
+    drifted = copy.deepcopy(candidate)
+    drifted["upstream_pins"] = dict(drifted["upstream_pins"])
+    drifted["upstream_pins"]["Antigravity"] = dict(
+        drifted["upstream_pins"]["Antigravity"]
+    )
+    drifted["upstream_pins"]["Antigravity"]["revision"] = "0" * 40
+    with pytest.raises(ContractValidationError, match="pin_revision|coverage_digest|Antigravity"):
+        assert_completeness_promotion(drifted, repo_root=ROOT)
 
 
 def test_seed_catalogue_is_not_a_completeness_proof() -> None:

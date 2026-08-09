@@ -8,10 +8,10 @@ Inventory status: **bootstrapping**.
 | --- | --- | --- | --- | --- | --- |
 | `gap.antigravity.provider` | P0 | open | #67 | `antigravity.provider.adapter` | A–D landed (probe/run/ask/Team envelope); dual review+CI before close |
 | `gap.jobs.durable` | P0 | open | #68 | `jobs.durable_background` | PR5 bounded auto-retry scheduler landed (caller-driven tick over explicit retry path). Authenticated live Antigravity evidence and Team job-backed workers (#69) remain open (#68). |
-| `gap.parity.governance.remaining` | P0 | open | #78 | `parity.inventory.governance` | #78-F/#78-G/#78-H real pinned OMC+OMX+OmO discovery policy/mapping/proof landed; Antigravity real-source proof and all explicit status promotions remain open |
+| `gap.parity.governance.remaining` | P0 | open | #78 | `parity.inventory.governance` | #78-F/#78-G/#78-H/#78-I real pinned OMC+OMX+OmO+Antigravity discovery policy/mapping/proof landed; Antigravity remains documentation/catalog seed only (unpromoted); all explicit status promotions remain open |
 | `gap.team.v3` | P0 | open | #69 | `team.plane_v3` | PR3 leader-resume claim reconciliation landed via omg team resume; job-backed workers, replacement attempts, compositions, and full OMX operation surface remain open (#69). Depends on #67/#68 for remainder. |
 | `gap.omo.todo_continuation` | P1 | open | #78 | `omo.goal.todo_continuation` | OmO todo-continuation inject is host_impossible on Grok (no session.prompt API) |
-| `gap.parity.platform_live_evidence` | P1 | open | #78 | `antigravity.platform.version_matrix` | Platform/runtime live-evidence gate shipped (#78-C); completeness promotion still manual |
+| `gap.parity.platform_live_evidence` | P1 | open | #78 | `antigravity.platform.version_matrix` | Platform/runtime live-evidence gate shipped (#78-C); #78-I Antigravity docs-only proof landed (unpromoted); completeness promotion still manual |
 | `gap.antigravity.headless_execution` | P2 | open | #67, #78 | `antigravity.headless.structured_execution`, `antigravity.runtime.model_effort_mode_perms` | Ask+Team routed (#67-C/D); typed runtime model/effort/mode controls still unclaimed |
 | `gap.omo.edit_and_hygiene` | P2 | open | #78 | `omo.edit.hash_anchored`, `omo.quality.comment_hygiene` | OmO hash-anchored edit and comment-hygiene quality surfaces unclaimed |
 | `gap.omx.research.modes` | P2 | open | #78 | `omx.research.modes` | OMX-style dedicated research/autoresearch mode surface unclaimed |
@@ -20,5 +20,5 @@ Inventory status: **bootstrapping**.
 
 - `gap.antigravity.provider` (#67): A–D landed (probe/run/ask/Team envelope); dual review+CI before close
 - `gap.jobs.durable` (#68): PR5 bounded auto-retry scheduler landed (caller-driven tick over explicit retry path). Authenticated live Antigravity evidence and Team job-backed workers (#69) remain open (#68).
-- `gap.parity.governance.remaining` (#78): #78-F/#78-G/#78-H real pinned OMC+OMX+OmO discovery policy/mapping/proof landed; Antigravity real-source proof and all explicit status promotions remain open
+- `gap.parity.governance.remaining` (#78): #78-F/#78-G/#78-H/#78-I real pinned OMC+OMX+OmO+Antigravity discovery policy/mapping/proof landed; Antigravity remains documentation/catalog seed only (unpromoted); all explicit status promotions remain open
 - `gap.team.v3` (#69): PR3 leader-resume claim reconciliation landed via omg team resume; job-backed workers, replacement attempts, compositions, and full OMX operation surface remain open (#69). Depends on #67/#68 for remainder.

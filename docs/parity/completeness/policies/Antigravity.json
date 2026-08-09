@@ -1,0 +1,51 @@
+{
+  "store_kind": "parity-completeness-policy",
+  "schema_version": 1,
+  "source": "Antigravity",
+  "repository": "https://github.com/google-antigravity/antigravity-cli",
+  "discovery_rules": {
+    "version": 2,
+    "authoritative_registries": [
+      {
+        "id": "readme-catalog",
+        "path": "README.md",
+        "extraction_method": "antigravity_readme_catalog_v1",
+        "options": {}
+      },
+      {
+        "id": "changelog-releases",
+        "path": "CHANGELOG.md",
+        "extraction_method": "antigravity_changelog_releases_v1",
+        "options": {}
+      },
+      {
+        "id": "example-title",
+        "path": "examples/title",
+        "extraction_method": "antigravity_examples_tree_v1",
+        "options": {}
+      },
+      {
+        "id": "example-statusline",
+        "path": "examples/statusline",
+        "extraction_method": "antigravity_examples_tree_v1",
+        "options": {}
+      },
+      {
+        "id": "issue-templates",
+        "path": ".github/ISSUE_TEMPLATE",
+        "extraction_method": "antigravity_issue_templates_v1",
+        "options": {}
+      }
+    ],
+    "category_assignment": {
+      "doc-binary": "antigravity",
+      "doc-catalog": "antigravity",
+      "doc-feature": "antigravity",
+      "doc-section": "antigravity",
+      "example": "antigravity",
+      "issue-template": "parity_governance",
+      "release": "platform_live_evidence"
+    },
+    "non_surface_exceptions": []
+  }
+}

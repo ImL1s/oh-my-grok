@@ -66,14 +66,19 @@ execution). Admitted methods:
 - `omo_agent_names_schema_v1`
 - `omo_zod_string_enum_v1`
 - `omo_command_tree_v1`
+- `antigravity_readme_catalog_v1`
+- `antigravity_changelog_releases_v1`
+- `antigravity_examples_tree_v1`
+- `antigravity_issue_templates_v1`
 
 V2 requires a committed **mapping store** and bidirectional
 surface↔inventory coverage (every discovered surface mapped; every
 non-alias inventory row for that source referenced).
 
-Committed OMC, OMX, and OmO proofs exist at their inventory pins but
-`source_status` for each remains `bootstrapping` (unpromoted). Antigravity
-remains without a committed real-source triple.
+Committed OMC, OMX, OmO, and Antigravity proofs exist at their inventory
+pins but `source_status` for each remains `bootstrapping` (unpromoted).
+The Antigravity pin is documentation/catalog seed only (no implementation
+registries); stronger upstream is still required before any promotion.
 ## Mapping (`parity-completeness-mapping/v1`)
 
 Committed under `docs/parity/completeness/mappings/{SOURCE}.json`.
@@ -135,6 +140,8 @@ OMC currently has a committed policy/mapping/proof triple that is
 technically sufficient for source promotion, while canonical
 `source_status.OMC` (and categories / inventory) remain `bootstrapping`.
 OMX and OmO likewise have committed triples that remain unpromoted.
+Antigravity has a committed documentation-only triple that remains
+unpromoted and is **not** implementation-complete.
 
 ## Artifact consistency vs source reproduction vs promotion
 
@@ -178,6 +185,11 @@ Hermetic fixtures live under `tests/fixtures/parity/completeness/`:
 - `upstream/OMC/` — tiny v1 `json_registry_v1` tree
 - `real_source/OMC/` — synthetic v2 registry-syntax tree (not a copy of
   upstream OMC)
+- `real_source/OMX/` — synthetic OMX catalog/plugin tree
+- `real_source/OmO/` — synthetic OmO schema/CLI tree
+- `real_source/Antigravity/` — documentation-only subset mirroring the
+  pinned antigravity-cli surfaces (README/CHANGELOG/examples/ISSUE_TEMPLATE;
+  no package.json/src)
 
 They remain explicitly bootstrapping examples for the gate; they do **not**
 promote the canonical inventory.
