@@ -22,6 +22,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   Antigravity live evidence / maturity promotion).
 
 ### Fixed
+- **#69 PR4 merge-gate P1s:** stop no longer stamps cancelled/`stop_state`
+  when Jobs cancel fails; `launch_worker` stamps `team_id` on Jobs
+  `request` and resume refuse same-root foreign binds; `apply_job_completion`
+  requires non-empty claim tokens (no `None`/`None` soft success); stamp
+  refuses corrupt dual-id prior handles; team-exec job topo observes Jobs
+  (no pane-wait / no auto-complete). Refs #69 (does not close; no `live_*`).
+
+### Fixed
 - **Parity #78-I Antigravity docs-only promotion false-green:** encode
   `proof_kind` + `promotion_sufficient` on completeness policy/proof
   schema; Antigravity is `documentation_catalog_seed` /

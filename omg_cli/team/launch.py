@@ -370,6 +370,7 @@ def launch_worker(
             run_id=run_id,
             sleep_s=sleep_s,
             launch=True,
+            team_id=team_id,
         )
     except JobStoreError as exc:
         raise WorkerLaunchError(
@@ -412,39 +413,45 @@ def stamp_execution_on_task(
     task: MutableMapping[str, Any],
     handle: WorkerExecutionHandle,
 ) -> dict[str, Any]:
-    """Attach a validated execution record; refuse topology drift in place."""
+    """Attach a validated execution record; refuse topology drift in place.
+
+    Fail closed on corrupt prior handles (dual ``job_id``+``pane_id``, invalid
+    shape): never heal by overwrite.
+    """
     existing = task.get("execution")
     if isinstance(existing, Mapping) and existing:
+        # Dual-id refuse before validate (validate also rejects; keep explicit).
+        if existing.get("job_id") is not None and existing.get("pane_id") is not None:
+            raise WorkerLaunchError(
+                "duplicate execution handle (both job_id and pane_id)",
+                code="E_TEAM_EXEC_XOR",
+            )
         try:
             prev = validate_execution_record(existing)
-        except WorkerLaunchError:
-            prev = None
-        if prev is not None:
-            prev_topo = prev.get("topology")
-            if prev_topo and prev_topo != handle.topology:
-                raise WorkerLaunchError(
-                    "refusing in-place topology mutation "
-                    f"({prev_topo} → {handle.topology}); launch a new generation",
-                    code="E_TEAM_TOPOLOGY_DRIFT",
-                )
-            # Refuse dual ids if somehow present on the prior record.
-            if prev.get("job_id") and prev.get("pane_id"):
-                raise WorkerLaunchError(
-                    "duplicate execution handle (both job_id and pane_id)",
-                    code="E_TEAM_EXEC_XOR",
-                )
-            if (
-                not handle.dry_run
-                and prev.get("job_id")
-                and handle.job_id
-                and prev.get("job_id") != handle.job_id
-                and int(prev.get("launch_generation") or 0)
-                == int(handle.launch_generation)
-            ):
-                raise WorkerLaunchError(
-                    "duplicate execution handle for same launch_generation",
-                    code="E_TEAM_EXEC_DUP",
-                )
+        except WorkerLaunchError as exc:
+            raise WorkerLaunchError(
+                f"refusing stamp over invalid prior execution: {exc}",
+                code=getattr(exc, "code", None) or "E_TEAM_EXEC_SHAPE",
+            ) from exc
+        prev_topo = prev.get("topology")
+        if prev_topo and prev_topo != handle.topology:
+            raise WorkerLaunchError(
+                "refusing in-place topology mutation "
+                f"({prev_topo} → {handle.topology}); launch a new generation",
+                code="E_TEAM_TOPOLOGY_DRIFT",
+            )
+        if (
+            not handle.dry_run
+            and prev.get("job_id")
+            and handle.job_id
+            and prev.get("job_id") != handle.job_id
+            and int(prev.get("launch_generation") or 0)
+            == int(handle.launch_generation)
+        ):
+            raise WorkerLaunchError(
+                "duplicate execution handle for same launch_generation",
+                code="E_TEAM_EXEC_DUP",
+            )
     record = handle.to_execution_record()
     validate_execution_record(record)
     task["execution"] = record
@@ -515,8 +522,10 @@ def apply_job_completion(
 ) -> CompletionDecision:
     """Promote a Jobs terminal state onto a Team task — fail closed.
 
-    Rejects stale attempts, claim-token mismatches, foreign workers/teams, and
-    unknown/non-terminal job states (never synthesize success).
+    Rejects missing claim tokens, claim-token mismatches, stale attempts,
+    foreign workers/teams, and unknown/non-terminal job states (never
+    synthesize success). Both ``claim_token`` and ``expected_claim_token``
+    must be non-empty and equal — ``None``/``None`` is not a soft success.
     """
     if foreign_team_id is not None and team_id is not None:
         if foreign_team_id != team_id:
@@ -537,9 +546,16 @@ def apply_job_completion(
     if rec.get("job_id") != job_id:
         return CompletionDecision(False, "job_id_mismatch")
 
-    if expected_claim_token is not None:
-        if not claim_token or claim_token != expected_claim_token:
-            return CompletionDecision(False, "claim_token_mismatch")
+    # Fail closed: claim tokens are required for any terminal promotion.
+    if (
+        not isinstance(expected_claim_token, str)
+        or not expected_claim_token.strip()
+        or not isinstance(claim_token, str)
+        or not claim_token.strip()
+    ):
+        return CompletionDecision(False, "claim_token_required")
+    if claim_token != expected_claim_token:
+        return CompletionDecision(False, "claim_token_mismatch")
     if int(job_attempt) != int(expected_attempt):
         return CompletionDecision(False, "stale_attempt")
 
@@ -681,11 +697,14 @@ def resume_bind_job_workers(
                 }
             )
             continue
-        # Isolation: refuse binding a job whose team ownership mismatches.
-        req = getattr(record, "request", None) or {}
-        if isinstance(req, Mapping) and team_id is not None:
-            owned = req.get("team_id")
-            if owned is not None and str(owned) != str(team_id):
+        # Isolation: when binder supplies team_id, Jobs request.team_id must
+        # match (missing ownership stamp → foreign / unproven, fail closed).
+        if team_id is not None:
+            req = getattr(record, "request", None) or {}
+            owned = (
+                req.get("team_id") if isinstance(req, Mapping) else None
+            )
+            if owned is None or str(owned) != str(team_id):
                 unproven.append(
                     {
                         "task_id": tid,

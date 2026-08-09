@@ -4761,6 +4761,12 @@ def _stop_team_locked(
         )
 
         job_actions: list[str] = []
+        cancelled_tids: set[str] = set()
+        soft_skip = {
+            "not_job_backed",
+            "missing_execution",
+            "no_job_id",
+        }
         for raw in meta.get("tasks") or []:
             if not isinstance(raw, Mapping):
                 continue
@@ -4772,40 +4778,41 @@ def _stop_team_locked(
                 job_actions.append(
                     f"cancel job {result.get('job_id')} for {tid}"
                 )
-            elif result.get("reason") not in {
-                "not_job_backed",
-                "missing_execution",
-                "no_job_id",
-            }:
+                if tid:
+                    cancelled_tids.add(tid)
+            elif result.get("reason") in soft_skip:
+                continue
+            else:
                 errors.append(
                     f"job cancel {tid}: {result.get('reason')}"
                 )
 
-        def _mark_job_tasks_cancelled(current: dict[str, Any]) -> dict[str, Any]:
+        # Fail closed: never claim stop_state=stopped / blanket cancelled when
+        # any Jobs cancel failed (Team must not say cancelled while Job runs).
+        hard_fail = bool(errors)
+
+        def _mark_job_stop(current: dict[str, Any]) -> dict[str, Any]:
             updated = dict(current)
             tasks = []
             for task in updated.get("tasks") or []:
                 if not isinstance(task, Mapping):
                     continue
                 row = dict(task)
-                execution = row.get("execution")
-                if (
-                    isinstance(execution, Mapping)
-                    and execution.get("topology") == "job"
-                    and execution.get("job_id")
-                ):
+                tid_row = str(row.get("task_id") or "")
+                if tid_row in cancelled_tids:
                     row["status"] = STATUS_CANCELLED
                 tasks.append(row)
             updated["tasks"] = tasks
-            updated["stop_state"] = "stopped"
-            updated["stopped_at"] = _utc_now()
+            if not hard_fail:
+                updated["stop_state"] = "stopped"
+                updated["stopped_at"] = _utc_now()
             return updated
 
         try:
             meta = mutate_team_meta(
                 root_path,
                 run_id,
-                _mark_job_tasks_cancelled,
+                _mark_job_stop,
                 expected_generation=_read_meta_generation(meta),
             )
         except TeamError as exc:
@@ -4820,9 +4827,16 @@ def _stop_team_locked(
             "actions": actions,
             "errors": errors,
             "ok": not errors,
+            "cancelled_task_ids": sorted(cancelled_tids),
             "note": (
                 "job-backed team stop: cancelled via Jobs plane; "
                 "worktrees preserved; verified untouched"
+                if not errors
+                else (
+                    "job-backed team stop incomplete: Jobs cancel failed; "
+                    "Team did not claim stop_state=stopped for failed cancels; "
+                    "verified untouched"
+                )
             ),
         }
 

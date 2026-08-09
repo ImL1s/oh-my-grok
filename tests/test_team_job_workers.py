@@ -229,6 +229,32 @@ def test_xor_both_ids_rejected() -> None:
     assert exc.value.code == "E_TEAM_EXEC_XOR"
 
 
+def test_stamp_refuses_corrupt_dual_id_prior() -> None:
+    task: dict[str, Any] = {
+        "task_id": "t1",
+        "execution": {
+            "schema": 1,
+            "topology": "job",
+            "launch_generation": 1,
+            "job_id": "20260809T120000Z-aaaa1111",
+            "pane_id": "%1",
+        },
+    }
+    handle = WorkerExecutionHandle(
+        topology="job",
+        worker_id="t1",
+        provider="fake",
+        launch_generation=2,
+        job_id="20260809T120000Z-bbbb2222",
+    )
+    with pytest.raises(WorkerLaunchError) as exc:
+        stamp_execution_on_task(task, handle)
+    assert exc.value.code == "E_TEAM_EXEC_XOR"
+    # Prior corrupt record must remain untouched (no heal-by-overwrite).
+    assert task["execution"]["job_id"] == "20260809T120000Z-aaaa1111"
+    assert task["execution"]["pane_id"] == "%1"
+
+
 def test_topology_drift_refused() -> None:
     task: dict[str, Any] = {
         "task_id": "t1",
@@ -331,6 +357,31 @@ def test_claim_token_mismatch_ignored() -> None:
     assert decision.reason == "claim_token_mismatch"
 
 
+def test_claim_tokens_none_none_rejected() -> None:
+    task = {
+        "task_id": "t1",
+        "execution": {
+            "schema": 1,
+            "topology": "job",
+            "launch_generation": 1,
+            "job_id": "20260809T120000Z-aaaa1111",
+        },
+    }
+    decision = apply_job_completion(
+        task,
+        job_id="20260809T120000Z-aaaa1111",
+        job_attempt=1,
+        job_state=JobState.SUCCEEDED.value,
+        claim_token=None,
+        expected_claim_token=None,
+        expected_attempt=1,
+        expected_worker_id="t1",
+        worker_id="t1",
+    )
+    assert decision.accepted is False
+    assert decision.reason == "claim_token_required"
+
+
 def test_cancel_job_cancels_task_no_succeeded_after_cancel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -393,6 +444,72 @@ def test_stop_team_cancels_job_backed_workers(
         JobState.FAILED,
         JobState.LOST,
     }
+    reloaded = json.loads(
+        (tmp_path / ".omg" / "state" / "runs" / run_id / "team" / "team.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert reloaded.get("stop_state") == "stopped"
+    assert reloaded["tasks"][0]["status"] == "cancelled"
+
+
+def test_stop_team_cancel_failure_does_not_claim_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _env_on(monkeypatch)
+    _init_repo(tmp_path)
+    meta = start_team(
+        "stop fail",
+        [{"task_id": "t1", "owned_files": ["a.py"], "provider": "fake"}],
+        root=tmp_path,
+        dry_run=False,
+        env={EXPERIMENTAL_ENV: "1"},
+        check_binary=False,
+        worker_topology="job",
+        executor="fixture",
+        team_id="team-stop",
+    )
+    run_id = str(meta["run_id"])
+    prior_status = meta["tasks"][0].get("status")
+
+    def _boom(_root: Path, _task: Any, *, reason: str = "team_stop") -> dict[str, Any]:
+        return {"ok": False, "reason": "simulated_cancel_failure", "job_id": "x"}
+
+    monkeypatch.setattr(
+        "omg_cli.team.launch.cancel_job_backed_worker", _boom
+    )
+    out = stop_team(tmp_path, run_id, force=True)
+    assert out.get("ok") is False
+    assert any("simulated_cancel_failure" in e for e in out.get("errors") or [])
+    reloaded = json.loads(
+        (tmp_path / ".omg" / "state" / "runs" / run_id / "team" / "team.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert reloaded.get("stop_state") != "stopped"
+    assert reloaded["tasks"][0].get("status") == prior_status
+
+
+def test_job_launch_stamps_team_id_on_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _env_on(monkeypatch)
+    _init_repo(tmp_path)
+    meta = start_team(
+        "own",
+        [{"task_id": "t1", "owned_files": ["a.py"], "provider": "fake"}],
+        root=tmp_path,
+        dry_run=False,
+        env={EXPERIMENTAL_ENV: "1"},
+        check_binary=False,
+        worker_topology="job",
+        executor="fixture",
+        team_id="team-own",
+    )
+    job_id = meta["tasks"][0]["execution"]["job_id"]
+    record = read_job_record(tmp_path, job_id)
+    assert record.request.get("team_id") == "team-own"
+    wait_job(tmp_path, job_id, timeout_s=30.0)
 
 
 def test_two_teams_worker_isolation(
@@ -437,6 +554,58 @@ def test_two_teams_worker_isolation(
     assert any(u.get("reason") == "unknown_job" for u in bind["unproven"])
     wait_job(a, job_a, timeout_s=30.0)
     wait_job(b, job_b, timeout_s=30.0)
+
+
+def test_same_root_cross_team_bind_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same project root: team-a must not bind team-b's job_id."""
+    _env_on(monkeypatch)
+    _init_repo(tmp_path)
+    meta_a = start_team(
+        "A",
+        [{"task_id": "t-a", "owned_files": ["a.py"], "provider": "fake"}],
+        root=tmp_path,
+        dry_run=False,
+        env={EXPERIMENTAL_ENV: "1"},
+        check_binary=False,
+        worker_topology="job",
+        executor="fixture",
+        team_id="team-a",
+    )
+    meta_b = start_team(
+        "B",
+        [{"task_id": "t-b", "owned_files": ["b.py"], "provider": "fake"}],
+        root=tmp_path,
+        dry_run=False,
+        env={EXPERIMENTAL_ENV: "1"},
+        check_binary=False,
+        worker_topology="job",
+        executor="fixture",
+        team_id="team-b",
+        force=True,
+    )
+    job_b = meta_b["tasks"][0]["execution"]["job_id"]
+    assert read_job_record(tmp_path, job_b).request.get("team_id") == "team-b"
+    # Poison team-a's view with team-b's job handle (same root).
+    foreign_tasks = [
+        {
+            "task_id": "t-a",
+            "execution": {
+                "schema": 1,
+                "topology": "job",
+                "launch_generation": 1,
+                "job_id": job_b,
+            },
+        }
+    ]
+    bind = resume_bind_job_workers(
+        tmp_path, foreign_tasks, team_id="team-a"
+    )
+    assert bind["bound"] == []
+    assert any(u.get("reason") == "foreign_team_job" for u in bind["unproven"])
+    wait_job(tmp_path, meta_a["tasks"][0]["execution"]["job_id"], timeout_s=30.0)
+    wait_job(tmp_path, job_b, timeout_s=30.0)
 
 
 def test_dry_run_job_topology_no_job_no_pane(

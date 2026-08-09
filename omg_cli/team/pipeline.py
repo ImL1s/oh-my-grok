@@ -697,10 +697,15 @@ def _run_exec_stage(
     routing: Mapping[str, Any] | None,
     worker_topology: str | None = None,
 ) -> dict[str, Any]:
-    """team-exec body: start_team, wait panes (non-dry), then collect.
+    """team-exec body: start_team, wait (non-dry), then collect.
 
-    Non-dry: poll liveness until panes finish (or ``OMG_TEAM_EXEC_WAIT_SECS``)
-    before ``collect_team``. Dry-run: start only — no wait, poll, or collect.
+    Pane topology: poll tmux liveness until panes finish (or
+    ``OMG_TEAM_EXEC_WAIT_SECS``) before ``collect_team``.
+
+    Job topology (#69 PR4): do **not** pane-wait. Observe Jobs health only;
+    do **not** auto-promote task success via ``apply_job_completion`` (claim
+    tokens required; promotion stays explicit). Collect still seal/integrate
+    fail-closed on unsealed worktrees. Dry-run: start only — no wait/collect.
     Never sets verified.
     """
     import omg_cli.team.plane as plane_mod
@@ -738,9 +743,35 @@ def _run_exec_stage(
         )
         collect_result: dict[str, Any] | None = None
         if not dry_run:
-            # Race fix: start_team only SPAWNS panes; workers need wall-clock
-            # time to work + seal before collect/integrate (fail-closed join).
-            wait_info = wait_for_team_panes(root, run_id)
+            worker_topo = str(
+                (topo if isinstance(topo, str) else None)
+                or meta.get("worker_topology")
+                or "pane"
+            )
+            if worker_topo == "job":
+                from omg_cli.team.launch import observe_job_for_task
+
+                observations = [
+                    observe_job_for_task(root, raw)
+                    for raw in (meta.get("tasks") or [])
+                    if isinstance(raw, Mapping)
+                ]
+                wait_info = {
+                    "waited": True,
+                    "worker_topology": "job",
+                    "pane_wait": False,
+                    "job_observe": observations,
+                    "note": (
+                        "job-backed team-exec: observed Jobs health only; "
+                        "no pane wait; no auto apply_job_completion "
+                        "(claim tokens required); proceeding to collect "
+                        "(fail-closed if unsealed)"
+                    ),
+                }
+            else:
+                # Race fix: start_team only SPAWNS panes; workers need wall-clock
+                # time to work + seal before collect/integrate (fail-closed join).
+                wait_info = wait_for_team_panes(root, run_id)
             collect_result = collect_team(root, run_id)
             # Defensive: collect never sets verified (plane contract).
             _ = collect_result.get("verified")
@@ -759,6 +790,8 @@ def _run_exec_stage(
     }
     if wait_info and wait_info.get("wait_timeout"):
         out["wait_timeout"] = True
+        out["note"] = wait_info.get("note")
+    elif wait_info and wait_info.get("worker_topology") == "job":
         out["note"] = wait_info.get("note")
     return out
 
