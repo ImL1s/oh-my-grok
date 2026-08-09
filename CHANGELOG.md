@@ -9,6 +9,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Fixed
+- **Parity #78-H OmO Commander/Zod discovery fail-closed:** resolve
+  `addCommand(factory())` (emit `cli.mcp` from `createMcpOAuthCommand()`),
+  emit Commander `.alias()` surfaces (`cli.setup`, `cli.uninstall`), and
+  reject non-string-literal Zod enum elements instead of partial extract.
+  Regenerated OmO mapping/proof at pin `4ca872b…`; statuses remain
+  bootstrapping. Refs #78 (does not close).
+
 ### Added
 - **Parity #78-H real pinned OmO discovery evidence:** committed
   discovery_rules v2 policy, surface→capability mapping, and completeness

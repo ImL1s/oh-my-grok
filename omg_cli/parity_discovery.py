@@ -588,6 +588,140 @@ def _parse_all_tools_elements(body: str) -> list[str]:
     return elements
 
 
+def _ts_call_argument(source: str, open_paren_end: int) -> tuple[str, int]:
+    """Return (argument_text, index_after_closing_paren) for a call starting after '('."""
+    depth = 1
+    i = open_paren_end
+    n = len(source)
+    start = open_paren_end
+    while i < n:
+        ch = source[i]
+        if ch in "'\"`":
+            quote = ch
+            i += 1
+            while i < n:
+                c = source[i]
+                if c == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if c == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch in "{[(":
+            depth += 1
+            i += 1
+            continue
+        if ch in "}])":
+            depth -= 1
+            if depth == 0:
+                return source[start:i].strip(), i + 1
+            i += 1
+            continue
+        i += 1
+    raise ContractValidationError(
+        "commander_command_graph_v1: unterminated call argument list"
+    )
+
+
+def _validate_commander_token(token: str, *, label: str) -> str:
+    text = token.split()[0] if token else ""
+    if not text or not re.fullmatch(r"[A-Za-z0-9][\w:-]*", text):
+        raise ContractValidationError(
+            f"commander_command_graph_v1: invalid {label} {token!r}"
+        )
+    return text
+
+
+def _resolve_local_command_binding(source: str, binding: str) -> str | None:
+    local = re.search(
+        rf"(?:const|let|var)\s+{re.escape(binding)}\s*=\s*new\s+Command\s*\(\s*(['\"])([^'\"]+)\1",
+        source,
+    )
+    if not local:
+        return None
+    return _validate_commander_token(local.group(2), label="local Command name")
+
+
+def _resolve_commander_factory_root_name(source: str, factory_name: str) -> str:
+    """Resolve ``export function factory(): Command { ... return root }`` to root name."""
+    cleaned = _strip_ts_comments(source)
+    marker = re.search(
+        rf"export\s+(?:async\s+)?function\s+{re.escape(factory_name)}\s*\(",
+        cleaned,
+    )
+    if not marker:
+        marker = re.search(
+            rf"export\s+const\s+{re.escape(factory_name)}\s*=\s*"
+            rf"(?:async\s*)?\([^)]*\)\s*(?::\s*[^=]+)?=>\s*{{",
+            cleaned,
+        )
+    if not marker:
+        raise ContractValidationError(
+            f"commander_command_graph_v1: factory {factory_name!r} not found"
+        )
+    # Locate function body opening brace.
+    brace = cleaned.find("{", marker.end() - 1)
+    if brace < 0:
+        raise ContractValidationError(
+            f"commander_command_graph_v1: factory {factory_name!r} missing body"
+        )
+    depth = 0
+    i = brace
+    body_end = -1
+    while i < len(cleaned):
+        ch = cleaned[i]
+        if ch in "'\"`":
+            quote = ch
+            i += 1
+            while i < len(cleaned):
+                c = cleaned[i]
+                if c == "\\" and i + 1 < len(cleaned):
+                    i += 2
+                    continue
+                if c == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                body_end = i
+                break
+        i += 1
+    if body_end < 0:
+        raise ContractValidationError(
+            f"commander_command_graph_v1: factory {factory_name!r} unterminated body"
+        )
+    body = cleaned[brace + 1 : body_end]
+    ret = re.search(r"\breturn\s+([A-Za-z_][\w]*)\s*;?", body)
+    if not ret:
+        direct = re.search(
+            r"\breturn\s+new\s+Command\s*\(\s*(['\"])([^'\"]+)\1",
+            body,
+        )
+        if direct:
+            return _validate_commander_token(
+                direct.group(2), label="factory Command name"
+            )
+        raise ContractValidationError(
+            f"commander_command_graph_v1: factory {factory_name!r} "
+            "missing static return binding"
+        )
+    returned = ret.group(1)
+    token = _resolve_local_command_binding(body, returned)
+    if token is None:
+        raise ContractValidationError(
+            f"commander_command_graph_v1: factory {factory_name!r} "
+            f"return binding {returned!r} is not a static Command"
+        )
+    return token
+
+
 def _commander_command_names(source: str) -> list[str]:
     cleaned = _strip_ts_comments(source)
     # Reject dynamic construction patterns.
@@ -602,35 +736,50 @@ def _commander_command_names(source: str) -> list[str]:
     # Reject addCommand of non-static identifiers later via import resolution.
     names: list[str] = []
     for m in re.finditer(r"\.command\s*\(\s*(['\"])([^'\"]+)\1", cleaned):
-        raw = m.group(2)
-        token = raw.split()[0]
-        if not token or not re.fullmatch(r"[A-Za-z0-9][\w:-]*", token):
-            raise ContractValidationError(
-                f"commander_command_graph_v1: invalid command token {token!r}"
-            )
-        names.append(token)
-    # Follow statically imported Command objects passed to addCommand.
-    imports = _parse_static_imports(cleaned)
-    for m in re.finditer(r"\.addCommand\s*\(\s*([A-Za-z_][\w]*)\s*\)", cleaned):
-        binding = m.group(1)
-        if binding in imports:
-            names.append(f"__import__:{binding}")
-            continue
-        # Local Command construction: const oauth = new Command("oauth")
-        local = re.search(
-            rf"(?:const|let|var)\s+{re.escape(binding)}\s*=\s*new\s+Command\s*\(\s*(['\"])([^'\"]+)\1",
-            cleaned,
+        names.append(
+            _validate_commander_token(m.group(2), label="command token")
         )
-        if local:
-            token = local.group(2).split()[0]
-            if not token or not re.fullmatch(r"[A-Za-z0-9][\w:-]*", token):
-                raise ContractValidationError(
-                    f"commander_command_graph_v1: invalid local Command name {token!r}"
-                )
-            names.append(token)
+    # User-invocable Commander aliases are first-class surfaces.
+    for m in re.finditer(r"\.alias\s*\(\s*", cleaned):
+        rest = cleaned[m.end() :]
+        if not rest or rest[0] not in "'\"`":
+            raise ContractValidationError(
+                "commander_command_graph_v1: dynamic alias rejected"
+            )
+        am = re.match(r"(['\"])([^'\"]+)\1", rest)
+        if not am:
+            raise ContractValidationError(
+                "commander_command_graph_v1: dynamic alias rejected"
+            )
+        names.append(_validate_commander_token(am.group(2), label="alias token"))
+    # Every .addCommand(...) must resolve statically or be rejected.
+    imports = _parse_static_imports(cleaned)
+    for m in re.finditer(r"\.addCommand\s*\(", cleaned):
+        arg, _ = _ts_call_argument(cleaned, m.end())
+        if not arg:
+            raise ContractValidationError(
+                "commander_command_graph_v1: empty addCommand argument rejected"
+            )
+        bare = re.fullmatch(r"([A-Za-z_][\w]*)", arg)
+        if bare:
+            binding = bare.group(1)
+            if binding in imports:
+                names.append(f"__import__:{binding}")
+                continue
+            token = _resolve_local_command_binding(cleaned, binding)
+            if token is not None:
+                names.append(token)
+                continue
+            raise ContractValidationError(
+                f"commander_command_graph_v1: unresolved addCommand import {binding!r}"
+            )
+        factory = re.fullmatch(r"([A-Za-z_][\w]*)\s*\(\s*\)", arg)
+        if factory:
+            names.append(f"__factory__:{factory.group(1)}")
             continue
         raise ContractValidationError(
-            f"commander_command_graph_v1: unresolved addCommand import {binding!r}"
+            "commander_command_graph_v1: non-static addCommand argument rejected: "
+            + arg[:120]
         )
     if not names:
         raise ContractValidationError(
@@ -930,18 +1079,44 @@ def extract_commander_command_graph_v1(
             mod_names = [
                 n
                 for n in _commander_command_names(mod_bytes.decode("utf-8"))
-                if not n.startswith("__import__:")
+                if not n.startswith(("__import__:", "__factory__:"))
             ]
             # Also accept `.name('x')` on Command objects
             cleaned = _strip_ts_comments(mod_bytes.decode("utf-8"))
             for m in re.finditer(r"\.name\s*\(\s*(['\"])([^'\"]+)\1", cleaned):
-                mod_names.append(m.group(2).split()[0])
+                mod_names.append(
+                    _validate_commander_token(m.group(2), label="command name")
+                )
             if not mod_names:
                 raise ContractValidationError(
                     f"commander_command_graph_v1: imported module {mod_rel} "
                     "has no static command name"
                 )
             expanded.extend(mod_names)
+        elif name.startswith("__factory__:"):
+            binding = name.split(":", 1)[1]
+            if binding not in imports:
+                # Local factory in the same file.
+                try:
+                    expanded.append(
+                        _resolve_commander_factory_root_name(text, binding)
+                    )
+                except ContractValidationError as exc:
+                    raise ContractValidationError(
+                        f"commander_command_graph_v1: unresolved addCommand "
+                        f"factory {binding!r}"
+                    ) from exc
+                continue
+            mod_rel = resolve_import_path(registry_path, imports[binding])
+            mod_bytes = read_blob(mod_rel)
+            input_parts.append(
+                {"path": mod_rel, "content_digest": file_digest(mod_bytes)}
+            )
+            expanded.append(
+                _resolve_commander_factory_root_name(
+                    mod_bytes.decode("utf-8"), binding
+                )
+            )
         else:
             expanded.append(name)
 

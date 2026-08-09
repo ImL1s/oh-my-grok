@@ -367,6 +367,9 @@ def test_omo_v2_policy_discovers_schema_cli_hooks(tmp_path: Path) -> None:
     assert any(s["surface_id"] == "mcp.lsp" for s in surfaces)
     assert any(s["surface_id"] == "cli.ulw-loop" for s in surfaces)
     assert any(s["surface_id"] == "cli.oauth" for s in surfaces)
+    assert any(s["surface_id"] == "cli.mcp" for s in surfaces)
+    assert any(s["surface_id"] == "cli.setup" for s in surfaces)
+    assert any(s["surface_id"] == "cli.uninstall" for s in surfaces)
     assert any(s["surface_id"] == "command.security-research" for s in surfaces)
     assert any(s["surface_id"] == "bin.omo" for s in surfaces)
     assert any(s["surface_id"] == "catalog.agent" for s in surfaces)
@@ -455,6 +458,49 @@ def test_missing_hook_enum_fails(tmp_path: Path) -> None:
     path.write_text('import { z } from "zod"\nexport const Other = z.enum(["x"])\n', encoding="utf-8")
     pin = _recommit(root)
     with pytest.raises(ContractValidationError, match="HookNameSchema"):
+        reproduce_source_index(policy, root, pin_revision=pin)
+
+
+def test_factory_form_addcommand_unresolved_fails(tmp_path: Path) -> None:
+    root, pin, policy, *_ = _synthetic_world(tmp_path)
+    path = root / "packages/omo-opencode/src/cli/cli-program.ts"
+    text = path.read_text(encoding="utf-8")
+    path.write_text(
+        text.replace(
+            "program.addCommand(createMcpOAuthCommand())",
+            "program.addCommand(unknownFactory())",
+        ),
+        encoding="utf-8",
+    )
+    pin = _recommit(root)
+    with pytest.raises(
+        ContractValidationError,
+        match="unresolved addCommand factory|factory .* not found|non-static addCommand",
+    ):
+        reproduce_source_index(policy, root, pin_revision=pin)
+
+
+def test_computed_zod_enum_member_fails(tmp_path: Path) -> None:
+    root, pin, policy, *_ = _synthetic_world(tmp_path)
+    path = root / "packages/omo-opencode/src/config/schema/hooks.ts"
+    text = path.read_text(encoding="utf-8")
+    # Keep a known literal plus a computed identifier — must reject entirely.
+    path.write_text(
+        text.replace(
+            'export const HookNameSchema = z.enum([',
+            'const COMPUTED_VALUE = "computed"\n'
+            'export const HookNameSchema = z.enum([',
+        ).replace(
+            '"todo-continuation-enforcer",',
+            '"todo-continuation-enforcer",\n  COMPUTED_VALUE,',
+        ),
+        encoding="utf-8",
+    )
+    pin = _recommit(root)
+    with pytest.raises(
+        ContractValidationError,
+        match="non-string-literal enum element",
+    ):
         reproduce_source_index(policy, root, pin_revision=pin)
 
 

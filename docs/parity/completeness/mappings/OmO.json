@@ -186,6 +186,13 @@
       ]
     },
     {
+      "surface_id": "cli.mcp",
+      "category": "tools_mcp",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
       "surface_id": "cli.migrate",
       "category": "team",
       "capability_ids": [
@@ -214,6 +221,13 @@
       ]
     },
     {
+      "surface_id": "cli.setup",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
       "surface_id": "cli.status",
       "category": "tools_mcp",
       "capability_ids": [
@@ -225,6 +239,13 @@
       "category": "runtime_orchestration",
       "capability_ids": [
         "omo.ulw.ultrawork_loop"
+      ]
+    },
+    {
+      "surface_id": "cli.uninstall",
+      "category": "team",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
       ]
     },
     {

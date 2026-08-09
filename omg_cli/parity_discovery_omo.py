@@ -21,6 +21,54 @@ def _helpers():
     return pd._category_for_kind, pd._strip_ts_comments, pd._require_relative_posix
 
 
+def _split_ts_array_elements(body: str, *, label: str) -> list[str]:
+    """Split a TypeScript array literal body into top-level elements (fail-closed)."""
+    elements: list[str] = []
+    depth = 0
+    i = 0
+    token_start = 0
+    n = len(body)
+
+    def flush(segment: str) -> None:
+        seg = segment.strip()
+        if seg:
+            elements.append(seg)
+
+    while i < n:
+        ch = body[i]
+        if ch in "'\"`":
+            quote = ch
+            i += 1
+            while i < n:
+                c = body[i]
+                if c == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if c == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch in "{[(":
+            depth += 1
+            i += 1
+            continue
+        if ch in "}])":
+            depth -= 1
+            if depth < 0:
+                raise ContractValidationError(f"{label}: unbalanced array body")
+            i += 1
+            continue
+        if ch == "," and depth == 0:
+            flush(body[token_start:i])
+            i += 1
+            token_start = i
+            continue
+        i += 1
+    flush(body[token_start:])
+    return elements
+
+
 def _parse_zod_string_enum_values(source: str, *, export_name: str, label: str) -> list[str]:
     """Extract string members from ``export const ExportName = z.enum([...])``."""
     cleaned = _helpers()[1](source)
@@ -58,14 +106,20 @@ def _parse_zod_string_enum_values(source: str, *, export_name: str, label: str) 
             depth -= 1
             if depth == 0:
                 body = cleaned[start + 1 : i]
-                if "..." in body or re.search(r"\[\s*[^\]]+\s*\]", body):
+                if "..." in body:
                     raise ContractValidationError(
                         f"{label}: computed/spread enum members rejected"
                     )
                 values: list[str] = []
                 seen: set[str] = set()
-                for m in re.finditer(r"(['\"])([^'\"]+)\1", body):
-                    value = m.group(2)
+                for raw in _split_ts_array_elements(body, label=label):
+                    lit = re.fullmatch(r"(['\"])([^'\"]*)\1", raw)
+                    if not lit:
+                        raise ContractValidationError(
+                            f"{label}: non-string-literal enum element rejected: "
+                            + raw[:120]
+                        )
+                    value = lit.group(2)
                     if not _SAFE_ENUM_VALUE.fullmatch(value):
                         raise ContractValidationError(
                             f"{label}: invalid enum member {value!r}"

@@ -1318,6 +1318,7 @@
         "source": "OmO",
         "revision": "4ca872b57e45281a9a81190bb73637729288ffc3",
         "source_paths": [
+          "packages/omo-opencode/src/cli/cli-program.ts",
           "packages/omo-opencode/src/cli/mcp-oauth/index.ts",
           "packages/omo-opencode/src/mcp/types.ts"
         ]

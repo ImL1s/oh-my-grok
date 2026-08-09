@@ -10,9 +10,9 @@
   },
   "policy_digest": "035db144350e13706cad5ac0a00df7a8dfa1110e28ee59876d484b279ca88002",
   "seed_digest": "98439aeaf2ed9ef68e4f405eb77dfc997b7eef94036d762dbe497e511748ec1c",
-  "coverage_digest": "5ba346790b7e4945f835d153f3f991a674ffbc660bb19770469154a14364f8f9",
+  "coverage_digest": "7f880e2323c706cd56391263e99a0b1f806f03f491947f4251a182d5c9a60bf2",
   "source_input_digest": "72955797083919e9a71ea4bcca18d37e55d8fb7b2c18b08cca37d02ab20c424c",
-  "surface_index_digest": "a6f55845904797b501dfec728b1eb302fa4cfa4bc748100a522a3f1c4af0edb4",
+  "surface_index_digest": "f6e73f22fe530097fd938c7e74c2129aaf43930e7703dcda299fc75a9e8427c0",
   "discovered_surfaces": [
     {
       "surface_id": "agent.atlas",
@@ -301,6 +301,17 @@
       ]
     },
     {
+      "surface_id": "cli.mcp",
+      "kind": "cli",
+      "category": "tools_mcp",
+      "source_path": "packages/omo-opencode/src/cli/cli-program.ts",
+      "anchor": "cli:mcp",
+      "content_digest": "33f911a9dc7e48fc72e464230575431eb6059ea00c80bfec3589483f1e011693",
+      "capability_ids": [
+        "omo.tools.lsp_ast_codegraph_mcp"
+      ]
+    },
+    {
       "surface_id": "cli.migrate",
       "kind": "cli",
       "category": "team",
@@ -345,6 +356,17 @@
       ]
     },
     {
+      "surface_id": "cli.setup",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "packages/omo-opencode/src/cli/cli-program.ts",
+      "anchor": "cli:setup",
+      "content_digest": "33f911a9dc7e48fc72e464230575431eb6059ea00c80bfec3589483f1e011693",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
+      ]
+    },
+    {
       "surface_id": "cli.status",
       "kind": "cli",
       "category": "tools_mcp",
@@ -364,6 +386,17 @@
       "content_digest": "34ba9fe002e8839f77e5fd32b72ff7f669538267f4b2aa9e90628ec7b970e662",
       "capability_ids": [
         "omo.ulw.ultrawork_loop"
+      ]
+    },
+    {
+      "surface_id": "cli.uninstall",
+      "kind": "cli",
+      "category": "team",
+      "source_path": "packages/omo-opencode/src/cli/cleanup-command.ts",
+      "anchor": "cli:uninstall",
+      "content_digest": "9daa5242db0169e8c148d1ba1d00c3af9806c51b35013288f8f3ce4c62fb4ccb",
+      "capability_ids": [
+        "omo.compat.tmux_plugin"
       ]
     },
     {
