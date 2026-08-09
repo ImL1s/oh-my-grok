@@ -82,6 +82,15 @@ def classify_retry(
     if not isinstance(exit_obj, Mapping):
         return RETRY_CLASS_UNKNOWN, "missing_exit"
 
+    # Strict JSON booleans only — never coerce truthy strings/lists.
+    # ``bool("false")`` is True in Python; treat non-bool as malformed.
+    timed_out = exit_obj.get("timed_out")
+    overflow = exit_obj.get("overflow")
+    if timed_out is not None and not isinstance(timed_out, bool):
+        return RETRY_CLASS_UNKNOWN, "malformed_timed_out"
+    if overflow is not None and not isinstance(overflow, bool):
+        return RETRY_CLASS_UNKNOWN, "malformed_overflow"
+
     exit_class = str(exit_obj.get("class") or "").strip().lower()
     if not exit_class:
         return RETRY_CLASS_UNKNOWN, "missing_exit_class"
@@ -98,7 +107,12 @@ def classify_retry(
     if exit_class in {"timeout", "overflow"}:
         return RETRY_CLASS_AUTOMATIC, exit_class
 
-    if bool(exit_obj.get("timed_out")) or bool(exit_obj.get("overflow")):
+    # Fail-closed primary classes before trusting timed_out/overflow flags so
+    # low-trust flags cannot override spawn_error / malformed / etc.
+    if exit_class in {"spawn_error", "malformed", "parse_error", "unknown"}:
+        return RETRY_CLASS_UNKNOWN, exit_class
+
+    if timed_out is True or overflow is True:
         return RETRY_CLASS_AUTOMATIC, "timeout_or_overflow"
 
     if exit_class in {"nonzero", "retryable"}:
@@ -108,9 +122,6 @@ def classify_retry(
             return RETRY_CLASS_AUTOMATIC, "retryable_nonzero"
         # nonzero without explicit retryable flag → unknown (fail closed)
         return RETRY_CLASS_UNKNOWN, "nonzero_unclassified"
-
-    if exit_class in {"spawn_error", "malformed", "parse_error", "unknown"}:
-        return RETRY_CLASS_UNKNOWN, exit_class
 
     return RETRY_CLASS_UNKNOWN, f"unclassified:{exit_class}"
 

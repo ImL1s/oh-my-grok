@@ -723,6 +723,13 @@ def _gc_identities_block_reason(
     if _spawn_uncertain(project_root, record.job_id):
         return "spawn_uncertain"
 
+    from omg_cli.jobs.recovery import provider_launch_unbound, spawn_identity_unproven
+
+    if spawn_identity_unproven(project_root, record.job_id):
+        return "spawn_identity_malformed"
+    if provider_launch_unbound(record):
+        return "provider_identity_incomplete"
+
     runner = _runner_identity(record)
     if runner is None:
         runner = _read_spawn_identity_recovery(project_root, record.job_id)
@@ -1248,14 +1255,29 @@ def cancel_job(
         if record.state in {JobState.SUCCEEDED, JobState.FAILED, JobState.LOST}:
             return record
 
-    # Fail-closed: launching but unbound — do not speculative-kill outer
-    # (would orphan agy) and do not claim cancelled. Same gate as recover.
-    from omg_cli.jobs.recovery import provider_launch_unbound
+    # Fail-closed: claimed launch/bind without complete PID/PGID — do not
+    # speculative-kill outer (would orphan agy) and do not claim cancelled.
+    # Covers launching-unbound and bound-but-incomplete (same as recover/retry).
+    from omg_cli.jobs.recovery import (
+        provider_incomplete_reason,
+        provider_launch_unbound,
+        spawn_identity_unproven,
+    )
 
-    if provider_launch_unbound(record):
+    incomplete = provider_incomplete_reason(record)
+    if incomplete is not None or provider_launch_unbound(record):
+        reason = incomplete or "provider_launch_unbound"
         raise JobStoreError(
-            f"job {job_id} provider process is launching but unbound; "
+            f"job {job_id} provider identity incomplete ({reason}); "
             "refusing speculative cancel (E_JOB_CANCEL_UNPROVEN)",
+            code="E_JOB_CANCEL_UNPROVEN",
+        )
+
+    if spawn_identity_unproven(project_root, job_id):
+        raise JobStoreError(
+            f"job {job_id} spawn_identity.json present but "
+            "malformed/incomplete; refusing speculative cancel "
+            "(E_JOB_CANCEL_UNPROVEN)",
             code="E_JOB_CANCEL_UNPROVEN",
         )
 
@@ -1474,13 +1496,18 @@ def _assert_prior_attempt_gone(project_root: Path, record: JobRecord) -> None:
     - LIVE → ``E_JOB_RETRY_LIVE``
     - UNPROVEN → ``E_JOB_CANCEL_UNPROVEN``
 
-    Also refuse ``provider_process.state == launching`` without a complete
-    durable PID/PGID (or proven disappearance) — same unbound-launch window
-    that cancel/recover treat as ``E_JOB_CANCEL_UNPROVEN`` / recovery-unproven.
+    Also refuse claimed provider launch/bind without a complete durable
+    PID/PGID (``launching`` unbound *or* ``bound`` incomplete), and
+    present-but-malformed ``spawn_identity.json`` — same fail-closed
+    semantics as cancel/recover (never treat incomplete as absent).
     Malformed or wrongly-marked ``lost`` records must not bypass this gate.
     """
     from omg_cli.jobs.ownership import probe_identity_for_recovery
-    from omg_cli.jobs.recovery import provider_launch_unbound
+    from omg_cli.jobs.recovery import (
+        provider_incomplete_reason,
+        provider_launch_unbound,
+        spawn_identity_unproven,
+    )
 
     if _spawn_uncertain(project_root, record.job_id):
         raise JobStoreError(
@@ -1488,10 +1515,19 @@ def _assert_prior_attempt_gone(project_root: Path, record: JobRecord) -> None:
             code="E_JOB_CANCEL_UNPROVEN",
         )
 
-    if provider_launch_unbound(record):
+    if spawn_identity_unproven(project_root, record.job_id):
         raise JobStoreError(
-            f"job {record.job_id} provider launch unbound (incomplete "
-            "PID/PGID); refusing retry until identity is proven gone",
+            f"job {record.job_id} spawn_identity.json present but "
+            "malformed/incomplete; refusing retry",
+            code="E_JOB_CANCEL_UNPROVEN",
+        )
+
+    incomplete = provider_incomplete_reason(record)
+    if incomplete is not None or provider_launch_unbound(record):
+        reason = incomplete or "provider_launch_unbound"
+        raise JobStoreError(
+            f"job {record.job_id} provider identity incomplete "
+            f"({reason}); refusing retry until identity is proven gone",
             code="E_JOB_CANCEL_UNPROVEN",
         )
 

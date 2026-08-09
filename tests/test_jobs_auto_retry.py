@@ -194,6 +194,66 @@ def test_auto_retry_recomputes_classification_and_reason() -> None:
     assert d.action == "eligible"
 
 
+@pytest.mark.parametrize(
+    ("exit_obj", "expected_reason"),
+    [
+        (
+            {"class": "spawn_error", "timed_out": "false"},
+            "malformed_timed_out",
+        ),
+        (
+            {"class": "spawn_error", "timed_out": "0"},
+            "malformed_timed_out",
+        ),
+        (
+            {"class": "nonzero", "overflow": "false", "retryable": True},
+            "malformed_overflow",
+        ),
+        (
+            {"class": "timeout", "timed_out": ["yes"]},
+            "malformed_timed_out",
+        ),
+        (
+            {"class": "spawn_error", "timed_out": True},
+            "spawn_error",
+        ),
+    ],
+)
+def test_classify_retry_malformed_bools_fail_closed(
+    exit_obj: dict, expected_reason: str
+) -> None:
+    """Truthiness of non-bool timed_out/overflow must never yield automatic."""
+    cls, reason = classify_retry(state=JobState.FAILED, exit_obj=exit_obj)
+    assert cls == "unknown"
+    assert reason == expected_reason
+    # Scheduler must not treat these as automatic either.
+    now = datetime.now(timezone.utc)
+    past = (now - timedelta(seconds=60)).isoformat()
+    rec = _record_like(
+        retry_class="automatic",
+        retry_reason="timeout_or_overflow",
+        exit_obj=exit_obj,
+        terminal_at=past,
+    )
+    d = evaluate_auto_retry(rec, now=now)
+    assert d.action == "blocked"
+
+
+def test_classify_retry_strict_true_bool_still_automatic() -> None:
+    cls, reason = classify_retry(
+        state=JobState.FAILED,
+        exit_obj={"class": "nonzero", "timed_out": True, "retryable": False},
+    )
+    assert cls == "automatic"
+    assert reason == "timeout_or_overflow"
+    cls2, reason2 = classify_retry(
+        state=JobState.FAILED,
+        exit_obj={"class": "nonzero", "timed_out": False, "overflow": True},
+    )
+    assert cls2 == "automatic"
+    assert reason2 == "timeout_or_overflow"
+
+
 def test_auto_retry_persisted_automatic_with_manual_exit_blocks() -> None:
     now = datetime.now(timezone.utc)
     past = (now - timedelta(seconds=60)).isoformat()
@@ -627,6 +687,85 @@ def test_auto_retry_provider_launch_unbound_blocks(root: Path) -> None:
     assert job_json_path(root, terminal.job_id).read_bytes() == before2
     assert not attempt_dir(root, terminal.job_id, 1).exists()
     del before
+
+
+def test_auto_retry_bound_incomplete_provider_blocks(root: Path) -> None:
+    """bound + missing pid/pgid is UNPROVEN — never absent/reclaimable."""
+    terminal = _failed_automatic(root)
+    with job_lock(root, terminal.job_id):
+        rec = read_job_record(root, terminal.job_id)
+        rec.provider_process = {
+            "state": "bound",
+            "pid": None,
+            "pgid": None,
+            "pid_starttime": None,
+            "handle": "provider:test",
+            "bound_at": "2026-01-01T00:00:00+00:00",
+            "exited_at": None,
+        }
+        write_job_record(root, rec)
+    before = job_json_path(root, terminal.job_id).read_bytes()
+    result = auto_retry_job(root, terminal.job_id, now=_due_now(terminal))
+    assert result.ok is False
+    assert result.error_code == "E_JOB_CANCEL_UNPROVEN"
+    assert job_json_path(root, terminal.job_id).read_bytes() == before
+    assert not attempt_dir(root, terminal.job_id, 1).exists()
+
+
+def test_auto_retry_bound_malformed_provider_ids_blocks(root: Path) -> None:
+    """bound + non-int pid/pgid must fail closed as UNPROVEN."""
+    terminal = _failed_automatic(root)
+    with job_lock(root, terminal.job_id):
+        rec = read_job_record(root, terminal.job_id)
+        rec.provider_process = {
+            "state": "bound",
+            "pid": "not-a-pid",
+            "pgid": "also-bad",
+        }
+        write_job_record(root, rec)
+    before = job_json_path(root, terminal.job_id).read_bytes()
+    result = auto_retry_job(root, terminal.job_id, now=_due_now(terminal))
+    assert result.error_code == "E_JOB_CANCEL_UNPROVEN"
+    assert job_json_path(root, terminal.job_id).read_bytes() == before
+
+
+def test_auto_retry_malformed_spawn_identity_blocks(root: Path) -> None:
+    """Present-but-malformed spawn_identity.json is UNPROVEN, not absent."""
+    terminal = _failed_automatic(root)
+    # Clear durable runner ids so recovery would otherwise fall through to
+    # the spawn_identity sidecar — which we deliberately corrupt.
+    with job_lock(root, terminal.job_id):
+        rec = read_job_record(root, terminal.job_id)
+        rec.pid = None
+        rec.pgid = None
+        rec.pid_starttime = None
+        write_job_record(root, rec)
+    identity_path = job_dir(root, terminal.job_id) / "spawn_identity.json"
+    identity_path.write_text("{not-json", encoding="utf-8")
+    before = job_json_path(root, terminal.job_id).read_bytes()
+    result = auto_retry_job(root, terminal.job_id, now=_due_now(terminal))
+    assert result.error_code == "E_JOB_CANCEL_UNPROVEN"
+    assert job_json_path(root, terminal.job_id).read_bytes() == before
+    assert not attempt_dir(root, terminal.job_id, 1).exists()
+
+
+def test_auto_retry_incomplete_spawn_identity_blocks(root: Path) -> None:
+    """spawn_identity.json with null pid/pgid is UNPROVEN."""
+    terminal = _failed_automatic(root)
+    with job_lock(root, terminal.job_id):
+        rec = read_job_record(root, terminal.job_id)
+        rec.pid = None
+        rec.pgid = None
+        write_job_record(root, rec)
+    identity_path = job_dir(root, terminal.job_id) / "spawn_identity.json"
+    identity_path.write_text(
+        json.dumps({"pid": None, "pgid": None, "reason": "test"}),
+        encoding="utf-8",
+    )
+    before = job_json_path(root, terminal.job_id).read_bytes()
+    result = auto_retry_job(root, terminal.job_id, now=_due_now(terminal))
+    assert result.error_code == "E_JOB_CANCEL_UNPROVEN"
+    assert job_json_path(root, terminal.job_id).read_bytes() == before
 
 
 def test_auto_retry_verified_reused_identity_allows(

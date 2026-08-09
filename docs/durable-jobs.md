@@ -44,9 +44,12 @@ is Team/ACP-sidecar only and cannot be retried or recovered via the public
    (or, when classification is `automatic` and due, `omg job auto-retry`).
 
 Live/unproven identities block recovery (`E_JOB_RECOVERY_UNPROVEN` /
-`E_JOB_RECOVERY_ORPHAN_LIVE`). A live inner provider with a dead outer runner
-is an orphan — use `omg job cancel`, not recover. `--dry-run` observes without
-writes or signals. Recovery never auto-relaunches.
+`E_JOB_RECOVERY_ORPHAN_LIVE`). Claimed provider launch/bind without a complete
+durable PID/PGID (`launching` unbound or `bound` incomplete) and
+present-but-malformed `spawn_identity.json` are `IDENTITY_UNPROVEN`, never
+provider-absent. A live inner provider with a dead outer runner is an orphan —
+use `omg job cancel`, not recover. `--dry-run` observes without writes or
+signals. Recovery never auto-relaunches.
 
 ## Auto-retry scheduler (#68 PR5)
 
@@ -61,7 +64,8 @@ Eligibility (all required):
 - timezone-aware `terminal_at` within clock-skew; deterministic exponential
   backoff (`10s × 2^(attempt-1)`, capped at `300s`) has elapsed
 - prior runner/provider identity proven gone/reused (same gates as explicit
-  retry — live/unproven/spawn-uncertain/provider-unbound block)
+  retry — live/unproven/spawn-uncertain/provider-unbound /
+  bound-but-incomplete / present-but-malformed `spawn_identity.json` block)
 - stored provider request revalidates before attempt consumption
 
 Every mutation goes through `retry_job(intent=automatic)` → existing

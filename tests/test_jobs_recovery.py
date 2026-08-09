@@ -427,6 +427,67 @@ def test_expired_dead_runner_launching_unbound_provider_is_unproven_zero_mutatio
     assert signal_calls == []
 
 
+def test_expired_dead_runner_bound_incomplete_provider_is_unproven(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P0: bound + missing pid/pgid is UNPROVEN — never reclaimable_lost."""
+    result = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        sleep_s=30.0,
+    )
+    jid = result.record.job_id
+    try:
+        os.kill(int(result.record.pid), signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        os.waitpid(int(result.record.pid), 0)
+    except ChildProcessError:
+        pass
+    time.sleep(0.05)
+
+    with job_lock(root, jid):
+        rec = read_job_record(root, jid)
+        rec.provider_process = {
+            "state": "bound",
+            "pid": None,
+            "pgid": None,
+            "pid_starttime": None,
+            "handle": "provider:test",
+            "bound_at": "2026-01-01T00:00:00+00:00",
+            "exited_at": None,
+        }
+        write_job_record(root, rec)
+    _force_lease_expired_on_disk(root, jid)
+
+    monkeypatch.setattr(
+        "omg_cli.jobs.recovery.probe_identity_for_recovery",
+        lambda identity: IdentityProbeOutcome.GONE,
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.probe_identity_for_recovery",
+        lambda identity: IdentityProbeOutcome.GONE,
+    )
+
+    path = job_json_path(root, jid)
+    raw_before = path.read_bytes()
+    obs = observe_job(root, jid)
+    assert obs.health == JobHealth.IDENTITY_UNPROVEN
+    assert obs.recoverable is False
+    assert obs.reason == "provider_identity_incomplete"
+    assert obs.provider_identity == "unproven"
+    assert path.read_bytes() == raw_before
+
+    out = recover_job(root, jid)
+    assert out.ok is False
+    assert out.error_code == "E_JOB_RECOVERY_UNPROVEN"
+    assert path.read_bytes() == raw_before
+    assert read_job_record(root, jid).state == JobState.RUNNING
+
+
 def test_retry_lost_launching_unbound_provider_refuses(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

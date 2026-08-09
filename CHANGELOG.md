@@ -23,6 +23,22 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   job-backed workers stay on #69).
 
 ### Fixed
+- **#68 PR5 P1 classify_retry strict booleans:** `timed_out` / `overflow` must
+  be JSON booleans (`true`/`false`/absent). String `"false"` / `"0"` / other
+  truthy non-bools fail closed as `unknown` (`malformed_timed_out` /
+  `malformed_overflow`); primary `spawn_error`/`malformed`/`parse_error`/
+  `unknown` classes are classified before flag trust so contradictory
+  envelopes cannot auto-retry. Hermetic coverage in
+  `tests/test_jobs_auto_retry.py`. Refs #68 (does not close).
+
+- **#68 PR5 P1 present-but-malformed / bound-but-incomplete identity:**
+  `provider_process.state=bound` (or `launching`) with missing/malformed
+  PID/PGID, and present-but-unparseable `spawn_identity.json`, map to
+  `E_JOB_CANCEL_UNPROVEN` / `IDENTITY_UNPROVEN` — never absent/reclaimable.
+  Aligns auto-retry/cancel/observe/recover/GC with PR4 unbound-launch
+  semantics. Hermetic coverage in `tests/test_jobs_auto_retry.py` and
+  `tests/test_jobs_recovery.py`. Refs #68 (does not close).
+
 - **#68 PR4 cancel_requested beats racing success:** once `cancel_requested_at`
   is durable (persist-before-signal), `transition_job` /
   `transition_owned_job` / CAS remap racing `succeeded`/`failed` stamps to
