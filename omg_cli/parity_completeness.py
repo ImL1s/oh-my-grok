@@ -35,9 +35,11 @@ from omg_cli.contracts.state_schemas import (
 )
 
 __all__ = [
+    "COMPLETENESS_MAPPING_STORE_KIND",
     "COMPLETENESS_POLICY_STORE_KIND",
     "COMPLETENESS_PROOF_STORE_KIND",
     "COMPLETENESS_SCHEMA_VERSION",
+    "DEFAULT_MAPPING_DIR_RELATIVE",
     "DEFAULT_POLICY_DIR_RELATIVE",
     "DEFAULT_PROOF_DIR_RELATIVE",
     "EXTRACTION_JSON_REGISTRY_V1",
@@ -46,6 +48,7 @@ __all__ = [
     "authenticate_pinned_checkout",
     "build_completeness_proof",
     "canonical_json_digest",
+    "check_committed_completeness_artifacts",
     "check_completeness_promotion_gate",
     "coverage_projection_for_source",
     "digest_coverage_projection",
@@ -55,6 +58,7 @@ __all__ = [
     "digest_surface_index",
     "plan_completeness_proof",
     "reproduce_source_index",
+    "validate_completeness_mapping",
     "validate_completeness_policy",
     "validate_completeness_proof",
     "verify_completeness_proof",
@@ -62,9 +66,11 @@ __all__ = [
 
 COMPLETENESS_POLICY_STORE_KIND = "parity-completeness-policy"
 COMPLETENESS_PROOF_STORE_KIND = "parity-completeness-proof"
+COMPLETENESS_MAPPING_STORE_KIND = "parity-completeness-mapping"
 COMPLETENESS_SCHEMA_VERSION = 1
 DEFAULT_POLICY_DIR_RELATIVE = "docs/parity/completeness/policies"
 DEFAULT_PROOF_DIR_RELATIVE = "docs/parity/completeness/proofs"
+DEFAULT_MAPPING_DIR_RELATIVE = "docs/parity/completeness/mappings"
 EXTRACTION_JSON_REGISTRY_V1 = "json_registry_v1"
 
 _POLICY_TOP_KEYS = frozenset(
@@ -86,6 +92,10 @@ _DISCOVERY_KEYS = frozenset(
 )
 _REGISTRY_KEYS = frozenset({"path", "extraction_method"})
 _EXCEPTION_KEYS = frozenset({"path", "rationale", "issue"})
+_MAPPING_TOP_KEYS = frozenset(
+    {"store_kind", "schema_version", "source", "surfaces"}
+)
+_MAPPING_SURFACE_KEYS = frozenset({"surface_id", "category", "capability_ids"})
 _PROOF_TOP_KEYS = frozenset(
     {
         "store_kind",
@@ -125,6 +135,19 @@ def canonical_json_digest(value: Any) -> str:
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+_SURFACE_ID_RE = __import__("re").compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._*:@+/-]{0,191}$"
+)
+
+
+def require_surface_id(value, *, label: str) -> str:
+    """Surface IDs may include hook matchers (*) and npm script colons."""
+    text = require_nonempty_string(value, label=label)
+    if not _SURFACE_ID_RE.fullmatch(text):
+        raise ContractValidationError(f"{label} is not a valid surface_id")
+    return text
 
 
 def _require_relative_posix(path_text: str, *, label: str) -> str:
@@ -515,38 +538,60 @@ def validate_completeness_policy(value: Mapping[str, Any]) -> dict[str, Any]:
     )
     rules = require_object(policy.get("discovery_rules"), label="discovery_rules")
     require_exact_keys(rules, required=_DISCOVERY_KEYS, label="discovery_rules")
-    if rules.get("version") != 1:
-        raise ContractValidationError("discovery_rules.version must be 1")
+    rules_version = rules.get("version")
+    if rules_version not in (1, 2):
+        raise ContractValidationError("discovery_rules.version must be 1 or 2")
     registries = rules.get("authoritative_registries")
     if not isinstance(registries, list) or not registries:
         raise ContractValidationError(
             "discovery_rules.authoritative_registries must be a non-empty list"
         )
-    normalized_regs: list[dict[str, str]] = []
-    seen_paths: set[str] = set()
-    for idx, item in enumerate(registries):
-        reg = require_object(item, label=f"authoritative_registries[{idx}]")
-        require_exact_keys(
-            reg, required=_REGISTRY_KEYS, label=f"authoritative_registries[{idx}]"
-        )
-        path = _require_relative_posix(
-            str(reg["path"]), label=f"authoritative_registries[{idx}].path"
-        )
-        method = require_nonempty_string(
-            reg.get("extraction_method"),
-            label=f"authoritative_registries[{idx}].extraction_method",
-        )
-        if method != EXTRACTION_JSON_REGISTRY_V1:
-            raise ContractValidationError(
-                f"unsupported extraction_method {method!r}; "
-                f"supported: {EXTRACTION_JSON_REGISTRY_V1}"
+
+    if rules_version == 1:
+        normalized_regs: list[dict[str, Any]] = []
+        seen_paths: set[str] = set()
+        for idx, item in enumerate(registries):
+            reg = require_object(item, label=f"authoritative_registries[{idx}]")
+            require_exact_keys(
+                reg, required=_REGISTRY_KEYS, label=f"authoritative_registries[{idx}]"
             )
-        if path in seen_paths:
-            raise ContractValidationError(
-                f"duplicate authoritative registry path: {path}"
+            path = _require_relative_posix(
+                str(reg["path"]), label=f"authoritative_registries[{idx}].path"
             )
-        seen_paths.add(path)
-        normalized_regs.append({"path": path, "extraction_method": method})
+            method = require_nonempty_string(
+                reg.get("extraction_method"),
+                label=f"authoritative_registries[{idx}].extraction_method",
+            )
+            if method != EXTRACTION_JSON_REGISTRY_V1:
+                raise ContractValidationError(
+                    f"unsupported extraction_method {method!r}; "
+                    f"supported: {EXTRACTION_JSON_REGISTRY_V1}"
+                )
+            if path in seen_paths:
+                raise ContractValidationError(
+                    f"duplicate authoritative registry path: {path}"
+                )
+            seen_paths.add(path)
+            normalized_regs.append({"path": path, "extraction_method": method})
+    else:
+        from omg_cli.parity_discovery import validate_v2_registry_entry
+
+        normalized_regs = []
+        seen_paths = set()
+        seen_ids: set[str] = set()
+        for idx, item in enumerate(registries):
+            entry = validate_v2_registry_entry(item, index=idx)
+            if entry["path"] in seen_paths:
+                raise ContractValidationError(
+                    f"duplicate authoritative registry path: {entry['path']}"
+                )
+            if entry["id"] in seen_ids:
+                raise ContractValidationError(
+                    f"duplicate authoritative registry id: {entry['id']}"
+                )
+            seen_paths.add(entry["path"])
+            seen_ids.add(entry["id"])
+            normalized_regs.append(entry)
 
     assignment = require_object(
         rules.get("category_assignment"), label="category_assignment"
@@ -599,7 +644,7 @@ def validate_completeness_policy(value: Mapping[str, Any]) -> dict[str, Any]:
         "source": source,
         "repository": repository,
         "discovery_rules": {
-            "version": 1,
+            "version": int(rules_version),
             "authoritative_registries": normalized_regs,
             "category_assignment": dict(sorted(normalized_assignment.items())),
             "non_surface_exceptions": exceptions,
@@ -609,6 +654,166 @@ def validate_completeness_policy(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def digest_policy(policy: Mapping[str, Any]) -> str:
     return canonical_json_digest(validate_completeness_policy(policy))
+
+
+def validate_completeness_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a committed parity-completeness-mapping store (schema_version 1)."""
+    mapping = require_object(value, label="completeness_mapping")
+    require_exact_keys(mapping, required=_MAPPING_TOP_KEYS, label="completeness_mapping")
+    if mapping.get("store_kind") != COMPLETENESS_MAPPING_STORE_KIND:
+        raise ContractValidationError(
+            f"completeness_mapping.store_kind must be "
+            f"{COMPLETENESS_MAPPING_STORE_KIND!r}"
+        )
+    if mapping.get("schema_version") != COMPLETENESS_SCHEMA_VERSION:
+        raise ContractValidationError(
+            f"completeness_mapping.schema_version must be {COMPLETENESS_SCHEMA_VERSION}"
+        )
+    source = require_nonempty_string(mapping.get("source"), label="mapping.source")
+    if source not in SOURCE_STATUS_IDS:
+        raise ContractValidationError(
+            f"mapping.source {source!r} is not a parity SOURCE_STATUS_ID"
+        )
+    surfaces_raw = mapping.get("surfaces")
+    if not isinstance(surfaces_raw, list):
+        raise ContractValidationError("mapping.surfaces must be a list")
+    surfaces: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for idx, raw in enumerate(surfaces_raw):
+        entry = require_object(raw, label=f"mapping.surfaces[{idx}]")
+        require_exact_keys(
+            entry, required=_MAPPING_SURFACE_KEYS, label=f"mapping.surfaces[{idx}]"
+        )
+        sid = require_nonempty_string(
+            entry.get("surface_id"), label=f"mapping.surfaces[{idx}].surface_id"
+        )
+        if sid in seen_ids:
+            raise ContractValidationError(f"duplicate mapping surface_id: {sid}")
+        seen_ids.add(sid)
+        category = require_nonempty_string(
+            entry.get("category"), label=f"mapping.surfaces[{idx}].category"
+        )
+        if category not in PARITY_CATEGORY_TAXONOMY:
+            raise ContractValidationError(
+                f"mapping surface {sid} unknown category {category!r}"
+            )
+        cap_ids = require_string_list(
+            entry.get("capability_ids"),
+            label=f"mapping.surfaces[{idx}].capability_ids",
+            unique=True,
+        )
+        if not cap_ids:
+            raise ContractValidationError(
+                f"mapping surface {sid} capability_ids must be non-empty"
+            )
+        sorted_caps = sorted(cap_ids)
+        if list(cap_ids) != sorted_caps:
+            raise ContractValidationError(
+                f"mapping surface {sid} capability_ids must be sorted"
+            )
+        surfaces.append(
+            {
+                "surface_id": sid,
+                "category": category,
+                "capability_ids": sorted_caps,
+            }
+        )
+    expected_order = sorted(s["surface_id"] for s in surfaces)
+    actual_order = [s["surface_id"] for s in surfaces]
+    if actual_order != expected_order:
+        raise ContractValidationError(
+            "mapping.surfaces must be sorted by surface_id"
+        )
+    return {
+        "store_kind": COMPLETENESS_MAPPING_STORE_KIND,
+        "schema_version": COMPLETENESS_SCHEMA_VERSION,
+        "source": source,
+        "surfaces": surfaces,
+    }
+
+
+def _is_mapping_store(value: Mapping[str, Any]) -> bool:
+    return value.get("store_kind") == COMPLETENESS_MAPPING_STORE_KIND
+
+
+def _coerce_mapping_arg(
+    mapping: Mapping[str, Any] | None,
+    surface_mappings: Mapping[str, Sequence[str]] | None,
+) -> Mapping[str, Any] | None:
+    """Prefer ``mapping``; fall back to legacy ``surface_mappings`` dict."""
+    if mapping is not None:
+        return mapping
+    if surface_mappings is not None:
+        return surface_mappings
+    return None
+
+
+def _normalized_mapping_projection(
+    mapping: Mapping[str, Any],
+    *,
+    source: str,
+) -> list[dict[str, Any]]:
+    """Stable mapping projection for v2 coverage digests."""
+    if _is_mapping_store(mapping):
+        validated = validate_completeness_mapping(mapping)
+        if validated["source"] != source:
+            raise ContractValidationError(
+                f"mapping.source {validated['source']!r} != proof source {source!r}"
+            )
+        return [
+            {
+                "surface_id": s["surface_id"],
+                "category": s["category"],
+                "capability_ids": list(s["capability_ids"]),
+            }
+            for s in validated["surfaces"]
+        ]
+    # Legacy dict: surface_id → [capability_id, ...]
+    projection: list[dict[str, Any]] = []
+    for sid, caps in mapping.items():
+        sid_s = require_nonempty_string(sid, label="mapping.surface_id")
+        if not isinstance(caps, Sequence) or isinstance(caps, (str, bytes)):
+            raise ContractValidationError(
+                f"legacy mapping[{sid_s}] must be a list of capability ids"
+            )
+        cap_ids = sorted(
+            {
+                require_nonempty_string(c, label=f"mapping[{sid_s}].capability_id")
+                for c in caps
+            }
+        )
+        if not cap_ids:
+            raise ContractValidationError(
+                f"legacy mapping[{sid_s}] capability_ids must be non-empty"
+            )
+        projection.append(
+            {
+                "surface_id": sid_s,
+                "capability_ids": cap_ids,
+            }
+        )
+    projection.sort(key=lambda item: item["surface_id"])
+    return projection
+
+
+def _coverage_digest_for_proof(
+    inventory: Mapping[str, Any],
+    source: str,
+    *,
+    policy: Mapping[str, Any],
+    mapping: Mapping[str, Any] | None,
+) -> str:
+    """V1: inventory coverage only. V2: coverage + normalized mapping projection."""
+    coverage = coverage_projection_for_source(inventory, source)
+    rules_version = policy["discovery_rules"]["version"]
+    if rules_version != 2:
+        return canonical_json_digest(coverage)
+    if mapping is None:
+        raise ContractValidationError(
+            "discovery_rules.version==2 requires a mapping for coverage_digest"
+        )
+    projection = _normalized_mapping_projection(mapping, source=source)
+    return canonical_json_digest({"coverage": coverage, "mapping": projection})
 
 
 def _parse_json_registry_v1(
@@ -675,6 +880,11 @@ def reproduce_source_index(
         raise ContractValidationError(f"upstream_root is not a directory: {root}")
 
     rules = validated["discovery_rules"]
+    if rules["version"] == 2:
+        return _reproduce_source_index_v2(
+            validated, root=root, pin=pin, provenance=provenance
+        )
+
     assignment = rules["category_assignment"]
     discovered: list[dict[str, Any]] = []
     input_parts: list[dict[str, str]] = []
@@ -740,6 +950,73 @@ def reproduce_source_index(
         "repository": validated["repository"],
         "pin_revision": provenance["observed_revision"],
         "checkout_provenance": provenance,
+        "discovered_surfaces": normalized,
+        "empty_category_partitions": empty_partitions,
+        "source_input": input_parts,
+        "source_input_digest": canonical_json_digest(input_parts),
+        "surface_index_digest": digest_surface_index(normalized),
+    }
+
+
+def _reproduce_source_index_v2(
+    validated: Mapping[str, Any],
+    *,
+    root: Path,
+    pin: str,
+    provenance: Mapping[str, Any],
+) -> dict[str, Any]:
+    from omg_cli.parity_discovery import extract_surfaces_v2, list_pin_tree_paths
+
+    rules = validated["discovery_rules"]
+    tree_entries = list_pin_tree_paths(
+        root,
+        pin,
+        git_blob_bytes=lambda r, p, rel, label="blob": _git_blob_bytes(
+            r, p, rel, label=label
+        ),
+        run_git=_run_git,
+    )
+    pin_paths: set[str] = set()
+    for mode, obj_type, path in tree_entries:
+        if obj_type == "blob":
+            if mode.startswith("120"):  # symlink
+                raise ContractValidationError(
+                    f"pin tree contains symlink blob (unsupported): {path}"
+                )
+            pin_paths.add(path)
+
+    def read_blob(rel: str) -> bytes:
+        return _git_blob_bytes(root, pin, rel, label=f"blob:{rel}")
+
+    surfaces, input_parts = extract_surfaces_v2(
+        registries=rules["authoritative_registries"],
+        category_assignment=rules["category_assignment"],
+        exceptions=rules["non_surface_exceptions"],
+        pin_paths=pin_paths,
+        file_digest=_file_digest,
+        read_blob=read_blob,
+    )
+    normalized: list[dict[str, Any]] = []
+    for surface in surfaces:
+        normalized.append(
+            {
+                "surface_id": surface["surface_id"],
+                "kind": surface["kind"],
+                "category": surface["category"],
+                "source_path": surface["source_path"],
+                "anchor": surface["anchor"],
+                "content_digest": surface["content_digest"],
+            }
+        )
+    normalized.sort(key=lambda item: item["surface_id"])
+    input_parts = sorted(input_parts, key=lambda item: item["path"])
+    present_categories = {item["category"] for item in normalized}
+    empty_partitions = sorted(PARITY_CATEGORY_TAXONOMY - present_categories)
+    return {
+        "source": validated["source"],
+        "repository": validated["repository"],
+        "pin_revision": provenance["observed_revision"],
+        "checkout_provenance": dict(provenance),
         "discovered_surfaces": normalized,
         "empty_category_partitions": empty_partitions,
         "source_input": input_parts,
@@ -845,29 +1122,141 @@ def _resolve_canonical_capability(
     return dict(row)
 
 
+def _assert_source_path_declared(
+    *,
+    surface_id: str,
+    source_path: str,
+    cap_id: str,
+    row: Mapping[str, Any],
+) -> None:
+    upstream = row.get("upstream")
+    if not isinstance(upstream, Mapping):
+        raise ContractValidationError(
+            f"capability {cap_id} missing upstream for surface {surface_id}"
+        )
+    paths = upstream.get("source_paths")
+    if not isinstance(paths, list):
+        raise ContractValidationError(
+            f"capability {cap_id} missing upstream.source_paths"
+        )
+    declared = {
+        _require_relative_posix(str(p), label=f"{cap_id}.source_paths[]") for p in paths
+    }
+    if source_path not in declared:
+        raise ContractValidationError(
+            f"surface {surface_id} source_path {source_path!r} not declared by "
+            f"capability {cap_id} upstream.source_paths"
+        )
+
+
+def _assert_bidirectional_inventory_coverage(
+    *,
+    mapped_surfaces: Sequence[Mapping[str, Any]],
+    inventory: Mapping[str, Any],
+    source: str,
+) -> None:
+    referenced: set[str] = set()
+    for surface in mapped_surfaces:
+        for cap_id in surface.get("capability_ids") or []:
+            referenced.add(str(cap_id))
+    for row in inventory.get("capabilities", []):
+        if not isinstance(row, Mapping):
+            continue
+        upstream = row.get("upstream")
+        if not isinstance(upstream, Mapping) or upstream.get("source") != source:
+            continue
+        if row.get("classification") == "alias":
+            continue
+        cap_id = require_nonempty_string(row.get("id"), label="capability.id")
+        if cap_id not in referenced:
+            raise ContractValidationError(
+                f"uncovered non-alias inventory row for {source}: {cap_id}"
+            )
+
+
+def _legacy_mapping_table(
+    mappings: Mapping[str, Any],
+) -> dict[str, list[str]]:
+    table: dict[str, list[str]] = {}
+    for key, value in mappings.items():
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+            raise ContractValidationError(
+                f"legacy mapping[{key!r}] must be a sequence of capability ids"
+            )
+        table[str(key)] = list(value)
+    return table
+
+
 def _apply_surface_mappings(
     *,
     surfaces: Sequence[Mapping[str, Any]],
-    mappings: Mapping[str, Sequence[str]] | None,
+    mappings: Mapping[str, Any] | None,
     inventory: Mapping[str, Any],
     source: str,
+    require_complete_mapping: bool = False,
+    require_source_path_declared: bool = False,
+    require_bidirectional_coverage: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Attach capability_ids; return (mapped_surfaces, unresolved_ids)."""
+    """Attach capability_ids; return (mapped_surfaces, unresolved_ids).
+
+    Supports legacy ``{surface_id: [cap_ids]}`` and v2 mapping-store documents.
+    For v2 stores, surface ``category`` is taken from the mapping entry
+    (overrides discovery category).
+    """
     index = _capability_index(inventory)
-    mapping_table = {
-        str(k): list(v) for k, v in (mappings or {}).items() if isinstance(v, Sequence)
-    }
+    category_overrides: dict[str, str] = {}
+    if mappings is None:
+        mapping_table: dict[str, list[str]] = {}
+    elif _is_mapping_store(mappings):
+        validated = validate_completeness_mapping(mappings)
+        if validated["source"] != source:
+            raise ContractValidationError(
+                f"mapping.source {validated['source']!r} != {source!r}"
+            )
+        mapping_table = {}
+        for entry in validated["surfaces"]:
+            mapping_table[entry["surface_id"]] = list(entry["capability_ids"])
+            category_overrides[entry["surface_id"]] = entry["category"]
+    else:
+        mapping_table = _legacy_mapping_table(mappings)
+
     mapped: list[dict[str, Any]] = []
     unresolved: list[str] = []
     seen_pairs: set[tuple[str, str]] = set()
+    discovered_ids = {
+        require_nonempty_string(s.get("surface_id"), label="surface_id")
+        for s in surfaces
+    }
+
+    if require_complete_mapping:
+        missing = sorted(discovered_ids - set(mapping_table))
+        if missing:
+            raise ContractValidationError(
+                "incomplete mapping; missing surfaces: " + ",".join(missing)
+            )
+        # Exactly one entry per discovered surface (dict/store already unique).
+        extra = sorted(set(mapping_table) - discovered_ids)
+        if extra:
+            raise ContractValidationError(
+                "mapping references undiscovered surface_id: " + ",".join(extra)
+            )
 
     for surface in surfaces:
         sid = require_nonempty_string(surface.get("surface_id"), label="surface_id")
-        category = require_nonempty_string(surface.get("category"), label="category")
+        if sid in category_overrides:
+            category = category_overrides[sid]
+        else:
+            category = require_nonempty_string(
+                surface.get("category"), label="category"
+            )
+        source_path = _require_relative_posix(
+            str(surface.get("source_path")), label=f"{sid}.source_path"
+        )
         cap_ids = mapping_table.get(sid)
         if not cap_ids:
             unresolved.append(sid)
             entry = dict(surface)
+            entry["category"] = category
             entry["capability_ids"] = []
             mapped.append(entry)
             continue
@@ -880,7 +1269,7 @@ def _apply_surface_mappings(
                     f"duplicate surface→capability mapping: {sid} → {cid}"
                 )
             seen_pairs.add(pair)
-            _resolve_canonical_capability(
+            row = _resolve_canonical_capability(
                 cid,
                 inventory=inventory,
                 index=index,
@@ -888,22 +1277,36 @@ def _apply_surface_mappings(
                 category=category,
                 surface_id=sid,
             )
+            if require_source_path_declared:
+                _assert_source_path_declared(
+                    surface_id=sid,
+                    source_path=source_path,
+                    cap_id=cid,
+                    row=row,
+                )
             canonical_ids.append(cid)
-        # Reject alias-only: at least one non-alias already enforced per id.
         entry = dict(surface)
+        entry["category"] = category
         entry["capability_ids"] = sorted(set(canonical_ids))
         mapped.append(entry)
 
     # Detect mapping keys that do not correspond to discovered surfaces.
-    discovered_ids = {s["surface_id"] for s in surfaces}
-    for key in mapping_table:
-        if key not in discovered_ids:
-            raise ContractValidationError(
-                f"mapping references undiscovered surface_id: {key}"
-            )
+    if not require_complete_mapping:
+        for key in mapping_table:
+            if key not in discovered_ids:
+                raise ContractValidationError(
+                    f"mapping references undiscovered surface_id: {key}"
+                )
 
     mapped.sort(key=lambda item: item["surface_id"])
     unresolved = sorted(set(unresolved))
+
+    if require_bidirectional_coverage:
+        _assert_bidirectional_inventory_coverage(
+            mapped_surfaces=mapped,
+            inventory=inventory,
+            source=source,
+        )
     return mapped, unresolved
 
 
@@ -970,7 +1373,7 @@ def validate_completeness_proof(value: Mapping[str, Any]) -> dict[str, Any]:
         require_exact_keys(
             surface, required=_SURFACE_KEYS, label=f"discovered_surfaces[{idx}]"
         )
-        sid = require_safe_id(
+        sid = require_surface_id(
             surface.get("surface_id"), label=f"discovered_surfaces[{idx}].surface_id"
         )
         if sid in seen_ids:
@@ -1059,11 +1462,18 @@ def build_completeness_proof(
     inventory: Mapping[str, Any],
     upstream_root: Path | str,
     seed: Mapping[str, Any] | None = None,
+    mapping: Mapping[str, Any] | None = None,
     surface_mappings: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """Build a candidate proof from policy + checkout + inventory (no mutation)."""
     validated_policy = validate_completeness_policy(policy)
     source = validated_policy["source"]
+    rules_version = validated_policy["discovery_rules"]["version"]
+    resolved_mapping = _coerce_mapping_arg(mapping, surface_mappings)
+    if rules_version == 2 and resolved_mapping is None:
+        raise ContractValidationError(
+            "discovery_rules.version==2 requires mapping for plan/build"
+        )
     coverage = coverage_projection_for_source(inventory, source)
     pin = coverage["pin"]
     if pin["repository"] != validated_policy["repository"]:
@@ -1073,12 +1483,21 @@ def build_completeness_proof(
     index = reproduce_source_index(
         validated_policy, upstream_root, pin_revision=pin["revision"]
     )
+    strict_map = rules_version == 2
     mapped, unresolved = _apply_surface_mappings(
         surfaces=index["discovered_surfaces"],
-        mappings=surface_mappings,
+        mappings=resolved_mapping,
         inventory=inventory,
         source=source,
+        require_complete_mapping=strict_map,
+        require_source_path_declared=strict_map,
+        require_bidirectional_coverage=strict_map,
     )
+    if strict_map and unresolved:
+        raise ContractValidationError(
+            "discovery_rules.version==2 forbids unresolved surfaces: "
+            + ",".join(unresolved)
+        )
     present = {s["category"] for s in mapped}
     empty_partitions = sorted(PARITY_CATEGORY_TAXONOMY - present)
     proof = {
@@ -1090,7 +1509,12 @@ def build_completeness_proof(
         "checkout_provenance": dict(index["checkout_provenance"]),
         "policy_digest": digest_policy(validated_policy),
         "seed_digest": digest_seed_catalog(seed),
-        "coverage_digest": canonical_json_digest(coverage),
+        "coverage_digest": _coverage_digest_for_proof(
+            inventory,
+            source,
+            policy=validated_policy,
+            mapping=resolved_mapping,
+        ),
         "source_input_digest": index["source_input_digest"],
         "surface_index_digest": digest_surface_index(
             [{k: v for k, v in s.items() if k != "capability_ids"} for s in mapped]
@@ -1108,6 +1532,7 @@ def plan_completeness_proof(
     inventory: Mapping[str, Any],
     upstream_root: Path | str,
     seed: Mapping[str, Any] | None = None,
+    mapping: Mapping[str, Any] | None = None,
     surface_mappings: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """Maintainer plan mode: emit candidate proof metadata; never write inventory."""
@@ -1116,6 +1541,7 @@ def plan_completeness_proof(
         inventory=inventory,
         upstream_root=upstream_root,
         seed=seed,
+        mapping=mapping,
         surface_mappings=surface_mappings,
     )
     return {
@@ -1137,6 +1563,8 @@ def verify_completeness_proof(
     seed: Mapping[str, Any] | None = None,
     upstream_root: Path | str | None = None,
     require_no_unresolved: bool = True,
+    mapping: Mapping[str, Any] | None = None,
+    surface_mappings: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """Verify proof bindings; optionally reproduce against an upstream checkout."""
     validated_proof = validate_completeness_proof(proof)
@@ -1158,7 +1586,22 @@ def verify_completeness_proof(
         raise ContractValidationError("proof.repository does not match inventory pin")
     if coverage["pin"]["revision"] != validated_proof["pin_revision"]:
         raise ContractValidationError("proof.pin_revision does not match inventory pin")
-    expected_coverage = canonical_json_digest(coverage)
+
+    resolved_mapping = _coerce_mapping_arg(mapping, surface_mappings)
+    rules_version = validated_policy["discovery_rules"]["version"]
+    if rules_version == 2:
+        if resolved_mapping is None:
+            raise ContractValidationError(
+                "discovery_rules.version==2 requires mapping for verify"
+            )
+        expected_coverage = _coverage_digest_for_proof(
+            inventory,
+            source,
+            policy=validated_policy,
+            mapping=resolved_mapping,
+        )
+    else:
+        expected_coverage = canonical_json_digest(coverage)
     if validated_proof["coverage_digest"] != expected_coverage:
         raise ContractValidationError("proof.coverage_digest drift")
 
@@ -1170,8 +1613,9 @@ def verify_completeness_proof(
     index = _capability_index(inventory)
     for surface in validated_proof["discovered_surfaces"]:
         sid = surface["surface_id"]
+        source_path = surface["source_path"]
         for cap_id in surface["capability_ids"]:
-            _resolve_canonical_capability(
+            row = _resolve_canonical_capability(
                 cap_id,
                 inventory=inventory,
                 index=index,
@@ -1179,12 +1623,63 @@ def verify_completeness_proof(
                 category=surface["category"],
                 surface_id=sid,
             )
+            _assert_source_path_declared(
+                surface_id=sid,
+                source_path=source_path,
+                cap_id=cap_id,
+                row=row,
+            )
 
     if require_no_unresolved and validated_proof["unresolved_surfaces"]:
         raise ContractValidationError(
             "completeness proof has unresolved surfaces: "
             + ",".join(validated_proof["unresolved_surfaces"])
         )
+
+    if require_no_unresolved:
+        _assert_bidirectional_inventory_coverage(
+            mapped_surfaces=validated_proof["discovered_surfaces"],
+            inventory=inventory,
+            source=source,
+        )
+
+    if resolved_mapping is not None:
+        remapped, unresolved = _apply_surface_mappings(
+            surfaces=[
+                {k: v for k, v in s.items() if k != "capability_ids"}
+                for s in validated_proof["discovered_surfaces"]
+            ],
+            mappings=resolved_mapping,
+            inventory=inventory,
+            source=source,
+            require_complete_mapping=True,
+            require_source_path_declared=True,
+            require_bidirectional_coverage=True,
+        )
+        if unresolved:
+            raise ContractValidationError(
+                "mapping leaves unresolved surfaces: " + ",".join(unresolved)
+            )
+        proof_proj = [
+            {
+                "surface_id": s["surface_id"],
+                "category": s["category"],
+                "capability_ids": list(s["capability_ids"]),
+            }
+            for s in validated_proof["discovered_surfaces"]
+        ]
+        map_proj = [
+            {
+                "surface_id": s["surface_id"],
+                "category": s["category"],
+                "capability_ids": list(s["capability_ids"]),
+            }
+            for s in remapped
+        ]
+        if proof_proj != map_proj:
+            raise ContractValidationError(
+                "mapping surfaces do not exactly match proof surfaces"
+            )
 
     if upstream_root is not None:
         # Re-authenticate checkout bytes to the claimed pin before comparing digests.
@@ -1209,17 +1704,84 @@ def verify_completeness_proof(
             )
         if reproduced["source_input_digest"] != validated_proof["source_input_digest"]:
             raise ContractValidationError("proof.source_input_digest reproduction drift")
-        if reproduced["surface_index_digest"] != validated_proof["surface_index_digest"]:
-            raise ContractValidationError(
-                "proof.surface_index_digest reproduction drift"
+        if rules_version == 2:
+            if resolved_mapping is None:
+                raise ContractValidationError(
+                    "discovery_rules.version==2 reproduction requires mapping"
+                )
+            remapped_up, unresolved_up = _apply_surface_mappings(
+                surfaces=reproduced["discovered_surfaces"],
+                mappings=resolved_mapping,
+                inventory=inventory,
+                source=source,
+                require_complete_mapping=True,
+                require_source_path_declared=True,
+                require_bidirectional_coverage=True,
             )
-        if (
-            sorted(reproduced["empty_category_partitions"])
-            != validated_proof["empty_category_partitions"]
-        ):
-            raise ContractValidationError(
-                "proof.empty_category_partitions reproduction drift"
+            if unresolved_up:
+                raise ContractValidationError(
+                    "reproduction left unresolved surfaces: "
+                    + ",".join(unresolved_up)
+                )
+            expected_surface_digest = digest_surface_index(
+                [
+                    {k: v for k, v in s.items() if k != "capability_ids"}
+                    for s in remapped_up
+                ]
             )
+            if expected_surface_digest != validated_proof["surface_index_digest"]:
+                raise ContractValidationError(
+                    "proof.surface_index_digest reproduction drift"
+                )
+            present_up = {s["category"] for s in remapped_up}
+            empty_up = sorted(PARITY_CATEGORY_TAXONOMY - present_up)
+            if empty_up != validated_proof["empty_category_partitions"]:
+                raise ContractValidationError(
+                    "proof.empty_category_partitions reproduction drift"
+                )
+            proof_ids = [
+                {
+                    "surface_id": s["surface_id"],
+                    "category": s["category"],
+                    "capability_ids": list(s["capability_ids"]),
+                    "source_path": s["source_path"],
+                    "anchor": s["anchor"],
+                    "content_digest": s["content_digest"],
+                    "kind": s["kind"],
+                }
+                for s in validated_proof["discovered_surfaces"]
+            ]
+            repro_ids = [
+                {
+                    "surface_id": s["surface_id"],
+                    "category": s["category"],
+                    "capability_ids": list(s["capability_ids"]),
+                    "source_path": s["source_path"],
+                    "anchor": s["anchor"],
+                    "content_digest": s["content_digest"],
+                    "kind": s["kind"],
+                }
+                for s in remapped_up
+            ]
+            if proof_ids != repro_ids:
+                raise ContractValidationError(
+                    "proof.discovered_surfaces reproduction drift"
+                )
+        else:
+            if (
+                reproduced["surface_index_digest"]
+                != validated_proof["surface_index_digest"]
+            ):
+                raise ContractValidationError(
+                    "proof.surface_index_digest reproduction drift"
+                )
+            if (
+                sorted(reproduced["empty_category_partitions"])
+                != validated_proof["empty_category_partitions"]
+            ):
+                raise ContractValidationError(
+                    "proof.empty_category_partitions reproduction drift"
+                )
 
     return {
         "ok": True,
@@ -1240,6 +1802,9 @@ class CompletenessGateResult:
     completeness_proofs_verified: int
     promoted_sources: tuple[str, ...]
     promoted_categories: tuple[str, ...]
+    completeness_artifacts_checked: bool = False
+    completeness_artifacts_verified: int = 0
+    completeness_artifact_sources: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -1248,6 +1813,9 @@ class CompletenessGateResult:
             "completeness_proofs_verified": self.completeness_proofs_verified,
             "promoted_sources": list(self.promoted_sources),
             "promoted_categories": list(self.promoted_categories),
+            "completeness_artifacts_checked": self.completeness_artifacts_checked,
+            "completeness_artifacts_verified": self.completeness_artifacts_verified,
+            "completeness_artifact_sources": list(self.completeness_artifact_sources),
         }
 
 
@@ -1256,6 +1824,160 @@ def _load_optional_seed(repo_root: Path, source: str) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     return load_json_object(path)
+
+
+def _load_optional_mapping(repo_root: Path, source: str) -> dict[str, Any] | None:
+    path = repo_root / DEFAULT_MAPPING_DIR_RELATIVE / f"{source}.json"
+    if not path.is_file():
+        return None
+    if path.is_symlink() or not path.is_file() or os.path.islink(path):
+        raise ContractValidationError(
+            f"completeness mapping must be a regular file: "
+            f"{DEFAULT_MAPPING_DIR_RELATIVE}/{source}.json"
+        )
+    return load_json_object(path)
+
+
+def _assert_regular_json_artifact(path: Path, *, label: str) -> None:
+    if path.is_symlink() or os.path.islink(path):
+        raise ContractValidationError(f"{label} must not be a symlink: {path}")
+    if not path.is_file():
+        raise ContractValidationError(f"{label} must be a regular file: {path}")
+
+
+def _list_completeness_artifact_sources(directory: Path) -> set[str]:
+    if not directory.is_dir():
+        return set()
+    sources: set[str] = set()
+    for path in sorted(directory.glob("*.json")):
+        _assert_regular_json_artifact(path, label="completeness artifact")
+        stem = path.stem
+        if stem not in SOURCE_STATUS_IDS:
+            raise ContractValidationError(
+                f"unknown or case-mismatched completeness source filename: "
+                f"{path.name}"
+            )
+        sources.add(stem)
+    return sources
+
+
+def check_committed_completeness_artifacts(
+    inventory: Mapping[str, Any],
+    *,
+    repo_root: Path | str,
+) -> dict[str, object]:
+    """Network-free consistency check for committed policy/mapping/proof triples.
+
+    Does not mutate inventory statuses. Does not treat bootstrapping artifacts as
+    promotions. Fail-closed on orphan members, schema drift, or coverage mismatch.
+    """
+    root = Path(repo_root)
+    policy_dir = root / DEFAULT_POLICY_DIR_RELATIVE
+    mapping_dir = root / DEFAULT_MAPPING_DIR_RELATIVE
+    proof_dir = root / DEFAULT_PROOF_DIR_RELATIVE
+
+    policy_sources = _list_completeness_artifact_sources(policy_dir)
+    mapping_sources = _list_completeness_artifact_sources(mapping_dir)
+    proof_sources = _list_completeness_artifact_sources(proof_dir)
+    all_sources = policy_sources | mapping_sources | proof_sources
+
+    for source in sorted(all_sources):
+        missing: list[str] = []
+        if source not in policy_sources:
+            missing.append("policy")
+        if source not in mapping_sources:
+            missing.append("mapping")
+        if source not in proof_sources:
+            missing.append("proof")
+        if missing:
+            raise ContractValidationError(
+                f"orphan completeness artifacts for {source}: missing "
+                + ",".join(missing)
+            )
+
+    verified = 0
+    for source in sorted(all_sources):
+        policy_path = policy_dir / f"{source}.json"
+        mapping_path = mapping_dir / f"{source}.json"
+        proof_path = proof_dir / f"{source}.json"
+        _assert_regular_json_artifact(policy_path, label="completeness policy")
+        _assert_regular_json_artifact(mapping_path, label="completeness mapping")
+        _assert_regular_json_artifact(proof_path, label="completeness proof")
+
+        policy = validate_completeness_policy(load_json_object(policy_path))
+        mapping = validate_completeness_mapping(load_json_object(mapping_path))
+        proof = validate_completeness_proof(load_json_object(proof_path))
+
+        if policy["source"] != source:
+            raise ContractValidationError(
+                f"policy.source {policy['source']!r} does not match filename {source}"
+            )
+        if mapping["source"] != source:
+            raise ContractValidationError(
+                f"mapping.source {mapping['source']!r} does not match filename {source}"
+            )
+        if proof["source"] != source:
+            raise ContractValidationError(
+                f"proof.source {proof['source']!r} does not match filename {source}"
+            )
+
+        coverage = coverage_projection_for_source(inventory, source)
+        if coverage["pin"]["repository"] != policy["repository"]:
+            raise ContractValidationError(
+                f"completeness policy repository drift for {source}"
+            )
+        if coverage["pin"]["repository"] != proof["repository"]:
+            raise ContractValidationError(
+                f"completeness proof repository drift for {source}"
+            )
+        if coverage["pin"]["revision"] != proof["pin_revision"]:
+            raise ContractValidationError(
+                f"completeness proof pin_revision drift for {source}"
+            )
+
+        seed = _load_optional_seed(root, source)
+        verify_completeness_proof(
+            proof,
+            policy=policy,
+            inventory=inventory,
+            seed=seed,
+            upstream_root=None,
+            require_no_unresolved=True,
+            mapping=mapping,
+        )
+        if proof["unresolved_surfaces"]:
+            raise ContractValidationError(
+                f"committed proof for {source} has unresolved_surfaces"
+            )
+        verified += 1
+
+    return {
+        "completeness_artifacts_checked": True,
+        "completeness_artifacts_verified": verified,
+        "completeness_artifact_sources": sorted(all_sources),
+        "completeness_proofs_required": False,
+        "promoted_sources": [],
+    }
+
+
+def _artifact_fields_for_gate(
+    inventory: Mapping[str, Any],
+    *,
+    repo_root: Path | str | None,
+) -> tuple[bool, int, tuple[str, ...]]:
+    if repo_root is None:
+        return False, 0, ()
+    artifacts = check_committed_completeness_artifacts(
+        inventory, repo_root=repo_root
+    )
+    sources = artifacts["completeness_artifact_sources"]
+    if not isinstance(sources, list):
+        raise ContractValidationError("completeness_artifact_sources must be a list")
+    return (
+        bool(artifacts["completeness_artifacts_checked"]),
+        int(artifacts["completeness_artifacts_verified"]),
+        tuple(str(s) for s in sources),
+    )
 
 
 def _load_policy_and_proof(
@@ -1274,6 +1996,7 @@ def _load_policy_and_proof(
                 f"source_status[{source}]==complete requires completeness proof at "
                 f"{DEFAULT_PROOF_DIR_RELATIVE}/{source}.json"
             )
+        _assert_regular_json_artifact(proof_path, label="completeness proof")
         proof = load_json_object(proof_path)
 
     if policies_by_source is not None and source in policies_by_source:
@@ -1285,6 +2008,7 @@ def _load_policy_and_proof(
                 f"source_status[{source}]==complete requires completeness policy at "
                 f"{DEFAULT_POLICY_DIR_RELATIVE}/{source}.json"
             )
+        _assert_regular_json_artifact(policy_path, label="completeness policy")
         policy = load_json_object(policy_path)
     return policy, proof
 
@@ -1317,7 +2041,14 @@ def assert_completeness_promotion(
             completeness_proofs_verified=0,
             promoted_sources=(),
             promoted_categories=(),
+            completeness_artifacts_checked=False,
+            completeness_artifacts_verified=0,
+            completeness_artifact_sources=(),
         )
+
+    art_checked, art_verified, art_sources = _artifact_fields_for_gate(
+        inventory, repo_root=repo_root
+    )
 
     source_status = inventory.get("source_status")
     category_status = inventory.get("category_status")
@@ -1350,6 +2081,9 @@ def assert_completeness_promotion(
             completeness_proofs_verified=0,
             promoted_sources=(),
             promoted_categories=(),
+            completeness_artifacts_checked=art_checked,
+            completeness_artifacts_verified=art_verified,
+            completeness_artifact_sources=art_sources,
         )
 
     root = Path(repo_root) if repo_root is not None else None
@@ -1392,6 +2126,10 @@ def assert_completeness_promotion(
         if upstream_roots is not None and source in upstream_roots:
             upstream = upstream_roots[source]
 
+        mapping = None
+        if root is not None:
+            mapping = _load_optional_mapping(root, source)
+
         verify_completeness_proof(
             proof,
             policy=policy,
@@ -1399,6 +2137,7 @@ def assert_completeness_promotion(
             seed=seed,
             upstream_root=upstream,
             require_no_unresolved=True,
+            mapping=mapping,
         )
         verified += 1
         verified_sources.add(source)
@@ -1462,6 +2201,10 @@ def assert_completeness_promotion(
             if upstream_roots is not None and source in upstream_roots:
                 upstream = upstream_roots[source]
 
+            mapping = None
+            if root is not None:
+                mapping = _load_optional_mapping(root, source)
+
             verify_completeness_proof(
                 proof,
                 policy=policy,
@@ -1469,6 +2212,7 @@ def assert_completeness_promotion(
                 seed=seed,
                 upstream_root=upstream,
                 require_no_unresolved=True,
+                mapping=mapping,
             )
             verified += 1
             verified_sources.add(source)
@@ -1504,6 +2248,9 @@ def assert_completeness_promotion(
         completeness_proofs_verified=verified,
         promoted_sources=promoted_sources,
         promoted_categories=promoted_categories,
+        completeness_artifacts_checked=art_checked,
+        completeness_artifacts_verified=art_verified,
+        completeness_artifact_sources=art_sources,
     )
 
 

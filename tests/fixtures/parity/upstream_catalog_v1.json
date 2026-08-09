@@ -4,17 +4,38 @@
   "capabilities": [
     {
       "id": "team.plane_v3",
-      "source_paths": ["README.md"],
+      "source_paths": [
+        "commands/omc-teams.md",
+        "skills/omc-teams/SKILL.md",
+        "skills/team/SKILL.md",
+        "src/cli/index.ts"
+      ],
       "promise": "Team plane v3 with job-backed panes and Antigravity adapter integration"
     },
     {
       "id": "parity.inventory.governance",
-      "source_paths": ["README.md"],
+      "source_paths": [
+        "package.json",
+        "src/cli/index.ts"
+      ],
       "promise": "Canonical parity inventory with claimability gates and strict local drift check"
     },
     {
       "id": "omc.cli.session_surfaces",
-      "source_paths": ["README.md"],
+      "source_paths": [
+        "bin/oh-my-claudecode.js",
+        "bridge/cli.cjs",
+        "commands/ask.md",
+        "commands/ccg.md",
+        "commands/debug.md",
+        "commands/external-context.md",
+        "commands/mcp-setup.md",
+        "commands/omc-doctor.md",
+        "commands/omc-setup.md",
+        "commands/skill.md",
+        "commands/verify.md",
+        "src/cli/index.ts"
+      ],
       "promise": "CLI and in-session launch surfaces with shared rules/guidance contract"
     }
   ]

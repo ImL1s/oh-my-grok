@@ -90,63 +90,74 @@ def test_runner_heartbeat_advances_lease(root: Path, monkeypatch: pytest.MonkeyP
     cancel_job(root, rec.job_id, reason="test")
 
 
-def test_wrong_owner_token_is_fenced_zero_mutation(root: Path) -> None:
-    result = start_job(
+def _plant_running_with_lease(root: Path) -> tuple[str, str, int, int]:
+    """RUNNING + active owner_lease without a live runner/heartbeat thread.
+
+    Fence zero-mutation assertions must not race a real heartbeat under CI
+    load (generation can advance between snapshot and the fenced call).
+    """
+    from omg_cli.jobs.store import create_job_dir, job_lock, write_job_record
+
+    planted_pid = 1_000_042
+    rec = create_job_dir(
         root,
         provider="fake",
         role="researcher",
-        prompt_file=_prompt(root),
-        sleep_s=2.0,
+        prompt_text="lease fence plant",
     )
-    rec = result.record
-    gen0 = rec.generation
+    lease = acquire_owner_lease(attempt=1)
+    token = str(lease["owner_token"])
+    with job_lock(root, rec.job_id):
+        cur = read_job_record(root, rec.job_id)
+        cur.state = JobState.RUNNING
+        cur.pid = planted_pid
+        cur.pgid = planted_pid
+        cur.handle = f"planted:{rec.job_id}"
+        cur.pid_starttime = "lstart:planted"
+        cur.owner_lease = lease
+        write_job_record(root, cur)
+    gen0 = read_job_record(root, rec.job_id).generation
+    return rec.job_id, token, planted_pid, gen0
+
+
+def test_wrong_owner_token_is_fenced_zero_mutation(root: Path) -> None:
+    job_id, _token, planted_pid, gen0 = _plant_running_with_lease(root)
     with pytest.raises(JobStoreError) as ei:
         renew_owner_lease(
             root,
-            rec.job_id,
+            job_id,
             expected_attempt=1,
             expected_owner_token="0" * 32,
-            expected_runner_pid=int(rec.pid),
+            expected_runner_pid=planted_pid,
         )
     assert ei.value.code == "E_JOB_LEASE_FENCED"
-    after = read_job_record(root, rec.job_id)
+    after = read_job_record(root, job_id)
     assert after.generation == gen0
-    cancel_job(root, rec.job_id, reason="test")
 
 
 def test_wrong_attempt_or_runner_pid_is_fenced(root: Path) -> None:
-    result = start_job(
-        root,
-        provider="fake",
-        role="researcher",
-        prompt_file=_prompt(root),
-        sleep_s=2.0,
-    )
-    rec = result.record
-    token = rec.owner_lease["owner_token"]
-    gen0 = rec.generation
+    job_id, token, planted_pid, gen0 = _plant_running_with_lease(root)
     with pytest.raises(JobStoreError) as ei:
         update_owned_job_fields(
             root,
-            rec.job_id,
+            job_id,
             expected_attempt=99,
             expected_owner_token=token,
-            expected_runner_pid=int(rec.pid),
+            expected_runner_pid=planted_pid,
             error_message="should not land",
         )
     assert ei.value.code == "E_JOB_LEASE_FENCED"
     with pytest.raises(JobStoreError) as ei2:
         update_owned_job_fields(
             root,
-            rec.job_id,
+            job_id,
             expected_attempt=1,
             expected_owner_token=token,
-            expected_runner_pid=int(rec.pid) + 99999,
+            expected_runner_pid=planted_pid + 99999,
             error_message="should not land",
         )
     assert ei2.value.code == "E_JOB_LEASE_FENCED"
-    assert read_job_record(root, rec.job_id).generation == gen0
-    cancel_job(root, rec.job_id, reason="test")
+    assert read_job_record(root, job_id).generation == gen0
 
 
 def test_terminal_transition_releases_lease(root: Path) -> None:

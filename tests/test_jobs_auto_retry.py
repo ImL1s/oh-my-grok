@@ -1263,22 +1263,31 @@ def test_auto_retry_vs_gc_never_recreates_quarantined_job(root: Path) -> None:
     from omg_cli.jobs.runtime import gc_jobs
 
     terminal = _failed_automatic(root)
-    # Make retention immediately eligible.
-    with job_lock(root, terminal.job_id):
-        rec = read_job_record(root, terminal.job_id)
+    jid = terminal.job_id
+    # Make retention immediately eligible and clear ALL identity surfaces so GC
+    # cannot skip on a reused/still-observed spawn_identity PID under load.
+    with job_lock(root, jid):
+        rec = read_job_record(root, jid)
         rec.terminal_at = (
             datetime.now(timezone.utc) - timedelta(days=30)
         ).isoformat()
-        # Clear identities so GC can delete.
         rec.pid = None
         rec.pgid = None
+        rec.pid_starttime = None
         rec.provider_process = {"state": "exited", "pid": None, "pgid": None}
         write_job_record(root, rec)
-    gc_jobs(root, retention_days=1)
-    assert not job_json_path(root, terminal.job_id).is_file()
-    result = auto_retry_job(root, terminal.job_id, now=datetime.now(timezone.utc))
+        for name in ("spawn_identity.json", "spawn_uncertain.json"):
+            path = job_dir(root, jid) / name
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+    out = gc_jobs(root, retention_days=0)
+    assert jid in out.deleted, f"GC did not delete {jid}; skipped={out.skipped}"
+    assert not job_json_path(root, jid).is_file()
+    result = auto_retry_job(root, jid, now=datetime.now(timezone.utc))
     assert result.ok is False
-    assert not job_dir(root, terminal.job_id).exists()
+    assert not job_dir(root, jid).exists()
 
 
 def test_auto_retry_archive_publish_crash_reuses_complete_archive(root: Path) -> None:

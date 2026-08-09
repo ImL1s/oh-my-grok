@@ -1,0 +1,1183 @@
+{
+  "store_kind": "parity-completeness-mapping",
+  "schema_version": 1,
+  "source": "OMC",
+  "surfaces": [
+    {
+      "surface_id": "agent.analyst",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.architect",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.code-reviewer",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.code-simplifier",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.critic",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.debugger",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.designer",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.document-specialist",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.executor",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.explore",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.git-master",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.planner",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.qa-tester",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.scientist",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.security-reviewer",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.test-engineer",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.tracer",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.verifier",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "agent.writer",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "bin.oh-my-claudecode",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "bin.omc",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "bin.omc-cli",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "catalog.agents",
+      "category": "agents_routing",
+      "capability_ids": [
+        "omc.agents.catalog_routing"
+      ]
+    },
+    {
+      "surface_id": "catalog.skills",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "cli.ask",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.autoresearch",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ]
+    },
+    {
+      "surface_id": "cli.capabilities",
+      "category": "parity_governance",
+      "capability_ids": [
+        "parity.inventory.governance"
+      ]
+    },
+    {
+      "surface_id": "cli.check",
+      "category": "parity_governance",
+      "capability_ids": [
+        "parity.inventory.governance"
+      ]
+    },
+    {
+      "surface_id": "cli.config",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.config-notify-profile",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.config-stop-callback",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.conflicts",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.daemon",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.detect",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.doctor",
+      "category": "parity_governance",
+      "capability_ids": [
+        "parity.inventory.governance"
+      ]
+    },
+    {
+      "surface_id": "cli.friction",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "cli.hud",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    },
+    {
+      "surface_id": "cli.info",
+      "category": "parity_governance",
+      "capability_ids": [
+        "parity.inventory.governance"
+      ]
+    },
+    {
+      "surface_id": "cli.install",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.interop",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.launch",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.list",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.lock",
+      "category": "parity_governance",
+      "capability_ids": [
+        "parity.inventory.governance"
+      ]
+    },
+    {
+      "surface_id": "cli.mission-board",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    },
+    {
+      "surface_id": "cli.postinstall",
+      "category": "parity_governance",
+      "capability_ids": [
+        "parity.inventory.governance"
+      ]
+    },
+    {
+      "surface_id": "cli.ralphthon",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ]
+    },
+    {
+      "surface_id": "cli.remove",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.report",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "cli.search",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "cli.session",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "cli.setup",
+      "category": "parity_governance",
+      "capability_ids": [
+        "parity.inventory.governance"
+      ]
+    },
+    {
+      "surface_id": "cli.status",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.team",
+      "category": "team",
+      "capability_ids": [
+        "team.plane_v3"
+      ]
+    },
+    {
+      "surface_id": "cli.team-routing",
+      "category": "team",
+      "capability_ids": [
+        "team.plane_v3"
+      ]
+    },
+    {
+      "surface_id": "cli.teleport",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.test-prompt",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.ultragoal",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ]
+    },
+    {
+      "surface_id": "cli.update",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.update-reconcile",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "cli.version",
+      "category": "parity_governance",
+      "capability_ids": [
+        "parity.inventory.governance"
+      ]
+    },
+    {
+      "surface_id": "cli.wait",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "command.ask",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "command.autoresearch",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ]
+    },
+    {
+      "surface_id": "command.ccg",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "command.compact",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "command.configure-notifications",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    },
+    {
+      "surface_id": "command.debug",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "command.deep-dive",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "command.deepinit",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "command.external-context",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "command.hud",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    },
+    {
+      "surface_id": "command.learner",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ]
+    },
+    {
+      "surface_id": "command.mcp-setup",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "command.omc-doctor",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "command.omc-setup",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "command.omc-teams",
+      "category": "team",
+      "capability_ids": [
+        "team.plane_v3"
+      ]
+    },
+    {
+      "surface_id": "command.project-session-manager",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "command.psm",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "command.release",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ]
+    },
+    {
+      "surface_id": "command.remember",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    },
+    {
+      "surface_id": "command.sciomc",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "command.self-improve",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ]
+    },
+    {
+      "surface_id": "command.skill",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "command.skillify",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ]
+    },
+    {
+      "surface_id": "command.trace",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "command.verify",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
+      "surface_id": "command.visual-verdict",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ]
+    },
+    {
+      "surface_id": "command.wiki",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    },
+    {
+      "surface_id": "command.writer-memory",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    },
+    {
+      "surface_id": "hook.PermissionRequest.Bash.permission-handler.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.PostToolUse.*.post-tool-rules-injector.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.PostToolUse.*.post-tool-verifier.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.PostToolUse.*.project-memory-posttool.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.PostToolUseFailure.*.post-tool-use-failure.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.PreCompact.*.pre-compact.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.PreCompact.*.project-memory-precompact.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.PreCompact.*.wiki-pre-compact.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.PreToolUse.*.pre-tool-enforcer.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.SessionEnd.*.session-end.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.SessionEnd.*.wiki-session-end.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.SessionStart.*.project-memory-session.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.SessionStart.*.session-start.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.SessionStart.*.wiki-session-start.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.SessionStart.init.setup-init.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.SessionStart.maintenance.setup-maintenance.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.Stop.*.code-simplifier.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.Stop.*.context-guard-stop.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.Stop.*.persistent-mode.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.Stop.*.workflow-drift-guard.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.SubagentStart.*.subagent-tracker.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.SubagentStop.*.subagent-tracker.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.SubagentStop.*.verify-deliverables.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.UserPromptSubmit.*.keyword-detector.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "hook.UserPromptSubmit.*.skill-injector.mjs",
+      "category": "hooks",
+      "capability_ids": [
+        "omc.hooks.lifecycle"
+      ]
+    },
+    {
+      "surface_id": "mcp-family.astTools",
+      "category": "tools_mcp",
+      "capability_ids": [
+        "omc.tools.lsp_ast"
+      ]
+    },
+    {
+      "surface_id": "mcp-family.deepinitManifestTool",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "mcp-family.lspTools",
+      "category": "tools_mcp",
+      "capability_ids": [
+        "omc.tools.lsp_ast"
+      ]
+    },
+    {
+      "surface_id": "mcp-family.memoryTools",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    },
+    {
+      "surface_id": "mcp-family.notepadTools",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    },
+    {
+      "surface_id": "mcp-family.pythonReplTool",
+      "category": "tools_mcp",
+      "capability_ids": [
+        "omc.tools.lsp_ast"
+      ]
+    },
+    {
+      "surface_id": "mcp-family.sharedMemoryTools",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    },
+    {
+      "surface_id": "mcp-family.skillsTools",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "mcp-family.stateTools",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    },
+    {
+      "surface_id": "mcp-family.traceTools",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "mcp-family.wikiTools",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    },
+    {
+      "surface_id": "npm-script.plugin:shipping:verify",
+      "category": "parity_governance",
+      "capability_ids": [
+        "parity.inventory.governance"
+      ]
+    },
+    {
+      "surface_id": "npm-script.sync-metadata:verify",
+      "category": "parity_governance",
+      "capability_ids": [
+        "parity.inventory.governance"
+      ]
+    },
+    {
+      "surface_id": "skill.ai-slop-cleaner",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ]
+    },
+    {
+      "surface_id": "skill.ask",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "skill.autopilot",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ]
+    },
+    {
+      "surface_id": "skill.autoresearch",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ]
+    },
+    {
+      "surface_id": "skill.cancel",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "skill.ccg",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "skill.configure-notifications",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    },
+    {
+      "surface_id": "skill.debug",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "skill.deep-dive",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "skill.deep-interview",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "skill.deepinit",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "skill.external-context",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "skill.hud",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    },
+    {
+      "surface_id": "skill.learner",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ]
+    },
+    {
+      "surface_id": "skill.local-build-reminder",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "skill.mcp-setup",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "skill.merge-readiness",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "skill.omc-doctor",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "skill.omc-reference",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "skill.omc-setup",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "skill.omc-teams",
+      "category": "team",
+      "capability_ids": [
+        "team.plane_v3"
+      ]
+    },
+    {
+      "surface_id": "skill.plan",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "skill.project-session-manager",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "skill.ralph",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ]
+    },
+    {
+      "surface_id": "skill.ralplan",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ]
+    },
+    {
+      "surface_id": "skill.release",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ]
+    },
+    {
+      "surface_id": "skill.remember",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    },
+    {
+      "surface_id": "skill.sciomc",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "skill.self-improve",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ]
+    },
+    {
+      "surface_id": "skill.setup",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "skill.skill",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "skill.skillify",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ]
+    },
+    {
+      "surface_id": "skill.team",
+      "category": "team",
+      "capability_ids": [
+        "team.plane_v3"
+      ]
+    },
+    {
+      "surface_id": "skill.trace",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "skill.ultragoal",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ]
+    },
+    {
+      "surface_id": "skill.ultraqa",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ]
+    },
+    {
+      "surface_id": "skill.ultrawork",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.goal.ralph_autopilot_ultra"
+      ]
+    },
+    {
+      "surface_id": "skill.verify",
+      "category": "skills",
+      "capability_ids": [
+        "omc.skills.catalog_aliases"
+      ]
+    },
+    {
+      "surface_id": "skill.visual-verdict",
+      "category": "quality_visual_edit_safety",
+      "capability_ids": [
+        "omc.quality.visual_release"
+      ]
+    },
+    {
+      "surface_id": "skill.wiki",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    },
+    {
+      "surface_id": "skill.writer-memory",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.memory.wiki_hud_notify"
+      ]
+    }
+  ]
+}

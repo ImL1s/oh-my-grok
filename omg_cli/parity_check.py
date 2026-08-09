@@ -70,6 +70,9 @@ def apply_strict_parity_gates(
             "completeness_proofs_verified": 0,
             "promoted_sources": [],
             "promoted_categories": [],
+            "completeness_artifacts_checked": False,
+            "completeness_artifacts_verified": 0,
+            "completeness_artifact_sources": [],
         }
         if completeness_payload is not None:
             completeness_payload.update(empty)
@@ -131,6 +134,9 @@ def check_parity_inventory(
         "completeness_proofs_verified": 0,
         "promoted_sources": [],
         "promoted_categories": [],
+        "completeness_artifacts_checked": False,
+        "completeness_artifacts_verified": 0,
+        "completeness_artifact_sources": [],
     }
     if release:
         strict = True

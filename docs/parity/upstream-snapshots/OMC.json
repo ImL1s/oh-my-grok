@@ -5,84 +5,210 @@
     {
       "id": "omc.agents.catalog_routing",
       "source_paths": [
-        "README.md"
+        "agents/analyst.md",
+        "agents/architect.md",
+        "agents/code-reviewer.md",
+        "agents/code-simplifier.md",
+        "agents/critic.md",
+        "agents/debugger.md",
+        "agents/designer.md",
+        "agents/document-specialist.md",
+        "agents/executor.md",
+        "agents/explore.md",
+        "agents/git-master.md",
+        "agents/planner.md",
+        "agents/qa-tester.md",
+        "agents/scientist.md",
+        "agents/security-reviewer.md",
+        "agents/test-engineer.md",
+        "agents/tracer.md",
+        "agents/verifier.md",
+        "agents/writer.md",
+        "src/agents/definitions.ts"
       ],
       "promise": "Agent catalog with tier/discipline routing for multi-agent work"
     },
     {
       "id": "omc.cli.session_surfaces",
       "source_paths": [
-        "README.md"
+        "bin/oh-my-claudecode.js",
+        "bridge/cli.cjs",
+        "commands/ask.md",
+        "commands/ccg.md",
+        "commands/debug.md",
+        "commands/external-context.md",
+        "commands/mcp-setup.md",
+        "commands/omc-doctor.md",
+        "commands/omc-setup.md",
+        "commands/skill.md",
+        "commands/verify.md",
+        "src/cli/index.ts"
       ],
       "promise": "CLI and in-session launch surfaces with shared rules/guidance contract"
     },
     {
       "id": "omc.goal.ralph_autopilot_ultra",
       "source_paths": [
-        "README.md"
+        "commands/autoresearch.md",
+        "skills/autopilot/SKILL.md",
+        "skills/autoresearch/SKILL.md",
+        "skills/ralph/SKILL.md",
+        "skills/ralplan/SKILL.md",
+        "skills/ultragoal/SKILL.md",
+        "skills/ultraqa/SKILL.md",
+        "skills/ultrawork/SKILL.md",
+        "src/cli/index.ts"
       ],
       "promise": "Goal persistence via Ralph, autopilot FSM, UltraQA, and Ultragoal loops"
     },
     {
       "id": "omc.hooks.lifecycle",
       "source_paths": [
-        "README.md"
+        "scripts/code-simplifier.mjs",
+        "scripts/context-guard-stop.mjs",
+        "scripts/keyword-detector.mjs",
+        "scripts/permission-handler.mjs",
+        "scripts/persistent-mode.mjs",
+        "scripts/post-tool-rules-injector.mjs",
+        "scripts/post-tool-use-failure.mjs",
+        "scripts/post-tool-verifier.mjs",
+        "scripts/pre-compact.mjs",
+        "scripts/pre-tool-enforcer.mjs",
+        "scripts/project-memory-posttool.mjs",
+        "scripts/project-memory-precompact.mjs",
+        "scripts/project-memory-session.mjs",
+        "scripts/session-end.mjs",
+        "scripts/session-start.mjs",
+        "scripts/setup-init.mjs",
+        "scripts/setup-maintenance.mjs",
+        "scripts/skill-injector.mjs",
+        "scripts/subagent-tracker.mjs",
+        "scripts/verify-deliverables.mjs",
+        "scripts/wiki-pre-compact.mjs",
+        "scripts/wiki-session-end.mjs",
+        "scripts/wiki-session-start.mjs",
+        "scripts/workflow-drift-guard.mjs"
       ],
       "promise": "Lifecycle hooks with Stop soft-pin honesty under Grok host constraints"
     },
     {
       "id": "omc.memory.wiki_hud_notify",
       "source_paths": [
-        "README.md"
+        "commands/configure-notifications.md",
+        "commands/hud.md",
+        "commands/remember.md",
+        "commands/wiki.md",
+        "commands/writer-memory.md",
+        "skills/configure-notifications/SKILL.md",
+        "skills/hud/SKILL.md",
+        "skills/remember/SKILL.md",
+        "skills/wiki/SKILL.md",
+        "skills/writer-memory/SKILL.md",
+        "src/cli/index.ts",
+        "src/tools/memory-tools.ts",
+        "src/tools/notepad-tools.ts",
+        "src/tools/shared-memory-tools.ts",
+        "src/tools/state-tools.ts",
+        "src/tools/wiki-tools.ts"
       ],
       "promise": "Project memory, wiki, HUD, and notification surfaces"
     },
     {
       "id": "omc.quality.visual_release",
       "source_paths": [
-        "README.md"
+        "commands/learner.md",
+        "commands/release.md",
+        "commands/self-improve.md",
+        "commands/skillify.md",
+        "commands/visual-verdict.md",
+        "skills/ai-slop-cleaner/SKILL.md",
+        "skills/learner/SKILL.md",
+        "skills/release/SKILL.md",
+        "skills/self-improve/SKILL.md",
+        "skills/skillify/SKILL.md",
+        "skills/visual-verdict/SKILL.md"
       ],
       "promise": "Visual verdict, dual-review, release packaging, and self-improve quality gates"
     },
     {
       "id": "omc.session.search_replay",
       "source_paths": [
-        "README.md"
+        "commands/compact.md",
+        "commands/deep-dive.md",
+        "commands/deepinit.md",
+        "commands/project-session-manager.md",
+        "commands/psm.md",
+        "commands/sciomc.md",
+        "commands/trace.md",
+        "skills/deep-dive/SKILL.md",
+        "skills/deepinit/SKILL.md",
+        "skills/project-session-manager/SKILL.md",
+        "skills/sciomc/SKILL.md",
+        "skills/trace/SKILL.md",
+        "src/cli/index.ts",
+        "src/tools/deepinit-manifest.ts",
+        "src/tools/trace-tools.ts"
       ],
       "promise": "Session search, friction, replay, and observatory surfaces"
     },
     {
       "id": "omc.skills.catalog_aliases",
       "source_paths": [
-        "README.md"
+        ".claude-plugin/plugin.json",
+        "skills/ask/SKILL.md",
+        "skills/cancel/SKILL.md",
+        "skills/ccg/SKILL.md",
+        "skills/debug/SKILL.md",
+        "skills/deep-interview/SKILL.md",
+        "skills/external-context/SKILL.md",
+        "skills/local-build-reminder/SKILL.md",
+        "skills/mcp-setup/SKILL.md",
+        "skills/merge-readiness/SKILL.md",
+        "skills/omc-doctor/SKILL.md",
+        "skills/omc-reference/SKILL.md",
+        "skills/omc-setup/SKILL.md",
+        "skills/plan/SKILL.md",
+        "skills/setup/SKILL.md",
+        "skills/skill/SKILL.md",
+        "skills/verify/SKILL.md",
+        "src/tools/skills-tools.ts"
       ],
       "promise": "Skill catalog with aliases, pipelines, and resource loading"
     },
     {
       "id": "omc.team.worktrees_mailbox",
       "source_paths": [
-        "README.md"
+        "commands/omc-teams.md",
+        "skills/omc-teams/SKILL.md",
+        "skills/team/SKILL.md",
+        "src/cli/index.ts"
       ],
       "promise": "Team worktrees, mailbox, and worker isolation plane"
     },
     {
       "id": "omc.tools.lsp_ast",
       "source_paths": [
-        "README.md"
+        "src/tools/ast-tools.ts",
+        "src/tools/lsp-tools.ts",
+        "src/tools/python-repl/tool.ts"
       ],
       "promise": "LSP/AST tooling and MCP tool surfaces for code intelligence"
     },
     {
       "id": "parity.inventory.governance",
       "source_paths": [
-        "README.md"
+        "package.json",
+        "src/cli/index.ts"
       ],
       "promise": "Canonical parity inventory with claimability gates and strict local drift check"
     },
     {
       "id": "team.plane_v3",
       "source_paths": [
-        "README.md"
+        "commands/omc-teams.md",
+        "skills/omc-teams/SKILL.md",
+        "skills/team/SKILL.md",
+        "src/cli/index.ts"
       ],
       "promise": "Team plane v3 with job-backed panes and Antigravity adapter integration"
     }
