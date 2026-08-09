@@ -340,6 +340,13 @@
       ]
     },
     {
+      "surface_id": "cli.rm",
+      "category": "runtime_orchestration",
+      "capability_ids": [
+        "omc.cli.session_surfaces"
+      ]
+    },
+    {
       "surface_id": "cli.search",
       "category": "state_memory_observability",
       "capability_ids": [
@@ -348,6 +355,13 @@
     },
     {
       "surface_id": "cli.session",
+      "category": "state_memory_observability",
+      "capability_ids": [
+        "omc.session.search_replay"
+      ]
+    },
+    {
+      "surface_id": "cli.sessions",
       "category": "state_memory_observability",
       "capability_ids": [
         "omc.session.search_replay"

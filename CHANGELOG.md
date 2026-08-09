@@ -10,6 +10,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Fixed
+- **Parity #78-H OMC Commander alias proof drift:** after shared
+  `commander_command_graph_v1` began emitting static `.alias()` surfaces,
+  regenerate the OMC mapping/proof at pin `67dddfc…` to include `cli.rm` and
+  `cli.sessions`, and extend the hermetic OMC CLI fixture so alias discovery
+  cannot silently diverge from the committed real-source triple. Statuses
+  remain bootstrapping (no promotion). Refs #78 (does not close).
 - **Parity #78-H OmO upstream snapshot fingerprint sync:** add
   `cli-program.ts` to `omo.tools.lsp_ast_codegraph_mcp` in
   `docs/parity/upstream-snapshots/OmO.json` and refresh OmO proof
