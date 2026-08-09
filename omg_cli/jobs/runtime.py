@@ -40,6 +40,7 @@ from omg_cli.jobs.store import (
     read_job_record,
     safe_job_id,
     transition_job,
+    update_job_fields,
 )
 
 # Grace between SIGTERM and SIGKILL for cancel (seconds).
@@ -326,10 +327,13 @@ def start_job(
                 "handle": None,
             },
         )
-        raise JobStoreError(
+        err = JobStoreError(
             f"failed to launch job runner: {exc}",
             code="E_JOB_LAUNCH",
-        ) from exc
+        )
+        err.spawned = False
+        err.disappearance_proven = True
+        raise err from exc
 
     pid = int(proc.pid)
     try:
@@ -372,10 +376,13 @@ def start_job(
                 )
         except JobStoreError:
             pass
-        raise JobStoreError(
+        err = JobStoreError(
             f"job runner exited immediately with code {early_rc}",
             code="E_JOB_LAUNCH",
         )
+        err.spawned = True
+        err.disappearance_proven = True
+        raise err
 
     handle = f"{provider}:{record.job_id}:pid={pid}"
     # Best-effort ownership fingerprint; null when probe fails (PR1 honesty).
@@ -396,7 +403,7 @@ def start_job(
         # Belt-and-suspenders: any post-spawn commit failure must kill the
         # exact child and reconcile durable state (never leave starting or
         # dead-running). SystemExit/KeyboardInterrupt are not caught.
-        _cleanup_after_spawn_commit_failure(
+        proven = _cleanup_after_spawn_commit_failure(
             project_root,
             record.job_id,
             pid=pid,
@@ -405,10 +412,13 @@ def start_job(
             expected_starttime=pid_starttime,
             exc=commit_exc,
         )
-        raise JobStoreError(
+        err = JobStoreError(
             f"failed to commit running handle after spawn: {commit_exc}",
             code="E_JOB_LAUNCH",
-        ) from commit_exc
+        )
+        err.spawned = True
+        err.disappearance_proven = bool(proven)
+        raise err from commit_exc
 
     return StartResult(record=record, launched=True)
 
@@ -418,16 +428,21 @@ def _kill_child_exact(
     pgid: int,
     *,
     expected_starttime: str | None = None,
-) -> None:
-    """Kill the exact spawn we own. Skip signals on fingerprint mismatch."""
+) -> bool:
+    """Kill the exact spawn we own.
+
+    Returns True only when process-group disappearance is proven.
+    Skip signals on fingerprint mismatch/uncertain probe — return False
+    (caller must fail closed; do not claim the child is gone).
+    """
     if pid <= 1 and pgid <= 1:
-        return
+        return True
     if expected_starttime:
         if _pid_alive(pid):
             live = _probe_pid_starttime(pid)
             if live is None or live != expected_starttime:
-                # Possible PID reuse — do not signal the wrong process.
-                return
+                # Possible PID reuse or probe uncertain — do not signal.
+                return False
     try:
         if pgid > 1:
             os.killpg(pgid, signal.SIGKILL)
@@ -440,6 +455,45 @@ def _kill_child_exact(
         except (ProcessLookupError, PermissionError, OSError):
             pass
     _reap_child(pid)
+    return _wait_until_gone(pid, timeout_s=2.0)
+
+
+def _persist_unproven_spawn_identity(
+    project_root: Path,
+    job_id: str,
+    *,
+    pid: int,
+    pgid: int,
+    handle: str,
+    expected_starttime: str | None,
+    exc: BaseException,
+) -> None:
+    """Keep non-terminal job + spawn identity when kill cannot be proven.
+
+    Never stamp FAILED while the child may still be alive — cancel_job treats
+    FAILED as terminal and would skip signalling the orphan.
+    """
+    try:
+        cur = read_job_record(project_root, job_id)
+    except JobStoreError:
+        return
+    if cur.state in TERMINAL_STATES:
+        return
+    try:
+        update_job_fields(
+            project_root,
+            job_id,
+            pid=int(pid),
+            pgid=int(pgid),
+            handle=str(handle),
+            pid_starttime=expected_starttime,
+            error_message=(
+                f"launch commit failed after spawn; cleanup disappearance "
+                f"unproven: {exc}"
+            ),
+        )
+    except JobStoreError:
+        pass
 
 
 def _cleanup_after_spawn_commit_failure(
@@ -451,13 +505,29 @@ def _cleanup_after_spawn_commit_failure(
     handle: str,
     exc: BaseException,
     expected_starttime: str | None = None,
-) -> None:
-    """Always kill the spawned child, then reconcile job.json fail-closed."""
-    _kill_child_exact(pid, pgid, expected_starttime=expected_starttime)
+) -> bool:
+    """Kill the spawned child when ownership is certain; reconcile fail-closed.
+
+    Returns True iff spawn disappearance is proven. When fingerprint/probe
+    uncertain, retain spawn identity on a non-terminal record and return False.
+    """
+    proven = _kill_child_exact(pid, pgid, expected_starttime=expected_starttime)
+    if not proven:
+        _persist_unproven_spawn_identity(
+            project_root,
+            job_id,
+            pid=pid,
+            pgid=pgid,
+            handle=handle,
+            expected_starttime=expected_starttime,
+            exc=exc,
+        )
+        return False
+
     try:
         cur = read_job_record(project_root, job_id)
     except JobStoreError:
-        # Unreadable — child already killed; best-effort failed if we can.
+        # Unreadable — child kill was proven; best-effort failed if we can.
         _best_effort_stamp_failed(
             project_root,
             job_id,
@@ -466,11 +536,11 @@ def _cleanup_after_spawn_commit_failure(
             spawn_pgid=pgid,
             spawn_handle=handle,
         )
-        return
+        return True
 
     if cur.state in TERMINAL_STATES:
         # Another winner (cancel/failed/succeeded) — keep durable terminal.
-        return
+        return True
 
     _best_effort_stamp_failed(
         project_root,
@@ -480,6 +550,7 @@ def _cleanup_after_spawn_commit_failure(
         spawn_pgid=pgid,
         spawn_handle=handle,
     )
+    return True
 
 
 def _best_effort_stamp_failed(
@@ -973,6 +1044,21 @@ def list_jobs(
 
 DEFAULT_ACP_READY_TIMEOUT_S = 20.0
 DEFAULT_ACP_HANDSHAKE_WAIT_S = 15.0
+
+
+def _acp_may_clear_binding_after_start_failure(exc: BaseException) -> bool:
+    """True only when spawn never happened or spawn disappearance is proven.
+
+    Fail closed on missing attrs / uncertain cleanup: retain the pre-allocated
+    job-bearing binding so a later ensure cannot double-spawn an orphan.
+    """
+    spawned = getattr(exc, "spawned", None)
+    proven = getattr(exc, "disappearance_proven", None)
+    if spawned is False:
+        return True
+    if proven is True:
+        return True
+    return False
 
 
 def _acp_lock_path(
@@ -1896,13 +1982,26 @@ def ensure_acp_session_sidecar(
                     "timeout_s": handshake_timeout_s,
                 },
             )
-        except Exception:
-            try:
-                if bind_path.is_file():
-                    bind_path.unlink()
-            except OSError:
-                pass
-            raise
+        except Exception as exc:
+            # Delete binding ONLY when spawn never happened OR cleanup proved
+            # process-group disappearance. Unproven fingerprint/probe must
+            # retain the pre-allocated job-bearing binding (fail closed).
+            if _acp_may_clear_binding_after_start_failure(exc):
+                try:
+                    if bind_path.is_file():
+                        bind_path.unlink()
+                except OSError:
+                    pass
+                raise
+            detail = str(exc)
+            code = getattr(exc, "code", None) or "E_JOB_LAUNCH"
+            if getattr(exc, "disappearance_proven", None) is False:
+                code = "E_JOB_CANCEL_UNPROVEN"
+            raise JobStoreError(
+                f"{detail}; ACP binding retained with job_id={job_id} "
+                "(spawn cleanup disappearance unproven)",
+                code=str(code),
+            ) from exc
         if start.record.job_id != job_id:
             # Should be impossible with job_id=; fail closed + cancel.
             try:

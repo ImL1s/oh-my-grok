@@ -489,6 +489,206 @@ def test_ready_fail_unproven_cancel_retains_binding_blocks_second(
         pass
 
 
+@pytest.mark.skipif(os.name != "posix", reason="killpg / ACP pgid ownership is POSIX")
+def test_start_job_commit_fail_unproven_kill_retains_binding(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P0: RUNNING commit fail + fingerprint re-probe None must retain binding.
+
+    Popen succeeds, first starttime fingerprint is ok, cleanup re-probe returns
+    None so the child is kept alive. ensure must NOT unlink the pre-allocated
+    job-bearing binding; second ensure must not spawn another job; Team stop
+    cannot complete until disappearance is proven.
+    """
+    import subprocess
+
+    from omg_cli.jobs import runtime as runtime_mod
+    from omg_cli.jobs.models import JobState
+    from omg_cli.jobs.runtime import list_jobs, read_acp_sidecar_binding
+    from omg_cli.jobs.store import read_job_record
+    from omg_cli.team.plane import EXPERIMENTAL_ENV, start_team, stop_team
+
+    monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
+    subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.com"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "t"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    (root / "README").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README"], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+
+    run_id = _seed_run(root)
+    meta = start_team(
+        "commit fail unproven kill",
+        [{"task_id": "w1", "owned_files": ["lane_a/"]}],
+        root=root,
+        dry_run=True,
+        run_id=run_id,
+    )
+    assert str(meta["run_id"]) == run_id
+
+    bind_path = runtime_mod._acp_binding_path(root, run_id)
+    spawned: dict[str, int] = {}
+    real_popen = runtime_mod.subprocess.Popen
+    real_probe = runtime_mod._probe_pid_starttime
+    real_transition = runtime_mod.transition_job
+    first_fp: dict[str, str | None] = {"v": None}
+    probe_calls = {"n": 0}
+
+    def sticky_popen(argv=None, *args, **kwargs):  # noqa: ANN001
+        # Long-lived stand-in only for the job runner argv. Do not intercept
+        # subprocess.run(["ps", ...]) used by fingerprint / liveness probes —
+        # runtime.subprocess is the shared stdlib module.
+        import sys
+
+        argv_l = list(argv or ())
+        is_runner = any("omg_cli.jobs.runner" in str(part) for part in argv_l)
+        if is_runner:
+            proc = real_popen(  # noqa: S603
+                [sys.executable, "-c", "import time; time.sleep(120)"],
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            proc = real_popen(argv, *args, **kwargs)
+        if is_runner:
+            spawned["pid"] = int(proc.pid)
+            try:
+                spawned["pgid"] = int(os.getpgid(proc.pid))
+            except OSError:
+                spawned["pgid"] = int(proc.pid)
+            spawned["proc"] = proc
+        return proc
+
+    def probe_once_then_none(pid: int) -> str | None:
+        probe_calls["n"] += 1
+        # First successful fingerprint (post-Popen) sticks; cleanup re-probe → None.
+        if first_fp["v"] is None:
+            fp = real_probe(pid)
+            if fp is None:
+                return None
+            first_fp["v"] = fp
+            return fp
+        return None
+
+    def boom_running(
+        project_root: Path,
+        job_id: str,
+        new_state: JobState,
+        *,
+        updates: dict | None = None,
+    ):
+        if new_state == JobState.RUNNING:
+            raise JobStoreError("simulated RUNNING commit failure", code="E_JOB_STORE")
+        return real_transition(project_root, job_id, new_state, updates=updates)
+
+    monkeypatch.setattr(runtime_mod.subprocess, "Popen", sticky_popen)
+    # Patch the module attribute used by start_job / _kill_child_exact.
+    monkeypatch.setattr(runtime_mod, "_probe_pid_starttime", probe_once_then_none)
+    monkeypatch.setattr(runtime_mod, "transition_job", boom_running)
+
+    before_ids = {
+        str(j.get("job_id"))
+        for j in list_jobs(root)
+        if isinstance(j, Mapping) and j.get("job_id")
+    }
+    with pytest.raises(JobStoreError) as ei:
+        ensure_acp_session_sidecar(root, run_id=run_id, ready_timeout_s=5.0)
+    assert ei.value.code == "E_JOB_CANCEL_UNPROVEN"
+    assert "binding retained" in str(ei.value).lower()
+    assert bind_path.is_file(), "pre-allocated binding must survive unproven cleanup"
+    assert "pid" in spawned
+    assert runtime_mod._pid_alive(spawned["pid"]), "child must remain alive"
+
+    # Restore Popen/transition for subsequent ensure/stop. Patch ownership
+    # probe to None so cancel_job (which calls ownership.probe_pid_starttime
+    # directly, not runtime._probe_pid_starttime) cannot prove disappearance.
+    monkeypatch.setattr(runtime_mod.subprocess, "Popen", real_popen)
+    monkeypatch.setattr(runtime_mod, "transition_job", real_transition)
+    import omg_cli.jobs.ownership as ownership_mod
+
+    monkeypatch.setattr(ownership_mod, "probe_pid_starttime", lambda _pid: None)
+    monkeypatch.setattr(runtime_mod, "_probe_pid_starttime", lambda _pid: None)
+
+    bind = read_acp_sidecar_binding(root, run_id)
+    assert isinstance(bind, dict)
+    retained = bind.get("job_id")
+    assert isinstance(retained, str) and retained
+    assert bind.get("state") == "ensuring"
+    rec = read_job_record(root, retained)
+    assert rec.state == JobState.STARTING
+    assert int(rec.pid or 0) == int(spawned["pid"])
+    assert first_fp["v"]
+    assert probe_calls["n"] >= 2
+
+    after_ids = {
+        str(j.get("job_id"))
+        for j in list_jobs(root)
+        if isinstance(j, Mapping) and j.get("job_id")
+    }
+    spawned_ids = after_ids - before_ids
+    assert retained in spawned_ids
+    assert len(spawned_ids) == 1
+
+    # Second ensure must not launch another sidecar while binding is retained.
+    with pytest.raises(JobStoreError) as ei2:
+        ensure_acp_session_sidecar(root, run_id=run_id, ready_timeout_s=5.0)
+    assert ei2.value.code in {"E_ACP_SIDECAR_STALE", "E_JOB_CANCEL_UNPROVEN", "E_JOB_PID_REUSED"}
+    after2 = {
+        str(j.get("job_id"))
+        for j in list_jobs(root)
+        if isinstance(j, Mapping) and j.get("job_id")
+    }
+    assert after2 - before_ids == spawned_ids
+    assert bind_path.is_file()
+
+    stop_out = stop_team(root, run_id)
+    assert stop_out.get("stop_completed") is False, stop_out
+    assert bind_path.is_file(), "stop must retain binding until disappearance proven"
+    assert runtime_mod._pid_alive(spawned["pid"])
+
+    # Cleanup: restore real probe so cancel can prove kill, then reap.
+    monkeypatch.setattr(runtime_mod, "_probe_pid_starttime", real_probe)
+    monkeypatch.setattr(runtime_mod, "transition_job", real_transition)
+    try:
+        cancel_job(root, retained, reason="test_cleanup")
+    except JobStoreError:
+        pass
+    proc = spawned.get("proc")
+    if proc is not None and proc.poll() is None:
+        try:
+            os.killpg(int(spawned["pgid"]), 9)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                proc.kill()
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        try:
+            proc.wait(timeout=2)
+        except Exception:
+            pass
+    try:
+        runtime_mod._reap_child(int(spawned["pid"]))
+    except Exception:
+        pass
+
+
 def test_stop_team_acp_cancel_unproven_clears_stop_completed() -> None:
     """Plane contract: unproven ACP cancel must refuse stop_completed publication."""
     # Mirrors omg_cli.team.plane._stop_team_locked linked_acp_session gate.
