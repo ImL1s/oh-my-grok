@@ -194,6 +194,7 @@ omg accept --yes
 
 ```bash
 omg team start --goal "平行修 A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --dry-run
+omg team start --goal "…" --tasks-json '[{"task_id":"t1","owned_files":["a.py"],"provider":"fake"}]' --worker-topology=job --dry-run
 omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --dry-run --max-fix 3
 omg team run --goal "x" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]}]' --ralph --max-iter 2 --dry-run
 omg team scale --run RUN --add 2 --dry-run

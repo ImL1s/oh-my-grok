@@ -181,6 +181,7 @@ def start_job(
     request_overrides: dict[str, Any] | None = None,
     job_id: str | None = None,
     attempt_budget: int = 1,
+    team_id: str | None = None,
 ) -> StartResult:
     """Atomic start: preflight → persist queued→starting before spawn.
 
@@ -191,6 +192,9 @@ def start_job(
     Pass either ``prompt_file`` or ``prompt_text`` (not both). Prefer
     ``prompt_text`` for concurrent callers (e.g. ask --background) so a shared
     temp path cannot cross-contaminate prompts.
+
+    Optional ``team_id`` is stamped onto the immutable Jobs ``request`` so Team
+    resume/bind can fail-closed on foreign jobs (#69 PR4).
     """
     provider = (provider or "").strip().lower()
     role = (role or "").strip() or "researcher"
@@ -258,6 +262,12 @@ def start_job(
             mode=mode,
             timeout_s=provider_timeout_s,
         )
+
+    # Team ownership stamp (#69 PR4): durable on request for foreign-job refuse.
+    if team_id is not None:
+        tid_own = str(team_id).strip()
+        if tid_own:
+            request_snapshot = {**request_snapshot, "team_id": tid_own}
 
     if prompt_text is not None and prompt_file is not None:
         raise JobStoreError(

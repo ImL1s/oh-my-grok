@@ -2782,6 +2782,7 @@ def start_team(
     executor: str | None = None,
     detach: bool = False,
     view_mode: str | None = None,
+    worker_topology: str | None = None,
 ) -> dict[str, Any]:
     """Create ownership + worktrees + team.json (+ live tmux unless dry_run).
 
@@ -2810,9 +2811,20 @@ def start_team(
         For ``topology=split``: ``same_window`` / ``dedicated_window`` /
         ``detached_session``. Resolved by the CLI when omitted. Non-split
         topologies refuse an explicit view_mode.
+    worker_topology:
+        ``pane`` (default — existing tmux workers) or ``job`` (durable Jobs
+        plane workers; #69 PR4). Independent of split/windows layout topology.
 
     Returns the written team.json payload.
     """
+    from omg_cli.team.launch import (
+        WORKER_TOPOLOGY_JOB,
+        WORKER_TOPOLOGY_PANE,
+        WorkerLaunchError,
+        launch_worker,
+        normalize_worker_topology,
+        stamp_execution_on_task,
+    )
     from omg_cli.team.topology import VIEW_MODES, layout_for_view_mode
 
     root_path = Path(root) if root is not None else Path.cwd().resolve()
@@ -2822,6 +2834,12 @@ def start_team(
     n = _assert_start_gates(tasks, env=env)
     if topology not in ("windows", "split"):
         raise TeamError(f"unsupported topology {topology!r}")
+    try:
+        worker_topo = normalize_worker_topology(
+            worker_topology if worker_topology is not None else WORKER_TOPOLOGY_PANE
+        )
+    except WorkerLaunchError as exc:
+        raise TeamError(str(exc)) from exc
     resolved_view_mode = view_mode
     if resolved_view_mode is not None:
         if topology != "split":
@@ -2830,6 +2848,11 @@ def start_team(
             )
         if resolved_view_mode not in VIEW_MODES:
             raise TeamError(f"unsupported view_mode {resolved_view_mode!r}")
+    if worker_topo == WORKER_TOPOLOGY_JOB and resolved_view_mode is not None:
+        raise TeamError(
+            "view_mode requires worker-topology=pane "
+            f"(got worker_topology={worker_topo!r})"
+        )
     executor_norm = (executor or "").strip().lower() or None
     if executor_norm is not None and executor_norm != "fixture":
         raise TeamError(
@@ -2864,7 +2887,9 @@ def start_team(
 
     _launch_lock_stack = ExitStack()
     try:
-        if not dry_run:
+        # Pane topology owns the tmux launch-intent WAL. Job-backed workers
+        # never touch tmux, so skip the lock/sweep for worker_topology=job.
+        if not dry_run and worker_topo == WORKER_TOPOLOGY_PANE:
             try:
                 from omg_cli.team.tmux import (
                     TmuxTeamError,
@@ -3120,6 +3145,15 @@ def start_team(
                     pane_cmd = build_fixture_pane_command(descriptor_path=desc_path)
                     provider = "fixture"
 
+                # Job-backed workers may take an explicit jobs-admitted provider
+                # from the task dict (fake|antigravity) when not using fixture.
+                if worker_topo == WORKER_TOPOLOGY_JOB and not use_fixture_executor:
+                    src_prov = str(src_task.get("provider") or "").strip().lower()
+                    if src_prov in ("agy", "antigravity"):
+                        provider = "antigravity"
+                    elif src_prov == "fake":
+                        provider = "fake"
+
                 # Persist per-task argv under team/ (mirrors fanout workers/*.argv.json)
                 argv_path = tdir / f"{tid}.argv.json"
                 # When reusing a team dir, backup prior argv so rollback can restore.
@@ -3176,17 +3210,45 @@ def start_team(
                 return cleaned
 
             if dry_run:
-                # HERMETIC: never call tmux_available() / subprocess
+                # HERMETIC: never call tmux_available() / subprocess / start_job
                 note = "dry_run skeleton; pid=None; no tmux/subprocess; " + (
                     "multi-CLI per-provider argv recorded"
                     if multi_cli
                     else "grok-only pane argv recorded"
                 )
+                if worker_topo == WORKER_TOPOLOGY_JOB:
+                    note = (
+                        "dry_run skeleton; worker_topology=job; "
+                        "no pane/subprocess/job; launch descriptors only"
+                    )
                 dry_view = resolved_view_mode
-                if topology == "split" and dry_view is None:
+                if (
+                    worker_topo == WORKER_TOPOLOGY_PANE
+                    and topology == "split"
+                    and dry_view is None
+                ):
                     dry_view = (
                         "detached_session" if detach else "same_window"
                     )
+                for rec in task_records:
+                    try:
+                        handle = launch_worker(
+                            root_path,
+                            worker_id=str(rec["task_id"]),
+                            topology=worker_topo,
+                            provider=str(rec.get("provider") or "grok"),
+                            role=str(rec.get("role") or "executor"),
+                            run_id=rid,
+                            team_id=tid_plane,
+                            task_id=str(rec["task_id"]),
+                            attempt=1,
+                            launch_generation=1,
+                            dry_run=True,
+                            executor=executor_norm,
+                        )
+                        stamp_execution_on_task(rec, handle)
+                    except WorkerLaunchError as exc:
+                        raise TeamError(str(exc)) from exc
                 meta = {
                     "writer": CLI_WRITER,
                     "schema_version": SCHEMA_VERSION,
@@ -3205,13 +3267,20 @@ def start_team(
                     "routing": routing_payload,
                     "linked_ralph": None,
                     "topology": topology,
+                    "worker_topology": worker_topo,
                     "team_id": tid_plane,
                     "owner_token": token,
                     "executor": executor_norm,
-                    "view_mode": dry_view if topology == "split" else None,
+                    "view_mode": (
+                        dry_view
+                        if worker_topo == WORKER_TOPOLOGY_PANE and topology == "split"
+                        else None
+                    ),
                     "layout": (
                         layout_for_view_mode(dry_view)
-                        if topology == "split" and dry_view
+                        if worker_topo == WORKER_TOPOLOGY_PANE
+                        and topology == "split"
+                        and dry_view
                         else None
                     ),
                     "note": note,
@@ -3226,12 +3295,111 @@ def start_team(
                         "stage": "team_dry_run",
                         "task_count": n,
                         "multi_cli": multi_cli,
+                        "worker_topology": worker_topo,
                         "note": "team dry_run completed; verified remains false",
                     },
                 )
                 return meta
 
-            # Live path: create tmux session + fill pids
+            # Live job-backed workers: Jobs plane owns process lifecycle.
+            if worker_topo == WORKER_TOPOLOGY_JOB:
+                launched_jobs: list[str] = []
+                try:
+                    for rec in task_records:
+                        handle = launch_worker(
+                            root_path,
+                            worker_id=str(rec["task_id"]),
+                            topology=WORKER_TOPOLOGY_JOB,
+                            provider=str(rec.get("provider") or "grok"),
+                            role=str(rec.get("role") or "executor"),
+                            run_id=rid,
+                            team_id=tid_plane,
+                            task_id=str(rec["task_id"]),
+                            attempt=1,
+                            launch_generation=1,
+                            dry_run=False,
+                            executor=executor_norm,
+                            prompt_text=(
+                                f"Team worker {rec['task_id']} "
+                                f"run={rid} team={tid_plane} goal={goal}"
+                            ),
+                        )
+                        stamp_execution_on_task(rec, handle)
+                        if handle.job_id:
+                            launched_jobs.append(handle.job_id)
+                        rec["status"] = "running"
+                        rec["pid"] = None
+                        rec["pgid"] = None
+                        rec["pid_start"] = None
+                    meta = {
+                        "writer": CLI_WRITER,
+                        "schema_version": SCHEMA_VERSION,
+                        "meta_generation": 0,
+                        "run_id": rid,
+                        "session": session,
+                        "dry_run": False,
+                        "workspace_mode": WORKSPACE_MODE,
+                        "goal": goal,
+                        "task_count": n,
+                        "next_worker_index": n,
+                        "next_logical_worker_index": n,
+                        "created_at": _utc_now(),
+                        "tasks": _public_tasks(),
+                        "multi_cli": multi_cli,
+                        "routing": routing_payload,
+                        "linked_ralph": None,
+                        "topology": topology,
+                        "worker_topology": worker_topo,
+                        "team_id": tid_plane,
+                        "owner_token": token,
+                        "executor": executor_norm,
+                        "view_mode": None,
+                        "layout": None,
+                        "note": (
+                            "experimental job-backed team workers via durable "
+                            "jobs plane (#69 PR4); process lifecycle owned by "
+                            "Jobs; stop cancels jobs (no tmux)"
+                        ),
+                    }
+                    for idx, task in enumerate(meta["tasks"]):
+                        if isinstance(task, dict):
+                            task.setdefault(
+                                "logical_worker_index",
+                                task.get("window_index", idx),
+                            )
+                            task.setdefault("attempt", 1)
+                    _atomic_write_json(team_meta_path(root_path, rid), meta)
+                    write_status(
+                        root_path,
+                        rid,
+                        "running",
+                        extra={
+                            "team": True,
+                            "stage": "team_running",
+                            "task_count": n,
+                            "multi_cli": multi_cli,
+                            "worker_topology": worker_topo,
+                            "job_ids": launched_jobs,
+                        },
+                    )
+                    return meta
+                except (WorkerLaunchError, TeamError, Exception) as exc:
+                    # Compensate: cancel any jobs already started.
+                    from omg_cli.jobs.runtime import cancel_job as _cancel_job
+                    from omg_cli.jobs.models import JobStoreError as _JobStoreError
+
+                    for jid in launched_jobs:
+                        try:
+                            _cancel_job(root_path, jid)
+                        except _JobStoreError:
+                            pass
+                    if isinstance(exc, TeamError):
+                        raise
+                    if isinstance(exc, WorkerLaunchError):
+                        raise TeamError(str(exc)) from exc
+                    raise TeamError(f"job-backed worker launch failed: {exc}") from exc
+
+            # Live pane path: create tmux session + fill pids
             launch_nonce = uuid.uuid4().hex
             # Project-wide intent sweep already ran (fail-closed) before create_run.
             transaction_paths = (
@@ -3475,6 +3643,7 @@ def start_team(
                     "routing": routing_payload,
                     "linked_ralph": None,
                     "topology": topology,
+                    "worker_topology": WORKER_TOPOLOGY_PANE,
                     "team_id": tid_plane,
                     "owner_token": token,
                     "executor": executor_norm,
@@ -3504,6 +3673,55 @@ def start_team(
                             "logical_worker_index", task.get("window_index", idx)
                         )
                         task.setdefault("attempt", 1)
+                        # Unified execution descriptor (#69 PR4) — pane topology.
+                        pane_id = task.get("pane_id")
+                        if isinstance(pane_id, str) and pane_id:
+                            try:
+                                handle = launch_worker(
+                                    root_path,
+                                    worker_id=str(task["task_id"]),
+                                    topology=WORKER_TOPOLOGY_PANE,
+                                    provider=str(task.get("provider") or "grok"),
+                                    role=str(task.get("role") or "executor"),
+                                    run_id=rid,
+                                    team_id=tid_plane,
+                                    task_id=str(task["task_id"]),
+                                    attempt=int(task.get("attempt") or 1),
+                                    launch_generation=1,
+                                    pane_id=pane_id,
+                                    dry_run=False,
+                                    executor=executor_norm,
+                                )
+                                stamp_execution_on_task(task, handle)
+                            except WorkerLaunchError as exc:
+                                raise TeamError(str(exc)) from exc
+                # Also stamp on task_records so _public_tasks stays consistent
+                # if meta["tasks"] was already snapshotted without execution.
+                for rec in task_records:
+                    if rec.get("execution"):
+                        continue
+                    pane_id = rec.get("pane_id")
+                    if isinstance(pane_id, str) and pane_id:
+                        try:
+                            handle = launch_worker(
+                                root_path,
+                                worker_id=str(rec["task_id"]),
+                                topology=WORKER_TOPOLOGY_PANE,
+                                provider=str(rec.get("provider") or "grok"),
+                                role=str(rec.get("role") or "executor"),
+                                run_id=rid,
+                                team_id=tid_plane,
+                                task_id=str(rec["task_id"]),
+                                attempt=int(rec.get("attempt") or 1),
+                                launch_generation=1,
+                                pane_id=pane_id,
+                                dry_run=False,
+                                executor=executor_norm,
+                            )
+                            stamp_execution_on_task(rec, handle)
+                        except WorkerLaunchError as exc:
+                            raise TeamError(str(exc)) from exc
+                meta["tasks"] = _public_tasks()
                 meta["tmux_topology"] = _build_launch_tmux_topology(
                     meta, launch_receipt=_receipt
                 )
@@ -4533,6 +4751,94 @@ def _stop_team_locked(
 
     actions: list[str] = []
     errors: list[str] = []
+
+    # Job-backed workers: cancel via Jobs plane (never signal PIDs directly).
+    worker_topo = str(meta.get("worker_topology") or "pane")
+    if worker_topo == "job":
+        from omg_cli.team.launch import (
+            STATUS_CANCELLED,
+            cancel_job_backed_worker,
+        )
+
+        job_actions: list[str] = []
+        cancelled_tids: set[str] = set()
+        soft_skip = {
+            "not_job_backed",
+            "missing_execution",
+            "no_job_id",
+        }
+        for raw in meta.get("tasks") or []:
+            if not isinstance(raw, Mapping):
+                continue
+            result = cancel_job_backed_worker(
+                root_path, raw, reason="team_stop"
+            )
+            tid = str(raw.get("task_id") or "")
+            if result.get("ok"):
+                job_actions.append(
+                    f"cancel job {result.get('job_id')} for {tid}"
+                )
+                if tid:
+                    cancelled_tids.add(tid)
+            elif result.get("reason") in soft_skip:
+                continue
+            else:
+                errors.append(
+                    f"job cancel {tid}: {result.get('reason')}"
+                )
+
+        # Fail closed: never claim stop_state=stopped / blanket cancelled when
+        # any Jobs cancel failed (Team must not say cancelled while Job runs).
+        hard_fail = bool(errors)
+
+        def _mark_job_stop(current: dict[str, Any]) -> dict[str, Any]:
+            updated = dict(current)
+            tasks = []
+            for task in updated.get("tasks") or []:
+                if not isinstance(task, Mapping):
+                    continue
+                row = dict(task)
+                tid_row = str(row.get("task_id") or "")
+                if tid_row in cancelled_tids:
+                    row["status"] = STATUS_CANCELLED
+                tasks.append(row)
+            updated["tasks"] = tasks
+            if not hard_fail:
+                updated["stop_state"] = "stopped"
+                updated["stopped_at"] = _utc_now()
+            return updated
+
+        try:
+            meta = mutate_team_meta(
+                root_path,
+                run_id,
+                _mark_job_stop,
+                expected_generation=_read_meta_generation(meta),
+            )
+        except TeamError as exc:
+            errors.append(f"job-backed stop meta update: {exc}")
+        actions.extend(job_actions)
+        return {
+            "run_id": run_id,
+            "session": session,
+            "dry_run": dry,
+            "force": bool(force),
+            "worker_topology": worker_topo,
+            "actions": actions,
+            "errors": errors,
+            "ok": not errors,
+            "cancelled_task_ids": sorted(cancelled_tids),
+            "note": (
+                "job-backed team stop: cancelled via Jobs plane; "
+                "worktrees preserved; verified untouched"
+                if not errors
+                else (
+                    "job-backed team stop incomplete: Jobs cancel failed; "
+                    "Team did not claim stop_state=stopped for failed cancels; "
+                    "verified untouched"
+                )
+            ),
+        }
 
     verified_targets: list[dict[str, Any]] = []
     receipt: dict[str, Any] | None = None
