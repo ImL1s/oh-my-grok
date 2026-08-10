@@ -1,4 +1,4 @@
-# Team workers — job topology + replacement attempts (#69 PR4/PR5)
+# Team workers — job topology + replacement + presentation (#69 PR4/PR5/PR6)
 
 Team launches workers through one execution abstraction:
 
@@ -24,12 +24,16 @@ omg team start --goal "…" --tasks-json '[…]' --worker-topology=job
 omg team run   --goal "…" --tasks-json '[…]' --worker-topology=job
 omg team launch --workers N --goal "…" --worker-topology=job
 
-# Leader-only replacement attempt (catalog v2):
+# Leader-only replacement attempt (catalog v2+):
 omg team api replace-worker --input '{
   "run_id":"RUN","team_id":"team","worker":"t1","mode":"lost",
   "expected_attempt":1,"expected_launch_generation":1,
   "idempotency_key":"repl-1"
 }'
+
+# Presentation State V1 (catalog v3; identical via MCP projection=presentation.v1):
+omg team status --run RUN --presentation --json
+omg team api read-presentation-state --input '{"run_id":"RUN","team_id":"team"}'
 ```
 
 `--worker-topology=job` requires a Jobs-admitted provider (`fake` or
@@ -59,7 +63,8 @@ a **new attempt** on the same logical worker/task slot:
 - Same topology / provider / role / worktree / logical slot; new physical
   execution identity via existing `launch_worker()` (pane|job).
 - Old execution archived under `prior_attempts` (handle/evidence only —
-  **never** claim tokens).
+  **never** claim tokens). Route descriptors are preserved on the prior
+  attempt and restamped on the live row.
 - Attempt and `launch_generation` advance by exactly one under the lifecycle
   lock + CAS.
 - Crash-safe WAL + idempotency adoption; resume recovers pending replacement
@@ -68,6 +73,15 @@ a **new attempt** on the same logical worker/task slot:
 
 Hermetic / fixture-proven for pane + fake-job. Antigravity uses the existing
 provider/Jobs path structurally but has **no live proof** in this PR.
+
+## Presentation State V1 (#69 PR6)
+
+`build_team_presentation_v1()` is a pure read-only, generation-fenced
+projection of team.json + ownership + bindings + startup + prior_attempts.
+See `docs/team-presentation-state-v1.md`. Default locked/`--full` status
+schemas are unchanged. Catalog **v3** adds leader-only
+`read-presentation-state`. MCP `team_status.read` accepts optional
+`projection=presentation.v1`.
 
 ## Status
 
@@ -102,6 +116,9 @@ Team never persists PID / PGID / subprocess objects for job-backed workers.
 Job launches stamp `team_id` onto the Jobs immutable `request` so resume bind
 can refuse foreign jobs in the same project root.
 
+New start/scale also stamp an additive `route` descriptor
+(`kind=external_executor`); legacy rows without it present as `unknown`.
+
 ## Fail-closed invariants
 
 1. Exactly one execution handle (pane XOR job). Corrupt dual-id prior records
@@ -123,13 +140,16 @@ can refuse foreign jobs in the same project root.
 7. Unknown job → `UNPROVEN` (never synthesize success).
 8. Topology cannot mutate in place (`pane` → `job` requires a new launch
    generation). Replacement never migrates pane↔job.
+9. Presentation projection never probes tmux/Jobs/network and never writes
+   state or `verified`.
 
 ## Non-goals (this slice)
 
 - No live Antigravity proof / `live_*` maturity claims
-- No Hyperplan / security compositions / presentation state
+- No Hyperplan / security compositions
 - No automatic replacement policy / retry scheduler / attempt budgets
 - No pane↔job migration during replacement
+- No TUI / native execution path
 - Does **not** close #69
 
 Refs #69.

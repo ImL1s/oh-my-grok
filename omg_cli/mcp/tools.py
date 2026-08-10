@@ -179,7 +179,17 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "team_status.read",
         "description": "Read a bounded native-team or tmux-team status projection.",
-        "inputSchema": _object_schema({"run_id": _RUN_ID, "team_id": _SAFE_ID}),
+        "inputSchema": _object_schema(
+            {
+                "run_id": _RUN_ID,
+                "team_id": _SAFE_ID,
+                "projection": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                },
+            }
+        ),
     },
     {
         "name": "mailbox.list",
@@ -426,6 +436,31 @@ def _team_status_read(args: dict[str, Any], root: Path, ctx: ToolContext) -> dic
         run_id = active.get("run_id")
     rid = _require_id(run_id, label="run_id")
     team_id = args.get("team_id")
+    projection = args.get("projection")
+    if projection is not None:
+        from omg_cli.team.presentation import MCP_PROJECTION_V1, PresentationError, build_team_presentation_v1
+
+        if projection != MCP_PROJECTION_V1:
+            raise ToolError(
+                "E_SCHEMA",
+                f"unsupported projection {projection!r}; "
+                f"supported: {MCP_PROJECTION_V1!r} or omit for default status",
+            )
+        try:
+            status = build_team_presentation_v1(
+                root,
+                rid,
+                team_id=_require_id(team_id, label="team_id") if team_id is not None else None,
+            )
+        except PresentationError as exc:
+            return {
+                "ok": True,
+                "found": False,
+                "team": None,
+                "reason": exc.message,
+                "code": exc.code,
+            }
+        return {"ok": True, "found": True, "team": redact_value(status), "projection": MCP_PROJECTION_V1}
     try:
         if team_id is not None:
             from omg_cli.team.plane import native_team_status

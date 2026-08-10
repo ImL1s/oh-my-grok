@@ -628,7 +628,7 @@ def _build_pane_record(
                 f"scale-up preparation materialization failed task={tid}"
             ) from exc
     artifact_paths.append(argv_path)
-    return {
+    record = {
         "task_id": tid,
         "window_index": window_index,
         "worktree": str(wt),
@@ -647,6 +647,16 @@ def _build_pane_record(
         "scaled_in_at": _utc_now(),
         "_artifact_paths": [str(path.relative_to(root)) for path in artifact_paths],
     }
+    from omg_cli.team.presentation import stamp_route_on_task
+
+    stamp_route_on_task(
+        record,
+        executor=executor_norm,
+        provider=provider,
+        role=role,
+        posture=posture,
+    )
+    return record
 
 
 def _reuse_prepared_pane_record(
@@ -853,7 +863,7 @@ def _reuse_prepared_pane_record(
     artifact_paths = [argv_path, task_prompt_path]
     if not multi_cli:
         artifact_paths.append(last_prompt_path)
-    return {
+    record = {
         "task_id": task_id,
         "window_index": window_index,
         "worktree": str(worktree),
@@ -872,6 +882,16 @@ def _reuse_prepared_pane_record(
         "scaled_in_at": _utc_now(),
         "_artifact_paths": [str(path.relative_to(root)) for path in artifact_paths],
     }
+    from omg_cli.team.presentation import stamp_route_on_task
+
+    stamp_route_on_task(
+        record,
+        executor=executor_norm,
+        provider=provider,
+        role=role,
+        posture=posture,
+    )
+    return record
 
 
 def _canonical_scale_task_specs(

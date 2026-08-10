@@ -1,0 +1,73 @@
+{
+  "kind": "omg.team.presentation_state",
+  "lifecycle": {
+    "dry_run": true,
+    "startup_status": null,
+    "worker_topology": "pane",
+    "workspace_mode": "worktree"
+  },
+  "members": [
+    {
+      "api_task_id": null,
+      "attempts": [
+        {
+          "attempt": 1,
+          "execution": {
+            "job_id": "<id>",
+            "launch_generation": 1,
+            "pane_id": "<id>",
+            "topology": "pane"
+          },
+          "launch_generation": 1,
+          "member_id": "t1",
+          "prior_evidence": null,
+          "start": "committed",
+          "startup": null,
+          "status": "dry_run",
+          "terminal_failure": null
+        }
+      ],
+      "capability_floor": "read-write",
+      "current_attempt": {
+        "attempt": 1,
+        "execution": {
+          "job_id": "<id>",
+          "launch_generation": 1,
+          "pane_id": "<id>",
+          "topology": "pane"
+        },
+        "launch_generation": 1,
+        "member_id": "t1",
+        "prior_evidence": null,
+        "start": "committed",
+        "startup": null,
+        "status": "dry_run",
+        "terminal_failure": null
+      },
+      "logical_worker_id": "t1",
+      "member_id": "t1",
+      "role": "executor",
+      "route": {
+        "executor": "grok",
+        "kind": "external_executor",
+        "posture": "read-write",
+        "provider": "grok",
+        "role": "executor",
+        "schema": 1
+      },
+      "task_id": "t1",
+      "worktree": {
+        "ownership_state": "planned",
+        "relative_path": "<relpath>"
+      }
+    }
+  ],
+  "run_id": "<id>",
+  "schema_version": 1,
+  "state_generation": 0,
+  "team_id": "team",
+  "team_name": "<id>",
+  "workspace": {
+    "mode": "worktree"
+  }
+}

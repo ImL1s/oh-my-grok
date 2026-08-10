@@ -9,7 +9,23 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Added
+- **#69 PR6 Team Presentation State V1:** pure read-only
+  `build_team_presentation_v1()` with generation-fenced snapshot; identical
+  payload via `omg team status --presentation [--json]`, catalog **v3**
+  leader-only `read-presentation-state`, and MCP `team_status.read`
+  `projection=presentation.v1`. Additive `route` stamp on start/scale;
+  replacement preserves/archives it. Default locked/`--full` status and
+  catalog v1/v2 goldens unchanged. Docs: `docs/team-presentation-state-v1.md`,
+  `docs/team-operation-catalog-v3.md`. Hermetic coverage in
+  `tests/test_team_presentation_state.py`. Does **not** close #69 (no
+  Hyperplan / security compositions / Antigravity live evidence / maturity
+  promotion / `live_*`).
+
 ### Fixed
+- **Parity OMC coverage_digest after #69 PR6 GAPS sync:** refresh OMC proof
+  `coverage_digest` only after gap.team.v3 text update for Presentation
+  State V1 (no policy/mapping/status changes). Refs #69 (does not close).
 - **#69 PR5 replace-worker P0 hardening:** fence/cancel before claim
   invalidate (cancel failure rolls back intent WAL; attempt/claim/generation
   + old execution unchanged); crash-after-launch adopts the Jobs record

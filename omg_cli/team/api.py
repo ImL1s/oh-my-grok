@@ -2245,6 +2245,25 @@ def _op_replace_worker(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     return _ok("replace-worker", result.to_dict())
 
 
+def _op_read_presentation_state(
+    root: Path, payload: dict[str, Any]
+) -> TeamApiEnvelope:
+    """Leader-only read-only presentation state projection (#69 PR6)."""
+    from omg_cli.team.presentation import PresentationError, build_team_presentation_v1
+
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    try:
+        state = build_team_presentation_v1(root, run_id, team_id=team_id)
+    except PresentationError as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            exc.message,
+            details={"error": exc.code, "code": exc.code},
+        ) from exc
+    return _ok("read-presentation-state", state)
+
+
 _HANDLERS: dict[str, Handler] = {
     "send-message": _op_send_message,
     "mailbox-list": _op_mailbox_list,
@@ -2272,6 +2291,7 @@ _HANDLERS: dict[str, Handler] = {
     "append-event": _op_append_event,
     "read-events": _op_read_events,
     "replace-worker": _op_replace_worker,
+    "read-presentation-state": _op_read_presentation_state,
 }
 
 
