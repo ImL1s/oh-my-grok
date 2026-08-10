@@ -299,7 +299,7 @@
       {
         "surface": "mcp",
         "path": "omg_cli/mcp/tools.py",
-        "sha256": "b2224366aa02d01b1dea8d0da706419098151df0fbf6a03f3d40534d97877122",
+        "sha256": "d89747c0c81be3e39b2ef894e704d4830040d5cb181a6cc469ed4f438ab363e8",
         "status": "valid"
       },
       {
@@ -379,5 +379,5 @@
     },
     "issues": []
   },
-  "session_surface_aggregate": "1c6139500c2d6c87c506deffb452ad7efe948fa39c8980ea4df855cb37dc3986"
+  "session_surface_aggregate": "a2b40f21063480e0a5e80c9ddb51484187ab40bc3baabea4a338064bf119f3b0"
 }

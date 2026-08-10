@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any, Mapping, MutableMapping, Sequence
+from typing import Any, Mapping, MutableMapping
 
 from omg_cli.state import load_active_run
 from omg_cli.team.launch import WorkerLaunchError, validate_execution_record
