@@ -9,6 +9,19 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Added
+- **#69 PR5 identity-fenced worker replacement attempts:** leader-only
+  `omg team api replace-worker` (catalog **v2**) fences the old pane/job
+  handle + claim, archives non-secret prior-attempt evidence, increments
+  `attempt` + `launch_generation` under lifecycle lock/CAS, and relaunches
+  via existing `launch_worker()` (pane|job on the #68 Jobs plane — no second
+  scheduler). Crash-safe replacement WAL + idempotency adoption; resume
+  recovers pending replacement before claim reconcile. Hermetic coverage in
+  `tests/test_team_replacement_attempts.py`. Docs: `docs/team.md`,
+  `docs/team-operation-catalog-v2.md` (v1 golden unchanged). Does **not**
+  close #69 (no Hyperplan / security compositions / Antigravity live
+  evidence / maturity promotion / `live_*`).
+
 ## [0.8.0] - 2026-08-10
 
 ### Fixed

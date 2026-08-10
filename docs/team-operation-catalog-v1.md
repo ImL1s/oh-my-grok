@@ -58,9 +58,10 @@ parity claims. Leader-resume **task-claim reconciliation** ships through
 `omg team resume` (`resume_for_identity` → `reconcile_task_claims`) and is
 **not** a catalog-v1 / MCP operation — a public `omg team api reconcile`
 requires a future catalog version. Job-backed workers (`--worker-topology=job`)
-landed in PR4 (see `docs/team.md`). Issue #69 remains open for replacement
-attempts, Hyperplan/compositions, API/MCP breadth, and full OMX surface
-parity.
+landed in PR4 (see `docs/team.md`). Identity-fenced `replace-worker` landed in
+PR5 (catalog v2 — see `docs/team-operation-catalog-v2.md`). Issue #69 remains
+open for Hyperplan/compositions, API/MCP breadth, live Antigravity evidence,
+and full OMX surface parity.
 
 ```bash
 omg team api catalog

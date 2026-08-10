@@ -838,8 +838,12 @@ def _seed_api_board(
     tasks: Sequence[Mapping[str, Any]],
     env: Mapping[str, str],
 ) -> None:
+    from omg_cli.team.plane import mutate_team_meta
+    from omg_cli.team.replacement import seed_worker_binding
+
     worker_names = [str(t["task_id"]) for t in tasks]
     # Register workers via first create-task workers= list, then one task each.
+    seeded: list[tuple[str, str]] = []  # (logical_worker_id, api_task_id)
     for index, task in enumerate(tasks):
         subject = str(task.get("subject") or task.get("description") or task["task_id"])
         payload: dict[str, Any] = {
@@ -856,6 +860,35 @@ def _seed_api_board(
             raise TeamError(
                 f"failed to seed team api task for {task['task_id']}: {envelope}"
             )
+        api_task = (envelope.get("data") or {}).get("task") or {}
+        api_task_id = str(api_task.get("id") or "")
+        logical = str(task["task_id"])
+        if api_task_id:
+            seeded.append((logical, api_task_id))
+            # Stamp binding onto the API task (attempt/generation fences).
+            from omg_cli.contracts.path_keys import exclusive_lock
+            from omg_cli.team import api as team_api
+
+            path = team_api._task_path(root, run_id, team_id, api_task_id)
+            with exclusive_lock(path.with_suffix(".lock")):
+                current = team_api._read_task(root, run_id, team_id, api_task_id)
+                if current is not None:
+                    team_api._write_task(
+                        root,
+                        run_id,
+                        team_id,
+                        {
+                            **current,
+                            "binding": {
+                                "schema": 1,
+                                "logical_worker_id": logical,
+                                "api_task_id": api_task_id,
+                                "attempt": 1,
+                                "launch_generation": 1,
+                            },
+                            "version": int(current["version"]) + 1,
+                        },
+                    )
         # Write inbox for this worker
         from omg_cli.team.api import _worker_dir  # noqa: PLC0415 — internal seed
 
@@ -884,6 +917,40 @@ def _seed_api_board(
             ),
             encoding="utf-8",
         )
+
+    if seeded:
+        by_id = {logical: api_id for logical, api_id in seeded}
+
+        def _mutator(meta: dict[str, Any]) -> dict[str, Any]:
+            rows = []
+            for raw in meta.get("tasks") or []:
+                if not isinstance(raw, Mapping):
+                    continue
+                row = dict(raw)
+                tid = str(row.get("task_id") or "")
+                if tid in by_id:
+                    gen = 1
+                    execution = row.get("execution")
+                    if isinstance(execution, Mapping) and execution.get(
+                        "launch_generation"
+                    ):
+                        try:
+                            gen = int(execution["launch_generation"])
+                        except (TypeError, ValueError):
+                            gen = 1
+                    seed_worker_binding(
+                        row,
+                        run_id=run_id,
+                        team_id=team_id,
+                        api_task_id=by_id[tid],
+                        attempt=int(row.get("attempt") or 1),
+                        launch_generation=max(gen, 1),
+                    )
+                rows.append(row)
+            meta["tasks"] = rows
+            return meta
+
+        mutate_team_meta(root, run_id, _mutator)
 
 
 def remove_team_ref(root: Path | str, team_name: str) -> None:
@@ -1246,6 +1313,20 @@ def resume_for_identity(
     run_id = resolve_team_ref(root_path, identity)
     with acquire_scale_lock(root_path, run_id):
         meta = load_team_meta(root_path, run_id)
+        team_id_early = str(meta.get("team_id") or "team")
+        # #69 PR5: recover pending replacement intents before claim reconcile /
+        # job bind so a crashed replace-worker cannot be skipped by generic
+        # resume paths.
+        from omg_cli.team.replacement import recover_pending_replacement
+
+        replacement_recover = recover_pending_replacement(
+            root_path,
+            run_id,
+            team_id=team_id_early,
+            env=env,
+            already_locked=True,
+        )
+        meta = load_team_meta(root_path, run_id)
         pending_operation = pending_identity_wal_operation(
             root_path,
             run_id,
@@ -1308,6 +1389,7 @@ def resume_for_identity(
             ),
             "relaunch_note": relaunch.get("note"),
             "claim_reconcile": claim_reconcile,
+            "replacement_recover": replacement_recover,
         }
     )
     if job_bind is not None:

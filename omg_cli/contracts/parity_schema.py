@@ -471,6 +471,7 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "operation_catalog.py",
                 "operator.py",
                 "provider_ready.py",
+                "replacement.py",
                 "startup.py",
                 "supervisor.py",
                 "topology.py",
@@ -484,8 +485,10 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             "tests/fixtures/providers/**",
             "tests/support/**",
             "tests/golden/team_operation_catalog_v1.json",
+            "tests/golden/team_operation_catalog_v2.json",
             "docs/team.md",
             "docs/team-operation-catalog-v1.md",
+            "docs/team-operation-catalog-v2.md",
         ]
         + _paths(
             "tests/",
@@ -520,6 +523,7 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "test_team_operator_101.py",
                 "test_team_real_tmux_ux.py",
                 "test_team_reconcile.py",
+                "test_team_replacement_attempts.py",
                 "test_team_scale_tmux.py",
                 "test_team_startup.py",
                 "test_team_topology_102.py",

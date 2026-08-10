@@ -1,4 +1,4 @@
-"""Versioned Team API operation catalog (schema v1).
+"""Versioned Team API operation catalog (schema v1 + v2).
 
 Single source of truth for operation names and metadata. Derived exports
 (``TEAM_API_OPERATIONS``, ``P0_OPERATIONS``, worker ACL sets) must not be
@@ -7,6 +7,9 @@ golden tests enforce ``implemented == _HANDLERS.keys()``.
 
 This module is pure data + serialization: no team state, tmux, filesystem
 mutation, or subprocess.
+
+v1 remains frozen (golden ``team_operation_catalog_v1.json``). Default
+dispatch / CLI catalog is **v2** (adds leader-only ``replace-worker``).
 """
 
 from __future__ import annotations
@@ -17,7 +20,10 @@ from typing import Any, Literal, Mapping
 DispatchState = Literal["implemented", "reserved", "planned"]
 
 CATALOG_KIND = "omg.team.operation_catalog"
-CATALOG_SCHEMA_VERSION = 1
+CATALOG_SCHEMA_VERSION_V1 = 1
+CATALOG_SCHEMA_VERSION_V2 = 2
+# Default / active catalog schema (CLI ``omg team api catalog``).
+CATALOG_SCHEMA_VERSION = 2
 
 _OP_FIELDS = (
     "name",
@@ -329,6 +335,21 @@ TEAM_OPERATION_CATALOG_V1: tuple[TeamOperation, ...] = (
 )
 
 
+# Catalog v2 = v1 + leader-only replace-worker (#69 PR5).
+TEAM_OPERATION_CATALOG_V2: tuple[TeamOperation, ...] = TEAM_OPERATION_CATALOG_V1 + (
+    _op(
+        "replace-worker",
+        domain="worker",
+        dispatch_state="implemented",
+        mutates_state=True,
+        worker_allowed=False,
+    ),
+)
+
+# Active catalog alias (default dispatch).
+TEAM_OPERATION_CATALOG = TEAM_OPERATION_CATALOG_V2
+
+
 def _validate_catalog(ops: tuple[TeamOperation, ...]) -> None:
     names = [op.name for op in ops]
     if len(names) != len(set(names)):
@@ -351,20 +372,21 @@ def _validate_catalog(ops: tuple[TeamOperation, ...]) -> None:
 
 
 _validate_catalog(TEAM_OPERATION_CATALOG_V1)
+_validate_catalog(TEAM_OPERATION_CATALOG_V2)
 
-# Derived exports — do not hand-edit; change TEAM_OPERATION_CATALOG_V1 instead.
+# Derived exports — do not hand-edit; change TEAM_OPERATION_CATALOG_V2 instead.
 TEAM_API_OPERATIONS: tuple[str, ...] = tuple(
-    op.name for op in TEAM_OPERATION_CATALOG_V1
+    op.name for op in TEAM_OPERATION_CATALOG_V2
 )
 P0_OPERATIONS: tuple[str, ...] = tuple(
-    op.name for op in TEAM_OPERATION_CATALOG_V1 if op.implemented
+    op.name for op in TEAM_OPERATION_CATALOG_V2 if op.implemented
 )
 WORKER_ALLOWED_OPS: frozenset[str] = frozenset(
-    op.name for op in TEAM_OPERATION_CATALOG_V1 if op.implemented and op.worker_allowed
+    op.name for op in TEAM_OPERATION_CATALOG_V2 if op.implemented and op.worker_allowed
 )
 WORKER_DENIED_OPS: frozenset[str] = frozenset(
     op.name
-    for op in TEAM_OPERATION_CATALOG_V1
+    for op in TEAM_OPERATION_CATALOG_V2
     if op.implemented and not op.worker_allowed
 )
 
@@ -372,12 +394,25 @@ WORKER_DENIED_OPS: frozenset[str] = frozenset(
 def serialize_operation_catalog(
     *,
     operations: tuple[TeamOperation, ...] | None = None,
+    schema_version: int | None = None,
 ) -> dict[str, Any]:
     """Machine-readable catalog document (kind + schema_version + operations)."""
-    ops = TEAM_OPERATION_CATALOG_V1 if operations is None else operations
+    if operations is None:
+        ops = TEAM_OPERATION_CATALOG_V2
+        version = (
+            CATALOG_SCHEMA_VERSION_V2 if schema_version is None else schema_version
+        )
+    else:
+        ops = operations
+        if schema_version is not None:
+            version = schema_version
+        elif ops is TEAM_OPERATION_CATALOG_V1:
+            version = CATALOG_SCHEMA_VERSION_V1
+        else:
+            version = CATALOG_SCHEMA_VERSION_V2
     return {
         "kind": CATALOG_KIND,
-        "schema_version": CATALOG_SCHEMA_VERSION,
+        "schema_version": version,
         "operations": [op.to_dict() for op in ops],
     }
 
@@ -385,13 +420,16 @@ def serialize_operation_catalog(
 def catalog_document_json(
     *,
     operations: tuple[TeamOperation, ...] | None = None,
+    schema_version: int | None = None,
 ) -> str:
     """Deterministic JSON text for CLI / golden freeze (sorted keys, 2-space)."""
     import json
 
     return (
         json.dumps(
-            serialize_operation_catalog(operations=operations),
+            serialize_operation_catalog(
+                operations=operations, schema_version=schema_version
+            ),
             indent=2,
             ensure_ascii=False,
             sort_keys=True,
@@ -400,8 +438,13 @@ def catalog_document_json(
     )
 
 
-def operation_by_name(name: str) -> TeamOperation | None:
-    for op in TEAM_OPERATION_CATALOG_V1:
+def operation_by_name(
+    name: str,
+    *,
+    operations: tuple[TeamOperation, ...] | None = None,
+) -> TeamOperation | None:
+    ops = TEAM_OPERATION_CATALOG_V2 if operations is None else operations
+    for op in ops:
         if op.name == name:
             return op
     return None
@@ -419,9 +462,13 @@ def catalog_from_mapping(doc: Mapping[str, Any]) -> dict[str, Any]:
 __all__ = [
     "CATALOG_KIND",
     "CATALOG_SCHEMA_VERSION",
+    "CATALOG_SCHEMA_VERSION_V1",
+    "CATALOG_SCHEMA_VERSION_V2",
     "P0_OPERATIONS",
     "TEAM_API_OPERATIONS",
+    "TEAM_OPERATION_CATALOG",
     "TEAM_OPERATION_CATALOG_V1",
+    "TEAM_OPERATION_CATALOG_V2",
     "TeamOperation",
     "WORKER_ALLOWED_OPS",
     "WORKER_DENIED_OPS",

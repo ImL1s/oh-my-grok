@@ -519,13 +519,15 @@ def apply_job_completion(
     worker_id: str | None,
     team_id: str | None = None,
     foreign_team_id: str | None = None,
+    expected_launch_generation: int | None = None,
 ) -> CompletionDecision:
     """Promote a Jobs terminal state onto a Team task — fail closed.
 
     Rejects missing claim tokens, claim-token mismatches, stale attempts,
-    foreign workers/teams, and unknown/non-terminal job states (never
-    synthesize success). Both ``claim_token`` and ``expected_claim_token``
-    must be non-empty and equal — ``None``/``None`` is not a soft success.
+    stale launch generations, foreign workers/teams, and unknown/non-terminal
+    job states (never synthesize success). Both ``claim_token`` and
+    ``expected_claim_token`` must be non-empty and equal — ``None``/``None``
+    is not a soft success.
     """
     if foreign_team_id is not None and team_id is not None:
         if foreign_team_id != team_id:
@@ -558,6 +560,18 @@ def apply_job_completion(
         return CompletionDecision(False, "claim_token_mismatch")
     if int(job_attempt) != int(expected_attempt):
         return CompletionDecision(False, "stale_attempt")
+    if expected_launch_generation is not None:
+        if int(rec.get("launch_generation") or 0) != int(expected_launch_generation):
+            return CompletionDecision(False, "stale_launch_generation")
+    # Binding attempt (post-replacement) must match when present.
+    binding = task.get("binding")
+    if isinstance(binding, Mapping) and binding.get("attempt") is not None:
+        try:
+            bound_attempt = int(binding["attempt"])
+        except (TypeError, ValueError):
+            return CompletionDecision(False, "invalid_binding_attempt")
+        if bound_attempt != int(expected_attempt):
+            return CompletionDecision(False, "stale_attempt")
 
     state = (job_state or "").strip().lower()
     if state == JobState.SUCCEEDED.value:
