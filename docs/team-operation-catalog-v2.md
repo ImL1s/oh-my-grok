@@ -38,7 +38,8 @@ v2 adds one leader-only mutation (`replace-worker`) on top of the v1 OMX-shaped
 names surface. Hermetic / fixture-proven for pane + fake-job topologies.
 Antigravity uses the existing provider/Jobs path structurally but has **no
 live proof** in this slice. Does **not** claim full OMX parity, Hyperplan /
-security compositions, presentation state, or issue completion.
+security compositions, or issue completion. Presentation State V1 is catalog
+**v3** (`docs/team-operation-catalog-v3.md`).
 
 ```bash
 omg team api catalog

@@ -197,6 +197,10 @@ def archive_prior_attempt(
         "role": task.get("role"),
         "status": task.get("status"),
     }
+    # Preserve stamped route (additive #69 PR6); never invent from argv.
+    route = task.get("route")
+    if isinstance(route, Mapping):
+        prior["route"] = dict(route)
     history = list(task.get("prior_attempts") or [])
     if not isinstance(history, list):
         raise ReplacementError(
@@ -1326,6 +1330,18 @@ def _commit_team_task_replacement(
             if api_task_id:
                 binding["api_task_id"] = api_task_id
             row["binding"] = binding
+            from omg_cli.team.presentation import stamp_route_on_task
+
+            stamp_route_on_task(
+                row,
+                provider=str(row.get("provider") or handle.provider),
+                role=str(row.get("role") or "executor"),
+                posture=(
+                    str(row["posture"])
+                    if isinstance(row.get("posture"), str)
+                    else None
+                ),
+            )
             if not dry_run:
                 row["status"] = "worker_launched"
             if handle.pane_id:

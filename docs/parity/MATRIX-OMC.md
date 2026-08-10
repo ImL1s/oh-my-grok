@@ -7,7 +7,7 @@
 
 | Capability | Category | Classification | Maturity | Marker | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `team.plane_v3` | team | omg_native | grok=catalogued | catalogued | PR4 job-backed workers + PR5 identity-fenced replace-worker landed (hermetic pane/fake-job). Hyperplan/security/presentation, live Antigravity proof, and full OMX operation surface remain open (#69). No maturity promotion; external-runtime evidence empty. |
+| `team.plane_v3` | team | omg_native | grok=catalogued | catalogued | PR4 job-backed workers + PR5 identity-fenced replace-worker + PR6 Presentation State V1 landed (hermetic pane/fake-job; CLI/API/MCP). Hyperplan/security compositions, live Antigravity proof, and full OMX operation surface remain open (#69). No maturity promotion; external-runtime evidence empty. |
 | `parity.inventory.governance` | parity_governance | omg_native | grok=catalogued | catalogued | #78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; #78-E README↔JSON managed-snapshot drift gate landed; #78-F/#78-G/#78-H/#78-I real pinned OMC+OMX+OmO+Antigravity discovery policy/mapping/proof landed; promotion remains unperformed and is proof-gated; Antigravity pin is documentation/catalog seed only (stronger upstream still needed for implementation-level completeness). |
 | `omc.cli.session_surfaces` | runtime_orchestration | omg_native | grok=catalogued | catalogued | OMG substitutes via guidance + host_session; OMC in-session MCP/tool surfaces are not 1:1. |
 | `omc.agents.catalog_routing` | agents_routing | omg_native | grok=catalogued | catalogued | Grok plugin agents exist; OMC-style dynamic tier routing is not fully mirrored. |

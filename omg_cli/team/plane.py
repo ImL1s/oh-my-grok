@@ -3194,6 +3194,15 @@ def start_team(
                         owner_token=token,
                     ),
                 }
+                from omg_cli.team.presentation import stamp_route_on_task
+
+                stamp_route_on_task(
+                    rec,
+                    executor=executor_norm,
+                    provider=provider,
+                    role=role,
+                    posture=posture,
+                )
                 task_records.append(rec)
 
             routing_payload = resolved.to_dict() if resolved is not None else None

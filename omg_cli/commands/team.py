@@ -819,6 +819,37 @@ def cmd_team(args: argparse.Namespace) -> int:
             identity = getattr(args, "team_identity", None) or getattr(
                 args, "run_id", None
             )
+            if getattr(args, "presentation_status", False):
+                from omg_cli.team.presentation import (
+                    PresentationError,
+                    build_team_presentation_v1,
+                )
+                from omg_cli.team.runtime import resolve_team_ref
+
+                try:
+                    rid = resolve_team_ref(root, identity)
+                    presentation = build_team_presentation_v1(root, rid)
+                except PresentationError as exc:
+                    print(
+                        f"team status --presentation failed: {exc.code}: {exc}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                except (OSError, RuntimeError, ValueError) as exc:
+                    print(
+                        f"team status --presentation failed: {exc}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                if getattr(args, "as_json", False):
+                    emit_data(args, "team.presentation", presentation)
+                else:
+                    print(
+                        json.dumps(
+                            presentation, indent=2, ensure_ascii=False, sort_keys=True
+                        )
+                    )
+                return 0
             st = status_for_identity(root, identity)
             if getattr(args, "as_json", False):
                 # Default --json stays LOCKED for machine consumers.
@@ -1936,6 +1967,16 @@ def register_team_parsers(
             "of the locked set"
         ),
     )
+    p_t_status.add_argument(
+        "--presentation",
+        dest="presentation_status",
+        action="store_true",
+        help=(
+            "emit Team Presentation State V1 (read-only; identical to "
+            "catalog read-presentation-state / MCP projection=presentation.v1); "
+            "does not change default --json / --full schemas"
+        ),
+    )
     p_t_status.set_defaults(func=cmd_team, team_action="status")
 
     p_t_collect = team_sub.add_parser(
@@ -2228,7 +2269,7 @@ def register_team_parsers(
         metavar="OP",
         help=(
             "operation name, or 'catalog' for the versioned operation catalog "
-            "(see omg_cli.team.operation_catalog / docs/team-operation-catalog-v2.md)"
+            "(see omg_cli.team.operation_catalog / docs/team-operation-catalog-v3.md)"
         ),
     )
     p_t_api.add_argument(
