@@ -9,6 +9,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Fixed
+- **Parity OMC coverage_digest after #69 PR5 GAPS sync:** refresh OMC proof
+  `coverage_digest` only after gap.team.v3 text update (no policy/mapping/
+  status changes). Refs #69 (does not close).
+
 ### Added
 - **#69 PR5 identity-fenced worker replacement attempts:** leader-only
   `omg team api replace-worker` (catalog **v2**) fences the old pane/job
