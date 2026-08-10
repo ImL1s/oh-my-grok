@@ -445,8 +445,11 @@ def fence_pane_for_replacement(
             session=session,
             session_id=str(authority.get("session_id") or ""),
         )
-    except Exception:  # noqa: BLE001 — probe must not crash fence
-        live = None
+    except Exception as exc:  # noqa: BLE001 — probe failure is not proven absence
+        raise ReplacementError(
+            f"pane probe failed (not proven_absent): {exc}",
+            code="E_TEAM_REPLACE_CANCEL",
+        ) from exc
 
     if live is None:
         return {"ok": True, "reason": "proven_absent", "pane_id": pane_id}
@@ -915,6 +918,84 @@ def _adopt_or_resume_wal(
     )
 
 
+def _replacement_job_stamps(
+    *,
+    idempotency_key: str,
+    worker_id: str,
+    attempt: int,
+    launch_generation: int,
+) -> dict[str, Any]:
+    return {
+        "team_replacement_key": str(idempotency_key),
+        "team_worker_id": str(worker_id),
+        "team_task_id": str(worker_id),
+        "team_attempt": int(attempt),
+        "team_launch_generation": int(launch_generation),
+    }
+
+
+def _find_orphaned_replacement_job(
+    root: Path,
+    *,
+    team_id: str,
+    worker_id: str,
+    attempt: int,
+    launch_generation: int,
+    idempotency_key: str,
+    run_id: str | None,
+    provider: str,
+) -> WorkerExecutionHandle | None:
+    """Adopt a Jobs record created for this replacement before WAL launched stamp.
+
+    Crash window: ``fenced`` → ``launch_worker`` succeeded → process died before
+    WAL ``launched``. Identity is the replacement idempotency key stamped on the
+    Jobs request (plus team/worker/attempt/generation CAS fields).
+    """
+    from omg_cli.jobs.store import list_job_ids, read_job_record
+
+    matches: list[Any] = []
+    for jid in list_job_ids(root):
+        try:
+            record = read_job_record(root, jid)
+        except Exception:  # noqa: BLE001 — skip unreadable
+            continue
+        req = record.request if isinstance(record.request, Mapping) else {}
+        if str(req.get("team_replacement_key") or "") != str(idempotency_key):
+            continue
+        if str(req.get("team_id") or "") != str(team_id):
+            continue
+        if str(req.get("team_worker_id") or "") != str(worker_id):
+            continue
+        if int(req.get("team_attempt") or -1) != int(attempt):
+            continue
+        if int(req.get("team_launch_generation") or -1) != int(launch_generation):
+            continue
+        if run_id is not None and record.run_id and str(record.run_id) != str(run_id):
+            continue
+        matches.append(record)
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise ReplacementError(
+            "ambiguous orphaned replacement jobs for idempotency key",
+            code="E_TEAM_REPLACE_IDEMPOTENCY",
+        )
+    record = matches[0]
+    return WorkerExecutionHandle(
+        topology=WORKER_TOPOLOGY_JOB,
+        worker_id=worker_id,
+        provider=provider,
+        launch_generation=int(launch_generation),
+        job_id=str(record.job_id),
+        pane_id=None,
+        attempt=int(attempt),
+        run_id=run_id,
+        team_id=team_id,
+        task_id=worker_id,
+        dry_run=False,
+    )
+
+
 def _execute_replacement_from_wal(
     root: Path,
     *,
@@ -936,13 +1017,29 @@ def _execute_replacement_from_wal(
     topology = str(wal["topology"])
     provider = str(wal.get("provider") or "grok")
     role = str(wal.get("role") or "executor")
+    idempotency_key = str(wal["idempotency_key"])
 
     task = _find_task(meta, worker_id)
     state = str(wal.get("state") or "intent")
+    # Track how far we got so cancel-before-fence can roll back without
+    # advancing attempt/claim/generation (P0).
+    progress = state
 
     try:
         if state == "intent":
-            # Fence old claim before any new results can land.
+            # Fence old execution FIRST. Cancel failure must not invalidate
+            # claim or advance attempt/generation.
+            if topology == WORKER_TOPOLOGY_JOB:
+                fence = _fence_job_handle(root, task, mode=mode, team_id=team_id)
+            else:
+                fence_fn = pane_fence or fence_pane_for_replacement
+                fence = fence_fn(root, task, meta=meta, mode=mode)
+            if not fence.get("ok"):
+                raise ReplacementError(
+                    f"fence failed: {fence.get('reason')}",
+                    code="E_TEAM_REPLACE_CANCEL",
+                )
+            # Only after proven fence: invalidate claim + archive prior.
             _invalidate_api_claim(
                 root,
                 run_id=run_id,
@@ -955,17 +1052,6 @@ def _execute_replacement_from_wal(
                 new_generation=new_generation,
                 env=env,
             )
-            # Fence old execution handle.
-            if topology == WORKER_TOPOLOGY_JOB:
-                fence = _fence_job_handle(root, task, mode=mode, team_id=team_id)
-            else:
-                fence_fn = pane_fence or fence_pane_for_replacement
-                fence = fence_fn(root, task, meta=meta, mode=mode)
-            if not fence.get("ok"):
-                raise ReplacementError(
-                    f"fence failed: {fence.get('reason')}",
-                    code="E_TEAM_REPLACE_CANCEL",
-                )
             prior = archive_prior_attempt(task, reason=f"replace_{mode}")
             wal["prior_attempt"] = prior
             wal["fence"] = {
@@ -976,6 +1062,7 @@ def _execute_replacement_from_wal(
             wal["state"] = "fenced"
             _write_wal(wal_path, wal)
             state = "fenced"
+            progress = "fenced"
 
         if state == "fenced":
             if dry_run:
@@ -1020,7 +1107,7 @@ def _execute_replacement_from_wal(
                     attempt=new_attempt,
                     launch_generation=new_generation,
                     mode=mode,
-                    idempotency_key=str(wal["idempotency_key"]),
+                    idempotency_key=idempotency_key,
                     adopted=adopted,
                     dry_run=True,
                     prior_attempt=wal.get("prior_attempt")
@@ -1029,24 +1116,53 @@ def _execute_replacement_from_wal(
                     execution=handle.to_execution_record(),
                 )
 
-            handle = launch_worker(
-                root,
-                worker_id=worker_id,
-                topology=topology,
-                provider=provider,
-                role=role,
-                run_id=run_id,
-                team_id=team_id,
-                task_id=worker_id,
-                attempt=new_attempt,
-                launch_generation=new_generation,
-                pane_launcher=pane_launcher if topology == WORKER_TOPOLOGY_PANE else None,
-                dry_run=False,
-                prompt_text=(
-                    f"Team replacement worker={worker_id} attempt={new_attempt} "
-                    f"run={run_id} team={team_id}"
-                ),
-            )
+            # Crash-after-launch adopt: if a Jobs record already exists for this
+            # idempotency key, commit THAT handle — never launch a second job.
+            handle: WorkerExecutionHandle | None = None
+            if topology == WORKER_TOPOLOGY_JOB:
+                handle = _find_orphaned_replacement_job(
+                    root,
+                    team_id=team_id,
+                    worker_id=worker_id,
+                    attempt=new_attempt,
+                    launch_generation=new_generation,
+                    idempotency_key=idempotency_key,
+                    run_id=run_id,
+                    provider=provider,
+                )
+                if handle is not None:
+                    adopted = True
+            if handle is None:
+                handle = launch_worker(
+                    root,
+                    worker_id=worker_id,
+                    topology=topology,
+                    provider=provider,
+                    role=role,
+                    run_id=run_id,
+                    team_id=team_id,
+                    task_id=worker_id,
+                    attempt=new_attempt,
+                    launch_generation=new_generation,
+                    pane_launcher=(
+                        pane_launcher if topology == WORKER_TOPOLOGY_PANE else None
+                    ),
+                    dry_run=False,
+                    prompt_text=(
+                        f"Team replacement worker={worker_id} attempt={new_attempt} "
+                        f"run={run_id} team={team_id}"
+                    ),
+                    job_request_stamps=(
+                        _replacement_job_stamps(
+                            idempotency_key=idempotency_key,
+                            worker_id=worker_id,
+                            attempt=new_attempt,
+                            launch_generation=new_generation,
+                        )
+                        if topology == WORKER_TOPOLOGY_JOB
+                        else None
+                    ),
+                )
             # Readback already enforced inside launch_worker for jobs; panes
             # require a non-empty pane_id from launcher.
             if topology == WORKER_TOPOLOGY_PANE and not handle.pane_id:
@@ -1063,6 +1179,7 @@ def _execute_replacement_from_wal(
             wal["state"] = "launched"
             _write_wal(wal_path, wal)
             state = "launched"
+            progress = "launched"
 
         if state == "launched":
             new_exec = wal.get("new_execution")
@@ -1107,7 +1224,7 @@ def _execute_replacement_from_wal(
                 attempt=new_attempt,
                 launch_generation=new_generation,
                 mode=mode,
-                idempotency_key=str(wal["idempotency_key"]),
+                idempotency_key=idempotency_key,
                 adopted=adopted,
                 dry_run=False,
                 prior_attempt=wal.get("prior_attempt")
@@ -1123,7 +1240,20 @@ def _execute_replacement_from_wal(
     except (ReplacementError, WorkerLaunchError) as exc:
         code = getattr(exc, "code", None) or "E_TEAM_REPLACE"
         message = getattr(exc, "message", None) or str(exc)
-        # Launch / fence failure: leave old attempt fenced; never restore token.
+        # Cancel/fence failure before fenced: roll back intent WAL and leave
+        # attempt/claim/generation + old execution untouched.
+        if (
+            isinstance(exc, ReplacementError)
+            and code == "E_TEAM_REPLACE_CANCEL"
+            and progress == "intent"
+        ):
+            try:
+                if wal_path.is_file():
+                    wal_path.unlink()
+            except OSError:
+                pass
+            raise
+        # Launch / post-fence failure: leave old attempt fenced; never restore token.
         wal["state"] = "failed"
         wal["error"] = message
         wal["code"] = code

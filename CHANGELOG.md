@@ -10,6 +10,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Fixed
+- **#69 PR5 replace-worker P0 hardening:** fence/cancel before claim
+  invalidate (cancel failure rolls back intent WAL; attempt/claim/generation
+  + old execution unchanged); crash-after-launch adopts the Jobs record
+  stamped with the replacement idempotency key (no dual-launch); pane probe
+  exceptions fail closed (not `proven_absent`). Hermetic coverage in
+  `tests/test_team_replacement_attempts.py`. Refs #69 (does not close).
 - **Parity OMC coverage_digest after #69 PR5 GAPS sync:** refresh OMC proof
   `coverage_digest` only after gap.team.v3 text update (no policy/mapping/
   status changes). Refs #69 (does not close).

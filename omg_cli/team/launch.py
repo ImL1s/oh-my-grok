@@ -265,6 +265,7 @@ def launch_worker(
     dry_run: bool = False,
     executor: str | None = None,
     sleep_s: float | None = None,
+    job_request_stamps: Mapping[str, Any] | None = None,
 ) -> WorkerExecutionHandle:
     """Launch one worker as a pane or durable job; return an execution handle.
 
@@ -360,6 +361,22 @@ def launch_worker(
             + (f" task={task_id}" if task_id else "")
             + (f" run={run_id}" if run_id else "")
         )
+    stamps: dict[str, Any] = {}
+    if job_request_stamps:
+        for key, val in job_request_stamps.items():
+            if not isinstance(key, str) or not key.startswith("team_"):
+                continue
+            if isinstance(val, bool) or not isinstance(val, (str, int)):
+                continue
+            if isinstance(val, str) and not val.strip():
+                continue
+            stamps[key] = val.strip() if isinstance(val, str) else int(val)
+    # Always stamp attempt/generation/worker for replacement orphan adoption.
+    stamps.setdefault("team_worker_id", wid)
+    stamps.setdefault("team_task_id", str(task_id or wid))
+    stamps.setdefault("team_attempt", int(attempt))
+    stamps.setdefault("team_launch_generation", int(launch_generation))
+
     try:
         started = start_job(
             root_path,
@@ -371,6 +388,7 @@ def launch_worker(
             sleep_s=sleep_s,
             launch=True,
             team_id=team_id,
+            request_overrides=stamps or None,
         )
     except JobStoreError as exc:
         raise WorkerLaunchError(

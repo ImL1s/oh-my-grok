@@ -268,6 +268,20 @@ def start_job(
         tid_own = str(team_id).strip()
         if tid_own:
             request_snapshot = {**request_snapshot, "team_id": tid_own}
+    # Additive Team stamps (replacement idempotency / worker binding). Only
+    # string/int scalars; never secrets. Used by #69 PR5 crash-after-launch adopt.
+    if request_overrides and provider != "grok-acp-session":
+        stamps: dict[str, Any] = {}
+        for key, val in request_overrides.items():
+            if not isinstance(key, str) or not key.startswith("team_"):
+                continue
+            if isinstance(val, bool) or not isinstance(val, (str, int)):
+                continue
+            if isinstance(val, str) and not val.strip():
+                continue
+            stamps[key] = val.strip() if isinstance(val, str) else int(val)
+        if stamps:
+            request_snapshot = {**request_snapshot, **stamps}
 
     if prompt_text is not None and prompt_file is not None:
         raise JobStoreError(

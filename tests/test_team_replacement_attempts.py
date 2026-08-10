@@ -199,6 +199,72 @@ def test_cancel_failure_zero_launches(
     old_job = meta["tasks"][0]["execution"]["job_id"]
     before = {p.name for p in (tmp_path / ".omg" / "jobs").iterdir()}
 
+    # Seed binding + live claim so cancel failure must leave them untouched.
+    env = {EXPERIMENTAL_ENV: "1"}
+    code, created = team_api.execute_team_api(
+        "create-task",
+        {
+            "run_id": run_id,
+            "team_id": team_id,
+            "subject": "t1",
+            "description": "t1",
+            "workers": ["t1"],
+        },
+        root=tmp_path,
+        env=env,
+    )
+    assert code == 0
+    api_id = created["data"]["task"]["id"]
+    from omg_cli.contracts.path_keys import exclusive_lock
+    from omg_cli.team.plane import mutate_team_meta
+
+    path = team_api._task_path(tmp_path, run_id, team_id, api_id)
+    with exclusive_lock(path.with_suffix(".lock")):
+        task = team_api._read_task(tmp_path, run_id, team_id, api_id)
+        assert task is not None
+        team_api._write_task(
+            tmp_path,
+            run_id,
+            team_id,
+            {
+                **task,
+                "binding": {
+                    "schema": 1,
+                    "logical_worker_id": "t1",
+                    "api_task_id": api_id,
+                    "attempt": 1,
+                    "launch_generation": 1,
+                },
+                "version": task["version"] + 1,
+            },
+        )
+
+    def _bind(current: dict[str, Any]) -> dict[str, Any]:
+        row = dict(current["tasks"][0])
+        seed_worker_binding(
+            row,
+            run_id=run_id,
+            team_id=team_id,
+            api_task_id=api_id,
+            attempt=1,
+            launch_generation=1,
+        )
+        current["tasks"] = [row]
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _bind)
+    code, claimed = team_api.execute_team_api(
+        "claim-task",
+        {"run_id": run_id, "team_id": team_id, "task_id": api_id, "worker": "t1"},
+        root=tmp_path,
+        env=env,
+    )
+    assert code == 0
+    old_token = claimed["data"]["claimToken"]
+    claim_before = team_api._read_task(tmp_path, run_id, team_id, api_id)
+    assert claim_before is not None
+    assert claim_before.get("claim") is not None
+
     def _boom(_root: Any, _task: Any, *, reason: str = "") -> dict[str, Any]:
         return {"ok": False, "reason": "simulated_cancel_failure"}
 
@@ -220,8 +286,121 @@ def test_cancel_failure_zero_launches(
     after = {p.name for p in (tmp_path / ".omg" / "jobs").iterdir()}
     assert after == before
     reloaded = load_team_meta(tmp_path, run_id)
-    assert reloaded["tasks"][0]["execution"]["job_id"] == old_job
+    task_row = reloaded["tasks"][0]
+    assert task_row["execution"]["job_id"] == old_job
+    assert int(task_row.get("attempt") or 1) == 1
+    assert int(task_row["execution"]["launch_generation"]) == 1
+    binding = task_row.get("binding") or {}
+    assert int(binding.get("attempt") or 1) == 1
+    assert int(binding.get("launch_generation") or 1) == 1
+    # Old claim must remain active (cancel failed before invalidate).
+    claim_after = team_api._read_task(tmp_path, run_id, team_id, api_id)
+    assert claim_after is not None
+    assert claim_after.get("claim") is not None
+    assert claim_after["claim"]["token"] == old_token
+    assert int((claim_after.get("binding") or {}).get("attempt") or 1) == 1
+    assert int((claim_after.get("binding") or {}).get("launch_generation") or 1) == 1
+    # Intent WAL rolled back so retry is clean.
+    assert not replacement_wal_path(tmp_path, run_id, "repl-cancel-fail").exists()
     wait_job(tmp_path, old_job, timeout_s=30.0)
+
+
+def test_crash_after_launch_adopts_orphaned_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """fenced → launch_worker ok → crash before WAL launched: resume adopts same job."""
+    _env_on(monkeypatch)
+    _init_repo(tmp_path)
+    meta = _start_job_team(tmp_path)
+    run_id = str(meta["run_id"])
+    team_id = str(meta["team_id"])
+    old_job = meta["tasks"][0]["execution"]["job_id"]
+    wait_job(tmp_path, old_job, timeout_s=30.0)
+
+    from omg_cli.jobs.store import list_job_ids
+    from omg_cli.team.launch import launch_worker
+    from omg_cli.team.replacement import (
+        WAL_CONTRACT,
+        WAL_KIND,
+        _replacement_job_stamps,
+        _write_wal,
+        archive_prior_attempt,
+    )
+
+    # Simulate crash window: fence done, WAL still `fenced`, replacement job
+    # already created but never stamped launched / Team-committed.
+    task = dict(meta["tasks"][0])
+    prior = archive_prior_attempt(task, reason="replace_lost")
+    wal_path = replacement_wal_path(tmp_path, run_id, "repl-crash-launch")
+    _write_wal(
+        wal_path,
+        {
+            "store_kind": WAL_KIND,
+            "writer_contract": WAL_CONTRACT,
+            "state": "fenced",
+            "idempotency_key": "repl-crash-launch",
+            "run_id": run_id,
+            "team_id": team_id,
+            "worker_id": "t1",
+            "mode": "lost",
+            "expected_attempt": 1,
+            "expected_launch_generation": 1,
+            "new_attempt": 2,
+            "new_launch_generation": 2,
+            "topology": "job",
+            "provider": "fake",
+            "role": "executor",
+            "api_task_id": None,
+            "old_execution": meta["tasks"][0]["execution"],
+            "prior_attempt": prior,
+            "new_execution": None,
+            "dry_run": False,
+            "fence": {"ok": True, "reason": "already_succeeded", "job_id": old_job},
+        },
+    )
+    orphan = launch_worker(
+        tmp_path,
+        worker_id="t1",
+        topology="job",
+        provider="fake",
+        role="executor",
+        run_id=run_id,
+        team_id=team_id,
+        task_id="t1",
+        attempt=2,
+        launch_generation=2,
+        dry_run=False,
+        prompt_text="orphaned replacement",
+        job_request_stamps=_replacement_job_stamps(
+            idempotency_key="repl-crash-launch",
+            worker_id="t1",
+            attempt=2,
+            launch_generation=2,
+        ),
+    )
+    assert orphan.job_id
+    jobs_after_orphan = set(list_job_ids(tmp_path))
+    assert orphan.job_id in jobs_after_orphan
+
+    result = replace_worker(
+        tmp_path,
+        run_id=run_id,
+        team_id=team_id,
+        worker_id="t1",
+        mode="lost",
+        expected_attempt=1,
+        expected_launch_generation=1,
+        idempotency_key="repl-crash-launch",
+    )
+    assert result.ok is True
+    assert result.adopted is True
+    assert (result.execution or {}).get("job_id") == orphan.job_id
+    # No second Jobs record created on resume/adopt.
+    assert set(list_job_ids(tmp_path)) == jobs_after_orphan
+    reloaded = load_team_meta(tmp_path, run_id)
+    assert reloaded["tasks"][0]["execution"]["job_id"] == orphan.job_id
+    assert reloaded["tasks"][0]["attempt"] == 2
+    wait_job(tmp_path, orphan.job_id, timeout_s=30.0)
 
 
 def test_late_old_completion_and_renew_rejected(
