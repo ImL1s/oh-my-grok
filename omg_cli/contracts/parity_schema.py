@@ -298,7 +298,17 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             "docs/parity/generated/host-capability-matrix.md",
             "scripts/generate_host_baseline_docs.py",
         ]
-        + ["docs/parity/upstream-snapshots/**", "docs/parity/reviews/**"]
+        + [
+            "docs/parity/upstream-snapshots/**",
+            "docs/parity/reviews/**",
+            "docs/parity/completeness/**",
+        ]
+        + [
+            "omg_cli/parity_discovery.py",
+            "omg_cli/parity_discovery_antigravity.py",
+            "omg_cli/parity_discovery_omo.py",
+            "omg_cli/parity_discovery_omx.py",
+        ]
         + _paths(
             "scripts/",
             (
@@ -329,6 +339,10 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "test_parity_completeness.py",
                 "test_parity_release_gate_acceptance.py",
                 "test_parity_historical_banner.py",
+                "test_parity_real_source_antigravity.py",
+                "test_parity_real_source_omc.py",
+                "test_parity_real_source_omo.py",
+                "test_parity_real_source_omx.py",
                 "test_traceability.py",
                 "test_path_keys.py",
                 "test_state_schemas.py",
@@ -394,8 +408,12 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "capability_discovery.py",
                 "redaction.py",
                 "deny.py",
+                "host_acp.py",
+                "host_models.py",
+                "host_probe.py",
             ),
         )
+        + ["docs/host-compat.md", "tests/fixtures/host/**", "tests/fixtures/fake_grok_acp_agent.py"]
         + _paths(
             "hooks/bin/",
             ("_common.py", "pre_tool_use_deny.py", "session_start.py", "stop.py", "subagent_stop.py"),
@@ -420,6 +438,11 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "test_capability_discovery.py",
                 "test_redaction.py",
                 "test_deny.py",
+                "test_host_acp.py",
+                "test_host_baseline_gate.py",
+                "test_host_pin_transition.py",
+                "test_host_probe.py",
+                "test_host_snapshot_schema.py",
             ),
         )
     ),
@@ -443,10 +466,27 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "decomposition.py",
                 "runtime.py",
                 "tmux.py",
+                "bootstrap.py",
+                "launch.py",
+                "operation_catalog.py",
+                "operator.py",
+                "provider_ready.py",
+                "startup.py",
+                "supervisor.py",
+                "topology.py",
+                "view.py",
             ),
         )
         + _paths("omg_cli/", ("workers.py", "integrate.py", "fanout.py"))
-        + ["scripts/live_team_smoke.py", "tests/fixtures/team_worker_fixture.py"]
+        + [
+            "scripts/live_team_smoke.py",
+            "tests/fixtures/team_worker_fixture.py",
+            "tests/fixtures/providers/**",
+            "tests/support/**",
+            "tests/golden/team_operation_catalog_v1.json",
+            "docs/team.md",
+            "docs/team-operation-catalog-v1.md",
+        ]
         + _paths(
             "tests/",
             (
@@ -473,6 +513,17 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "test_team_meta_mutate.py",
                 "test_team_plan_only.py",
                 "test_team_start_transaction.py",
+                "test_team_agy_envelope.py",
+                "test_team_bootstrap_100.py",
+                "test_team_job_workers.py",
+                "test_team_operation_catalog.py",
+                "test_team_operator_101.py",
+                "test_team_real_tmux_ux.py",
+                "test_team_reconcile.py",
+                "test_team_scale_tmux.py",
+                "test_team_startup.py",
+                "test_team_topology_102.py",
+                "test_team_view.py",
             ),
         )
     ),
@@ -506,6 +557,8 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "test_mcp_server.py",
                 "test_lsp_symbols.py",
                 "test_ask.py",
+                "test_ask_agy.py",
+                "antigravity_testutil.py",
                 "test_antigravity_provider_probe.py",
                 "test_antigravity_provider_run.py",
                 "test_provider_process.py",
@@ -564,12 +617,14 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "project_root.py",
             ),
         )
+        + ["omg_cli/jobs/**", "docs/durable-jobs.md"]
         + _paths(
             "omg_cli/commands/",
             (
                 "__init__.py",
                 "inspect.py",
                 "install.py",
+                "job.py",
                 "mcp.py",
                 "memory.py",
                 "modes.py",
@@ -667,6 +722,15 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "test_review.py",
                 "test_qa.py",
                 "test_packaging.py",
+                "jobs_testutil.py",
+                "test_jobs_acp_session.py",
+                "test_jobs_antigravity.py",
+                "test_jobs_auto_retry.py",
+                "test_jobs_cli.py",
+                "test_jobs_lease.py",
+                "test_jobs_provider_registry.py",
+                "test_jobs_recovery.py",
+                "test_jobs_runtime.py",
                 "test_docs_cli_drift.py",
                 "test_release_readback.py",
                 "test_host_launcher.py",

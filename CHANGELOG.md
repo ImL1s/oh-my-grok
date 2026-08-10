@@ -11,6 +11,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [0.8.0] - 2026-08-10
 
+### Fixed
+- **Release writer-ownership for Jobs/Team/completeness paths:** register
+  `docs/durable-jobs.md`, `docs/team*.md`, `docs/parity/completeness/**`,
+  `omg_cli/jobs/**`, new `omg_cli/team/*` modules, host probe/ACP surfaces,
+  and matching tests under `OMG_OWNER_PATTERNS` so `release.yml` verify
+  no longer fails closed on unowned dirty paths (same class as #93).
+
 ### Highlights
 - **Team tmux milestone:** default-on `omg team` with same-window topology,
   identity-fenced attach/view, claim reconcile on resume, and optional
