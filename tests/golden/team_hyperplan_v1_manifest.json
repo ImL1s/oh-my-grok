@@ -1,0 +1,160 @@
+{
+  "composition_id": "hp1_dc342e1a8c8d8a27",
+  "critic_count": 3,
+  "dependency_graph": {
+    "critic.correctness": [],
+    "critic.operability": [],
+    "critic.security": [],
+    "synthesize": [
+      "critic.correctness",
+      "critic.operability",
+      "critic.security"
+    ],
+    "verify": [
+      "synthesize",
+      "critic.correctness",
+      "critic.operability",
+      "critic.security"
+    ]
+  },
+  "digest": "6809b8b5ef7ef150cb2918c41ed1ee9b1200b57952fd85e9b951933bc12ead2e",
+  "execution_supported": false,
+  "kind": "omg.team.hyperplan",
+  "lane_count": 5,
+  "lanes": [
+    {
+      "allow_implementation": false,
+      "depends_on": [],
+      "dimension": "correctness",
+      "expected_artifact": {
+        "dimension": "correctness",
+        "kind": "omg.team.hyperplan.critique",
+        "required_fields": [
+          "dimension",
+          "findings",
+          "severity",
+          "blocking"
+        ],
+        "schema_version": 1
+      },
+      "lane_id": "critic.correctness",
+      "owned_files": [],
+      "posture": "read-only",
+      "requires_code_change": false,
+      "role": "critic"
+    },
+    {
+      "allow_implementation": false,
+      "depends_on": [],
+      "dimension": "operability",
+      "expected_artifact": {
+        "dimension": "operability",
+        "kind": "omg.team.hyperplan.critique",
+        "required_fields": [
+          "dimension",
+          "findings",
+          "severity",
+          "blocking"
+        ],
+        "schema_version": 1
+      },
+      "lane_id": "critic.operability",
+      "owned_files": [],
+      "posture": "read-only",
+      "requires_code_change": false,
+      "role": "critic"
+    },
+    {
+      "allow_implementation": false,
+      "depends_on": [],
+      "dimension": "security",
+      "expected_artifact": {
+        "dimension": "security",
+        "kind": "omg.team.hyperplan.critique",
+        "required_fields": [
+          "dimension",
+          "findings",
+          "severity",
+          "blocking"
+        ],
+        "schema_version": 1
+      },
+      "lane_id": "critic.security",
+      "owned_files": [],
+      "posture": "read-only",
+      "requires_code_change": false,
+      "role": "critic"
+    },
+    {
+      "allow_implementation": false,
+      "depends_on": [
+        "critic.correctness",
+        "critic.operability",
+        "critic.security"
+      ],
+      "dimension": null,
+      "expected_artifact": {
+        "kind": "omg.team.hyperplan.synthesis",
+        "required_fields": [
+          "summary",
+          "merged_findings",
+          "open_conflicts",
+          "recommended_verdict"
+        ],
+        "schema_version": 1
+      },
+      "lane_id": "synthesize",
+      "owned_files": [],
+      "posture": "read-only",
+      "requires_code_change": false,
+      "role": "planner"
+    },
+    {
+      "allow_implementation": false,
+      "depends_on": [
+        "synthesize",
+        "critic.correctness",
+        "critic.operability",
+        "critic.security"
+      ],
+      "dimension": null,
+      "expected_artifact": {
+        "kind": "omg.team.hyperplan.verification",
+        "required_fields": [
+          "gate",
+          "covered_lanes",
+          "blocking_issues",
+          "verdict"
+        ],
+        "schema_version": 1
+      },
+      "lane_id": "verify",
+      "owned_files": [],
+      "posture": "read-only",
+      "requires_code_change": false,
+      "role": "verifier"
+    }
+  ],
+  "result_contract": {
+    "approval_requires_empty_conflicts": true,
+    "approval_requires_empty_repairs": true,
+    "approval_requires_empty_unresolved_risks": true,
+    "execution_supported": false,
+    "requires_lane_coverage": true,
+    "schema_version": 1,
+    "silent_approve_forbidden": true
+  },
+  "schema_version": 1,
+  "spec": {
+    "critique_dimensions": [
+      "correctness",
+      "operability",
+      "security"
+    ],
+    "evidence": [],
+    "goal": "Evaluate plan for Hyperplan V1 scaffolding",
+    "limits": {},
+    "schema_version": 1
+  },
+  "writer": "omg-cli"
+}

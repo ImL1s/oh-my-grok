@@ -10,6 +10,25 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#69 PR7 Hyperplan Composition Contract V1:** non-executing
+  `omg_cli.team.compositions.hyperplan` with `HyperplanSpecV1` /
+  `ManifestV1` / `DecisionV1` and pure `compile_hyperplan_v1()` (N critics +
+  synthesize + verify; `execution_supported=false`). CLI:
+  `omg team hyperplan plan|materialize|validate-decision`. Materialize
+  persists only
+  `.omg/state/runs/<run>/team/compositions/hyperplan-v1.json` (idempotent;
+  digest/symlink/corrupt/foreign-writer fail-closed). Docs:
+  `docs/team-hyperplan-v1.md`. Hermetic coverage in
+  `tests/test_team_hyperplan.py` (+ golden). Does **not** close #69 (no
+  execution / synthesis / security compositions / Antigravity live evidence /
+  catalog v4 / maturity promotion / `live_*`).
+
+### Fixed
+- **Parity OMC coverage_digest after #69 PR7 GAPS sync:** refresh OMC proof
+  `coverage_digest` only after gap.team.v3 text update for Hyperplan V1
+  scaffolding (no policy/mapping/status changes). Refs #69 (does not close).
+
+### Added
 - **#69 PR6 Team Presentation State V1:** pure read-only
   `build_team_presentation_v1()` with generation-fenced snapshot; identical
   payload via `omg team status --presentation [--json]`, catalog **v3**

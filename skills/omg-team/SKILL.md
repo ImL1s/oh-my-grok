@@ -100,6 +100,10 @@ omg team status <team-name-or-run> --json
 omg team resume <team-name-or-run>
 omg team stop <team-name-or-run>    # shutdown alias → stop
 omg team api send-message --input '{...}' --json
+# Hyperplan V1 scaffolding (non-executing; see docs/team-hyperplan-v1.md):
+omg team hyperplan plan --spec SPEC.json --json
+omg team hyperplan materialize --spec SPEC.json --run RUN
+omg team hyperplan validate-decision --run RUN --input DECISION.json
 ```
 
 ## When to use ULW instead
