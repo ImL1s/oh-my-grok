@@ -4,7 +4,7 @@ English | [简体中文](./security-model.zh.md) | [繁體中文](./security-mod
 
 **Canonical truth table** for isolation claims. README, skills, and doctor footers should link here rather than invent stronger wording.
 
-Last updated: 2026-08-05 · Plugin version: **0.7.6**
+Last updated: 2026-08-05 · Plugin version: **0.8.0**
 
 ## Layer table (strongest → weakest)
 

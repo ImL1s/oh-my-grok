@@ -9,6 +9,21 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-10
+
+### Highlights
+- **Team tmux milestone:** default-on `omg team` with same-window topology,
+  identity-fenced attach/view, claim reconcile on resume, and optional
+  `--worker-topology=job` on the #68 Jobs plane. Fixture + interactive UX
+  smokes green (`FIXTURE_TEAM_SMOKE_OK`, `LIVE_TEAM_INTERACTIVE_UX_OK`).
+  Does **not** close #69 (replacement / Hyperplan / live Antigravity still open).
+- **Durable Jobs plane (#68 PR1–PR5):** start/status/wait/cancel/collect,
+  retry+GC, lease recovery, bounded `auto-retry`. Does **not** close #68
+  (authenticated live Antigravity evidence still open).
+- **Parity real-source completeness (#78-F–I):** OMC/OMX/OmO/Antigravity
+  pinned discovery triples; Antigravity docs-only (`promotion_sufficient=false`).
+  Canonical inventory stays **bootstrapping** — no promotion.
+
 ### Added
 - **#69 PR4 job-backed Team workers:** unified `launch_worker` execution
   abstraction (`omg_cli/team/launch.py`) with `--worker-topology=pane|job`
