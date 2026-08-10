@@ -1,0 +1,376 @@
+{
+  "kind": "omg.team.operation_catalog",
+  "operations": [
+    {
+      "dispatch_state": "implemented",
+      "domain": "mailbox",
+      "implemented": true,
+      "mutates_state": true,
+      "name": "send-message",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "reserved",
+      "domain": "mailbox",
+      "implemented": false,
+      "mutates_state": true,
+      "name": "broadcast",
+      "planned": false,
+      "reserved": true,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "mailbox",
+      "implemented": true,
+      "mutates_state": false,
+      "name": "mailbox-list",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "mailbox",
+      "implemented": true,
+      "mutates_state": true,
+      "name": "mailbox-mark-delivered",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "reserved",
+      "domain": "mailbox",
+      "implemented": false,
+      "mutates_state": true,
+      "name": "mailbox-mark-notified",
+      "planned": false,
+      "reserved": true,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "task",
+      "implemented": true,
+      "mutates_state": true,
+      "name": "create-task",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "task",
+      "implemented": true,
+      "mutates_state": false,
+      "name": "read-task",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "task",
+      "implemented": true,
+      "mutates_state": false,
+      "name": "list-tasks",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "task",
+      "implemented": true,
+      "mutates_state": true,
+      "name": "update-task",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "task",
+      "implemented": true,
+      "mutates_state": true,
+      "name": "claim-task",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "task",
+      "implemented": true,
+      "mutates_state": true,
+      "name": "transition-task-status",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "task",
+      "implemented": true,
+      "mutates_state": true,
+      "name": "release-task-claim",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "task",
+      "implemented": true,
+      "mutates_state": true,
+      "name": "renew-task-claim",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "config",
+      "implemented": true,
+      "mutates_state": false,
+      "name": "read-config",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "config",
+      "implemented": true,
+      "mutates_state": false,
+      "name": "read-manifest",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "worker",
+      "implemented": true,
+      "mutates_state": false,
+      "name": "read-worker-status",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "worker",
+      "implemented": true,
+      "mutates_state": false,
+      "name": "read-worker-heartbeat",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "worker",
+      "implemented": true,
+      "mutates_state": true,
+      "name": "update-worker-heartbeat",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "worker",
+      "implemented": true,
+      "mutates_state": true,
+      "name": "write-worker-inbox",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "reserved",
+      "domain": "worker",
+      "implemented": false,
+      "mutates_state": true,
+      "name": "write-worker-identity",
+      "planned": false,
+      "reserved": true,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "event",
+      "implemented": true,
+      "mutates_state": true,
+      "name": "append-event",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "event",
+      "implemented": true,
+      "mutates_state": false,
+      "name": "read-events",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "reserved",
+      "domain": "event",
+      "implemented": false,
+      "mutates_state": false,
+      "name": "await-event",
+      "planned": false,
+      "reserved": true,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "reserved",
+      "domain": "summary",
+      "implemented": false,
+      "mutates_state": false,
+      "name": "read-idle-state",
+      "planned": false,
+      "reserved": true,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "reserved",
+      "domain": "summary",
+      "implemented": false,
+      "mutates_state": false,
+      "name": "read-stall-state",
+      "planned": false,
+      "reserved": true,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "summary",
+      "implemented": true,
+      "mutates_state": false,
+      "name": "get-summary",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "reserved",
+      "domain": "lifecycle",
+      "implemented": false,
+      "mutates_state": true,
+      "name": "cleanup",
+      "planned": false,
+      "reserved": true,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "lifecycle",
+      "implemented": true,
+      "mutates_state": true,
+      "name": "orphan-cleanup",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "lifecycle",
+      "implemented": true,
+      "mutates_state": true,
+      "name": "write-shutdown-request",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "lifecycle",
+      "implemented": true,
+      "mutates_state": false,
+      "name": "read-shutdown-request",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "lifecycle",
+      "implemented": true,
+      "mutates_state": true,
+      "name": "write-shutdown-ack",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": true
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "lifecycle",
+      "implemented": true,
+      "mutates_state": false,
+      "name": "read-shutdown-ack",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "reserved",
+      "domain": "monitor",
+      "implemented": false,
+      "mutates_state": false,
+      "name": "read-monitor-snapshot",
+      "planned": false,
+      "reserved": true,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "reserved",
+      "domain": "monitor",
+      "implemented": false,
+      "mutates_state": true,
+      "name": "write-monitor-snapshot",
+      "planned": false,
+      "reserved": true,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "reserved",
+      "domain": "task",
+      "implemented": false,
+      "mutates_state": false,
+      "name": "read-task-approval",
+      "planned": false,
+      "reserved": true,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "reserved",
+      "domain": "task",
+      "implemented": false,
+      "mutates_state": true,
+      "name": "write-task-approval",
+      "planned": false,
+      "reserved": true,
+      "worker_allowed": false
+    },
+    {
+      "dispatch_state": "implemented",
+      "domain": "worker",
+      "implemented": true,
+      "mutates_state": true,
+      "name": "replace-worker",
+      "planned": false,
+      "reserved": false,
+      "worker_allowed": false
+    }
+  ],
+  "schema_version": 2
+}

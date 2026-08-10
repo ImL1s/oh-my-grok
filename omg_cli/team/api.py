@@ -7,9 +7,10 @@ task files directly.
 P0 + P0′ ops (mailbox/task CRUD including claim renew/release, heartbeat/
 shutdown/orphan, events, manifest) are implemented; remaining
 ``TEAM_API_OPERATIONS`` return ``E_TEAM_API_UNIMPLEMENTED``. Operation names
-and metadata come from ``omg_cli.team.operation_catalog`` (schema v1); full
-OMX catalog parity is intentionally not claimed — see
-``omg team api catalog`` / ``docs/team-operation-catalog-v1.md``.
+and metadata come from ``omg_cli.team.operation_catalog`` (default schema
+v2; v1 golden remains frozen). Full OMX catalog parity is intentionally
+not claimed — see ``omg team api catalog`` /
+``docs/team-operation-catalog-v2.md``.
 """
 
 from __future__ import annotations
@@ -837,7 +838,14 @@ def _normalize_task(raw: Mapping[str, Any]) -> dict[str, Any]:
             "task claim must be an object or null",
             details={"error": "corrupt_task"},
         )
-    return {
+    binding = row.get("binding")
+    if binding is not None and not isinstance(binding, Mapping):
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            "task binding must be an object or null",
+            details={"error": "corrupt_task"},
+        )
+    out: dict[str, Any] = {
         "id": task_id,
         "subject": str(row.get("subject") or ""),
         "description": str(row.get("description") or ""),
@@ -853,6 +861,9 @@ def _normalize_task(raw: Mapping[str, Any]) -> dict[str, Any]:
         "completed_at": row.get("completed_at"),
         "requires_code_change": bool(row.get("requires_code_change", False)),
     }
+    if isinstance(binding, Mapping):
+        out["binding"] = dict(binding)
+    return out
 
 
 def _write_task(
@@ -963,6 +974,30 @@ def _task_readiness(
         if dep is None or dep["status"] != "completed":
             incomplete.append(str(dep_id))
     return (not incomplete, incomplete)
+
+
+def _claim_attempt_matches(
+    task: Mapping[str, Any], payload: Mapping[str, Any]
+) -> str | None:
+    """Return an error code when payload attempt disagrees with binding."""
+    binding = task.get("binding")
+    if not isinstance(binding, Mapping) or binding.get("attempt") is None:
+        return None
+    try:
+        bound = int(binding["attempt"])
+    except (TypeError, ValueError):
+        return "corrupt_binding_attempt"
+    if "attempt" not in payload and "expected_attempt" not in payload:
+        # Soft: binding present but caller omitted attempt — still allow when
+        # claim token matches; replacement fences tokens first. Strict when
+        # callers supply an attempt fence.
+        return None
+    raw = payload.get("attempt", payload.get("expected_attempt"))
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        return "invalid_attempt"
+    if int(raw) != bound:
+        return "stale_attempt"
+    return None
 
 
 def _op_send_message(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
@@ -1337,6 +1372,10 @@ def _op_claim_task(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
         if _is_terminal(task["status"]):
             return _ok("claim-task", {"ok": False, "error": "already_terminal"})
 
+        attempt_err = _claim_attempt_matches(task, payload)
+        if attempt_err:
+            return _ok("claim-task", {"ok": False, "error": attempt_err})
+
         if task["status"] == "in_progress":
             if not _lease_expired(task.get("claim")):
                 return _ok("claim-task", {"ok": False, "error": "claim_conflict"})
@@ -1355,6 +1394,16 @@ def _op_claim_task(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
         leased_until = _format_lease_deadline(
             _now_utc() + timedelta(seconds=CLAIM_LEASE_SECONDS)
         )
+        binding = dict(task.get("binding") or {})
+        if binding:
+            binding["logical_worker_id"] = binding.get("logical_worker_id") or worker
+        claim_body: dict[str, Any] = {
+            "owner": worker,
+            "token": token,
+            "leased_until": leased_until,
+        }
+        if binding.get("attempt") is not None:
+            claim_body["attempt"] = int(binding["attempt"])
         updated = _write_task(
             root,
             run_id,
@@ -1363,11 +1412,8 @@ def _op_claim_task(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
                 **task,
                 "status": "in_progress",
                 "owner": worker,
-                "claim": {
-                    "owner": worker,
-                    "token": token,
-                    "leased_until": leased_until,
-                },
+                "claim": claim_body,
+                "binding": binding or task.get("binding"),
                 "version": task["version"] + 1,
             },
         )
@@ -1447,6 +1493,26 @@ def _op_transition_task_status(
                 "claim_conflict",
                 details={"error": "claim_conflict"},
             )
+        attempt_err = _claim_attempt_matches(task, payload)
+        if attempt_err:
+            raise TeamApiError(
+                "E_TEAM_API_FAILED",
+                attempt_err,
+                details={"error": attempt_err},
+            )
+        # Fenced prior-attempt tokens: claim.attempt must match binding when both set.
+        binding = task.get("binding") if isinstance(task.get("binding"), Mapping) else None
+        if (
+            binding
+            and binding.get("attempt") is not None
+            and claim.get("attempt") is not None
+            and int(claim["attempt"]) != int(binding["attempt"])
+        ):
+            raise TeamApiError(
+                "E_TEAM_API_FAILED",
+                "stale_attempt",
+                details={"error": "stale_attempt"},
+            )
         if _lease_expired(claim):
             raise TeamApiError(
                 "E_TEAM_API_FAILED",
@@ -1502,6 +1568,18 @@ def _op_release_task_claim(root: Path, payload: dict[str, Any]) -> TeamApiEnvelo
             or claim.get("owner") != worker
         ):
             return _ok("release-task-claim", {"ok": False, "error": "claim_conflict"})
+        attempt_err = _claim_attempt_matches(task, payload)
+        if attempt_err:
+            return _ok("release-task-claim", {"ok": False, "error": attempt_err})
+        binding = task.get("binding") if isinstance(task.get("binding"), Mapping) else None
+        if (
+            binding
+            and binding.get("attempt") is not None
+            and isinstance(claim, Mapping)
+            and claim.get("attempt") is not None
+            and int(claim["attempt"]) != int(binding["attempt"])
+        ):
+            return _ok("release-task-claim", {"ok": False, "error": "stale_attempt"})
         if _lease_expired(claim):
             return _ok("release-task-claim", {"ok": False, "error": "lease_expired"})
         updated = _write_task(
@@ -1560,6 +1638,17 @@ def _op_renew_task_claim(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope
             or task.get("owner") != worker
         ):
             return _ok("renew-task-claim", {"ok": False, "error": "claim_conflict"})
+        attempt_err = _claim_attempt_matches(task, payload)
+        if attempt_err:
+            return _ok("renew-task-claim", {"ok": False, "error": attempt_err})
+        binding = task.get("binding") if isinstance(task.get("binding"), Mapping) else None
+        if (
+            binding
+            and binding.get("attempt") is not None
+            and claim.get("attempt") is not None
+            and int(claim["attempt"]) != int(binding["attempt"])
+        ):
+            return _ok("renew-task-claim", {"ok": False, "error": "stale_attempt"})
         current_deadline = _parse_leased_until(claim)
         if current_deadline is None or current_deadline <= _now_utc():
             return _ok("renew-task-claim", {"ok": False, "error": "lease_expired"})
@@ -2098,6 +2187,64 @@ def _op_orphan_cleanup(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     )
 
 
+def _op_replace_worker(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    """Leader-only identity-fenced worker replacement (#69 PR5)."""
+    from omg_cli.team.replacement import ReplacementError, replace_worker
+
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    worker = require_safe_id(
+        _require_str(payload, "worker")
+        if "worker" in payload
+        else _require_str(payload, "worker_id"),
+        label="worker",
+    )
+    mode = _require_str(payload, "mode").strip().lower()
+    idempotency_key = _require_str(payload, "idempotency_key")
+    expected_attempt = payload.get("expected_attempt")
+    expected_launch_generation = payload.get("expected_launch_generation")
+    if (
+        isinstance(expected_attempt, bool)
+        or not isinstance(expected_attempt, int)
+        or expected_attempt < 1
+    ):
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "expected_attempt must be a positive integer",
+            exit_code=2,
+        )
+    if (
+        isinstance(expected_launch_generation, bool)
+        or not isinstance(expected_launch_generation, int)
+        or expected_launch_generation < 1
+    ):
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "expected_launch_generation must be a positive integer",
+            exit_code=2,
+        )
+    dry_run = bool(payload.get("dry_run", False))
+    try:
+        result = replace_worker(
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            worker_id=worker,
+            mode=mode,  # type: ignore[arg-type]
+            expected_attempt=expected_attempt,
+            expected_launch_generation=expected_launch_generation,
+            idempotency_key=idempotency_key,
+            dry_run=dry_run,
+        )
+    except ReplacementError as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            exc.message,
+            details={"error": exc.code, "code": exc.code},
+        ) from exc
+    return _ok("replace-worker", result.to_dict())
+
+
 _HANDLERS: dict[str, Handler] = {
     "send-message": _op_send_message,
     "mailbox-list": _op_mailbox_list,
@@ -2124,6 +2271,7 @@ _HANDLERS: dict[str, Handler] = {
     "orphan-cleanup": _op_orphan_cleanup,
     "append-event": _op_append_event,
     "read-events": _op_read_events,
+    "replace-worker": _op_replace_worker,
 }
 
 

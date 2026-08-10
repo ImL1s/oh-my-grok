@@ -6616,12 +6616,26 @@ def native_dispatch_plan(
     }
 
 
+def fence_pane_execution_for_replacement(
+    root: Path | str,
+    task: Mapping[str, Any],
+    *,
+    meta: Mapping[str, Any],
+    mode: str,
+) -> dict[str, Any]:
+    """Public wrapper: identity-fenced pane cancel/absence for #69 PR5 replace."""
+    from omg_cli.team.replacement import fence_pane_for_replacement
+
+    return fence_pane_for_replacement(root, task, meta=meta, mode=mode)  # type: ignore[arg-type]
+
+
 __all__ = [
     "SCALE_LOCK_NAME",
     "STATUS_BLOCKED",
     "STATUS_NEEDS_COLLECT",
     "STATUS_SCALED_DOWN",
     "acquire_scale_lock",
+    "fence_pane_execution_for_replacement",
     "relaunch_dead_incomplete_workers",
     "resume_team",
     "native_dispatch_plan",

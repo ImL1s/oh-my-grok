@@ -265,6 +265,7 @@ def launch_worker(
     dry_run: bool = False,
     executor: str | None = None,
     sleep_s: float | None = None,
+    job_request_stamps: Mapping[str, Any] | None = None,
 ) -> WorkerExecutionHandle:
     """Launch one worker as a pane or durable job; return an execution handle.
 
@@ -360,6 +361,22 @@ def launch_worker(
             + (f" task={task_id}" if task_id else "")
             + (f" run={run_id}" if run_id else "")
         )
+    stamps: dict[str, Any] = {}
+    if job_request_stamps:
+        for key, val in job_request_stamps.items():
+            if not isinstance(key, str) or not key.startswith("team_"):
+                continue
+            if isinstance(val, bool) or not isinstance(val, (str, int)):
+                continue
+            if isinstance(val, str) and not val.strip():
+                continue
+            stamps[key] = val.strip() if isinstance(val, str) else int(val)
+    # Always stamp attempt/generation/worker for replacement orphan adoption.
+    stamps.setdefault("team_worker_id", wid)
+    stamps.setdefault("team_task_id", str(task_id or wid))
+    stamps.setdefault("team_attempt", int(attempt))
+    stamps.setdefault("team_launch_generation", int(launch_generation))
+
     try:
         started = start_job(
             root_path,
@@ -371,6 +388,7 @@ def launch_worker(
             sleep_s=sleep_s,
             launch=True,
             team_id=team_id,
+            request_overrides=stamps or None,
         )
     except JobStoreError as exc:
         raise WorkerLaunchError(
@@ -519,13 +537,15 @@ def apply_job_completion(
     worker_id: str | None,
     team_id: str | None = None,
     foreign_team_id: str | None = None,
+    expected_launch_generation: int | None = None,
 ) -> CompletionDecision:
     """Promote a Jobs terminal state onto a Team task — fail closed.
 
     Rejects missing claim tokens, claim-token mismatches, stale attempts,
-    foreign workers/teams, and unknown/non-terminal job states (never
-    synthesize success). Both ``claim_token`` and ``expected_claim_token``
-    must be non-empty and equal — ``None``/``None`` is not a soft success.
+    stale launch generations, foreign workers/teams, and unknown/non-terminal
+    job states (never synthesize success). Both ``claim_token`` and
+    ``expected_claim_token`` must be non-empty and equal — ``None``/``None``
+    is not a soft success.
     """
     if foreign_team_id is not None and team_id is not None:
         if foreign_team_id != team_id:
@@ -558,6 +578,18 @@ def apply_job_completion(
         return CompletionDecision(False, "claim_token_mismatch")
     if int(job_attempt) != int(expected_attempt):
         return CompletionDecision(False, "stale_attempt")
+    if expected_launch_generation is not None:
+        if int(rec.get("launch_generation") or 0) != int(expected_launch_generation):
+            return CompletionDecision(False, "stale_launch_generation")
+    # Binding attempt (post-replacement) must match when present.
+    binding = task.get("binding")
+    if isinstance(binding, Mapping) and binding.get("attempt") is not None:
+        try:
+            bound_attempt = int(binding["attempt"])
+        except (TypeError, ValueError):
+            return CompletionDecision(False, "invalid_binding_attempt")
+        if bound_attempt != int(expected_attempt):
+            return CompletionDecision(False, "stale_attempt")
 
     state = (job_state or "").strip().lower()
     if state == JobState.SUCCEEDED.value:
