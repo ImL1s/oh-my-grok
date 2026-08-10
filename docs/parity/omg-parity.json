@@ -206,7 +206,7 @@
       "issues": [
         "#69"
       ],
-      "gap": "PR4 job-backed workers + PR5 identity-fenced replace-worker + PR6 Presentation State V1 landed (hermetic pane/fake-job; CLI/API/MCP). Hyperplan/security compositions, live Antigravity proof, and full OMX operation surface remain open (#69). No maturity promotion; external-runtime evidence empty."
+      "gap": "PR4 job-backed workers + PR5 identity-fenced replace-worker + PR6 Presentation State V1 + PR7 Hyperplan V1 scaffolding landed (hermetic contract/compiler; execution_supported=false). Security compositions, Hyperplan execution/synthesis, live Antigravity proof, and full OMX operation surface remain open (#69). No maturity promotion; external-runtime evidence empty."
     },
     {
       "id": "parity.inventory.governance",
@@ -1800,7 +1800,7 @@
       "capability_ids": [
         "team.plane_v3"
       ],
-      "summary": "PR4 job-backed workers + PR5 identity-fenced replace-worker + PR6 Presentation State V1 landed (hermetic pane/fake-job; CLI/API/MCP). Hyperplan/security compositions, live Antigravity proof, and full OMX operation surface remain open (#69). Depends on #67/#68 for remainder."
+      "summary": "PR4 job-backed workers + PR5 identity-fenced replace-worker + PR6 Presentation State V1 + PR7 Hyperplan V1 scaffolding landed (hermetic contract/compiler; execution_supported=false). Security compositions, Hyperplan execution/synthesis, live Antigravity proof, and full OMX operation surface remain open (#69). Depends on #67/#68 for remainder."
     },
     {
       "id": "gap.parity.governance.remaining",

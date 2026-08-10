@@ -11,6 +11,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from omg_cli.cli_envelope import emit_data
 from omg_cli.cli_util import project_root
@@ -1032,6 +1033,121 @@ def cmd_team(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return int(getattr(exc, "exit_code", 1) or 1)
+        if action == "hyperplan":
+            from omg_cli.cli_envelope import wants_json
+            from omg_cli.team.compositions.hyperplan import (
+                HyperplanError,
+                compile_hyperplan_v1,
+                materialize_hyperplan_v1,
+                validate_hyperplan_decision_v1,
+            )
+            from omg_cli.team.plane import TeamGateError, experimental_enabled
+
+            if not experimental_enabled():
+                raise TeamGateError("team plane disabled by kill-switch")
+
+            hp_action = getattr(args, "hyperplan_action", None)
+            spec_path = getattr(args, "hyperplan_spec", None)
+            decision_path = getattr(args, "hyperplan_decision", None)
+            run_id = getattr(args, "run_id", None)
+
+            def _load_json_file(path_s: str, *, label: str) -> Any:
+                path = Path(path_s)
+                if path.is_symlink() or not path.is_file():
+                    raise HyperplanError(
+                        f"{label} must be a regular non-symlink file",
+                        code="E_TEAM_HYPERPLAN_SPEC",
+                    )
+                try:
+                    return json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise HyperplanError(
+                        f"{label} unreadable JSON: {exc}",
+                        code="E_TEAM_HYPERPLAN_SPEC",
+                    ) from exc
+
+            try:
+                if hp_action == "plan":
+                    if not spec_path:
+                        print(
+                            "omg team hyperplan plan: --spec required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    manifest = compile_hyperplan_v1(
+                        _load_json_file(str(spec_path), label="--spec")
+                    )
+                    emit_data(args, "team.hyperplan", manifest)
+                    if not wants_json(args):
+                        print(
+                            f"hyperplan plan composition_id={manifest['composition_id']} "
+                            f"lanes={manifest['lane_count']} "
+                            f"execution_supported={manifest['execution_supported']}",
+                            file=sys.stderr,
+                        )
+                    return 0
+                if hp_action == "materialize":
+                    if not spec_path or not run_id:
+                        print(
+                            "omg team hyperplan materialize: --spec and --run required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    result = materialize_hyperplan_v1(
+                        root,
+                        str(run_id),
+                        _load_json_file(str(spec_path), label="--spec"),
+                    )
+                    emit_data(args, "team.hyperplan", result)
+                    if not wants_json(args):
+                        tag = "idempotent" if result.get("idempotent") else "wrote"
+                        print(
+                            f"hyperplan materialize {tag} "
+                            f"path={result.get('path')} "
+                            f"composition_id={result['manifest']['composition_id']}",
+                            file=sys.stderr,
+                        )
+                    return 0
+                if hp_action == "validate-decision":
+                    if not run_id or not decision_path:
+                        print(
+                            "omg team hyperplan validate-decision: "
+                            "--run and --input required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    result = validate_hyperplan_decision_v1(
+                        root,
+                        str(run_id),
+                        _load_json_file(str(decision_path), label="--input"),
+                        persist=True,
+                    )
+                    emit_data(args, "team.hyperplan", result)
+                    if not wants_json(args):
+                        decision = result.get("decision") or {}
+                        print(
+                            f"hyperplan decision ok verdict={decision.get('verdict')} "
+                            f"path={result.get('path')}",
+                            file=sys.stderr,
+                        )
+                    return 0
+                print(
+                    f"omg team hyperplan: unknown action {hp_action!r}",
+                    file=sys.stderr,
+                )
+                return 2
+            except HyperplanError as exc:
+                emit_data(
+                    args,
+                    "team.hyperplan",
+                    {
+                        "ok": False,
+                        "error": {"code": exc.code, "message": exc.message},
+                    },
+                )
+                print(f"omg team hyperplan: {exc.code}: {exc}", file=sys.stderr)
+                return 2
+
         if action == "api":
             from omg_cli.team.api import (
                 TeamApiError,
@@ -2287,6 +2403,79 @@ def register_team_parsers(
     )
     # --json inherited from common → json_output
     p_t_api.set_defaults(func=cmd_team, team_action="api")
+
+    p_t_hp = team_sub.add_parser(
+        "hyperplan",
+        parents=[common],
+        help=(
+            "Hyperplan Composition Contract V1 (non-executing): "
+            "plan|materialize|validate-decision (#69 PR7)"
+        ),
+    )
+    hp_sub = p_t_hp.add_subparsers(dest="hyperplan_action")
+    p_hp_plan = hp_sub.add_parser(
+        "plan",
+        parents=[common],
+        help="compile HyperplanSpecV1 → ManifestV1 (zero filesystem mutation)",
+    )
+    p_hp_plan.add_argument(
+        "--spec",
+        dest="hyperplan_spec",
+        required=True,
+        help="path to HyperplanSpecV1 JSON",
+    )
+    p_hp_plan.set_defaults(func=cmd_team, team_action="hyperplan", hyperplan_action="plan")
+
+    p_hp_mat = hp_sub.add_parser(
+        "materialize",
+        parents=[common],
+        help=(
+            "atomically persist manifest under "
+            ".omg/state/runs/<run>/team/compositions/hyperplan-v1.json"
+        ),
+    )
+    p_hp_mat.add_argument(
+        "--spec",
+        dest="hyperplan_spec",
+        required=True,
+        help="path to HyperplanSpecV1 JSON",
+    )
+    p_hp_mat.add_argument(
+        "--run",
+        dest="run_id",
+        required=True,
+        help="existing run_id under .omg/state/runs/",
+    )
+    p_hp_mat.set_defaults(
+        func=cmd_team, team_action="hyperplan", hyperplan_action="materialize"
+    )
+
+    p_hp_dec = hp_sub.add_parser(
+        "validate-decision",
+        parents=[common],
+        help=(
+            "validate + persist HyperplanDecisionV1 against materialized manifest "
+            "(never silent-approves)"
+        ),
+    )
+    p_hp_dec.add_argument(
+        "--run",
+        dest="run_id",
+        required=True,
+        help="run_id with materialized hyperplan-v1.json",
+    )
+    p_hp_dec.add_argument(
+        "--input",
+        dest="hyperplan_decision",
+        required=True,
+        help="path to HyperplanDecisionV1 JSON",
+    )
+    p_hp_dec.set_defaults(
+        func=cmd_team,
+        team_action="hyperplan",
+        hyperplan_action="validate-decision",
+    )
+
     p_team.set_defaults(func=cmd_team)
 
 

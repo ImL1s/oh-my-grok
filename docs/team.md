@@ -146,10 +146,21 @@ New start/scale also stamp an additive `route` descriptor
 ## Non-goals (this slice)
 
 - No live Antigravity proof / `live_*` maturity claims
-- No Hyperplan / security compositions
+- No Hyperplan **execution** / model synthesis / security compositions
 - No automatic replacement policy / retry scheduler / attempt budgets
 - No pane↔job migration during replacement
 - No TUI / native execution path
 - Does **not** close #69
+
+## Hyperplan V1 (scaffolding)
+
+See `docs/team-hyperplan-v1.md`. Contract + hermetic compiler landed; execution
+remains open.
+
+```bash
+omg team hyperplan plan --spec SPEC.json --json
+omg team hyperplan materialize --spec SPEC.json --run RUN
+omg team hyperplan validate-decision --run RUN --input DECISION.json
+```
 
 Refs #69.

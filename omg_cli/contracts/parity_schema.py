@@ -479,6 +479,7 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "view.py",
             ),
         )
+        + ["omg_cli/team/compositions/**"]
         + _paths("omg_cli/", ("workers.py", "integrate.py", "fanout.py"))
         + [
             "scripts/live_team_smoke.py",
@@ -489,11 +490,13 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             "tests/golden/team_operation_catalog_v2.json",
             "tests/golden/team_operation_catalog_v3.json",
             "tests/golden/team_presentation_state_v1_dry_run.json",
+            "tests/golden/team_hyperplan_v1_manifest.json",
             "docs/team.md",
             "docs/team-operation-catalog-v1.md",
             "docs/team-operation-catalog-v2.md",
             "docs/team-operation-catalog-v3.md",
             "docs/team-presentation-state-v1.md",
+            "docs/team-hyperplan-v1.md",
         ]
         + _paths(
             "tests/",
@@ -529,6 +532,7 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "test_team_real_tmux_ux.py",
                 "test_team_reconcile.py",
                 "test_team_presentation_state.py",
+                "test_team_hyperplan.py",
                 "test_team_replacement_attempts.py",
                 "test_team_scale_tmux.py",
                 "test_team_startup.py",
