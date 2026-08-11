@@ -34,6 +34,10 @@ omg team api replace-worker --input '{
 # Presentation State V1 (catalog v3; identical via MCP projection=presentation.v1):
 omg team status --run RUN --presentation --json
 omg team api read-presentation-state --input '{"run_id":"RUN","team_id":"team"}'
+
+# Catalog v4 atomic task-batch DAG admission (leader-only; no MCP mutation):
+omg team api bulk-create-tasks --input BATCH.json --json
+omg team api catalog   # schema v4 by default; v1–v3 goldens remain frozen
 ```
 
 `--worker-topology=job` requires a Jobs-admitted provider (`fake` or
@@ -149,7 +153,9 @@ New start/scale also stamp an additive `route` descriptor
 - No Hyperplan **execution** / Security Research **composition execution** /
   model synthesis / PoC running
   (Security Research hermetic result production landed in PR9;
-  Hyperplan hermetic result production landed in PR10)
+  Hyperplan hermetic result production landed in PR10;
+  catalog v4 atomic task-batch DAG admission landed in PR11 — partial
+  catalog, not full OMX)
 - No automatic replacement policy / retry scheduler / attempt budgets
 - No pane↔job migration during replacement
 - No TUI / native execution path

@@ -557,8 +557,9 @@ def test_redact_text_closes_pr94t_residual_p2_classes() -> None:
         t0 = time.perf_counter()
         assert redact_text(source) == source
         timings.append(time.perf_counter() - t0)
-    # Doubling n must not ~4× the time (quadratic). Allow CI slack.
-    assert timings[2] < max(0.05, timings[0] * 10.0), timings
+    # Doubling n must not ~4× the time (quadratic). Absolute floor is above
+    # 50ms so brief CI scheduler noise (observed ~70–90ms) does not flake.
+    assert timings[2] < max(0.15, timings[0] * 10.0), timings
     n = 50_000
     t0 = time.perf_counter()
     redact_text("[" * n + "]" * n)
@@ -632,7 +633,8 @@ def test_redact_text_closes_pr94u_residual_p2_classes() -> None:
         t0 = time.perf_counter()
         redact_text(source)
         timings.append(time.perf_counter() - t0)
-    assert timings[2] < max(0.05, timings[0] * 10.0), timings
+    # Escaped-quote flood must stay near-linear; floor absorbs CI noise.
+    assert timings[2] < max(0.15, timings[0] * 10.0), timings
     assert timings[2] < 1.0
 
     # P2-4: nested key-brackets must stay O(n) and must not RecursionError.
@@ -645,7 +647,7 @@ def test_redact_text_closes_pr94u_residual_p2_classes() -> None:
             t0 = time.perf_counter()
             redact_text(source)
             nest_timings.append(time.perf_counter() - t0)
-        assert nest_timings[2] < max(0.05, nest_timings[0] * 10.0), nest_timings
+        assert nest_timings[2] < max(0.15, nest_timings[0] * 10.0), nest_timings
         # Depth past the recursion ceiling of the prior sliced implementation.
         source = "[" * 975 + "safe" + "]=x" * 975
         t0 = time.perf_counter()
