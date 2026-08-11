@@ -101,16 +101,20 @@ omg team resume <team-name-or-run>
 omg team stop <team-name-or-run>    # shutdown alias → stop
 omg team api send-message --input '{...}' --json
 omg team api bulk-create-tasks --input BATCH.json --json
-# Hyperplan V1 hermetic produce (execution_supported=false; see docs/team-hyperplan-v1.md):
+# Hyperplan V1 hermetic produce + task driver (execution_supported=false; see docs/team-hyperplan-v1.md):
 omg team hyperplan plan --spec SPEC.json --json
 omg team hyperplan materialize --spec SPEC.json --run RUN
 omg team hyperplan validate-decision --run RUN --input DECISION.json
 omg team hyperplan produce-decision --run RUN --input RESULT_BUNDLE.json
-# Security Research V1 hermetic produce (execution_supported=false; see docs/team-security-research-v1.md):
+omg team hyperplan admit-tasks --run RUN --team-id TEAM
+omg team hyperplan collect-tasks --run RUN --team-id TEAM
+# Security Research V1 hermetic produce + task driver (execution_supported=false; see docs/team-security-research-v1.md):
 omg team security-research plan --spec SPEC.json --json
 omg team security-research materialize --spec SPEC.json --run RUN
 omg team security-research validate-report --run RUN --input REPORT.json
 omg team security-research produce-report --run RUN --input RESULT_BUNDLE.json
+omg team security-research admit-tasks --run RUN --team-id TEAM
+omg team security-research collect-tasks --run RUN --team-id TEAM
 ```
 
 ## When to use ULW instead

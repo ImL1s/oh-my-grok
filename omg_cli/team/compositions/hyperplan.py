@@ -1,4 +1,4 @@
-"""Hyperplan Composition Contract V1 — hermetic result production (#69 PR10).
+"""Hyperplan Composition Contract V1 — hermetic produce + task driver (#69 PR12).
 
 Pure ``compile_hyperplan_v1`` builds a deterministic critic→synthesize→verify
 DAG from a bounded spec. ``materialize_hyperplan_v1`` persists only under the
@@ -8,9 +8,11 @@ canonical Team run root:
 
 ``compile_hyperplan_decision_v1`` / ``produce_hyperplan_decision_v1`` derive a
 decision from a bounded ``HyperplanResultBundleV1`` (offline; never executes
-lanes). ``execution_supported`` is always ``false``. This module never launches
-panes, Jobs, providers, Antigravity, MCP tools, or claimable API tasks, and
-never sets ``verified`` / ``passes``.
+lanes). ``admit_hyperplan_tasks_v1`` / ``collect_hyperplan_tasks_v1`` bridge
+the materialized DAG onto the PR11 Team task plane via the shared composition
+task driver. ``execution_supported`` is always ``false``. This module never
+launches panes, Jobs, providers, Antigravity, MCP tools, or automatic workers,
+and never sets ``verified`` / ``passes``.
 """
 
 from __future__ import annotations
@@ -1256,9 +1258,6 @@ def produce_hyperplan_decision_v1(
     rid = _safe_run_id(run_id)
     _require_live_run(root_path, rid)
     manifest = load_hyperplan_manifest(root_path, rid)
-    normalized_bundle = _normalize_result_bundle(bundle, manifest=manifest)
-    decision = compile_hyperplan_decision_v1(manifest, normalized_bundle)
-
     compositions = hyperplan_compositions_dir(root_path, rid)
     compositions.mkdir(parents=True, exist_ok=True)
     if compositions.is_symlink():
@@ -1266,98 +1265,192 @@ def produce_hyperplan_decision_v1(
             "compositions directory may not be a symlink",
             code="E_TEAM_HYPERPLAN_PATH",
         )
+    lock = hyperplan_lock_path(root_path, rid)
+    with exclusive_lock(lock):
+        return _persist_hyperplan_decision_locked(
+            root_path=root_path,
+            rid=rid,
+            manifest=manifest,
+            bundle=bundle,
+        )
+
+
+def _persist_hyperplan_decision_locked(
+    *,
+    root_path: Path,
+    rid: str,
+    manifest: Mapping[str, Any],
+    bundle: Mapping[str, Any] | Any,
+) -> dict[str, Any]:
+    """Bundle-first / decision-last persistence; caller holds composition lock."""
+    normalized_bundle = _normalize_result_bundle(bundle, manifest=manifest)
+    decision = compile_hyperplan_decision_v1(manifest, normalized_bundle)
     bundle_path = hyperplan_result_bundle_path(root_path, rid)
     decision_path = hyperplan_decision_path(root_path, rid)
-    lock = hyperplan_lock_path(root_path, rid)
-
     bundle_body = canonical_json_bytes(normalized_bundle)
     decision_body = canonical_json_bytes(decision)
 
-    with exclusive_lock(lock):
-        existing_bundle = _try_load_existing_result_bundle(bundle_path)
-        existing_decision = _try_load_existing_decision(decision_path)
-        if existing_bundle is not None or existing_decision is not None:
-            same_bundle = (
-                existing_bundle is not None
-                and existing_bundle.get("digest") == normalized_bundle["digest"]
-                and _bundle_core_equal(existing_bundle, normalized_bundle)
-            )
-            same_decision = (
-                existing_decision is not None and existing_decision == decision
-            )
-            if same_bundle and same_decision:
-                return {
-                    "ok": True,
-                    "idempotent": True,
-                    "bundle_path": _rel_under_root(root_path, bundle_path),
-                    "path": _rel_under_root(root_path, decision_path),
-                    "bundle": existing_bundle,
-                    "decision": existing_decision,
-                }
-            if existing_decision is not None and not same_decision:
-                raise HyperplanError(
-                    "hyperplan-v1-decision.json conflict: refusing overwrite",
-                    code="E_TEAM_HYPERPLAN_CONFLICT",
-                )
-            if existing_bundle is not None and not same_bundle:
-                raise HyperplanError(
-                    "hyperplan-v1-result-bundle.json conflict: refusing overwrite",
-                    code="E_TEAM_HYPERPLAN_CONFLICT",
-                )
+    existing_bundle = _try_load_existing_result_bundle(bundle_path)
+    existing_decision = _try_load_existing_decision(decision_path)
+    if existing_bundle is not None or existing_decision is not None:
+        same_bundle = (
+            existing_bundle is not None
+            and existing_bundle.get("digest") == normalized_bundle["digest"]
+            and _bundle_core_equal(existing_bundle, normalized_bundle)
+        )
+        same_decision = (
+            existing_decision is not None and existing_decision == decision
+        )
+        if same_bundle and same_decision:
+            return {
+                "ok": True,
+                "idempotent": True,
+                "bundle_path": _rel_under_root(root_path, bundle_path),
+                "path": _rel_under_root(root_path, decision_path),
+                "bundle": existing_bundle,
+                "decision": existing_decision,
+            }
+        if existing_decision is not None and not same_decision:
             raise HyperplanError(
-                "incomplete prior result production refused "
-                "(bundle/decision mismatch)",
+                "hyperplan-v1-decision.json conflict: refusing overwrite",
                 code="E_TEAM_HYPERPLAN_CONFLICT",
             )
-
-        try:
-            atomic_write_bytes(
-                bundle_path, bundle_body, mode=DATA_FILE_MODE, replace=False
+        if existing_bundle is not None and not same_bundle:
+            raise HyperplanError(
+                "hyperplan-v1-result-bundle.json conflict: refusing overwrite",
+                code="E_TEAM_HYPERPLAN_CONFLICT",
             )
-        except FileExistsError as exc:
-            raise HyperplanError(
-                "concurrent result-bundle write race refused",
-                code="E_TEAM_HYPERPLAN_RACE",
-            ) from exc
-        except ContractPathError as exc:
-            raise HyperplanError(
-                f"result-bundle path refused: {exc}",
-                code="E_TEAM_HYPERPLAN_PATH",
-            ) from exc
-
-        try:
-            atomic_write_bytes(
-                decision_path, decision_body, mode=DATA_FILE_MODE, replace=False
-            )
-        except (FileExistsError, ContractPathError) as exc:
-            raise HyperplanError(
-                f"decision commit marker refused after bundle write: {exc}",
-                code="E_TEAM_HYPERPLAN_PATH",
-            ) from exc
-
-        loaded_bundle = _load_result_bundle_file(bundle_path)
-        if loaded_bundle.get("digest") != normalized_bundle["digest"]:
-            raise HyperplanError(
-                "published result-bundle digest mismatch",
-                code="E_TEAM_HYPERPLAN_CORRUPT",
-            )
-        loaded_decision = _parse_decision(
-            json.loads(decision_path.read_bytes().decode("utf-8")),
-            manifest=manifest,
+        raise HyperplanError(
+            "incomplete prior result production refused "
+            "(bundle/decision mismatch)",
+            code="E_TEAM_HYPERPLAN_CONFLICT",
         )
-        if loaded_decision != decision:
+
+    try:
+        atomic_write_bytes(
+            bundle_path, bundle_body, mode=DATA_FILE_MODE, replace=False
+        )
+    except FileExistsError as exc:
+        raise HyperplanError(
+            "concurrent result-bundle write race refused",
+            code="E_TEAM_HYPERPLAN_RACE",
+        ) from exc
+    except ContractPathError as exc:
+        raise HyperplanError(
+            f"result-bundle path refused: {exc}",
+            code="E_TEAM_HYPERPLAN_PATH",
+        ) from exc
+
+    try:
+        atomic_write_bytes(
+            decision_path, decision_body, mode=DATA_FILE_MODE, replace=False
+        )
+    except (FileExistsError, ContractPathError) as exc:
+        raise HyperplanError(
+            f"decision commit marker refused after bundle write: {exc}",
+            code="E_TEAM_HYPERPLAN_PATH",
+        ) from exc
+
+    loaded_bundle = _load_result_bundle_file(bundle_path)
+    if loaded_bundle.get("digest") != normalized_bundle["digest"]:
+        raise HyperplanError(
+            "published result-bundle digest mismatch",
+            code="E_TEAM_HYPERPLAN_CORRUPT",
+        )
+    loaded_decision = _parse_decision(
+        json.loads(decision_path.read_bytes().decode("utf-8")),
+        manifest=manifest,
+    )
+    if loaded_decision != decision:
+        raise HyperplanError(
+            "published decision mismatch",
+            code="E_TEAM_HYPERPLAN_CORRUPT",
+        )
+    return {
+        "ok": True,
+        "idempotent": False,
+        "bundle_path": _rel_under_root(root_path, bundle_path),
+        "path": _rel_under_root(root_path, decision_path),
+        "bundle": loaded_bundle,
+        "decision": loaded_decision,
+    }
+
+
+def admit_hyperplan_tasks_v1(
+    root: Path | str, run_id: str, team_id: str
+) -> dict[str, Any]:
+    """Admit a materialized Hyperplan DAG onto the Team task plane (PR12)."""
+    from omg_cli.team.compositions.task_driver import (
+        CompositionTaskDriverError,
+        admit_composition_tasks_v1,
+    )
+
+    try:
+        return admit_composition_tasks_v1(
+            root, run_id, team_id, _HyperplanTaskAdapter()
+        )
+    except CompositionTaskDriverError as exc:
+        raise HyperplanError(str(exc), code=exc.code) from exc
+
+
+def collect_hyperplan_tasks_v1(
+    root: Path | str, run_id: str, team_id: str
+) -> dict[str, Any]:
+    """Collect completed Hyperplan lane tasks into produce-decision (PR12)."""
+    from omg_cli.team.compositions.task_driver import (
+        CompositionTaskDriverError,
+        collect_composition_tasks_v1,
+    )
+
+    try:
+        return collect_composition_tasks_v1(
+            root, run_id, team_id, _HyperplanTaskAdapter()
+        )
+    except CompositionTaskDriverError as exc:
+        raise HyperplanError(str(exc), code=exc.code) from exc
+
+
+class _HyperplanTaskAdapter:
+    source_kind = "hyperplan_v1"
+    result_bundle_kind = HYPERPLAN_RESULT_BUNDLE_KIND
+    error_ns = "E_TEAM_HYPERPLAN"
+
+    def load_manifest(self, root: Path, run_id: str) -> dict[str, Any]:
+        return load_hyperplan_manifest(root, run_id)
+
+    def composition_lock_path(self, root: Path, run_id: str) -> Path:
+        return hyperplan_lock_path(root, run_id)
+
+    def persist_from_bundle_locked(
+        self,
+        *,
+        root: Path,
+        run_id: str,
+        manifest: Mapping[str, Any],
+        bundle: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        compositions = hyperplan_compositions_dir(root, run_id)
+        compositions.mkdir(parents=True, exist_ok=True)
+        if compositions.is_symlink():
             raise HyperplanError(
-                "published decision mismatch",
-                code="E_TEAM_HYPERPLAN_CORRUPT",
+                "compositions directory may not be a symlink",
+                code="E_TEAM_HYPERPLAN_PATH",
             )
-        return {
-            "ok": True,
-            "idempotent": False,
-            "bundle_path": _rel_under_root(root_path, bundle_path),
-            "path": _rel_under_root(root_path, decision_path),
-            "bundle": loaded_bundle,
-            "decision": loaded_decision,
-        }
+        return _persist_hyperplan_decision_locked(
+            root_path=root,
+            rid=run_id,
+            manifest=manifest,
+            bundle=bundle,
+        )
+
+    def raise_error(
+        self,
+        message: str,
+        *,
+        code: str,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        raise HyperplanError(message, code=code)
 
 
 def _bundle_core_equal(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
@@ -2215,6 +2308,8 @@ __all__ = [
     "HYPERPLAN_RESULT_BUNDLE_KIND",
     "HYPERPLAN_SCHEMA_VERSION",
     "HyperplanError",
+    "admit_hyperplan_tasks_v1",
+    "collect_hyperplan_tasks_v1",
     "compile_hyperplan_decision_v1",
     "compile_hyperplan_v1",
     "hyperplan_decision_path",

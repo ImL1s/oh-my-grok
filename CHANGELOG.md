@@ -10,6 +10,27 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#69 PR12 Shared Composition Task Driver V1:** one hermetic bridge
+  (`omg_cli/team/compositions/task_driver.py`) admits materialized Hyperplan
+  / Security Research manifests into PR11 `TaskBatchV1` and collects
+  completed lane `LaneTaskResultV1` payloads into the existing result-bundle
+  producers. CLI: `omg team hyperplan|security-research admit-tasks|collect-tasks
+  --run RUN --team-id TEAM [--json]`. Lock order: composition → batch →
+  numeric task IDs. Workers must not supply lane/digest/writer identity;
+  collector derives them. `execution_supported=false` retained. No auto
+  workers / panes / Jobs / providers / PoC / MCP mutation / catalog V5.
+  Docs: `docs/team-hyperplan-v1.md`, `docs/team-security-research-v1.md`.
+  Hermetic coverage in `tests/test_team_composition_task_driver.py`. Does
+  **not** close #69 (no composition execution / Antigravity live evidence /
+  full OMX / maturity promotion / `live_*` / `execution_supported=true`).
+
+### Fixed
+- **Parity OMC/OmO coverage_digest after #69 PR12 GAPS sync:** refresh proof
+  `coverage_digest` values only after gap.team.v3 +
+  `omo.team.hyperplan_security` text update for shared composition task
+  driver (no policy/mapping/status changes). Refs #69 (does not close).
+
+### Added
 - **#69 PR11 Team Catalog V4 — Atomic Task-Batch DAG Admission V1:** catalog
   schema v4 adds leader-only mutating `bulk-create-tasks` (v1–v3 goldens
   byte-frozen). Pure `compile_task_batch_v1` admits 1–32 unique safe

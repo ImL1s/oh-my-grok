@@ -901,3 +901,39 @@ def test_source_digests_bind_bundle_and_lanes(
         assert key in sources
     assert "hermetic_result_production_v1" in decision["limitations"]
     assert "execution_supported=false" in decision["limitations"]
+
+
+def test_produce_decision_still_works_after_persist_helper_extract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR12 extract of _persist_hyperplan_decision_locked must keep produce semantics."""
+    _patch_no_exec(monkeypatch)
+    run_id = _make_run(tmp_path)
+    materialize_hyperplan_v1(tmp_path, run_id, _base_spec())
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    assert manifest["execution_supported"] is False
+    out = produce_hyperplan_decision_v1(tmp_path, run_id, _bundle_for(manifest))
+    assert out["ok"] is True
+    assert out["decision"]["verdict"] == "approved"
+    again = produce_hyperplan_decision_v1(tmp_path, run_id, _bundle_for(manifest))
+    assert again["idempotent"] is True
+
+
+def test_hyperplan_cli_help_lists_admit_and_collect() -> None:
+    from omg_cli.main import build_parser
+
+    parser = build_parser()
+    help_text = ""
+    for action in parser._actions:
+        choices = getattr(action, "choices", None)
+        if not (isinstance(choices, dict) and "team" in choices):
+            continue
+        team = choices["team"]
+        for team_action in team._actions:
+            team_choices = getattr(team_action, "choices", None)
+            if isinstance(team_choices, dict) and "hyperplan" in team_choices:
+                help_text = team_choices["hyperplan"].format_help()
+                break
+    assert "admit-tasks" in help_text
+    assert "collect-tasks" in help_text
+    assert "produce-decision" in help_text

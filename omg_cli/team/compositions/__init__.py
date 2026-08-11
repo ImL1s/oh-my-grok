@@ -1,8 +1,9 @@
 """Team composition contracts (hermetic Hyperplan + Security Research produce).
 
-Hyperplan V1 and Security Research V1 (contract + hermetic result production)
-live here. Composition task/pane/Jobs execution remains out of scope until
-separately specified.
+Hyperplan V1 and Security Research V1 (contract + hermetic result production +
+shared composition task driver admission/collection) live here. Automatic
+worker/pane/Jobs/provider execution remains out of scope
+(``execution_supported=false``).
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ from omg_cli.team.compositions.hyperplan import (
     HYPERPLAN_RESULT_BUNDLE_KIND,
     HYPERPLAN_SCHEMA_VERSION,
     HyperplanError,
+    admit_hyperplan_tasks_v1,
+    collect_hyperplan_tasks_v1,
     compile_hyperplan_decision_v1,
     compile_hyperplan_v1,
     hyperplan_decision_path,
@@ -30,6 +33,8 @@ from omg_cli.team.compositions.security_research import (
     SECURITY_RESEARCH_RESULT_BUNDLE_KIND,
     SECURITY_RESEARCH_SCHEMA_VERSION,
     SecurityResearchError,
+    admit_security_research_tasks_v1,
+    collect_security_research_tasks_v1,
     compile_security_research_report_v1,
     compile_security_research_v1,
     load_security_research_manifest,
@@ -53,6 +58,10 @@ __all__ = [
     "SECURITY_RESEARCH_RESULT_BUNDLE_KIND",
     "SECURITY_RESEARCH_SCHEMA_VERSION",
     "SecurityResearchError",
+    "admit_hyperplan_tasks_v1",
+    "admit_security_research_tasks_v1",
+    "collect_hyperplan_tasks_v1",
+    "collect_security_research_tasks_v1",
     "compile_hyperplan_decision_v1",
     "compile_hyperplan_v1",
     "compile_security_research_report_v1",
