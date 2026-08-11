@@ -1,23 +1,32 @@
-# Team Security Research Composition Contract V1 (#69 PR9)
+# Team Security Research Composition Contract V1 (#69 PR12)
 
 Hermetic Security Research contract: deterministic DAG compiler, fail-closed
-manifest persistence, and **offline result production** under the canonical
-Team run root. Composition task/pane/Jobs execution remains unsupported
+manifest persistence, offline result production, and **shared composition
+task-driver admission/collection** under the canonical Team run root.
+Composition worker/pane/Jobs/PoC execution remains unsupported
 (`execution_supported=false`).
 
-Authoritative module: `omg_cli.team.compositions.security_research`.
+Authoritative modules: `omg_cli.team.compositions.security_research` and
+`omg_cli.team.compositions.task_driver`.
 
 ```bash
 omg team security-research plan --spec SPEC.json [--json]
 omg team security-research materialize --spec SPEC.json --run RUN_ID [--json]
 omg team security-research validate-report --run RUN_ID --input REPORT.json [--json]
 omg team security-research produce-report --run RUN_ID --input RESULT_BUNDLE.json [--json]
+omg team security-research admit-tasks --run RUN_ID --team-id TEAM_ID [--json]
+omg team security-research collect-tasks --run RUN_ID --team-id TEAM_ID [--json]
 ```
 
 `plan` performs **zero** filesystem mutation. `materialize` atomically writes
 only:
 
 `.omg/state/runs/<run>/team/compositions/security-research-v1.json`
+
+`admit-tasks` / `collect-tasks` share the Hyperplan PR12 driver
+(`source.kind=security_research_v1`). Admission does not launch workers; collection
+parses `LaneTaskResultV1` and invokes produce-report persistence (bundle first,
+report commit marker last). Immutable safe-PoC policy is unchanged.
 
 `produce-report` derives a report from a bounded
 `SecurityResearchResultBundleV1` (exactly one receipt per manifest lane;
@@ -125,10 +134,11 @@ in `rejected_candidates`.
 ## Honesty
 
 Security Research V1 **result production landed** under #69 PR9. Catalog v4
-atomic task-batch DAG admission landed under #69 PR11. Does **not**
-close #69: composition execution, PoC running, model synthesis, Hyperplan
-execution, live Antigravity evidence, and full OMX remain open.
-Hyperplan hermetic result production landed under #69 PR10. No `live_*`
-maturity claims.
+atomic task-batch DAG admission landed under #69 PR11. Shared composition
+task driver (admit-tasks / collect-tasks) landed under #69 PR12. Does
+**not** close #69: composition execution, PoC running, model synthesis,
+Hyperplan execution, live Antigravity evidence, and full OMX remain open.
+Hyperplan hermetic result production landed under #69 PR10. Manifests retain
+`execution_supported=false`. No `live_*` maturity claims.
 
 Refs #69.

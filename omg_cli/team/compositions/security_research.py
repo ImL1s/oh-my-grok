@@ -1,4 +1,4 @@
-"""Security Research Composition Contract V1 — hermetic result production (#69 PR9).
+"""Security Research Composition Contract V1 — hermetic produce + task driver (#69 PR12).
 
 Pure ``compile_security_research_v1`` builds a deterministic
 hunt→validate×2→consolidate→verify DAG from a bounded spec.
@@ -9,9 +9,12 @@ run root:
 
 ``compile_security_research_report_v1`` / ``produce_security_research_report_v1``
 derive a report from a bounded ``SecurityResearchResultBundleV1`` (offline;
-never executes lanes). ``execution_supported`` is always ``false``. This
-module never launches panes, Jobs, providers, Antigravity, MCP tools, or
-claimable API tasks, never runs PoCs, and never sets ``verified`` / ``passes``.
+never executes lanes). ``admit_security_research_tasks_v1`` /
+``collect_security_research_tasks_v1`` bridge the materialized DAG onto the
+PR11 Team task plane via the shared composition task driver.
+``execution_supported`` is always ``false``. This module never launches panes,
+Jobs, providers, Antigravity, MCP tools, or automatic workers, never runs
+PoCs, and never sets ``verified`` / ``passes``.
 """
 
 from __future__ import annotations
@@ -1901,9 +1904,6 @@ def produce_security_research_report_v1(
     rid = _safe_run_id(run_id)
     _require_live_run(root_path, rid)
     manifest = load_security_research_manifest(root_path, rid)
-    normalized_bundle = _normalize_result_bundle(bundle, manifest=manifest)
-    report = compile_security_research_report_v1(manifest, normalized_bundle)
-
     compositions = security_research_compositions_dir(root_path, rid)
     compositions.mkdir(parents=True, exist_ok=True)
     if compositions.is_symlink():
@@ -1911,104 +1911,199 @@ def produce_security_research_report_v1(
             "compositions directory may not be a symlink",
             code="E_TEAM_SECURITY_RESEARCH_PATH",
         )
+    lock = security_research_lock_path(root_path, rid)
+    with exclusive_lock(lock):
+        return _persist_security_research_report_locked(
+            root_path=root_path,
+            rid=rid,
+            manifest=manifest,
+            bundle=bundle,
+        )
+
+
+def _persist_security_research_report_locked(
+    *,
+    root_path: Path,
+    rid: str,
+    manifest: Mapping[str, Any],
+    bundle: Mapping[str, Any] | Any,
+) -> dict[str, Any]:
+    """Bundle-first / report-last persistence; caller holds composition lock."""
+    normalized_bundle = _normalize_result_bundle(bundle, manifest=manifest)
+    report = compile_security_research_report_v1(manifest, normalized_bundle)
     bundle_path = security_research_result_bundle_path(root_path, rid)
     report_path = security_research_report_path(root_path, rid)
-    lock = security_research_lock_path(root_path, rid)
-
     bundle_body = canonical_json_bytes(normalized_bundle)
     report_body = canonical_json_bytes(report)
 
-    with exclusive_lock(lock):
-        existing_bundle = _try_load_existing_result_bundle(bundle_path)
-        existing_report = _try_load_existing_report(report_path)
-        if existing_bundle is not None or existing_report is not None:
-            same_bundle = (
-                existing_bundle is not None
-                and existing_bundle.get("digest") == normalized_bundle["digest"]
-                and _bundle_core_equal(existing_bundle, normalized_bundle)
-            )
-            same_report = (
-                existing_report is not None
-                and existing_report == report
-            )
-            if same_bundle and same_report:
-                return {
-                    "ok": True,
-                    "idempotent": True,
-                    "bundle_path": _rel_under_root(root_path, bundle_path),
-                    "path": _rel_under_root(root_path, report_path),
-                    "bundle": existing_bundle,
-                    "report": existing_report,
-                }
-            if existing_report is not None and not same_report:
-                raise SecurityResearchError(
-                    "security-research-v1-report.json conflict: refusing overwrite",
-                    code="E_TEAM_SECURITY_RESEARCH_CONFLICT",
-                )
-            if existing_bundle is not None and not same_bundle:
-                raise SecurityResearchError(
-                    "security-research-v1-result-bundle.json conflict: "
-                    "refusing overwrite",
-                    code="E_TEAM_SECURITY_RESEARCH_CONFLICT",
-                )
-            # Bundle present without matching report (or vice versa) → refuse
-            # rather than leave a misleading partial commit.
+    existing_bundle = _try_load_existing_result_bundle(bundle_path)
+    existing_report = _try_load_existing_report(report_path)
+    if existing_bundle is not None or existing_report is not None:
+        same_bundle = (
+            existing_bundle is not None
+            and existing_bundle.get("digest") == normalized_bundle["digest"]
+            and _bundle_core_equal(existing_bundle, normalized_bundle)
+        )
+        same_report = existing_report is not None and existing_report == report
+        if same_bundle and same_report:
+            return {
+                "ok": True,
+                "idempotent": True,
+                "bundle_path": _rel_under_root(root_path, bundle_path),
+                "path": _rel_under_root(root_path, report_path),
+                "bundle": existing_bundle,
+                "report": existing_report,
+            }
+        if existing_report is not None and not same_report:
             raise SecurityResearchError(
-                "incomplete prior result production refused "
-                "(bundle/report mismatch)",
+                "security-research-v1-report.json conflict: refusing overwrite",
                 code="E_TEAM_SECURITY_RESEARCH_CONFLICT",
             )
-
-        try:
-            atomic_write_bytes(
-                bundle_path, bundle_body, mode=DATA_FILE_MODE, replace=False
+        if existing_bundle is not None and not same_bundle:
+            raise SecurityResearchError(
+                "security-research-v1-result-bundle.json conflict: "
+                "refusing overwrite",
+                code="E_TEAM_SECURITY_RESEARCH_CONFLICT",
             )
-        except FileExistsError as exc:
-            raise SecurityResearchError(
-                "concurrent result-bundle write race refused",
-                code="E_TEAM_SECURITY_RESEARCH_RACE",
-            ) from exc
-        except ContractPathError as exc:
-            raise SecurityResearchError(
-                f"result-bundle path refused: {exc}",
-                code="E_TEAM_SECURITY_RESEARCH_PATH",
-            ) from exc
-
-        try:
-            atomic_write_bytes(
-                report_path, report_body, mode=DATA_FILE_MODE, replace=False
-            )
-        except (FileExistsError, ContractPathError) as exc:
-            # Bundle may exist without report — report is the commit marker, so
-            # no authoritative report remains. Surface the failure.
-            raise SecurityResearchError(
-                f"report commit marker refused after bundle write: {exc}",
-                code="E_TEAM_SECURITY_RESEARCH_PATH",
-            ) from exc
-
-        loaded_bundle = _load_result_bundle_file(bundle_path)
-        if loaded_bundle.get("digest") != normalized_bundle["digest"]:
-            raise SecurityResearchError(
-                "published result-bundle digest mismatch",
-                code="E_TEAM_SECURITY_RESEARCH_CORRUPT",
-            )
-        loaded_report = _parse_report(
-            json.loads(report_path.read_bytes().decode("utf-8")),
-            manifest=manifest,
+        raise SecurityResearchError(
+            "incomplete prior result production refused "
+            "(bundle/report mismatch)",
+            code="E_TEAM_SECURITY_RESEARCH_CONFLICT",
         )
-        if loaded_report != report:
+
+    try:
+        atomic_write_bytes(
+            bundle_path, bundle_body, mode=DATA_FILE_MODE, replace=False
+        )
+    except FileExistsError as exc:
+        raise SecurityResearchError(
+            "concurrent result-bundle write race refused",
+            code="E_TEAM_SECURITY_RESEARCH_RACE",
+        ) from exc
+    except ContractPathError as exc:
+        raise SecurityResearchError(
+            f"result-bundle path refused: {exc}",
+            code="E_TEAM_SECURITY_RESEARCH_PATH",
+        ) from exc
+
+    try:
+        atomic_write_bytes(
+            report_path, report_body, mode=DATA_FILE_MODE, replace=False
+        )
+    except (FileExistsError, ContractPathError) as exc:
+        raise SecurityResearchError(
+            f"report commit marker refused after bundle write: {exc}",
+            code="E_TEAM_SECURITY_RESEARCH_PATH",
+        ) from exc
+
+    loaded_bundle = _load_result_bundle_file(bundle_path)
+    if loaded_bundle.get("digest") != normalized_bundle["digest"]:
+        raise SecurityResearchError(
+            "published result-bundle digest mismatch",
+            code="E_TEAM_SECURITY_RESEARCH_CORRUPT",
+        )
+    loaded_report = _parse_report(
+        json.loads(report_path.read_bytes().decode("utf-8")),
+        manifest=manifest,
+    )
+    if loaded_report != report:
+        raise SecurityResearchError(
+            "published report mismatch",
+            code="E_TEAM_SECURITY_RESEARCH_CORRUPT",
+        )
+    return {
+        "ok": True,
+        "idempotent": False,
+        "bundle_path": _rel_under_root(root_path, bundle_path),
+        "path": _rel_under_root(root_path, report_path),
+        "bundle": loaded_bundle,
+        "report": loaded_report,
+    }
+
+
+def admit_security_research_tasks_v1(
+    root: Path | str,
+    run_id: str,
+    team_id: str,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Admit a materialized Security Research DAG onto the Team task plane."""
+    from omg_cli.team.compositions.task_driver import (
+        CompositionTaskDriverError,
+        admit_composition_tasks_v1,
+    )
+
+    try:
+        return admit_composition_tasks_v1(
+            root, run_id, team_id, _SecurityResearchTaskAdapter(), env=env
+        )
+    except CompositionTaskDriverError as exc:
+        raise SecurityResearchError(str(exc), code=exc.code) from exc
+
+
+def collect_security_research_tasks_v1(
+    root: Path | str,
+    run_id: str,
+    team_id: str,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Collect completed Security Research lane tasks into produce-report."""
+    from omg_cli.team.compositions.task_driver import (
+        CompositionTaskDriverError,
+        collect_composition_tasks_v1,
+    )
+
+    try:
+        return collect_composition_tasks_v1(
+            root, run_id, team_id, _SecurityResearchTaskAdapter(), env=env
+        )
+    except CompositionTaskDriverError as exc:
+        raise SecurityResearchError(str(exc), code=exc.code) from exc
+
+
+class _SecurityResearchTaskAdapter:
+    source_kind = "security_research_v1"
+    result_bundle_kind = SECURITY_RESEARCH_RESULT_BUNDLE_KIND
+    error_ns = "E_TEAM_SECURITY_RESEARCH"
+
+    def load_manifest(self, root: Path, run_id: str) -> dict[str, Any]:
+        return load_security_research_manifest(root, run_id)
+
+    def composition_lock_path(self, root: Path, run_id: str) -> Path:
+        return security_research_lock_path(root, run_id)
+
+    def persist_from_bundle_locked(
+        self,
+        *,
+        root: Path,
+        run_id: str,
+        manifest: Mapping[str, Any],
+        bundle: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        compositions = security_research_compositions_dir(root, run_id)
+        compositions.mkdir(parents=True, exist_ok=True)
+        if compositions.is_symlink():
             raise SecurityResearchError(
-                "published report mismatch",
-                code="E_TEAM_SECURITY_RESEARCH_CORRUPT",
+                "compositions directory may not be a symlink",
+                code="E_TEAM_SECURITY_RESEARCH_PATH",
             )
-        return {
-            "ok": True,
-            "idempotent": False,
-            "bundle_path": _rel_under_root(root_path, bundle_path),
-            "path": _rel_under_root(root_path, report_path),
-            "bundle": loaded_bundle,
-            "report": loaded_report,
-        }
+        return _persist_security_research_report_locked(
+            root_path=root,
+            rid=run_id,
+            manifest=manifest,
+            bundle=bundle,
+        )
+
+    def raise_error(
+        self,
+        message: str,
+        *,
+        code: str,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        raise SecurityResearchError(message, code=code)
 
 
 def _bundle_core_equal(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
@@ -3314,6 +3409,8 @@ __all__ = [
     "SECURITY_RESEARCH_RESULT_BUNDLE_KIND",
     "SECURITY_RESEARCH_SCHEMA_VERSION",
     "SecurityResearchError",
+    "admit_security_research_tasks_v1",
+    "collect_security_research_tasks_v1",
     "compile_security_research_report_v1",
     "compile_security_research_v1",
     "load_security_research_manifest",

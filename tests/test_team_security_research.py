@@ -1236,3 +1236,41 @@ def test_codex_p1_every_hunted_candidate_needs_disposition(
     )
     with pytest.raises(SecurityResearchError, match="lack consolidate disposition"):
         compile_security_research_report_v1(manifest, bundle)
+
+
+def test_produce_report_still_works_after_persist_helper_extract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR12 extract of _persist_security_research_report_locked keeps produce semantics."""
+    _patch_no_exec(monkeypatch)
+    run_id = _make_run(tmp_path)
+    materialize_security_research_v1(tmp_path, run_id, _base_spec())
+    manifest = load_security_research_manifest(tmp_path, run_id)
+    assert manifest["execution_supported"] is False
+    assert manifest["safe_poc_policy"]["immutable"] is True
+    assert manifest["safe_poc_policy"]["execution_supported"] is False
+    out = produce_security_research_report_v1(tmp_path, run_id, _bundle_for(manifest))
+    assert out["ok"] is True
+    assert out["report"]["verdict"] == "pass"
+    again = produce_security_research_report_v1(tmp_path, run_id, _bundle_for(manifest))
+    assert again["idempotent"] is True
+
+
+def test_security_research_cli_help_lists_admit_and_collect() -> None:
+    from omg_cli.main import build_parser
+
+    parser = build_parser()
+    help_text = ""
+    for action in parser._actions:
+        choices = getattr(action, "choices", None)
+        if not (isinstance(choices, dict) and "team" in choices):
+            continue
+        team = choices["team"]
+        for team_action in team._actions:
+            team_choices = getattr(team_action, "choices", None)
+            if isinstance(team_choices, dict) and "security-research" in team_choices:
+                help_text = team_choices["security-research"].format_help()
+                break
+    assert "admit-tasks" in help_text
+    assert "collect-tasks" in help_text
+    assert "produce-report" in help_text

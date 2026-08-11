@@ -1,23 +1,39 @@
-# Team Hyperplan Composition Contract V1 (#69 PR10)
+# Team Hyperplan Composition Contract V1 (#69 PR12)
 
 Hermetic Hyperplan contract: deterministic DAG compiler, fail-closed
-manifest persistence, and **offline result production** under the canonical
-Team run root. Composition task/pane/Jobs execution remains unsupported
+manifest persistence, offline result production, and **shared composition
+task-driver admission/collection** under the canonical Team run root.
+Composition worker/pane/Jobs/provider execution remains unsupported
 (`execution_supported=false`).
 
-Authoritative module: `omg_cli.team.compositions.hyperplan`.
+Authoritative modules: `omg_cli.team.compositions.hyperplan` and
+`omg_cli.team.compositions.task_driver`.
 
 ```bash
 omg team hyperplan plan --spec SPEC.json [--json]
 omg team hyperplan materialize --spec SPEC.json --run RUN_ID [--json]
 omg team hyperplan validate-decision --run RUN_ID --input DECISION.json [--json]
 omg team hyperplan produce-decision --run RUN_ID --input RESULT_BUNDLE.json [--json]
+omg team hyperplan admit-tasks --run RUN_ID --team-id TEAM_ID [--json]
+omg team hyperplan collect-tasks --run RUN_ID --team-id TEAM_ID [--json]
 ```
 
 `plan` performs **zero** filesystem mutation. `materialize` atomically writes
 only:
 
 `.omg/state/runs/<run>/team/compositions/hyperplan-v1.json`
+
+`admit-tasks` revalidates the materialized manifest, compiles a deterministic
+PR11 `TaskBatchV1` (`source.kind=hyperplan_v1`, `task_key=lane_id`,
+`requires_code_change=false`), and calls `admit_task_batch_v1`. It does **not**
+launch workers.
+
+`collect-tasks` requires a committed batch with exact lane coverage, every
+mapped task `completed` + claim-free + still bound, parses worker
+`LaneTaskResultV1` JSON (workers must not supply lane/digest/writer identity),
+builds the existing result bundle, and invokes produce-decision persistence
+(bundle first, decision commit marker last). Failures write no authoritative
+decision.
 
 `produce-decision` derives a decision from a bounded
 `HyperplanResultBundleV1` (exactly one receipt per manifest lane;
@@ -107,10 +123,12 @@ can only be stored under `verdict=rejected` (or fails closed).
 ## Honesty
 
 Hyperplan V1 **result production landed** under #69 PR10. Catalog v4
-atomic task-batch DAG admission landed under #69 PR11. Does **not**
-close #69: Hyperplan execution, model synthesis, Security Research
-composition execution, live Antigravity evidence, and full OMX
-remain open. Security Research hermetic result production landed under
-#69 PR9. No `live_*` maturity claims.
+atomic task-batch DAG admission landed under #69 PR11. Shared composition
+task driver (admit-tasks / collect-tasks) landed under #69 PR12. Does
+**not** close #69: Hyperplan execution (auto workers / providers / panes /
+Jobs), model synthesis, Security Research composition execution, live
+Antigravity evidence, and full OMX remain open. Security Research
+hermetic result production landed under #69 PR9. Manifests retain
+`execution_supported=false`. No `live_*` maturity claims.
 
 Refs #69.

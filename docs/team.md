@@ -154,36 +154,41 @@ New start/scale also stamp an additive `route` descriptor
   model synthesis / PoC running
   (Security Research hermetic result production landed in PR9;
   Hyperplan hermetic result production landed in PR10;
-  catalog v4 atomic task-batch DAG admission landed in PR11 — partial
+  catalog v4 task-batch admission (PR11) + composition task driver admit/collect (PR12) landed — partial
   catalog, not full OMX)
 - No automatic replacement policy / retry scheduler / attempt budgets
 - No pane↔job migration during replacement
 - No TUI / native execution path
 - Does **not** close #69
 
-## Hyperplan V1 (hermetic produce)
+## Hyperplan V1 (hermetic produce + task driver)
 
-See `docs/team-hyperplan-v1.md`. Contract + hermetic result production landed;
-execution remains open (`execution_supported=false`).
+See `docs/team-hyperplan-v1.md`. Contract + hermetic result production +
+shared composition task-driver admission/collection landed; automatic
+worker/provider/pane/Jobs execution remains open (`execution_supported=false`).
 
 ```bash
 omg team hyperplan plan --spec SPEC.json --json
 omg team hyperplan materialize --spec SPEC.json --run RUN
 omg team hyperplan validate-decision --run RUN --input DECISION.json
 omg team hyperplan produce-decision --run RUN --input RESULT_BUNDLE.json
+omg team hyperplan admit-tasks --run RUN --team-id TEAM
+omg team hyperplan collect-tasks --run RUN --team-id TEAM
 ```
 
-## Security Research V1 (hermetic produce)
+## Security Research V1 (hermetic produce + task driver)
 
 See `docs/team-security-research-v1.md`. Contract + hermetic result production
-landed; composition execution / PoC running remain open
-(`execution_supported=false`).
++ shared composition task-driver admission/collection landed; composition
+execution / PoC running remain open (`execution_supported=false`).
 
 ```bash
 omg team security-research plan --spec SPEC.json --json
 omg team security-research materialize --spec SPEC.json --run RUN
 omg team security-research validate-report --run RUN --input REPORT.json
 omg team security-research produce-report --run RUN --input RESULT_BUNDLE.json
+omg team security-research admit-tasks --run RUN --team-id TEAM
+omg team security-research collect-tasks --run RUN --team-id TEAM
 ```
 
 Refs #69.

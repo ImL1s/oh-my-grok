@@ -1037,6 +1037,8 @@ def cmd_team(args: argparse.Namespace) -> int:
             from omg_cli.cli_envelope import wants_json
             from omg_cli.team.compositions.hyperplan import (
                 HyperplanError,
+                admit_hyperplan_tasks_v1,
+                collect_hyperplan_tasks_v1,
                 compile_hyperplan_v1,
                 materialize_hyperplan_v1,
                 produce_hyperplan_decision_v1,
@@ -1157,6 +1159,52 @@ def cmd_team(args: argparse.Namespace) -> int:
                             file=sys.stderr,
                         )
                     return 0
+                if hp_action == "admit-tasks":
+                    team_id = getattr(args, "team_id", None)
+                    if not run_id or not team_id:
+                        print(
+                            "omg team hyperplan admit-tasks: "
+                            "--run and --team-id required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    result = admit_hyperplan_tasks_v1(
+                        root, str(run_id), str(team_id)
+                    )
+                    emit_data(args, "team.hyperplan", result)
+                    if not wants_json(args):
+                        tag = "idempotent" if result.get("idempotent") else "admitted"
+                        print(
+                            f"hyperplan admit-tasks {tag} "
+                            f"batch={result.get('batch_id')} "
+                            f"tasks={len(result.get('task_key_to_id') or {})} "
+                            f"execution_supported={result.get('execution_supported')}",
+                            file=sys.stderr,
+                        )
+                    return 0
+                if hp_action == "collect-tasks":
+                    team_id = getattr(args, "team_id", None)
+                    if not run_id or not team_id:
+                        print(
+                            "omg team hyperplan collect-tasks: "
+                            "--run and --team-id required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    result = collect_hyperplan_tasks_v1(
+                        root, str(run_id), str(team_id)
+                    )
+                    emit_data(args, "team.hyperplan", result)
+                    if not wants_json(args):
+                        tag = "idempotent" if result.get("idempotent") else "wrote"
+                        decision = result.get("decision") or {}
+                        print(
+                            f"hyperplan collect-tasks {tag} "
+                            f"verdict={decision.get('verdict')} "
+                            f"path={result.get('path')}",
+                            file=sys.stderr,
+                        )
+                    return 0
                 print(
                     f"omg team hyperplan: unknown action {hp_action!r}",
                     file=sys.stderr,
@@ -1178,6 +1226,8 @@ def cmd_team(args: argparse.Namespace) -> int:
             from omg_cli.cli_envelope import wants_json
             from omg_cli.team.compositions.security_research import (
                 SecurityResearchError,
+                admit_security_research_tasks_v1,
+                collect_security_research_tasks_v1,
                 compile_security_research_v1,
                 materialize_security_research_v1,
                 produce_security_research_report_v1,
@@ -1296,6 +1346,52 @@ def cmd_team(args: argparse.Namespace) -> int:
                         tag = "idempotent" if result.get("idempotent") else "wrote"
                         print(
                             f"security-research produce-report {tag} "
+                            f"verdict={report.get('verdict')} "
+                            f"path={result.get('path')}",
+                            file=sys.stderr,
+                        )
+                    return 0
+                if sr_action == "admit-tasks":
+                    team_id = getattr(args, "team_id", None)
+                    if not run_id or not team_id:
+                        print(
+                            "omg team security-research admit-tasks: "
+                            "--run and --team-id required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    result = admit_security_research_tasks_v1(
+                        root, str(run_id), str(team_id)
+                    )
+                    emit_data(args, "team.security_research", result)
+                    if not wants_json(args):
+                        tag = "idempotent" if result.get("idempotent") else "admitted"
+                        print(
+                            f"security-research admit-tasks {tag} "
+                            f"batch={result.get('batch_id')} "
+                            f"tasks={len(result.get('task_key_to_id') or {})} "
+                            f"execution_supported={result.get('execution_supported')}",
+                            file=sys.stderr,
+                        )
+                    return 0
+                if sr_action == "collect-tasks":
+                    team_id = getattr(args, "team_id", None)
+                    if not run_id or not team_id:
+                        print(
+                            "omg team security-research collect-tasks: "
+                            "--run and --team-id required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    result = collect_security_research_tasks_v1(
+                        root, str(run_id), str(team_id)
+                    )
+                    emit_data(args, "team.security_research", result)
+                    if not wants_json(args):
+                        report = result.get("report") or {}
+                        tag = "idempotent" if result.get("idempotent") else "wrote"
+                        print(
+                            f"security-research collect-tasks {tag} "
                             f"verdict={report.get('verdict')} "
                             f"path={result.get('path')}",
                             file=sys.stderr,
@@ -2581,9 +2677,9 @@ def register_team_parsers(
         "hyperplan",
         parents=[common],
         help=(
-            "Hyperplan Composition Contract V1 (hermetic produce; "
-            "non-executing): plan|materialize|validate-decision|produce-decision "
-            "(#69 PR10)"
+            "Hyperplan Composition Contract V1 (hermetic produce + task driver; "
+            "non-executing): plan|materialize|validate-decision|produce-decision|"
+            "admit-tasks|collect-tasks (#69 PR12)"
         ),
     )
     hp_sub = p_t_hp.add_subparsers(dest="hyperplan_action")
@@ -2676,13 +2772,65 @@ def register_team_parsers(
         hyperplan_action="produce-decision",
     )
 
+    p_hp_admit = hp_sub.add_parser(
+        "admit-tasks",
+        parents=[common],
+        help=(
+            "admit materialized Hyperplan lanes as a committed Team task batch "
+            "(execution_supported=false; no auto workers)"
+        ),
+    )
+    p_hp_admit.add_argument(
+        "--run",
+        dest="run_id",
+        required=True,
+        help="run_id with materialized hyperplan-v1.json",
+    )
+    p_hp_admit.add_argument(
+        "--team-id",
+        dest="team_id",
+        required=True,
+        help="Team API team_id for task-batch admission",
+    )
+    p_hp_admit.set_defaults(
+        func=cmd_team,
+        team_action="hyperplan",
+        hyperplan_action="admit-tasks",
+    )
+
+    p_hp_collect = hp_sub.add_parser(
+        "collect-tasks",
+        parents=[common],
+        help=(
+            "collect completed Hyperplan lane tasks into produce-decision "
+            "(fail-closed; no auto workers)"
+        ),
+    )
+    p_hp_collect.add_argument(
+        "--run",
+        dest="run_id",
+        required=True,
+        help="run_id with admitted Hyperplan task batch",
+    )
+    p_hp_collect.add_argument(
+        "--team-id",
+        dest="team_id",
+        required=True,
+        help="Team API team_id for task-batch collection",
+    )
+    p_hp_collect.set_defaults(
+        func=cmd_team,
+        team_action="hyperplan",
+        hyperplan_action="collect-tasks",
+    )
+
     p_t_sr = team_sub.add_parser(
         "security-research",
         parents=[common],
         help=(
-            "Security Research Composition Contract V1 (hermetic produce; "
-            "non-executing): plan|materialize|validate-report|produce-report "
-            "(#69 PR9)"
+            "Security Research Composition Contract V1 (hermetic produce + task "
+            "driver; non-executing): plan|materialize|validate-report|"
+            "produce-report|admit-tasks|collect-tasks (#69 PR12)"
         ),
     )
     sr_sub = p_t_sr.add_subparsers(dest="security_research_action")
@@ -2783,6 +2931,58 @@ def register_team_parsers(
         func=cmd_team,
         team_action="security-research",
         security_research_action="produce-report",
+    )
+
+    p_sr_admit = sr_sub.add_parser(
+        "admit-tasks",
+        parents=[common],
+        help=(
+            "admit materialized Security Research lanes as a committed Team "
+            "task batch (execution_supported=false; no auto workers/PoC)"
+        ),
+    )
+    p_sr_admit.add_argument(
+        "--run",
+        dest="run_id",
+        required=True,
+        help="run_id with materialized security-research-v1.json",
+    )
+    p_sr_admit.add_argument(
+        "--team-id",
+        dest="team_id",
+        required=True,
+        help="Team API team_id for task-batch admission",
+    )
+    p_sr_admit.set_defaults(
+        func=cmd_team,
+        team_action="security-research",
+        security_research_action="admit-tasks",
+    )
+
+    p_sr_collect = sr_sub.add_parser(
+        "collect-tasks",
+        parents=[common],
+        help=(
+            "collect completed Security Research lane tasks into produce-report "
+            "(fail-closed; no auto workers/PoC)"
+        ),
+    )
+    p_sr_collect.add_argument(
+        "--run",
+        dest="run_id",
+        required=True,
+        help="run_id with admitted Security Research task batch",
+    )
+    p_sr_collect.add_argument(
+        "--team-id",
+        dest="team_id",
+        required=True,
+        help="Team API team_id for task-batch collection",
+    )
+    p_sr_collect.set_defaults(
+        func=cmd_team,
+        team_action="security-research",
+        security_research_action="collect-tasks",
     )
 
     p_team.set_defaults(func=cmd_team)
