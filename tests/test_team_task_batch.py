@@ -793,5 +793,43 @@ def test_incomplete_prepared_mapping_raises_task_batch_error(
     tampered["task_key_to_id"] = mapping
     path.write_bytes(canonical_json_bytes(tampered))
 
-    with pytest.raises(tb.TaskBatchError, match="keys mismatch|missing entry"):
+    with pytest.raises(tb.TaskBatchError, match="keys mismatch|missing entry|topo_order"):
         tb.admit_task_batch_v1(tmp_path, payload)
+
+
+def test_after_reserve_create_task_skips_reserved_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """next_task_id must advance before prepared record is durable."""
+    run_id = _seed(tmp_path, monkeypatch)
+    payload = _batch(run_id, key="reserve-first")
+
+    def after_reserve(point: str) -> None:
+        if point == "after_reserve":
+            raise RuntimeError("injected crash after reserve")
+
+    tb._crash_hook = after_reserve
+    with pytest.raises(RuntimeError, match="after reserve"):
+        tb.admit_task_batch_v1(tmp_path, payload)
+    tb._crash_hook = None
+
+    path = tb.batch_record_path(tmp_path, run_id, TEAM, "reserve-first")
+    record = tb._load_batch_record(path, run_id=run_id, team_id=TEAM)
+    assert record is not None
+    reserved_ids = set(record["task_key_to_id"].values())
+
+    code, created = execute_team_api(
+        "create-task",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "subject": "after-reserve",
+            "description": "must not steal reserved ids",
+            "workers": ["w1"],
+        },
+        root=tmp_path,
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    assert code == 0
+    new_id = str(created["data"]["task"]["id"])
+    assert new_id not in reserved_ids

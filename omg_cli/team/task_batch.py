@@ -444,12 +444,22 @@ def _validate_batch_record(
                 "task batch record task_id must be numeric",
                 code="E_TEAM_TASK_BATCH_CORRUPT",
             )
+        if tid in normalized_mapping.values():
+            raise TaskBatchError(
+                f"task batch record task_key_to_id duplicate task id {tid!r}",
+                code="E_TEAM_TASK_BATCH_CORRUPT",
+            )
         normalized_mapping[task_key] = tid
     row["task_key_to_id"] = normalized_mapping
     topo = row.get("topo_order")
     if not isinstance(topo, list) or not all(isinstance(x, str) for x in topo):
         raise TaskBatchError(
             "task batch record topo_order must be a string array",
+            code="E_TEAM_TASK_BATCH_CORRUPT",
+        )
+    if set(topo) != set(normalized_mapping) or len(topo) != len(normalized_mapping):
+        raise TaskBatchError(
+            "task batch record topo_order keys mismatch task_key_to_id",
             code="E_TEAM_TASK_BATCH_CORRUPT",
         )
     tasks = row.get("tasks")
@@ -794,6 +804,16 @@ def admit_task_batch_v1(
                     str(task["task_key"]): reserved[idx]
                     for idx, task in enumerate(compiled["tasks"])
                 }
+                # Advance next_task_id before the prepared record so a crash
+                # cannot leave reserved IDs allocatable to create-task.
+                _write_config(
+                    root_path,
+                    {
+                        **config,
+                        "next_task_id": next_task_id,
+                        "updated_at": _utc_now(),
+                    },
+                )
                 record = {
                     "store_kind": BATCH_STORE_KIND,
                     "schema_version": BATCH_SCHEMA_VERSION,
@@ -811,14 +831,6 @@ def admit_task_batch_v1(
                     "updated_at": _utc_now(),
                 }
                 _write_batch_record(batch_path, record)
-                _write_config(
-                    root_path,
-                    {
-                        **config,
-                        "next_task_id": next_task_id,
-                        "updated_at": _utc_now(),
-                    },
-                )
                 _invoke_crash_hook("after_reserve")
 
             for idx, task in enumerate(compiled["tasks"]):
