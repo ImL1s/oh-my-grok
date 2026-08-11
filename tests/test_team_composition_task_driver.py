@@ -31,6 +31,7 @@ from omg_cli.team.compositions.hyperplan import (
 )
 from omg_cli.team.compositions.security_research import (
     SECURITY_RESEARCH_RESULT_BUNDLE_KIND,
+    SecurityResearchError,
     admit_security_research_tasks_v1,
     collect_security_research_tasks_v1,
     compile_security_research_report_v1,
@@ -1136,3 +1137,90 @@ def test_uncommitted_batch_refused(
     with pytest.raises(HyperplanError, match="committed|missing"):
         collect_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
     assert not hyperplan_decision_path(tmp_path, run_id).exists()
+
+
+def _worker_env(run_id: str) -> dict[str, str]:
+    return {
+        EXPERIMENTAL_ENV: "1",
+        "OMG_TEAM_WORKER": "1",
+        "OMG_TEAM_WORKER_ID": "w1",
+        "OMG_TEAM_RUN_ID": run_id,
+        "OMG_TEAM_ID": TEAM,
+    }
+
+
+def test_worker_env_cannot_admit_or_collect_composition_tasks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leader-only gate: workers must not bypass bulk-create-tasks denial."""
+    run_id = _seed(tmp_path, monkeypatch)
+    mat = materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    manifest = mat["manifest"]
+    worker_env = _worker_env(run_id)
+
+    with pytest.raises(HyperplanError, match="cannot admit/collect|leader-only") as exc_info:
+        admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM, env=worker_env)
+    assert exc_info.value.code == "E_TEAM_COMPOSITION_TASK_GATE"
+
+    _, idem = composition_batch_ids(SOURCE_KIND_HYPERPLAN, manifest["composition_id"])
+    record = tb._load_batch_record(
+        tb.batch_record_path(tmp_path, run_id, TEAM, idem),
+        run_id=run_id,
+        team_id=TEAM,
+    )
+    assert record is None
+
+    # Leader admits, then worker collect is refused (no decision written).
+    leader = admit_hyperplan_tasks_v1(
+        tmp_path, run_id, TEAM, env={EXPERIMENTAL_ENV: "1"}
+    )
+    assert leader["ok"] is True
+    bundle = _hp_bundle(manifest)
+    _complete_lane_tasks(
+        tmp_path,
+        run_id=run_id,
+        team_id=TEAM,
+        mapping=leader["task_key_to_id"],
+        bundle=bundle,
+    )
+    with pytest.raises(HyperplanError, match="cannot admit/collect|leader-only") as col_exc:
+        collect_hyperplan_tasks_v1(tmp_path, run_id, TEAM, env=worker_env)
+    assert col_exc.value.code == "E_TEAM_COMPOSITION_TASK_GATE"
+    assert not hyperplan_decision_path(tmp_path, run_id).exists()
+
+    # Security research worker admit refused similarly.
+    run_sr = _seed(tmp_path / "sr-gate", monkeypatch)
+    materialize_security_research_v1(tmp_path / "sr-gate", run_sr, _sr_spec())
+    with pytest.raises(
+        SecurityResearchError, match="cannot admit/collect|leader-only"
+    ) as sr_exc:
+        admit_security_research_tasks_v1(
+            tmp_path / "sr-gate", run_sr, TEAM, env=_worker_env(run_sr)
+        )
+    assert sr_exc.value.code == "E_TEAM_COMPOSITION_TASK_GATE"
+
+
+def test_leader_env_still_admits_and_collects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed(tmp_path, monkeypatch)
+    mat = materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    leader_env = {EXPERIMENTAL_ENV: "1"}
+    admitted = admit_hyperplan_tasks_v1(
+        tmp_path, run_id, TEAM, env=leader_env
+    )
+    assert admitted["ok"] is True
+    assert admitted["execution_supported"] is False
+    bundle = _hp_bundle(mat["manifest"])
+    _complete_lane_tasks(
+        tmp_path,
+        run_id=run_id,
+        team_id=TEAM,
+        mapping=admitted["task_key_to_id"],
+        bundle=bundle,
+    )
+    collected = collect_hyperplan_tasks_v1(
+        tmp_path, run_id, TEAM, env=leader_env
+    )
+    assert collected["ok"] is True
+    assert collected["decision"]["verdict"] == "approved"

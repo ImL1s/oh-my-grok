@@ -2022,7 +2022,11 @@ def _persist_security_research_report_locked(
 
 
 def admit_security_research_tasks_v1(
-    root: Path | str, run_id: str, team_id: str
+    root: Path | str,
+    run_id: str,
+    team_id: str,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Admit a materialized Security Research DAG onto the Team task plane."""
     from omg_cli.team.compositions.task_driver import (
@@ -2032,14 +2036,18 @@ def admit_security_research_tasks_v1(
 
     try:
         return admit_composition_tasks_v1(
-            root, run_id, team_id, _SecurityResearchTaskAdapter()
+            root, run_id, team_id, _SecurityResearchTaskAdapter(), env=env
         )
     except CompositionTaskDriverError as exc:
         raise SecurityResearchError(str(exc), code=exc.code) from exc
 
 
 def collect_security_research_tasks_v1(
-    root: Path | str, run_id: str, team_id: str
+    root: Path | str,
+    run_id: str,
+    team_id: str,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Collect completed Security Research lane tasks into produce-report."""
     from omg_cli.team.compositions.task_driver import (
@@ -2049,7 +2057,7 @@ def collect_security_research_tasks_v1(
 
     try:
         return collect_composition_tasks_v1(
-            root, run_id, team_id, _SecurityResearchTaskAdapter()
+            root, run_id, team_id, _SecurityResearchTaskAdapter(), env=env
         )
     except CompositionTaskDriverError as exc:
         raise SecurityResearchError(str(exc), code=exc.code) from exc

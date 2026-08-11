@@ -31,6 +31,12 @@ from omg_cli.team.api import (
     _read_task,
     _require_control_plane,
     _task_path,
+    team_api_worker_context_present,
+)
+from omg_cli.team.plane import (
+    in_non_team_spawn_context,
+    in_spawned_worker_context,
+    team_worker_identity,
 )
 from omg_cli.team.task_batch import (
     TaskBatchError,
@@ -385,13 +391,58 @@ def parse_lane_task_result_v1(raw: Any) -> dict[str, Any]:
     return out
 
 
+def _require_leader_only_env(env: Mapping[str, str] | None = None) -> None:
+    """Refuse composition admit/collect from worker or incomplete worker env.
+
+    Mirrors ``execute_team_api`` leader-only refusal for ops with
+    ``worker_allowed=False`` (e.g. ``bulk-create-tasks``): non-team spawn
+    markers, identified team workers, and partial/invalid worker contexts
+    must not fall through to leader semantics.
+    """
+    if in_non_team_spawn_context(env):
+        raise CompositionTaskDriverError(
+            "composition task driver refused: already inside a spawned-worker "
+            "context (depth-1; process-fanout / spawned-subagent marker set)",
+            code="E_TEAM_COMPOSITION_TASK_GATE",
+            details={"error": "non_team_spawn_denied"},
+        )
+    identity = team_worker_identity(env)
+    if identity is not None:
+        raise CompositionTaskDriverError(
+            f"worker {identity!r} cannot admit/collect composition tasks "
+            "(leader-only; mirrors bulk-create-tasks worker_allowed=False)",
+            code="E_TEAM_COMPOSITION_TASK_GATE",
+            details={
+                "error": "worker_op_denied",
+                "worker": identity,
+            },
+        )
+    if team_api_worker_context_present(env):
+        raise CompositionTaskDriverError(
+            "composition task driver refused: partial or invalid worker "
+            "environment",
+            code="E_TEAM_COMPOSITION_TASK_GATE",
+            details={"error": "worker_env_incomplete"},
+        )
+    if in_spawned_worker_context(env):
+        raise CompositionTaskDriverError(
+            "composition task driver refused: OMG_TEAM_WORKER set without "
+            "OMG_TEAM_WORKER_ID",
+            code="E_TEAM_COMPOSITION_TASK_GATE",
+            details={"error": "worker_env_incomplete"},
+        )
+
+
 def admit_composition_tasks_v1(
     root: Path | str,
     run_id: str,
     team_id: str,
     adapter: CompositionTaskAdapter,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Admit a materialized composition DAG as a committed Team task batch."""
+    _require_leader_only_env(env)
     root_path = Path(root).resolve()
     rid = _safe_run_id(run_id)
     try:
@@ -549,8 +600,11 @@ def collect_composition_tasks_v1(
     run_id: str,
     team_id: str,
     adapter: CompositionTaskAdapter,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Collect completed lane tasks into the existing result-bundle producer path."""
+    _require_leader_only_env(env)
     root_path = Path(root).resolve()
     rid = _safe_run_id(run_id)
     try:

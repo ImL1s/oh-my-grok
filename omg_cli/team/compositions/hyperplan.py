@@ -1377,7 +1377,11 @@ def _persist_hyperplan_decision_locked(
 
 
 def admit_hyperplan_tasks_v1(
-    root: Path | str, run_id: str, team_id: str
+    root: Path | str,
+    run_id: str,
+    team_id: str,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Admit a materialized Hyperplan DAG onto the Team task plane (PR12)."""
     from omg_cli.team.compositions.task_driver import (
@@ -1387,14 +1391,18 @@ def admit_hyperplan_tasks_v1(
 
     try:
         return admit_composition_tasks_v1(
-            root, run_id, team_id, _HyperplanTaskAdapter()
+            root, run_id, team_id, _HyperplanTaskAdapter(), env=env
         )
     except CompositionTaskDriverError as exc:
         raise HyperplanError(str(exc), code=exc.code) from exc
 
 
 def collect_hyperplan_tasks_v1(
-    root: Path | str, run_id: str, team_id: str
+    root: Path | str,
+    run_id: str,
+    team_id: str,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Collect completed Hyperplan lane tasks into produce-decision (PR12)."""
     from omg_cli.team.compositions.task_driver import (
@@ -1404,7 +1412,7 @@ def collect_hyperplan_tasks_v1(
 
     try:
         return collect_composition_tasks_v1(
-            root, run_id, team_id, _HyperplanTaskAdapter()
+            root, run_id, team_id, _HyperplanTaskAdapter(), env=env
         )
     except CompositionTaskDriverError as exc:
         raise HyperplanError(str(exc), code=exc.code) from exc
