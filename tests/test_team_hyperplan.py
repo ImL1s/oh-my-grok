@@ -1,4 +1,4 @@
-"""Hermetic tests for Hyperplan Composition Contract V1 (#69 PR7)."""
+"""Hermetic tests for Hyperplan Composition Contract V1 (#69 PR7/PR10)."""
 
 from __future__ import annotations
 
@@ -15,13 +15,18 @@ from omg_cli.state import create_run
 from omg_cli.team.compositions.hyperplan import (
     HYPERPLAN_DECISION_KIND,
     HYPERPLAN_KIND,
+    HYPERPLAN_RESULT_BUNDLE_KIND,
     HYPERPLAN_SCHEMA_VERSION,
     HyperplanError,
+    compile_hyperplan_decision_v1,
     compile_hyperplan_v1,
+    hyperplan_decision_path,
     hyperplan_manifest_path,
+    hyperplan_result_bundle_path,
     load_hyperplan_manifest,
     materialize_hyperplan_v1,
     parse_hyperplan_spec_v1,
+    produce_hyperplan_decision_v1,
     validate_hyperplan_decision_v1,
 )
 from omg_cli.team.operation_catalog import (
@@ -36,6 +41,8 @@ from omg_cli.team.plane import EXPERIMENTAL_ENV
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN_MANIFEST = ROOT / "tests" / "golden" / "team_hyperplan_v1_manifest.json"
+GOLDEN_BUNDLE = ROOT / "tests" / "golden" / "team_hyperplan_v1_result_bundle.json"
+GOLDEN_DECISION = ROOT / "tests" / "golden" / "team_hyperplan_v1_decision.json"
 GOLDEN_V1 = ROOT / "tests" / "golden" / "team_operation_catalog_v1.json"
 GOLDEN_V2 = ROOT / "tests" / "golden" / "team_operation_catalog_v2.json"
 GOLDEN_V3 = ROOT / "tests" / "golden" / "team_operation_catalog_v3.json"
@@ -266,7 +273,7 @@ def test_digest_conflict_and_symlink_corrupt_refuse(tmp_path: Path) -> None:
     atomic_write_bytes(
         path, canonical_json_bytes(forged), mode=DATA_FILE_MODE, replace=True
     )
-    with pytest.raises(HyperplanError, match="digest conflict"):
+    with pytest.raises(HyperplanError, match="derived core drift|digest conflict"):
         materialize_hyperplan_v1(tmp_path, run_id, _base_spec())
 
     # Corrupt body
@@ -410,3 +417,477 @@ def test_no_catalog_v4_and_no_verified_writes(tmp_path: Path) -> None:
     assert (team_root / "compositions" / "hyperplan-v1.json").is_file()
     # No spurious verified stamp files
     assert not list(tmp_path.rglob("verified.json"))
+
+
+# ---------------------------------------------------------------------------
+# #69 PR10 — hermetic result production
+# ---------------------------------------------------------------------------
+
+
+def _critic_receipt(
+    dimension: str,
+    *,
+    findings: list[dict[str, Any]] | None = None,
+    severity: str = "info",
+    blocking: bool = False,
+    status: str = "complete",
+    reason: str | None = None,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "lane_id": f"critic.{dimension}",
+        "status": status,
+        "artifact_kind": "omg.team.hyperplan.critique",
+        "payload": {
+            "dimension": dimension,
+            "findings": findings if findings is not None else [],
+            "severity": severity,
+            "blocking": blocking,
+        },
+    }
+    if reason is not None:
+        row["reason"] = reason
+    return row
+
+
+def _bundle_for(
+    manifest: dict[str, Any],
+    *,
+    findings_by_dim: dict[str, list[dict[str, Any]]] | None = None,
+    merged: list[dict[str, Any]] | None = None,
+    conflicts: list[str] | None = None,
+    synth_verdict: str = "approved",
+    verify_verdict: str = "approved",
+    verify_blockers: list[str] | None = None,
+    incomplete_lane: str | None = None,
+) -> dict[str, Any]:
+    by_dim = findings_by_dim or {}
+    dims = list(manifest["spec"]["critique_dimensions"])
+    receipts: list[dict[str, Any]] = [
+        _critic_receipt(dim, findings=by_dim.get(dim, [])) for dim in dims
+    ]
+    receipts.append(
+        {
+            "lane_id": "synthesize",
+            "status": "complete",
+            "artifact_kind": "omg.team.hyperplan.synthesis",
+            "payload": {
+                "summary": "Synthetic summary for hermetic tests.",
+                "merged_findings": merged if merged is not None else [],
+                "open_conflicts": conflicts if conflicts is not None else [],
+                "recommended_verdict": synth_verdict,
+            },
+        }
+    )
+    receipts.append(
+        {
+            "lane_id": "verify",
+            "status": "complete",
+            "artifact_kind": "omg.team.hyperplan.verification",
+            "payload": {
+                "gate": "hyperplan-v1",
+                "covered_lanes": [r["lane_id"] for r in manifest["lanes"]],
+                "blocking_issues": verify_blockers if verify_blockers is not None else [],
+                "verdict": verify_verdict,
+            },
+        }
+    )
+    if incomplete_lane is not None:
+        for row in receipts:
+            if row["lane_id"] == incomplete_lane:
+                row["status"] = "blocked"
+                row["reason"] = "lane incomplete for test"
+                break
+    return {
+        "kind": HYPERPLAN_RESULT_BUNDLE_KIND,
+        "schema_version": 1,
+        "composition_id": manifest["composition_id"],
+        "composition_digest": manifest["digest"],
+        "receipts": receipts,
+    }
+
+
+def _patch_no_exec(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(*_a: Any, **_k: Any) -> None:
+        raise AssertionError("execution surface touched")
+
+    monkeypatch.setattr("subprocess.run", _boom)
+    monkeypatch.setattr("subprocess.Popen", _boom)
+    monkeypatch.setattr("subprocess.call", _boom)
+    monkeypatch.setattr(os, "system", _boom)
+    try:
+        import socket
+
+        monkeypatch.setattr(socket, "socket", _boom)
+        monkeypatch.setattr(socket, "create_connection", _boom)
+    except Exception:
+        pass
+    for mod_name in (
+        "omg_cli.team.plane",
+        "omg_cli.team.jobs",
+        "omg_cli.providers",
+        "omg_cli.mcp.server",
+    ):
+        try:
+            mod = __import__(mod_name, fromlist=["*"])
+        except Exception:
+            continue
+        for attr in (
+            "start_team",
+            "launch_job",
+            "spawn_provider",
+            "run_poc",
+            "tmux",
+        ):
+            if hasattr(mod, attr):
+                monkeypatch.setattr(mod, attr, _boom, raising=False)
+
+
+def test_produce_golden_bundle_and_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_no_exec(monkeypatch)
+    run_id = _make_run(tmp_path)
+    materialize_hyperplan_v1(tmp_path, run_id, _base_spec())
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    golden_bundle = json.loads(GOLDEN_BUNDLE.read_text(encoding="utf-8"))
+    golden_decision = json.loads(GOLDEN_DECISION.read_text(encoding="utf-8"))
+    assert golden_bundle["composition_id"] == manifest["composition_id"]
+    decision = compile_hyperplan_decision_v1(manifest, golden_bundle)
+    assert decision == golden_decision
+    assert decision["verdict"] == "approved"
+    out = produce_hyperplan_decision_v1(tmp_path, run_id, golden_bundle)
+    assert out["ok"] is True and out["idempotent"] is False
+    again = produce_hyperplan_decision_v1(tmp_path, run_id, golden_bundle)
+    assert again["idempotent"] is True
+    assert hyperplan_result_bundle_path(tmp_path, run_id).is_file()
+    assert hyperplan_decision_path(tmp_path, run_id).is_file()
+
+
+def test_validate_decision_refuses_overwrite_when_result_bundle_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_no_exec(monkeypatch)
+    run_id = _make_run(tmp_path)
+    materialize_hyperplan_v1(tmp_path, run_id, _base_spec())
+    golden_bundle = json.loads(GOLDEN_BUNDLE.read_text(encoding="utf-8"))
+    produced = produce_hyperplan_decision_v1(tmp_path, run_id, golden_bundle)
+    decision_path = hyperplan_decision_path(tmp_path, run_id)
+    before = decision_path.read_bytes()
+
+    forged = dict(produced["decision"])
+    forged["notes"] = "forged-via-validate"
+    with pytest.raises(HyperplanError, match="result-bundle present"):
+        validate_hyperplan_decision_v1(tmp_path, run_id, forged, persist=True)
+    assert decision_path.read_bytes() == before
+
+    again = validate_hyperplan_decision_v1(
+        tmp_path, run_id, produced["decision"], persist=True
+    )
+    assert again["ok"] is True
+    assert again.get("idempotent") is True
+    assert decision_path.read_bytes() == before
+
+    check = validate_hyperplan_decision_v1(
+        tmp_path, run_id, forged, persist=False
+    )
+    assert check["persisted"] is False
+    assert decision_path.read_bytes() == before
+
+
+def test_missing_duplicate_unknown_lanes_and_findings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_no_exec(monkeypatch)
+    run_id = _make_run(tmp_path)
+    materialize_hyperplan_v1(tmp_path, run_id, _base_spec())
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    bundle = _bundle_for(manifest)
+    bundle["receipts"] = bundle["receipts"][:-1]
+    with pytest.raises(HyperplanError, match="omits required lanes"):
+        compile_hyperplan_decision_v1(manifest, bundle)
+
+    bundle2 = _bundle_for(manifest)
+    bundle2["receipts"].append(dict(bundle2["receipts"][0]))
+    with pytest.raises(HyperplanError, match="duplicate receipt"):
+        compile_hyperplan_decision_v1(manifest, bundle2)
+
+    finding = {"finding_id": "corr_1", "summary": "edge case"}
+    omitted = _bundle_for(
+        manifest,
+        findings_by_dim={"correctness": [finding]},
+        merged=[],
+        synth_verdict="rejected",
+        verify_verdict="rejected",
+    )
+    with pytest.raises(HyperplanError, match="omits critic findings"):
+        compile_hyperplan_decision_v1(manifest, omitted)
+
+    invented = _bundle_for(
+        manifest,
+        merged=[{"finding_id": "invented", "disposition": "dismissed"}],
+        synth_verdict="rejected",
+        verify_verdict="rejected",
+    )
+    with pytest.raises(HyperplanError, match="invents unknown"):
+        compile_hyperplan_decision_v1(manifest, invented)
+
+
+def test_dimension_spoof_and_artifact_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_no_exec(monkeypatch)
+    run_id = _make_run(tmp_path)
+    materialize_hyperplan_v1(tmp_path, run_id, _base_spec())
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    bundle = _bundle_for(manifest)
+    for row in bundle["receipts"]:
+        if row["lane_id"] == "critic.correctness":
+            row["payload"]["dimension"] = "security"
+            break
+    with pytest.raises(HyperplanError, match="dimension must be"):
+        compile_hyperplan_decision_v1(manifest, bundle)
+
+    bad_kind = _bundle_for(manifest)
+    for row in bad_kind["receipts"]:
+        if row["lane_id"] == "synthesize":
+            row["artifact_kind"] = "omg.team.hyperplan.critique"
+            break
+    with pytest.raises(HyperplanError, match="artifact_kind"):
+        compile_hyperplan_decision_v1(manifest, bad_kind)
+
+
+def test_contradictory_synthesis_and_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_no_exec(monkeypatch)
+    run_id = _make_run(tmp_path)
+    materialize_hyperplan_v1(tmp_path, run_id, _base_spec())
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    with pytest.raises(HyperplanError, match="open_conflicts is contradictory"):
+        compile_hyperplan_decision_v1(
+            manifest,
+            _bundle_for(
+                manifest,
+                conflicts=["critics disagree on scope"],
+                synth_verdict="approved",
+            ),
+        )
+    with pytest.raises(HyperplanError, match="blocking_issues is contradictory"):
+        compile_hyperplan_decision_v1(
+            manifest,
+            _bundle_for(
+                manifest,
+                verify_verdict="approved",
+                verify_blockers=["coverage hole"],
+            ),
+        )
+
+
+def test_incomplete_lane_derives_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_no_exec(monkeypatch)
+    run_id = _make_run(tmp_path)
+    materialize_hyperplan_v1(tmp_path, run_id, _base_spec())
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    bundle = _bundle_for(manifest, incomplete_lane="verify")
+    decision = compile_hyperplan_decision_v1(manifest, bundle)
+    assert decision["verdict"] == "rejected"
+    assert any(row["status"] == "blocked" for row in decision["lane_coverage"])
+
+
+def test_repairs_risks_and_accepted_blocking_reject(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_no_exec(monkeypatch)
+    run_id = _make_run(tmp_path)
+    materialize_hyperplan_v1(tmp_path, run_id, _base_spec())
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    finding = {
+        "finding_id": "sec_block",
+        "summary": "missing authz",
+        "blocking": True,
+    }
+    decision = compile_hyperplan_decision_v1(
+        manifest,
+        _bundle_for(
+            manifest,
+            findings_by_dim={"security": [finding]},
+            merged=[{"finding_id": "sec_block", "disposition": "accepted"}],
+            synth_verdict="approved",
+            verify_verdict="approved",
+        ),
+    )
+    assert decision["verdict"] == "rejected"
+
+    repair = compile_hyperplan_decision_v1(
+        manifest,
+        _bundle_for(
+            manifest,
+            findings_by_dim={
+                "correctness": [{"finding_id": "corr_fix", "summary": "race"}]
+            },
+            merged=[{"finding_id": "corr_fix", "disposition": "repair"}],
+            synth_verdict="rejected",
+            verify_verdict="rejected",
+        ),
+    )
+    assert repair["verdict"] == "rejected"
+    assert repair["required_repairs"] == ["corr_fix"]
+
+
+def test_produce_conflict_symlink_foreign_writer_and_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes
+    from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
+
+    _patch_no_exec(monkeypatch)
+    run_id = _make_run(tmp_path)
+    materialize_hyperplan_v1(tmp_path, run_id, _base_spec())
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    golden = json.loads(GOLDEN_BUNDLE.read_text(encoding="utf-8"))
+    produce_hyperplan_decision_v1(tmp_path, run_id, golden)
+
+    other = _bundle_for(
+        manifest,
+        findings_by_dim={
+            "operability": [{"finding_id": "ops_1", "summary": "other"}]
+        },
+        merged=[{"finding_id": "ops_1", "disposition": "dismissed"}],
+        synth_verdict="approved",
+        verify_verdict="approved",
+    )
+    with pytest.raises(HyperplanError, match="conflict"):
+        produce_hyperplan_decision_v1(tmp_path, run_id, other)
+
+    run2_dir = tmp_path / "run2_root"
+    run2_dir.mkdir()
+    run2 = _make_run(run2_dir)
+    materialize_hyperplan_v1(run2_dir, run2, _base_spec())
+    decision_path = hyperplan_decision_path(run2_dir, run2)
+    decision_path.parent.mkdir(parents=True, exist_ok=True)
+    target = run2_dir / "elsewhere-decision.json"
+    target.write_text("{}", encoding="utf-8")
+    decision_path.symlink_to(target)
+    with pytest.raises(HyperplanError, match="symlink"):
+        produce_hyperplan_decision_v1(run2_dir, run2, golden)
+
+    run3_dir = tmp_path / "run3_root"
+    run3_dir.mkdir()
+    run3 = _make_run(run3_dir)
+    materialize_hyperplan_v1(run3_dir, run3, _base_spec())
+    man3 = load_hyperplan_manifest(run3_dir, run3)
+    golden3 = json.loads(GOLDEN_BUNDLE.read_text(encoding="utf-8"))
+    assert golden3["composition_id"] == man3["composition_id"]
+    produce_hyperplan_decision_v1(run3_dir, run3, golden3)
+    bpath = hyperplan_result_bundle_path(run3_dir, run3)
+    data = json.loads(bpath.read_text(encoding="utf-8"))
+    data["writer"] = "not-omg"
+    core = {k: v for k, v in data.items() if k != "digest"}
+    data["digest"] = sha256_hex(canonical_json_bytes(core))
+    atomic_write_bytes(
+        bpath, canonical_json_bytes(data), mode=DATA_FILE_MODE, replace=True
+    )
+    with pytest.raises(HyperplanError, match="foreign writer"):
+        produce_hyperplan_decision_v1(run3_dir, run3, golden3)
+
+
+def test_failure_between_bundle_and_decision_leaves_no_authoritative_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_no_exec(monkeypatch)
+    run_id = _make_run(tmp_path)
+    materialize_hyperplan_v1(tmp_path, run_id, _base_spec())
+    golden = json.loads(GOLDEN_BUNDLE.read_text(encoding="utf-8"))
+    decision_path = hyperplan_decision_path(tmp_path, run_id)
+    bundle_path = hyperplan_result_bundle_path(tmp_path, run_id)
+
+    import omg_cli.team.compositions.hyperplan as hp_mod
+
+    real_atomic = hp_mod.atomic_write_bytes
+    calls = {"n": 0}
+
+    def _flaky(path, body, **kwargs):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] >= 2 and Path(path) == decision_path:
+            raise hp_mod.ContractPathError("injected failure before decision commit")
+        return real_atomic(path, body, **kwargs)
+
+    monkeypatch.setattr(hp_mod, "atomic_write_bytes", _flaky)
+    with pytest.raises(HyperplanError, match="commit marker|refused"):
+        produce_hyperplan_decision_v1(tmp_path, run_id, golden)
+    assert bundle_path.is_file()
+    assert not decision_path.exists()
+
+
+def test_cli_produce_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _env_on(monkeypatch)
+    _patch_no_exec(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OMG_PROJECT_ROOT", str(tmp_path))
+    run_id = _make_run(tmp_path)
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps(_base_spec()), encoding="utf-8")
+    assert (
+        main(
+            [
+                "team",
+                "hyperplan",
+                "materialize",
+                "--spec",
+                str(spec_path),
+                "--run",
+                run_id,
+                "--json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    bundle_path = tmp_path / "bundle.json"
+    bundle_path.write_text(GOLDEN_BUNDLE.read_text(encoding="utf-8"), encoding="utf-8")
+    rc = main(
+        [
+            "team",
+            "hyperplan",
+            "produce-decision",
+            "--run",
+            run_id,
+            "--input",
+            str(bundle_path),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    body = payload.get("data", payload)
+    assert body["decision"]["verdict"] == "approved"
+    status = json.loads(
+        (tmp_path / ".omg" / "state" / "runs" / run_id / "status.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert status.get("verified") is not True
+    assert not status.get("passes")
+
+
+def test_source_digests_bind_bundle_and_lanes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_no_exec(monkeypatch)
+    run_id = _make_run(tmp_path)
+    materialize_hyperplan_v1(tmp_path, run_id, _base_spec())
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    golden = json.loads(GOLDEN_BUNDLE.read_text(encoding="utf-8"))
+    decision = compile_hyperplan_decision_v1(manifest, golden)
+    sources = decision["source_artifact_digests"]
+    assert sources["composition"] == manifest["digest"]
+    assert "result_bundle" in sources
+    for lane in manifest["lanes"]:
+        key = f"lane_{lane['lane_id'].replace('.', '_')}"
+        assert key in sources
+    assert "hermetic_result_production_v1" in decision["limitations"]
+    assert "execution_supported=false" in decision["limitations"]

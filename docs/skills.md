@@ -270,10 +270,11 @@ omg team api catalog
 omg team api replace-worker --input '{"run_id":"RUN","team_id":"t","worker":"t1","mode":"lost","expected_attempt":1,"expected_launch_generation":1,"idempotency_key":"repl-1"}' --json
 omg team api read-presentation-state --input '{"run_id":"RUN","team_id":"t"}' --json
 omg team status --run RUN --presentation --json
-# Hyperplan V1 scaffolding (#69 PR7; non-executing; execution_supported=false):
+# Hyperplan V1 hermetic produce (#69 PR10; non-executing; execution_supported=false):
 omg team hyperplan plan --spec SPEC.json --json
 omg team hyperplan materialize --spec SPEC.json --run RUN --json
 omg team hyperplan validate-decision --run RUN --input DECISION.json --json
+omg team hyperplan produce-decision --run RUN --input RESULT_BUNDLE.json --json
 # Security Research V1 hermetic produce (#69 PR9; execution_supported=false):
 omg team security-research plan --spec SPEC.json --json
 omg team security-research materialize --spec SPEC.json --run RUN --json
@@ -285,9 +286,9 @@ omg team api send-message --input '{"run_id":"RUN","team_id":"t","from_worker":"
 ```
 
 See also `docs/team.md` for job-backed worker invariants (#69 PR4),
-`docs/team-hyperplan-v1.md` for Hyperplan V1 scaffolding (#69 PR7), and
-`docs/team-security-research-v1.md` for Security Research V1 hermetic result
-production (#69 PR9).
+`docs/team-hyperplan-v1.md` for Hyperplan V1 hermetic result production
+(#69 PR10), and `docs/team-security-research-v1.md` for Security Research V1
+hermetic result production (#69 PR9).
 
 ---
 

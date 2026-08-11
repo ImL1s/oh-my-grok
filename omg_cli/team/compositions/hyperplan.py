@@ -1,4 +1,4 @@
-"""Hyperplan Composition Contract V1 — non-executing scaffold (#69 PR7).
+"""Hyperplan Composition Contract V1 — hermetic result production (#69 PR10).
 
 Pure ``compile_hyperplan_v1`` builds a deterministic critic→synthesize→verify
 DAG from a bounded spec. ``materialize_hyperplan_v1`` persists only under the
@@ -6,9 +6,11 @@ canonical Team run root:
 
   ``.omg/state/runs/<run>/team/compositions/hyperplan-v1.json``
 
-``execution_supported`` is always ``false``. This module never launches panes,
-Jobs, providers, Antigravity, MCP tools, or claimable API tasks, and never
-sets ``verified`` / ``passes``.
+``compile_hyperplan_decision_v1`` / ``produce_hyperplan_decision_v1`` derive a
+decision from a bounded ``HyperplanResultBundleV1`` (offline; never executes
+lanes). ``execution_supported`` is always ``false``. This module never launches
+panes, Jobs, providers, Antigravity, MCP tools, or claimable API tasks, and
+never sets ``verified`` / ``passes``.
 """
 
 from __future__ import annotations
@@ -40,9 +42,11 @@ from omg_cli.team.plane import team_dir
 
 HYPERPLAN_KIND = "omg.team.hyperplan"
 HYPERPLAN_DECISION_KIND = "omg.team.hyperplan_decision"
+HYPERPLAN_RESULT_BUNDLE_KIND = "omg.team.hyperplan_result_bundle"
 HYPERPLAN_SCHEMA_VERSION = 1
 HYPERPLAN_FILENAME = "hyperplan-v1.json"
 HYPERPLAN_DECISION_FILENAME = "hyperplan-v1-decision.json"
+HYPERPLAN_RESULT_BUNDLE_FILENAME = "hyperplan-v1-result-bundle.json"
 HYPERPLAN_LOCK_NAME = "hyperplan-v1.lock"
 
 MIN_CRITIQUE_DIMENSIONS = 3
@@ -57,11 +61,43 @@ MAX_RISK_ITEMS = 32
 MAX_LIMITATION_ITEMS = 32
 MAX_CONFLICT_ITEMS = 32
 MAX_NOTE_CHARS = 2000
+MAX_FINDING_ITEMS = 64
+MAX_LIST_ITEMS = 32
 
 _REL_PATH_RE = re.compile(r"^(?!\./)(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._/-]{0,240}$")
 _ABS_HINT_RE = re.compile(r"(^|/)(Users|home|private|var/folders|tmp)/")
 _DIMENSION_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 _LANE_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,127}$")
+_SEVERITIES = frozenset({"info", "low", "medium", "high", "critical"})
+_RECEIPT_STATUSES = frozenset({"complete", "rejected", "blocked"})
+_FINDING_DISPOSITIONS = frozenset({"accepted", "repair", "risk", "dismissed"})
+_SYNTHESIS_VERDICTS = frozenset({"approved", "rejected"})
+_VERIFY_VERDICTS = frozenset({"approved", "rejected"})
+_FORBIDDEN_PAYLOAD_KEYS = frozenset(
+    {
+        "argv",
+        "command",
+        "commands",
+        "credentials",
+        "credential",
+        "password",
+        "token",
+        "api_key",
+        "url",
+        "urls",
+        "uri",
+        "network",
+        "socket",
+        "poc",
+        "exploit",
+        "provider",
+        "pane",
+        "tmux",
+        "job",
+        "jobs",
+        "mcp",
+    }
+)
 
 _SPEC_REQUIRED = frozenset({"schema_version", "critique_dimensions"})
 _SPEC_OPTIONAL = frozenset({"goal", "plan_artifact", "limits", "evidence"})
@@ -126,6 +162,10 @@ def hyperplan_manifest_path(root: Path | str, run_id: str) -> Path:
 
 def hyperplan_decision_path(root: Path | str, run_id: str) -> Path:
     return hyperplan_compositions_dir(root, run_id) / HYPERPLAN_DECISION_FILENAME
+
+
+def hyperplan_result_bundle_path(root: Path | str, run_id: str) -> Path:
+    return hyperplan_compositions_dir(root, run_id) / HYPERPLAN_RESULT_BUNDLE_FILENAME
 
 
 def hyperplan_lock_path(root: Path | str, run_id: str) -> Path:
@@ -386,10 +426,37 @@ def validate_hyperplan_decision_v1(
             code="E_TEAM_HYPERPLAN_PATH",
         )
     path = hyperplan_decision_path(root_path, rid)
+    bundle_path = hyperplan_result_bundle_path(root_path, rid)
     lock = hyperplan_lock_path(root_path, rid)
     with exclusive_lock(lock):
+        # Produce owns the decision commit marker whenever a result-bundle is
+        # present. validate-decision must not overwrite (or mint) that marker.
+        if bundle_path.is_symlink():
+            raise HyperplanError(
+                "hyperplan-v1-result-bundle.json may not be a symlink",
+                code="E_TEAM_HYPERPLAN_PATH",
+            )
+        if bundle_path.exists():
+            existing_decision = _try_load_existing_decision(path)
+            if existing_decision is not None:
+                existing_norm = _parse_decision(existing_decision, manifest=manifest)
+                if existing_norm == normalized:
+                    return {
+                        "ok": True,
+                        "persisted": True,
+                        "idempotent": True,
+                        "path": _rel_under_root(root_path, path),
+                        "decision": existing_norm,
+                    }
+            raise HyperplanError(
+                "result-bundle present: refuse validate-decision persist "
+                "(decision commit marker is owned by produce-decision)",
+                code="E_TEAM_HYPERPLAN_CONFLICT",
+            )
+
         body = canonical_json_bytes(normalized)
         try:
+            # Hand-authored validate path (no produce bundle): replace allowed.
             atomic_write_bytes(path, body, mode=DATA_FILE_MODE, replace=True)
         except ContractPathError as exc:
             raise HyperplanError(
@@ -399,6 +466,7 @@ def validate_hyperplan_decision_v1(
     return {
         "ok": True,
         "persisted": True,
+        "idempotent": False,
         "path": _rel_under_root(root_path, path),
         "decision": normalized,
     }
@@ -833,6 +901,21 @@ def _validate_persisted_manifest(
         raise HyperplanError("lane_count mismatch", code="E_TEAM_HYPERPLAN_CORRUPT")
     if int(raw.get("critic_count") or -1) != len(spec["critique_dimensions"]):
         raise HyperplanError("critic_count mismatch", code="E_TEAM_HYPERPLAN_CORRUPT")
+    # Recompile from normalized spec and compare the entire canonical derived
+    # core — closes forged lane/dependency drift that re-stamps digest.
+    recompiled = compile_hyperplan_v1(spec)
+    expected_core = {k: v for k, v in recompiled.items() if k != "digest"}
+    actual_core = {k: v for k, v in raw.items() if k not in {"digest", "run_id"}}
+    if actual_core != expected_core:
+        raise HyperplanError(
+            "manifest derived core drift (forged lanes/dependencies refused)",
+            code="E_TEAM_HYPERPLAN_CORRUPT",
+        )
+    if recompiled["digest"] != raw["digest"]:
+        raise HyperplanError(
+            "manifest digest mismatch against recompiled core",
+            code="E_TEAM_HYPERPLAN_CORRUPT",
+        )
     return dict(raw)
 
 
@@ -1102,18 +1185,1044 @@ def _rel_under_root(root: Path, path: Path) -> str:
         return path.as_posix()
 
 
+# ---------------------------------------------------------------------------
+# Result bundle → decision production (hermetic; execution_supported=false)
+# ---------------------------------------------------------------------------
+
+_BUNDLE_REQUIRED = frozenset(
+    {
+        "kind",
+        "schema_version",
+        "composition_id",
+        "composition_digest",
+        "receipts",
+    }
+)
+_BUNDLE_OPTIONAL = frozenset({"notes", "writer"})
+_RECEIPT_REQUIRED = frozenset({"lane_id", "status", "artifact_kind", "payload"})
+_RECEIPT_OPTIONAL = frozenset({"reason"})
+_CRITIC_PAYLOAD_REQUIRED = frozenset(
+    {"dimension", "findings", "severity", "blocking"}
+)
+_FINDING_REQUIRED = frozenset({"finding_id", "summary"})
+_FINDING_OPTIONAL = frozenset({"severity", "blocking", "notes"})
+_SYNTHESIS_PAYLOAD_REQUIRED = frozenset(
+    {
+        "summary",
+        "merged_findings",
+        "open_conflicts",
+        "recommended_verdict",
+    }
+)
+_MERGED_FINDING_REQUIRED = frozenset({"finding_id", "disposition"})
+_MERGED_FINDING_OPTIONAL = frozenset({"notes"})
+_VERIFY_PAYLOAD_REQUIRED = frozenset(
+    {"gate", "covered_lanes", "blocking_issues", "verdict"}
+)
+
+
+def compile_hyperplan_decision_v1(
+    manifest: Mapping[str, Any] | Any,
+    bundle: Mapping[str, Any] | Any,
+) -> dict[str, Any]:
+    """Pure: HyperplanResultBundleV1 + ManifestV1 → DecisionV1.
+
+    Derives lane coverage, conflicts, repairs, risks, verdict, and source
+    digests. Never launches execution surfaces.
+    """
+    if not isinstance(manifest, Mapping):
+        raise HyperplanError(
+            "manifest must be an object",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    normalized_bundle = _normalize_result_bundle(bundle, manifest=manifest)
+    decision = _derive_decision_from_bundle(manifest, normalized_bundle)
+    return _parse_decision(decision, manifest=manifest)
+
+
+def produce_hyperplan_decision_v1(
+    root: Path | str,
+    run_id: str,
+    bundle: Mapping[str, Any] | Any,
+) -> dict[str, Any]:
+    """Persist result bundle then decision under the composition lock.
+
+    Writes ``hyperplan-v1-result-bundle.json`` first, then atomically writes
+    ``hyperplan-v1-decision.json`` last as the commit marker. Identical
+    production is idempotent; conflicts / path attacks leave no authoritative
+    decision. Never mutates ``status.json`` / ``passes`` / ``verified``.
+    """
+    root_path = Path(root)
+    rid = _safe_run_id(run_id)
+    _require_live_run(root_path, rid)
+    manifest = load_hyperplan_manifest(root_path, rid)
+    normalized_bundle = _normalize_result_bundle(bundle, manifest=manifest)
+    decision = compile_hyperplan_decision_v1(manifest, normalized_bundle)
+
+    compositions = hyperplan_compositions_dir(root_path, rid)
+    compositions.mkdir(parents=True, exist_ok=True)
+    if compositions.is_symlink():
+        raise HyperplanError(
+            "compositions directory may not be a symlink",
+            code="E_TEAM_HYPERPLAN_PATH",
+        )
+    bundle_path = hyperplan_result_bundle_path(root_path, rid)
+    decision_path = hyperplan_decision_path(root_path, rid)
+    lock = hyperplan_lock_path(root_path, rid)
+
+    bundle_body = canonical_json_bytes(normalized_bundle)
+    decision_body = canonical_json_bytes(decision)
+
+    with exclusive_lock(lock):
+        existing_bundle = _try_load_existing_result_bundle(bundle_path)
+        existing_decision = _try_load_existing_decision(decision_path)
+        if existing_bundle is not None or existing_decision is not None:
+            same_bundle = (
+                existing_bundle is not None
+                and existing_bundle.get("digest") == normalized_bundle["digest"]
+                and _bundle_core_equal(existing_bundle, normalized_bundle)
+            )
+            same_decision = (
+                existing_decision is not None and existing_decision == decision
+            )
+            if same_bundle and same_decision:
+                return {
+                    "ok": True,
+                    "idempotent": True,
+                    "bundle_path": _rel_under_root(root_path, bundle_path),
+                    "path": _rel_under_root(root_path, decision_path),
+                    "bundle": existing_bundle,
+                    "decision": existing_decision,
+                }
+            if existing_decision is not None and not same_decision:
+                raise HyperplanError(
+                    "hyperplan-v1-decision.json conflict: refusing overwrite",
+                    code="E_TEAM_HYPERPLAN_CONFLICT",
+                )
+            if existing_bundle is not None and not same_bundle:
+                raise HyperplanError(
+                    "hyperplan-v1-result-bundle.json conflict: refusing overwrite",
+                    code="E_TEAM_HYPERPLAN_CONFLICT",
+                )
+            raise HyperplanError(
+                "incomplete prior result production refused "
+                "(bundle/decision mismatch)",
+                code="E_TEAM_HYPERPLAN_CONFLICT",
+            )
+
+        try:
+            atomic_write_bytes(
+                bundle_path, bundle_body, mode=DATA_FILE_MODE, replace=False
+            )
+        except FileExistsError as exc:
+            raise HyperplanError(
+                "concurrent result-bundle write race refused",
+                code="E_TEAM_HYPERPLAN_RACE",
+            ) from exc
+        except ContractPathError as exc:
+            raise HyperplanError(
+                f"result-bundle path refused: {exc}",
+                code="E_TEAM_HYPERPLAN_PATH",
+            ) from exc
+
+        try:
+            atomic_write_bytes(
+                decision_path, decision_body, mode=DATA_FILE_MODE, replace=False
+            )
+        except (FileExistsError, ContractPathError) as exc:
+            raise HyperplanError(
+                f"decision commit marker refused after bundle write: {exc}",
+                code="E_TEAM_HYPERPLAN_PATH",
+            ) from exc
+
+        loaded_bundle = _load_result_bundle_file(bundle_path)
+        if loaded_bundle.get("digest") != normalized_bundle["digest"]:
+            raise HyperplanError(
+                "published result-bundle digest mismatch",
+                code="E_TEAM_HYPERPLAN_CORRUPT",
+            )
+        loaded_decision = _parse_decision(
+            json.loads(decision_path.read_bytes().decode("utf-8")),
+            manifest=manifest,
+        )
+        if loaded_decision != decision:
+            raise HyperplanError(
+                "published decision mismatch",
+                code="E_TEAM_HYPERPLAN_CORRUPT",
+            )
+        return {
+            "ok": True,
+            "idempotent": False,
+            "bundle_path": _rel_under_root(root_path, bundle_path),
+            "path": _rel_under_root(root_path, decision_path),
+            "bundle": loaded_bundle,
+            "decision": loaded_decision,
+        }
+
+
+def _bundle_core_equal(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    left = {k: v for k, v in a.items() if k != "digest"}
+    right = {k: v for k, v in b.items() if k != "digest"}
+    return left == right
+
+
+def _normalize_result_bundle(
+    raw: Any, *, manifest: Mapping[str, Any]
+) -> dict[str, Any]:
+    try:
+        body = require_object(raw, label="hyperplan.result_bundle")
+        require_exact_keys(
+            body,
+            required=_BUNDLE_REQUIRED,
+            optional=_BUNDLE_OPTIONAL | frozenset({"digest"}),
+            label="hyperplan.result_bundle",
+        )
+    except ContractValidationError as exc:
+        raise HyperplanError(str(exc), code="E_TEAM_HYPERPLAN_BUNDLE") from exc
+
+    if body.get("kind") != HYPERPLAN_RESULT_BUNDLE_KIND:
+        raise HyperplanError(
+            "result bundle kind mismatch",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    if body.get("schema_version") != HYPERPLAN_SCHEMA_VERSION:
+        raise HyperplanError(
+            "result bundle schema_version must be 1",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    try:
+        composition_id = require_safe_id(
+            body.get("composition_id"), label="composition_id"
+        )
+        composition_digest = require_sha256(
+            body.get("composition_digest"), label="composition_digest"
+        )
+    except ContractValidationError as exc:
+        raise HyperplanError(str(exc), code="E_TEAM_HYPERPLAN_BUNDLE") from exc
+    if composition_id != manifest.get("composition_id"):
+        raise HyperplanError(
+            "result bundle composition_id does not match manifest",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    if composition_digest != manifest.get("digest"):
+        raise HyperplanError(
+            "result bundle composition_digest does not match manifest",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    writer = body.get("writer", CLI_WRITER)
+    if writer != CLI_WRITER:
+        raise HyperplanError(
+            "foreign writer refused on result bundle",
+            code="E_TEAM_HYPERPLAN_FOREIGN_WRITER",
+        )
+
+    required_lanes = [row["lane_id"] for row in manifest["lanes"]]
+    lane_meta = {row["lane_id"]: row for row in manifest["lanes"]}
+    receipts = _parse_receipts(
+        body.get("receipts"),
+        required_lanes=required_lanes,
+        lane_meta=lane_meta,
+    )
+    out: dict[str, Any] = {
+        "kind": HYPERPLAN_RESULT_BUNDLE_KIND,
+        "schema_version": HYPERPLAN_SCHEMA_VERSION,
+        "composition_id": composition_id,
+        "composition_digest": composition_digest,
+        "receipts": receipts,
+        "writer": CLI_WRITER,
+    }
+    if "notes" in body:
+        notes = body.get("notes")
+        if not isinstance(notes, str) or len(notes) > MAX_NOTE_CHARS:
+            raise HyperplanError(
+                "result bundle notes must be a short string",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+        out["notes"] = notes
+    core = {k: v for k, v in out.items()}
+    digest = sha256_hex(canonical_json_bytes(core))
+    if "digest" in body:
+        try:
+            claimed = require_sha256(body.get("digest"), label="digest")
+        except ContractValidationError as exc:
+            raise HyperplanError(str(exc), code="E_TEAM_HYPERPLAN_BUNDLE") from exc
+        if claimed != digest:
+            raise HyperplanError(
+                "result bundle digest mismatch (CLI recomputed)",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+    out["digest"] = digest
+    _assert_bundle_inline_budget(out)
+    return out
+
+
+def _assert_bundle_inline_budget(bundle: Mapping[str, Any]) -> None:
+    size = len(canonical_json_bytes(dict(bundle)))
+    if size > MAX_INLINE_JSON_BYTES:
+        raise HyperplanError(
+            f"result bundle exceeds inline budget ({size} > {MAX_INLINE_JSON_BYTES})",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+
+
+def _expected_artifact_kind(lane_id: str, lane_meta: Mapping[str, Any]) -> str:
+    expected = lane_meta.get("expected_artifact") or {}
+    kind = expected.get("kind")
+    if isinstance(kind, str) and kind:
+        return kind
+    if lane_id.startswith("critic."):
+        return "omg.team.hyperplan.critique"
+    if lane_id == "synthesize":
+        return "omg.team.hyperplan.synthesis"
+    if lane_id == "verify":
+        return "omg.team.hyperplan.verification"
+    raise HyperplanError(
+        f"unknown lane artifact kind for {lane_id!r}",
+        code="E_TEAM_HYPERPLAN_BUNDLE",
+    )
+
+
+def _parse_receipts(
+    raw: Any,
+    *,
+    required_lanes: Sequence[str],
+    lane_meta: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        raise HyperplanError(
+            "receipts must be a list",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    by_id: dict[str, dict[str, Any]] = {}
+    for idx, item in enumerate(raw):
+        label = f"receipts[{idx}]"
+        try:
+            obj = require_object(item, label=label)
+            require_exact_keys(
+                obj,
+                required=_RECEIPT_REQUIRED,
+                optional=_RECEIPT_OPTIONAL | frozenset({"digest"}),
+                label=label,
+            )
+            lane_id = require_nonempty_string(
+                obj.get("lane_id"), label=f"{label}.lane_id"
+            )
+        except ContractValidationError as exc:
+            raise HyperplanError(str(exc), code="E_TEAM_HYPERPLAN_BUNDLE") from exc
+        if not _LANE_ID_RE.fullmatch(lane_id):
+            raise HyperplanError(
+                f"{label}.lane_id is not a valid lane id",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+        if lane_id in by_id:
+            raise HyperplanError(
+                f"duplicate receipt for lane {lane_id!r}",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+        status = obj.get("status")
+        if status not in _RECEIPT_STATUSES:
+            raise HyperplanError(
+                f"{label}.status must be one of {sorted(_RECEIPT_STATUSES)}",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+        artifact_kind = obj.get("artifact_kind")
+        expected_kind = _expected_artifact_kind(
+            lane_id, lane_meta[lane_id] if lane_id in lane_meta else {}
+        )
+        if artifact_kind != expected_kind:
+            raise HyperplanError(
+                f"{label}.artifact_kind must be {expected_kind!r}",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+        payload = _parse_receipt_payload(
+            obj.get("payload"),
+            lane_id=lane_id,
+            artifact_kind=str(artifact_kind),
+            lane_meta=lane_meta.get(lane_id) or {},
+            label=f"{label}.payload",
+        )
+        row: dict[str, Any] = {
+            "lane_id": lane_id,
+            "status": status,
+            "artifact_kind": artifact_kind,
+            "payload": payload,
+        }
+        if "reason" in obj:
+            reason = obj.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                raise HyperplanError(
+                    f"{label}.reason must be a non-empty string when present",
+                    code="E_TEAM_HYPERPLAN_BUNDLE",
+                )
+            if len(reason) > MAX_NOTE_CHARS:
+                raise HyperplanError(
+                    f"{label}.reason too long",
+                    code="E_TEAM_HYPERPLAN_BUNDLE",
+                )
+            row["reason"] = reason.strip()
+        if status != "complete" and not row.get("reason"):
+            raise HyperplanError(
+                f"{label} non-complete status requires reason",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+        digest = sha256_hex(canonical_json_bytes(row))
+        if "digest" in obj:
+            try:
+                claimed = require_sha256(obj.get("digest"), label=f"{label}.digest")
+            except ContractValidationError as exc:
+                raise HyperplanError(
+                    str(exc), code="E_TEAM_HYPERPLAN_BUNDLE"
+                ) from exc
+            if claimed != digest:
+                raise HyperplanError(
+                    f"{label}.digest mismatch (CLI recomputed)",
+                    code="E_TEAM_HYPERPLAN_BUNDLE",
+                )
+        row["digest"] = digest
+        by_id[lane_id] = row
+
+    missing = [lane for lane in required_lanes if lane not in by_id]
+    if missing:
+        raise HyperplanError(
+            f"result bundle omits required lanes: {missing!r}",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    extra = sorted(set(by_id) - set(required_lanes))
+    if extra:
+        raise HyperplanError(
+            f"result bundle references unknown lanes: {extra!r}",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    return [by_id[lane] for lane in required_lanes]
+
+
+def _refuse_forbidden_keys(obj: Mapping[str, Any], *, label: str) -> None:
+    bad = sorted(set(obj) & _FORBIDDEN_PAYLOAD_KEYS)
+    if bad:
+        raise HyperplanError(
+            f"{label} contains forbidden fields: {bad!r}",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+
+
+def _parse_receipt_payload(
+    raw: Any,
+    *,
+    lane_id: str,
+    artifact_kind: str,
+    lane_meta: Mapping[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    try:
+        obj = require_object(raw, label=label)
+    except ContractValidationError as exc:
+        raise HyperplanError(str(exc), code="E_TEAM_HYPERPLAN_BUNDLE") from exc
+    _refuse_forbidden_keys(obj, label=label)
+    if lane_id.startswith("critic."):
+        return _parse_critic_payload(obj, lane_meta=lane_meta, label=label)
+    if lane_id == "synthesize":
+        return _parse_synthesis_payload(obj, label=label)
+    if lane_id == "verify":
+        return _parse_verify_payload(obj, label=label)
+    raise HyperplanError(
+        f"{label} unsupported lane {lane_id!r} kind {artifact_kind!r}",
+        code="E_TEAM_HYPERPLAN_BUNDLE",
+    )
+
+
+def _require_short_string(raw: Any, *, label: str) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        raise HyperplanError(
+            f"{label} must be a non-empty string",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    if len(raw) > MAX_NOTE_CHARS:
+        raise HyperplanError(f"{label} too long", code="E_TEAM_HYPERPLAN_BUNDLE")
+    return raw.strip()
+
+
+def _parse_critic_payload(
+    obj: Mapping[str, Any], *, lane_meta: Mapping[str, Any], label: str
+) -> dict[str, Any]:
+    try:
+        require_exact_keys(
+            obj,
+            required=_CRITIC_PAYLOAD_REQUIRED,
+            optional=frozenset({"notes"}),
+            label=label,
+        )
+    except ContractValidationError as exc:
+        raise HyperplanError(str(exc), code="E_TEAM_HYPERPLAN_BUNDLE") from exc
+    try:
+        dimension = require_safe_id(obj.get("dimension"), label=f"{label}.dimension")
+    except ContractValidationError as exc:
+        raise HyperplanError(str(exc), code="E_TEAM_HYPERPLAN_BUNDLE") from exc
+    expected_dim = lane_meta.get("dimension")
+    if expected_dim is not None and dimension != expected_dim:
+        raise HyperplanError(
+            f"{label}.dimension must be {expected_dim!r}",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    severity = obj.get("severity")
+    if severity not in _SEVERITIES:
+        raise HyperplanError(
+            f"{label}.severity must be one of {sorted(_SEVERITIES)}",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    blocking = obj.get("blocking")
+    if not isinstance(blocking, bool):
+        raise HyperplanError(
+            f"{label}.blocking must be a bool",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    findings = _parse_critic_findings(
+        obj.get("findings"), label=f"{label}.findings"
+    )
+    out: dict[str, Any] = {
+        "dimension": dimension,
+        "findings": findings,
+        "severity": severity,
+        "blocking": blocking,
+    }
+    if "notes" in obj:
+        notes = obj.get("notes")
+        if not isinstance(notes, str) or len(notes) > MAX_NOTE_CHARS:
+            raise HyperplanError(
+                f"{label}.notes must be a short string",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+        out["notes"] = notes
+    return out
+
+
+def _parse_critic_findings(raw: Any, *, label: str) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        raise HyperplanError(
+            f"{label} must be a list",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    if len(raw) > MAX_FINDING_ITEMS:
+        raise HyperplanError(
+            f"{label} exceeds {MAX_FINDING_ITEMS} items",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for idx, item in enumerate(raw):
+        row_label = f"{label}[{idx}]"
+        try:
+            obj = require_object(item, label=row_label)
+            require_exact_keys(
+                obj,
+                required=_FINDING_REQUIRED,
+                optional=_FINDING_OPTIONAL,
+                label=row_label,
+            )
+            finding_id = require_safe_id(
+                obj.get("finding_id"), label=f"{row_label}.finding_id"
+            )
+        except ContractValidationError as exc:
+            raise HyperplanError(str(exc), code="E_TEAM_HYPERPLAN_BUNDLE") from exc
+        if finding_id in seen:
+            raise HyperplanError(
+                f"duplicate finding_id {finding_id!r}",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+        seen.add(finding_id)
+        row: dict[str, Any] = {
+            "finding_id": finding_id,
+            "summary": _require_short_string(
+                obj.get("summary"), label=f"{row_label}.summary"
+            ),
+        }
+        if "severity" in obj:
+            severity = obj.get("severity")
+            if severity not in _SEVERITIES:
+                raise HyperplanError(
+                    f"{row_label}.severity invalid",
+                    code="E_TEAM_HYPERPLAN_BUNDLE",
+                )
+            row["severity"] = severity
+        if "blocking" in obj:
+            blocking = obj.get("blocking")
+            if not isinstance(blocking, bool):
+                raise HyperplanError(
+                    f"{row_label}.blocking must be a bool",
+                    code="E_TEAM_HYPERPLAN_BUNDLE",
+                )
+            row["blocking"] = blocking
+        if "notes" in obj:
+            notes = obj.get("notes")
+            if not isinstance(notes, str) or len(notes) > MAX_NOTE_CHARS:
+                raise HyperplanError(
+                    f"{row_label}.notes must be a short string",
+                    code="E_TEAM_HYPERPLAN_BUNDLE",
+                )
+            row["notes"] = notes
+        out.append(row)
+    out.sort(key=lambda row: row["finding_id"])
+    return out
+
+
+def _parse_synthesis_payload(obj: Mapping[str, Any], *, label: str) -> dict[str, Any]:
+    try:
+        require_exact_keys(
+            obj,
+            required=_SYNTHESIS_PAYLOAD_REQUIRED,
+            optional=frozenset({"notes"}),
+            label=label,
+        )
+    except ContractValidationError as exc:
+        raise HyperplanError(str(exc), code="E_TEAM_HYPERPLAN_BUNDLE") from exc
+    summary = _require_short_string(obj.get("summary"), label=f"{label}.summary")
+    recommended = obj.get("recommended_verdict")
+    if recommended not in _SYNTHESIS_VERDICTS:
+        raise HyperplanError(
+            f"{label}.recommended_verdict must be approved|rejected",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    conflicts = _parse_bounded_string_list(
+        obj.get("open_conflicts"),
+        label=f"{label}.open_conflicts",
+        max_items=MAX_CONFLICT_ITEMS,
+    )
+    merged = _parse_merged_findings(
+        obj.get("merged_findings"), label=f"{label}.merged_findings"
+    )
+    out: dict[str, Any] = {
+        "summary": summary,
+        "merged_findings": merged,
+        "open_conflicts": conflicts,
+        "recommended_verdict": recommended,
+    }
+    if "notes" in obj:
+        notes = obj.get("notes")
+        if not isinstance(notes, str) or len(notes) > MAX_NOTE_CHARS:
+            raise HyperplanError(
+                f"{label}.notes must be a short string",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+        out["notes"] = notes
+    return out
+
+
+def _parse_merged_findings(raw: Any, *, label: str) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        raise HyperplanError(
+            f"{label} must be a list",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    if len(raw) > MAX_FINDING_ITEMS:
+        raise HyperplanError(
+            f"{label} exceeds {MAX_FINDING_ITEMS} items",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for idx, item in enumerate(raw):
+        row_label = f"{label}[{idx}]"
+        try:
+            obj = require_object(item, label=row_label)
+            require_exact_keys(
+                obj,
+                required=_MERGED_FINDING_REQUIRED,
+                optional=_MERGED_FINDING_OPTIONAL,
+                label=row_label,
+            )
+            finding_id = require_safe_id(
+                obj.get("finding_id"), label=f"{row_label}.finding_id"
+            )
+        except ContractValidationError as exc:
+            raise HyperplanError(str(exc), code="E_TEAM_HYPERPLAN_BUNDLE") from exc
+        if finding_id in seen:
+            raise HyperplanError(
+                f"duplicate merged finding_id {finding_id!r}",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+        seen.add(finding_id)
+        disposition = obj.get("disposition")
+        if disposition not in _FINDING_DISPOSITIONS:
+            raise HyperplanError(
+                f"{row_label}.disposition must be one of "
+                f"{sorted(_FINDING_DISPOSITIONS)}",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+        row: dict[str, Any] = {
+            "finding_id": finding_id,
+            "disposition": disposition,
+        }
+        if "notes" in obj:
+            notes = obj.get("notes")
+            if not isinstance(notes, str) or len(notes) > MAX_NOTE_CHARS:
+                raise HyperplanError(
+                    f"{row_label}.notes must be a short string",
+                    code="E_TEAM_HYPERPLAN_BUNDLE",
+                )
+            row["notes"] = notes
+        out.append(row)
+    out.sort(key=lambda row: row["finding_id"])
+    return out
+
+
+def _parse_verify_payload(obj: Mapping[str, Any], *, label: str) -> dict[str, Any]:
+    try:
+        require_exact_keys(
+            obj,
+            required=_VERIFY_PAYLOAD_REQUIRED,
+            optional=frozenset({"notes"}),
+            label=label,
+        )
+    except ContractValidationError as exc:
+        raise HyperplanError(str(exc), code="E_TEAM_HYPERPLAN_BUNDLE") from exc
+    gate = _require_short_string(obj.get("gate"), label=f"{label}.gate")
+    if gate != "hyperplan-v1":
+        raise HyperplanError(
+            f"{label}.gate must be 'hyperplan-v1'",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    verdict = obj.get("verdict")
+    if verdict not in _VERIFY_VERDICTS:
+        raise HyperplanError(
+            f"{label}.verdict must be approved|rejected",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    covered = _parse_bounded_string_list(
+        obj.get("covered_lanes"),
+        label=f"{label}.covered_lanes",
+        max_items=MAX_LIST_ITEMS,
+    )
+    blockers = _parse_bounded_string_list(
+        obj.get("blocking_issues"),
+        label=f"{label}.blocking_issues",
+        max_items=MAX_LIST_ITEMS,
+    )
+    # Contradictory verifier approval + blockers: fail closed.
+    if verdict == "approved" and blockers:
+        raise HyperplanError(
+            "verify approval with blocking_issues is contradictory",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    out: dict[str, Any] = {
+        "gate": gate,
+        "covered_lanes": covered,
+        "blocking_issues": blockers,
+        "verdict": verdict,
+    }
+    if "notes" in obj:
+        notes = obj.get("notes")
+        if not isinstance(notes, str) or len(notes) > MAX_NOTE_CHARS:
+            raise HyperplanError(
+                f"{label}.notes must be a short string",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+        out["notes"] = notes
+    return out
+
+
+def _parse_bounded_string_list(
+    raw: Any, *, label: str, max_items: int
+) -> list[str]:
+    if not isinstance(raw, list):
+        raise HyperplanError(
+            f"{label} must be a list",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    if len(raw) > max_items:
+        raise HyperplanError(
+            f"{label} exceeds {max_items} items",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+    out: list[str] = []
+    for idx, item in enumerate(raw):
+        if not isinstance(item, str) or not item.strip():
+            raise HyperplanError(
+                f"{label}[{idx}] must be a non-empty string",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+        if len(item) > MAX_NOTE_CHARS:
+            raise HyperplanError(
+                f"{label}[{idx}] too long",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+        out.append(item.strip())
+    return out
+
+
+def _derive_decision_from_bundle(
+    manifest: Mapping[str, Any],
+    bundle: Mapping[str, Any],
+) -> dict[str, Any]:
+    receipts = {row["lane_id"]: row for row in bundle["receipts"]}
+
+    # Collect critic findings; IDs must be globally unique.
+    findings_by_id: dict[str, dict[str, Any]] = {}
+    finding_blocking: dict[str, bool] = {}
+    for lane in manifest["lanes"]:
+        lane_id = lane["lane_id"]
+        if not lane_id.startswith("critic."):
+            continue
+        receipt = receipts[lane_id]
+        if receipt["status"] != "complete":
+            continue
+        payload = receipt["payload"]
+        # Lane-level blocking applies when a finding omits its own flag.
+        lane_blocking = bool(payload.get("blocking"))
+        for finding in payload["findings"]:
+            fid = finding["finding_id"]
+            if fid in findings_by_id:
+                raise HyperplanError(
+                    f"duplicate finding_id {fid!r} across critic lanes",
+                    code="E_TEAM_HYPERPLAN_BUNDLE",
+                )
+            findings_by_id[fid] = finding
+            if "blocking" in finding:
+                finding_blocking[fid] = bool(finding["blocking"])
+            else:
+                finding_blocking[fid] = lane_blocking
+
+    synth = receipts["synthesize"]
+    synth_payload = synth["payload"]
+    merged = list(synth_payload.get("merged_findings") or [])
+    open_conflicts = list(synth_payload.get("open_conflicts") or [])
+    synth_verdict = synth_payload.get("recommended_verdict")
+
+    merged_ids = {row["finding_id"] for row in merged}
+    if set(findings_by_id) != merged_ids:
+        missing = sorted(set(findings_by_id) - merged_ids)
+        invented = sorted(merged_ids - set(findings_by_id))
+        if missing:
+            raise HyperplanError(
+                f"synthesis omits critic findings: {missing!r}",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+        raise HyperplanError(
+            f"synthesis invents unknown finding ids: {invented!r}",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+
+    # Contradictory synthesis approval with open conflicts → fail closed.
+    if synth_verdict == "approved" and open_conflicts:
+        raise HyperplanError(
+            "synthesis approval with open_conflicts is contradictory",
+            code="E_TEAM_HYPERPLAN_BUNDLE",
+        )
+
+    repairs: list[str] = []
+    risks: list[str] = []
+    accepted_blocking: list[str] = []
+    for row in merged:
+        fid = row["finding_id"]
+        disposition = row["disposition"]
+        note = row.get("notes")
+        label = f"{fid}: {note}" if note else fid
+        if disposition == "repair":
+            repairs.append(label)
+        elif disposition == "risk":
+            risks.append(label)
+        elif disposition == "accepted" and finding_blocking.get(fid):
+            accepted_blocking.append(fid)
+
+    coverage: list[dict[str, Any]] = []
+    incomplete: list[str] = []
+    for lane in manifest["lanes"]:
+        lane_id = lane["lane_id"]
+        receipt = receipts[lane_id]
+        coverage.append(
+            {
+                "lane_id": lane_id,
+                "status": receipt["status"],
+                "artifact_digest": receipt["digest"],
+            }
+        )
+        if receipt["status"] != "complete":
+            incomplete.append(lane_id)
+
+    verify = receipts["verify"]
+    verify_payload = verify["payload"]
+    if verify["status"] == "complete":
+        expected_covered = [lane["lane_id"] for lane in manifest["lanes"]]
+        covered = list(verify_payload.get("covered_lanes") or [])
+        if set(covered) != set(expected_covered) or len(covered) != len(
+            expected_covered
+        ):
+            raise HyperplanError(
+                "verify.covered_lanes must list every manifest lane exactly once "
+                f"(expected {sorted(expected_covered)!r}, got {sorted(set(covered))!r})",
+                code="E_TEAM_HYPERPLAN_BUNDLE",
+            )
+
+    verify_verdict = verify_payload.get("verdict")
+    verify_blockers = list(verify_payload.get("blocking_issues") or [])
+
+    # Derive verdict — incomplete always rejects; approved only under strict gates.
+    can_approve = (
+        not incomplete
+        and not open_conflicts
+        and not repairs
+        and not risks
+        and not accepted_blocking
+        and not verify_blockers
+        and synth_verdict == "approved"
+        and verify_verdict == "approved"
+        and synth["status"] == "complete"
+        and verify["status"] == "complete"
+    )
+    verdict = "approved" if can_approve else "rejected"
+
+    sources: dict[str, str] = {
+        "composition": str(manifest["digest"]),
+        "result_bundle": str(bundle["digest"]),
+    }
+    for row in coverage:
+        key = f"lane_{row['lane_id'].replace('.', '_')}"
+        sources[key] = row["artifact_digest"]
+
+    return {
+        "kind": HYPERPLAN_DECISION_KIND,
+        "schema_version": HYPERPLAN_SCHEMA_VERSION,
+        "verdict": verdict,
+        "composition_id": manifest["composition_id"],
+        "composition_digest": manifest["digest"],
+        "lane_coverage": coverage,
+        "conflicts": list(open_conflicts),
+        "required_repairs": repairs,
+        "unresolved_risks": risks,
+        "limitations": [
+            "execution_supported=false",
+            "hermetic_result_production_v1",
+        ],
+        "source_artifact_digests": dict(sorted(sources.items())),
+        "writer": CLI_WRITER,
+    }
+
+
+def _try_load_existing_result_bundle(path: Path) -> dict[str, Any] | None:
+    if path.is_symlink():
+        raise HyperplanError(
+            "hyperplan-v1-result-bundle.json may not be a symlink",
+            code="E_TEAM_HYPERPLAN_PATH",
+        )
+    if not path.exists():
+        return None
+    return _load_result_bundle_file(path)
+
+
+def _load_result_bundle_file(path: Path) -> dict[str, Any]:
+    if path.is_symlink():
+        raise HyperplanError(
+            "hyperplan-v1-result-bundle.json may not be a symlink",
+            code="E_TEAM_HYPERPLAN_PATH",
+        )
+    try:
+        body = read_managed_regular_bytes(path, max_bytes=MAX_INLINE_JSON_BYTES)
+    except FileNotFoundError as exc:
+        raise HyperplanError(
+            "hyperplan-v1-result-bundle.json missing",
+            code="E_TEAM_HYPERPLAN_MISSING",
+        ) from exc
+    except ContractPathError as exc:
+        raise HyperplanError(
+            f"hyperplan-v1-result-bundle.json unreadable: {exc}",
+            code="E_TEAM_HYPERPLAN_PATH",
+        ) from exc
+    if not body:
+        raise HyperplanError(
+            "hyperplan-v1-result-bundle.json empty/corrupt",
+            code="E_TEAM_HYPERPLAN_CORRUPT",
+        )
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HyperplanError(
+            "hyperplan-v1-result-bundle.json corrupt JSON",
+            code="E_TEAM_HYPERPLAN_CORRUPT",
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise HyperplanError(
+            "hyperplan-v1-result-bundle.json must be an object",
+            code="E_TEAM_HYPERPLAN_CORRUPT",
+        )
+    if parsed.get("writer") != CLI_WRITER:
+        raise HyperplanError(
+            "foreign writer refused on result bundle",
+            code="E_TEAM_HYPERPLAN_FOREIGN_WRITER",
+        )
+    if parsed.get("kind") != HYPERPLAN_RESULT_BUNDLE_KIND:
+        raise HyperplanError(
+            "result bundle kind mismatch",
+            code="E_TEAM_HYPERPLAN_CORRUPT",
+        )
+    try:
+        require_sha256(parsed.get("digest"), label="digest")
+    except ContractValidationError as exc:
+        raise HyperplanError(str(exc), code="E_TEAM_HYPERPLAN_CORRUPT") from exc
+    core = {k: v for k, v in parsed.items() if k != "digest"}
+    expected = sha256_hex(canonical_json_bytes(core))
+    if expected != parsed["digest"]:
+        raise HyperplanError(
+            "result bundle digest mismatch (truncated or partially written)",
+            code="E_TEAM_HYPERPLAN_CORRUPT",
+        )
+    return dict(parsed)
+
+
+def _try_load_existing_decision(path: Path) -> dict[str, Any] | None:
+    if path.is_symlink():
+        raise HyperplanError(
+            "hyperplan-v1-decision.json may not be a symlink",
+            code="E_TEAM_HYPERPLAN_PATH",
+        )
+    if not path.exists():
+        return None
+    try:
+        body = read_managed_regular_bytes(path, max_bytes=MAX_INLINE_JSON_BYTES)
+    except ContractPathError as exc:
+        raise HyperplanError(
+            f"hyperplan-v1-decision.json unreadable: {exc}",
+            code="E_TEAM_HYPERPLAN_PATH",
+        ) from exc
+    if not body:
+        raise HyperplanError(
+            "hyperplan-v1-decision.json empty/corrupt",
+            code="E_TEAM_HYPERPLAN_CORRUPT",
+        )
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HyperplanError(
+            "hyperplan-v1-decision.json corrupt JSON",
+            code="E_TEAM_HYPERPLAN_CORRUPT",
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise HyperplanError(
+            "hyperplan-v1-decision.json must be an object",
+            code="E_TEAM_HYPERPLAN_CORRUPT",
+        )
+    if parsed.get("writer") != CLI_WRITER:
+        raise HyperplanError(
+            "foreign writer refused on decision",
+            code="E_TEAM_HYPERPLAN_FOREIGN_WRITER",
+        )
+    return dict(parsed)
+
+
 __all__ = [
     "HYPERPLAN_DECISION_FILENAME",
     "HYPERPLAN_DECISION_KIND",
     "HYPERPLAN_FILENAME",
     "HYPERPLAN_KIND",
+    "HYPERPLAN_RESULT_BUNDLE_FILENAME",
+    "HYPERPLAN_RESULT_BUNDLE_KIND",
     "HYPERPLAN_SCHEMA_VERSION",
     "HyperplanError",
+    "compile_hyperplan_decision_v1",
     "compile_hyperplan_v1",
     "hyperplan_decision_path",
     "hyperplan_manifest_path",
+    "hyperplan_result_bundle_path",
     "load_hyperplan_manifest",
     "materialize_hyperplan_v1",
     "parse_hyperplan_spec_v1",
+    "produce_hyperplan_decision_v1",
     "validate_hyperplan_decision_v1",
 ]
