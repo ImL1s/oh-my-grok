@@ -20,7 +20,6 @@ from omg_cli.team.operation_catalog import (
     TEAM_OPERATION_CATALOG_V2,
     TEAM_OPERATION_CATALOG_V3,
     TEAM_OPERATION_CATALOG_V4,
-    catalog_document_json,
     serialize_operation_catalog,
 )
 from omg_cli.team.plane import (
