@@ -104,6 +104,10 @@ omg team api send-message --input '{...}' --json
 omg team hyperplan plan --spec SPEC.json --json
 omg team hyperplan materialize --spec SPEC.json --run RUN
 omg team hyperplan validate-decision --run RUN --input DECISION.json
+# Security Research V1 scaffolding (non-executing; see docs/team-security-research-v1.md):
+omg team security-research plan --spec SPEC.json --json
+omg team security-research materialize --spec SPEC.json --run RUN
+omg team security-research validate-report --run RUN --input REPORT.json
 ```
 
 ## When to use ULW instead

@@ -1148,6 +1148,127 @@ def cmd_team(args: argparse.Namespace) -> int:
                 print(f"omg team hyperplan: {exc.code}: {exc}", file=sys.stderr)
                 return 2
 
+        if action == "security-research":
+            from omg_cli.cli_envelope import wants_json
+            from omg_cli.team.compositions.security_research import (
+                SecurityResearchError,
+                compile_security_research_v1,
+                materialize_security_research_v1,
+                validate_security_research_report_v1,
+            )
+            from omg_cli.team.plane import TeamGateError, experimental_enabled
+
+            if not experimental_enabled():
+                raise TeamGateError("team plane disabled by kill-switch")
+
+            sr_action = getattr(args, "security_research_action", None)
+            spec_path = getattr(args, "security_research_spec", None)
+            report_path = getattr(args, "security_research_report", None)
+            run_id = getattr(args, "run_id", None)
+
+            def _load_sr_json_file(path_s: str, *, label: str) -> Any:
+                path = Path(path_s)
+                if path.is_symlink() or not path.is_file():
+                    raise SecurityResearchError(
+                        f"{label} must be a regular non-symlink file",
+                        code="E_TEAM_SECURITY_RESEARCH_SPEC",
+                    )
+                try:
+                    return json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise SecurityResearchError(
+                        f"{label} unreadable JSON: {exc}",
+                        code="E_TEAM_SECURITY_RESEARCH_SPEC",
+                    ) from exc
+
+            try:
+                if sr_action == "plan":
+                    if not spec_path:
+                        print(
+                            "omg team security-research plan: --spec required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    manifest = compile_security_research_v1(
+                        _load_sr_json_file(str(spec_path), label="--spec")
+                    )
+                    emit_data(args, "team.security_research", manifest)
+                    if not wants_json(args):
+                        print(
+                            f"security-research plan "
+                            f"composition_id={manifest['composition_id']} "
+                            f"lanes={manifest['lane_count']} "
+                            f"execution_supported={manifest['execution_supported']}",
+                            file=sys.stderr,
+                        )
+                    return 0
+                if sr_action == "materialize":
+                    if not spec_path or not run_id:
+                        print(
+                            "omg team security-research materialize: "
+                            "--spec and --run required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    result = materialize_security_research_v1(
+                        root,
+                        str(run_id),
+                        _load_sr_json_file(str(spec_path), label="--spec"),
+                    )
+                    emit_data(args, "team.security_research", result)
+                    if not wants_json(args):
+                        tag = "idempotent" if result.get("idempotent") else "wrote"
+                        print(
+                            f"security-research materialize {tag} "
+                            f"path={result.get('path')} "
+                            f"composition_id={result['manifest']['composition_id']}",
+                            file=sys.stderr,
+                        )
+                    return 0
+                if sr_action == "validate-report":
+                    if not run_id or not report_path:
+                        print(
+                            "omg team security-research validate-report: "
+                            "--run and --input required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    result = validate_security_research_report_v1(
+                        root,
+                        str(run_id),
+                        _load_sr_json_file(str(report_path), label="--input"),
+                        persist=True,
+                    )
+                    emit_data(args, "team.security_research", result)
+                    if not wants_json(args):
+                        report = result.get("report") or {}
+                        print(
+                            f"security-research report ok "
+                            f"verdict={report.get('verdict')} "
+                            f"path={result.get('path')}",
+                            file=sys.stderr,
+                        )
+                    return 0
+                print(
+                    f"omg team security-research: unknown action {sr_action!r}",
+                    file=sys.stderr,
+                )
+                return 2
+            except SecurityResearchError as exc:
+                emit_data(
+                    args,
+                    "team.security_research",
+                    {
+                        "ok": False,
+                        "error": {"code": exc.code, "message": exc.message},
+                    },
+                )
+                print(
+                    f"omg team security-research: {exc.code}: {exc}",
+                    file=sys.stderr,
+                )
+                return 2
+
         if action == "api":
             from omg_cli.team.api import (
                 TeamApiError,
@@ -2474,6 +2595,87 @@ def register_team_parsers(
         func=cmd_team,
         team_action="hyperplan",
         hyperplan_action="validate-decision",
+    )
+
+    p_t_sr = team_sub.add_parser(
+        "security-research",
+        parents=[common],
+        help=(
+            "Security Research Composition Contract V1 (non-executing): "
+            "plan|materialize|validate-report (#69 PR8)"
+        ),
+    )
+    sr_sub = p_t_sr.add_subparsers(dest="security_research_action")
+    p_sr_plan = sr_sub.add_parser(
+        "plan",
+        parents=[common],
+        help=(
+            "compile SecurityResearchSpecV1 → ManifestV1 "
+            "(zero filesystem mutation)"
+        ),
+    )
+    p_sr_plan.add_argument(
+        "--spec",
+        dest="security_research_spec",
+        required=True,
+        help="path to SecurityResearchSpecV1 JSON",
+    )
+    p_sr_plan.set_defaults(
+        func=cmd_team,
+        team_action="security-research",
+        security_research_action="plan",
+    )
+
+    p_sr_mat = sr_sub.add_parser(
+        "materialize",
+        parents=[common],
+        help=(
+            "atomically persist manifest under "
+            ".omg/state/runs/<run>/team/compositions/security-research-v1.json"
+        ),
+    )
+    p_sr_mat.add_argument(
+        "--spec",
+        dest="security_research_spec",
+        required=True,
+        help="path to SecurityResearchSpecV1 JSON",
+    )
+    p_sr_mat.add_argument(
+        "--run",
+        dest="run_id",
+        required=True,
+        help="existing run_id under .omg/state/runs/",
+    )
+    p_sr_mat.set_defaults(
+        func=cmd_team,
+        team_action="security-research",
+        security_research_action="materialize",
+    )
+
+    p_sr_rep = sr_sub.add_parser(
+        "validate-report",
+        parents=[common],
+        help=(
+            "validate + persist SecurityResearchReportV1 against materialized "
+            "manifest (never writes passes/verified)"
+        ),
+    )
+    p_sr_rep.add_argument(
+        "--run",
+        dest="run_id",
+        required=True,
+        help="run_id with materialized security-research-v1.json",
+    )
+    p_sr_rep.add_argument(
+        "--input",
+        dest="security_research_report",
+        required=True,
+        help="path to SecurityResearchReportV1 JSON",
+    )
+    p_sr_rep.set_defaults(
+        func=cmd_team,
+        team_action="security-research",
+        security_research_action="validate-report",
     )
 
     p_team.set_defaults(func=cmd_team)

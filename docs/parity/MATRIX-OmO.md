@@ -10,7 +10,7 @@
 | `omo.agents.discipline_routing` | agents_routing | omg_native | grok=catalogued | catalogued | Static omg-* agent catalog exists; OmO discipline/category routing engine is not mirrored (#78). |
 | `omo.rules.intent_gate` | hooks | omg_native | grok=catalogued | catalogued | Rules-file + PreToolUse soft-gate substitute IntentGate; Grok cannot inject via UserPromptSubmit (#78). |
 | `omo.agents.background` | jobs | optional_unclaimed | grok=catalogued | optional_unclaimed | No OmO-style background agents; durable jobs plane tracked under #68 (jobs.durable_background). |
-| `omo.team.hyperplan_security` | team | omg_native | grok=catalogued | catalogued | Team + ralplan + security-reviewer substitute hyperplan/security-research; Team v3 remains #69. |
+| `omo.team.hyperplan_security` | team | omg_native | grok=catalogued | catalogued | Hyperplan V1 + Security Research V1 non-executing composition contracts landed (#69 PR7/PR8; execution_supported=false). Execution/result production, live Antigravity, and full OMX remain open under Team v3 (#69). |
 | `omo.goal.todo_continuation` | runtime_orchestration | host_impossible | grok=catalogued | host_impossible | OmO client session.prompt inject has no Grok host equivalent; Stop soft-pin is not todo-continuation (#78). |
 | `omo.edit.hash_anchored` | quality_visual_edit_safety | optional_unclaimed | grok=catalogued | optional_unclaimed | No hash-anchored edit surface in OMG; host edit tools are used as-is (#78). |
 | `omo.tools.lsp_ast_codegraph_mcp` | tools_mcp | omg_native | grok=catalogued | catalogued | Local omg lsp + MCP probe exist; no full AST/CodeGraph MCP bridge (#78). |

@@ -40,6 +40,7 @@ RESERVED_ACTIONS: frozenset[str] = frozenset(
         "watch",
         "view",
         "hyperplan",
+        "security-research",
         "help",
         "-h",
         "--help",

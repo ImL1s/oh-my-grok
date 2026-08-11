@@ -146,7 +146,7 @@ New start/scale also stamp an additive `route` descriptor
 ## Non-goals (this slice)
 
 - No live Antigravity proof / `live_*` maturity claims
-- No Hyperplan **execution** / model synthesis / security compositions
+- No Hyperplan / Security Research **execution** / model synthesis / PoC running
 - No automatic replacement policy / retry scheduler / attempt budgets
 - No pane↔job migration during replacement
 - No TUI / native execution path
@@ -161,6 +161,17 @@ remains open.
 omg team hyperplan plan --spec SPEC.json --json
 omg team hyperplan materialize --spec SPEC.json --run RUN
 omg team hyperplan validate-decision --run RUN --input DECISION.json
+```
+
+## Security Research V1 (scaffolding)
+
+See `docs/team-security-research-v1.md`. Contract + hermetic compiler landed;
+execution / PoC running remain open.
+
+```bash
+omg team security-research plan --spec SPEC.json --json
+omg team security-research materialize --spec SPEC.json --run RUN
+omg team security-research validate-report --run RUN --input REPORT.json
 ```
 
 Refs #69.

@@ -879,7 +879,7 @@ def test_foreign_owner_nonce_fails_closed_for_capture_key_input(
 def test_cli_normalize_reserves_operator_actions() -> None:
     from omg_cli.team.cli import RESERVED_ACTIONS, normalize_team_argv
 
-    for name in ("panes", "capture", "focus", "key", "input", "watch", "view", "hyperplan"):
+    for name in ("panes", "capture", "focus", "key", "input", "watch", "view", "hyperplan", "security-research"):
         assert name in RESERVED_ACTIONS
     out = normalize_team_argv(["team", "panes", "--json"])
     assert out[1] == "panes"
