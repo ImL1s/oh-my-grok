@@ -1418,6 +1418,57 @@ def collect_hyperplan_tasks_v1(
         raise HyperplanError(str(exc), code=exc.code) from exc
 
 
+def claim_hyperplan_lane_v1(
+    root: Path | str,
+    run_id: str,
+    team_id: str,
+    lane_id: str,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Worker-only: claim one Hyperplan lane via Composition Lane Protocol V1."""
+    from omg_cli.team.compositions.lane_protocol import (
+        CompositionLaneProtocolError,
+        claim_composition_lane_v1,
+    )
+
+    try:
+        return claim_composition_lane_v1(
+            root, run_id, team_id, lane_id, _HyperplanTaskAdapter(), env=env
+        )
+    except CompositionLaneProtocolError as exc:
+        raise HyperplanError(str(exc), code=exc.code) from exc
+
+
+def submit_hyperplan_lane_result_v1(
+    root: Path | str,
+    run_id: str,
+    team_id: str,
+    *,
+    claim: Mapping[str, Any] | Any,
+    result: Mapping[str, Any] | Any,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Worker-only: submit Hyperplan ``LaneTaskResultV1`` via transition-task-status."""
+    from omg_cli.team.compositions.lane_protocol import (
+        CompositionLaneProtocolError,
+        submit_composition_lane_result_v1,
+    )
+
+    try:
+        return submit_composition_lane_result_v1(
+            root,
+            run_id,
+            team_id,
+            _HyperplanTaskAdapter(),
+            claim=claim,
+            result=result,
+            env=env,
+        )
+    except CompositionLaneProtocolError as exc:
+        raise HyperplanError(str(exc), code=exc.code) from exc
+
+
 class _HyperplanTaskAdapter:
     source_kind = "hyperplan_v1"
     result_bundle_kind = HYPERPLAN_RESULT_BUNDLE_KIND

@@ -1,13 +1,14 @@
-# Team Hyperplan Composition Contract V1 (#69 PR12)
+# Team Hyperplan Composition Contract V1 (#69 PR13)
 
 Hermetic Hyperplan contract: deterministic DAG compiler, fail-closed
-manifest persistence, offline result production, and **shared composition
-task-driver admission/collection** under the canonical Team run root.
-Composition worker/pane/Jobs/provider execution remains unsupported
-(`execution_supported=false`).
+manifest persistence, offline result production, **shared composition
+task-driver admission/collection**, and **worker-scoped lane claim/submit**
+under the canonical Team run root. Composition worker/pane/Jobs/provider
+**automatic** execution remains unsupported (`execution_supported=false`).
 
-Authoritative modules: `omg_cli.team.compositions.hyperplan` and
-`omg_cli.team.compositions.task_driver`.
+Authoritative modules: `omg_cli.team.compositions.hyperplan`,
+`omg_cli.team.compositions.task_driver`, and
+`omg_cli.team.compositions.lane_protocol`.
 
 ```bash
 omg team hyperplan plan --spec SPEC.json [--json]
@@ -16,6 +17,8 @@ omg team hyperplan validate-decision --run RUN_ID --input DECISION.json [--json]
 omg team hyperplan produce-decision --run RUN_ID --input RESULT_BUNDLE.json [--json]
 omg team hyperplan admit-tasks --run RUN_ID --team-id TEAM_ID [--json]
 omg team hyperplan collect-tasks --run RUN_ID --team-id TEAM_ID [--json]
+omg team hyperplan claim-lane --run RUN_ID --team-id TEAM_ID --lane-id LANE [--json]
+omg team hyperplan submit-lane-result --run RUN_ID --team-id TEAM_ID --claim-file CLAIM.json --result RESULT.json [--json]
 ```
 
 `plan` performs **zero** filesystem mutation. `materialize` atomically writes
@@ -26,14 +29,25 @@ only:
 `admit-tasks` revalidates the materialized manifest, compiles a deterministic
 PR11 `TaskBatchV1` (`source.kind=hyperplan_v1`, `task_key=lane_id`,
 `requires_code_change=false`), and calls `admit_task_batch_v1`. It does **not**
-launch workers.
+launch workers. Leader-only.
 
-`collect-tasks` requires a committed batch with exact lane coverage, every
-mapped task `completed` + claim-free + still bound, parses worker
-`LaneTaskResultV1` JSON (workers must not supply lane/digest/writer identity),
-builds the existing result bundle, and invokes produce-decision persistence
-(bundle first, decision commit marker last). Failures write no authoritative
-decision.
+`claim-lane` / `submit-lane-result` are **worker-only**. They require a complete
+Team worker environment (`OMG_TEAM_WORKER` + identity + run/team + leader/state
+roots + owner token), resolve the authoritative leader root, bind `lane_id` to
+the immutable PR12/PR11 task, call existing `claim-task` /
+`transition-task-status`, and never write task files directly. `claim-lane`
+returns a bounded `CompositionLaneClaimV1` envelope (goal/evidence + validated
+dependency outputs; never the leader conversation). Human output redacts the
+claim token; machine `--json` may expose it for the worker. Submit consumes a
+claim file (no `--claim-token` argv). Rejected/blocked lane results still
+transition the Team task to `completed`. `execution_supported=false` retained.
+
+`collect-tasks` remains leader-only: requires a committed batch with exact lane
+coverage, every mapped task `completed` + claim-free + still bound, parses
+worker `LaneTaskResultV1` JSON (workers must not supply lane/digest/writer
+identity), builds the existing result bundle, and invokes produce-decision
+persistence (bundle first, decision commit marker last). Failures write no
+authoritative decision.
 
 `produce-decision` derives a decision from a bounded
 `HyperplanResultBundleV1` (exactly one receipt per manifest lane;
@@ -98,16 +112,6 @@ verifier blockers. Incomplete lanes derive `rejected`. Contradictory claims
 (e.g. verifier approval with blockers, or synthesis approval with open
 conflicts) fail closed rather than being silently normalized.
 
-## Decision contract
-
-`HyperplanDecisionV1` must cover **all** manifest lanes, bind
-`composition_id` + `composition_digest`, and include
-`source_artifact_digests.composition`. Produced decisions additionally bind
-`result_bundle` and every lane receipt digest. `verdict=approved`
-additionally requires empty `conflicts`, `required_repairs`, and
-`unresolved_risks`, plus every lane `status=complete`. Incomplete coverage
-can only be stored under `verdict=rejected` (or fails closed).
-
 ## Fail-closed invariants
 
 - Idempotent materialize / produce for identical digests
@@ -119,16 +123,20 @@ can only be stored under `verdict=rejected` (or fails closed).
 - Missing / cancelled run → refuse
 - Never sets `verified` / `passes`
 - Never launches panes, Jobs, providers, Antigravity, or MCP
+- Worker claim/submit refuse leader / partial / non-Team spawn contexts
+- Concurrent same-lane claims yield exactly one winner
+- Same-result submit is idempotent; conflicting submit is refused
 
 ## Honesty
 
 Hyperplan V1 **result production landed** under #69 PR10. Catalog v4
 atomic task-batch DAG admission landed under #69 PR11. Shared composition
-task driver (admit-tasks / collect-tasks) landed under #69 PR12. Does
-**not** close #69: Hyperplan execution (auto workers / providers / panes /
-Jobs), model synthesis, Security Research composition execution, live
-Antigravity evidence, and full OMX remain open. Security Research
-hermetic result production landed under #69 PR9. Manifests retain
+task driver (admit-tasks / collect-tasks) landed under #69 PR12. Composition
+lane worker protocol (claim-lane / submit-lane-result) landed under #69
+PR13. Does **not** close #69: Hyperplan execution (auto workers / providers /
+panes / Jobs), model synthesis, Security Research composition execution, live
+Antigravity evidence, and full OMX remain open. Security Research hermetic
+result production landed under #69 PR9. Manifests retain
 `execution_supported=false`. No `live_*` maturity claims.
 
 Refs #69.

@@ -206,7 +206,7 @@
       "issues": [
         "#69"
       ],
-      "gap": "PR4 job-backed workers + PR5 identity-fenced replace-worker + PR6 Presentation State V1 + PR7 Hyperplan V1 scaffolding + PR8 Security Research V1 scaffolding + PR9 Security Research hermetic result production + PR10 Hyperplan hermetic result production + PR11 catalog v4 atomic task-batch DAG admission + PR12 shared composition task driver (admit/collect) landed (execution_supported=false; partial catalog, not full OMX). Hyperplan/Security Research auto-worker execution, live Antigravity proof, and full OMX operation surface remain open (#69). No maturity promotion; external-runtime evidence empty."
+      "gap": "PR4 job-backed workers + PR5 identity-fenced replace-worker + PR6 Presentation State V1 + PR7 Hyperplan V1 scaffolding + PR8 Security Research V1 scaffolding + PR9 Security Research hermetic result production + PR10 Hyperplan hermetic result production + PR11 catalog v4 atomic task-batch DAG admission + PR12 shared composition task driver (admit/collect) + PR13 composition lane worker protocol (claim-lane/submit-lane-result) landed (execution_supported=false; partial catalog, not full OMX). Hyperplan/Security Research auto-worker execution, live Antigravity proof, and full OMX operation surface remain open (#69). No maturity promotion; external-runtime evidence empty."
     },
     {
       "id": "parity.inventory.governance",
@@ -1267,7 +1267,7 @@
         "#69",
         "#78"
       ],
-      "gap": "Hyperplan V1 hermetic result production + Security Research V1 hermetic result production + catalog v4 atomic task-batch DAG admission + shared composition task driver (admit/collect) landed (#69 PR7/PR8/PR9/PR10/PR11/PR12; execution_supported=false; partial catalog, not full OMX). Hyperplan/Security Research auto-worker execution, live Antigravity, and full OMX remain open under Team v3 (#69)."
+      "gap": "Hyperplan V1 hermetic result production + Security Research V1 hermetic result production + catalog v4 atomic task-batch DAG admission + shared composition task driver (admit/collect) + composition lane worker protocol (claim-lane/submit-lane-result) landed (#69 PR7/PR8/PR9/PR10/PR11/PR12/PR13; execution_supported=false; partial catalog, not full OMX). Hyperplan/Security Research auto-worker execution, live Antigravity, and full OMX remain open under Team v3 (#69)."
     },
     {
       "id": "omo.goal.todo_continuation",
@@ -1809,7 +1809,7 @@
       "capability_ids": [
         "team.plane_v3"
       ],
-      "summary": "PR4 job-backed workers + PR5 identity-fenced replace-worker + PR6 Presentation State V1 + PR7 Hyperplan V1 scaffolding + PR8 Security Research V1 scaffolding + PR9 Security Research hermetic result production + PR10 Hyperplan hermetic result production + PR11 catalog v4 atomic task-batch DAG admission + PR12 shared composition task driver (admit/collect) landed (execution_supported=false; partial catalog, not full OMX). Hyperplan/Security Research auto-worker execution, live Antigravity proof, and full OMX operation surface remain open (#69). Depends on #67/#68 for remainder."
+      "summary": "PR4 job-backed workers + PR5 identity-fenced replace-worker + PR6 Presentation State V1 + PR7 Hyperplan V1 scaffolding + PR8 Security Research V1 scaffolding + PR9 Security Research hermetic result production + PR10 Hyperplan hermetic result production + PR11 catalog v4 atomic task-batch DAG admission + PR12 shared composition task driver (admit/collect) + PR13 composition lane worker protocol (claim-lane/submit-lane-result) landed (execution_supported=false; partial catalog, not full OMX). Hyperplan/Security Research auto-worker execution, live Antigravity proof, and full OMX operation surface remain open (#69). Depends on #67/#68 for remainder."
     },
     {
       "id": "gap.parity.governance.remaining",
