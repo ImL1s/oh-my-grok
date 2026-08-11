@@ -1039,6 +1039,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 HyperplanError,
                 compile_hyperplan_v1,
                 materialize_hyperplan_v1,
+                produce_hyperplan_decision_v1,
                 validate_hyperplan_decision_v1,
             )
             from omg_cli.team.plane import TeamGateError, experimental_enabled
@@ -1049,6 +1050,7 @@ def cmd_team(args: argparse.Namespace) -> int:
             hp_action = getattr(args, "hyperplan_action", None)
             spec_path = getattr(args, "hyperplan_spec", None)
             decision_path = getattr(args, "hyperplan_decision", None)
+            bundle_path = getattr(args, "hyperplan_bundle", None)
             run_id = getattr(args, "run_id", None)
 
             def _load_json_file(path_s: str, *, label: str) -> Any:
@@ -1127,6 +1129,30 @@ def cmd_team(args: argparse.Namespace) -> int:
                         decision = result.get("decision") or {}
                         print(
                             f"hyperplan decision ok verdict={decision.get('verdict')} "
+                            f"path={result.get('path')}",
+                            file=sys.stderr,
+                        )
+                    return 0
+                if hp_action == "produce-decision":
+                    if not run_id or not bundle_path:
+                        print(
+                            "omg team hyperplan produce-decision: "
+                            "--run and --input required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    result = produce_hyperplan_decision_v1(
+                        root,
+                        str(run_id),
+                        _load_json_file(str(bundle_path), label="--input"),
+                    )
+                    emit_data(args, "team.hyperplan", result)
+                    if not wants_json(args):
+                        tag = "idempotent" if result.get("idempotent") else "wrote"
+                        decision = result.get("decision") or {}
+                        print(
+                            f"hyperplan produce-decision {tag} "
+                            f"verdict={decision.get('verdict')} "
                             f"path={result.get('path')}",
                             file=sys.stderr,
                         )
@@ -2555,8 +2581,9 @@ def register_team_parsers(
         "hyperplan",
         parents=[common],
         help=(
-            "Hyperplan Composition Contract V1 (non-executing): "
-            "plan|materialize|validate-decision (#69 PR7)"
+            "Hyperplan Composition Contract V1 (hermetic produce; "
+            "non-executing): plan|materialize|validate-decision|produce-decision "
+            "(#69 PR10)"
         ),
     )
     hp_sub = p_t_hp.add_subparsers(dest="hyperplan_action")
@@ -2621,6 +2648,32 @@ def register_team_parsers(
         func=cmd_team,
         team_action="hyperplan",
         hyperplan_action="validate-decision",
+    )
+
+    p_hp_produce = hp_sub.add_parser(
+        "produce-decision",
+        parents=[common],
+        help=(
+            "derive + persist HyperplanDecisionV1 from HyperplanResultBundleV1 "
+            "(hermetic; decision is commit marker)"
+        ),
+    )
+    p_hp_produce.add_argument(
+        "--run",
+        dest="run_id",
+        required=True,
+        help="run_id with materialized hyperplan-v1.json",
+    )
+    p_hp_produce.add_argument(
+        "--input",
+        dest="hyperplan_bundle",
+        required=True,
+        help="path to HyperplanResultBundleV1 JSON",
+    )
+    p_hp_produce.set_defaults(
+        func=cmd_team,
+        team_action="hyperplan",
+        hyperplan_action="produce-decision",
     )
 
     p_t_sr = team_sub.add_parser(

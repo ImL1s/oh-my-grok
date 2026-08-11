@@ -491,6 +491,8 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             "tests/golden/team_operation_catalog_v3.json",
             "tests/golden/team_presentation_state_v1_dry_run.json",
             "tests/golden/team_hyperplan_v1_manifest.json",
+            "tests/golden/team_hyperplan_v1_result_bundle.json",
+            "tests/golden/team_hyperplan_v1_decision.json",
             "tests/golden/team_security_research_v1_manifest.json",
             "tests/golden/team_security_research_v1_result_bundle.json",
             "tests/golden/team_security_research_v1_report.json",

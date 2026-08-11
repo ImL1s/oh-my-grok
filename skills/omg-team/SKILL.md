@@ -100,10 +100,11 @@ omg team status <team-name-or-run> --json
 omg team resume <team-name-or-run>
 omg team stop <team-name-or-run>    # shutdown alias → stop
 omg team api send-message --input '{...}' --json
-# Hyperplan V1 scaffolding (non-executing; see docs/team-hyperplan-v1.md):
+# Hyperplan V1 hermetic produce (execution_supported=false; see docs/team-hyperplan-v1.md):
 omg team hyperplan plan --spec SPEC.json --json
 omg team hyperplan materialize --spec SPEC.json --run RUN
 omg team hyperplan validate-decision --run RUN --input DECISION.json
+omg team hyperplan produce-decision --run RUN --input RESULT_BUNDLE.json
 # Security Research V1 hermetic produce (execution_supported=false; see docs/team-security-research-v1.md):
 omg team security-research plan --spec SPEC.json --json
 omg team security-research materialize --spec SPEC.json --run RUN

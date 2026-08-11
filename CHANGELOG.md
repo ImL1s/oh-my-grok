@@ -10,6 +10,28 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#69 PR10 Hyperplan Hermetic Result Production V1:** offline
+  `compile_hyperplan_decision_v1` / `produce_hyperplan_decision_v1` over
+  `HyperplanResultBundleV1` (exact-key lane receipts; CLI digests;
+  `execution_supported=false`). CLI:
+  `omg team hyperplan produce-decision --run RUN --input BUNDLE.json`.
+  Persistence: `hyperplan-v1-result-bundle.json` then decision commit marker
+  under the composition lock. Once a result-bundle exists,
+  `validate-decision --persist` refuses overwrite unless byte/normalized
+  equivalent (produce-owned marker). Strengthened
+  `load_hyperplan_manifest` recompile-vs-core. Docs:
+  `docs/team-hyperplan-v1.md`. Hermetic coverage in
+  `tests/test_team_hyperplan.py` (+ goldens). Does **not** close #69 (no
+  Hyperplan execution / Security Research composition execution /
+  Antigravity live evidence / catalog v4 / maturity promotion / `live_*`).
+
+### Fixed
+- **Parity OMC/OmO coverage_digest after #69 PR10 GAPS sync:** refresh proof
+  `coverage_digest` values only after gap.team.v3 +
+  `omo.team.hyperplan_security` text update for Hyperplan V1 result
+  production (no policy/mapping/status changes). Refs #69 (does not close).
+
+### Added
 - **#69 PR9 Security Research Hermetic Result Production V1:** offline
   `compile_security_research_report_v1` /
   `produce_security_research_report_v1` over

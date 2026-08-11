@@ -126,7 +126,8 @@ in `rejected_candidates`.
 
 Security Research V1 **result production landed** under #69 PR9. Does **not**
 close #69: composition execution, PoC running, model synthesis, Hyperplan
-execution/result production, live Antigravity evidence, catalog v4, and full
-OMX remain open. No `live_*` maturity claims.
+execution, live Antigravity evidence, catalog v4, and full OMX remain open.
+Hyperplan hermetic result production landed under #69 PR10. No `live_*`
+maturity claims.
 
 Refs #69.
