@@ -25,7 +25,7 @@ from omg_cli.contracts.state_schemas import (
 )
 from omg_cli.contracts.writer_chain import canonical_json_bytes
 from omg_cli.evidence import CLI_WRITER
-from omg_cli.state import _safe_run_id, load_run
+from omg_cli.state import TERMINAL_STATUSES, _safe_run_id, load_run
 from omg_cli.team.api import (
     TeamApiError,
     _ensure_config,
@@ -140,7 +140,7 @@ def _require_live_run(root: Path, run_id: str) -> dict[str, Any]:
             f"run {run_id!r} not found",
             code="E_TEAM_COMPOSITION_TASK_RUN",
         )
-    if status.get("status") in {"cancelled", "complete"}:
+    if status.get("status") in TERMINAL_STATUSES:
         raise CompositionTaskDriverError(
             f"run {run_id!r} is not live (status={status.get('status')!r})",
             code="E_TEAM_COMPOSITION_TASK_RUN",

@@ -14,6 +14,7 @@ import pytest
 
 from omg_cli.contracts.path_keys import exclusive_lock
 from omg_cli.main import main
+from omg_cli.state import write_status
 from omg_cli.team import api as team_api
 from omg_cli.team import task_batch as tb
 from omg_cli.team.api import execute_team_api
@@ -116,7 +117,11 @@ def _seed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
         env={EXPERIMENTAL_ENV: "1"},
         check_binary=False,
     )
-    return str(meta["run_id"])
+    run_id = str(meta["run_id"])
+    # dry_run start_team leaves the OMG run terminal (completed); reopen so
+    # admit/collect exercise the live-run path against a live control plane.
+    write_status(tmp_path, run_id, "running")
+    return run_id
 
 
 def _hp_spec(**overrides: Any) -> dict[str, Any]:
@@ -1304,3 +1309,20 @@ def test_admit_refuses_team_id_mismatch(
     with pytest.raises(HyperplanError, match="team_id mismatch") as col_exc:
         collect_hyperplan_tasks_v1(tmp_path, run_id, WRONG_TEAM)
     assert col_exc.value.code == "E_TEAM_COMPOSITION_TASK_TEAM_ID"
+
+
+@pytest.mark.parametrize("terminal", ["completed", "failed", "verified"])
+def test_admit_collect_refuse_terminal_run_statuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal: str
+) -> None:
+    run_id = _seed(tmp_path, monkeypatch)
+    materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    write_status(tmp_path, run_id, terminal)
+
+    with pytest.raises(HyperplanError, match="is not live") as admit_exc:
+        admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    assert admit_exc.value.code == "E_TEAM_COMPOSITION_TASK_RUN"
+
+    with pytest.raises(HyperplanError, match="is not live") as collect_exc:
+        collect_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    assert collect_exc.value.code == "E_TEAM_COMPOSITION_TASK_RUN"
