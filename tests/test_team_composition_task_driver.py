@@ -13,7 +13,6 @@ from typing import Any
 import pytest
 
 from omg_cli.contracts.path_keys import exclusive_lock
-from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
 from omg_cli.main import main
 from omg_cli.team import api as team_api
 from omg_cli.team import task_batch as tb
@@ -32,7 +31,6 @@ from omg_cli.team.compositions.hyperplan import (
 )
 from omg_cli.team.compositions.security_research import (
     SECURITY_RESEARCH_RESULT_BUNDLE_KIND,
-    SecurityResearchError,
     admit_security_research_tasks_v1,
     collect_security_research_tasks_v1,
     compile_security_research_report_v1,
@@ -388,7 +386,7 @@ def test_compile_min_max_hyperplan_and_security_research_stable() -> None:
     assert all(t["requires_code_change"] is False for t in batch_min["tasks"])
     for task, lane in zip(
         sorted(batch_min["tasks"], key=lambda t: t["task_key"]),
-        sorted(hp_min["lanes"], key=lambda l: l["lane_id"]),
+        sorted(hp_min["lanes"], key=lambda lane: lane["lane_id"]),
         strict=True,
     ):
         assert task["task_key"] == lane["lane_id"]
