@@ -58,8 +58,8 @@ every lane `status=complete`. Incomplete coverage can only be stored under
 ## Honesty
 
 Hyperplan V1 **contract/scaffolding landed** under #69 PR7. Does **not**
-close #69: execution, result production, model synthesis, security
-compositions, live Antigravity evidence, catalog v4, and full OMX remain
-open. No `live_*` maturity claims.
+close #69: execution, result production, model synthesis, Security Research
+execution/result production, live Antigravity evidence, catalog v4, and full
+OMX remain open. No `live_*` maturity claims.
 
 Refs #69.

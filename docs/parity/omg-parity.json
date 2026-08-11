@@ -206,7 +206,7 @@
       "issues": [
         "#69"
       ],
-      "gap": "PR4 job-backed workers + PR5 identity-fenced replace-worker + PR6 Presentation State V1 + PR7 Hyperplan V1 scaffolding landed (hermetic contract/compiler; execution_supported=false). Security compositions, Hyperplan execution/synthesis, live Antigravity proof, and full OMX operation surface remain open (#69). No maturity promotion; external-runtime evidence empty."
+      "gap": "PR4 job-backed workers + PR5 identity-fenced replace-worker + PR6 Presentation State V1 + PR7 Hyperplan V1 scaffolding + PR8 Security Research V1 scaffolding landed (hermetic contract/compiler; execution_supported=false). Hyperplan/Security Research execution/result production, live Antigravity proof, and full OMX operation surface remain open (#69). No maturity promotion; external-runtime evidence empty."
     },
     {
       "id": "parity.inventory.governance",
@@ -250,7 +250,7 @@
       "issues": [
         "#78"
       ],
-      "gap": "#78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; #78-E README↔JSON managed-snapshot drift gate landed; #78-F/#78-G/#78-H/#78-I real pinned OMC+OMX+OmO+Antigravity discovery policy/mapping/proof landed; promotion remains unperformed and is proof-gated; Antigravity pin is documentation/catalog seed only (stronger upstream still needed for implementation-level completeness)."
+      "gap": "#78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; #78-E README\u2194JSON managed-snapshot drift gate landed; #78-F/#78-G/#78-H/#78-I real pinned OMC+OMX+OmO+Antigravity discovery policy/mapping/proof landed; promotion remains unperformed and is proof-gated; Antigravity pin is documentation/catalog seed only (stronger upstream still needed for implementation-level completeness)."
     },
     {
       "id": "omc.cli.session_surfaces",
@@ -1237,7 +1237,10 @@
         "omg_cli/team/",
         "omg_cli/ralplan.py",
         "agents/omg-security-reviewer.md",
-        "skills/omg-team/"
+        "skills/omg-team/",
+        "omg_cli/team/compositions/",
+        "docs/team-hyperplan-v1.md",
+        "docs/team-security-research-v1.md"
       ],
       "runtime_owner": "omg",
       "maturity": {
@@ -1246,11 +1249,15 @@
       "evidence": {
         "tests": [
           "tests/test_team_plane.py",
-          "tests/test_ralplan.py"
+          "tests/test_ralplan.py",
+          "tests/test_team_hyperplan.py",
+          "tests/test_team_security_research.py"
         ],
         "docs": [
           "docs/skills.md",
-          "docs/security-model.md"
+          "docs/security-model.md",
+          "docs/team-hyperplan-v1.md",
+          "docs/team-security-research-v1.md"
         ],
         "live": []
       },
@@ -1258,7 +1265,7 @@
         "#69",
         "#78"
       ],
-      "gap": "Team + ralplan + security-reviewer substitute hyperplan/security-research; Team v3 remains #69."
+      "gap": "Hyperplan V1 + Security Research V1 non-executing composition contracts landed (#69 PR7/PR8; execution_supported=false). Execution/result production, live Antigravity, and full OMX remain open under Team v3 (#69)."
     },
     {
       "id": "omo.goal.todo_continuation",
@@ -1776,7 +1783,7 @@
       "capability_ids": [
         "antigravity.provider.adapter"
       ],
-      "summary": "A–D landed (probe/run/ask/Team envelope); dual review+CI before close"
+      "summary": "A\u2013D landed (probe/run/ask/Team envelope); dual review+CI before close"
     },
     {
       "id": "gap.jobs.durable",
@@ -1800,7 +1807,7 @@
       "capability_ids": [
         "team.plane_v3"
       ],
-      "summary": "PR4 job-backed workers + PR5 identity-fenced replace-worker + PR6 Presentation State V1 + PR7 Hyperplan V1 scaffolding landed (hermetic contract/compiler; execution_supported=false). Security compositions, Hyperplan execution/synthesis, live Antigravity proof, and full OMX operation surface remain open (#69). Depends on #67/#68 for remainder."
+      "summary": "PR4 job-backed workers + PR5 identity-fenced replace-worker + PR6 Presentation State V1 + PR7 Hyperplan V1 scaffolding + PR8 Security Research V1 scaffolding landed (hermetic contract/compiler; execution_supported=false). Hyperplan/Security Research execution/result production, live Antigravity proof, and full OMX operation surface remain open (#69). Depends on #67/#68 for remainder."
     },
     {
       "id": "gap.parity.governance.remaining",

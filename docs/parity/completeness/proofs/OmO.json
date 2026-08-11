@@ -12,7 +12,7 @@
   },
   "policy_digest": "77c5f06294f7cf3e6af85e7039d181a826231a354f966d0706b07a64e3fa383d",
   "seed_digest": "1acbe81d2c9c3d3a6b3a9c124da0efe703fd89a4918d3f876df9842f79b96582",
-  "coverage_digest": "7f880e2323c706cd56391263e99a0b1f806f03f491947f4251a182d5c9a60bf2",
+  "coverage_digest": "db93f480ee1a8a6d29367b51299e3a0b6b3a69fffdb8c59744dec7c36c86461a",
   "source_input_digest": "72955797083919e9a71ea4bcca18d37e55d8fb7b2c18b08cca37d02ab20c424c",
   "surface_index_digest": "f6e73f22fe530097fd938c7e74c2129aaf43930e7703dcda299fc75a9e8427c0",
   "discovered_surfaces": [

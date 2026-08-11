@@ -1,0 +1,251 @@
+{
+  "composition_id": "sr1_b59f5f5349440081",
+  "dependency_graph": {
+    "consolidate": [
+      "hunt.auth",
+      "hunt.injection",
+      "hunt.secrets",
+      "validate.primary",
+      "validate.independent"
+    ],
+    "hunt.auth": [],
+    "hunt.injection": [],
+    "hunt.secrets": [],
+    "validate.independent": [
+      "hunt.auth",
+      "hunt.injection",
+      "hunt.secrets"
+    ],
+    "validate.primary": [
+      "hunt.auth",
+      "hunt.injection",
+      "hunt.secrets"
+    ],
+    "verify": [
+      "hunt.auth",
+      "hunt.injection",
+      "hunt.secrets",
+      "validate.primary",
+      "validate.independent",
+      "consolidate"
+    ]
+  },
+  "digest": "a82697cdf905ae276380e11c71bfe41f7cfe79f96fab0b99a373c9673e0862af",
+  "execution_supported": false,
+  "hunter_count": 3,
+  "kind": "omg.team.security_research",
+  "lane_count": 7,
+  "lanes": [
+    {
+      "allow_implementation": false,
+      "depends_on": [],
+      "expected_artifact": {
+        "kind": "omg.team.security_research.candidate_findings",
+        "required_fields": [
+          "surface",
+          "candidates",
+          "severity_hints",
+          "evidence_pointers"
+        ],
+        "schema_version": 1,
+        "surface": "auth"
+      },
+      "lane_id": "hunt.auth",
+      "owned_files": [],
+      "posture": "read-only",
+      "requires_code_change": false,
+      "role": "security-reviewer",
+      "surface": "auth"
+    },
+    {
+      "allow_implementation": false,
+      "depends_on": [],
+      "expected_artifact": {
+        "kind": "omg.team.security_research.candidate_findings",
+        "required_fields": [
+          "surface",
+          "candidates",
+          "severity_hints",
+          "evidence_pointers"
+        ],
+        "schema_version": 1,
+        "surface": "injection"
+      },
+      "lane_id": "hunt.injection",
+      "owned_files": [],
+      "posture": "read-only",
+      "requires_code_change": false,
+      "role": "security-reviewer",
+      "surface": "injection"
+    },
+    {
+      "allow_implementation": false,
+      "depends_on": [],
+      "expected_artifact": {
+        "kind": "omg.team.security_research.candidate_findings",
+        "required_fields": [
+          "surface",
+          "candidates",
+          "severity_hints",
+          "evidence_pointers"
+        ],
+        "schema_version": 1,
+        "surface": "secrets"
+      },
+      "lane_id": "hunt.secrets",
+      "owned_files": [],
+      "posture": "read-only",
+      "requires_code_change": false,
+      "role": "security-reviewer",
+      "surface": "secrets"
+    },
+    {
+      "allow_implementation": false,
+      "depends_on": [
+        "hunt.auth",
+        "hunt.injection",
+        "hunt.secrets"
+      ],
+      "expected_artifact": {
+        "kind": "omg.team.security_research.validation",
+        "lane": "primary",
+        "required_fields": [
+          "validated",
+          "falsified",
+          "proof_kind",
+          "artifact_digest"
+        ],
+        "schema_version": 1
+      },
+      "lane_id": "validate.primary",
+      "owned_files": [],
+      "posture": "read-only",
+      "requires_code_change": false,
+      "role": "verifier",
+      "surface": null
+    },
+    {
+      "allow_implementation": false,
+      "depends_on": [
+        "hunt.auth",
+        "hunt.injection",
+        "hunt.secrets"
+      ],
+      "expected_artifact": {
+        "kind": "omg.team.security_research.validation",
+        "lane": "independent",
+        "required_fields": [
+          "validated",
+          "falsified",
+          "proof_kind",
+          "artifact_digest"
+        ],
+        "schema_version": 1
+      },
+      "lane_id": "validate.independent",
+      "owned_files": [],
+      "posture": "read-only",
+      "requires_code_change": false,
+      "role": "verifier",
+      "surface": null
+    },
+    {
+      "allow_implementation": false,
+      "depends_on": [
+        "hunt.auth",
+        "hunt.injection",
+        "hunt.secrets",
+        "validate.primary",
+        "validate.independent"
+      ],
+      "expected_artifact": {
+        "kind": "omg.team.security_research.consolidated_report",
+        "required_fields": [
+          "surviving_findings",
+          "rejected_candidates",
+          "severity_calibration",
+          "recommended_verdict"
+        ],
+        "schema_version": 1
+      },
+      "lane_id": "consolidate",
+      "owned_files": [],
+      "posture": "read-only",
+      "requires_code_change": false,
+      "role": "security-reviewer",
+      "surface": null
+    },
+    {
+      "allow_implementation": false,
+      "depends_on": [
+        "hunt.auth",
+        "hunt.injection",
+        "hunt.secrets",
+        "validate.primary",
+        "validate.independent",
+        "consolidate"
+      ],
+      "expected_artifact": {
+        "kind": "omg.team.security_research.gate",
+        "required_fields": [
+          "gate",
+          "covered_lanes",
+          "blocking_issues",
+          "verdict"
+        ],
+        "schema_version": 1
+      },
+      "lane_id": "verify",
+      "owned_files": [],
+      "posture": "read-only",
+      "requires_code_change": false,
+      "role": "verifier",
+      "surface": null
+    }
+  ],
+  "result_contract": {
+    "block_may_preserve_blocked_lanes": true,
+    "cvss_requires_complete_metric_vector": true,
+    "execution_supported": false,
+    "high_critical_requires_dual_validator_and_proof": true,
+    "never_writes_passes_or_verified": true,
+    "pass_requires_all_lanes_complete": true,
+    "requires_lane_coverage": true,
+    "schema_version": 1,
+    "verdicts": [
+      "block",
+      "pass",
+      "pass_with_findings"
+    ]
+  },
+  "safe_poc_policy": {
+    "allowed_proof_kinds": [
+      "static",
+      "dry_run",
+      "local_fixture"
+    ],
+    "execution_supported": false,
+    "forbidden": [
+      "network_access",
+      "third_party_targets",
+      "destructive_actions",
+      "target_side_persistence",
+      "ambient_or_real_credentials"
+    ],
+    "immutable": true,
+    "schema_version": 1
+  },
+  "schema_version": 1,
+  "spec": {
+    "attack_surfaces": [
+      "auth",
+      "injection",
+      "secrets"
+    ],
+    "evidence": [],
+    "limits": {},
+    "schema_version": 1,
+    "target": "Evaluate auth and input surfaces for Security Research V1 scaffolding"
+  },
+  "writer": "omg-cli"
+}

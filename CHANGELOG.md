@@ -10,6 +10,28 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#69 PR8 Security Research Composition Contract V1:** non-executing
+  `omg_cli.team.compositions.security_research` with `SecurityResearchSpecV1` /
+  `ManifestV1` / `ReportV1` and pure `compile_security_research_v1()` (N hunters
+  + dual validate + consolidate + verify; immutable safe-PoC policy;
+  `execution_supported=false`). CLI:
+  `omg team security-research plan|materialize|validate-report`. Materialize
+  persists only
+  `.omg/state/runs/<run>/team/compositions/security-research-v1.json`
+  (idempotent; digest/symlink/corrupt/foreign-writer fail-closed). Report gate:
+  `pass` / `pass_with_findings` / `block` with severity proof rules; never
+  writes `passes`/`verified`. Docs: `docs/team-security-research-v1.md`.
+  Hermetic coverage in `tests/test_team_security_research.py` (+ golden). Does
+  **not** close #69 (no execution / PoC running / Hyperplan execution /
+  Antigravity live evidence / catalog v4 / maturity promotion / `live_*`).
+
+### Fixed
+- **Parity OMC/OmO coverage_digest after #69 PR8 GAPS sync:** refresh proof
+  `coverage_digest` values only after gap.team.v3 +
+  `omo.team.hyperplan_security` text update for Security Research V1
+  scaffolding (no policy/mapping/status changes). Refs #69 (does not close).
+
+### Added
 - **#69 PR7 Hyperplan Composition Contract V1:** non-executing
   `omg_cli.team.compositions.hyperplan` with `HyperplanSpecV1` /
   `ManifestV1` / `DecisionV1` and pure `compile_hyperplan_v1()` (N critics +

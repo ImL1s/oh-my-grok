@@ -167,7 +167,7 @@ omg accept --yes
 | **When** | Multi-pane ULW with real worktrees; hermetic dry-run / fixture smoke for tests |
 | **Gate** | **Default on.** Kill switch `OMG_DISABLE_TMUX_TEAM=1` (legacy `OMG_EXPERIMENTAL_TMUX_TEAM=0` also disables) |
 | **Skill** | `omg-team` — in-session slash **`/oh-my-grok:omg-team` only**; natural `team N …` |
-| **CLI** | `omg team launch` (argv shorthand `N`/`N:role`+goal → launch); also `start\|run\|scale\|resume\|status\|collect\|stop\|api\|supervisor\|panes\|capture\|focus\|key\|input\|watch\|view\|hyperplan` |
+| **CLI** | `omg team launch` (argv shorthand `N`/`N:role`+goal → launch); also `start\|run\|scale\|resume\|status\|collect\|stop\|api\|supervisor\|panes\|capture\|focus\|key\|input\|watch\|view\|hyperplan\|security-research` |
 | **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` / `scale` / `resume` never set `verified`. Scaling/resume/ralph are **lifecycle extensions** of the same team plane (no new isolation claims). Shorthand uses **split-pane** topology + seeds team API (P0′ surface; catalog v3 has 38 named ops / 27 implemented — not full OMX catalog parity; see `docs/team-operation-catalog-v3.md`). Live promotion proof: `scripts/live_team_smoke.py --live` → `LIVE_TEAM_SMOKE_OK` (2026-07-30 local; not CI-required). **No bare `/team` slash alias** — 2026-07-25 host probe (`grok inspect` / plugin skill docs): skills are `/name` or `/plugin:name`; no frontmatter to register an unnamespaced `/team` for `omg-team`, and other plugins already expose `team` skills. |
 
 **Canonical shorthand (OMX-like):** `omg team` accepts `N` / `N:role` before the
@@ -274,13 +274,18 @@ omg team status --run RUN --presentation --json
 omg team hyperplan plan --spec SPEC.json --json
 omg team hyperplan materialize --spec SPEC.json --run RUN --json
 omg team hyperplan validate-decision --run RUN --input DECISION.json --json
+# Security Research V1 scaffolding (#69 PR8; non-executing; execution_supported=false):
+omg team security-research plan --spec SPEC.json --json
+omg team security-research materialize --spec SPEC.json --run RUN --json
+omg team security-research validate-report --run RUN --input REPORT.json --json
 omg team api send-message --input '{"run_id":"RUN","team_id":"t","from_worker":"leader","to_worker":"w1","body":"hi"}' --json
 # P0′ ops + replace-worker + read-presentation-state; catalog v3 = 38 named / 27 implemented (see docs/team-operation-catalog-v3.md; v1/v2 goldens unchanged)
 # disable: export OMG_DISABLE_TMUX_TEAM=1
 ```
 
-See also `docs/team.md` for job-backed worker invariants (#69 PR4) and
-`docs/team-hyperplan-v1.md` for Hyperplan V1 scaffolding (#69 PR7).
+See also `docs/team.md` for job-backed worker invariants (#69 PR4),
+`docs/team-hyperplan-v1.md` for Hyperplan V1 scaffolding (#69 PR7), and
+`docs/team-security-research-v1.md` for Security Research V1 scaffolding (#69 PR8).
 
 ---
 
