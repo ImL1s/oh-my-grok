@@ -19,6 +19,7 @@ from omg_cli.team.operation_catalog import (
     TEAM_OPERATION_CATALOG_V1,
     TEAM_OPERATION_CATALOG_V2,
     TEAM_OPERATION_CATALOG_V3,
+    TEAM_OPERATION_CATALOG_V4,
     catalog_document_json,
     serialize_operation_catalog,
 )
@@ -133,10 +134,13 @@ def test_catalog_v1_v2_goldens_frozen() -> None:
     assert serialize_operation_catalog(
         operations=TEAM_OPERATION_CATALOG_V2, schema_version=2
     ) == json.loads(GOLDEN_V2.read_text(encoding="utf-8"))
-    assert CATALOG_SCHEMA_VERSION == 3
+    assert serialize_operation_catalog(
+        operations=TEAM_OPERATION_CATALOG_V3, schema_version=3
+    ) == json.loads(GOLDEN_V3.read_text(encoding="utf-8"))
+    assert CATALOG_SCHEMA_VERSION == 4
     assert len(TEAM_OPERATION_CATALOG_V3) == 38
     assert any(op.name == "read-presentation-state" for op in TEAM_OPERATION_CATALOG_V3)
-    assert catalog_document_json() == GOLDEN_V3.read_text(encoding="utf-8")
+    assert any(op.name == "bulk-create-tasks" for op in TEAM_OPERATION_CATALOG_V4)
 
 
 def test_presentation_dry_run_stamps_route_and_is_read_only(

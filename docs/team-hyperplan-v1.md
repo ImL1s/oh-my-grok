@@ -106,9 +106,10 @@ can only be stored under `verdict=rejected` (or fails closed).
 
 ## Honesty
 
-Hyperplan V1 **result production landed** under #69 PR10. Does **not**
+Hyperplan V1 **result production landed** under #69 PR10. Catalog v4
+atomic task-batch DAG admission landed under #69 PR11. Does **not**
 close #69: Hyperplan execution, model synthesis, Security Research
-composition execution, live Antigravity evidence, catalog v4, and full OMX
+composition execution, live Antigravity evidence, and full OMX
 remain open. Security Research hermetic result production landed under
 #69 PR9. No `live_*` maturity claims.
 

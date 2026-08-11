@@ -10,6 +10,31 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#69 PR11 Team Catalog V4 — Atomic Task-Batch DAG Admission V1:** catalog
+  schema v4 adds leader-only mutating `bulk-create-tasks` (v1–v3 goldens
+  byte-frozen). Pure `compile_task_batch_v1` admits 1–32 unique safe
+  task_keys with intra-batch deps only (no cycles/self/dupes/missing),
+  deterministic topo order, bounded exact-key `expected_artifact`, and
+  rejects caller-supplied IDs/status/claims/results/versions. Crash-safe
+  `admit_task_batch_v1` under API-config + batch locks: prepared → reserve
+  contiguous IDs → write immutable batch/task-key bindings → re-read verify
+  → commit marker last. Uncommitted batch tasks invisible to
+  read/list/claim. Idempotent same key+digest; conflicts / symlink /
+  corrupt / foreign-writer fail closed. CLI:
+  `omg team api bulk-create-tasks --input BATCH.json --json`. No MCP
+  mutation in this slice. Docs: `docs/team-operation-catalog-v4.md`.
+  Hermetic coverage in `tests/test_team_task_batch.py` (+ golden). Does
+  **not** close #69 (no composition execution / provider/pane/Jobs launch /
+  Antigravity live evidence / full OMX / maturity promotion / `live_*` /
+  `execution_supported=true`).
+
+### Fixed
+- **Parity OMC/OmO coverage_digest after #69 PR11 GAPS sync:** refresh proof
+  `coverage_digest` values only after gap.team.v3 +
+  `omo.team.hyperplan_security` text update for catalog v4 task-batch
+  admission (no policy/mapping/status changes). Refs #69 (does not close).
+
+### Added
 - **#69 PR10 Hyperplan Hermetic Result Production V1:** offline
   `compile_hyperplan_decision_v1` / `produce_hyperplan_decision_v1` over
   `HyperplanResultBundleV1` (exact-key lane receipts; CLI digests;

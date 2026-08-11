@@ -1,4 +1,4 @@
-"""Versioned Team API operation catalog (schema v1 + v2 + v3).
+"""Versioned Team API operation catalog (schema v1 + v2 + v3 + v4).
 
 Single source of truth for operation names and metadata. Derived exports
 (``TEAM_API_OPERATIONS``, ``P0_OPERATIONS``, worker ACL sets) must not be
@@ -10,8 +10,11 @@ mutation, or subprocess.
 
 v1 remains frozen (golden ``team_operation_catalog_v1.json``).
 v2 remains frozen (golden ``team_operation_catalog_v2.json`` — adds
-``replace-worker``). Default dispatch / CLI catalog is **v3** (adds
+``replace-worker``).
+v3 remains frozen (golden ``team_operation_catalog_v3.json`` — adds
 leader-only read-only ``read-presentation-state``).
+Default dispatch / CLI catalog is **v4** (adds leader-only mutating
+``bulk-create-tasks``).
 """
 
 from __future__ import annotations
@@ -25,8 +28,9 @@ CATALOG_KIND = "omg.team.operation_catalog"
 CATALOG_SCHEMA_VERSION_V1 = 1
 CATALOG_SCHEMA_VERSION_V2 = 2
 CATALOG_SCHEMA_VERSION_V3 = 3
+CATALOG_SCHEMA_VERSION_V4 = 4
 # Default / active catalog schema (CLI ``omg team api catalog``).
-CATALOG_SCHEMA_VERSION = 3
+CATALOG_SCHEMA_VERSION = 4
 
 _OP_FIELDS = (
     "name",
@@ -360,8 +364,19 @@ TEAM_OPERATION_CATALOG_V3: tuple[TeamOperation, ...] = TEAM_OPERATION_CATALOG_V2
     ),
 )
 
+# Catalog v4 = v3 + leader-only bulk-create-tasks (#69 PR11).
+TEAM_OPERATION_CATALOG_V4: tuple[TeamOperation, ...] = TEAM_OPERATION_CATALOG_V3 + (
+    _op(
+        "bulk-create-tasks",
+        domain="task",
+        dispatch_state="implemented",
+        mutates_state=True,
+        worker_allowed=False,
+    ),
+)
+
 # Active catalog alias (default dispatch).
-TEAM_OPERATION_CATALOG = TEAM_OPERATION_CATALOG_V3
+TEAM_OPERATION_CATALOG = TEAM_OPERATION_CATALOG_V4
 
 
 def _validate_catalog(ops: tuple[TeamOperation, ...]) -> None:
@@ -388,20 +403,21 @@ def _validate_catalog(ops: tuple[TeamOperation, ...]) -> None:
 _validate_catalog(TEAM_OPERATION_CATALOG_V1)
 _validate_catalog(TEAM_OPERATION_CATALOG_V2)
 _validate_catalog(TEAM_OPERATION_CATALOG_V3)
+_validate_catalog(TEAM_OPERATION_CATALOG_V4)
 
-# Derived exports — do not hand-edit; change TEAM_OPERATION_CATALOG_V3 instead.
+# Derived exports — do not hand-edit; change TEAM_OPERATION_CATALOG_V4 instead.
 TEAM_API_OPERATIONS: tuple[str, ...] = tuple(
-    op.name for op in TEAM_OPERATION_CATALOG_V3
+    op.name for op in TEAM_OPERATION_CATALOG_V4
 )
 P0_OPERATIONS: tuple[str, ...] = tuple(
-    op.name for op in TEAM_OPERATION_CATALOG_V3 if op.implemented
+    op.name for op in TEAM_OPERATION_CATALOG_V4 if op.implemented
 )
 WORKER_ALLOWED_OPS: frozenset[str] = frozenset(
-    op.name for op in TEAM_OPERATION_CATALOG_V3 if op.implemented and op.worker_allowed
+    op.name for op in TEAM_OPERATION_CATALOG_V4 if op.implemented and op.worker_allowed
 )
 WORKER_DENIED_OPS: frozenset[str] = frozenset(
     op.name
-    for op in TEAM_OPERATION_CATALOG_V3
+    for op in TEAM_OPERATION_CATALOG_V4
     if op.implemented and not op.worker_allowed
 )
 
@@ -413,9 +429,9 @@ def serialize_operation_catalog(
 ) -> dict[str, Any]:
     """Machine-readable catalog document (kind + schema_version + operations)."""
     if operations is None:
-        ops = TEAM_OPERATION_CATALOG_V3
+        ops = TEAM_OPERATION_CATALOG_V4
         version = (
-            CATALOG_SCHEMA_VERSION_V3 if schema_version is None else schema_version
+            CATALOG_SCHEMA_VERSION_V4 if schema_version is None else schema_version
         )
     else:
         ops = operations
@@ -425,8 +441,10 @@ def serialize_operation_catalog(
             version = CATALOG_SCHEMA_VERSION_V1
         elif ops is TEAM_OPERATION_CATALOG_V2:
             version = CATALOG_SCHEMA_VERSION_V2
-        else:
+        elif ops is TEAM_OPERATION_CATALOG_V3:
             version = CATALOG_SCHEMA_VERSION_V3
+        else:
+            version = CATALOG_SCHEMA_VERSION_V4
     return {
         "kind": CATALOG_KIND,
         "schema_version": version,
@@ -460,7 +478,7 @@ def operation_by_name(
     *,
     operations: tuple[TeamOperation, ...] | None = None,
 ) -> TeamOperation | None:
-    ops = TEAM_OPERATION_CATALOG_V3 if operations is None else operations
+    ops = TEAM_OPERATION_CATALOG_V4 if operations is None else operations
     for op in ops:
         if op.name == name:
             return op
@@ -482,12 +500,14 @@ __all__ = [
     "CATALOG_SCHEMA_VERSION_V1",
     "CATALOG_SCHEMA_VERSION_V2",
     "CATALOG_SCHEMA_VERSION_V3",
+    "CATALOG_SCHEMA_VERSION_V4",
     "P0_OPERATIONS",
     "TEAM_API_OPERATIONS",
     "TEAM_OPERATION_CATALOG",
     "TEAM_OPERATION_CATALOG_V1",
     "TEAM_OPERATION_CATALOG_V2",
     "TEAM_OPERATION_CATALOG_V3",
+    "TEAM_OPERATION_CATALOG_V4",
     "TeamOperation",
     "WORKER_ALLOWED_OPS",
     "WORKER_DENIED_OPS",

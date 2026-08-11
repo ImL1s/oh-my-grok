@@ -124,9 +124,10 @@ in `rejected_candidates`.
 
 ## Honesty
 
-Security Research V1 **result production landed** under #69 PR9. Does **not**
+Security Research V1 **result production landed** under #69 PR9. Catalog v4
+atomic task-batch DAG admission landed under #69 PR11. Does **not**
 close #69: composition execution, PoC running, model synthesis, Hyperplan
-execution, live Antigravity evidence, catalog v4, and full OMX remain open.
+execution, live Antigravity evidence, and full OMX remain open.
 Hyperplan hermetic result production landed under #69 PR10. No `live_*`
 maturity claims.
 

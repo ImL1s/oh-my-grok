@@ -1,4 +1,4 @@
-"""Golden contract for the versioned Team operation catalog (schema v1+v2+v3)."""
+"""Golden contract for the versioned Team operation catalog (schema v1–v4)."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from omg_cli.team.operation_catalog import (
     TEAM_OPERATION_CATALOG_V1,
     TEAM_OPERATION_CATALOG_V2,
     TEAM_OPERATION_CATALOG_V3,
+    TEAM_OPERATION_CATALOG_V4,
     WORKER_ALLOWED_OPS,
     WORKER_DENIED_OPS,
     catalog_document_json,
@@ -28,7 +29,8 @@ ROOT = Path(__file__).resolve().parents[1]
 GOLDEN_V1 = ROOT / "tests" / "golden" / "team_operation_catalog_v1.json"
 GOLDEN_V2 = ROOT / "tests" / "golden" / "team_operation_catalog_v2.json"
 GOLDEN_V3 = ROOT / "tests" / "golden" / "team_operation_catalog_v3.json"
-GOLDEN = GOLDEN_V3
+GOLDEN_V4 = ROOT / "tests" / "golden" / "team_operation_catalog_v4.json"
+GOLDEN = GOLDEN_V4
 
 # Legacy constant snapshots (pre-catalog module) for export parity.
 # Worker ACL partition now includes leader-only ``read-shutdown-ack`` in denied.
@@ -148,38 +150,53 @@ def test_operation_catalog_v2_golden_unchanged() -> None:
     )
 
 
-def test_operation_catalog_matches_golden() -> None:
+def test_operation_catalog_v3_golden_unchanged() -> None:
     expected = json.loads(GOLDEN_V3.read_text(encoding="utf-8"))
+    actual = serialize_operation_catalog(
+        operations=TEAM_OPERATION_CATALOG_V3, schema_version=3
+    )
+    assert actual == expected
+    assert (
+        catalog_document_json(operations=TEAM_OPERATION_CATALOG_V3, schema_version=3)
+        == GOLDEN_V3.read_text(encoding="utf-8")
+    )
+
+
+def test_operation_catalog_matches_golden() -> None:
+    expected = json.loads(GOLDEN_V4.read_text(encoding="utf-8"))
     actual = serialize_operation_catalog()
     assert actual == expected
-    assert catalog_document_json() == GOLDEN_V3.read_text(encoding="utf-8")
-    assert actual["schema_version"] == 3
+    assert catalog_document_json() == GOLDEN_V4.read_text(encoding="utf-8")
+    assert actual["schema_version"] == 4
     assert any(op["name"] == "replace-worker" for op in actual["operations"])
     assert any(op["name"] == "read-presentation-state" for op in actual["operations"])
+    assert any(op["name"] == "bulk-create-tasks" for op in actual["operations"])
 
 
 def test_operation_catalog_has_unique_names() -> None:
-    names = [op.name for op in TEAM_OPERATION_CATALOG_V3]
+    names = [op.name for op in TEAM_OPERATION_CATALOG_V4]
     assert len(names) == len(set(names))
     assert names == list(TEAM_API_OPERATIONS)
     assert len(TEAM_OPERATION_CATALOG_V1) == 36
     assert len(TEAM_OPERATION_CATALOG_V2) == 37
     assert len(TEAM_OPERATION_CATALOG_V3) == 38
+    assert len(TEAM_OPERATION_CATALOG_V4) == 39
 
 
 def test_operation_catalog_handler_coverage() -> None:
-    implemented = {op.name for op in TEAM_OPERATION_CATALOG_V3 if op.implemented}
+    implemented = {op.name for op in TEAM_OPERATION_CATALOG_V4 if op.implemented}
     assert implemented == set(team_api._HANDLERS)
     assert implemented == set(P0_OPERATIONS)
     assert "replace-worker" in implemented
     assert "read-presentation-state" in implemented
+    assert "bulk-create-tasks" in implemented
 
 
 def test_operation_catalog_worker_acl_partition() -> None:
     implemented = set(P0_OPERATIONS)
     assert WORKER_ALLOWED_OPS | WORKER_DENIED_OPS == implemented
     assert WORKER_ALLOWED_OPS & WORKER_DENIED_OPS == frozenset()
-    for op in TEAM_OPERATION_CATALOG_V3:
+    for op in TEAM_OPERATION_CATALOG_V4:
         if not op.implemented:
             assert op.name not in WORKER_ALLOWED_OPS
             assert op.name not in WORKER_DENIED_OPS
@@ -190,17 +207,20 @@ def test_operation_catalog_worker_acl_partition() -> None:
             assert op.name in WORKER_DENIED_OPS
     assert "replace-worker" in WORKER_DENIED_OPS
     assert "read-presentation-state" in WORKER_DENIED_OPS
+    assert "bulk-create-tasks" in WORKER_DENIED_OPS
 
 
 def test_operation_catalog_exports_match_legacy_constants() -> None:
-    # v3 = legacy v1 names + replace-worker + read-presentation-state
+    # v4 = legacy v1 names + replace-worker + read-presentation-state + bulk-create-tasks
     assert TEAM_API_OPERATIONS == _LEGACY_TEAM_API_OPERATIONS + (
         "replace-worker",
         "read-presentation-state",
+        "bulk-create-tasks",
     )
     assert set(P0_OPERATIONS) == _LEGACY_P0_OPERATIONS | {
         "replace-worker",
         "read-presentation-state",
+        "bulk-create-tasks",
     }
     assert team_api.TEAM_API_OPERATIONS is TEAM_API_OPERATIONS
     assert team_api.P0_OPERATIONS is P0_OPERATIONS
@@ -211,9 +231,11 @@ def test_operation_catalog_exports_match_legacy_constants() -> None:
     assert "read-shutdown-ack" in WORKER_DENIED_OPS
     assert "replace-worker" in WORKER_DENIED_OPS
     assert "read-presentation-state" in WORKER_DENIED_OPS
+    assert "bulk-create-tasks" in WORKER_DENIED_OPS
     assert WORKER_ALLOWED_OPS | WORKER_DENIED_OPS == _LEGACY_P0_OPERATIONS | {
         "replace-worker",
         "read-presentation-state",
+        "bulk-create-tasks",
     }
 
 
@@ -242,7 +264,7 @@ def test_team_api_catalog_cli_is_state_free(
     doc = json.loads(out)
     assert doc["kind"] == CATALOG_KIND
     assert doc["schema_version"] == CATALOG_SCHEMA_VERSION
-    assert doc["schema_version"] == 3
+    assert doc["schema_version"] == 4
     assert doc == serialize_operation_catalog()
 
 
@@ -272,14 +294,14 @@ def test_team_api_catalog_is_deterministic(
     assert first == second
     assert first == catalog_document_json()
     # Serializer path matches CLI bytes.
-    assert first == GOLDEN_V3.read_text(encoding="utf-8")
+    assert first == GOLDEN_V4.read_text(encoding="utf-8")
 
 
 def test_catalog_document_schema_shape() -> None:
     doc = serialize_operation_catalog()
     assert set(doc) == {"kind", "schema_version", "operations"}
     assert doc["kind"] == "omg.team.operation_catalog"
-    assert doc["schema_version"] == 3
+    assert doc["schema_version"] == 4
     required = {
         "name",
         "domain",

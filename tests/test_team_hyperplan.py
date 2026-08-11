@@ -126,9 +126,15 @@ def test_catalog_v1_v2_v3_frozen() -> None:
     assert serialize_operation_catalog(
         operations=TEAM_OPERATION_CATALOG_V2, schema_version=2
     ) == json.loads(GOLDEN_V2.read_text(encoding="utf-8"))
-    assert CATALOG_SCHEMA_VERSION == 3
-    assert catalog_document_json() == GOLDEN_V3.read_text(encoding="utf-8")
+    assert serialize_operation_catalog(
+        operations=TEAM_OPERATION_CATALOG_V3, schema_version=3
+    ) == json.loads(GOLDEN_V3.read_text(encoding="utf-8"))
+    assert CATALOG_SCHEMA_VERSION == 4
     assert len(TEAM_OPERATION_CATALOG_V3) == 38
+    # Hyperplan is not a Team API catalog operation (composition CLI only).
+    blob = catalog_document_json()
+    assert "hyperplan" not in blob
+    assert '"bulk-create-tasks"' in blob
 
 
 def test_compile_matches_golden_and_stable_digest() -> None:
@@ -408,8 +414,12 @@ def test_cli_materialize_and_validate(
     assert not status.get("passes")
 
 
-def test_no_catalog_v4_and_no_verified_writes(tmp_path: Path) -> None:
-    assert CATALOG_SCHEMA_VERSION == 3
+def test_catalog_v4_does_not_imply_verified_or_hyperplan_api(tmp_path: Path) -> None:
+    # Catalog v4 landed for bulk-create-tasks; Hyperplan remains composition CLI only.
+    assert CATALOG_SCHEMA_VERSION == 4
+    blob = catalog_document_json()
+    assert '"bulk-create-tasks"' in blob
+    assert "hyperplan" not in blob
     run_id = _make_run(tmp_path)
     materialize_hyperplan_v1(tmp_path, run_id, _base_spec())
     # Ensure state tree only gained compositions artifact under team/

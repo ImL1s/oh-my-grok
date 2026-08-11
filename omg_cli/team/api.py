@@ -8,9 +8,9 @@ P0 + P0′ ops (mailbox/task CRUD including claim renew/release, heartbeat/
 shutdown/orphan, events, manifest) are implemented; remaining
 ``TEAM_API_OPERATIONS`` return ``E_TEAM_API_UNIMPLEMENTED``. Operation names
 and metadata come from ``omg_cli.team.operation_catalog`` (default schema
-v2; v1 golden remains frozen). Full OMX catalog parity is intentionally
+v4; v1–v3 goldens remain frozen). Full OMX catalog parity is intentionally
 not claimed — see ``omg team api catalog`` /
-``docs/team-operation-catalog-v2.md``.
+``docs/team-operation-catalog-v4.md``.
 """
 
 from __future__ import annotations
@@ -845,6 +845,20 @@ def _normalize_task(raw: Mapping[str, Any]) -> dict[str, Any]:
             "task binding must be an object or null",
             details={"error": "corrupt_task"},
         )
+    batch = row.get("batch")
+    if batch is not None and not isinstance(batch, Mapping):
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            "task batch must be an object or null",
+            details={"error": "corrupt_task"},
+        )
+    expected_artifact = row.get("expected_artifact")
+    if expected_artifact is not None and not isinstance(expected_artifact, Mapping):
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            "task expected_artifact must be an object or null",
+            details={"error": "corrupt_task"},
+        )
     out: dict[str, Any] = {
         "id": task_id,
         "subject": str(row.get("subject") or ""),
@@ -863,7 +877,23 @@ def _normalize_task(raw: Mapping[str, Any]) -> dict[str, Any]:
     }
     if isinstance(binding, Mapping):
         out["binding"] = dict(binding)
+    if isinstance(batch, Mapping):
+        out["batch"] = dict(batch)
+    if isinstance(expected_artifact, Mapping):
+        out["expected_artifact"] = dict(expected_artifact)
     return out
+
+
+def _task_is_visible(
+    root: Path, run_id: str, team_id: str, task: Mapping[str, Any]
+) -> bool:
+    """Uncommitted batch-bound tasks are invisible to read/list/claim."""
+    batch = task.get("batch")
+    if not isinstance(batch, Mapping):
+        return True
+    from omg_cli.team.task_batch import batch_is_committed
+
+    return batch_is_committed(root, run_id, team_id, batch)
 
 
 def _write_task(
@@ -909,7 +939,24 @@ def _read_task(
     return task
 
 
-def _list_tasks(root: Path, run_id: str, team_id: str) -> list[dict[str, Any]]:
+def _read_visible_task(
+    root: Path, run_id: str, team_id: str, task_id: str
+) -> dict[str, Any] | None:
+    task = _read_task(root, run_id, team_id, task_id)
+    if task is None:
+        return None
+    if not _task_is_visible(root, run_id, team_id, task):
+        return None
+    return task
+
+
+def _list_tasks(
+    root: Path,
+    run_id: str,
+    team_id: str,
+    *,
+    include_uncommitted: bool = False,
+) -> list[dict[str, Any]]:
     directory = _tasks_dir(root, run_id, team_id)
     if not directory.exists():
         return []
@@ -959,7 +1006,8 @@ def _list_tasks(root: Path, run_id: str, team_id: str) -> list[dict[str, Any]]:
                     "embedded_id": task["id"],
                 },
             )
-        tasks.append(task)
+        if include_uncommitted or _task_is_visible(root, run_id, team_id, task):
+            tasks.append(task)
     tasks.sort(key=lambda item: int(item["id"]))
     return tasks
 
@@ -1202,6 +1250,39 @@ def _op_create_task(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     return _ok("create-task", {"task": task})
 
 
+def _op_bulk_create_tasks(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    """Leader-only atomic task-batch DAG admission (#69 PR11)."""
+    from omg_cli.team.task_batch import TaskBatchError, admit_task_batch_v1
+
+    # Ensure run_id/team_id resolution still applies when callers omit them
+    # and rely on env injection — merge into a copy for the exact-key compiler.
+    body = dict(payload)
+    if "run_id" not in body:
+        body["run_id"] = _resolve_run_id(payload, root)
+    if "team_id" not in body:
+        body["team_id"] = _resolve_team_id(payload)
+    try:
+        result = admit_task_batch_v1(root, body)
+    except TaskBatchError as exc:
+        code = "E_TEAM_API_INVALID_INPUT"
+        exit_code = 2
+        if exc.code in {
+            "E_TEAM_TASK_BATCH_CONFLICT",
+            "E_TEAM_TASK_BATCH_CORRUPT",
+            "E_TEAM_TASK_BATCH_FOREIGN",
+            "E_TEAM_TASK_BATCH_PATH",
+        }:
+            code = "E_TEAM_API_FAILED"
+            exit_code = 1
+        raise TeamApiError(
+            code,
+            exc.message,
+            exit_code=exit_code,
+            details={"error": exc.code, "code": exc.code, **exc.details},
+        ) from exc
+    return _ok("bulk-create-tasks", result)
+
+
 def _op_list_tasks(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     run_id = _resolve_run_id(payload, root)
     team_id = _resolve_team_id(payload)
@@ -1214,7 +1295,7 @@ def _op_read_task(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     team_id = _resolve_team_id(payload)
     task_id = _validate_task_id(_require_str(payload, "task_id"))
     _require_control_plane(root, run_id)
-    task = _read_task(root, run_id, team_id, task_id)
+    task = _read_visible_task(root, run_id, team_id, task_id)
     if task is None:
         raise TeamApiError(
             "E_TEAM_API_FAILED",
@@ -1304,7 +1385,7 @@ def _op_update_task(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     ensure_managed_dir(path.parent)
     with exclusive_lock(path.with_suffix(".lock")):
         task = _read_task(root, run_id, team_id, task_id)
-        if task is None:
+        if task is None or not _task_is_visible(root, run_id, team_id, task):
             raise TeamApiError(
                 "E_TEAM_API_FAILED",
                 f"task {task_id!r} not found",
@@ -1359,7 +1440,7 @@ def _op_claim_task(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
             return _ok("claim-task", {"ok": False, "error": "team_not_found"})
         _require_worker_in_config(config, worker)
         task = _read_task(root, run_id, team_id, task_id)
-        if task is None:
+        if task is None or not _task_is_visible(root, run_id, team_id, task):
             return _ok("claim-task", {"ok": False, "error": "task_not_found"})
         ready, deps = _task_readiness(root, run_id, team_id, task)
         if not ready:
@@ -2269,6 +2350,7 @@ _HANDLERS: dict[str, Handler] = {
     "mailbox-list": _op_mailbox_list,
     "mailbox-mark-delivered": _op_mailbox_mark_delivered,
     "create-task": _op_create_task,
+    "bulk-create-tasks": _op_bulk_create_tasks,
     "read-task": _op_read_task,
     "list-tasks": _op_list_tasks,
     "update-task": _op_update_task,
