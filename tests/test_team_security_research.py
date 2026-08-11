@@ -720,7 +720,6 @@ def _bundle_for(
     independent_proof: str = "static",
 ) -> dict[str, Any]:
     cands = candidates if candidates is not None else []
-    auth_cands = [c for c in cands if c["candidate_id"].startswith("auth") or True]
     # Place all candidates on hunt.auth for simplicity unless surface encoded.
     by_surface: dict[str, list[dict[str, Any]]] = {
         "auth": [],
@@ -1001,7 +1000,6 @@ def test_produce_conflict_symlink_foreign_writer_and_partial(
     report_path.parent.mkdir(parents=True, exist_ok=True)
     target = run2_dir / "elsewhere-report.json"
     target.write_text("{}", encoding="utf-8")
-    bundle_path = security_research_result_bundle_path(run2_dir, run2)
     report_path.symlink_to(target)
     with pytest.raises(SecurityResearchError, match="symlink"):
         produce_security_research_report_v1(run2_dir, run2, golden)
