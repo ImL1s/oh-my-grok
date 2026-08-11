@@ -1154,6 +1154,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 SecurityResearchError,
                 compile_security_research_v1,
                 materialize_security_research_v1,
+                produce_security_research_report_v1,
                 validate_security_research_report_v1,
             )
             from omg_cli.team.plane import TeamGateError, experimental_enabled
@@ -1164,6 +1165,7 @@ def cmd_team(args: argparse.Namespace) -> int:
             sr_action = getattr(args, "security_research_action", None)
             spec_path = getattr(args, "security_research_spec", None)
             report_path = getattr(args, "security_research_report", None)
+            bundle_path = getattr(args, "security_research_bundle", None)
             run_id = getattr(args, "run_id", None)
 
             def _load_sr_json_file(path_s: str, *, label: str) -> Any:
@@ -1244,6 +1246,30 @@ def cmd_team(args: argparse.Namespace) -> int:
                         report = result.get("report") or {}
                         print(
                             f"security-research report ok "
+                            f"verdict={report.get('verdict')} "
+                            f"path={result.get('path')}",
+                            file=sys.stderr,
+                        )
+                    return 0
+                if sr_action == "produce-report":
+                    if not run_id or not bundle_path:
+                        print(
+                            "omg team security-research produce-report: "
+                            "--run and --input required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    result = produce_security_research_report_v1(
+                        root,
+                        str(run_id),
+                        _load_sr_json_file(str(bundle_path), label="--input"),
+                    )
+                    emit_data(args, "team.security_research", result)
+                    if not wants_json(args):
+                        report = result.get("report") or {}
+                        tag = "idempotent" if result.get("idempotent") else "wrote"
+                        print(
+                            f"security-research produce-report {tag} "
                             f"verdict={report.get('verdict')} "
                             f"path={result.get('path')}",
                             file=sys.stderr,
@@ -2601,8 +2627,9 @@ def register_team_parsers(
         "security-research",
         parents=[common],
         help=(
-            "Security Research Composition Contract V1 (non-executing): "
-            "plan|materialize|validate-report (#69 PR8)"
+            "Security Research Composition Contract V1 (hermetic produce; "
+            "non-executing): plan|materialize|validate-report|produce-report "
+            "(#69 PR9)"
         ),
     )
     sr_sub = p_t_sr.add_subparsers(dest="security_research_action")
@@ -2676,6 +2703,33 @@ def register_team_parsers(
         func=cmd_team,
         team_action="security-research",
         security_research_action="validate-report",
+    )
+
+    p_sr_prod = sr_sub.add_parser(
+        "produce-report",
+        parents=[common],
+        help=(
+            "hermetic SecurityResearchResultBundleV1 → report "
+            "(writes result-bundle then report commit marker; "
+            "execution_supported=false; never writes passes/verified)"
+        ),
+    )
+    p_sr_prod.add_argument(
+        "--run",
+        dest="run_id",
+        required=True,
+        help="run_id with materialized security-research-v1.json",
+    )
+    p_sr_prod.add_argument(
+        "--input",
+        dest="security_research_bundle",
+        required=True,
+        help="path to SecurityResearchResultBundleV1 JSON",
+    )
+    p_sr_prod.set_defaults(
+        func=cmd_team,
+        team_action="security-research",
+        security_research_action="produce-report",
     )
 
     p_team.set_defaults(func=cmd_team)

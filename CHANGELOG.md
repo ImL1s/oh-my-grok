@@ -10,6 +10,29 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#69 PR9 Security Research Hermetic Result Production V1:** offline
+  `compile_security_research_report_v1` /
+  `produce_security_research_report_v1` over
+  `SecurityResearchResultBundleV1` (exact-key lane receipts; CLI digests;
+  `execution_supported=false`). CLI:
+  `omg team security-research produce-report --run RUN --input BUNDLE.json`.
+  Persistence: `security-research-v1-result-bundle.json` then report commit
+  marker under the composition lock. Closes PR8 dual-review P1: high/critical
+  `validator_artifact_refs` must equal exactly `validate.primary` +
+  `validate.independent` coverage digests; `reproduced` only on dual
+  `local_fixture`; CVSS 3.1 metric enums; recompile-vs-core forged-lane
+  refusal. Docs: `docs/team-security-research-v1.md`. Hermetic coverage in
+  `tests/test_team_security_research.py` (+ goldens). Does **not** close #69
+  (no composition execution / PoC / Hyperplan result production / Antigravity
+  live evidence / catalog v4 / maturity promotion / `live_*`).
+
+### Fixed
+- **Parity OMC/OmO coverage_digest after #69 PR9 GAPS sync:** refresh proof
+  `coverage_digest` values only after gap.team.v3 +
+  `omo.team.hyperplan_security` text update for Security Research V1 result
+  production (no policy/mapping/status changes). Refs #69 (does not close).
+
+### Added
 - **#69 PR8 Security Research Composition Contract V1:** non-executing
   `omg_cli.team.compositions.security_research` with `SecurityResearchSpecV1` /
   `ManifestV1` / `ReportV1` and pure `compile_security_research_v1()` (N hunters

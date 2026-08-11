@@ -1,7 +1,9 @@
-# Team Security Research Composition Contract V1 (#69 PR8)
+# Team Security Research Composition Contract V1 (#69 PR9)
 
-Non-executing Security Research scaffold: deterministic DAG compiler +
-fail-closed manifest/report persistence under the canonical Team run root.
+Hermetic Security Research contract: deterministic DAG compiler, fail-closed
+manifest persistence, and **offline result production** under the canonical
+Team run root. Composition task/pane/Jobs execution remains unsupported
+(`execution_supported=false`).
 
 Authoritative module: `omg_cli.team.compositions.security_research`.
 
@@ -9,6 +11,7 @@ Authoritative module: `omg_cli.team.compositions.security_research`.
 omg team security-research plan --spec SPEC.json [--json]
 omg team security-research materialize --spec SPEC.json --run RUN_ID [--json]
 omg team security-research validate-report --run RUN_ID --input REPORT.json [--json]
+omg team security-research produce-report --run RUN_ID --input RESULT_BUNDLE.json [--json]
 ```
 
 `plan` performs **zero** filesystem mutation. `materialize` atomically writes
@@ -16,9 +19,17 @@ only:
 
 `.omg/state/runs/<run>/team/compositions/security-research-v1.json`
 
-`validate-report` validates a supplied artifact against that manifest and
-stores `.omg/state/runs/<run>/team/compositions/security-research-v1-report.json`.
-It never invents findings and never writes `passes` / `verified`.
+`produce-report` derives a report from a bounded
+`SecurityResearchResultBundleV1` (exactly one receipt per manifest lane;
+CLI-computed digests). Under the composition lock it writes
+`security-research-v1-result-bundle.json`, then atomically writes
+`security-research-v1-report.json` **last** as the commit marker. It never
+creates Team tasks, launches panes/Jobs/providers, invokes MCP, runs
+commands, accesses a network, or executes a PoC.
+
+`validate-report` validates a supplied report artifact against the
+materialized manifest (same proof gates) and may persist the report. It never
+invents findings and never writes `passes` / `verified`.
 
 ## Spec → Manifest
 
@@ -44,7 +55,32 @@ empty `owned_files`, `posture=read-only`, and an explicit
 `expected_artifact` schema. No worktree / provider / pane / Jobs / command
 fields.
 
-## Report contract
+Persisted manifests are recompiled from their normalized specs; the entire
+canonical derived core must match (forged lane/dependency drift is refused
+even if digests were re-stamped).
+
+## Result bundle → Report
+
+`compile_security_research_report_v1(manifest, bundle)` is pure.
+`produce_security_research_report_v1(root, run_id, bundle)` is the locked
+persistence wrapper.
+
+The bundle is exact-key bounded and bound to `composition_id` +
+`composition_digest`. Each receipt carries `lane_id`, `status`,
+`artifact_kind`, schema-checked `payload`, and a CLI-computed canonical
+`digest`. Hunt receipts carry candidates; validators carry per-candidate
+validated/falsified dispositions and admissible proof modes; consolidate
+carries surviving/rejected findings; verify carries covered lanes, blockers,
+and a gate recommendation (advisory — verdict is derived).
+
+Derived (never accepted as top-level caller assertions): lane coverage,
+source digests (including `result_bundle`), findings, rejected candidates,
+blockers, and verdict. Surviving findings must trace to hunt candidates and
+the consolidate receipt. Validator dispositions must reference known
+candidates. `pass` / `pass_with_findings` require every lane complete;
+otherwise the derived verdict is `block`.
+
+## Report contract / proof gates
 
 `SecurityResearchReportV1` must cover **all** manifest lanes, bind
 `composition_id` + `composition_digest`, and bind every lane artifact digest
@@ -57,25 +93,36 @@ under `source_artifact_digests`. Verdicts:
 
 A surviving finding requires attacker capability, concrete attack path,
 reachability, impact, CWE candidate, evidence locations, remediation, and
-regression check. `high`/`critical` additionally require both validator
-artifact references and `reproduced` or `safe_static_proof`. CVSS is accepted
-only with a complete base metric vector. Falsified candidates belong only in
-`rejected_candidates`.
+regression check. `high`/`critical` additionally require:
+
+- both validators validate that same finding/candidate
+- `validator_artifact_refs` equal **exactly** the unordered pair of
+  `validate.primary` and `validate.independent` coverage digests (no
+  substitutes, extras, or duplicates)
+- `reproduced` only when both validators record `local_fixture` reproduction;
+  otherwise agreeing `safe_static_proof` (`static` / `dry_run`)
+
+CVSS is accepted only with a complete base metric vector whose metric values
+are CVSS 3.1 enums (not arbitrary strings). Falsified candidates belong only
+in `rejected_candidates`.
 
 ## Fail-closed invariants
 
-- Idempotent materialize for the same spec digest
+- Idempotent materialize / produce for identical digests
 - Same `composition_id` with a different digest → refuse
-- Corrupt / truncated / symlinked / foreign-writer manifests → refuse
+- Conflicting existing result bundle/report → refuse
+- Corrupt / truncated / symlinked / foreign-writer artifacts → refuse
+- Failure between bundle write and report commit marker → no authoritative
+  report
 - Missing / cancelled run → refuse
 - Never sets `verified` / `passes`
 - Never launches panes, Jobs, providers, Antigravity, MCP, or PoC execution
 
 ## Honesty
 
-Security Research V1 **contract/scaffolding landed** under #69 PR8. Does **not**
-close #69: execution, PoC running, model synthesis, Hyperplan execution/result
-production, live Antigravity evidence, catalog v4, and full OMX remain open.
-No `live_*` maturity claims.
+Security Research V1 **result production landed** under #69 PR9. Does **not**
+close #69: composition execution, PoC running, model synthesis, Hyperplan
+execution/result production, live Antigravity evidence, catalog v4, and full
+OMX remain open. No `live_*` maturity claims.
 
 Refs #69.
