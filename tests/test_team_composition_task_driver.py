@@ -276,6 +276,7 @@ def _complete_lane_tasks(
             lane_result["reason"] = receipt["reason"]
         task = team_api._read_task(root, run_id, team_id, task_id)
         assert task is not None
+        # Mirror transition-task-status: claim cleared, owner retained.
         team_api._write_task(
             root,
             run_id,
@@ -283,7 +284,7 @@ def _complete_lane_tasks(
             {
                 **task,
                 "status": "completed",
-                "owner": None,
+                "owner": "w1",
                 "claim": None,
                 "result": json.dumps(lane_result, separators=(",", ":")),
                 "completed_at": "2026-08-11T00:00:00Z",
@@ -765,18 +766,43 @@ def test_fail_closed_matrix_leaves_no_authoritative_output(
             ),
         },
     )
-    with pytest.raises(HyperplanError, match="claimed"):
+    with pytest.raises(HyperplanError, match="still claimed"):
         collect_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
     assert not decision_exists()
 
-    # Restore clean completions then conflict with manual produce.
+    # Honest transition shape: owner retained, claim cleared → collect ok.
     _complete_lane_tasks(
         tmp_path, run_id=run_id, team_id=TEAM, mapping=mapping, bundle=bundle
     )
-    produce_hyperplan_decision_v1(tmp_path, run_id, bundle)
-    # Mutate one task payload after produce → collect must conflict, not overwrite.
-    tid2 = mapping["synthesize"]
-    t2 = team_api._read_task(tmp_path, run_id, TEAM, tid2)
+    for task_id in mapping.values():
+        row = team_api._read_task(tmp_path, run_id, TEAM, task_id)
+        assert row is not None
+        assert row["owner"] == "w1"
+        assert row["claim"] is None
+        assert row["status"] == "completed"
+    collected_owned = collect_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    assert collected_owned["ok"] is True
+    assert collected_owned["decision"]["verdict"] == "approved"
+    assert decision_exists()
+
+    # Restore clean completions then conflict with manual produce via mutated
+    # payload against an already-produced decision (same digests → idempotent
+    # unless we mutate first on a fresh run). Use sibling run for conflict.
+    run_conflict = _seed(tmp_path / "conflict-owner", monkeypatch)
+    mat_c = materialize_hyperplan_v1(tmp_path / "conflict-owner", run_conflict, _hp_spec())
+    bundle_c = _hp_bundle(mat_c["manifest"])
+    adm_c = admit_hyperplan_tasks_v1(tmp_path / "conflict-owner", run_conflict, TEAM)
+    mapping_c = adm_c["task_key_to_id"]
+    _complete_lane_tasks(
+        tmp_path / "conflict-owner",
+        run_id=run_conflict,
+        team_id=TEAM,
+        mapping=mapping_c,
+        bundle=bundle_c,
+    )
+    produce_hyperplan_decision_v1(tmp_path / "conflict-owner", run_conflict, bundle_c)
+    tid2 = mapping_c["synthesize"]
+    t2 = team_api._read_task(tmp_path / "conflict-owner", run_conflict, TEAM, tid2)
     assert t2 is not None
     mutated = {
         "schema_version": 1,
@@ -789,13 +815,13 @@ def test_fail_closed_matrix_leaves_no_authoritative_output(
         },
     }
     team_api._write_task(
-        tmp_path,
-        run_id,
+        tmp_path / "conflict-owner",
+        run_conflict,
         TEAM,
         {**t2, "result": json.dumps(mutated)},
     )
     with pytest.raises(HyperplanError, match="conflict"):
-        collect_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+        collect_hyperplan_tasks_v1(tmp_path / "conflict-owner", run_conflict, TEAM)
 
     # Parser unit matrix.
     with pytest.raises(CompositionTaskDriverError):
@@ -812,6 +838,60 @@ def test_fail_closed_matrix_leaves_no_authoritative_output(
         parse_lane_task_result_v1(
             {"schema_version": 1, "status": "complete", "payload": "x"}
         )
+
+
+def test_collect_allows_retained_owner_but_refuses_active_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """transition-task-status keeps owner; collect must only require claim-free."""
+    run_id = _seed(tmp_path, monkeypatch)
+    mat = materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    bundle = _hp_bundle(mat["manifest"])
+    admitted = admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    mapping = admitted["task_key_to_id"]
+    _complete_lane_tasks(
+        tmp_path, run_id=run_id, team_id=TEAM, mapping=mapping, bundle=bundle
+    )
+    for task_id in mapping.values():
+        row = team_api._read_task(tmp_path, run_id, TEAM, task_id)
+        assert row is not None
+        assert row["owner"] == "w1"
+        assert row["claim"] is None
+    out = collect_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    assert out["ok"] is True
+    assert out["decision"]["verdict"] == "approved"
+
+    run2 = _seed(tmp_path / "still-claimed", monkeypatch)
+    mat2 = materialize_hyperplan_v1(tmp_path / "still-claimed", run2, _hp_spec())
+    bundle2 = _hp_bundle(mat2["manifest"])
+    adm2 = admit_hyperplan_tasks_v1(tmp_path / "still-claimed", run2, TEAM)
+    mapping2 = adm2["task_key_to_id"]
+    _complete_lane_tasks(
+        tmp_path / "still-claimed",
+        run_id=run2,
+        team_id=TEAM,
+        mapping=mapping2,
+        bundle=bundle2,
+    )
+    tid = mapping2["verify"]
+    task = team_api._read_task(tmp_path / "still-claimed", run2, TEAM, tid)
+    assert task is not None
+    team_api._write_task(
+        tmp_path / "still-claimed",
+        run2,
+        TEAM,
+        {
+            **task,
+            "claim": {
+                "owner": "w1",
+                "token": "tok",
+                "leased_until": "2099-01-01T00:00:00Z",
+            },
+        },
+    )
+    with pytest.raises(HyperplanError, match="still claimed"):
+        collect_hyperplan_tasks_v1(tmp_path / "still-claimed", run2, TEAM)
+    assert not hyperplan_decision_path(tmp_path / "still-claimed", run2).exists()
 
 
 def test_collection_blocks_transition_and_concurrent_collectors(

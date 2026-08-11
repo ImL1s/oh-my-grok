@@ -684,9 +684,11 @@ def _assert_task_ready_for_collect(
             code="E_TEAM_COMPOSITION_TASK_COLLECT",
             details={"task_key": task_key, "status": task.get("status")},
         )
-    if task.get("claim") is not None or task.get("owner") is not None:
+    # Honest transition-task-status → completed clears claim but retains owner.
+    # Collect requires claim-free, not owner-free.
+    if task.get("claim") is not None:
         raise CompositionTaskDriverError(
-            f"task for lane {task_key!r} still claimed/owned",
+            f"task for lane {task_key!r} still claimed",
             code="E_TEAM_COMPOSITION_TASK_COLLECT",
             details={"task_key": task_key},
         )
