@@ -28,6 +28,7 @@ from omg_cli.evidence import CLI_WRITER
 from omg_cli.state import _safe_run_id, load_run
 from omg_cli.team.api import (
     TeamApiError,
+    _ensure_config,
     _read_task,
     _require_control_plane,
     _task_path,
@@ -156,6 +157,46 @@ def _require_team_plane(root: Path, run_id: str) -> dict[str, Any]:
             code="E_TEAM_COMPOSITION_TASK_CONTROL_PLANE",
             details=dict(exc.details),
         ) from exc
+
+
+def _worker_names_from_control_plane(meta: Mapping[str, Any]) -> list[str]:
+    """Extract unique safe worker ids from control-plane ``tasks[].task_id``."""
+    tasks = meta.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        raise CompositionTaskDriverError(
+            "control plane tasks must be a non-empty list",
+            code="E_TEAM_COMPOSITION_TASK_CONTROL_PLANE",
+        )
+    names: list[str] = []
+    seen: set[str] = set()
+    for idx, item in enumerate(tasks):
+        if not isinstance(item, Mapping):
+            raise CompositionTaskDriverError(
+                f"control plane tasks[{idx}] must be an object",
+                code="E_TEAM_COMPOSITION_TASK_CONTROL_PLANE",
+            )
+        raw = item.get("task_id")
+        if not isinstance(raw, str) or not raw.strip():
+            raise CompositionTaskDriverError(
+                f"control plane tasks[{idx}].task_id must be a non-empty string",
+                code="E_TEAM_COMPOSITION_TASK_CONTROL_PLANE",
+            )
+        try:
+            name = require_safe_id(raw.strip(), label=f"tasks[{idx}].task_id")
+        except ContractValidationError as exc:
+            raise CompositionTaskDriverError(
+                str(exc),
+                code="E_TEAM_COMPOSITION_TASK_CONTROL_PLANE",
+            ) from exc
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+    if not names:
+        raise CompositionTaskDriverError(
+            "control plane has no claimable worker task_ids",
+            code="E_TEAM_COMPOSITION_TASK_CONTROL_PLANE",
+        )
+    return names
 
 
 def _lane_scope(lane: Mapping[str, Any]) -> str:
@@ -458,6 +499,12 @@ def admit_composition_tasks_v1(
     lock = adapter.composition_lock_path(root_path, rid)
 
     with exclusive_lock(lock):
+        # Refresh under composition lock; seed API workers from plane tasks so
+        # claim-task can resolve pane identities after admission.
+        plane = _require_team_plane(root_path, rid)
+        worker_names = _worker_names_from_control_plane(plane)
+        _ensure_config(root_path, rid, tid, workers=worker_names)
+
         manifest = adapter.load_manifest(root_path, rid)
         if manifest.get("execution_supported") is not False:
             raise CompositionTaskDriverError(

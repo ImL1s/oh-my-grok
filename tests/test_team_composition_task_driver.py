@@ -1224,3 +1224,41 @@ def test_leader_env_still_admits_and_collects(
     )
     assert collected["ok"] is True
     assert collected["decision"]["verdict"] == "approved"
+
+
+def test_admit_seeds_api_workers_and_claim_task_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Control-plane task_ids must be registered so pane claim-task works."""
+    run_id = _seed(tmp_path, monkeypatch)
+    materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    admitted = admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    cfg = team_api._load_config(tmp_path, run_id, TEAM)
+    assert cfg is not None
+    worker_names = {row["name"] for row in cfg["workers"]}
+    assert "t-a" in worker_names
+
+    root_key = admitted["topo_order"][0]
+    assert root_key.startswith("critic.")
+    code, claim = execute_team_api(
+        "claim-task",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "task_id": admitted["task_key_to_id"][root_key],
+            "worker": "t-a",
+        },
+        root=tmp_path,
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    assert code == 0
+    assert claim["data"]["ok"] is True
+    assert claim["data"]["task"]["owner"] == "t-a"
+    assert claim["data"]["claimToken"]
+
+    # Idempotent re-admit repairs/preserves the seeded registry.
+    again = admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    assert again["idempotent"] is True
+    cfg2 = team_api._load_config(tmp_path, run_id, TEAM)
+    assert cfg2 is not None
+    assert "t-a" in {row["name"] for row in cfg2["workers"]}
