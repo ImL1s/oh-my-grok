@@ -64,8 +64,9 @@ GOLDEN_V2 = ROOT / "tests" / "golden" / "team_operation_catalog_v2.json"
 GOLDEN_V3 = ROOT / "tests" / "golden" / "team_operation_catalog_v3.json"
 GOLDEN_V4 = ROOT / "tests" / "golden" / "team_operation_catalog_v4.json"
 
-TEAM = "team-api"
+TEAM = "team"  # must match start_team dry_run control-plane team_id
 SEED_TASKS = [{"task_id": "t-a", "owned_files": ["a.py"]}]
+WRONG_TEAM = "team-api"
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -1237,9 +1238,18 @@ def test_admit_seeds_api_workers_and_claim_task_succeeds(
     assert cfg is not None
     worker_names = {row["name"] for row in cfg["workers"]}
     assert "t-a" in worker_names
+    assert cfg["team_id"] == TEAM
 
     root_key = admitted["topo_order"][0]
     assert root_key.startswith("critic.")
+    # Real pane env: worker marker + identity + control-plane team id.
+    pane_env = {
+        EXPERIMENTAL_ENV: "1",
+        "OMG_TEAM_WORKER": "1",
+        "OMG_TEAM_WORKER_ID": "t-a",
+        "OMG_TEAM_ID": TEAM,
+        "OMG_TEAM_RUN_ID": run_id,
+    }
     code, claim = execute_team_api(
         "claim-task",
         {
@@ -1249,7 +1259,7 @@ def test_admit_seeds_api_workers_and_claim_task_succeeds(
             "worker": "t-a",
         },
         root=tmp_path,
-        env={EXPERIMENTAL_ENV: "1"},
+        env=pane_env,
     )
     assert code == 0
     assert claim["data"]["ok"] is True
@@ -1262,3 +1272,35 @@ def test_admit_seeds_api_workers_and_claim_task_succeeds(
     cfg2 = team_api._load_config(tmp_path, run_id, TEAM)
     assert cfg2 is not None
     assert "t-a" in {row["name"] for row in cfg2["workers"]}
+
+
+def test_admit_refuses_team_id_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed(tmp_path, monkeypatch)
+    mat = materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    with pytest.raises(HyperplanError, match="team_id mismatch") as exc_info:
+        admit_hyperplan_tasks_v1(tmp_path, run_id, WRONG_TEAM)
+    assert exc_info.value.code == "E_TEAM_COMPOSITION_TASK_TEAM_ID"
+
+    # No batch under the wrong team id.
+    _, idem = composition_batch_ids(
+        SOURCE_KIND_HYPERPLAN, mat["manifest"]["composition_id"]
+    )
+    wrong_record = tb._load_batch_record(
+        tb.batch_record_path(tmp_path, run_id, WRONG_TEAM, idem),
+        run_id=run_id,
+        team_id=WRONG_TEAM,
+    )
+    assert wrong_record is None
+    # And none under the correct id either (admit never ran successfully).
+    good_record = tb._load_batch_record(
+        tb.batch_record_path(tmp_path, run_id, TEAM, idem),
+        run_id=run_id,
+        team_id=TEAM,
+    )
+    assert good_record is None
+
+    with pytest.raises(HyperplanError, match="team_id mismatch") as col_exc:
+        collect_hyperplan_tasks_v1(tmp_path, run_id, WRONG_TEAM)
+    assert col_exc.value.code == "E_TEAM_COMPOSITION_TASK_TEAM_ID"

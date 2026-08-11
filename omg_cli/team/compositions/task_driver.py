@@ -159,6 +159,33 @@ def _require_team_plane(root: Path, run_id: str) -> dict[str, Any]:
         ) from exc
 
 
+def _control_plane_team_id(meta: Mapping[str, Any]) -> str:
+    """Resolve and validate control-plane ``team.json.team_id``."""
+    try:
+        return require_safe_id(meta.get("team_id"), label="control_plane.team_id")
+    except ContractValidationError as exc:
+        raise CompositionTaskDriverError(
+            str(exc),
+            code="E_TEAM_COMPOSITION_TASK_TEAM_ID",
+        ) from exc
+
+
+def _require_matching_team_id(caller_team_id: str, meta: Mapping[str, Any]) -> str:
+    """Refuse caller team_id that does not match the control plane."""
+    plane_team_id = _control_plane_team_id(meta)
+    if caller_team_id != plane_team_id:
+        raise CompositionTaskDriverError(
+            f"team_id mismatch: caller={caller_team_id!r} "
+            f"control_plane={plane_team_id!r}",
+            code="E_TEAM_COMPOSITION_TASK_TEAM_ID",
+            details={
+                "caller_team_id": caller_team_id,
+                "control_plane_team_id": plane_team_id,
+            },
+        )
+    return plane_team_id
+
+
 def _worker_names_from_control_plane(meta: Mapping[str, Any]) -> list[str]:
     """Extract unique safe worker ids from control-plane ``tasks[].task_id``."""
     tasks = meta.get("tasks")
@@ -495,13 +522,15 @@ def admit_composition_tasks_v1(
         ) from exc
 
     _require_live_run(root_path, rid)
-    _require_team_plane(root_path, rid)
+    plane = _require_team_plane(root_path, rid)
+    _require_matching_team_id(tid, plane)
     lock = adapter.composition_lock_path(root_path, rid)
 
     with exclusive_lock(lock):
         # Refresh under composition lock; seed API workers from plane tasks so
         # claim-task can resolve pane identities after admission.
         plane = _require_team_plane(root_path, rid)
+        _require_matching_team_id(tid, plane)
         worker_names = _worker_names_from_control_plane(plane)
         _ensure_config(root_path, rid, tid, workers=worker_names)
 
@@ -663,10 +692,13 @@ def collect_composition_tasks_v1(
         ) from exc
 
     _require_live_run(root_path, rid)
-    _require_team_plane(root_path, rid)
+    plane = _require_team_plane(root_path, rid)
+    _require_matching_team_id(tid, plane)
     lock = adapter.composition_lock_path(root_path, rid)
 
     with exclusive_lock(lock):
+        plane = _require_team_plane(root_path, rid)
+        _require_matching_team_id(tid, plane)
         manifest = adapter.load_manifest(root_path, rid)
         if manifest.get("execution_supported") is not False:
             raise CompositionTaskDriverError(
