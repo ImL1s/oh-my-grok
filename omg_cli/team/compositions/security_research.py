@@ -2975,6 +2975,13 @@ def _derive_report_from_bundle(
             f"candidate ids both surviving and rejected: {sorted(overlap)!r}",
             code="E_TEAM_SECURITY_RESEARCH_BUNDLE",
         )
+    missing_disposition = set(candidates_by_id) - surviving_ids - rejected_ids
+    if missing_disposition:
+        raise SecurityResearchError(
+            "hunted candidates lack consolidate disposition: "
+            f"{sorted(missing_disposition)!r}",
+            code="E_TEAM_SECURITY_RESEARCH_BUNDLE",
+        )
 
     # Disagreement before severity gates so spoof/disagreement is explicit.
     for cid in surviving_ids:
@@ -3115,6 +3122,18 @@ def _derive_report_from_bundle(
     rejected_out.sort(key=lambda row: row["candidate_id"])
 
     verify_payload = receipts["verify"]["payload"]
+    if receipts["verify"]["status"] == "complete":
+        expected_covered = [lane["lane_id"] for lane in manifest["lanes"]]
+        covered = list(verify_payload.get("covered_lanes") or [])
+        if set(covered) != set(expected_covered) or len(covered) != len(
+            expected_covered
+        ):
+            raise SecurityResearchError(
+                "verify.covered_lanes must list every manifest lane exactly once "
+                f"(expected {sorted(expected_covered)!r}, got {sorted(set(covered))!r})",
+                code="E_TEAM_SECURITY_RESEARCH_BUNDLE",
+            )
+
     blockers: list[str] = []
     if incomplete:
         blockers.append(
@@ -3129,24 +3148,17 @@ def _derive_report_from_bundle(
             blockers.append(issue)
 
     blocking_findings = [f for f in findings if f.get("blocking") is True]
-    if incomplete or blockers and incomplete:
+    # Any non-empty blockers (including verifier blocking_issues) force block.
+    if incomplete or blockers or blocking_findings:
         verdict = "block"
-    elif blocking_findings:
-        verdict = "block"
+        if not blockers and incomplete:
+            blockers = [
+                "incomplete audit: lanes not complete: " + ", ".join(incomplete)
+            ]
     elif findings:
         verdict = "pass_with_findings"
     else:
         verdict = "pass"
-
-    # When incomplete, force block even if consolidate recommended otherwise.
-    if incomplete:
-        verdict = "block"
-        # Non-complete coverage cannot claim pass* — already handled.
-        # Ensure blockers non-empty for block consistency.
-        if not blockers:
-            blockers = [
-                "incomplete audit: lanes not complete: " + ", ".join(incomplete)
-            ]
 
     sources: dict[str, str] = {
         "composition": str(manifest["digest"]),

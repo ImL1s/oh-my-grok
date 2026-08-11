@@ -1175,3 +1175,57 @@ def test_deterministic_ordering_and_digests(
     r2 = compile_security_research_report_v1(manifest, bundle)
     assert r1 == r2
     assert [f["finding_id"] for f in r1["findings"]] == ["auth_a", "auth_b"]
+
+
+def test_codex_p1_blocking_issues_force_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_no_exec(monkeypatch)
+    run_id = _make_run(tmp_path)
+    materialize_security_research_v1(tmp_path, run_id, _base_spec())
+    manifest = load_security_research_manifest(tmp_path, run_id)
+    bundle = _bundle_for(manifest)
+    for row in bundle["receipts"]:
+        if row["lane_id"] == "verify":
+            row["payload"]["blocking_issues"] = ["unresolved exploit path"]
+            row["payload"]["verdict"] = "block"
+            break
+    report = compile_security_research_report_v1(manifest, bundle)
+    assert report["verdict"] == "block"
+    assert "unresolved exploit path" in report["incomplete_audit_blockers"]
+
+
+def test_codex_p1_verify_covered_lanes_must_match_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_no_exec(monkeypatch)
+    run_id = _make_run(tmp_path)
+    materialize_security_research_v1(tmp_path, run_id, _base_spec())
+    manifest = load_security_research_manifest(tmp_path, run_id)
+    bundle = _bundle_for(manifest)
+    for row in bundle["receipts"]:
+        if row["lane_id"] == "verify":
+            row["payload"]["covered_lanes"] = ["hunt.auth"]
+            break
+    with pytest.raises(SecurityResearchError, match="covered_lanes"):
+        compile_security_research_report_v1(manifest, bundle)
+
+
+def test_codex_p1_every_hunted_candidate_needs_disposition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_no_exec(monkeypatch)
+    run_id = _make_run(tmp_path)
+    materialize_security_research_v1(tmp_path, run_id, _base_spec())
+    manifest = load_security_research_manifest(tmp_path, run_id)
+    dropped = _candidate("auth_dropped", severity_hint="critical")
+    kept = _candidate("auth_kept", severity_hint="low")
+    bundle = _bundle_for(
+        manifest,
+        candidates=[dropped, kept],
+        surviving=[{"candidate_id": "auth_kept", "severity": "low", "blocking": False}],
+        calibration={"auth_kept": "low"},
+        recommended_verdict="pass_with_findings",
+    )
+    with pytest.raises(SecurityResearchError, match="lack consolidate disposition"):
+        compile_security_research_report_v1(manifest, bundle)
