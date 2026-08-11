@@ -587,7 +587,16 @@ def _expected_task_document(
     task_id: str,
     task_key_to_id: Mapping[str, str],
 ) -> dict[str, Any]:
-    dep_ids = [task_key_to_id[dep] for dep in task["depends_on"]]
+    dep_ids: list[str] = []
+    for dep in task["depends_on"]:
+        try:
+            dep_ids.append(task_key_to_id[dep])
+        except KeyError as exc:
+            raise TaskBatchError(
+                f"task_key_to_id missing dependency {dep!r}",
+                code="E_TEAM_TASK_BATCH_CORRUPT",
+                details={"task_key": dep},
+            ) from exc
     return {
         "id": task_id,
         "subject": task["subject"],
@@ -645,6 +654,61 @@ def _admit_result(
     }
 
 
+def _validate_prepared_mapping(
+    compiled: Mapping[str, Any], task_key_to_id: Mapping[str, str]
+) -> None:
+    """Refuse tampered/incomplete prepared mappings before any task write."""
+    expected_keys = [str(task["task_key"]) for task in compiled["tasks"]]
+    mapping_keys = list(task_key_to_id.keys())
+    if set(mapping_keys) != set(expected_keys) or len(mapping_keys) != len(
+        expected_keys
+    ):
+        raise TaskBatchError(
+            "task_key_to_id keys mismatch compiled batch "
+            f"(expected {sorted(expected_keys)!r}, got {sorted(mapping_keys)!r})",
+            code="E_TEAM_TASK_BATCH_CORRUPT",
+        )
+    ids = list(task_key_to_id.values())
+    if len(set(ids)) != len(ids):
+        raise TaskBatchError(
+            "task_key_to_id contains duplicate task ids",
+            code="E_TEAM_TASK_BATCH_CORRUPT",
+        )
+    topo = [str(x) for x in compiled["topo_order"]]
+    if set(topo) != set(expected_keys) or len(topo) != len(expected_keys):
+        raise TaskBatchError(
+            "compiled topo_order keys mismatch tasks",
+            code="E_TEAM_TASK_BATCH_CORRUPT",
+        )
+
+
+def _ensure_task_slot_owned(
+    root: Path,
+    *,
+    run_id: str,
+    team_id: str,
+    expected: Mapping[str, Any],
+) -> None:
+    """Refuse overwriting a task id that is not owned by this batch binding."""
+    task_id = str(expected["id"])
+    existing = _read_task(root, run_id, team_id, task_id)
+    if existing is None:
+        return
+    if _task_documents_match(existing, expected):
+        return
+    batch = existing.get("batch")
+    expected_batch = expected.get("batch")
+    if isinstance(batch, Mapping) and batch == expected_batch:
+        # Same-batch binding: allow rewrite to repair a partial/crashed write.
+        return
+    raise TaskBatchError(
+        f"task id {task_id!r} already exists without matching batch binding "
+        "(refusing foreign overwrite)",
+        code="E_TEAM_TASK_BATCH_FOREIGN",
+        details={"task_id": task_id},
+    )
+
+
 def _write_and_verify_task(
     root: Path,
     *,
@@ -653,6 +717,9 @@ def _write_and_verify_task(
     expected: Mapping[str, Any],
 ) -> None:
     task_id = str(expected["id"])
+    _ensure_task_slot_owned(
+        root, run_id=run_id, team_id=team_id, expected=expected
+    )
     _write_task(root, run_id, team_id, expected)
     actual = _read_task(root, run_id, team_id, task_id)
     if actual is None or not _task_documents_match(actual, expected):
@@ -711,6 +778,7 @@ def admit_task_batch_v1(
                         idempotent=True,
                         task_key_to_id=task_key_to_id,
                     )
+                _validate_prepared_mapping(compiled, task_key_to_id)
                 record = existing
             else:
                 config = _ensure_config_locked(root_path, run_id, team_id)
@@ -754,7 +822,15 @@ def admit_task_batch_v1(
                 _invoke_crash_hook("after_reserve")
 
             for idx, task in enumerate(compiled["tasks"]):
-                task_id = task_key_to_id[str(task["task_key"])]
+                key = str(task["task_key"])
+                try:
+                    task_id = task_key_to_id[key]
+                except KeyError as exc:
+                    raise TaskBatchError(
+                        f"task_key_to_id missing entry for {key!r}",
+                        code="E_TEAM_TASK_BATCH_CORRUPT",
+                        details={"task_key": key},
+                    ) from exc
                 expected = _expected_task_document(
                     compiled,
                     task=task,

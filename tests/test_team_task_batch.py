@@ -709,3 +709,89 @@ def test_symlink_batch_record_refused(
     path.symlink_to(target)
     with pytest.raises(tb.TaskBatchError, match="symlink"):
         tb.admit_task_batch_v1(tmp_path, payload)
+
+
+def test_prepared_mapping_tamper_refuses_foreign_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Crash after reserve → create-task takes next id → tamper mapping must refuse."""
+    from omg_cli.contracts.writer_chain import canonical_json_bytes
+    from omg_cli.team import api as team_api
+
+    run_id = _seed(tmp_path, monkeypatch)
+    payload = _batch(run_id, key="tamper-key")
+
+    def after_reserve(point: str) -> None:
+        if point == "after_reserve":
+            raise RuntimeError("injected crash after reserve")
+
+    tb._crash_hook = after_reserve
+    with pytest.raises(RuntimeError, match="after reserve"):
+        tb.admit_task_batch_v1(tmp_path, payload)
+    tb._crash_hook = None
+
+    path = tb.batch_record_path(tmp_path, run_id, TEAM, "tamper-key")
+    record = tb._load_batch_record(path, run_id=run_id, team_id=TEAM)
+    assert record is not None and record["state"] == "prepared"
+
+    # Foreign create-task consumes the next free numeric id (typically 3).
+    code, created = execute_team_api(
+        "create-task",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "subject": "foreign",
+            "description": "must not be clobbered",
+            "workers": ["w1"],
+        },
+        root=tmp_path,
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    assert code == 0
+    foreign_id = str(created["data"]["task"]["id"])
+    foreign_before = team_api._read_task(tmp_path, run_id, TEAM, foreign_id)
+    assert foreign_before is not None
+    assert foreign_before.get("subject") == "foreign"
+
+    # Tamper prepared mapping: point child at the foreign task id.
+    tampered = dict(record)
+    mapping = dict(tampered["task_key_to_id"])
+    mapping["child"] = foreign_id
+    tampered["task_key_to_id"] = mapping
+    path.write_bytes(canonical_json_bytes(tampered))
+
+    with pytest.raises(tb.TaskBatchError, match="foreign overwrite"):
+        tb.admit_task_batch_v1(tmp_path, payload)
+
+    foreign_after = team_api._read_task(tmp_path, run_id, TEAM, foreign_id)
+    assert foreign_after == foreign_before
+
+
+def test_incomplete_prepared_mapping_raises_task_batch_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.contracts.writer_chain import canonical_json_bytes
+
+    run_id = _seed(tmp_path, monkeypatch)
+    payload = _batch(run_id, key="incomplete-map")
+
+    def after_reserve(point: str) -> None:
+        if point == "after_reserve":
+            raise RuntimeError("injected crash after reserve")
+
+    tb._crash_hook = after_reserve
+    with pytest.raises(RuntimeError, match="after reserve"):
+        tb.admit_task_batch_v1(tmp_path, payload)
+    tb._crash_hook = None
+
+    path = tb.batch_record_path(tmp_path, run_id, TEAM, "incomplete-map")
+    record = tb._load_batch_record(path, run_id=run_id, team_id=TEAM)
+    assert record is not None
+    tampered = dict(record)
+    mapping = dict(tampered["task_key_to_id"])
+    mapping.pop("child")
+    tampered["task_key_to_id"] = mapping
+    path.write_bytes(canonical_json_bytes(tampered))
+
+    with pytest.raises(tb.TaskBatchError, match="keys mismatch|missing entry"):
+        tb.admit_task_batch_v1(tmp_path, payload)
