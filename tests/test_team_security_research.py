@@ -843,6 +843,42 @@ def test_produce_golden_bundle_and_report(tmp_path: Path, monkeypatch: pytest.Mo
     assert security_research_report_path(tmp_path, run_id).is_file()
 
 
+def test_validate_report_refuses_overwrite_when_result_bundle_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Produce owns the report commit marker; validate-report must not desync it."""
+    _patch_no_exec(monkeypatch)
+    run_id = _make_run(tmp_path)
+    materialize_security_research_v1(tmp_path, run_id, _base_spec())
+    golden_bundle = json.loads(GOLDEN_BUNDLE.read_text(encoding="utf-8"))
+    produced = produce_security_research_report_v1(tmp_path, run_id, golden_bundle)
+    report_path = security_research_report_path(tmp_path, run_id)
+    before = report_path.read_bytes()
+
+    forged = dict(produced["report"])
+    forged["notes"] = "forged-via-validate"
+    with pytest.raises(SecurityResearchError, match="result-bundle present"):
+        validate_security_research_report_v1(
+            tmp_path, run_id, forged, persist=True
+        )
+    assert report_path.read_bytes() == before
+
+    # Idempotent re-check of the exact produce report is allowed.
+    again = validate_security_research_report_v1(
+        tmp_path, run_id, produced["report"], persist=True
+    )
+    assert again["ok"] is True
+    assert again.get("idempotent") is True
+    assert report_path.read_bytes() == before
+
+    # In-memory validation of a different report still works without persist.
+    check = validate_security_research_report_v1(
+        tmp_path, run_id, forged, persist=False
+    )
+    assert check["persisted"] is False
+    assert report_path.read_bytes() == before
+
+
 def test_produce_high_finding_binds_validator_digests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

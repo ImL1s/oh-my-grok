@@ -28,8 +28,12 @@ creates Team tasks, launches panes/Jobs/providers, invokes MCP, runs
 commands, accesses a network, or executes a PoC.
 
 `validate-report` validates a supplied report artifact against the
-materialized manifest (same proof gates) and may persist the report. It never
-invents findings and never writes `passes` / `verified`.
+materialized manifest (same proof gates). It may persist only when no
+result-bundle exists (hand-authored path). If
+`security-research-v1-result-bundle.json` is present, persist is refused
+unless the report already matches the produce commit marker (idempotent
+re-check) — validate-report never overwrites a produce-written report. It
+never invents findings and never writes `passes` / `verified`.
 
 ## Spec → Manifest
 

@@ -521,10 +521,37 @@ def validate_security_research_report_v1(
             code="E_TEAM_SECURITY_RESEARCH_PATH",
         )
     path = security_research_report_path(root_path, rid)
+    bundle_path = security_research_result_bundle_path(root_path, rid)
     lock = security_research_lock_path(root_path, rid)
     with exclusive_lock(lock):
+        # Produce owns the report commit marker whenever a result-bundle is
+        # present. validate-report must not overwrite (or mint) that marker.
+        if bundle_path.is_symlink():
+            raise SecurityResearchError(
+                "security-research-v1-result-bundle.json may not be a symlink",
+                code="E_TEAM_SECURITY_RESEARCH_PATH",
+            )
+        if bundle_path.exists():
+            existing_report = _try_load_existing_report(path)
+            if existing_report is not None:
+                existing_norm = _parse_report(existing_report, manifest=manifest)
+                if existing_norm == normalized:
+                    return {
+                        "ok": True,
+                        "persisted": True,
+                        "idempotent": True,
+                        "path": _rel_under_root(root_path, path),
+                        "report": existing_norm,
+                    }
+            raise SecurityResearchError(
+                "result-bundle present: refuse validate-report persist "
+                "(report commit marker is owned by produce-report)",
+                code="E_TEAM_SECURITY_RESEARCH_CONFLICT",
+            )
+
         body = canonical_json_bytes(normalized)
         try:
+            # Hand-authored validate path (no produce bundle): replace allowed.
             atomic_write_bytes(path, body, mode=DATA_FILE_MODE, replace=True)
         except ContractPathError as exc:
             raise SecurityResearchError(
@@ -534,6 +561,7 @@ def validate_security_research_report_v1(
     return {
         "ok": True,
         "persisted": True,
+        "idempotent": False,
         "path": _rel_under_root(root_path, path),
         "report": normalized,
     }
