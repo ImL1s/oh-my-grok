@@ -274,10 +274,11 @@ omg team status --run RUN --presentation --json
 omg team hyperplan plan --spec SPEC.json --json
 omg team hyperplan materialize --spec SPEC.json --run RUN --json
 omg team hyperplan validate-decision --run RUN --input DECISION.json --json
-# Security Research V1 scaffolding (#69 PR8; non-executing; execution_supported=false):
+# Security Research V1 hermetic produce (#69 PR9; execution_supported=false):
 omg team security-research plan --spec SPEC.json --json
 omg team security-research materialize --spec SPEC.json --run RUN --json
 omg team security-research validate-report --run RUN --input REPORT.json --json
+omg team security-research produce-report --run RUN --input RESULT_BUNDLE.json --json
 omg team api send-message --input '{"run_id":"RUN","team_id":"t","from_worker":"leader","to_worker":"w1","body":"hi"}' --json
 # P0′ ops + replace-worker + read-presentation-state; catalog v3 = 38 named / 27 implemented (see docs/team-operation-catalog-v3.md; v1/v2 goldens unchanged)
 # disable: export OMG_DISABLE_TMUX_TEAM=1
@@ -285,7 +286,8 @@ omg team api send-message --input '{"run_id":"RUN","team_id":"t","from_worker":"
 
 See also `docs/team.md` for job-backed worker invariants (#69 PR4),
 `docs/team-hyperplan-v1.md` for Hyperplan V1 scaffolding (#69 PR7), and
-`docs/team-security-research-v1.md` for Security Research V1 scaffolding (#69 PR8).
+`docs/team-security-research-v1.md` for Security Research V1 hermetic result
+production (#69 PR9).
 
 ---
 

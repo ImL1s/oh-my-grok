@@ -1,7 +1,8 @@
-"""Team composition contracts (non-executing scaffolds).
+"""Team composition contracts (non-executing scaffolds + hermetic SR produce).
 
-Hyperplan V1 and Security Research V1 live here. Execution / result production
-remain out of scope until separately specified.
+Hyperplan V1 (contract only) and Security Research V1 (contract + hermetic
+result production) live here. Composition task/pane/Jobs execution remains
+out of scope until separately specified.
 """
 
 from __future__ import annotations
@@ -21,13 +22,18 @@ from omg_cli.team.compositions.hyperplan import (
 from omg_cli.team.compositions.security_research import (
     SECURITY_RESEARCH_KIND,
     SECURITY_RESEARCH_REPORT_KIND,
+    SECURITY_RESEARCH_RESULT_BUNDLE_KIND,
     SECURITY_RESEARCH_SCHEMA_VERSION,
     SecurityResearchError,
+    compile_security_research_report_v1,
     compile_security_research_v1,
     load_security_research_manifest,
     materialize_security_research_v1,
     parse_security_research_spec_v1,
+    produce_security_research_report_v1,
     security_research_manifest_path,
+    security_research_report_path,
+    security_research_result_bundle_path,
     validate_security_research_report_v1,
 )
 
@@ -38,9 +44,11 @@ __all__ = [
     "HyperplanError",
     "SECURITY_RESEARCH_KIND",
     "SECURITY_RESEARCH_REPORT_KIND",
+    "SECURITY_RESEARCH_RESULT_BUNDLE_KIND",
     "SECURITY_RESEARCH_SCHEMA_VERSION",
     "SecurityResearchError",
     "compile_hyperplan_v1",
+    "compile_security_research_report_v1",
     "compile_security_research_v1",
     "hyperplan_manifest_path",
     "load_hyperplan_manifest",
@@ -49,7 +57,10 @@ __all__ = [
     "materialize_security_research_v1",
     "parse_hyperplan_spec_v1",
     "parse_security_research_spec_v1",
+    "produce_security_research_report_v1",
     "security_research_manifest_path",
+    "security_research_report_path",
+    "security_research_result_bundle_path",
     "validate_hyperplan_decision_v1",
     "validate_security_research_report_v1",
 ]
