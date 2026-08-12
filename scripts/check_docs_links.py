@@ -76,6 +76,14 @@ MARKERS = [
     ),
     (
         "docs/architecture/agent-model-routing.md",
+        "ImL1s/medley#207",
+    ),
+    (
+        "docs/architecture/agent-model-routing.md",
+        "ImL1s/medley#290",
+    ),
+    (
+        "docs/architecture/agent-model-routing.md",
         "oh-my-grok#138",
     ),
     (
@@ -104,6 +112,14 @@ MARKERS = [
     ),
     (
         "docs/architecture/agent-model-routing.zh.md",
+        "ImL1s/medley#207",
+    ),
+    (
+        "docs/architecture/agent-model-routing.zh.md",
+        "ImL1s/medley#290",
+    ),
+    (
+        "docs/architecture/agent-model-routing.zh.md",
         "oh-my-grok#138",
     ),
     (
@@ -121,6 +137,14 @@ MARKERS = [
     (
         "docs/architecture/agent-model-routing.zh-TW.md",
         "ImL1s/medley#289",
+    ),
+    (
+        "docs/architecture/agent-model-routing.zh-TW.md",
+        "ImL1s/medley#207",
+    ),
+    (
+        "docs/architecture/agent-model-routing.zh-TW.md",
+        "ImL1s/medley#290",
     ),
     (
         "docs/architecture/agent-model-routing.zh-TW.md",
@@ -146,6 +170,8 @@ REQUIRED_EXTERNAL = {
     "https://github.com/ImL1s/oh-my-grok/issues/138",
     "https://github.com/ImL1s/medley/issues/287",
     "https://github.com/ImL1s/medley/issues/289",
+    "https://github.com/ImL1s/medley/issues/207",
+    "https://github.com/ImL1s/medley/issues/290",
 }
 _ROUTING_REQUIRE_EXTERNAL = (
     "docs/architecture/agent-model-routing.md",

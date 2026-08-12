@@ -117,6 +117,10 @@ ARCH_REQUIRED_SNIPPETS: tuple[str, ...] = (
     "team_member",
     "ImL1s/medley#287",
     "ImL1s/medley#289",
+    "ImL1s/medley#207",
+    "ImL1s/medley#290",
+    "narrow-width",
+    "no-color",
     "omg doctor",
     "route kind",
 )
@@ -354,6 +358,34 @@ def test_architecture_does_not_claim_medley_required() -> None:
     assert "never" in body.lower()
 
 
+def test_architecture_states_ux_ownership_and_accessibility() -> None:
+    body = ARCH.read_text(encoding="utf-8")
+    assert (
+        "is **not** UI" in body
+        or "not** UI" in body
+        or "not UI / TUI" in body
+    ), "architecture must negate routing/backend completion as UI/TUI completion"
+    assert "declarative Agents" in body
+    renderer_hits = list(re.finditer(r"renderer", body))
+    assert renderer_hits, "architecture must mention renderer"
+    assert any(
+        re.search(
+            r"not|does \*\*not\*\* own",
+            _window(body, m.start(), m.end(), 80),
+            re.IGNORECASE,
+        )
+        for m in renderer_hits
+    ), "architecture must say OMG does not own a stock-host renderer"
+    assert "ImL1s/medley#207" in body
+    assert "ImL1s/medley#290" in body
+    assert "oh-my-grok#134" in body
+    assert "narrow-width" in body
+    assert "no-color" in body
+    assert "contract target" in body
+    assert "unsupported" in body
+    assert "unavailable" in body
+
+
 def test_architecture_distinguishes_advisory_from_task_execution() -> None:
     body = ARCH.read_text(encoding="utf-8")
     for token in (
@@ -461,6 +493,13 @@ def test_locale_architecture_projection_honesty() -> None:
             assert needle in text, f"{rel} missing {needle!r}"
         assert "#131" in text, f"{rel} missing #131"
         assert "#138" in text, f"{rel} missing #138"
+        assert "#207" in text, f"{rel} missing #207"
+        assert "#290" in text, f"{rel} missing #290"
+        assert "narrow-width" in text, f"{rel} missing narrow-width"
+        assert "no-color" in text, f"{rel} missing no-color"
+        assert (
+            "UI" in text or "TUI" in text
+        ), f"{rel} missing UI/TUI not-complete claim"
         assert "runtime_kind" in text, f"{rel} missing runtime_kind"
         assert "advisory" in text, f"{rel} missing advisory"
         assert "omg ask" in text, f"{rel} missing omg ask"
@@ -663,3 +702,5 @@ def test_check_docs_links_source_lists_architecture() -> None:
     assert "https://github.com/ImL1s/oh-my-grok/issues/131" in src
     assert "https://github.com/ImL1s/oh-my-grok/issues/138" in src
     assert "https://github.com/ImL1s/medley/issues/287" in src
+    assert "https://github.com/ImL1s/medley/issues/207" in src
+    assert "https://github.com/ImL1s/medley/issues/290" in src

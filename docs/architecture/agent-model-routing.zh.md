@@ -12,6 +12,7 @@
 - [Native model route vs external executor](./agent-model-routing.md#native-model-route-vs-external-executor)
 - [Advisory plane vs task execution](./agent-model-routing.md#advisory-plane-vs-task-execution)
 - [CLI / UX surfaces honesty](./agent-model-routing.md#cli--ux-surfaces-honesty)
+- [Presentation ownership and accessibility](./agent-model-routing.md#presentation-ownership-and-accessibility)
 
 **跟踪：** [oh-my-grok#133](https://github.com/ImL1s/oh-my-grok/issues/133) · 实现（本页不宣称已出货）：[#131](https://github.com/ImL1s/oh-my-grok/issues/131) · UX：[#134](https://github.com/ImL1s/oh-my-grok/issues/134) · 顾问平面：[#138](https://github.com/ImL1s/oh-my-grok/issues/138)
 
@@ -91,6 +92,19 @@ HTTP `429` 不得单独授权换 provider 重送。细节见英文页 [Initial s
 
 human+JSON 成对示例（含 stock host 的 unsupported／unavailable）只以英文页为准，见 [CLI / UX surfaces honesty](./agent-model-routing.md#cli--ux-surfaces-honesty)。本投影不复制那四组完整区块。
 
+## UX 归属与无障碍
+
+路由／后端完成 **不是** UI／TUI 完成。OMG **不拥有**任意 stock-host renderer／panel。
+
+- Stock Grok Build：只经 host 已支持的宣告式 Agents／Tasks／child surfaces
+- OMG：[#134](https://github.com/ImL1s/oh-my-grok/issues/134) 的 policy／Team／external-executor 投影（planned / contract-only）
+- Medley：[ImL1s/medley#290](https://github.com/ImL1s/medley/issues/290) Agents／lifecycle TUI；[ImL1s/medley#207](https://github.com/ImL1s/medley/issues/207) provider／route／statusline
+
+增强栏位 capability-gated；stock host 以 **unsupported**／**unavailable** 诚实回报。
+narrow-width／no-color／无障碍是 **contract target**，本页不宣称已出货 runtime。
+
+英文规范：[Presentation ownership and accessibility](./agent-model-routing.md#presentation-ownership-and-accessibility)。
+
 ## 请读英文页
 
 规范来源：[`agent-model-routing.md`](./agent-model-routing.md)
@@ -103,5 +117,7 @@ Issue（稳定 GitHub URL）：
 - [oh-my-grok#138](https://github.com/ImL1s/oh-my-grok/issues/138)
 - [ImL1s/medley#287](https://github.com/ImL1s/medley/issues/287)
 - [ImL1s/medley#289](https://github.com/ImL1s/medley/issues/289)
+- [ImL1s/medley#207](https://github.com/ImL1s/medley/issues/207)
+- [ImL1s/medley#290](https://github.com/ImL1s/medley/issues/290)
 
 繁体投影：[agent-model-routing.zh-TW.md](./agent-model-routing.zh-TW.md)

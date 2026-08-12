@@ -17,6 +17,7 @@ anchors. Do not copy their tables, ownership lists, or capability catalogs here:
 - [Advisory plane vs task execution](../architecture/agent-model-routing.md#advisory-plane-vs-task-execution)
 - [Selection / retry / fallback / replacement](../architecture/agent-model-routing.md#initial-selection-retry-route-fallback-worker-replacement)
 - [CLI / UX honesty](../architecture/agent-model-routing.md#cli--ux-surfaces-honesty)
+- [Presentation ownership and accessibility](../architecture/agent-model-routing.md#presentation-ownership-and-accessibility)
 - [Installation / compatibility](../architecture/agent-model-routing.md#installation-and-compatibility-language)
 - [Non-goals](../architecture/agent-model-routing.md#non-goals)
 
@@ -31,6 +32,7 @@ anchors. Do not copy their tables, ownership lists, or capability catalogs here:
 
 Optional related:
 
+- https://github.com/ImL1s/medley/issues/207
 - https://github.com/ImL1s/medley/issues/290
 - https://github.com/ImL1s/medley/pull/288
 - https://github.com/ImL1s/oh-my-grok/issues/71

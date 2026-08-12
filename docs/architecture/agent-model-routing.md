@@ -313,6 +313,41 @@ credentials, account IDs, private origins, or entitlement claims.
 OMG does **not** own a separate stock-Grok TUI. Portable surfaces are CLI/JSON
 plus host-native projections.
 
+### Presentation ownership and accessibility
+
+Routing / backend completion is **not** UI / TUI completion. A policy or
+route contract does **not** ship a host renderer.
+
+Presentation ownership (documentation contract; **not** a shipped TUI runtime):
+
+- **Stock original Grok Build** presents through the host's **supported
+  declarative Agents / Tasks / child-session surfaces**. OMG does **not**
+  own an arbitrary stock-host renderer or a new stock Grok Build panel.
+- **OMG** owns policy / Team / external-executor **projection** under
+  [#134](https://github.com/ImL1s/oh-my-grok/issues/134). That work is
+  **planned / contract-only**; this page does not ship `omg agents` (not
+  registered / not runnable today) or a host-neutral TUI.
+- **Medley** owns route-aware Agents / lifecycle TUI under
+  [ImL1s/medley#290](https://github.com/ImL1s/medley/issues/290) and
+  provider / route / statusline projection under
+  [ImL1s/medley#207](https://github.com/ImL1s/medley/issues/207). Those
+  Medley surfaces are **not** OMG runtime and are **not** claimed shipped
+  here.
+
+Enhanced fields stay **capability-gated**. On stock Grok Build a
+Medley-only capability outcome is **unsupported**; route-specific facts
+are **unavailable**. The stock host must report those honest states
+rather than fabricating a panel.
+
+Accessibility **contract targets** (not shipped runtime):
+
+- narrow-width layouts remain readable;
+- no-color / `NO_COLOR` environments remain usable;
+- human and JSON views of the same facts stay equivalent.
+
+No page may imply OMG can arbitrarily add a new stock Grok Build TUI
+panel.
+
 | Surface | Status relative to this architecture page |
 |---------|-------------------------------------------|
 | `omg doctor` / `omg doctor --strict` / `omg doctor --json` (also `omg --json doctor`) | **Shipped** — host/compat/probe honesty for **current host/session capabilities** only; does **not** negotiate Medley/model-routing enhancements today; enhanced fields must not false-green |
@@ -521,7 +556,8 @@ Use stable GitHub URLs for other repos; relative links inside this repository.
 | OMG Team runtime | [#69](https://github.com/ImL1s/oh-my-grok/issues/69) |
 | Medley optional host-contract plan | [ImL1s/medley#287](https://github.com/ImL1s/medley/issues/287) |
 | Medley architecture/docs counterpart | [ImL1s/medley#289](https://github.com/ImL1s/medley/issues/289) |
-| Medley TUI counterpart (related, not claimed here) | [ImL1s/medley#290](https://github.com/ImL1s/medley/issues/290) |
+| Medley provider/route/statusline projection | [ImL1s/medley#207](https://github.com/ImL1s/medley/issues/207) |
+| Medley Agents/lifecycle TUI counterpart (related, not claimed here) | [ImL1s/medley#290](https://github.com/ImL1s/medley/issues/290) |
 | OMG security model | [security-model.md](../security-model.md) |
 | OMG dual-host planning doc | [plans/2026-08-09-dual-host-agent-model-routing.md](../plans/2026-08-09-dual-host-agent-model-routing.md) |
 
@@ -544,7 +580,7 @@ CI should eventually prove (and #133 acceptance requires):
 - policy `external_executor` must stay distinct from advisory `omg ask`;
   the three dimension names (`runtime_kind`, `purpose`, `lifecycle`) must
   remain present;
-- links to Medley #287 / #289 and OMG #131 / #133 / #138 remain present;
+- links to Medley #207 / #287 / #289 / #290 and OMG #131 / #133 / #138 remain present;
 - maintained indexes and locales **point at** this page rather than forking the
   matrix into hand-maintained duplicates;
 - no secret/header/query/account sentinel in examples;
@@ -561,4 +597,5 @@ hand-maintained normative source.
 - no runtime benchmark/ranking claims;
 - no claim that worktree/Team isolation is an execution sandbox;
 - no implication of affiliation between OMG, Medley, or xAI;
-- no runtime implementation of #131, #134, or #138 on this documentation page alone.
+- no runtime implementation of #131, #134, or #138 on this documentation page alone;
+- no stock-host TUI / renderer or Medley #207 / #290 runtime shipped by this page.
