@@ -387,7 +387,7 @@ def test_acp_cumulative_chrome_uses_max_total_bytes(tmp_path: Path) -> None:
             sess2.handshake(timeout_s=5.0)
         assert ei.value.code == "E_ACP_OVERFLOW"
         assert sess2._receipt is None
-        assert sess2._byte_budget[0] > sess2.max_total_bytes
+        assert sess2._byte_budget[0] + len(sess2._rx_buf) > sess2.max_total_bytes
     finally:
         sess2.close()
 
@@ -609,6 +609,237 @@ def test_handshake_coalesced_oversize_suffix_writes_no_receipt(tmp_path: Path) -
         elapsed = time.monotonic() - t0
         assert ei.value.code == "E_ACP_OVERFLOW"
         assert "line overflow" in str(ei.value)
+        assert sess._receipt is None
+        assert elapsed < 2.0
+    finally:
+        sess.close()
+
+
+def test_read_line_committed_plus_buffered_suffix_overflows_before_timeout() -> None:
+    """Valid NL line + under-line-cap leftover still trips max_total_bytes."""
+    max_bytes = 64
+    valid = b'{"id":1,"result":{}}\n'
+    suffix = b"x" * 20
+    max_total = 40
+    assert len(valid) - 1 < max_bytes
+    assert len(suffix) < max_bytes
+    assert len(valid) + len(suffix) > max_total
+    r_fd, w_fd = os.pipe()
+    r_file = os.fdopen(r_fd, "rb", buffering=0)
+    w_file = os.fdopen(w_fd, "wb", buffering=0)
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.stdout = r_file
+
+        def poll(self) -> None:
+            return None
+
+    proc = _FakeProc()
+    rx_buf = bytearray()
+    byte_budget = [0]
+    try:
+        w_file.write(valid + suffix)
+        w_file.flush()
+        w_file.close()
+        first = _read_line(
+            proc,
+            max_bytes=max_bytes,
+            deadline=time.monotonic() + 5.0,
+            byte_budget=byte_budget,
+            rx_buf=rx_buf,
+            max_total_bytes=max_total,
+        )
+        assert first == valid[:-1]
+        assert bytes(rx_buf) == suffix
+        assert len(rx_buf) < max_bytes
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            _read_line(
+                proc,
+                max_bytes=max_bytes,
+                deadline=time.monotonic() + 5.0,
+                byte_budget=byte_budget,
+                rx_buf=rx_buf,
+                max_total_bytes=max_total,
+            )
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "byte overflow" in str(ei.value)
+        assert "line overflow" not in str(ei.value)
+        assert elapsed < 0.5
+    finally:
+        r_file.close()
+        w_file.close()
+
+
+def test_read_line_exactly_at_total_limit_succeeds() -> None:
+    """Exactly-at-limit uses ``>`` (combined size == max_total_bytes is ok)."""
+    max_bytes = 64
+    line1 = b'{"id":1,"result":{}}\n'
+    line2 = b'{"id":2,"result":{}}\n'
+    max_total = len(line1) + len(line2)
+    r_fd, w_fd = os.pipe()
+    r_file = os.fdopen(r_fd, "rb", buffering=0)
+    w_file = os.fdopen(w_fd, "wb", buffering=0)
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.stdout = r_file
+
+        def poll(self) -> None:
+            return None
+
+    proc = _FakeProc()
+    rx_buf = bytearray()
+    byte_budget = [0]
+    try:
+        w_file.write(line1 + line2)
+        w_file.flush()
+        w_file.close()
+        first = _read_line(
+            proc,
+            max_bytes=max_bytes,
+            deadline=time.monotonic() + 5.0,
+            byte_budget=byte_budget,
+            rx_buf=rx_buf,
+            max_total_bytes=max_total,
+        )
+        second = _read_line(
+            proc,
+            max_bytes=max_bytes,
+            deadline=time.monotonic() + 5.0,
+            byte_budget=byte_budget,
+            rx_buf=rx_buf,
+            max_total_bytes=max_total,
+        )
+        assert first == line1[:-1]
+        assert second == line2[:-1]
+        assert byte_budget[0] == max_total
+        assert not rx_buf
+    finally:
+        r_file.close()
+        w_file.close()
+
+    # leftover-at-limit: committed + leftover == max_total must not overflow.
+    line_a = b'{"id":1,"result":{}}\n'
+    suffix = b"y" * (max_total - len(line_a))
+    assert len(line_a) + len(suffix) == max_total
+    assert len(suffix) < max_bytes
+    r_fd, w_fd = os.pipe()
+    r_file = os.fdopen(r_fd, "rb", buffering=0)
+    w_file = os.fdopen(w_fd, "wb", buffering=0)
+    proc = _FakeProc()
+    proc.stdout = r_file
+    rx_buf = bytearray()
+    byte_budget = [0]
+    try:
+        w_file.write(line_a + suffix)
+        w_file.flush()
+        w_file.close()
+        first = _read_line(
+            proc,
+            max_bytes=max_bytes,
+            deadline=time.monotonic() + 5.0,
+            byte_budget=byte_budget,
+            rx_buf=rx_buf,
+            max_total_bytes=max_total,
+        )
+        assert first == line_a[:-1]
+        assert bytes(rx_buf) == suffix
+        assert byte_budget[0] + len(rx_buf) == max_total
+        with pytest.raises(AcpError) as ei:
+            _read_line(
+                proc,
+                max_bytes=max_bytes,
+                deadline=time.monotonic() + 0.15,
+                byte_budget=byte_budget,
+                rx_buf=rx_buf,
+                max_total_bytes=max_total,
+            )
+        assert ei.value.code != "E_ACP_OVERFLOW"
+        assert ei.value.code == "E_ACP_TIMEOUT"
+    finally:
+        r_file.close()
+        w_file.close()
+
+
+def test_read_line_completed_buffered_frame_counted_once() -> None:
+    """Leftover prefix is not double-counted when the frame later completes."""
+    max_bytes = 64
+    line1 = b'{"id":1,"result":{}}\n'
+    line2_prefix = b'{"id":2'
+    line2_rest = b',"result":{}}\n'
+    line2 = line2_prefix + line2_rest
+    max_total = len(line1) + len(line2)
+    assert len(line1) - 1 < max_bytes
+    assert len(line2) - 1 < max_bytes
+    r_fd, w_fd = os.pipe()
+    r_file = os.fdopen(r_fd, "rb", buffering=0)
+    w_file = os.fdopen(w_fd, "wb", buffering=0)
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.stdout = r_file
+
+        def poll(self) -> None:
+            return None
+
+    proc = _FakeProc()
+    rx_buf = bytearray()
+    byte_budget = [0]
+    try:
+        w_file.write(line1 + line2_prefix)
+        w_file.flush()
+        first = _read_line(
+            proc,
+            max_bytes=max_bytes,
+            deadline=time.monotonic() + 5.0,
+            byte_budget=byte_budget,
+            rx_buf=rx_buf,
+            max_total_bytes=max_total,
+        )
+        assert first == line1[:-1]
+        assert bytes(rx_buf) == line2_prefix
+        assert byte_budget[0] == len(line1)
+        w_file.write(line2_rest)
+        w_file.flush()
+        second = _read_line(
+            proc,
+            max_bytes=max_bytes,
+            deadline=time.monotonic() + 5.0,
+            byte_budget=byte_budget,
+            rx_buf=rx_buf,
+            max_total_bytes=max_total,
+        )
+        assert second == line2[:-1]
+        assert not rx_buf
+        assert byte_budget[0] == len(line1) + len(line2)
+    finally:
+        r_file.close()
+        w_file.close()
+
+
+def test_handshake_committed_plus_buffered_suffix_writes_no_receipt(
+    tmp_path: Path,
+) -> None:
+    # Suffix stays under max_line_bytes but init+resume+suffix exceeds total.
+    proc, argv = _spawn(
+        "resume_plus_oversize_suffix",
+        tmp_path,
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "80"},
+    )
+    sess = _session(proc, argv, tmp_path, quiet=0.3)
+    sess.max_line_bytes = 256
+    sess.max_total_bytes = 220
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "byte overflow" in str(ei.value)
+        assert "line overflow" not in str(ei.value)
         assert sess._receipt is None
         assert elapsed < 2.0
     finally:

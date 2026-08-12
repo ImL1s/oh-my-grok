@@ -319,6 +319,17 @@ def _start_stderr_drain(proc: subprocess.Popen[bytes]) -> threading.Thread:
     return thread
 
 
+def _received_bytes(byte_budget: list[int], rx_buf: bytearray) -> int:
+    return byte_budget[0] + len(rx_buf)
+
+
+def _raise_if_total_overflow(
+    byte_budget: list[int], rx_buf: bytearray, max_total_bytes: int
+) -> None:
+    if _received_bytes(byte_budget, rx_buf) > max_total_bytes:
+        raise AcpError("ACP byte overflow", code="E_ACP_OVERFLOW")
+
+
 def _read_line(
     proc: subprocess.Popen[bytes],
     *,
@@ -326,11 +337,13 @@ def _read_line(
     deadline: float,
     byte_budget: list[int],
     rx_buf: bytearray,
+    max_total_bytes: int = DEFAULT_DRAIN_MAX_BYTES,
 ) -> bytes:
     """Read one NL-terminated frame; fail on timeout/EOF/overflow.
 
-    *max_bytes* is the **per-line** cap only. Cumulative ``byte_budget`` is
-    incremented here and compared to ``max_total_bytes`` by the caller.
+    *max_bytes* is the **per-line** cap only. The cumulative ceiling is
+    committed ``byte_budget`` plus currently buffered leftover bytes
+    versus *max_total_bytes*.
 
     Partial bytes are retained in *rx_buf* across calls so a quiet-window /
     poll timeout mid-frame cannot drop already-consumed bytes and turn a later
@@ -338,7 +351,11 @@ def _read_line(
 
     Leftover newline-free *rx_buf* is checked against *max_bytes* before
     poll/timeout so a quiet window cannot treat an already-over-limit
-    incomplete frame as "no message".
+    incomplete frame as "no message". Committed budget plus leftover is
+    also checked against *max_total_bytes* before poll/timeout and after
+    append. ``byte_budget`` is incremented only when a complete NL frame is
+    extracted so leftover is not double-counted when that frame later
+    completes.
     """
     if proc.stdout is None:
         raise AcpError("ACP stdout missing", code="E_ACP_IO")
@@ -355,6 +372,7 @@ def _read_line(
         # Fail closed on leftover over-limit incomplete frames before poll/timeout.
         if len(rx_buf) > max_bytes:
             raise AcpError("ACP line overflow", code="E_ACP_OVERFLOW")
+        _raise_if_total_overflow(byte_budget, rx_buf, max_total_bytes)
 
         if time.monotonic() > deadline:
             raise AcpError("ACP read timed out", code="E_ACP_TIMEOUT")
@@ -388,6 +406,9 @@ def _read_line(
         # read chunk; do not treat their combined size as one-line overflow.
         if b"\n" not in rx_buf and len(rx_buf) > max_bytes:
             raise AcpError("ACP line overflow", code="E_ACP_OVERFLOW")
+        # Extract complete frames first; leftover-only total ceiling.
+        if b"\n" not in rx_buf:
+            _raise_if_total_overflow(byte_budget, rx_buf, max_total_bytes)
 
 
 def _parse_rpc(line: bytes) -> dict[str, Any]:
@@ -666,6 +687,8 @@ class AcpStdioSession:
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 raise AcpError("ACP cancelled", code="E_ACP_CANCELLED")
+            if _received_bytes(self._byte_budget, self._rx_buf) > self.max_total_bytes:
+                raise AcpError("ACP byte overflow", code="E_ACP_OVERFLOW")
             now = time.monotonic()
             if now > deadline:
                 if allow_timeout:
@@ -678,13 +701,14 @@ class AcpStdioSession:
                     deadline=deadline,
                     byte_budget=self._byte_budget,
                     rx_buf=self._rx_buf,
+                    max_total_bytes=self.max_total_bytes,
                 )
             except AcpError as exc:
                 if allow_timeout and exc.code == "E_ACP_TIMEOUT":
                     # Keep any partial frame in _rx_buf for the next poll.
                     return None
                 raise
-            if self._byte_budget[0] > self.max_total_bytes:
+            if _received_bytes(self._byte_budget, self._rx_buf) > self.max_total_bytes:
                 raise AcpError("ACP byte overflow", code="E_ACP_OVERFLOW")
             return _parse_rpc(line)
 
