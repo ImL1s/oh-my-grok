@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "writer": "omg-cli",
+  "kind": "ask",
+  "provider": "claude",
+  "ts": "2026-08-12T19:40:13Z",
+  "cwd": "/tmp/workspace",
+  "exit_code": 0,
+  "duration_s": 1.25,
+  "argv": ["claude", "--print", "summarize the diff"],
+  "artifact": "/tmp/workspace/.omg/artifacts/ask-claude.md",
+  "run_id": "run-1",
+  "truncated": false,
+  "bytes_captured": 42,
+  "dry_run": false,
+  "advisor_route": {}
+}

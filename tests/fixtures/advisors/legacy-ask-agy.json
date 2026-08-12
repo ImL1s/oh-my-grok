@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "writer": "omg-cli",
+  "kind": "ask",
+  "provider": "agy",
+  "ts": "2026-08-12T19:40:15Z",
+  "cwd": "/tmp/workspace",
+  "exit_code": 0,
+  "duration_s": 3.0,
+  "argv": ["agy", "ask", "what changed"],
+  "artifact": "/tmp/workspace/.omg/artifacts/ask-agy.md",
+  "run_id": "run-1",
+  "truncated": false,
+  "bytes_captured": 64,
+  "dry_run": false,
+  "advisor_route": {}
+}

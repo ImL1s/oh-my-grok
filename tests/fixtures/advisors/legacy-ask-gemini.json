@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "writer": "omg-cli",
+  "kind": "ask",
+  "provider": "gemini",
+  "ts": "2026-08-12T19:40:17Z",
+  "cwd": "/tmp/workspace",
+  "exit_code": 0,
+  "duration_s": 1.8,
+  "argv": ["gemini", "-p", "list risks"],
+  "artifact": "/tmp/workspace/.omg/artifacts/ask-gemini.md",
+  "run_id": "run-1",
+  "truncated": false,
+  "bytes_captured": 55,
+  "dry_run": false,
+  "advisor_route": {}
+}
