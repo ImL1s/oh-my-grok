@@ -37,6 +37,12 @@ Rules:
 
 - Stock Grok Build is **supported**, not a legacy or degraded mode.
 - Absence of Medley must **not** disable ordinary OMG operation.
+  Hermetic evidence (Medley absent from env/config/PYTHONPATH; no `medley`
+  package/import; fake/temp host/home; no credentials or live network) lives
+  in [`tests/test_stock_host_medley_absent.py`](../../tests/test_stock_host_medley_absent.py).
+  It exercises setup / package projection, current `omg doctor`, ordinary
+  agent/profile discovery, and an ordinary workflow parser/inventory surface.
+  It does **not** implement routing.
 - Installing OMG does **not** install Medley; installing Medley is **not**
   required for standard OMG agents/workflows.
 - External Team CLI executors (codex, agy, cursor, gemini, …) are **separate**
@@ -584,7 +590,11 @@ CI should eventually prove (and #133 acceptance requires):
 - maintained indexes and locales **point at** this page rather than forking the
   matrix into hand-maintained duplicates;
 - no secret/header/query/account sentinel in examples;
-- **no** statement that Medley is required for baseline OMG operation.
+- **no** statement that Medley is required for baseline OMG operation;
+- hermetic Medley-absent stock-host smoke:
+  [`tests/test_stock_host_medley_absent.py`](../../tests/test_stock_host_medley_absent.py)
+  (setup / package projection, current `omg doctor`, ordinary agent/profile
+  discovery, ordinary workflow parser/inventory; not a routing implementation).
 
 Prefer generated snippets or managed markers for machine-owned tables once the
 capability registry exists. Until then, this English page is the single

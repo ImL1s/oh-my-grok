@@ -1,0 +1,204 @@
+"""Hermetic evidence for docs/architecture/agent-model-routing.md Decision.
+
+Absence of Medley must not disable ordinary OMG operation. This file is
+stock-host smoke (setup / package projection, current ``omg doctor``,
+ordinary agent/profile discovery, ordinary workflow parser/inventory). It
+is not a routing implementation and does not exercise #131 / #134 / #138.
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+
+from omg_cli import doctor
+from omg_cli.setup_cmd import compute_package_identity, run_setup
+from omg_cli.team.roles import CANONICAL_ROLES
+from omg_cli.workflows.schema import compile_workflow
+
+ROOT = Path(__file__).resolve().parents[1]
+GEN_SCRIPT = ROOT / "scripts" / "generate_capabilities_lock.py"
+HOST_FIXTURE = ROOT / "tests" / "fixtures" / "host" / "0.2.121.json"
+WORKFLOW_FIXTURE = (
+    ROOT / "tests" / "fixtures" / "workflow" / "production-safety-review-v1.json"
+)
+
+_REQUIRE_MEDLEY_CLAIMS = (
+    "requires medley",
+    "require medley",
+    "medley required",
+    "medley is required",
+    "must install medley",
+    "need medley",
+    "routing-availability",
+    "routing availability",
+)
+
+
+def _this_file_does_not_import_medley() -> None:
+    src = Path(__file__).read_text(encoding="utf-8")
+    for line in src.splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if stripped.startswith(("import ", "from ")):
+            assert not stripped.startswith("import medley")
+            assert not stripped.startswith("from medley")
+
+
+def _isolate_stock_host(monkeypatch, tmp_path: Path) -> tuple[Path, Path]:
+    """Fake/temp HOME + GROK_HOME; strip Medley env/path; install a local grok."""
+    home = tmp_path / "home"
+    grok_home = tmp_path / "grok"
+    bin_dir = tmp_path / "bin"
+    home.mkdir()
+    grok_home.mkdir()
+    bin_dir.mkdir()
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+
+    for key in [k for k in os.environ if k.upper().startswith("MEDLEY")]:
+        monkeypatch.delenv(key, raising=False)
+
+    kept = [
+        part
+        for part in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+        if part and "medley" not in part.lower()
+    ]
+    if kept:
+        monkeypatch.setenv("PYTHONPATH", os.pathsep.join(kept))
+    else:
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+
+    monkeypatch.setattr(
+        sys,
+        "path",
+        [p for p in sys.path if "medley" not in str(p).lower()],
+    )
+    for key in [k for k in sys.modules if k == "medley" or k.startswith("medley.")]:
+        monkeypatch.delitem(sys.modules, key)
+
+    monkeypatch.setenv(
+        "PATH",
+        str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
+    )
+    _install_fake_grok(bin_dir)
+    return home, grok_home
+
+
+def _install_fake_grok(bin_dir: Path) -> Path:
+    """Tiny local grok: --version / version → 0.2.121; otherwise exit 0. No network."""
+    path = bin_dir / "grok"
+    path.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "args = sys.argv[1:]\n"
+        "if '--version' in args or (args and args[0] == 'version'):\n"
+        "    if '--json' in args:\n"
+        "        print('{\"currentVersion\":\"0.2.121\"}')\n"
+        "    else:\n"
+        "        print('0.2.121')\n"
+        "raise SystemExit(0)\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return path
+
+
+def _assert_medley_absent(home: Path) -> None:
+    _this_file_does_not_import_medley()
+    assert importlib.util.find_spec("medley") is None
+    leaked = [k for k in sys.modules if k == "medley" or k.startswith("medley.")]
+    assert not leaked, f"medley leaked into sys.modules: {leaked}"
+    assert not (home / ".medley").exists()
+    assert not (home / "medley").exists()
+    if home.is_dir():
+        for child in home.iterdir():
+            assert "medley" not in child.name.lower(), child
+    assert not any(k.upper().startswith("MEDLEY") for k in os.environ)
+
+
+def _fake_host_report():
+    from omg_cli.host_probe import host_report_for_doctor, probe_host_from_fixture
+
+    report = probe_host_from_fixture(HOST_FIXTURE)
+    return report, host_report_for_doctor(report)
+
+
+def _load_generator():
+    spec = importlib.util.spec_from_file_location(
+        "generate_capabilities_lock_stock_host_test", GEN_SCRIPT
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_ordinary_omg_surfaces_work_with_medley_absent(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    home, _grok_home = _isolate_stock_host(monkeypatch, tmp_path)
+    _assert_medley_absent(home)
+
+    # 1. Package projection / setup
+    identity = compute_package_identity(ROOT)
+    assert identity.get("digest")
+    assert identity.get("version")
+    inventory_paths = {row["path"] for row in identity["inventory"]}
+    assert "bin/omg" in inventory_paths
+
+    project = tmp_path / "project"
+    project.mkdir()
+    assert run_setup(project, install_rules=True, install_hook=True) == 0
+    assert (project / ".omg").is_dir()
+    capsys.readouterr()
+
+    # 2. Current doctor (fixture host probe; no live grok inspect / network)
+    monkeypatch.setattr(doctor, "_canonical_host_probe", _fake_host_report)
+    rc = doctor.run_doctor(strict=False, project_root=project, json_output=True)
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert rc == 0
+    assert payload["command"] == "doctor"
+    host = payload.get("host") or {}
+    assert host.get("binary") == "grok" or "binary" in host
+    blob = out.lower()
+    for banned in _REQUIRE_MEDLEY_CLAIMS:
+        assert banned not in blob, banned
+
+    hard = {row["name"]: row for row in payload.get("checks") or []}
+    for name in (
+        "plugin.json",
+        "skills omg-*",
+        "agents",
+        "deny module",
+        "hooks scripts",
+        "PreToolUse hook",
+        "global PreToolUse soft-gate",
+    ):
+        assert name in hard, name
+        assert hard[name]["ok"] is True, hard[name]
+
+    assert doctor.check_plugin_json()[1] is True
+    assert doctor.check_agents_present()[1] is True
+    assert doctor.check_skills_omg_prefix()[1] is True
+    assert doctor.check_deny_importable()[1] is True
+
+    # 3. Ordinary agent / profile discovery (taxonomy only — no routing)
+    gen = _load_generator()
+    surface = gen.discover_session_surface(ROOT)
+    agent_names = {item["name"] for item in surface["agents"]}
+    skill_names = {item["name"] for item in surface["skills"]}
+    assert "omg-executor" in agent_names or "omg-verifier" in agent_names
+    assert "omg-using" in skill_names or "omg-ralph" in skill_names
+    assert "executor" in CANONICAL_ROLES
+    assert "verifier" in CANONICAL_ROLES
+
+    # 4. Ordinary workflow parser / inventory (no network)
+    compiled = compile_workflow(WORKFLOW_FIXTURE)
+    assert compiled.get("stages")
+    assert compiled.get("name") or compiled.get("contract") or compiled.get("definition")
+
+    _assert_medley_absent(home)

@@ -123,6 +123,7 @@ ARCH_REQUIRED_SNIPPETS: tuple[str, ...] = (
     "no-color",
     "omg doctor",
     "route kind",
+    "test_stock_host_medley_absent",
 )
 
 # Affirmative "Medley required" phrases — only allowed inside explicit negations.
@@ -343,6 +344,15 @@ def test_architecture_page_has_required_contract_snippets() -> None:
     body = ARCH.read_text(encoding="utf-8")
     missing = [s for s in ARCH_REQUIRED_SNIPPETS if s not in body]
     assert not missing, f"architecture page missing: {missing}"
+
+
+def test_stock_host_medley_absent_smoke_is_documented_and_present() -> None:
+    body = ARCH.read_text(encoding="utf-8")
+    assert "test_stock_host_medley_absent.py" in body
+    assert (ROOT / "tests" / "test_stock_host_medley_absent.py").is_file()
+    for path in (ARCH_ZH, ARCH_ZH_TW):
+        text = path.read_text(encoding="utf-8")
+        assert "test_stock_host_medley_absent.py" in text, path.name
 
 
 def test_architecture_does_not_claim_medley_required() -> None:

@@ -25,6 +25,7 @@
 - 原版 Grok Build 是必备 **first-class baseline**。
 - Medley 是 **optional**／可选兼容主机，**不是** hard dependency。
 - Medley **absent**／没有 Medley 时，agents / skills / workflows / evidence / acceptance 仍可用。
+- Medley **absent** 的 hermetic 证据见英文页与 [`tests/test_stock_host_medley_absent.py`](../../tests/test_stock_host_medley_absent.py)。本投影不复制测试。
 - 安装 OMG **不会**安装 Medley；安装 Medley **不是**标准 OMG 的前提。
 - 增强 native 路由与 Medley 端 negotiation 为**计划中（#131）**，**尚未出货**。
 - 现行 `omg doctor` 只回报现行 host/session capabilities，**不决定** Medley 路由可用性。
