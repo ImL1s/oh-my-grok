@@ -365,15 +365,18 @@ def cmd_team(args: argparse.Namespace) -> int:
 
     try:
         # Authoritative nested-launch gate before root discovery / side effects
-        # for supervisor lifecycle verbs. Identity-bound ``api`` is excluded so
-        # worker ops reach the runtime operation matrix.
+        # for lifecycle verbs that create or control a team. Identity-bound
+        # ``api`` is excluded so worker ops reach the runtime operation matrix.
+        # ``supervisor`` is NOT here: legal panes intentionally set
+        # OMG_TEAM_WORKER=1 and run ``omg team supervisor --descriptor …``;
+        # admission is identity/descriptor/owner-token bound (see
+        # admit_pane_supervisor) rather than blanket nested-launch refuse.
         if action in (
             "launch",
             "start",
             "run",
             "scale",
             "resume",
-            "supervisor",
             "stop",
             "collect",
         ):
@@ -977,24 +980,24 @@ def cmd_team(args: argparse.Namespace) -> int:
             from omg_cli.team.bootstrap import (
                 BootstrapError,
                 append_bootstrap_log,
-                bootstrap_env_identity,
                 classify_bootstrap_exception,
                 pane_failure_line,
             )
-            from omg_cli.team.supervisor import SupervisorError, run_supervisor
+            from omg_cli.team.supervisor import (
+                SupervisorError,
+                admit_pane_supervisor,
+                run_supervisor,
+            )
 
             desc = getattr(args, "supervisor_descriptor", None)
-            if not desc:
-                # Missing descriptor is a CLI usage error (not a pane bootstrap).
-                print(
-                    "omg team supervisor: --descriptor PATH required",
-                    file=sys.stderr,
-                )
-                return 2
             worker_id: str | None = None
             run_id: str | None = None
+            admitted = False
             try:
-                run_id, team_id, worker_id, leader = bootstrap_env_identity()
+                # Identity + descriptor + optional team binding BEFORE any
+                # bootstrap log / provider / startup-phase side effects.
+                run_id, team_id, worker_id, leader = admit_pane_supervisor(desc)
+                admitted = True
                 append_bootstrap_log(
                     leader,
                     run_id=run_id,
@@ -1022,7 +1025,10 @@ def cmd_team(args: argparse.Namespace) -> int:
                 )
             except (BootstrapError, SupervisorError) as exc:
                 code = classify_bootstrap_exception(exc)
-                if run_id and worker_id:
+                # Admission failures must stay zero-side-effect: do not create
+                # bootstrap.log for missing/forged/stale authority. Only write
+                # BOOTSTRAP_FAIL after successful admission (post-admit path).
+                if admitted and run_id and worker_id:
                     try:
                         leader_root = (
                             os.environ.get("OMG_TEAM_LEADER_ROOT")
@@ -1044,10 +1050,25 @@ def cmd_team(args: argparse.Namespace) -> int:
                             )
                     except Exception:  # noqa: BLE001 — never poison pane
                         pass
-                print(
-                    pane_failure_line(worker_id=worker_id, run_id=run_id),
-                    file=sys.stderr,
-                )
+                # Display-only fallback from process env (never authorizes).
+                display_worker = worker_id or (
+                    os.environ.get("OMG_TEAM_WORKER_ID") or ""
+                ).strip() or None
+                display_run = run_id or (
+                    os.environ.get("OMG_TEAM_RUN_ID") or ""
+                ).strip() or None
+                # Missing descriptor is a CLI usage line; other admission
+                # failures stay one pane-safe line (no traceback / paths).
+                msg = str(exc)
+                if "descriptor PATH required" in msg:
+                    print(msg, file=sys.stderr)
+                else:
+                    print(
+                        pane_failure_line(
+                            worker_id=display_worker, run_id=display_run
+                        ),
+                        file=sys.stderr,
+                    )
                 return int(getattr(exc, "exit_code", 1) or 1)
         if action == "hyperplan":
             from omg_cli.cli_envelope import wants_json

@@ -231,13 +231,18 @@ def refuse_nested_team_launch(
     Stable code: ``E_TEAM_NESTED_LAUNCH``. Must run before run creation,
     worktree prep, tmux mutation, descriptor publication, or state writes.
     Does not authorize from command-text env assignments.
+
+    Does **not** gate legal pane ``omg team supervisor``: those processes are
+    intentionally worker-marked and admitted via identity-bound descriptor
+    validation (see ``admit_pane_supervisor``). Use this only for lifecycle
+    verbs that create or control a nested team (launch/start/run/scale/…).
     """
     if in_spawned_worker_context(env):
         raise TeamGateError(
             f"omg team {action} refused: already inside a spawned-worker context "
             f"(depth-1; E_TEAM_NESTED_LAUNCH; one of "
             f"{', '.join(WORKER_ENV_MARKERS)} is set). "
-            "Workers must not launch or supervise a team.",
+            "Workers must not launch or control a nested team.",
             code="E_TEAM_NESTED_LAUNCH",
         )
 

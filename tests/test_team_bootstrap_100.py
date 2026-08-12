@@ -300,6 +300,253 @@ def test_supervisor_missing_leader_one_line(
     assert len(lines) == 1
 
 
+def _minimal_team_meta(
+    leader: Path,
+    *,
+    run_id: str,
+    team_id: str = "team",
+    owner_token: str = "owner-token-test",
+) -> Path:
+    """Write a lightweight team.json for supervisor authority tests."""
+    from omg_cli.team.plane import team_meta_path
+
+    path = team_meta_path(leader, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "team_id": team_id,
+                "owner_token": owner_token,
+                "schema_version": 1,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _assert_no_supervisor_side_effects(
+    leader: Path, *, run_id: str, team_id: str = "team", worker_id: str = "w1"
+) -> None:
+    boot = worker_bootstrap_path(
+        leader, run_id=run_id, team_id=team_id, worker_id=worker_id
+    )
+    assert not boot.is_file(), "admission failure must not write bootstrap.log"
+    from omg_cli.team.startup import worker_startup_path
+
+    startup = worker_startup_path(
+        leader, run_id=run_id, team_id=team_id, worker_id=worker_id
+    )
+    assert not startup.is_file(), "admission failure must not write startup phase"
+
+
+def test_supervisor_legal_worker_context_not_nested_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """P0: OMG_TEAM_WORKER=1 + full identity must reach supervisor (not E_TEAM_NESTED)."""
+    leader = _leader_root(tmp_path / "leader")
+    worktree = tmp_path / "worktrees" / "w1"
+    worktree.mkdir(parents=True)
+    (worktree / ".omg").mkdir()
+    script = worktree / "provider.py"
+    script.write_text(
+        "import time\nprint('ok', flush=True)\ntime.sleep(30)\n",
+        encoding="utf-8",
+    )
+    desc = write_provider_descriptor(
+        leader / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, str(script)],
+        cwd=worktree,
+    )
+    monkeypatch.chdir(worktree)
+    _bind_supervisor_env(monkeypatch, leader, run_id="run-legal")
+    monkeypatch.setenv("OMG_TEAM_PROVIDER_STRATEGY", "fake-ready")
+    clear_resolved_project_root()
+
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "omg_cli.main",
+            "team",
+            "supervisor",
+            "--descriptor",
+            str(desc),
+            "--ready-timeout",
+            "5",
+        ],
+        cwd=str(worktree),
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                break
+            time.sleep(0.15)
+            from omg_cli.team.startup import read_startup_record
+
+            rec = read_startup_record(
+                leader, run_id="run-legal", team_id="team", worker_id="w1"
+            )
+            if rec and rec.get("phase") in ("provider_ready", "task_dispatched"):
+                break
+        proc.send_signal(signal.SIGTERM)
+        try:
+            out, err = proc.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate(timeout=2)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            out, err = proc.communicate(timeout=2)
+
+    combined = (out or "") + (err or "")
+    assert "E_TEAM_NESTED_LAUNCH" not in combined
+    boot = worker_bootstrap_path(
+        leader, run_id="run-legal", team_id="team", worker_id="w1"
+    )
+    assert boot.is_file()
+    assert "ROOT_VALIDATED" in boot.read_text(encoding="utf-8") or (
+        "BOOTSTRAP_BEGIN" in boot.read_text(encoding="utf-8")
+    )
+
+
+def test_supervisor_missing_identity_zero_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Forged/incomplete supervisor env: refuse before bootstrap/startup writes."""
+    leader = _leader_root(tmp_path / "leader")
+    desc = write_provider_descriptor(
+        tmp_path / "d.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    monkeypatch.chdir(tmp_path)
+    # Worker marker set (as a nested attacker would have) but identity incomplete.
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    monkeypatch.delenv("OMG_TEAM_WORKER_ID", raising=False)
+    monkeypatch.delenv("OMG_TEAM_RUN_ID", raising=False)
+    monkeypatch.setenv("OMG_TEAM_LEADER_ROOT", str(leader))
+    monkeypatch.setenv("OMG_EXPERIMENTAL_TMUX_TEAM", "1")
+    clear_resolved_project_root()
+    rc = main(["team", "supervisor", "--descriptor", str(desc)])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "E_TEAM_NESTED_LAUNCH" not in err  # not the wrong gate
+    assert "failed to initialize" in err
+    assert "Traceback" not in err
+    _assert_no_supervisor_side_effects(
+        leader, run_id="missing", worker_id="missing"
+    )
+
+
+def test_supervisor_forged_leader_root_zero_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Leader root without real .omg control plane fails closed, no side effects."""
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    desc = write_provider_descriptor(
+        tmp_path / "d.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    monkeypatch.chdir(bare)
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    monkeypatch.setenv("OMG_TEAM_WORKER_ID", "w1")
+    monkeypatch.setenv("OMG_TEAM_RUN_ID", "run-forged-root")
+    monkeypatch.setenv("OMG_TEAM_ID", "team")
+    monkeypatch.setenv("OMG_TEAM_LEADER_ROOT", str(bare))
+    monkeypatch.setenv("OMG_EXPERIMENTAL_TMUX_TEAM", "1")
+    clear_resolved_project_root()
+    rc = main(["team", "supervisor", "--descriptor", str(desc)])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "failed to initialize" in err
+    assert "w1" in err
+    assert "Traceback" not in err
+    # No control-plane writes under the forged root.
+    assert not (bare / ".omg").exists() or not any(
+        (bare / ".omg").rglob("bootstrap.log")
+    )
+
+
+def test_supervisor_stale_owner_token_zero_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Published team.json owner_token must match env; mismatch is zero-side-effect."""
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-stale-tok"
+    _minimal_team_meta(
+        leader, run_id=run_id, owner_token="published-token-abc"
+    )
+    desc = write_provider_descriptor(
+        tmp_path / "d.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id)
+    monkeypatch.setenv("OMG_TEAM_OWNER_TOKEN", "stale-or-forged-token")
+    clear_resolved_project_root()
+    rc = main(["team", "supervisor", "--descriptor", str(desc)])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "failed to initialize" in err
+    assert "Traceback" not in err
+    _assert_no_supervisor_side_effects(leader, run_id=run_id)
+
+
+def test_supervisor_missing_descriptor_zero_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Argparse requires --descriptor; ensure no control-plane writes on misuse."""
+    from omg_cli.team.supervisor import admit_pane_supervisor, SupervisorError
+
+    leader = _leader_root(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id="run-nodesc")
+    clear_resolved_project_root()
+    with pytest.raises(SupervisorError, match="descriptor"):
+        admit_pane_supervisor(None)
+    _assert_no_supervisor_side_effects(leader, run_id="run-nodesc")
+
+
+def test_worker_launch_still_nested_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Nested launch remains refused; only supervisor is identity-admitted."""
+    leader = _leader_root(tmp_path)
+    monkeypatch.chdir(leader)
+    _bind_supervisor_env(monkeypatch, leader, run_id="run-nolaunch")
+    clear_resolved_project_root()
+    rc = main(["team", "launch", "--workers", "1", "--goal", "x", "--plan-only"])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "E_TEAM_NESTED_LAUNCH" in err
+
+
 def test_generic_cli_still_warns_on_nested_omg(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

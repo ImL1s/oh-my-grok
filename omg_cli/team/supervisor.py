@@ -74,6 +74,118 @@ def _resolve_post_stable_observe_s(env: Mapping[str, str]) -> float:
 class SupervisorError(RuntimeError):
     """Supervisor identity / descriptor / spawn failure."""
 
+    def __init__(self, message: str, *, exit_code: int = 1) -> None:
+        super().__init__(message)
+        self.exit_code = int(exit_code)
+
+
+def admit_pane_supervisor(
+    descriptor_path: Path | str | None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, str, str, Path]:
+    """Validate a leader-authorized pane supervisor before any side effects.
+
+    Legal Team panes intentionally run with ``OMG_TEAM_WORKER=1`` and execute
+    ``omg team supervisor --descriptor …``. That worker marker must **not** be
+    treated as nested-team launch refusal. This admission path instead requires:
+
+    1. A present, schema-valid provider descriptor (read-only load).
+    2. Run / team / worker identity plus a validated canonical leader root
+       (``bootstrap_env_identity`` / ``validate_canonical_leader_root``).
+    3. When authoritative ``team.json`` already exists for the run, binding of
+       ``team_id`` and (when published) ``owner_token`` — rejecting stale or
+       forged pane authority with no provider spawn, tmux mutation, or state
+       writes.
+
+    Raises:
+        SupervisorError / BootstrapError: fail-closed before side effects.
+    """
+    from omg_cli.team.bootstrap import (
+        TEAM_OWNER_TOKEN_ENV,
+        bootstrap_env_identity,
+    )
+
+    if not descriptor_path:
+        raise SupervisorError(
+            "omg team supervisor: --descriptor PATH required",
+            exit_code=2,
+        )
+    # Identity + leader root first (no writes).
+    run_id, team_id, worker_id, leader = bootstrap_env_identity(env)
+    # Descriptor schema only (read); never spawns the provider.
+    load_provider_descriptor(descriptor_path)
+    source = env if env is not None else os.environ
+    _validate_supervisor_team_binding(
+        leader,
+        run_id=run_id,
+        team_id=team_id,
+        env=source,
+        owner_token_env=TEAM_OWNER_TOKEN_ENV,
+    )
+    return run_id, team_id, worker_id, leader
+
+
+def _validate_supervisor_team_binding(
+    leader: Path,
+    *,
+    run_id: str,
+    team_id: str,
+    env: Mapping[str, str],
+    owner_token_env: str,
+) -> None:
+    """When team.json exists, require run/team/owner binding (zero side effects)."""
+    # Lazy import avoids plane↔supervisor import cycles at module load.
+    from omg_cli.team.plane import team_meta_path
+
+    path = team_meta_path(leader, run_id)
+    try:
+        if not path.is_file():
+            # Pre-publication / unit fixtures: identity+descriptor already gate.
+            return
+    except OSError as exc:
+        raise SupervisorError(
+            "supervisor team meta is not usable",
+            exit_code=2,
+        ) from exc
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SupervisorError(
+            "supervisor team meta unreadable",
+            exit_code=2,
+        ) from exc
+    if not isinstance(data, dict):
+        raise SupervisorError(
+            "supervisor team meta must be a JSON object",
+            exit_code=2,
+        )
+    meta_run = str(data.get("run_id") or "").strip()
+    if meta_run and meta_run != run_id:
+        raise SupervisorError(
+            "supervisor run_id does not match team meta "
+            "(stale or forged pane authority)",
+            exit_code=2,
+        )
+    meta_team = str(data.get("team_id") or "team").strip() or "team"
+    if meta_team != team_id:
+        raise SupervisorError(
+            "supervisor team_id does not match team meta "
+            "(stale or forged pane authority)",
+            exit_code=2,
+        )
+    meta_token = str(data.get("owner_token") or "").strip()
+    if not meta_token:
+        return
+    env_token = (env.get(owner_token_env) or "").strip()
+    if not env_token or env_token != meta_token:
+        raise SupervisorError(
+            "supervisor owner_token mismatch or missing "
+            "(stale or forged pane authority)",
+            exit_code=2,
+        )
+
 
 def write_provider_descriptor(
     path: Path | str,
@@ -1306,6 +1418,7 @@ __all__ = [
     "DESCRIPTOR_SCHEMA_VERSION",
     "DESCRIPTOR_KIND",
     "SupervisorError",
+    "admit_pane_supervisor",
     "write_provider_descriptor",
     "load_provider_descriptor",
     "expected_identity_basenames",
