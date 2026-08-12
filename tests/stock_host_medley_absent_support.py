@@ -15,7 +15,8 @@ import socket
 import stat
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+import tempfile
+from collections.abc import Callable, Mapping, Sequence
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from types import ModuleType
@@ -338,8 +339,133 @@ def _allowed_subprocess_argv(
     return False
 
 
+def _reviewed_smoke_cwd(cwd: object) -> bool:
+    """Allow inherit, ``tempfile.gettempdir()``, or ``/tmp`` when that dir exists."""
+    if cwd is None:
+        return True
+    try:
+        actual = Path(cwd).resolve()  # type: ignore[arg-type]
+        allowed = [Path(tempfile.gettempdir()).resolve()]
+        tmp = Path("/tmp")
+        if tmp.is_dir():
+            allowed.append(tmp.resolve())
+    except (OSError, TypeError, ValueError):
+        return False
+    return actual in allowed
+
+
+def _reviewed_smoke_env(env: object) -> bool:
+    """Allow inherit or the exact PATH-only reviewed smoke mapping."""
+    if env is None:
+        return True
+    if not isinstance(env, Mapping):
+        return False
+    if set(env.keys()) != {"PATH"}:
+        return False
+    return env["PATH"] == os.environ.get("PATH", "/usr/bin:/bin")
+
+
+def _safe_popen_kwargs(kwargs: Mapping[str, object]) -> bool:
+    """Reject launch overrides that can retarget an argv-allowed binary."""
+    if kwargs.get("executable") is not None:
+        return False
+    if kwargs.get("shell"):
+        return False
+    if kwargs.get("preexec_fn") is not None:
+        return False
+    if kwargs.get("pass_fds"):
+        return False
+    if kwargs.get("start_new_session"):
+        return False
+    if kwargs.get("process_group") is not None:
+        return False
+    for key in ("user", "group", "extra_groups", "umask", "startupinfo"):
+        if kwargs.get(key) is not None:
+            return False
+    if kwargs.get("creationflags"):
+        return False
+    if kwargs.get("close_fds") is False:
+        return False
+    if not _reviewed_smoke_cwd(kwargs.get("cwd")):
+        return False
+    if not _reviewed_smoke_env(kwargs.get("env")):
+        return False
+    return True
+
+
+def _effective_executable(
+    args: Sequence[object] | str | None, kwargs: Mapping[str, object]
+) -> object:
+    """Binary Popen would exec after ``shell`` / ``executable`` overrides."""
+    if kwargs.get("shell"):
+        return "/bin/sh"
+    executable = kwargs.get("executable")
+    if executable is not None:
+        return executable
+    if args is None or isinstance(args, str) or not args:
+        return None
+    return args[0]
+
+
+def _allowed_subprocess_launch(
+    args: Sequence[object] | str | None,
+    kwargs: Mapping[str, object],
+    bin_dir: Path,
+    grok_home: Path,
+) -> bool:
+    """Authorize argv, launch kwargs, and the normalized effective executable."""
+    if not _allowed_subprocess_argv(args, bin_dir, grok_home):
+        return False
+    if not _safe_popen_kwargs(kwargs):
+        return False
+    # Safe kwargs imply executable is None and shell is false. Deny anyway
+    # if an override still produced a different effective executable.
+    if kwargs.get("shell") or kwargs.get("executable") is not None:
+        return False
+    if args is None or isinstance(args, str) or not args:
+        return False
+    argv0 = str(args[0])
+    if str(_effective_executable(args, kwargs)) != argv0:
+        return False
+    return (
+        _is_fake_grok_argv0(argv0, bin_dir)
+        or _is_reviewed_python_argv(args, argv0, grok_home)
+        or _is_reviewed_hook_shell_argv(args, argv0, grok_home)
+    )
+
+
 def _setattr_live(module: object, name: str, value: object) -> None:
     setattr(module, name, value)
+
+
+_POPEN_POSITIONAL = (
+    "bufsize",
+    "executable",
+    "stdin",
+    "stdout",
+    "stderr",
+    "preexec_fn",
+    "close_fds",
+    "shell",
+    "cwd",
+    "env",
+    "universal_newlines",
+    "startupinfo",
+    "creationflags",
+    "restore_signals",
+    "start_new_session",
+    "pass_fds",
+)
+
+
+def _merge_popen_launch_kwargs(rest: Sequence[object], kwargs: Mapping[str, object]) -> dict[str, object]:
+    """Fold positional Popen args into the kwargs the launch guard sees."""
+    merged = dict(kwargs)
+    for name, value in zip(_POPEN_POSITIONAL, rest, strict=False):
+        if name in merged:
+            raise PermissionError(f"{_SUBPROCESS_DENIED}: duplicate Popen argument {name}")
+        merged[name] = value
+    return merged
 
 
 def _install_subprocess_guard(
@@ -352,7 +478,8 @@ def _install_subprocess_guard(
     real_popen = subprocess.Popen
 
     def guarded_popen(args, *rest, **kwargs):  # noqa: ANN001
-        if not _allowed_subprocess_argv(args, bin_dir, grok_home):
+        launch_kwargs = _merge_popen_launch_kwargs(rest, kwargs)
+        if not _allowed_subprocess_launch(args, launch_kwargs, bin_dir, grok_home):
             raise PermissionError(f"{_SUBPROCESS_DENIED}: {args!r}")
         return real_popen(args, *rest, **kwargs)
 

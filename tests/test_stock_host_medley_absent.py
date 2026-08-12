@@ -29,6 +29,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -464,6 +465,59 @@ def test_unexpected_subprocess_and_exec_are_denied(monkeypatch, tmp_path) -> Non
         check=False,
     )
     assert allowed.returncode == 0
+
+
+def test_guarded_subprocess_rejects_executable_and_launch_overrides(
+    monkeypatch, tmp_path
+) -> None:
+    iso = _isolate_stock_host(monkeypatch, tmp_path)
+    denied = "subprocess denied"
+
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(["grok", "-c", "printf GUARD_BYPASS"], executable="/bin/sh")
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.Popen(["grok", "-c", "printf GUARD_BYPASS"], -1, "/bin/sh")
+
+    grok_version = ["grok", "version"]
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(grok_version, executable="/bin/sh")
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(grok_version, executable="")
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(grok_version, executable="grok")
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(grok_version, shell=True)
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(grok_version, preexec_fn=lambda: None)
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(grok_version, pass_fds=(1,))
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(grok_version, start_new_session=True)
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(grok_version, process_group=0)
+
+    unreviewed = tmp_path / "unreviewed-cwd"
+    unreviewed.mkdir()
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(grok_version, cwd=str(unreviewed))
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(
+            grok_version,
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "GUARD": "1"},
+        )
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(grok_version, env={"PATH": "/tmp/not-the-isolated-path"})
+
+    reviewed = subprocess.run(
+        [str(iso.grok), "version"],
+        cwd=tempfile.gettempdir(),
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert reviewed.returncode == 0
+    assert "0.2.121" in (reviewed.stdout or "")
 
 
 def test_reviewed_hook_shell_argv_accepts_exact_launcher_tuple(
