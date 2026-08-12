@@ -216,13 +216,53 @@ Rules:
 - a Medley API **provider** is **not** an OMG external executor;
 - an advisory `external_cli` (`omg ask`) is **not** an OMG external executor;
 - an external CLI executable is **not** a Medley credential/access route;
-- legacy external `provider` naming remains readable through a documented
-  migration path toward `executor` (schema-versioned; implementation #131/Team);
+- legacy `provider` naming is readable via the shipped Presentation migration
+  rules below (not a #131 runtime);
 - native catalog identifiers are **not** passed into external argv builders
   without an explicit adapter mapping.
 
 Integration isolation (worktrees, seal, integrate) is **not** an execution
 sandbox — see [team integration isolation](../security-model.md#team-integration-isolation).
+
+### Legacy provider fields and route schema v1
+
+This is **shipped** Team Presentation State V1 behavior (`omg_cli.team.presentation`),
+not a future #131 registry.
+
+- Route objects use **schema v1**. The exported constant is `ROUTE_SCHEMA = 1`.
+  The discriminator is `route.kind`.
+- Shipped `route.kind` values are only the exported constants:
+  `external_executor` (`ROUTE_KIND_EXTERNAL`) | `unknown` (`ROUTE_KIND_UNKNOWN`)
+  | `native_host_receipt` (`ROUTE_KIND_NATIVE_RECEIPT`).
+- New start/scale **writers** stamp an explicit route (`stamp_route_on_task` /
+  `build_external_route`) when they can. They do **not** infer `route.kind`
+  from `provider` text.
+- For compatibility, existing descriptor fields `executor` and `provider` may
+  be **dual-carried** on the same route object. `provider` remains readable;
+  it is not a kind.
+- **Readers** that see a persisted task **without** a `route` object project
+  `unknown_route()`: `kind` is `unknown`, and `executor` / `provider` / `role`
+  / `posture` are `None`. Legacy unstamped rows stay unknown.
+- Readers **never infer** `native` vs `external_executor` from `provider`
+  text. `validate_route_descriptor` requires an explicit `kind` among the
+  three shipped values and `route.schema == 1`.
+- Readers **preserve** `unknown`. They do not upgrade it to external or native.
+- Removing or replacing this schema requires a **separate versioned migration**.
+  Until that migration exists, `route.schema` must remain `1`;
+  any other schema is refused.
+
+Shipped `unknown_route()` shape (fictional ids only; Python `None` as JSON `null`):
+
+```json
+{ "schema": 1, "kind": "unknown", "executor": null, "provider": null, "role": null, "posture": null }
+```
+
+Stamped `build_external_route` dual-carry shape (same keys as the later
+Presentation example under [CLI / UX surfaces](#cli--ux-surfaces-honesty)):
+
+```json
+{ "schema": 1, "kind": "external_executor", "executor": "fixture", "provider": "fake", "role": "executor", "posture": "read-write" }
+```
 
 ## Advisory plane vs task execution
 
@@ -591,6 +631,10 @@ CI should eventually prove (and #133 acceptance requires):
   `native_host_receipt`; shipped Presentation `route.kind` is only
   `external_executor` | `unknown` | `native_host_receipt`; default locked
   `omg team status --json` has no route field;
+- Presentation route schema / kind / unknown / dual-carry wording stays
+  bound to `omg_cli.team.presentation` exports (`ROUTE_SCHEMA`,
+  `ROUTE_KIND_EXTERNAL`, `ROUTE_KIND_UNKNOWN`, `ROUTE_KIND_NATIVE_RECEIPT`,
+  `unknown_route`, `build_external_route`);
 - policy `external_executor` must stay distinct from advisory `omg ask`;
   the three dimension names (`runtime_kind`, `purpose`, `lifecycle`) must
   remain present;

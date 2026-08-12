@@ -14,6 +14,7 @@ anchors. Do not copy their tables, ownership lists, or capability catalogs here:
 - [Normative support matrix](../architecture/agent-model-routing.md#normative-support-matrix)
 - [Ownership boundary](../architecture/agent-model-routing.md#ownership-boundary)
 - [Native vs external executor](../architecture/agent-model-routing.md#native-model-route-vs-external-executor)
+- [Legacy provider fields and route schema v1](../architecture/agent-model-routing.md#legacy-provider-fields-and-route-schema-v1)
 - [Advisory plane vs task execution](../architecture/agent-model-routing.md#advisory-plane-vs-task-execution)
 - [Selection / retry / fallback / replacement](../architecture/agent-model-routing.md#initial-selection-retry-route-fallback-worker-replacement)
 - [CLI / UX honesty](../architecture/agent-model-routing.md#cli--ux-surfaces-honesty)

@@ -10,6 +10,7 @@
 - [英文支援矩陣（唯一規範表）](./agent-model-routing.md#normative-support-matrix) — 八行表格僅英文頁維護，本投影不複製
 - [Ownership boundary](./agent-model-routing.md#ownership-boundary)
 - [Native model route vs external executor](./agent-model-routing.md#native-model-route-vs-external-executor)
+- [Legacy provider fields and route schema v1](./agent-model-routing.md#legacy-provider-fields-and-route-schema-v1)
 - [Advisory plane vs task execution](./agent-model-routing.md#advisory-plane-vs-task-execution)
 - [CLI / UX surfaces honesty](./agent-model-routing.md#cli--ux-surfaces-honesty)
 - [Presentation ownership and accessibility](./agent-model-routing.md#presentation-ownership-and-accessibility)
@@ -67,6 +68,15 @@ Stock Grok Build 是 **supported**，不是 legacy 或降級模式。本文件�
 完整對照與 ownership 清單以英文為準：[Native model route vs external executor](./agent-model-routing.md#native-model-route-vs-external-executor)、[Ownership boundary](./agent-model-routing.md#ownership-boundary)。
 
 HTTP `429` 不得單獨授權換 provider 重送。細節見英文頁 [Initial selection, retry, route fallback, worker replacement](./agent-model-routing.md#initial-selection-retry-route-fallback-worker-replacement)。
+
+## Legacy provider 與 route schema v1
+
+已出貨 Presentation（不是 #131）：`route.schema` = 1；`route.kind` 才是判別欄。
+`executor` 與 `provider` 可 **dual-carried**。沒有 stamp 的舊列投影 `unknown`。
+**永不**從 provider 文字推斷 native／external。Reader 保留 unknown。
+schema 變更需要另一次 versioned migration。
+
+英文規範：[Legacy provider fields and route schema v1](./agent-model-routing.md#legacy-provider-fields-and-route-schema-v1)
 
 ## 顧問平面 vs 任務執行
 

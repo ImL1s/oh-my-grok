@@ -23,6 +23,9 @@ from omg_cli.team.presentation import (
     ROUTE_KIND_EXTERNAL,
     ROUTE_KIND_NATIVE_RECEIPT,
     ROUTE_KIND_UNKNOWN,
+    ROUTE_SCHEMA,
+    build_external_route,
+    unknown_route,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -132,6 +135,10 @@ ARCH_REQUIRED_SNIPPETS: tuple[str, ...] = (
     "omg doctor",
     "route kind",
     "test_stock_host_medley_absent",
+    "ROUTE_SCHEMA",
+    "dual-carried",
+    "never infer",
+    "versioned migration",
 )
 
 # Affirmative "Medley required" phrases — only allowed inside explicit negations.
@@ -735,6 +742,33 @@ def test_route_kind_constants_match_architecture() -> None:
         _NATIVE_RECEIPT_NEGATION.search(_window(body, m.start(), m.end(), _KIND_WINDOW))
         for m in hits
     ), "architecture must negate policy native == native_host_receipt"
+
+
+def test_architecture_binds_legacy_provider_migration_to_presentation_exports() -> None:
+    """Shipped Presentation route schema/kind/unknown/dual-carry — not #131."""
+    assert ROUTE_SCHEMA == 1
+    assert ROUTE_KIND_UNKNOWN == "unknown"
+    unknown = unknown_route()
+    assert unknown["schema"] == ROUTE_SCHEMA
+    assert unknown["kind"] == ROUTE_KIND_UNKNOWN
+    assert unknown["executor"] is None
+    assert unknown["provider"] is None
+    dual = build_external_route(
+        executor="fixture",
+        provider="fake",
+        role="executor",
+        posture="read-write",
+    )
+    assert dual["schema"] == ROUTE_SCHEMA
+    assert dual["kind"] == ROUTE_KIND_EXTERNAL
+    assert dual["executor"] == "fixture"
+    assert dual["provider"] == "fake"
+    body = ARCH.read_text(encoding="utf-8")
+    for snippet in ("ROUTE_SCHEMA", "dual-carried", "never infer"):
+        assert snippet in body, f"architecture missing {snippet!r}"
+    assert "unknown_route" in body or "`unknown`" in body
+    assert "versioned migration" in body
+    assert "implementation #131/Team" not in body
 
 
 def test_architecture_mentions_external_cli_executor_only_as_unshipped() -> None:
