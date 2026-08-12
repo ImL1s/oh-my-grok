@@ -47,8 +47,10 @@ def _spawn(scenario: str, cwd: Path, env: dict | None = None):
     return proc, argv
 
 
-def _session(proc, argv, cwd: Path, *, quiet: float = 0.12) -> AcpStdioSession:
-    sid = str(uuid.uuid4())
+def _session(
+    proc, argv, cwd: Path, *, quiet: float = 0.12, session_id: str | None = None
+) -> AcpStdioSession:
+    sid = session_id if session_id is not None else str(uuid.uuid4())
     return AcpStdioSession(
         proc=proc,
         argv=argv,
@@ -60,6 +62,13 @@ def _session(proc, argv, cwd: Path, *, quiet: float = 0.12) -> AcpStdioSession:
         session_id_hash=hash_session_id(sid),
         cwd_hash=hash_cwd(cwd),
         quiet_window_s=quiet,
+    )
+
+
+def _peer_response_frame(*, rpc_id: int, result: dict) -> bytes:
+    # Match fixture _write: default json.dumps (spaces), not host compact separators.
+    return (json.dumps({"jsonrpc": "2.0", "id": rpc_id, "result": result}) + "\n").encode(
+        "utf-8"
     )
 
 
@@ -847,24 +856,40 @@ def test_read_line_completed_buffered_frame_counted_once() -> None:
 def test_handshake_committed_plus_buffered_suffix_writes_no_receipt(
     tmp_path: Path,
 ) -> None:
-    # Suffix stays under max_line_bytes but init+resume+suffix exceeds total.
-    proc, argv = _spawn(
-        "resume_plus_oversize_suffix",
-        tmp_path,
-        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "80"},
+    # Derive max_total from the same initialize/resume response encoding the
+    # fake peer writes so leftover suffix trips the cumulative cap, not a guess.
+    sid = str(uuid.uuid4())
+    suffix_env = "80"
+    suffix_len = int(suffix_env)
+    max_line_bytes = 256
+    init_frame = _peer_response_frame(
+        rpc_id=1,
+        result={"protocolVersion": 1, "agentInfo": {"name": "fake-acp"}},
     )
-    sess = _session(proc, argv, tmp_path, quiet=0.3)
-    sess.max_line_bytes = 256
-    sess.max_total_bytes = 220
-    # Default fixture suffix 400 would be a line overflow, not a total overflow.
-    assert int("80") < sess.max_line_bytes
-    assert 400 > sess.max_line_bytes
+    resume_frame = _peer_response_frame(
+        rpc_id=2,
+        result={"sessionId": sid, "resumed": True},
+    )
+    completed = len(init_frame) + len(resume_frame)
+    max_total = completed + suffix_len - 1
+    assert completed <= max_total
+    assert completed + suffix_len > max_total
+    assert suffix_len < max_line_bytes
+    assert 400 > max_line_bytes
     assert (
-        allowlisted_acp_env({"OMG_ACP_FAKE_SUFFIX_BYTES": "80"})[
+        allowlisted_acp_env({"OMG_ACP_FAKE_SUFFIX_BYTES": suffix_env})[
             "OMG_ACP_FAKE_SUFFIX_BYTES"
         ]
         == "80"
     )
+    proc, argv = _spawn(
+        "resume_plus_oversize_suffix",
+        tmp_path,
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": suffix_env},
+    )
+    sess = _session(proc, argv, tmp_path, quiet=0.3, session_id=sid)
+    sess.max_line_bytes = max_line_bytes
+    sess.max_total_bytes = max_total
     try:
         t0 = time.monotonic()
         with pytest.raises(AcpError) as ei:
@@ -875,6 +900,9 @@ def test_handshake_committed_plus_buffered_suffix_writes_no_receipt(
         assert "line overflow" not in str(ei.value)
         assert sess._receipt is None
         assert elapsed < 2.0
+        assert sess._byte_budget[0] == completed
+        assert bytes(sess._rx_buf) == b"x" * suffix_len
+        assert sess._byte_budget[0] + len(sess._rx_buf) > sess.max_total_bytes
     finally:
         sess.close()
 
@@ -946,6 +974,73 @@ def test_try_read_message_expired_deadline_rejects_line_overflow() -> None:
     finally:
         r_file.close()
         w_file.close()
+
+
+def test_try_read_message_expired_deadline_rejects_either_buffered_limit() -> None:
+    for kind in ("line", "total"):
+        for allow_timeout in (True, False):
+            r_fd, w_fd = os.pipe()
+            r_file = os.fdopen(r_fd, "rb", buffering=0)
+            w_file = os.fdopen(w_fd, "wb", buffering=0)
+
+            class _FakeProc:
+                def __init__(self) -> None:
+                    self.stdout = r_file
+                    self.stdin = None
+                    self.pid = None
+
+                def poll(self) -> None:
+                    return None
+
+            proc = _FakeProc()
+            sid = str(uuid.uuid4())
+            if kind == "line":
+                max_line = 256
+                max_total = 50_000
+                leftover = b"x" * (max_line + 1)
+            else:
+                max_line = 256
+                max_total = 100
+                leftover = b"x" * 80
+            sess = AcpStdioSession(
+                proc=proc,
+                argv=("fake",),
+                session_id=sid,
+                cwd=".",
+                job_id="20260101T000000Z-deadbeef",
+                attempt=1,
+                parent_run_id="run-1",
+                session_id_hash=hash_session_id(sid),
+                cwd_hash=hash_cwd("."),
+                max_line_bytes=max_line,
+                max_total_bytes=max_total,
+            )
+            if kind == "total":
+                sess._byte_budget[0] = 40
+            sess._rx_buf.extend(leftover)
+            if kind == "line":
+                assert sess._byte_budget[0] + len(sess._rx_buf) < sess.max_total_bytes
+            else:
+                assert len(sess._rx_buf) <= sess.max_line_bytes
+                assert sess._byte_budget[0] + len(sess._rx_buf) > sess.max_total_bytes
+            try:
+                deadline = time.monotonic() - 1.0
+                with pytest.raises(AcpError) as ei:
+                    sess._try_read_message(
+                        deadline=deadline,
+                        allow_timeout=allow_timeout,
+                        cancel_event=None,
+                    )
+                assert ei.value.code == "E_ACP_OVERFLOW", (kind, allow_timeout, ei.value)
+                assert ei.value.code != "E_ACP_TIMEOUT", (kind, allow_timeout)
+                if kind == "line":
+                    assert "line overflow" in str(ei.value)
+                else:
+                    assert "byte overflow" in str(ei.value)
+                    assert "line overflow" not in str(ei.value)
+            finally:
+                r_file.close()
+                w_file.close()
 
 
 def test_handshake_expired_deadline_oversize_suffix_writes_no_receipt(
