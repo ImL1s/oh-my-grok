@@ -2180,6 +2180,29 @@ def _remove_team_worktree(root: Path, worktree: Path) -> str | None:
     return None if not wt.exists() else f"worktree still present: {wt}"
 
 
+def _note_start_file_backup(
+    file_backups: dict[Path, tuple[bytes | None, int | None]],
+    path: Path,
+) -> None:
+    """Snapshot prior regular-file bytes+mode once (None, None if absent).
+
+    Used by ``--run`` reuse so rollback can restore descriptor / argv /
+    prepublish authority exactly, or unlink files this start created.
+    """
+    target = Path(path)
+    if target in file_backups:
+        return
+    if target.is_symlink():
+        raise TeamError(f"team start backup path may not be a symlink: {target}")
+    if target.is_file():
+        file_backups[target] = (
+            target.read_bytes(),
+            stat.S_IMODE(target.stat().st_mode),
+        )
+        return
+    file_backups[target] = (None, None)
+
+
 def _rollback_partial_team_start(
     root: Path,
     run_id: str,
@@ -2189,7 +2212,7 @@ def _rollback_partial_team_start(
     team_dir_path: Path | None,
     remove_ownership: bool = True,
     ownership_backup: bytes | None = None,
-    file_backups: Mapping[Path, bytes | None] | None = None,
+    file_backups: Mapping[Path, tuple[bytes | None, int | None]] | None = None,
 ) -> list[str]:
     """Undo pre-commit start debris (issue #17 all-or-nothing).
 
@@ -2198,7 +2221,8 @@ def _rollback_partial_team_start(
     - ``team_dir_path`` only when this start created the directory
     - ownership: restore ``ownership_backup`` when we overwrote a prior file;
       otherwise unlink only if ``remove_ownership`` (new write / new run)
-    - ``file_backups``: path → prior bytes (or None if this start created the file)
+    - ``file_backups``: path → ``(bytes, mode)`` or ``(None, None)`` if this
+      start created the file (descriptor / argv / prepublish authority)
 
     Reverse order: worktrees → team dir (or file restore) → ownership → active.
     Never raises; returns actionable error strings for diagnostics.
@@ -2225,26 +2249,7 @@ def _rollback_partial_team_start(
                 errors.append(f"team dir remove {tdir}: {exc}")
     elif file_backups:
         # Reused team dir: restore or remove files this start overwrote/created.
-        for fpath, prior in file_backups.items():
-            path = Path(fpath)
-            try:
-                if prior is None:
-                    if path.is_file() or path.is_symlink():
-                        path.unlink(missing_ok=True)
-                else:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    tmp = path.with_name(f".{path.name}.{os.getpid()}.rb.tmp")
-                    try:
-                        tmp.write_bytes(prior)
-                        os.replace(tmp, path)
-                    finally:
-                        if tmp.exists():
-                            try:
-                                tmp.unlink()
-                            except OSError:
-                                pass
-            except OSError as exc:
-                errors.append(f"file restore {path}: {exc}")
+        errors.extend(_restore_live_start_files(file_backups, unlink_new=True))
 
     try:
         mpath = ownership_manifest_path(root, rid)
@@ -3129,7 +3134,7 @@ def start_team(
         created_team_dir = False
         ownership_backup: bytes | None = None
         remove_ownership = True
-        file_backups: dict[Path, bytes | None] = {}
+        file_backups: dict[Path, tuple[bytes | None, int | None]] = {}
         tdir: Path | None = None
         # Resolve / create run
         if run_id:
@@ -3281,6 +3286,8 @@ def start_team(
 
             task_records: list[dict[str, Any]] = []
             manifest_tasks = list(manifest.get("tasks") or [])
+            from omg_cli.team.supervisor import supervisor_prepublish_path
+
             # Preserve manifest order for window indices
             for i, mtask in enumerate(manifest_tasks):
                 tid = str(mtask["task_id"])
@@ -3290,6 +3297,16 @@ def start_team(
                 owned = list(mtask.get("owned_files") or [])
                 src_task = tasks_by_id.get(tid) or mtask
                 role = _task_role(src_task)
+                desc_path = tdir / f"{tid}.provider.json"
+                # Snapshot before any materialize/publish so --run reuse can
+                # restore exact prior descriptor/authority bytes+mode.
+                if not created_team_dir:
+                    _note_start_file_backup(file_backups, desc_path)
+                    if not dry_run:
+                        _note_start_file_backup(
+                            file_backups,
+                            supervisor_prepublish_path(root_path, rid, tid),
+                        )
 
                 if multi_cli and resolved is not None:
                     route = resolved.for_role(role)
@@ -3318,7 +3335,6 @@ def start_team(
                     provider = inv.provider
                     posture = inv.posture
                     prompt_delivery = inv.prompt_delivery
-                    desc_path = tdir / f"{tid}.provider.json"
                     # Live panes need prepublish before team.json; dry_run
                     # never runs supervisor so skip authority publication.
                     pane_cmd = materialize_supervisor_pane_command(
@@ -3365,7 +3381,6 @@ def start_team(
                             prompt_path_d1 = Path(argv[pidx + 1])
                     except ValueError:
                         prompt_path_d1 = None
-                    desc_path = tdir / f"{tid}.provider.json"
                     pane_cmd = materialize_supervisor_pane_command(
                         descriptor_path=desc_path,
                         provider=provider,
@@ -3384,7 +3399,6 @@ def start_team(
 
                 if use_fixture_executor:
                     # Hermetic transport override — keep argv record for diagnostics.
-                    desc_path = tdir / f"{tid}.provider.json"
                     pane_cmd = build_fixture_pane_command(
                         descriptor_path=desc_path,
                         leader_root=root_path,
@@ -3407,15 +3421,8 @@ def start_team(
 
                 # Persist per-task argv under team/ (mirrors fanout workers/*.argv.json)
                 argv_path = tdir / f"{tid}.argv.json"
-                # When reusing a team dir, backup prior argv so rollback can restore.
-                if not created_team_dir and argv_path not in file_backups:
-                    if argv_path.is_file() and not argv_path.is_symlink():
-                        try:
-                            file_backups[argv_path] = argv_path.read_bytes()
-                        except OSError:
-                            file_backups[argv_path] = None
-                    else:
-                        file_backups[argv_path] = None
+                if not created_team_dir:
+                    _note_start_file_backup(file_backups, argv_path)
                 argv_path.write_text(
                     json.dumps(argv, indent=2, ensure_ascii=False) + "\n",
                     encoding="utf-8",
