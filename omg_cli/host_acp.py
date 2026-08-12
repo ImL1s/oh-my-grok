@@ -196,6 +196,7 @@ def allowlisted_acp_env(base: Mapping[str, str] | None = None) -> dict[str, str]
         "OMG_ACP_FAKE_SCENARIO",
         "OMG_ACP_FAKE_DELAY_S",
         "OMG_ACP_FAKE_CHROME_COUNT",
+        "OMG_ACP_FAKE_SUFFIX_BYTES",
     ):
         val = src.get(key)
         if isinstance(val, str) and val:
@@ -334,6 +335,10 @@ def _read_line(
     Partial bytes are retained in *rx_buf* across calls so a quiet-window /
     poll timeout mid-frame cannot drop already-consumed bytes and turn a later
     replay notification into ``E_ACP_MALFORMED``.
+
+    Leftover newline-free *rx_buf* is checked against *max_bytes* before
+    poll/timeout so a quiet window cannot treat an already-over-limit
+    incomplete frame as "no message".
     """
     if proc.stdout is None:
         raise AcpError("ACP stdout missing", code="E_ACP_IO")
@@ -346,6 +351,10 @@ def _read_line(
             if len(line) > max_bytes:
                 raise AcpError("ACP line overflow", code="E_ACP_OVERFLOW")
             return line
+
+        # Fail closed on leftover over-limit incomplete frames before poll/timeout.
+        if len(rx_buf) > max_bytes:
+            raise AcpError("ACP line overflow", code="E_ACP_OVERFLOW")
 
         if time.monotonic() > deadline:
             raise AcpError("ACP read timed out", code="E_ACP_TIMEOUT")

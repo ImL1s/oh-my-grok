@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from omg_cli.host_acp import (
     AcpError,
     AcpResumeReceipt,
     AcpStdioSession,
+    _read_line,
     acp_stdio_argv,
     bind_constructor_identity,
     build_receipt_from_dict,
@@ -533,3 +535,81 @@ def test_validate_resume_result_typed_errors() -> None:
     with pytest.raises(AcpError) as list_result:
         validate_resume_result([], sid)
     assert list_result.value.code == "E_ACP_RESUME"
+
+
+def test_read_line_coalesced_valid_plus_oversize_suffix_overflows_before_timeout() -> None:
+    """One OS read: valid under-cap line + oversized unterminated suffix.
+
+    The leftover must raise E_ACP_OVERFLOW on the next read before timeout.
+    """
+    max_bytes = 32
+    valid = b'{"id":1,"result":{}}\n'
+    assert len(valid) - 1 < max_bytes
+    suffix = b"x" * (max_bytes + 1)
+    r_fd, w_fd = os.pipe()
+    # Default buffering makes read(4096) wait for 4096/EOF.
+    r_file = os.fdopen(r_fd, "rb", buffering=0)
+    w_file = os.fdopen(w_fd, "wb", buffering=0)
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.stdout = r_file
+
+        def poll(self) -> None:
+            return None
+
+    proc = _FakeProc()
+    rx_buf = bytearray()
+    byte_budget = [0]
+    try:
+        w_file.write(valid + suffix)
+        w_file.flush()
+        w_file.close()
+        first = _read_line(
+            proc,
+            max_bytes=max_bytes,
+            deadline=time.monotonic() + 5.0,
+            byte_budget=byte_budget,
+            rx_buf=rx_buf,
+        )
+        assert first == valid[:-1]
+        assert bytes(rx_buf) == suffix
+        assert len(rx_buf) > max_bytes
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            _read_line(
+                proc,
+                max_bytes=max_bytes,
+                deadline=time.monotonic() + 5.0,
+                byte_budget=byte_budget,
+                rx_buf=rx_buf,
+            )
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "line overflow" in str(ei.value)
+        assert elapsed < 0.5
+    finally:
+        r_file.close()
+        w_file.close()
+
+
+def test_handshake_coalesced_oversize_suffix_writes_no_receipt(tmp_path: Path) -> None:
+    # Cap must admit initialize/resume frames but reject the leftover suffix.
+    proc, argv = _spawn(
+        "resume_plus_oversize_suffix",
+        tmp_path,
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "400"},
+    )
+    sess = _session(proc, argv, tmp_path, quiet=0.3)
+    sess.max_line_bytes = 256
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "line overflow" in str(ei.value)
+        assert sess._receipt is None
+        assert elapsed < 2.0
+    finally:
+        sess.close()
