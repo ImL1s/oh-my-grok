@@ -211,8 +211,12 @@ omg team status --run RUN --json
 omg team status --run RUN --full
 omg team status --run RUN --presentation --json
 omg team status TEAM_NAME
-# Identity-fenced operator pane control (#101). Prefer durable mailbox/task
-# API for automation; pane input is operator recovery / steering only.
+# Identity-fenced operator pane control (#101 / #147). Prefer durable
+# mailbox/task API for automation; pane input is recovery / steering only.
+# PR1: current supervisor panes are headless_stream / unsupported — key/input
+# refuse with E_OPERATOR_*_UNSUPPORTED even under --operator-override.
+# status --full shows per-worker io_mode / input_ready / operator_input_supported
+# (locked --json status_locked_view keys unchanged).
 omg team panes --run RUN --json
 omg team capture --run RUN --worker w1 --lines 200 --json
 omg team focus --run RUN --worker w1

@@ -549,27 +549,32 @@ def test_pane_scrollback_starts_with_provider_not_bootstrap_json(
 
 
 # ---------------------------------------------------------------------------
-# F — Operator exact-pane (#101)
+# F — Operator exact-pane (#101) + I/O capability refuse (#147 PR1)
 # ---------------------------------------------------------------------------
 
 
-def test_operator_capture_and_input_hit_exact_worker_pane(
+def test_operator_capture_exact_worker_pane_still_identity_fenced(
     tmux_server: IsolatedTmuxServer,
     repo: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Capture remains identity-fenced; readiness is provider stdout, not typing."""
     from omg_cli.team import operator
 
     leader = _leader(tmux_server)
     _bind_leader(monkeypatch, leader)
-    install_fixture_provider(
-        monkeypatch, provider_script("echo_input.py"), needs_pty=True
-    )
+    install_fixture_provider(monkeypatch, provider_script("ready_provider.py"))
     meta = launch_team_inside(root=repo, leader=leader, workers=1)
     try:
         assert meta.get("startup_status") == "running"
         task = (meta.get("tasks") or [{}])[0]
         worker_id = str(task.get("task_id") or "w1")
+        # Task rows from live launch must stamp fail-closed I/O (#147).
+        assert task.get("io_mode") == "headless_stream"
+        assert task.get("provider_tty_owner") == "supervisor"
+        assert task.get("operator_input_supported") is False
+        assert task.get("input_ready") is False
+        assert task.get("interaction_evidence") is None
         out = operator.capture_worker(
             repo,
             str(meta["run_id"]),
@@ -579,17 +584,92 @@ def test_operator_capture_and_input_hit_exact_worker_pane(
         if "TEAM_PROVIDER_READY_OK" not in text:
             text = leader.capture_pane(str(task["pane_id"]))
         assert "TEAM_PROVIDER_READY_OK" in text
-        pane_id = str(task["pane_id"])
-        marker = f"omg104-marker-{os.getpid()}"
-        tmux_server.require_ok(
-            "send-keys", "-l", "-t", pane_id, marker + "\n"
-        )
-        wait_until(
-            lambda: marker in leader.capture_pane(pane_id)
-            or f"ECHO:{marker}" in leader.capture_pane(pane_id),
-            timeout_s=8.0,
-            label="echo marker",
-        )
+        assert out.get("ok") is True
+        assert out.get("worker_id") == worker_id
+        assert out.get("pane_id") == task.get("pane_id")
+    finally:
+        stop_team(repo, meta["run_id"])
+
+
+def test_operator_input_and_key_refuse_headless_real_tmux(
+    tmux_server: IsolatedTmuxServer,
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#147 PR1: headless supervisor panes refuse operator input/key.
+
+    Must not treat local terminal echo / bare marker-in-capture as provider
+    delivery. ``send_literal`` / ``send_key`` must never be invoked.
+    """
+    from unittest.mock import MagicMock
+
+    from omg_cli.team import operator
+    from omg_cli.team.io_capability import (
+        E_OPERATOR_INPUT_UNSUPPORTED,
+        E_OPERATOR_KEY_UNSUPPORTED,
+    )
+    from omg_cli.team.operator import OperatorError
+
+    leader = _leader(tmux_server)
+    _bind_leader(monkeypatch, leader)
+    # needs_pty fixture still supervisor-owned / headless for operator input.
+    install_fixture_provider(
+        monkeypatch, provider_script("echo_input.py"), needs_pty=True
+    )
+    meta = launch_team_inside(root=repo, leader=leader, workers=1)
+    try:
+        assert meta.get("startup_status") == "running"
+        task = (meta.get("tasks") or [{}])[0]
+        worker_id = str(task.get("task_id") or "w1")
+        run_id = str(meta["run_id"])
+
+        # Prove capture still works (identity fence independent of input).
+        cap = operator.capture_worker(repo, run_id, worker_id)
+        assert cap.get("ok") is True
+
+        send_literal = MagicMock(side_effect=AssertionError("send_literal must not run"))
+        send_key = MagicMock(side_effect=AssertionError("send_key must not run"))
+        monkeypatch.setattr(operator, "send_literal", send_literal)
+        monkeypatch.setattr(operator, "send_key", send_key)
+
+        with pytest.raises(OperatorError) as e_in:
+            operator.input_worker(
+                repo,
+                run_id,
+                worker_id,
+                f"omg147-marker-{os.getpid()}",
+                submit=True,
+                operator_override=True,
+                is_tty=False,
+            )
+        assert e_in.value.code == E_OPERATOR_INPUT_UNSUPPORTED
+
+        with pytest.raises(OperatorError) as e_key:
+            operator.key_worker(
+                repo,
+                run_id,
+                worker_id,
+                "Enter",
+                operator_override=True,
+                is_tty=False,
+            )
+        assert e_key.value.code == E_OPERATOR_KEY_UNSUPPORTED
+
+        send_literal.assert_not_called()
+        send_key.assert_not_called()
+
+        # JSON noop still precedes any capability/send path.
+        with pytest.raises(OperatorError) as e_json:
+            operator.input_worker(
+                repo,
+                run_id,
+                worker_id,
+                "noop",
+                as_json=True,
+                operator_override=True,
+            )
+        assert e_json.value.code == "E_OPERATOR_JSON_NOOP"
+        send_literal.assert_not_called()
     finally:
         stop_team(repo, meta["run_id"])
 

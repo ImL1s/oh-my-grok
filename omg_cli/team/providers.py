@@ -519,23 +519,22 @@ def build_executor_argv_signature_has_free_form_param() -> bool:
     return bool(forbidden & set(sig.parameters))
 
 
-def executor_io_defaults(provider: str | None = None) -> "WorkerIoCapability":
+def executor_io_defaults(provider: str | None = None):
     """Static PR1 I/O defaults for every executor provider.
 
     Always headless_stream / supervisor / unsupported — **never** derived from
     ``needs_pty``, provider name, or binary. ``provider`` is accepted for API
     symmetry and future matrix cells (PR4); unknown names still fail closed
     the same way as known ones in PR1.
+
+    Returns:
+        :class:`omg_cli.team.io_capability.WorkerIoCapability`
     """
-    from omg_cli.team.io_capability import (
-        WorkerIoCapability,
-        supervisor_pane_io_defaults,
-    )
+    from omg_cli.team.io_capability import supervisor_pane_io_defaults
 
     # Intentional: ignore provider/needs_pty. Document agy specially via tests.
     _ = provider
-    cap: WorkerIoCapability = supervisor_pane_io_defaults()
-    return cap
+    return supervisor_pane_io_defaults()
 
 
 # ---------------------------------------------------------------------------
