@@ -1523,3 +1523,69 @@ def test_head_tail_budget_fail_closed_for_nested_team(monkeypatch):
         }
     )
     assert d["decision"] == "allow"
+
+
+def test_named_fd_redirect_foreign_denied():
+    """F11: adjacent named-FD ``{ident}>`` peels before semantic argv."""
+    from omg_cli.deny import is_first_party_team_nested_launch
+
+    deny_cmds = (
+        "omc {fd}>/dev/null team x",
+        "omc {fd}>>/tmp/x team",
+        "omc {fd}</dev/null team",
+        "omc {fd}<>/dev/null team",
+        "omc {fd}<<<payload team",
+        "omc {fd}>&1 team",
+        "{fd}>/dev/null omc team x",
+        "env omc {fd}>/dev/null team x",
+        "bash -c 'omc {fd}>/dev/null team x'",
+        "omc {my_fd}>/dev/null team",
+        "omc 2>/dev/null team x",
+        "omc <>out team",
+    )
+    for cmd in deny_cmds:
+        assert should_deny_command(cmd) is True, cmd
+
+    allow_cmds = (
+        "echo omc {fd}>/dev/null team",
+        "omc {fd} team",
+        "omc {fd} >/dev/null team",
+        "omc '{fd}>/dev/null' team x",
+        "omc{fd}>/dev/null team",
+        "omc {1fd}>/dev/null team",
+        "omc {fd-x}>/dev/null team",
+        "omc {}>/dev/null team",
+    )
+    for cmd in allow_cmds:
+        assert should_deny_command(cmd) is False, cmd
+        assert is_first_party_team_nested_launch(cmd) is False, cmd
+
+
+def test_named_fd_redirect_worker_nested_launch(monkeypatch):
+    """F11: worker DiD sees nested launch through named-FD ``{ident}>``."""
+    from omg_cli.deny import is_first_party_team_nested_launch
+
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    deny_cmds = (
+        "omg {fd}>/dev/null team launch",
+        "{fd}>/dev/null omg team launch",
+        "env -i omg {fd}>/dev/null team launch",
+    )
+    for cmd in deny_cmds:
+        assert is_first_party_team_nested_launch(cmd) is True, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "deny", cmd
+        assert "E_TEAM_NESTED_LAUNCH" in (d.get("reason") or ""), cmd
+
+    allow_cmds = (
+        "omg {fd}>/dev/null team api catalog",
+        "echo omg {fd}>/dev/null team launch",
+    )
+    for cmd in allow_cmds:
+        assert is_first_party_team_nested_launch(cmd) is False, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "allow", cmd

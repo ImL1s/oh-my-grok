@@ -574,6 +574,7 @@ def test_standalone_readwrite_herestring_and_budget():
         "command -p omc <<<payload team",
         "true; omc <>out team",
         "echo hi && omc <<<payload team",
+        "omc {fd}>/dev/null team x",
         " ".join(["omc"] + [f"1>x{i}" for i in range(_HEAD_TAIL_RAW_SCAN_CAP)] + ["team"]),
         f"omc >{'A' * (_HEAD_TAIL_DECODE_LIMIT + 64)} team",
     )
@@ -628,6 +629,7 @@ def test_standalone_readwrite_herestring_and_budget():
 
     worker_allow = (
         "omg <>out team api catalog",
+        "omg {fd}>/dev/null team api catalog",
         "echo omg <>out team launch",
         "omg 2 <>out team launch",
     )

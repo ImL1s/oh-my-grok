@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "938db3762e83678df1f8bee8154810dad84c8d4856b0212a5e3f79cf466cbb74"
+_OMG_GENERATED_FROM_SHA = "26951e7884c9521a1b367ec1fb7e2694017782b84b31bf5ea134aa4fc71d708f"
 _OMG_PLUGIN_VERSION = "0.8.0"
 
 
@@ -99,10 +99,12 @@ _COMMAND_LEAD = (
     rf"|{_FUNCTION_GROUP_LEAD})*"
 )
 # Leading redirections before the executable (``>out cmd``, ``2>/dev/null env …``).
-# Adjacent FD digits of any shell-valid length; spaced ``2 >out`` is not leading.
+# Adjacent FD digits of any shell-valid length, or bash 4+ named FD ``{ident}``
+# (ident max 64). Spaced ``2 >out`` / ``{fd} >out`` is not leading.
 # Longest operator first: ``<<<`` before ``<<``, ``<>`` before ``<``/``>``.
+_REDIR_FD_PREFIX = r"(?:\d*|\{[A-Za-z_][A-Za-z0-9_]{0,63}\})"
 _LEADING_REDIR_UNIT = (
-    r"(?:\d*)(?:<<<|>>|<<|<>|>&|<&|>\||&>|&>>|[<>])"
+    rf"{_REDIR_FD_PREFIX}(?:<<<|>>|<<|<>|>&|<&|>\||&>|&>>|[<>])"
     r"(?:\\.|[^\s;&|()'\"`\\]+|'[^']*'|\"(?:\\.|[^\"\\])*\")*"
 )
 _LEADING_REDIRS = rf"(?:{_LEADING_REDIR_UNIT}\s+)*"
@@ -1456,9 +1458,10 @@ def _executable_basename(raw_word: str) -> str | None:
     a concrete executable token.
 
     Also strips shell redirections glued to the head (``omc>out``,
-    ``omg</dev/null``): real shells tokenize those as executable + redir, but
-    ``_SHELL_WORD`` keeps ``<``/``>`` inside the match. Linear quote-aware
-    boundary insert + first-token basename; trailing redir noise is ignored.
+    ``omg</dev/null``, ``{fd}>/dev/null``): real shells tokenize those as
+    executable + redir, but ``_SHELL_WORD`` keeps ``<``/``>`` inside the match.
+    Linear quote-aware boundary insert + first-token basename; trailing redir
+    noise is ignored.
     """
 
     if not raw_word:
@@ -1620,29 +1623,76 @@ _SHELL_COMMAND_SEPARATORS = frozenset({";", "&", "&&", "|", "||", "\n", "\r"})
 _SHELL_REDIR_OPS = frozenset(
     {">", ">>", "<", "<<", "<>", "<<<", ">&", "<&", ">|", "&>", "&>>"}
 )
+# Glued target (``2>/dev/null``) stays digit-or-empty prefix only. A quoted
+# ``'{fd}>/dev/null'`` decodes to one argv word and must remain literal.
 _SHELL_REDIR_GLUED = re.compile(
     r"^(?:\d*)(?:<<<|>>|<<|<>|>&|<&|>\||&>|&>>|[<>]).+"
 )
 _SHELL_REDIR_PURE = re.compile(
-    r"^(?:\d*)(?:<<<|>>|<<|<>|>&|<&|>\||&>|&>>|[<>])$"
+    rf"^{_REDIR_FD_PREFIX}(?:<<<|>>|<<|<>|>&|<&|>\||&>|&>>|[<>])$"
 )
-# Redirection operators that may take an adjacent FD digit prefix (``2>``,
-# ``2>&``, ``2<>``). Control operators ``&&`` / ``||`` are not included.
+# Redirection operators that may take an adjacent FD prefix (``2>``,
+# ``2>&``, ``2<>``, ``{fd}>``, ``{fd}>&``). Control operators ``&&`` / ``||``
+# are not included.
 _SHELL_REDIR_TWOCHAR = frozenset({">>", "<<", "<>", ">&", "<&", ">|", "&>"})
 
 
 # Shell allows multi-digit FDs; keep a hard upper bound only as DoS guard
 # (old arbitrary 4-digit cap false-negatived ``12345>/dev/null …``).
 _MAX_ADJACENT_FD_DIGITS = 64
+# Bash 4+ named FD ``{ident}`` — ident is ``[A-Za-z_][A-Za-z0-9_]*``, max 64.
+_MAX_NAMED_FD_IDENT = 64
+
+
+def _adjacent_named_fd_prefix(text: str, op_index: int) -> str:
+    """Return adjacent ``{ident}`` immediately before *op_index*, else ``""``.
+
+    Fail-closed bash 4+ named-FD syntax: unquoted ``{fd}>word`` is one
+    redirect unit (on bash 3.2 it is argv ``{fd}`` plus ``>``, but the
+    command is still ``omc … team``). Rejects empty ``{}``, digit-leading
+    ``{1fd}``, hyphen ``{fd-x}``, idents longer than
+    :data:`_MAX_NAMED_FD_IDENT`, and ``{ident}`` glued to an alnum/``_``
+    head (``omc{fd}>out``).
+    """
+
+    if op_index < 2 or text[op_index - 1] != "}":
+        return ""
+    ident_end = op_index - 1
+    cursor = ident_end - 1
+    while cursor >= 0 and (
+        "A" <= text[cursor] <= "Z"
+        or "a" <= text[cursor] <= "z"
+        or "0" <= text[cursor] <= "9"
+        or text[cursor] == "_"
+    ):
+        if ident_end - cursor > _MAX_NAMED_FD_IDENT:
+            return ""
+        cursor -= 1
+    if cursor < 0 or text[cursor] != "{":
+        return ""
+    ident = text[cursor + 1 : ident_end]
+    if not ident or len(ident) > _MAX_NAMED_FD_IDENT:
+        return ""
+    first = ident[0]
+    if not (("A" <= first <= "Z") or ("a" <= first <= "z") or first == "_"):
+        return ""
+    if cursor > 0:
+        before = text[cursor - 1]
+        if before.isalnum() or before == "_":
+            return ""
+    return text[cursor:op_index]
 
 
 def _adjacent_fd_prefix(text: str, op_index: int) -> str:
-    """Return bare FD digits immediately before *op_index*, else ``""``.
+    """Return adjacent FD prefix immediately before *op_index*, else ``""``.
 
-    Preserves token adjacency: ``2>out`` / ``12345>/dev/null`` have prefix
-    digits; spaced ``2 >out`` does not. Digits that are part of a larger word
-    (``echo2>out``) are not an FD prefix. Any shell-valid digit length is
-    accepted up to :data:`_MAX_ADJACENT_FD_DIGITS`.
+    Digit FDs (``2>out`` / ``12345>/dev/null``) and bash named FDs
+    (``{fd}>`` / ``{my_fd}>>``) stay one redirect token when unquoted and
+    adjacent. Spaced ``2 >out`` / ``{fd} >out`` remain argv + redirect.
+    A prefix glued to an alnum/``_`` head (``echo2>out``, ``omc{fd}>out``)
+    is not an FD. Digit length is accepted up to
+    :data:`_MAX_ADJACENT_FD_DIGITS`; named idents up to
+    :data:`_MAX_NAMED_FD_IDENT`.
     """
 
     if op_index <= 0:
@@ -1655,21 +1705,22 @@ def _adjacent_fd_prefix(text: str, op_index: int) -> str:
     ):
         start -= 1
     digits = text[start:op_index]
-    if not digits or not digits.isdecimal():
-        return ""
-    if start > 0:
-        before = text[start - 1]
-        if before.isalnum() or before == "_":
-            return ""
-    return digits
+    if digits and digits.isdecimal():
+        if start > 0:
+            before = text[start - 1]
+            if before.isalnum() or before == "_":
+                return ""
+        return digits
+    return _adjacent_named_fd_prefix(text, op_index)
 
 
 def _emit_redir_op(out: list[str], text: str, op_index: int, op_len: int) -> None:
     """Append a spaced redir token, gluing an immediately-adjacent FD prefix.
 
-    Pops already-emitted digit characters from *out* when they form a bare FD
-    that was adjacent to the operator in the original text. Spaced forms such
-    as ``2 >out`` keep ``2`` as a normal argv word.
+    Pops already-emitted prefix characters from *out* when they form a bare
+    digit FD or named FD ``{ident}`` that was adjacent to the operator in the
+    original text. Spaced forms such as ``2 >out`` / ``{fd} >out`` keep the
+    prefix as a normal argv word.
     """
 
     fd = _adjacent_fd_prefix(text, op_index)
@@ -1690,8 +1741,9 @@ def _insert_unquoted_shell_boundaries(text: str) -> str:
     ``omc team`` and first-party nested classification see the same tokens.
 
     Also:
-    - Keeps FD digits **adjacent** to redirection ops (``2>out`` → ``2>`` +
-      target) so spaced ``2 >out`` remains argv ``2`` + redirect (review3).
+    - Keeps FD digits **and** named FDs **adjacent** to redirection ops
+      (``2>out`` → ``2>`` + target, ``{fd}>/dev/null`` → ``{fd}>`` + target)
+      so spaced ``2 >out`` / ``{fd} >out`` remain argv + redirect (review3).
     - Rewrites unquoted newlines/CRs to ``;`` so ``shlex`` cannot erase command
       separators (``omc>out\\nteam`` is two commands, not ``omc team``).
 
@@ -1779,7 +1831,11 @@ def _insert_unquoted_shell_boundaries(text: str) -> str:
 
 
 def _is_shell_redirect_token(word: str) -> bool:
-    """True for pure or glued redirection tokens (not ordinary path args)."""
+    """True for pure or glued redirection tokens (not ordinary path args).
+
+    Includes digit-prefixed (``2>``, ``2>/dev/null``) and named-FD
+    (``{fd}>``, ``{fd}>/dev/null``) forms.
+    """
 
     if not word:
         return False
@@ -1808,12 +1864,13 @@ def _next_decoded_words(
 
     Skips redirections *between* the executable and later argv (``omc 2>out
     team``, ``omg 0</dev/null 1>out 2>&1 team``, ``omc <>out team``,
-    ``omc <<<payload team``). FD-prefixed redirs stay a single redirect
-    token when originally adjacent (``2>out``, ``2<>out``); a spaced
-    numeric argv (``2 >out``) remains a semantic word. Raw tokens are **not**
-    truncated before redirect-dropping — only the 512-char fragment bound and
-    :data:`_HEAD_TAIL_RAW_SCAN_CAP` apply — so multi-redir sequences cannot
-    starve ``team``.
+    ``omc <<<payload team``, ``omc {fd}>/dev/null team``). FD-prefixed
+    redirs stay a single redirect token when originally adjacent
+    (``2>out``, ``2<>out``, ``{fd}>``, ``{fd}>&``); a spaced numeric or
+    ``{ident}`` argv (``2 >out``, ``{fd} >out``) remains a semantic word.
+    Raw tokens are **not** truncated before redirect-dropping — only the
+    512-char fragment bound and :data:`_HEAD_TAIL_RAW_SCAN_CAP` apply — so
+    multi-redir sequences cannot starve ``team``.
 
     When *raise_on_budget* is true, character or raw-token budget exhaustion
     before a separator or *limit* semantic words raises
@@ -1848,8 +1905,8 @@ def _next_decoded_words(
             hit_separator = True
             break
         if _is_shell_redirect_token(word):
-            # Pure ops (``>``, ``2>``, ``<>``, ``<<<``, ``>&``) take a
-            # following target. Glued forms already include the target.
+            # Pure ops (``>``, ``2>``, ``{fd}>``, ``<>``, ``<<<``, ``>&``)
+            # take a following target. Glued forms already include the target.
             if word in _SHELL_REDIR_OPS or _SHELL_REDIR_PURE.match(word):
                 skip_next = True
             continue
@@ -2189,7 +2246,8 @@ def _has_foreign_omc_team(command: str) -> bool:
     forms already exposed as executable heads by the bounded parser. Recursive
     ``sh|bash|zsh -c/-lc`` bodies are handled by the existing shell-c walk.
     Also covers no-space shell boundaries after *or before* ``team``
-    (``omc team>out``, ``omc>out team``, ``omc 2>&1 team``, ``omc team;echo``).
+    (``omc team>out``, ``omc>out team``, ``omc 2>&1 team``,
+    ``omc {fd}>/dev/null team``, ``omc team;echo``).
     Wrapper-option residue (``env --weird omc team``) fail-closes by scanning
     later tokens for ``omc`` + ``team``.
     """
