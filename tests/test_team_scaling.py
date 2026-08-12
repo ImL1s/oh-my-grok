@@ -1752,6 +1752,54 @@ def test_scale_up_persists_actual_tmux_identity_and_scale_down_uses_it(
     assert all(call[:2] != ["kill-window", "-t"] for call in tmux_calls)
 
 
+def test_scale_up_publishes_authority_before_pane_and_clears_after_meta(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.team.supervisor import supervisor_prepublish_path
+
+    rid, _live = _prepare_live_scale_team(monkeypatch, tmp_path)
+
+    def capture_add(*, session: str, records: Any, **_kwargs: Any) -> None:
+        assert session == "omg-workers"
+        for record in records:
+            tid = str(record["task_id"])
+            desc_path = plane.team_dir(tmp_path, rid) / f"{tid}.provider.json"
+            auth_path = supervisor_prepublish_path(tmp_path, rid, tid)
+            assert desc_path.is_file()
+            assert auth_path.is_file()
+            payload = json.loads(auth_path.read_text(encoding="utf-8"))
+            assert payload["writer"] == CLI_WRITER
+            assert payload["worker_id"] == tid
+            assert payload["generation"] == 1
+            assert int(payload["attempt"]) >= 1
+            assert payload["descriptor_sha256"] == hashlib.sha256(
+                desc_path.read_bytes()
+            ).hexdigest()
+            assert payload["owner_token"] == "owner-1"
+            record["window_index"] = 7
+            record["window_id"] = "@17"
+            record["window_nonce"] = "c" * 32
+            record["pane_id"] = "%27"
+
+    monkeypatch.setattr(scaling, "_add_tmux_windows", capture_add)
+    monkeypatch.setattr(
+        scaling,
+        "_read_scaled_pane_pid",
+        lambda **_kwargs: 10002,
+        raising=False,
+    )
+    monkeypatch.setattr(scaling, "_pgid_for_pid", lambda _pid: 20002)
+    monkeypatch.setattr(scaling, "_pid_start_identity", lambda _pid: "start-10002")
+
+    out = scale_team(tmp_path, rid, add=1)
+
+    tid = out["task_ids"][0]
+    assert tid == "scale-2"
+    assert not supervisor_prepublish_path(tmp_path, rid, tid).exists()
+    disk = load_team_meta(tmp_path, rid)
+    assert any(task["task_id"] == tid for task in disk["tasks"])
+
+
 def test_scale_identity_chain_refuses_team_meta_window_handle_drift(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -2109,6 +2157,68 @@ def test_scale_up_pane_binding_failure_exact_retry_reuses_preparation(
     assert launches == 2
     assert argv_path.is_file()
     assert task_prompt.is_file()
+    disk = load_team_meta(tmp_path, rid)
+    assert [row["task_id"] for row in disk["tasks"]].count("scale-2") == 1
+
+
+def test_scale_up_reuse_path_republishes_authority_before_pane(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.team.supervisor import supervisor_prepublish_path
+
+    rid, _live = _prepare_live_scale_team(monkeypatch, tmp_path)
+    real_build = scaling._build_pane_record
+    builds = 0
+    launches = 0
+
+    def count_build(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal builds
+        builds += 1
+        return real_build(*args, **kwargs)
+
+    def fail_then_launch(*, session: str, records: Any, **_kwargs: Any) -> None:
+        nonlocal launches
+        launches += 1
+        rec = records[0]
+        tid = str(rec["task_id"])
+        desc_path = plane.team_dir(tmp_path, rid) / f"{tid}.provider.json"
+        auth_path = supervisor_prepublish_path(tmp_path, rid, tid)
+        assert desc_path.is_file()
+        assert auth_path.is_file(), f"authority missing on launch {launches}"
+        payload = json.loads(auth_path.read_text(encoding="utf-8"))
+        assert payload["writer"] == CLI_WRITER
+        assert payload["worker_id"] == tid
+        assert payload["generation"] == 1
+        assert int(payload["attempt"]) >= 1
+        assert payload["owner_token"] == "owner-1"
+        if launches == 1:
+            raise TeamError("simulated pane binding failure")
+        rec.update(
+            {
+                "window_index": 7,
+                "window_id": "@17",
+                "window_nonce": rec["window_nonce"],
+                "pane_id": "%27",
+            }
+        )
+
+    monkeypatch.setattr(scaling, "_build_pane_record", count_build)
+    monkeypatch.setattr(scaling, "_add_tmux_windows", fail_then_launch)
+    monkeypatch.setattr(scaling, "_read_scaled_pane_pid", lambda **_kwargs: 10002)
+    monkeypatch.setattr(scaling, "_pgid_for_pid", lambda _pid: 20002)
+    monkeypatch.setattr(scaling, "_pid_start_identity", lambda _pid: "start-10002")
+
+    with pytest.raises(TeamError, match="pane binding failure"):
+        scale_team(tmp_path, rid, add=1)
+    auth_path = supervisor_prepublish_path(tmp_path, rid, "scale-2")
+    assert auth_path.is_file()
+
+    out = scale_team(tmp_path, rid, add=1)
+
+    assert out["task_ids"] == ["scale-2"]
+    assert builds == 1
+    assert launches == 2
+    assert not auth_path.exists()
     disk = load_team_meta(tmp_path, rid)
     assert [row["task_id"] for row in disk["tasks"]].count("scale-2") == 1
 

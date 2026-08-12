@@ -446,6 +446,51 @@ def _ensure_scale_ownership_manifest(
         raise TeamError(str(exc)) from exc
 
 
+def _publish_scale_supervisor_authorities(
+    root: Path,
+    run_id: str,
+    *,
+    team_id: str,
+    owner_token: str,
+    generation: int,
+    records: Sequence[Mapping[str, Any]],
+) -> None:
+    """Publish generation/attempt-bound authority before live pane spawn.
+
+    team.json does not list the new worker yet; supervisor admission
+    prefers a surviving prepublish record when owner_token is set.
+    """
+    from omg_cli.team.supervisor import (
+        SupervisorError,
+        publish_supervisor_authority,
+    )
+
+    token = str(owner_token or "").strip()
+    if not token:
+        raise TeamError(
+            "scale-up refused: owner_token required to publish "
+            "supervisor authority before pane spawn"
+        )
+    for rec in records:
+        tid = str(rec["task_id"])
+        desc_path = team_dir(root, run_id) / f"{tid}.provider.json"
+        if not desc_path.is_file():
+            raise TeamError(f"scale-up supervisor descriptor missing task={tid}")
+        try:
+            publish_supervisor_authority(
+                leader_root=root,
+                run_id=run_id,
+                team_id=str(team_id or "team"),
+                worker_id=tid,
+                owner_token=token,
+                descriptor_path=desc_path,
+                generation=int(generation),
+                attempt=int(rec.get("attempt") or 1),
+            )
+        except SupervisorError as exc:
+            raise TeamError(str(exc)) from exc
+
+
 def _build_pane_record(
     *,
     root: Path,
@@ -462,6 +507,11 @@ def _build_pane_record(
     safe: bool,
     extra: Sequence[str] | None,
     executor: str | None = None,
+    team_id: str = "team",
+    owner_token: str | None = None,
+    authority_generation: int = 0,
+    authority_attempt: int = 1,
+    publish_authority: bool = False,
 ) -> dict[str, Any]:
     from omg_cli.contracts.path_keys import (
         DATA_FILE_MODE,
@@ -474,6 +524,16 @@ def _build_pane_record(
     wt = worktree_dir(root, run_id, tid)
     role = _task_role(task)
     tdir = team_dir(root, run_id)
+    authority_kw = {
+        "leader_root": root,
+        "run_id": run_id,
+        "team_id": str(team_id or "team"),
+        "worker_id": tid,
+        "owner_token": owner_token,
+        "authority_generation": authority_generation,
+        "authority_attempt": authority_attempt,
+        "publish_authority": publish_authority,
+    }
     tdir.mkdir(parents=True, exist_ok=True)
     artifact_paths: list[Path] = []
     executor_norm = (executor or "").strip().lower() or None
@@ -534,6 +594,7 @@ def _build_pane_record(
             identity_basenames=inv.identity_basenames or None,
             provider_strategy=inv.provider_strategy or None,
             startup_strategy=inv.startup_strategy or None,
+            **authority_kw,
         )
     elif executor_norm == "fixture":
         # Inherit launch executor=fixture so hermetic teams do not spawn grok
@@ -543,7 +604,10 @@ def _build_pane_record(
         from omg_cli.team.plane import build_fixture_pane_command
 
         desc_path = tdir / f"{tid}.provider.json"
-        pane_cmd = build_fixture_pane_command(descriptor_path=desc_path)
+        pane_cmd = build_fixture_pane_command(
+            descriptor_path=desc_path,
+            **authority_kw,
+        )
         provider = "fixture"
         posture = "read-write"
         needs_pty = False
@@ -594,6 +658,7 @@ def _build_pane_record(
             prompt_file=last_prompt_path,
             needs_pty=False,
             cwd=wt,
+            **authority_kw,
         )
         artifact_paths.extend([last_prompt_path, prompt_path])
 
@@ -669,6 +734,11 @@ def _reuse_prepared_pane_record(
     safe: bool,
     extra: Sequence[str] | None,
     executor: str | None = None,
+    team_id: str = "team",
+    owner_token: str | None = None,
+    authority_generation: int = 0,
+    authority_attempt: int = 1,
+    publish_authority: bool = False,
 ) -> dict[str, Any] | None:
     """Strictly reuse a complete deterministic prompt/argv preparation set."""
     from omg_cli.contracts.path_keys import (
@@ -681,6 +751,16 @@ def _reuse_prepared_pane_record(
     owned = list(task.get("owned_files") or [])
     role = _task_role(task)
     worktree = worktree_dir(root, run_id, task_id)
+    authority_kw = {
+        "leader_root": root,
+        "run_id": run_id,
+        "team_id": str(team_id or "team"),
+        "worker_id": task_id,
+        "owner_token": owner_token,
+        "authority_generation": authority_generation,
+        "authority_attempt": authority_attempt,
+        "publish_authority": publish_authority,
+    }
     argv_path = team_dir(root, run_id) / f"{task_id}.argv.json"
     prompt_dir = worktree / ".omg" / "team-prompt"
     task_prompt_path = prompt_dir / f"{task_id}.prompt.md"
@@ -735,6 +815,7 @@ def _reuse_prepared_pane_record(
             identity_basenames=inv.identity_basenames or None,
             provider_strategy=inv.provider_strategy or None,
             startup_strategy=inv.startup_strategy or None,
+            **authority_kw,
         )
     elif executor_norm == "fixture":
         import sys
@@ -762,7 +843,10 @@ def _reuse_prepared_pane_record(
         )
         expected_argv = [sys.executable, str(fixture)]
         desc_path = team_dir(root, run_id) / f"{task_id}.provider.json"
-        pane_cmd = build_fixture_pane_command(descriptor_path=desc_path)
+        pane_cmd = build_fixture_pane_command(
+            descriptor_path=desc_path,
+            **authority_kw,
+        )
     else:
         provider = "grok"
         posture = "read-write"
@@ -808,6 +892,7 @@ def _reuse_prepared_pane_record(
             prompt_file=last_prompt_path,
             needs_pty=False,
             cwd=worktree,
+            **authority_kw,
         )
 
     expected_bodies = {
@@ -3985,7 +4070,7 @@ def _scale_up(
                 else None
             )
             for i, spec in enumerate(new_task_specs):
-                pane_kwargs = dict(
+                pane_kwargs: dict[str, Any] = dict(
                     root=root,
                     run_id=run_id,
                     goal=goal,
@@ -4000,6 +4085,15 @@ def _scale_up(
                     safe=safe,
                     extra=extra,
                     executor=executor,
+                    team_id=str(meta.get("team_id") or "team"),
+                    owner_token=(
+                        str(meta["owner_token"])
+                        if meta.get("owner_token")
+                        else None
+                    ),
+                    authority_generation=pending_generation,
+                    authority_attempt=1,
+                    publish_authority=not effective_dry,
                 )
                 rec = None
                 if not effective_dry:
@@ -4028,6 +4122,18 @@ def _scale_up(
             if not effective_dry:
                 assert scale_wal is not None
                 _apply_scale_wal_plan(new_records, scale_wal)
+                _publish_scale_supervisor_authorities(
+                    root,
+                    run_id,
+                    team_id=str(meta.get("team_id") or "team"),
+                    owner_token=(
+                        str(meta["owner_token"])
+                        if meta.get("owner_token")
+                        else ""
+                    ),
+                    generation=pending_generation,
+                    records=new_records,
+                )
 
             if not effective_dry:
                 assert authority is not None
@@ -4318,6 +4424,12 @@ def _scale_up(
             if isinstance(exc, TeamError):
                 raise TeamError(detail) from exc
             raise TeamError(f"scale-up meta commit failed: {detail}") from exc
+
+    from omg_cli.team.supervisor import clear_supervisor_prepublish_authorities
+
+    # team.json now lists the worker; prepublish is no longer required.
+    # Skip on not_committed / unknown (those paths raise above).
+    clear_supervisor_prepublish_authorities(root, run_id)
 
     try:
         write_status(
