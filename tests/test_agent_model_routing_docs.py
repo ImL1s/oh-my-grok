@@ -122,6 +122,8 @@ ARCH_REQUIRED_SNIPPETS: tuple[str, ...] = (
     "purpose",
     "advisory",
     "task_execution",
+    "authoritative task participation",
+    "independent of read-only",
     "lifecycle",
     "foreground",
     "background_job",
@@ -506,6 +508,32 @@ def test_architecture_distinguishes_advisory_from_task_execution() -> None:
     assert "Medley API" in body
     assert "#138" in body
     assert "oh-my-grok#138" in body
+
+
+def test_purpose_is_independent_of_capability_posture() -> None:
+    """purpose=task_execution is participation, not mutation authority."""
+    from omg_cli.team.roles import CANONICAL_ROLES, role_posture
+
+    body = ARCH.read_text(encoding="utf-8")
+    purpose_rows = [
+        line for line in body.splitlines() if line.startswith("| `purpose`")
+    ]
+    assert len(purpose_rows) == 1, purpose_rows
+    row = purpose_rows[0]
+    assert "authoritative task participation" in row
+    assert "independent of read-only" in row.lower()
+    assert "change product state" not in row
+    assert "implement work" not in row
+    assert "may change" not in row
+    assert "independent of read-only" in body
+    assert "**cannot** mutate" in body
+    assert "purpose = task_execution" in body
+    assert "team_member" in body
+    read_only = [name for name in CANONICAL_ROLES if role_posture(name) == "read-only"]
+    assert "code-reviewer" in read_only
+    assert "verifier" in read_only
+    assert "critic" in read_only
+    assert any(role_posture(name) == "read-write" for name in CANONICAL_ROLES)
 
 
 def test_architecture_distinguishes_native_and_external_routes() -> None:

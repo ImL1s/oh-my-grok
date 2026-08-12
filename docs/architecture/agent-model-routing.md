@@ -286,7 +286,7 @@ Issue [#138](https://github.com/ImL1s/oh-my-grok/issues/138) requires three
 | Dimension | Values | Meaning |
 |-----------|--------|---------|
 | `runtime_kind` | `native_host` \| `external_cli` | Who runs the process: the native host session, or an OMG-owned external CLI |
-| `purpose` | `advisory` \| `task_execution` | Whether the process may change product state / implement work, or only produce non-authoritative advice |
+| `purpose` | `advisory` \| `task_execution` | Whether the process is **authoritative task participation** or only non-authoritative advice. Independent of read-only / read-write capability posture |
 | `lifecycle` | `foreground` \| `background_job` \| `team_member` | How the process is awaited: synchronous broker, durable job, or Team pane/member |
 
 ### Shipped advisory broker
@@ -312,7 +312,12 @@ Rules:
   fact. It is not `omg ask`, not a Team executor, and not an advisory
   artifact.
 - `team_member` is Team pane lifecycle (`purpose = task_execution`).
-  Advisors are not Team members.
+  Advisors are not Team members. `purpose = task_execution` does **not**
+  grant mutation authority. Read-only / read-write **posture**
+  (`capability_mode` / role floor in `omg_cli/team/roles.py`) is a
+  separate axis: shipped read-only reviewer / verifier / planner Team
+  members **cannot** mutate. They still participate authoritatively in
+  the Team task (verdicts, gates), so they are not `advisory`.
 
 Foreground ask writes the artifact and returns. Background ask creates a
 durable job and returns `job_id`; the job still has `purpose = advisory`
@@ -646,6 +651,10 @@ CI should eventually prove (and #133 acceptance requires):
 - policy `external_executor` must stay distinct from advisory `omg ask`;
   the three dimension names (`runtime_kind`, `purpose`, `lifecycle`) must
   remain present;
+- `purpose = task_execution` is **authoritative task participation**,
+  **independent of read-only** / read-write posture; the purpose table
+  must **not** define it as mutation or implement authority; read-only
+  Team members **cannot** mutate;
 - links to Medley #207 / #287 / #289 / #290 and OMG #131 / #133 / #138 remain present;
 - maintained indexes and locales **point at** this page rather than forking the
   matrix into hand-maintained duplicates;

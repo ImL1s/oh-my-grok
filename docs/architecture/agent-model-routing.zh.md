@@ -85,7 +85,7 @@ schema 变更需要另一次 versioned migration。
 三个正交维度（规范以英文为准）：
 
 - `runtime_kind` = `native_host` | `external_cli`
-- `purpose` = `advisory` | `task_execution`
+- `purpose` = `advisory` | `task_execution`（权威任务参与；与 read-only / read-write posture **独立**；只读 reviewer **不能** mutate）
 - `lifecycle` = `foreground` | `background_job` | `team_member`
 
 `external_cli` + `advisory` **不是** external Team executor。`omg ask` 产物（`.omg/artifacts/ask-*.md`）与 consultation／council 产物都是 advisory／非权威，**永不**写入 acceptance / `verified`。本页不宣称已出货 council runtime。
