@@ -353,6 +353,7 @@ def test_post_stable_zero_env_still_catches_delayed_auth(
         provider="grok",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-post0")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -608,6 +609,7 @@ def test_delayed_auth_after_process_stable_is_blocked(
         provider="grok",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-delayed-auth")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -696,6 +698,7 @@ def test_delayed_auth_after_tui_idle_is_blocked(
         provider="grok",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id=run_id)
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -927,6 +930,7 @@ def test_supervisor_immediate_exit_fails_closed(
         provider="fixture",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-exit")
     rc = run_supervisor(descriptor_path=desc, ready_timeout_s=2.0, poll_s=0.05)
     assert rc == 0  # child exit 0
     record = read_startup_record(
@@ -1198,6 +1202,7 @@ def test_labeled_grok_python_sleep_not_running_via_process_stable(
         provider="grok",
         argv=[sys.executable, "-c", "import time; time.sleep(30)"],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-fake-grok-sleep")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -1271,6 +1276,7 @@ def test_unknown_strategy_silent_hang_times_out(
         provider="unknown-cli",
         argv=[sys.executable, "-c", "import time; time.sleep(30)"],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-unknown-hang")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -1338,6 +1344,7 @@ def test_provider_ready_then_dies_before_wait_returns(
         provider="fake-ready",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-die-after-ready")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -1475,6 +1482,7 @@ def test_process_stable_with_interpreter_script_launcher(
         provider="grok",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-interp-stable")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -1585,6 +1593,7 @@ def test_process_stable_with_matching_binary_identity(
         provider="grok",
         argv=[str(fake_grok), "30"],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-real-identity")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -1655,6 +1664,7 @@ def test_needs_pty_records_real_child_not_wrapper(
         argv=[str(fake_agy), "30"],
         needs_pty=True,
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-pty-child")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
