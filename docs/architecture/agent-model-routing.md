@@ -11,9 +11,9 @@ architecture matrix — see [docs/README.md](../README.md).
 
 **Related UX (not claimed by this page):** [oh-my-grok#134](https://github.com/ImL1s/oh-my-grok/issues/134)
 
-**Planning detail:** [plans/2026-08-09-dual-host-agent-model-routing.md](../plans/2026-08-09-dual-host-agent-model-routing.md)
+**Delivery sequence (non-normative):** [plans/2026-08-09-dual-host-agent-model-routing.md](../plans/2026-08-09-dual-host-agent-model-routing.md)
 
-**Security honesty:** [security-model.md](../security-model.md) · host probe notes: [host-compat.md](../host-compat.md)
+**Security honesty:** verified / OMG ownership — [primary product contract](../security-model.md#primary-product-contract) · [acceptance policy (summary)](../security-model.md#acceptance-policy-summary); Team isolation is not a sandbox — [team integration isolation](../security-model.md#team-integration-isolation); host probe notes: [host-compat.md](../host-compat.md)
 
 This page is the **single canonical architecture** for how oh-my-grok (OMG)
 agent/model **policy** relates to native hosts. It does **not** implement route
@@ -37,8 +37,10 @@ Rules:
   required for standard OMG agents/workflows.
 - External Team CLI executors (codex, agy, cursor, gemini, …) are **separate**
   optional dependencies and are not Medley API/access routes.
-- Feature detection and `omg doctor` determine which **enhancements** are
-  available; unknown hosts negotiate by **capabilities**, not binary-name guessing.
+- Unknown hosts negotiate by **capabilities**, not binary-name guessing.
+  Current shipped `omg doctor` reports **current host/session capabilities**
+  only. Medley-side negotiation and routing-aware doctor fields are
+  **planned / contract-only** under #131, **not shipped**.
 - This document does **not** claim affiliation between OMG, Medley, or xAI.
 
 ## Mandatory terminology
@@ -90,8 +92,9 @@ medley.native-replay-safe-fallback.v1
 
 (Issue #133 also lists the conceptual family `native.exact-model.v1` /
 `native.ordered-candidates.v1` / … — the `host.*` vs `medley.*` split above is
-the dual-host disambiguation used by the planning contract so baseline
-exact/inherit is never mistaken for a Medley-only feature.)
+the dual-host disambiguation on **this** page so baseline exact/inherit is
+never mistaken for a Medley-only feature. The planning file is sequence-only
+and must not carry a second copy of these identifiers.)
 
 | Outcome | Meaning | Baseline OMG usable? |
 |---------|---------|----------------------|
@@ -102,9 +105,11 @@ exact/inherit is never mistaken for a Medley-only feature.)
 | **unknown** | Do not infer support | Yes for baseline; treat as not authorized |
 
 Only **supported** authorizes use of that capability. Unsupported enhanced
-fields must **not** be silently interpreted as baseline success. Medley-only
-diagnostics on stock Grok Build are labeled **unavailable** / **unsupported**,
-not installation **failed**.
+fields must **not** be silently interpreted as baseline success. On stock
+Grok Build, a Medley-only **capability outcome** is **unsupported**;
+**route-specific facts** (receipts, ordered candidates, access/readiness)
+are **unavailable**. Never interchange **unavailable** and **unsupported**
+with a slash. Neither is installation **failed**.
 
 ## Normative support matrix
 
@@ -175,7 +180,7 @@ Rules:
   without an explicit adapter mapping.
 
 Integration isolation (worktrees, seal, integrate) is **not** an execution
-sandbox — see [security-model.md](../security-model.md).
+sandbox — see [team integration isolation](../security-model.md#team-integration-isolation).
 
 ## Initial selection, retry, route fallback, worker replacement
 
@@ -212,8 +217,10 @@ credentials, account IDs, private origins, or entitlement claims.
   `model: grok-example-1` (fictional);
 - explicit `inherit` for parent model;
 - host-independent OMG agent/profile with **no** provider credentials in OMG state;
-- diagnostics: Medley route-receipt / ordered-candidate fields shown as
-  **unavailable** or **unsupported**, never fabricated success.
+- diagnostics: Medley-only **capability outcomes** shown as **unsupported**;
+  **route-specific facts** (receipts, ordered candidates, access/readiness)
+  shown as **unavailable**; never fabricated success. Neither is installation
+  failed.
 
 ### Medley extension
 
@@ -231,7 +238,7 @@ plus host-native projections.
 
 | Surface | Status relative to this architecture page |
 |---------|-------------------------------------------|
-| `omg doctor [--strict]` | **Shipped** — host/compat/probe honesty; enhanced fields must not false-green |
+| `omg doctor [--strict]` | **Shipped** — host/compat/probe honesty for **current host/session capabilities**; does **not** negotiate Medley/model-routing enhancements today; enhanced fields must not false-green |
 | `omg team status [--json]` | **Shipped** — Team status; route kind labeling is the dual-host contract target |
 | `omg agents list [--json]` | **Contract** — host-neutral agent/policy catalog; delivery under #131 / #134 |
 | `omg agents explain <id> [--json]` | **Contract** — policy vs effective route/receipt; delivery under #131 / #134 |
@@ -245,10 +252,13 @@ provider probes or print secrets.
 ## Installation and compatibility language
 
 - Original Grok Build remains the **normal supported host**.
-- Medley is an **optional compatible host** that can unlock enhanced native routing.
+- Medley is an **optional compatible host**. Enhanced native routing and
+  Medley-side negotiation are **planned (#131)**, not shipped.
 - OMG install ≠ Medley install; Medley is not required for baseline OMG.
 - External Team executors remain separate optional dependencies.
-- Use capability negotiation + `omg doctor`, not branding guesses.
+- Current `omg doctor` reports **current host/session capabilities** only; it
+  does not negotiate Medley routing availability. Use capability negotiation,
+  not branding guesses.
 
 Avoid wording that makes Medley look upstream, official, or required by Grok Build.
 

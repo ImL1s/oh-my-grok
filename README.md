@@ -61,7 +61,7 @@ Version: **0.8.0** · License: MIT
 
 **Requirements:** [Grok Build CLI](https://github.com/xai-org/grok-build) (`grok` on `PATH`) · Python **3.11+**
 
-**Host compatibility:** **Original Grok Build is the required, first-class baseline host.** OMG installs and runs ordinary agents, skills, workflows, evidence, and acceptance with Medley **absent**. [Medley](https://github.com/ImL1s/medley) is an **optional** compatible host that can unlock enhanced native model routing; installing OMG does **not** install Medley, and Medley is **never** a hard dependency. External Team CLI executors (`--routing`) remain separate optional tools. Capability negotiation and `omg doctor` decide which enhancements are available — details: [`docs/architecture/agent-model-routing.md`](docs/architecture/agent-model-routing.md).
+**Host compatibility:** **Original Grok Build is the required, first-class baseline host.** OMG installs and runs ordinary agents, skills, workflows, evidence, and acceptance with Medley **absent**. [Medley](https://github.com/ImL1s/medley) is an **optional** compatible host; installing OMG does **not** install Medley, and Medley is **never** a hard dependency. Enhanced native routing and Medley-side negotiation are **planned / contract-only (#131)**, not shipped. Current `omg doctor` reports current host/session capabilities only; it does **not** decide Medley routing availability. External Team CLI executors (`--routing`) remain separate optional tools. Details: [`docs/architecture/agent-model-routing.md`](docs/architecture/agent-model-routing.md).
 
 OMG has **two surfaces**: Grok **plugin** (skills/agents/hooks) + **`omg` CLI** (state, accept, verified). You need both for the full product.
 
