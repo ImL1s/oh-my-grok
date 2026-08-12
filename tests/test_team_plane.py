@@ -230,8 +230,18 @@ def test_start_refuses_inside_spawned_worker(
     _init_repo(tmp_path)
     _enable_team(monkeypatch)
     monkeypatch.setenv(TEAM_WORKER_ENV, "1")
-    with pytest.raises(TeamGateError, match="spawned-worker"):
+    with pytest.raises(TeamGateError, match="E_TEAM_NESTED_LAUNCH") as ei:
         start_team("g", TASKS_TWO, root=tmp_path, dry_run=True)
+    assert ei.value.code == "E_TEAM_NESTED_LAUNCH"
+    # command-text cannot authorize: still refused when process marker set
+    with pytest.raises(TeamGateError, match="E_TEAM_NESTED_LAUNCH"):
+        start_team(
+            "g",
+            TASKS_TWO,
+            root=tmp_path,
+            dry_run=True,
+            env={TEAM_WORKER_ENV: "1", "PATH": "/bin"},
+        )
 
 
 def test_start_caps_at_hard_cap(

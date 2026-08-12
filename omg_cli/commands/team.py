@@ -341,6 +341,7 @@ def cmd_team(args: argparse.Namespace) -> int:
         TeamGateError,
         collect_team,
         format_status_table,
+        refuse_nested_team_launch,
         start_team,
         status_locked_view,
         stop_team,
@@ -361,14 +362,29 @@ def cmd_team(args: argparse.Namespace) -> int:
 
         print(catalog_document_json(), end="")
         return 0
-    # #100: supervisor must not trigger generic project-root discovery via
-    # project_root(); it consumes the validated leader root from env only.
-    if action == "supervisor":
-        root = None
-    else:
-        root = project_root()
 
     try:
+        # Authoritative nested-launch gate before root discovery / side effects
+        # for supervisor lifecycle verbs. Identity-bound ``api`` is excluded so
+        # worker ops reach the runtime operation matrix.
+        if action in (
+            "launch",
+            "start",
+            "run",
+            "scale",
+            "resume",
+            "supervisor",
+            "stop",
+            "collect",
+        ):
+            refuse_nested_team_launch(action=str(action or "launch"))
+        # #100: supervisor must not trigger generic project-root discovery via
+        # project_root(); it consumes the validated leader root from env only.
+        if action == "supervisor":
+            root = None
+        else:
+            root = project_root()
+
         if action == "launch":
             from omg_cli.team.runtime import launch_team
             from omg_cli.team.topology import (

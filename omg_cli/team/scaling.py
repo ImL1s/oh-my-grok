@@ -63,6 +63,7 @@ from omg_cli.team.plane import (
     in_spawned_worker_context,
     load_team_meta,
     mutate_team_meta,
+    refuse_nested_team_launch,
     team_dir,
     team_launch_receipt_path,
     team_meta_path,
@@ -275,11 +276,7 @@ def _assert_team_gates(*, env: Mapping[str, str] | None = None) -> None:
             f"(unset OMG_DISABLE_TMUX_TEAM; {EXPERIMENTAL_ENV}=0 disables). "
             "(experimental tmux team plane; integration isolation only)"
         )
-    if in_spawned_worker_context(env):
-        raise TeamGateError(
-            "omg team scale/resume refused: already inside a spawned-worker "
-            f"context (depth-1; {TEAM_WORKER_ENV} or related markers set)"
-        )
+    refuse_nested_team_launch(env, action="scale/resume")
 
 
 def _resolve_run_id(root: Path, run_id: str | None) -> str:

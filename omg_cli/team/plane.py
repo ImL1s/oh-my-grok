@@ -157,7 +157,15 @@ class TeamError(RuntimeError):
 
 
 class TeamGateError(TeamError):
-    """Policy / experimental gate failure (maps to exit 2)."""
+    """Policy / experimental gate failure (maps to exit 2).
+
+    Optional ``code`` is a stable typed token (e.g. ``E_TEAM_NESTED_LAUNCH``)
+    for CLI/API consumers; message remains human-readable.
+    """
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 # ---------------------------------------------------------------------------
@@ -203,12 +211,35 @@ def in_spawned_worker_context(env: Mapping[str, str] | None = None) -> bool:
 
     Reuses the same marker family process fanout / team panes inject into
     child environments (``OMG_*_WORKER``). Prompt-only bans are insufficient.
+    Command-text env assignments are never consulted — only the provided
+    mapping or the real process environment.
     """
     source = env if env is not None else os.environ
     for key in WORKER_ENV_MARKERS:
         if _truthy_env(source.get(key)):
             return True
     return False
+
+
+def refuse_nested_team_launch(
+    env: Mapping[str, str] | None = None,
+    *,
+    action: str = "launch",
+) -> None:
+    """Fail closed before Team side effects when already a depth-1 worker.
+
+    Stable code: ``E_TEAM_NESTED_LAUNCH``. Must run before run creation,
+    worktree prep, tmux mutation, descriptor publication, or state writes.
+    Does not authorize from command-text env assignments.
+    """
+    if in_spawned_worker_context(env):
+        raise TeamGateError(
+            f"omg team {action} refused: already inside a spawned-worker context "
+            f"(depth-1; E_TEAM_NESTED_LAUNCH; one of "
+            f"{', '.join(WORKER_ENV_MARKERS)} is set). "
+            "Workers must not launch or supervise a team.",
+            code="E_TEAM_NESTED_LAUNCH",
+        )
 
 
 def in_non_team_spawn_context(env: Mapping[str, str] | None = None) -> bool:
@@ -598,12 +629,7 @@ def _assert_start_gates(
             f"(not an execution sandbox). Multi-CLI panes require explicit "
             f"role routing; zero-config remains grok-only."
         )
-    if in_spawned_worker_context(env):
-        raise TeamGateError(
-            "omg team start refused: already inside a spawned-worker context "
-            f"(depth-1; one of {', '.join(WORKER_ENV_MARKERS)} is set). "
-            "Workers must not launch a team."
-        )
+    refuse_nested_team_launch(env, action="start")
     n = len(tasks)
     if n < 1:
         raise TeamError("at least one task is required")
@@ -6796,6 +6822,7 @@ __all__ = [
     "in_spawned_worker_context",
     "load_team_meta",
     "mutate_team_meta",
+    "refuse_nested_team_launch",
     "start_team",
     "status_locked_view",
     "stop_team",
