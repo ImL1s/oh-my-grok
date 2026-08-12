@@ -504,6 +504,107 @@ def test_validate_receipt_rejects_forged_resume_matched_wrong_session_hash() -> 
         assert field in str(ei.value)
 
 
+def test_validate_receipt_rejects_initialized_not_exactly_true() -> None:
+    rec = AcpResumeReceipt(
+        job_id="20260101T000000Z-deadbeef",
+        attempt=1,
+        parent_run_id="run-1",
+        session_id_hash=hash_session_id("sid"),
+        cwd_hash=hash_cwd("."),
+        resume_matched=True,
+        timestamp="2026-01-01T00:00:00+00:00",
+    )
+    good = rec.to_dict()
+    assert good["initialized"] is True
+    validated = validate_receipt(
+        good,
+        session_id_hash=rec.session_id_hash,
+        cwd_hash=rec.cwd_hash,
+        parent_run_id=rec.parent_run_id,
+    )
+    assert validated.initialized is True
+    assert validated.receipt_sha256 == good["receipt_sha256"]
+
+    missing = rec.to_dict()
+    del missing["initialized"]
+    core = {k: v for k, v in missing.items() if k != "receipt_sha256"}
+    missing["receipt_sha256"] = hashlib.sha256(
+        json.dumps(core, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    with pytest.raises(AcpError) as ei_missing:
+        validate_receipt(
+            missing,
+            session_id_hash=rec.session_id_hash,
+            cwd_hash=rec.cwd_hash,
+            parent_run_id=rec.parent_run_id,
+        )
+    assert ei_missing.value.code == "E_ACP_RECEIPT"
+    assert "initialized" in str(ei_missing.value)
+
+    for bad in (False, 0, 1, "true", "True", "1", "yes"):
+        body = rec.to_dict()
+        body["initialized"] = bad
+        core = {k: v for k, v in body.items() if k != "receipt_sha256"}
+        body["receipt_sha256"] = hashlib.sha256(
+            json.dumps(core, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        with pytest.raises(AcpError) as ei:
+            validate_receipt(
+                body,
+                session_id_hash=rec.session_id_hash,
+                cwd_hash=rec.cwd_hash,
+                parent_run_id=rec.parent_run_id,
+            )
+        assert ei.value.code == "E_ACP_RECEIPT", bad
+        assert "initialized" in str(ei.value), bad
+
+
+def test_build_receipt_from_dict_initialized_is_exact_true() -> None:
+    rec = build_receipt_from_dict(
+        {
+            "job_id": "j",
+            "attempt": 1,
+            "parent_run_id": "run-1",
+            "session_id_hash": "abc",
+            "cwd_hash": "def",
+        }
+    )
+    assert rec.initialized is False
+    rec_truthy = build_receipt_from_dict(
+        {
+            "job_id": "j",
+            "attempt": 1,
+            "parent_run_id": "run-1",
+            "session_id_hash": "abc",
+            "cwd_hash": "def",
+            "initialized": 1,
+        }
+    )
+    assert rec_truthy.initialized is False
+    rec_str = build_receipt_from_dict(
+        {
+            "job_id": "j",
+            "attempt": 1,
+            "parent_run_id": "run-1",
+            "session_id_hash": "abc",
+            "cwd_hash": "def",
+            "initialized": "true",
+        }
+    )
+    assert rec_str.initialized is False
+    rec_ok = build_receipt_from_dict(
+        {
+            "job_id": "j",
+            "attempt": 1,
+            "parent_run_id": "run-1",
+            "session_id_hash": "abc",
+            "cwd_hash": "def",
+            "initialized": True,
+        }
+    )
+    assert rec_ok.initialized is True
+
+
 def test_build_receipt_from_dict_missing_resume_matched_is_not_true() -> None:
     rec = build_receipt_from_dict(
         {

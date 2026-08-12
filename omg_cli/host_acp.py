@@ -87,7 +87,7 @@ class AcpResumeReceipt:
             "session_id_hash": self.session_id_hash,
             "cwd_hash": self.cwd_hash,
             "transport": self.transport,
-            "initialized": bool(self.initialized),
+            "initialized": self.initialized is True,
             "resume_matched": self.resume_matched is True,
             "no_replay_observed": bool(self.no_replay_observed),
             "restore_code_requested": bool(self.restore_code_requested),
@@ -1016,7 +1016,7 @@ def build_receipt_from_dict(data: Mapping[str, Any]) -> AcpResumeReceipt:
         session_id_hash=str(data.get("session_id_hash") or ""),
         cwd_hash=str(data.get("cwd_hash") or ""),
         transport=str(data.get("transport") or TRANSPORT_KIND),
-        initialized=bool(data.get("initialized", True)),
+        initialized=data.get("initialized") is True,
         resume_matched=data.get("resume_matched") is True,
         no_replay_observed=bool(data.get("no_replay_observed", True)),
         restore_code_requested=bool(data.get("restore_code_requested", False)),
@@ -1058,6 +1058,8 @@ def validate_receipt(
         raise AcpError("receipt connection_owned required", code="E_ACP_RECEIPT")
     if data.get("resume_matched") is not True:
         raise AcpError("receipt resume_matched must be true", code="E_ACP_RECEIPT")
+    if data.get("initialized") is not True:
+        raise AcpError("receipt initialized must be true", code="E_ACP_RECEIPT")
     # Forbidden content keys
     for banned in (
         "transcript",
