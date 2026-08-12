@@ -675,6 +675,11 @@ def test_omc_team_shell_metachar_boundary_no_space_denied():
         "env omc 2>out team",
         'bash -lc "omc>out team"',
         "bash -lc 'omc 2>&1 team x'",
+        # multi-fd mid-command redirs (review3 Critical — must not starve team)
+        "omc 0</dev/null 1>out 2>&1 team",
+        "omc 0</dev/null 1>out 2>>err 3>&1 team",
+        "A=1 command /usr/bin/omc 0</dev/null 1>out 2>&1 team",
+        "bash -lc 'omc 0</dev/null 1>out 2>&1 team x'",
         # reversed multi-head: safe-looking then foreign with mid-redir
         "true; omc>out team",
         "echo hi && omc 2>out team 2:codex x",
@@ -690,6 +695,15 @@ def test_omc_team_shell_metachar_boundary_no_space_denied():
         "printf '%s' 'omc team>out'",
         'printf "%s" "omc>out team"',
         "echo omc>out team",  # omc not command-position head
+        # newline/CR after redir: second line is a separate command (review3)
+        "omc>out\nteam",
+        "omc 2>out\nteam",
+        "omc>out\r\nteam",
+        # spaced numeric argv is NOT an FD prefix (``2 >out`` keeps argv 2)
+        "omc 2 >out team",
+        "omc 2 >out team 2:codex x",
+        # team as redir target, not subcommand
+        "omc >team status",
     )
     for cmd in allow_cmds:
         assert should_deny_command(cmd) is False, cmd
@@ -721,6 +735,10 @@ def test_worker_nested_team_shell_metachar_boundary(monkeypatch):
         "/opt/omg/bin/omg>out team start --goal x",
         "command omg</dev/null team scale --add 1",
         "bash -lc 'omg>out team launch --goal x'",
+        # multi-fd mid-command redirs (review3 Critical)
+        "omg 0</dev/null 1>out 2>>err 3>&1 team launch",
+        "omg 0</dev/null 1>out 2>&1 team start --goal x",
+        "bash -lc 'omg 0</dev/null 1>out 2>>err 3>&1 team launch --goal x'",
         # multi-head: status then nested launch with mid-redir
         "omg team api catalog; omg>out team launch --goal x",
         "omg team status\nomg 2>&1 team launch --goal x",
@@ -744,7 +762,16 @@ def test_worker_nested_team_shell_metachar_boundary(monkeypatch):
         "omg</dev/null team status",
         "omg 2>out team api claim-task --input '{}'",
         "omg 2>&1 team status r",
+        "omg 0</dev/null 1>out 2>&1 team api catalog",
+        "omg 0</dev/null 1>out 2>>err 3>&1 team status r",
         'echo "omg team launch"',
+        # newline after redir: first command has no team launch (review3)
+        "omg>out\nteam launch",
+        "omg 2>out\nteam launch",
+        "omg>out\r\nteam launch",
+        # spaced numeric argv is NOT an FD prefix → not ``omg team launch``
+        "omg 2 >out team launch",
+        "omg 2 >out team start --goal x",
     )
     for cmd in allow_cmds:
         assert is_first_party_team_nested_launch(cmd) is False, cmd

@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "d55645a05a561b6494c0a004a1ca30188111bfe41cfe0c936912a2c04e4f371a"
+_OMG_GENERATED_FROM_SHA = "91b8b1466a54a4c21f0a294cc2286770b59abf316ac3a34c5e33f0ea990cefcf"
 _OMG_PLUGIN_VERSION = "0.8.0"
 
 
@@ -1525,18 +1525,66 @@ def _has_denied_decoded_command_head(command: str) -> bool:
 # Bound how much trailing text we decode after a matched executable head when
 # classifying ``omc team`` / ``omg team`` — avoids O(n²) shlex on huge scripts.
 _HEAD_TAIL_DECODE_LIMIT = 512
-# Extra raw words to decode so redirection noise (``>out``, ``2>&1``) does not
-# starve the semantic ``team`` / op tokens after boundary normalization.
-_HEAD_TAIL_WORD_SLACK = 8
+# Max raw tokens examined after boundary insert while dropping redirects. The
+# char-bounded fragment is already small; this is a secondary safety cap so a
+# pathological token soup cannot stall the hook. Must stay large enough that
+# several FD redirects (``0</dev/null 1>out 2>&1`` → ~9 raw words) never starve
+# the semantic ``team`` / op tokens (Codex review3 multi-redir Critical).
+_HEAD_TAIL_RAW_SCAN_CAP = 64
 
 # Pure command separators / pipeline control — stop argv collection for the
 # current head (do not glue the next shell command into this argv).
+# ``\n``/``\r`` are listed for documentation; unquoted newlines are rewritten
+# to ``;`` in :func:`_insert_unquoted_shell_boundaries` because ``shlex`` treats
+# newlines as whitespace and would otherwise erase the command boundary.
 _SHELL_COMMAND_SEPARATORS = frozenset({";", "&", "&&", "|", "||", "\n", "\r"})
 # Pure redirection operators that take a following word as the target when
 # not already glued (``> out`` vs ``>out``).
 _SHELL_REDIR_OPS = frozenset({">", ">>", "<", "<<", ">&", "<&", ">|", "&>", "&>>"})
 _SHELL_REDIR_GLUED = re.compile(r"^(?:\d*)(?:>>|<<|>&|<&|>\||&>|&>>|[<>]).+")
 _SHELL_REDIR_PURE = re.compile(r"^(?:\d*)(?:>>|<<|>&|<&|>\||&>|&>>|[<>])$")
+# Redirection operators that may take an adjacent FD digit prefix (``2>``,
+# ``2>&``). Control operators ``&&`` / ``||`` are not included.
+_SHELL_REDIR_TWOCHAR = frozenset({">>", "<<", ">&", "<&", ">|", "&>"})
+
+
+def _adjacent_fd_prefix(text: str, op_index: int) -> str:
+    """Return bare FD digits immediately before *op_index*, else ``""``.
+
+    Preserves token adjacency: ``2>out`` has prefix ``2``; ``2 >out`` does not.
+    Digits that are part of a larger word (``echo2>out``) are not an FD prefix.
+    """
+
+    if op_index <= 0:
+        return ""
+    start = op_index
+    while start > 0 and text[start - 1].isdigit() and op_index - (start - 1) <= 4:
+        start -= 1
+    digits = text[start:op_index]
+    if not digits or not digits.isdecimal() or len(digits) > 4:
+        return ""
+    if start > 0:
+        before = text[start - 1]
+        if before.isalnum() or before == "_":
+            return ""
+    return digits
+
+
+def _emit_redir_op(out: list[str], text: str, op_index: int, op_len: int) -> None:
+    """Append a spaced redir token, gluing an immediately-adjacent FD prefix.
+
+    Pops already-emitted digit characters from *out* when they form a bare FD
+    that was adjacent to the operator in the original text. Spaced forms such
+    as ``2 >out`` keep ``2`` as a normal argv word.
+    """
+
+    fd = _adjacent_fd_prefix(text, op_index)
+    op = text[op_index : op_index + op_len]
+    if fd and len(out) >= len(fd) and "".join(out[-len(fd) :]) == fd:
+        del out[-len(fd) :]
+        out.append(f" {fd}{op} ")
+    else:
+        out.append(f" {op} ")
 
 
 def _insert_unquoted_shell_boundaries(text: str) -> str:
@@ -1546,6 +1594,12 @@ def _insert_unquoted_shell_boundaries(text: str) -> str:
     glued to a word (``team>out``, ``team;echo``). Real shells do. This pass
     normalizes only the bounded tail after an executable head so both foreign
     ``omc team`` and first-party nested classification see the same tokens.
+
+    Also:
+    - Keeps FD digits **adjacent** to redirection ops (``2>out`` → ``2>`` +
+      target) so spaced ``2 >out`` remains argv ``2`` + redirect (review3).
+    - Rewrites unquoted newlines/CRs to ``;`` so ``shlex`` cannot erase command
+      separators (``omc>out\\nteam`` is two commands, not ``omc team``).
 
     Preserves single/double quotes and backslash escapes. Does not expand
     substitutions or implement full shell grammar. O(n) in *text* length.
@@ -1591,18 +1645,37 @@ def _insert_unquoted_shell_boundaries(text: str) -> str:
             context = "double"
             index += 1
             continue
+        # Unquoted newline / CR are command separators. ``shlex`` treats them as
+        # whitespace and would otherwise glue the next line's tokens into this
+        # head's argv (``omc>out\\nteam`` must not become ``omc`` + ``team``).
+        if char == "\r":
+            index += 2 if following == "\n" else 1
+            out.append(" ; ")
+            continue
+        if char == "\n":
+            out.append(" ; ")
+            index += 1
+            continue
         # Multi-character operators first (longest match).
         three = text[index : index + 3]
         if three == "&>>":
-            out.append(" &>> ")
+            _emit_redir_op(out, text, index, 3)
             index += 3
             continue
         two = char + following if following else char
-        if two in ("&&", "||", ">>", "<<", ">&", "<&", ">|", "&>"):
+        if two in ("&&", "||"):
             out.append(f" {two} ")
             index += 2
             continue
-        if char in ";&|<>()":
+        if two in _SHELL_REDIR_TWOCHAR:
+            _emit_redir_op(out, text, index, 2)
+            index += 2
+            continue
+        if char in "<>":
+            _emit_redir_op(out, text, index, 1)
+            index += 1
+            continue
+        if char in ";&|()":
             out.append(f" {char} ")
             index += 1
             continue
@@ -1625,12 +1698,6 @@ def _is_shell_redirect_token(word: str) -> bool:
     return False
 
 
-def _is_bare_shell_fd_token(word: str) -> bool:
-    """True for a bare decimal FD number (prefix of ``2>out`` / ``2>&1``)."""
-
-    return bool(word) and word.isdecimal() and len(word) <= 4
-
-
 def _next_decoded_words(command: str, start: int, *, limit: int = 4) -> list[str]:
     """Decode at most *limit* **semantic** argv words from a bounded tail.
 
@@ -1639,25 +1706,26 @@ def _next_decoded_words(command: str, start: int, *, limit: int = 4) -> list[str
     the first word. Shared by foreign ``omc team`` and first-party nested
     classification.
 
-    Also skips redirections *between* the executable and later argv
-    (``omc 2>out team``, ``omg >out team launch``): after boundary insert,
-    FD-prefixed forms become ``2`` + ``>`` + target — the bare FD must not
-    become a semantic argv word that masks ``team``.
+    Skips redirections *between* the executable and later argv (``omc 2>out
+    team``, ``omg 0</dev/null 1>out 2>&1 team``). FD-prefixed redirs stay a
+    single redirect token when originally adjacent (``2>out``); a spaced
+    numeric argv (``2 >out``) remains a semantic word. Raw tokens are **not**
+    truncated before redirect-dropping — only the 512-char fragment bound and
+    :data:`_HEAD_TAIL_RAW_SCAN_CAP` apply — so multi-redir sequences cannot
+    starve ``team``.
     """
 
     if start >= len(command):
         return []
     end = min(len(command), start + _HEAD_TAIL_DECODE_LIMIT)
     fragment = _insert_unquoted_shell_boundaries(command[start:end])
-    # Decode enough raw tokens to fill *limit* semantic words after redir drop.
-    raw_limit = max(limit + _HEAD_TAIL_WORD_SLACK, limit * 2)
-    raw_words = _decode_shell_words(fragment)[:raw_limit]
-    # Build semantic argv until separators; preserve order for callers that
-    # need the full post-``team`` argv (nested-launch op classification).
+    # Decode the whole bounded fragment; drop redirs while scanning so a long
+    # redirect sequence never cuts ``team`` off before semantic collection.
+    raw_words = _decode_shell_words(fragment)
     semantic: list[str] = []
     skip_next = False
     index = 0
-    n_raw = len(raw_words)
+    n_raw = min(len(raw_words), _HEAD_TAIL_RAW_SCAN_CAP)
     while index < n_raw:
         word = raw_words[index]
         index += 1
@@ -1668,17 +1736,9 @@ def _next_decoded_words(command: str, start: int, *, limit: int = 4) -> list[str
             break
         if word in ("(", ")"):
             break
-        # FD prefix of a redirection: ``2`` then ``>`` / ``>&`` / ``>out`` …
-        if _is_bare_shell_fd_token(word) and index < n_raw:
-            following = raw_words[index]
-            if _is_shell_redirect_token(following):
-                # Drop the FD; the next loop iteration consumes the redir.
-                continue
         if _is_shell_redirect_token(word):
-            # Pure ops (``>``, ``2>``, ``>&``) take a following target word.
+            # Pure ops (``>``, ``2>``, ``>&``, ``2>&``) take a following target.
             # Glued forms (``>out``, ``2>out``) already include the target.
-            # Duplication ``>&1`` / ``2>&1`` is pure after boundary split as
-            # ``>&`` + ``1`` (or still glued as ``2>&1`` via _SHELL_REDIR_GLUED).
             if word in _SHELL_REDIR_OPS or _SHELL_REDIR_PURE.match(word):
                 skip_next = True
             continue
