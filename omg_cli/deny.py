@@ -1467,16 +1467,142 @@ def _has_denied_decoded_command_head(command: str) -> bool:
 # Bound how much trailing text we decode after a matched executable head when
 # classifying ``omc team`` / ``omg team`` — avoids O(n²) shlex on huge scripts.
 _HEAD_TAIL_DECODE_LIMIT = 512
+# Extra raw words to decode so redirection noise (``>out``, ``2>&1``) does not
+# starve the semantic ``team`` / op tokens after boundary normalization.
+_HEAD_TAIL_WORD_SLACK = 8
+
+# Pure command separators / pipeline control — stop argv collection for the
+# current head (do not glue the next shell command into this argv).
+_SHELL_COMMAND_SEPARATORS = frozenset({";", "&", "&&", "|", "||", "\n", "\r"})
+# Pure redirection operators that take a following word as the target when
+# not already glued (``> out`` vs ``>out``).
+_SHELL_REDIR_OPS = frozenset({">", ">>", "<", "<<", ">&", "<&", ">|", "&>", "&>>"})
+_SHELL_REDIR_GLUED = re.compile(r"^(?:\d*)(?:>>|<<|>&|<&|>\||&>|&>>|[<>]).+")
+_SHELL_REDIR_PURE = re.compile(r"^(?:\d*)(?:>>|<<|>&|<&|>\||&>|&>>|[<>])$")
+
+
+def _insert_unquoted_shell_boundaries(text: str) -> str:
+    """Insert whitespace around unquoted shell operators (linear, quote-aware).
+
+    ``shlex`` does not treat ``; | & < > ( )`` as token boundaries when they are
+    glued to a word (``team>out``, ``team;echo``). Real shells do. This pass
+    normalizes only the bounded tail after an executable head so both foreign
+    ``omc team`` and first-party nested classification see the same tokens.
+
+    Preserves single/double quotes and backslash escapes. Does not expand
+    substitutions or implement full shell grammar. O(n) in *text* length.
+    """
+
+    if not text:
+        return text
+    out: list[str] = []
+    context = "normal"  # normal | single | double
+    index = 0
+    n = len(text)
+    while index < n:
+        char = text[index]
+        following = text[index + 1] if index + 1 < n else ""
+        if context == "single":
+            out.append(char)
+            if char == "'":
+                context = "normal"
+            index += 1
+            continue
+        if context == "double":
+            out.append(char)
+            if char == "\\" and following:
+                out.append(following)
+                index += 2
+                continue
+            if char == '"':
+                context = "normal"
+            index += 1
+            continue
+        # normal context
+        if char == "\\" and following:
+            out.extend((char, following))
+            index += 2
+            continue
+        if char == "'":
+            out.append(char)
+            context = "single"
+            index += 1
+            continue
+        if char == '"':
+            out.append(char)
+            context = "double"
+            index += 1
+            continue
+        # Multi-character operators first (longest match).
+        three = text[index : index + 3]
+        if three == "&>>":
+            out.append(" &>> ")
+            index += 3
+            continue
+        two = char + following if following else char
+        if two in ("&&", "||", ">>", "<<", ">&", "<&", ">|", "&>"):
+            out.append(f" {two} ")
+            index += 2
+            continue
+        if char in ";&|<>()":
+            out.append(f" {char} ")
+            index += 1
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _is_shell_redirect_token(word: str) -> bool:
+    """True for pure or glued redirection tokens (not ordinary path args)."""
+
+    if not word:
+        return False
+    if word in _SHELL_REDIR_OPS:
+        return True
+    if _SHELL_REDIR_PURE.match(word):
+        return True
+    if _SHELL_REDIR_GLUED.match(word):
+        return True
+    return False
 
 
 def _next_decoded_words(command: str, start: int, *, limit: int = 4) -> list[str]:
-    """Decode at most *limit* words from a bounded slice after *start*."""
+    """Decode at most *limit* **semantic** argv words from a bounded tail.
+
+    Applies a linear shell-operator boundary correction before shlex so
+    no-space forms like ``team>out`` / ``team;echo`` still yield ``team`` as
+    the first word. Shared by foreign ``omc team`` and first-party nested
+    classification.
+    """
 
     if start >= len(command):
         return []
     end = min(len(command), start + _HEAD_TAIL_DECODE_LIMIT)
-    words = _decode_shell_words(command[start:end])
-    return words[:limit]
+    fragment = _insert_unquoted_shell_boundaries(command[start:end])
+    # Decode enough raw tokens to fill *limit* semantic words after redir drop.
+    raw_limit = max(limit + _HEAD_TAIL_WORD_SLACK, limit * 2)
+    raw_words = _decode_shell_words(fragment)[:raw_limit]
+    # Build semantic argv until separators; preserve order for callers that
+    # need the full post-``team`` argv (nested-launch op classification).
+    semantic: list[str] = []
+    skip_next = False
+    for word in raw_words:
+        if skip_next:
+            skip_next = False
+            continue
+        if word in _SHELL_COMMAND_SEPARATORS:
+            break
+        if word in ("(", ")"):
+            break
+        if _is_shell_redirect_token(word):
+            if word in _SHELL_REDIR_OPS or _SHELL_REDIR_PURE.match(word):
+                skip_next = True
+            continue
+        semantic.append(word)
+        if len(semantic) >= limit:
+            break
+    return semantic
 
 
 def _has_foreign_omc_team(command: str) -> bool:
@@ -1485,6 +1611,7 @@ def _has_foreign_omc_team(command: str) -> bool:
     Covers bare, path-prefixed, wrapper (``env``/``command``/``exec``/…), and
     forms already exposed as executable heads by the bounded parser. Recursive
     ``sh|bash|zsh -c/-lc`` bodies are handled by the existing shell-c walk.
+    Also covers no-space shell boundaries (``omc team>out``, ``omc team;echo``).
     """
 
     search_position = 0
@@ -1526,6 +1653,9 @@ def _iter_first_party_team_argvs(command: str):
 
     Important (#146 multi-occurrence STOP): a safe/read-only/api head must never
     short-circuit later launch/supervise heads in the same command string.
+
+    Shell metacharacter boundaries are normalized so no-space forms such as
+    ``omg team>out launch`` and ``omg team;echo`` classify correctly.
     """
 
     search_position = 0
@@ -1533,7 +1663,7 @@ def _iter_first_party_team_argvs(command: str):
         if _shell_context_is_executable(command, match.start()) is True:
             base = _executable_basename(match.group("word"))
             if base == _FIRST_PARTY_TEAM_BIN:
-                tail = _next_decoded_words(command, match.end(), limit=3)
+                tail = _next_decoded_words(command, match.end(), limit=4)
                 if tail and tail[0].lower() == "team":
                     yield [w.lower() for w in tail[1:]]
         search_position = match.start() + 1

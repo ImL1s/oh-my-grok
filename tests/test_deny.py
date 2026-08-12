@@ -626,6 +626,87 @@ def test_omg_team_first_party_allowed_omc_team_denied():
     assert should_deny_command('echo "run omc team"') is False
 
 
+def test_omc_team_shell_metachar_boundary_no_space_denied():
+    """#146 STOP-6 / P1: shlex must not miss ``team`` glued to shell ops.
+
+    Real shells treat ``omc team>out`` as ``omc team`` + redirect; a pure
+    shlex tail decode sees one token ``team>out`` and would allow the command.
+    """
+    deny_cmds = (
+        "omc team>out 2:codex x",
+        "omc team>/dev/null 2:codex x",
+        "omc team;echo",
+        "omc team|cat",
+        "omc team&&x",
+        "omc team||true",
+        "omc team</dev/null 2:codex x",
+        "omc team>out",
+        # with-space redirections still denied
+        "omc team >out 2:codex x",
+        "omc team >/dev/null 2:codex x",
+        # path / wrapper / shell-c with no-space team boundary
+        "/usr/bin/omc team>out x",
+        "command omc team;echo hi",
+        "env omc team|cat",
+        "bash -lc 'omc team>out 2:codex x'",
+        "bash -lc 'omc team;echo'",
+    )
+    for cmd in deny_cmds:
+        assert should_deny_command(cmd) is True, cmd
+
+    # Harmless argument / quoted mentions remain allowed.
+    allow_cmds = (
+        'echo "run omc team"',
+        "echo omc team>not-a-command",  # omc not in command position
+        "true; echo omc team",
+        "printf '%s' 'omc team>out'",
+    )
+    for cmd in allow_cmds:
+        assert should_deny_command(cmd) is False, cmd
+
+
+def test_worker_nested_team_shell_metachar_boundary(monkeypatch):
+    """#146 P1 minor: worker DiD still sees nested launch through redirections."""
+    from omg_cli.deny import is_first_party_team_nested_launch
+
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+
+    deny_cmds = (
+        "omg team>out launch --goal x",
+        "omg team>/dev/null launch --goal x",
+        "omg team;launch --goal x",  # bare ``omg team`` is launch surface
+        "omg team|cat",
+        "omg team&&launch --goal x",
+        "omg team</dev/null launch --goal x",
+        "omg team>out 2:executor \"x\"",
+        "bash -lc 'omg team>out launch --goal x'",
+        "/opt/omg/bin/omg team>/dev/null start --goal x",
+        "command omg team;scale --add 1",
+    )
+    for cmd in deny_cmds:
+        assert is_first_party_team_nested_launch(cmd) is True, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "deny", cmd
+        assert "E_TEAM_NESTED_LAUNCH" in (d.get("reason") or ""), cmd
+
+    # Safe ops + arg mentions still allowed through soft-gate.
+    allow_cmds = (
+        "omg team api catalog",
+        "omg team status r",
+        "omg team>out api catalog",  # redir only; op remains api
+        "omg team>/dev/null status",
+        'echo "omg team launch"',
+    )
+    for cmd in allow_cmds:
+        assert is_first_party_team_nested_launch(cmd) is False, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "allow", cmd
+
+
 def test_first_party_team_not_mislabeled_as_external_cli():
     """decide_pre_tool_use must allow bare omg team without advisor messaging."""
     ev = {
