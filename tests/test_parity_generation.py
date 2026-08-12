@@ -105,6 +105,57 @@ def test_generated_gap_report_contains_open_p0s() -> None:
     assert "| `gap.parity.governance.remaining` | P0 | closed | #78 |" in text
 
 
+def _issues_by_capability(matrix: str) -> dict[str, set[str]]:
+    issues_by_cap: dict[str, set[str]] = {}
+    for match in _FEATURE_MATRIX_ROW.finditer(matrix):
+        cap_id, issues_cell = match.groups()
+        issues_by_cap[cap_id] = {
+            item.strip() for item in issues_cell.split(",") if item.strip()
+        }
+    return issues_by_cap
+
+
+def test_rendered_feature_matrix_locks_child_owners_not_78_only() -> None:
+    gen = _load_generator()
+    inventory = validate_parity_inventory(load_json_object(INVENTORY), repo_root=ROOT)
+    issues_by_cap = _issues_by_capability(gen.render_feature_matrix(inventory))
+    assert "#73" in issues_by_cap["omc.tools.lsp_ast"]
+    assert "#73" in issues_by_cap["omo.tools.lsp_ast_codegraph_mcp"]
+    assert "#76" in issues_by_cap["omo.edit.hash_anchored"]
+    assert "#76" in issues_by_cap["omo.quality.comment_hygiene"]
+    for cap_id in (
+        "omc.tools.lsp_ast",
+        "omo.tools.lsp_ast_codegraph_mcp",
+        "omo.edit.hash_anchored",
+        "omo.quality.comment_hygiene",
+    ):
+        assert issues_by_cap[cap_id] != {"#78"}, cap_id
+        assert "#78" not in issues_by_cap[cap_id], cap_id
+    gaps_text = gen.render_gaps(inventory)
+    assert "| `gap.parity.governance.remaining` | P0 | closed | #78 |" in gaps_text
+
+
+def test_generated_feature_matrix_locks_child_owners_after_regen() -> None:
+    result = _run_generate_check()
+    assert result.returncode == 0, result.stderr
+    issues_by_cap = _issues_by_capability(MATRIX.read_text(encoding="utf-8"))
+    assert "#73" in issues_by_cap["omc.tools.lsp_ast"]
+    assert "#73" in issues_by_cap["omo.tools.lsp_ast_codegraph_mcp"]
+    assert "#76" in issues_by_cap["omo.edit.hash_anchored"]
+    assert "#76" in issues_by_cap["omo.quality.comment_hygiene"]
+    for cap_id in (
+        "omc.tools.lsp_ast",
+        "omo.tools.lsp_ast_codegraph_mcp",
+        "omo.edit.hash_anchored",
+        "omo.quality.comment_hygiene",
+    ):
+        assert issues_by_cap[cap_id] != {"#78"}, cap_id
+        assert "#78" not in issues_by_cap[cap_id], cap_id
+    assert "| `gap.parity.governance.remaining` | P0 | closed | #78 |" in GAPS.read_text(
+        encoding="utf-8"
+    )
+
+
 def test_generated_open_p0_section_excludes_closed_67_68_owners() -> None:
     result = _run_generate_check()
     assert result.returncode == 0, result.stderr
@@ -165,6 +216,30 @@ def test_rendered_feature_matrix_includes_open_gap_owners() -> None:
         )
     assert section_owners == {"#69"}
     assert inventory["inventory_status"] == "bootstrapping"
+
+
+def test_rendered_feature_matrix_locks_child_owners_not_closed_78() -> None:
+    """Locked leftovers use child owners; #78 is historical on governance only."""
+    gen = _load_generator()
+    inventory = validate_parity_inventory(load_json_object(INVENTORY), repo_root=ROOT)
+    matrix = gen.render_feature_matrix(inventory)
+    issues_by_cap: dict[str, set[str]] = {}
+    for match in _FEATURE_MATRIX_ROW.finditer(matrix):
+        cap_id, issues_cell = match.groups()
+        issues_by_cap[cap_id] = {
+            item.strip() for item in issues_cell.split(",") if item.strip()
+        }
+    assert "#73" in issues_by_cap["omc.tools.lsp_ast"]
+    assert "#73" in issues_by_cap["omo.tools.lsp_ast_codegraph_mcp"]
+    assert "#76" in issues_by_cap["omo.edit.hash_anchored"]
+    assert "#76" in issues_by_cap["omo.quality.comment_hygiene"]
+    assert "#78" not in issues_by_cap["omc.tools.lsp_ast"]
+    assert "#78" not in issues_by_cap["omo.tools.lsp_ast_codegraph_mcp"]
+    assert "#78" not in issues_by_cap["omo.edit.hash_anchored"]
+    assert issues_by_cap["parity.inventory.governance"] >= {"#78", "#79"}
+    gaps_text = gen.render_gaps(inventory)
+    assert "| `gap.parity.governance.remaining` | P0 | closed | #78 |" in gaps_text
+    assert "| `gap.omo.edit_and_hygiene` | P2 | open | #76, #79 |" in gaps_text
 
 
 def test_generated_per_source_matrices_are_current() -> None:

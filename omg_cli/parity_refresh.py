@@ -180,6 +180,29 @@ def canonical_changes_digest(changes: list[dict[str, Any]]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def host_baseline_receipt_digest(
+    *,
+    change_digest: str,
+    snapshot_hash: str,
+    generated_docs_hash: str,
+) -> str:
+    """Filename digest for GROK_BUILD receipts (changes + current content hashes).
+
+    Keeps the changes-only ``change_digest`` field stable so pin-transition
+    acknowledgments still match, while a new snapshot/docs hash can mint a
+    new immutable receipt instead of rewriting the previous ledger.
+    """
+    payload = {
+        "change_digest": require_nonempty_string(change_digest, label="change_digest"),
+        "generated_docs_hash": require_nonempty_string(
+            generated_docs_hash, label="generated_docs_hash"
+        ),
+        "snapshot_hash": require_nonempty_string(snapshot_hash, label="snapshot_hash"),
+    }
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
 def committed_review_filename(
     *,
     source: str,
@@ -653,12 +676,52 @@ def write_committed_host_baseline_review(
     host_meta = require_object(plan.get("host_baseline"), label="plan.host_baseline")
     for key in ("snapshot_hash", "reviewed_pin", "previous_pin", "snapshot_path"):
         require_nonempty_string(host_meta.get(key), label=f"plan.host_baseline.{key}")
-    path = write_committed_refresh_review(
-        root, plan, acknowledgments=acknowledgments
+    generated_docs_hash = require_nonempty_string(
+        host_meta.get("generated_docs_hash"),
+        label="plan.host_baseline.generated_docs_hash",
     )
-    # Re-read and ensure host_baseline block is persisted (write_committed strips unknown?).
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["host_baseline"] = dict(host_meta)
+    changes = plan.get("changes")
+    if not isinstance(changes, list):
+        raise ContractValidationError("plan.changes must be an array")
+    changes_digest = canonical_changes_digest(
+        [c for c in changes if isinstance(c, dict)]
+    )
+    identity = host_baseline_receipt_digest(
+        change_digest=changes_digest,
+        snapshot_hash=str(host_meta["snapshot_hash"]),
+        generated_docs_hash=generated_docs_hash,
+    )
+    entries = acknowledgments
+    if entries is None:
+        entries = []
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            entries.append({**change, "disposition": "acknowledged"})
+    from_revision = require_git_oid(plan.get("from_revision"), label="plan.from_revision")
+    to_revision = require_git_oid(plan.get("to_revision"), label="plan.to_revision")
+    payload = {
+        "store_kind": "parity_refresh_review",
+        "schema_version": 1,
+        "source": HOST_BASELINE_PIN_ID,
+        "from_revision": from_revision,
+        "to_revision": to_revision,
+        "generated_at": plan.get("generated_at"),
+        "change_digest": changes_digest,
+        "content_binding_digest": identity,
+        "changes": entries,
+        "proposed_inventory_patch": plan.get("proposed_inventory_patch"),
+        "guards": plan.get("guards"),
+        "host_baseline": dict(host_meta),
+    }
+    path = committed_review_path(
+        root,
+        source=HOST_BASELINE_PIN_ID,
+        from_revision=from_revision,
+        to_revision=to_revision,
+        change_digest=identity,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
 

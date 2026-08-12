@@ -298,7 +298,8 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#74",
+        "#79"
       ],
       "gap": "OMG substitutes via guidance + host_session; OMC in-session MCP/tool surfaces are not 1:1."
     },
@@ -350,7 +351,8 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#71",
+        "#79"
       ],
       "gap": "Grok plugin agents exist; OMC-style dynamic tier routing is not fully mirrored."
     },
@@ -400,7 +402,8 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#70",
+        "#79"
       ],
       "gap": "OMG ships omg-* skills; OMC alias/pipeline breadth remains partially unclaimed."
     },
@@ -499,7 +502,8 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#72",
+        "#79"
       ],
       "gap": "Grok hooks are fail-open / stdout-ignored for most events; not OMC-equivalent injection."
     },
@@ -536,7 +540,8 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#73",
+        "#79"
       ],
       "gap": "omg lsp is a local probe; no full LSP/AST MCP bridge (host-honest substitute)."
     },
@@ -587,7 +592,8 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#74",
+        "#79"
       ],
       "gap": "Resume/recovery/workflow replay exist; OMC session-search/observatory breadth is not claimed."
     },
@@ -641,7 +647,8 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#74",
+        "#79"
       ],
       "gap": "Core wiki/HUD/notify paths exist; OMC notepad/shared-memory breadth remains partial."
     },
@@ -690,7 +697,9 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#69",
+        "#70",
+        "#79"
       ],
       "gap": "OMG modes/autopilot substitute OMC goal loops; Stop stickiness remains host-capped."
     },
@@ -740,7 +749,8 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#75",
+        "#79"
       ],
       "gap": "Dual-review/verdict/release exist; OMC visual-verdict / project-session-manager breadth is partial."
     },
@@ -838,7 +848,8 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#70",
+        "#79"
       ],
       "gap": "Interview + ralplan CLI/skills exist; OMX prometheus-strict / ultragoal canonical chain breadth is partial."
     },
@@ -911,8 +922,7 @@
         "live": []
       },
       "issues": [
-        "#69",
-        "#78"
+        "#69"
       ],
       "gap": "Worker/mailbox/ask substitutes exist; Team v3 job-backed panes remain under #69."
     },
@@ -982,9 +992,10 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#71",
+        "#79"
       ],
-      "gap": "Plugin reviewer agents exist; OMX product-catalog breadth and dynamic routing remain partial (#78)."
+      "gap": "Plugin reviewer agents exist; OMX product-catalog breadth and dynamic routing remain partial (#71/#79)."
     },
     {
       "id": "omx.goal.stop_lock_recovery",
@@ -1021,9 +1032,11 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#69",
+        "#74",
+        "#79"
       ],
-      "gap": "Stop gate + recovery exist; Grok Stop pin is capped/fail-open (not OMX infinite stickiness) (#78)."
+      "gap": "Stop gate + recovery exist; Grok Stop pin is capped/fail-open (not OMX infinite stickiness) (#69/#74/#79)."
     },
     {
       "id": "omx.plugin.setup_update_migrate",
@@ -1066,9 +1079,10 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#77",
+        "#79"
       ],
-      "gap": "omg setup/install + guidance rules exist; OMX migrate breadth is not 1:1 (#78)."
+      "gap": "omg setup/install + guidance rules exist; OMX migrate breadth is not 1:1 (#77)."
     },
     {
       "id": "omx.quality.visual_modes",
@@ -1114,9 +1128,10 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#75",
+        "#79"
       ],
-      "gap": "Dual-review/verdict/UltraQA exist; OMX visual-mode catalog breadth remains partial (#78)."
+      "gap": "Dual-review/verdict/UltraQA exist; OMX visual-mode catalog breadth remains partial (#75/#79)."
     },
     {
       "id": "omo.agents.discipline_routing",
@@ -1148,9 +1163,10 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#71",
+        "#79"
       ],
-      "gap": "Static omg-* agent catalog exists; OmO discipline/category routing engine is not mirrored (#78)."
+      "gap": "Static omg-* agent catalog exists; OmO discipline/category routing engine is not mirrored (#71)."
     },
     {
       "id": "omo.rules.intent_gate",
@@ -1184,9 +1200,10 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#72",
+        "#79"
       ],
-      "gap": "Rules-file + PreToolUse soft-gate substitute IntentGate; Grok cannot inject via UserPromptSubmit (#78)."
+      "gap": "Rules-file + PreToolUse soft-gate substitute IntentGate; Grok cannot inject via UserPromptSubmit (#72)."
     },
     {
       "id": "omo.agents.background",
@@ -1322,9 +1339,10 @@
         "live": []
       },
       "issues": [
+        "#76",
         "#79"
       ],
-      "gap": "No hash-anchored edit surface in OMG; host edit tools are used as-is. Near-1:1 leftover owned by #79, not #78."
+      "gap": "No hash-anchored edit surface in OMG; host edit tools are used as-is. Near-1:1 leftover owned by #76 (aggregate #79), not closed #78."
     },
     {
       "id": "omo.tools.lsp_ast_codegraph_mcp",
@@ -1360,9 +1378,10 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#73",
+        "#79"
       ],
-      "gap": "Local omg lsp + MCP probe exist; no full AST/CodeGraph MCP bridge (#78)."
+      "gap": "Local omg lsp + MCP probe exist; no full AST/CodeGraph MCP bridge (#73)."
     },
     {
       "id": "omo.quality.comment_hygiene",
@@ -1387,9 +1406,10 @@
         "live": []
       },
       "issues": [
+        "#76",
         "#79"
       ],
-      "gap": "No dedicated OmO-style comment-hygiene checker claimed in OMG. Near-1:1 leftover owned by #79, not #78."
+      "gap": "No dedicated OmO-style comment-hygiene checker claimed in OMG. Near-1:1 leftover owned by #76 (aggregate #79), not closed #78."
     },
     {
       "id": "omo.ulw.ultrawork_loop",
@@ -1427,9 +1447,11 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#69",
+        "#70",
+        "#79"
       ],
-      "gap": "ULW fan-out/workers/integrate exist; OmO ulw-loop host APIs are not 1:1 (#78)."
+      "gap": "ULW fan-out/workers/integrate exist; OmO ulw-loop host APIs are not 1:1 (#69/#70/#79)."
     },
     {
       "id": "omo.compat.tmux_plugin",
@@ -1469,9 +1491,9 @@
       },
       "issues": [
         "#69",
-        "#78"
+        "#79"
       ],
-      "gap": "Default-on tmux team plane + plugin hooks exist; OmO host-plugin compat matrix is partial (#69/#78)."
+      "gap": "Default-on tmux team plane + plugin hooks exist; OmO host-plugin compat matrix is partial (#69/#79)."
     },
     {
       "id": "antigravity.headless.structured_execution",
@@ -1770,7 +1792,6 @@
       },
       "issues": [
         "#77",
-        "#78",
         "#79"
       ],
       "gap": "Doctor/version/pin catalogue exists; #78-C refresh+claim gate landed; #78-I Antigravity docs-only completeness triple landed (unpromoted). Provider loading/doctor follow-up is owned by #77. Explicit completeness promotion belongs to #79 and is not a #78 close gate."
@@ -1879,13 +1900,14 @@
       "priority": "P2",
       "status": "open",
       "issues": [
+        "#76",
         "#79"
       ],
       "capability_ids": [
         "omo.edit.hash_anchored",
         "omo.quality.comment_hygiene"
       ],
-      "summary": "OmO hash-anchored edit and comment-hygiene quality surfaces unclaimed; leftover owned by #79."
+      "summary": "OmO hash-anchored edit and comment-hygiene quality surfaces unclaimed; leftover owned by #76; #79 is aggregate tracker."
     },
     {
       "id": "gap.install.provider_doctor",

@@ -30,6 +30,28 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   tolerance). Closes #159.
 
 ### Changed
+- **Pinned offline issue-state evidence:** `--strict` consumes
+  `docs/parity/issue-state/v1.json` (digest-bound, no network) for
+  closure-sensitive `#67`/`#68`/`#78`. Observed GitHub: `#67`/`#68`
+  closed; `#78` open/reopened with close pending PR #158 — not live
+  truth. Rejects missing/stale/unknown/tampered receipts, inventory
+  disagreement, and mutation reopening those issues as Open P0.
+  Inventory stays `bootstrapping`.
+- **Host baseline review ledger content-bind:** mint a new immutable
+  `GROK_BUILD` receipt bound to current snapshot/docs hashes
+  (`38350559…` / `23d41ed5…`) instead of rewriting the historical
+  `81e709b1…` ledger (`3eed15cc…` / `fe0b9855…`). Filename digest is
+  `change_digest` + `snapshot_hash` + `generated_docs_hash`. Strict/host
+  `--check` fails if no receipt binds current content. Inventory stays
+  `bootstrapping`. Refs #78 (historical) #105.
+- **Closed #78 must not remain a present-tense residual owner** on
+  capability/gap `issues`. Child owners: skills #70, agents #71, hooks
+  #72, LSP/AST/MCP #73, session/state #74, visual #75, edit/hygiene #76,
+  install #77, Team/runtime #69; #79 aggregate only. Locks #73/#76.
+  Strict gate rejects residual #78 and #79-only replacement of locked
+  children. Inventory stays `bootstrapping`. Open P0 still #69. Refs
+  #70-#77 #69 #79 (does not close). Does not close #78 again (already
+  closed as governance).
 - **#78 GAPS governance reconciliation:** closed GitHub issues #67/#68 are
   no longer open P0 owners in `docs/parity/omg-parity.json` or generated
   `GAPS.md` Open P0. `gap.parity.governance.remaining` is closed: pinned

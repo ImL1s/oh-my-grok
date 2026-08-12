@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 from pathlib import Path
 
@@ -207,3 +208,85 @@ def test_release_gate_still_passes_with_host_snapshot(tmp_path: Path) -> None:
     )
     assert payload["ok"] is True
     assert payload["host_baseline_checked"] is True
+
+
+def test_host_gate_rejects_stale_review_hashes_when_receipts_exist(
+    tmp_path: Path,
+) -> None:
+    from omg_cli.parity_refresh import write_committed_host_baseline_review
+    from omg_cli.parity_refresh import (
+        build_host_baseline_refresh_plan,
+        generated_docs_content_hash,
+        host_snapshot_content_hash,
+    )
+    from datetime import datetime, timezone
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+    _write_host_baseline_snapshot(tmp_path, inventory)
+    snapshot = load_host_baseline_snapshot(tmp_path)
+    docs_hash = generated_docs_content_hash(tmp_path, snapshot["generated"]["docs"])
+    plan = build_host_baseline_refresh_plan(
+        from_revision="7cfcb20d2b50b0d18801a6c0af2e401c0e060894",
+        to_revision=snapshot["public_commit"],
+        host_snapshot=snapshot,
+        generated_at=datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc),
+        snapshot_hash=host_snapshot_content_hash(snapshot),
+        generated_docs_hash=docs_hash,
+    )
+    path = write_committed_host_baseline_review(tmp_path, plan)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["host_baseline"]["snapshot_hash"] = "0" * 64
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    reviews = tmp_path / "docs" / "parity" / "reviews"
+    for other in reviews.glob("GROK_BUILD-*.json"):
+        if other.resolve() != path.resolve():
+            other.unlink()
+    with pytest.raises(
+        ContractValidationError,
+        match="snapshot_hash|generated_docs_hash|bind",
+    ):
+        assert_host_baseline_gate(inventory=inventory, repo_root=tmp_path)
+
+
+def test_host_gate_fails_when_no_content_bound_review_exists(tmp_path: Path) -> None:
+    inventory = _bootstrapping_inventory(tmp_path)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _write_host_baseline_snapshot(tmp_path, inventory, write_binding_review=False)
+    with pytest.raises(
+        ContractValidationError,
+        match="snapshot_hash|generated_docs_hash|bind",
+    ):
+        assert_host_baseline_gate(inventory=inventory, repo_root=tmp_path)
+
+
+def test_host_gate_accepts_content_bound_review(tmp_path: Path) -> None:
+    from omg_cli.parity_refresh import write_committed_host_baseline_review
+    from omg_cli.parity_refresh import (
+        build_host_baseline_refresh_plan,
+        generated_docs_content_hash,
+        host_snapshot_content_hash,
+    )
+    from datetime import datetime, timezone
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+    _write_host_baseline_snapshot(tmp_path, inventory)
+    snapshot = load_host_baseline_snapshot(tmp_path)
+    docs_hash = generated_docs_content_hash(tmp_path, snapshot["generated"]["docs"])
+    plan = build_host_baseline_refresh_plan(
+        from_revision="7cfcb20d2b50b0d18801a6c0af2e401c0e060894",
+        to_revision=snapshot["public_commit"],
+        host_snapshot=snapshot,
+        generated_at=datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc),
+        snapshot_hash=host_snapshot_content_hash(snapshot),
+        generated_docs_hash=docs_hash,
+    )
+    write_committed_host_baseline_review(tmp_path, plan)
+    payload = assert_host_baseline_gate(inventory=inventory, repo_root=tmp_path)
+    assert payload["ok"] is True
+    assert payload["generated_docs_hash"] == docs_hash

@@ -7,13 +7,13 @@
 
 | Capability | Category | Classification | Maturity | Marker | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `omo.agents.discipline_routing` | agents_routing | omg_native | grok=catalogued | catalogued | Static omg-* agent catalog exists; OmO discipline/category routing engine is not mirrored (#78). |
-| `omo.rules.intent_gate` | hooks | omg_native | grok=catalogued | catalogued | Rules-file + PreToolUse soft-gate substitute IntentGate; Grok cannot inject via UserPromptSubmit (#78). |
+| `omo.agents.discipline_routing` | agents_routing | omg_native | grok=catalogued | catalogued | Static omg-* agent catalog exists; OmO discipline/category routing engine is not mirrored (#71). |
+| `omo.rules.intent_gate` | hooks | omg_native | grok=catalogued | catalogued | Rules-file + PreToolUse soft-gate substitute IntentGate; Grok cannot inject via UserPromptSubmit (#72). |
 | `omo.agents.background` | jobs | optional_unclaimed | grok=catalogued | optional_unclaimed | No OmO-style background agents. Durable jobs plane landed under closed #68 (jobs.durable_background); remaining job-backed/live Team evidence is owned by #69. |
 | `omo.team.hyperplan_security` | team | omg_native | grok=catalogued | catalogued | Hyperplan V1 hermetic result production + Security Research V1 hermetic result production + catalog v4 atomic task-batch DAG admission + shared composition task driver (admit/collect) + composition lane worker protocol (claim-lane/submit-lane-result) landed (#69 PR7–PR13; execution_supported=false; partial catalog, not full OMX). Hyperplan/Security Research auto-worker execution, live Antigravity, and full OMX remain open under Team v3 (#69). |
 | `omo.goal.todo_continuation` | runtime_orchestration | host_impossible | grok=catalogued | host_impossible | OmO client session.prompt inject has no Grok host equivalent; Stop soft-pin is not todo-continuation. Catalogued as host_impossible; leftover owned by #79. |
-| `omo.edit.hash_anchored` | quality_visual_edit_safety | optional_unclaimed | grok=catalogued | optional_unclaimed | No hash-anchored edit surface in OMG; host edit tools are used as-is. Near-1:1 leftover owned by #79, not #78. |
-| `omo.tools.lsp_ast_codegraph_mcp` | tools_mcp | omg_native | grok=catalogued | catalogued | Local omg lsp + MCP probe exist; no full AST/CodeGraph MCP bridge (#78). |
-| `omo.quality.comment_hygiene` | quality_visual_edit_safety | optional_unclaimed | grok=catalogued | optional_unclaimed | No dedicated OmO-style comment-hygiene checker claimed in OMG. Near-1:1 leftover owned by #79, not #78. |
-| `omo.ulw.ultrawork_loop` | runtime_orchestration | omg_native | grok=catalogued | catalogued | ULW fan-out/workers/integrate exist; OmO ulw-loop host APIs are not 1:1 (#78). |
-| `omo.compat.tmux_plugin` | team | omg_native | grok=catalogued | catalogued | Default-on tmux team plane + plugin hooks exist; OmO host-plugin compat matrix is partial (#69/#78). |
+| `omo.edit.hash_anchored` | quality_visual_edit_safety | optional_unclaimed | grok=catalogued | optional_unclaimed | No hash-anchored edit surface in OMG; host edit tools are used as-is. Near-1:1 leftover owned by #76 (aggregate #79), not closed #78. |
+| `omo.tools.lsp_ast_codegraph_mcp` | tools_mcp | omg_native | grok=catalogued | catalogued | Local omg lsp + MCP probe exist; no full AST/CodeGraph MCP bridge (#73). |
+| `omo.quality.comment_hygiene` | quality_visual_edit_safety | optional_unclaimed | grok=catalogued | optional_unclaimed | No dedicated OmO-style comment-hygiene checker claimed in OMG. Near-1:1 leftover owned by #76 (aggregate #79), not closed #78. |
+| `omo.ulw.ultrawork_loop` | runtime_orchestration | omg_native | grok=catalogued | catalogued | ULW fan-out/workers/integrate exist; OmO ulw-loop host APIs are not 1:1 (#69/#70/#79). |
+| `omo.compat.tmux_plugin` | team | omg_native | grok=catalogued | catalogued | Default-on tmux team plane + plugin hooks exist; OmO host-plugin compat matrix is partial (#69/#79). |

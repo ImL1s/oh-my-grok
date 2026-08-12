@@ -25,13 +25,18 @@ from omg_cli.contracts.parity_schema import (
     validate_host_baseline_snapshot,
     validate_parity_inventory,
 )
-from omg_cli.contracts.state_schemas import ContractValidationError
+from omg_cli.contracts.state_schemas import (
+    ContractValidationError,
+    require_nonempty_string,
+)
 from omg_cli.parity_refresh import (
+    COMMITTED_REVIEWS_RELATIVE,
     build_host_baseline_refresh_plan,
     build_refresh_plan,
     canonical_changes_digest,
     committed_review_path,
     generated_docs_content_hash,
+    host_baseline_receipt_digest,
     host_snapshot_content_hash,
     validate_upstream_catalog,
 )
@@ -656,12 +661,21 @@ def _require_host_pin_transition_review(
     digest = canonical_changes_digest(
         [c for c in plan.get("changes", []) if isinstance(c, dict)]
     )
+    bind_docs_hash = docs_hash or str(plan["host_baseline"].get("generated_docs_hash") or "")
+    if bind_docs_hash:
+        lookup_digest = host_baseline_receipt_digest(
+            change_digest=digest,
+            snapshot_hash=str(plan["host_baseline"]["snapshot_hash"]),
+            generated_docs_hash=bind_docs_hash,
+        )
+    else:
+        lookup_digest = digest
     path = committed_review_path(
         root,
         source=HOST_BASELINE_PIN_ID,
         from_revision=from_revision,
         to_revision=to_revision,
-        change_digest=digest,
+        change_digest=lookup_digest,
     )
     try:
         path.lstat()
@@ -728,6 +742,46 @@ def _require_host_pin_transition_review(
             )
 
 
+def assert_host_review_binds_current_content(
+    *,
+    repo_root: Path | str,
+    snapshot: Mapping[str, Any],
+    docs_hash: str,
+) -> Path:
+    """Require a committed GROK_BUILD receipt bound to current snapshot/docs."""
+    root = Path(repo_root)
+    pin = require_nonempty_string(
+        snapshot.get("public_commit"), label="host snapshot public_commit"
+    )
+    snapshot_hash = host_snapshot_content_hash(snapshot)
+    reviews_dir = root / COMMITTED_REVIEWS_RELATIVE
+    matches: list[Path] = []
+    if reviews_dir.is_dir():
+        for path in sorted(reviews_dir.glob(f"GROK_BUILD-*-{pin}-*.json")):
+            if path.is_symlink() or not path.is_file():
+                continue
+            try:
+                review = load_json_object(path)
+            except (OSError, ContractValidationError, ValueError):
+                continue
+            host_meta = review.get("host_baseline")
+            if not isinstance(host_meta, dict):
+                continue
+            if host_meta.get("reviewed_pin") != pin:
+                continue
+            if (
+                host_meta.get("snapshot_hash") == snapshot_hash
+                and host_meta.get("generated_docs_hash") == docs_hash
+            ):
+                matches.append(path)
+    if not matches:
+        raise ContractValidationError(
+            "no committed GROK_BUILD review binds current snapshot_hash and "
+            f"generated_docs_hash for reviewed_pin {pin}"
+        )
+    return matches[0]
+
+
 def assert_host_baseline_gate(
     *,
     inventory: dict[str, Any],
@@ -741,6 +795,9 @@ def assert_host_baseline_gate(
     assert_host_baseline_matches_inventory(inventory=inventory, host_snapshot=snapshot)
     docs_hash = assert_host_generated_docs_consistent(
         repo_root=root, host_snapshot=snapshot
+    )
+    assert_host_review_binds_current_content(
+        repo_root=root, snapshot=snapshot, docs_hash=docs_hash
     )
     missing: list[str] = []
     if base_inventory is not None:

@@ -18,7 +18,10 @@ from omg_cli.parity_claim_gate import (
 )
 from omg_cli.parity_refresh import (
     build_host_baseline_refresh_plan,
+    canonical_changes_digest,
+    committed_review_path,
     generated_docs_content_hash,
+    host_baseline_receipt_digest,
     host_snapshot_content_hash,
     write_committed_host_baseline_review,
 )
@@ -122,8 +125,36 @@ def test_host_pin_transition_rejects_untracked_review(
         )
 
 
+def test_write_committed_host_review_uses_content_binding_filename(
+    tmp_path: Path,
+) -> None:
+    inventory = _bootstrapping_inventory(tmp_path)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _write_host_baseline_snapshot(tmp_path, inventory, write_binding_review=False)
+    path = _commit_host_review(tmp_path, from_pin=OLD_PIN, to_pin=FROZEN_PINS[HOST_BASELINE_PIN_ID])
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    changes_digest = canonical_changes_digest(payload["changes"])
+    identity = host_baseline_receipt_digest(
+        change_digest=changes_digest,
+        snapshot_hash=payload["host_baseline"]["snapshot_hash"],
+        generated_docs_hash=payload["host_baseline"]["generated_docs_hash"],
+    )
+    assert payload["change_digest"] == changes_digest
+    assert payload["content_binding_digest"] == identity
+    assert path.name.endswith(f"{identity}.json")
+    changes_only = committed_review_path(
+        tmp_path,
+        source=HOST_BASELINE_PIN_ID,
+        from_revision=OLD_PIN,
+        to_revision=FROZEN_PINS[HOST_BASELINE_PIN_ID],
+        change_digest=changes_digest,
+    )
+    if changes_only != path:
+        assert not changes_only.exists()
+
+
 def test_canonical_repo_host_pin_transition_review_exists() -> None:
-    """Repo tip must include the 7cfcb20→a5589e9 host baseline review ledger."""
+    """Repo tip must include a content-bound 7cfcb20→a5589e9 host review."""
     root = Path(__file__).resolve().parents[1]
     reviews = root / "docs" / "parity" / "reviews"
     matches = list(
@@ -133,7 +164,18 @@ def test_canonical_repo_host_pin_transition_review_exists() -> None:
         )
     )
     assert matches, "missing committed GROK_BUILD host baseline review ledger"
-    payload = json.loads(matches[0].read_text(encoding="utf-8"))
-    assert payload["source"] == HOST_BASELINE_PIN_ID
-    assert "host_baseline" in payload
-    assert payload["host_baseline"]["reviewed_pin"] == FROZEN_PINS[HOST_BASELINE_PIN_ID]
+    snapshot = load_host_baseline_snapshot(root)
+    snapshot_hash = host_snapshot_content_hash(snapshot)
+    docs_hash = generated_docs_content_hash(root, snapshot["generated"]["docs"])
+    bound = []
+    for path in matches:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["source"] == HOST_BASELINE_PIN_ID
+        host_meta = payload["host_baseline"]
+        assert host_meta["reviewed_pin"] == FROZEN_PINS[HOST_BASELINE_PIN_ID]
+        if (
+            host_meta.get("snapshot_hash") == snapshot_hash
+            and host_meta.get("generated_docs_hash") == docs_hash
+        ):
+            bound.append(path)
+    assert bound, "no GROK_BUILD receipt binds current snapshot_hash/generated_docs_hash"

@@ -1,0 +1,755 @@
+{
+  "store_kind": "parity_refresh_review",
+  "schema_version": 1,
+  "source": "GROK_BUILD",
+  "from_revision": "7cfcb20d2b50b0d18801a6c0af2e401c0e060894",
+  "to_revision": "a5589e958437d79e13db026eedcb1720bffd4063",
+  "generated_at": "2026-08-12T20:20:00Z",
+  "change_digest": "81e709b16d44b7c162d757bce71a22ebdacadb21533d4f0ac7b9c691026c1d08",
+  "changes": [
+    {
+      "change_kind": "added",
+      "capability_id": "grok.auth.invalid_key_no_skip_login",
+      "detail": {
+        "after": {
+          "id": "grok.auth.invalid_key_no_skip_login",
+          "classification": "consumed_downstream",
+          "category": "auth",
+          "promise": "Invalid first-party API keys no longer skip login",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.dashboard.auto_recap_idle_only",
+      "detail": {
+        "after": {
+          "id": "grok.dashboard.auto_recap_idle_only",
+          "classification": "host_owned",
+          "category": "dashboard",
+          "promise": "Auto-recap placement while idle only",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.dashboard.auto_recap_no_interleave",
+      "detail": {
+        "after": {
+          "id": "grok.dashboard.auto_recap_no_interleave",
+          "classification": "consumed_downstream",
+          "category": "dashboard",
+          "promise": "Auto recaps do not interleave with a busy/new turn",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.dashboard.previous_turn_summary",
+      "detail": {
+        "after": {
+          "id": "grok.dashboard.previous_turn_summary",
+          "classification": "host_owned",
+          "category": "dashboard",
+          "promise": "Dashboard rows show a short previous-turn summary",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.dashboard.shortcut_cleanup",
+      "detail": {
+        "after": {
+          "id": "grok.dashboard.shortcut_cleanup",
+          "classification": "host_owned",
+          "category": "dashboard",
+          "promise": "Dashboard single-agent shortcut cleanup, /new navigation, exit/quit, and /delete return behavior",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.extensions.grouped_skills",
+      "detail": {
+        "after": {
+          "id": "grok.extensions.grouped_skills",
+          "classification": "host_owned",
+          "category": "extensions",
+          "promise": "Extensions modal grouping, alphabetical ordering, and collapsible Skills sections",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.feedback.report_box",
+      "detail": {
+        "after": {
+          "id": "grok.feedback.report_box",
+          "classification": "host_owned",
+          "category": "feedback",
+          "promise": "/feedback dedicated report box and composer-mode preservation",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.mcp.disabled_servers_visible",
+      "detail": {
+        "after": {
+          "id": "grok.mcp.disabled_servers_visible",
+          "classification": "host_owned",
+          "category": "mcp",
+          "promise": "Disabled-but-re-enableable MCP servers remain visible",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.mcp.image_before_truncation",
+      "detail": {
+        "after": {
+          "id": "grok.mcp.image_before_truncation",
+          "classification": "consumed_downstream",
+          "category": "mcp",
+          "promise": "MCP image outputs are extracted before large-output truncation",
+          "maturity": "catalogued",
+          "source_commit": "ed6d543643628663873c5de28298e022ed634238",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.permissions.full_script_expandable",
+      "detail": {
+        "after": {
+          "id": "grok.permissions.full_script_expandable",
+          "classification": "host_owned",
+          "category": "permissions",
+          "promise": "Full-script permission display and Ctrl-F expansion for long Bash commands",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.plan.approval_model_switching",
+      "detail": {
+        "after": {
+          "id": "grok.plan.approval_model_switching",
+          "classification": "consumed_downstream",
+          "category": "workflow",
+          "promise": "Plan-approval flow supports model switching without breaking plan/approval UX contracts",
+          "maturity": "catalogued",
+          "source_commit": "ed6d543643628663873c5de28298e022ed634238",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.prompt_queue.lossless_ordered",
+      "detail": {
+        "after": {
+          "id": "grok.prompt_queue.lossless_ordered",
+          "classification": "consumed_downstream",
+          "category": "queue",
+          "promise": "Rapid send-now and messages queued while waiting on subagents preserve earlier entries",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.prompt_queue.reorderable",
+      "detail": {
+        "after": {
+          "id": "grok.prompt_queue.reorderable",
+          "classification": "consumed_downstream",
+          "category": "queue",
+          "promise": "Queued prompts, slash commands, and images can be reordered",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.prompt_queue.visible_while_waiting",
+      "detail": {
+        "after": {
+          "id": "grok.prompt_queue.visible_while_waiting",
+          "classification": "consumed_downstream",
+          "category": "queue",
+          "promise": "Plain queued prompts remain visible/reachable while waiting",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.release.public_sync_a5589e9",
+      "detail": {
+        "after": {
+          "id": "grok.release.public_sync_a5589e9",
+          "classification": "irrelevant",
+          "category": "reliability",
+          "promise": "Public sync commit packaging for v0.2.121 release line",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.reliability.server_5xx_retry",
+      "detail": {
+        "after": {
+          "id": "grok.reliability.server_5xx_retry",
+          "classification": "host_owned",
+          "category": "reliability",
+          "promise": "More server/Cloudflare 5xx failures are retried",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.session.acp_close",
+      "detail": {
+        "after": {
+          "id": "grok.session.acp_close",
+          "classification": "consumed_downstream",
+          "category": "session",
+          "promise": "ACP clients can explicitly close sessions via session/close",
+          "maturity": "catalogued",
+          "source_commit": "ed6d543643628663873c5de28298e022ed634238",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.session.acp_resume_no_replay",
+      "detail": {
+        "after": {
+          "id": "grok.session.acp_resume_no_replay",
+          "classification": "consumed_downstream",
+          "category": "session",
+          "promise": "ACP session/resume attaches without transcript replay",
+          "maturity": "catalogued",
+          "source_commit": "ed6d543643628663873c5de28298e022ed634238",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.session.child_restore_registration",
+      "detail": {
+        "after": {
+          "id": "grok.session.child_restore_registration",
+          "classification": "consumed_downstream",
+          "category": "session",
+          "promise": "Restored child sessions are registered so resume after remote-parent restore does not 404",
+          "maturity": "catalogued",
+          "source_commit": "ed6d543643628663873c5de28298e022ed634238",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.session.codebase_restore_no_hang",
+      "detail": {
+        "after": {
+          "id": "grok.session.codebase_restore_no_hang",
+          "classification": "consumed_downstream",
+          "category": "session",
+          "promise": "Codebase restore no longer hangs on large or shallow repositories",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.session.plan_mode_after_resume",
+      "detail": {
+        "after": {
+          "id": "grok.session.plan_mode_after_resume",
+          "classification": "consumed_downstream",
+          "category": "session",
+          "promise": "Plan-mode state and controls remain usable/correct after resume",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.session.restore_code_explicit",
+      "detail": {
+        "after": {
+          "id": "grok.session.restore_code_explicit",
+          "classification": "consumed_downstream",
+          "category": "session",
+          "promise": "Remote resume restores conversation only unless code restoration is explicitly requested; session/load may restore code",
+          "maturity": "catalogued",
+          "source_commit": "ed6d543643628663873c5de28298e022ed634238",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.session.uuid_cross_directory_search",
+      "detail": {
+        "after": {
+          "id": "grok.session.uuid_cross_directory_search",
+          "classification": "consumed_downstream",
+          "category": "session",
+          "promise": "Resume search finds a session UUID across directories",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.slash.menu_enter_behavior",
+      "detail": {
+        "after": {
+          "id": "grok.slash.menu_enter_behavior",
+          "classification": "host_owned",
+          "category": "slash",
+          "promise": "Slash-command menu Enter behavior and dashboard-only command guidance",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.subagent.cancel_no_restart",
+      "detail": {
+        "after": {
+          "id": "grok.subagent.cancel_no_restart",
+          "classification": "consumed_downstream",
+          "category": "subagent",
+          "promise": "Esc/stop prevents cancelled background work from restarting the model",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.subagent.parent_continue_reminder",
+      "detail": {
+        "after": {
+          "id": "grok.subagent.parent_continue_reminder",
+          "classification": "consumed_downstream",
+          "category": "subagent",
+          "promise": "After a background subagent starts, the parent is reminded to continue its original work",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.tmux.auto_theme",
+      "detail": {
+        "after": {
+          "id": "grok.tmux.auto_theme",
+          "classification": "host_owned",
+          "category": "tmux",
+          "promise": "Automatic theme detection over SSH and inside tmux",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.tools.voice_finance_icons",
+      "detail": {
+        "after": {
+          "id": "grok.tools.voice_finance_icons",
+          "classification": "host_owned",
+          "category": "tools",
+          "promise": "Voice/Finance tool-card icons and localized labels",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.tui.blocking_card_tab_esc",
+      "detail": {
+        "after": {
+          "id": "grok.tui.blocking_card_tab_esc",
+          "classification": "host_owned",
+          "category": "terminal",
+          "promise": "Consistent Tab/Esc behavior on blocking cards",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.tui.cjk_selection_edge",
+      "detail": {
+        "after": {
+          "id": "grok.tui.cjk_selection_edge",
+          "classification": "host_owned",
+          "category": "terminal",
+          "promise": "CJK selection-edge correctness",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.tui.clean_api_error_banners",
+      "detail": {
+        "after": {
+          "id": "grok.tui.clean_api_error_banners",
+          "classification": "host_owned",
+          "category": "terminal",
+          "promise": "Clean API-error banners",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.tui.minimal_mode_reset",
+      "detail": {
+        "after": {
+          "id": "grok.tui.minimal_mode_reset",
+          "classification": "host_owned",
+          "category": "terminal",
+          "promise": "Minimal-mode terminal reset",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.tui.mode_indication_after_resume",
+      "detail": {
+        "after": {
+          "id": "grok.tui.mode_indication_after_resume",
+          "classification": "host_owned",
+          "category": "terminal",
+          "promise": "Actual plan/agent/ask mode indication after resume/transitions",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.tui.narrow_table_reflow",
+      "detail": {
+        "after": {
+          "id": "grok.tui.narrow_table_reflow",
+          "classification": "host_owned",
+          "category": "terminal",
+          "promise": "Narrow-pane Markdown table in-cell reflow",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.tui.pinned_header_mouse",
+      "detail": {
+        "after": {
+          "id": "grok.tui.pinned_header_mouse",
+          "classification": "host_owned",
+          "category": "terminal",
+          "promise": "Pinned-header mouse selection",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.tui.wrapped_btw_errors",
+      "detail": {
+        "after": {
+          "id": "grok.tui.wrapped_btw_errors",
+          "classification": "host_owned",
+          "category": "terminal",
+          "promise": "Wrapped /btw errors",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.tui.wrapped_diff_highlight",
+      "detail": {
+        "after": {
+          "id": "grok.tui.wrapped_diff_highlight",
+          "classification": "host_owned",
+          "category": "terminal",
+          "promise": "Wrapped diff syntax highlighting",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.workflow.parallel_child_cap",
+      "detail": {
+        "after": {
+          "id": "grok.workflow.parallel_child_cap",
+          "classification": "consumed_downstream",
+          "category": "workflow",
+          "promise": "Live workflow parallel() fan-out is capped instead of launching hundreds of children",
+          "maturity": "catalogued",
+          "source_commit": "ed6d543643628663873c5de28298e022ed634238",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.workspace.default_branch_without_origin_head",
+      "detail": {
+        "after": {
+          "id": "grok.workspace.default_branch_without_origin_head",
+          "classification": "consumed_downstream",
+          "category": "workspace",
+          "promise": "Hand-initialized repos without origin/HEAD get correct default-branch detection",
+          "maturity": "catalogued",
+          "source_commit": "a5589e958437d79e13db026eedcb1720bffd4063",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    },
+    {
+      "change_kind": "added",
+      "capability_id": "grok.workspace.non_project_no_picker",
+      "detail": {
+        "after": {
+          "id": "grok.workspace.non_project_no_picker",
+          "classification": "consumed_downstream",
+          "category": "workspace",
+          "promise": "Non-project/home-directory launch no longer asks for a project directory",
+          "maturity": "catalogued",
+          "source_commit": "e5478eff1e4050558e12e1328b85e6616632efb6",
+          "source_paths": [
+            "CHANGELOG.md"
+          ]
+        }
+      },
+      "disposition": "acknowledged"
+    }
+  ],
+  "proposed_inventory_patch": {
+    "upstream_pins": {
+      "GROK_BUILD": {
+        "revision": "a5589e958437d79e13db026eedcb1720bffd4063"
+      }
+    },
+    "capabilities": []
+  },
+  "guards": {
+    "auto_maturity_upgrade": false,
+    "requires_manual_mapping": true,
+    "host_baseline": true
+  },
+  "host_baseline": {
+    "snapshot_path": "docs/parity/upstream-snapshots/grok-build.json",
+    "snapshot_hash": "3835055907587cdceb67c41693d01212683a9a127f5a802c0ed1bee325a7ad1f",
+    "generated_docs_hash": "23d41ed5d7b1c84455c982415cdc86a6e2137a8ebbe9a7d76e7a55d97f886e41",
+    "reviewed_pin": "a5589e958437d79e13db026eedcb1720bffd4063",
+    "previous_pin": "7cfcb20d2b50b0d18801a6c0af2e401c0e060894",
+    "release": "0.2.121",
+    "classification_complete": true,
+    "missing_required_capability_ids": []
+  },
+  "content_binding_digest": "80a22517c3fa0ffee5034aca171fae6eac68c2fe757cc18114da35f942fc798b"
+}

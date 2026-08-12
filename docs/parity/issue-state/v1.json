@@ -1,0 +1,75 @@
+{
+  "store_kind": "parity-issue-state-evidence",
+  "schema_version": 1,
+  "repository_id": "OMG",
+  "source": {
+    "host": "github.com",
+    "owner": "ImL1s",
+    "name": "oh-my-grok",
+    "html_url": "https://github.com/ImL1s/oh-my-grok",
+    "observed_git_commit": "7f1315c19c443d75a71660069865825e65214a5e",
+    "observed_at": "2026-08-12T20:24:00Z"
+  },
+  "freshness": {
+    "semantics": "release_pin",
+    "note": "Bounded release-time GitHub observation, not perpetual live GitHub truth."
+  },
+  "closure_sensitive": [
+    "#67",
+    "#68",
+    "#78"
+  ],
+  "issues": {
+    "#67": {
+      "number": 67,
+      "url": "https://github.com/ImL1s/oh-my-grok/issues/67",
+      "issue_node_id": "I_kwDOTdHr-s8AAAABK8ALbA",
+      "observed_state": "closed",
+      "state_reason": "completed",
+      "closed_at": "2026-08-07T18:14:05Z",
+      "blocks_open_p0": true,
+      "close_event": {
+        "id": 29134062611,
+        "node_id": "CE_lADOTdHr-s8AAAABK8ALbM8AAAAGyIaEEw",
+        "created_at": "2026-08-07T18:14:06Z"
+      }
+    },
+    "#68": {
+      "number": 68,
+      "url": "https://github.com/ImL1s/oh-my-grok/issues/68",
+      "issue_node_id": "I_kwDOTdHr-s8AAAABK8AeqQ",
+      "observed_state": "closed",
+      "state_reason": "completed",
+      "closed_at": "2026-08-10T02:18:02Z",
+      "blocks_open_p0": true,
+      "close_event": {
+        "id": 29198929233,
+        "node_id": "CE_lADOTdHr-s8AAAABK8Aeqc8AAAAGzGRNUQ",
+        "created_at": "2026-08-10T02:18:02Z"
+      }
+    },
+    "#78": {
+      "number": 78,
+      "url": "https://github.com/ImL1s/oh-my-grok/issues/78",
+      "issue_node_id": "I_kwDOTdHr-s8AAAABK8Dfnw",
+      "observed_state": "open",
+      "state_reason": "reopened",
+      "closed_at": null,
+      "blocks_open_p0": true,
+      "inventory_role": "historical_governance",
+      "close_claim": "pending_pr_merge",
+      "pending_pr": 158,
+      "close_event": {
+        "id": 29154536391,
+        "node_id": "CE_lADOTdHr-s8AAAABK8Dfn88AAAAGyb7rxw",
+        "created_at": "2026-08-08T08:26:30Z"
+      },
+      "reopen_event": {
+        "id": 29154537252,
+        "node_id": "REE_lADOTdHr-s8AAAABK8Dfn88AAAAGyb7vJA",
+        "created_at": "2026-08-08T08:26:33Z"
+      }
+    }
+  },
+  "content_digest": "14a53d1fa610f3cd3bb435762d46517076732ba9e8424644917c9ec307573095"
+}

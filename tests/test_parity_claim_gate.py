@@ -20,8 +20,14 @@ from omg_cli.contracts.parity_schema import (
     load_json_object,
 )
 from omg_cli.contracts.state_schemas import ContractValidationError
-from omg_cli.parity_claim_gate import check_parity_release_claims
-from omg_cli.parity_refresh import build_refresh_plan
+from omg_cli.parity_claim_gate import check_parity_release_claims, load_host_baseline_snapshot
+from omg_cli.parity_refresh import (
+    build_host_baseline_refresh_plan,
+    build_refresh_plan,
+    generated_docs_content_hash,
+    host_snapshot_content_hash,
+    write_committed_host_baseline_review,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "docs" / "parity" / "omg-parity.json"
@@ -344,12 +350,42 @@ def _minimal_host_capability(pin: str) -> dict:
     }
 
 
+_HOST_REVIEW_SENTINEL_FROM = "0000000000000000000000000000000000000001"
+
+
+def _write_binding_host_review(tmp_path: Path) -> Path | None:
+    """Mint a content-bound GROK_BUILD receipt for the fixture snapshot."""
+    try:
+        snapshot = load_host_baseline_snapshot(tmp_path)
+    except (OSError, ContractValidationError):
+        return None
+    pin = snapshot["public_commit"]
+    previous = _HOST_REVIEW_SENTINEL_FROM
+    if previous == pin:
+        previous = "0000000000000000000000000000000000000002"
+    try:
+        docs_hash = generated_docs_content_hash(tmp_path, snapshot["generated"]["docs"])
+        plan = build_host_baseline_refresh_plan(
+            from_revision=previous,
+            to_revision=pin,
+            host_snapshot=snapshot,
+            previous_snapshot=None,
+            generated_at=datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc),
+            snapshot_hash=host_snapshot_content_hash(snapshot),
+            generated_docs_hash=docs_hash,
+        )
+        return write_committed_host_baseline_review(tmp_path, plan)
+    except (OSError, ContractValidationError):
+        return None
+
+
 def _write_host_baseline_snapshot(
     tmp_path: Path,
     inventory: dict,
     *,
     snapshot_override: dict | None = None,
     write_generated_docs: bool = True,
+    write_binding_review: bool = True,
 ) -> Path:
     pin = inventory["upstream_pins"][HOST_BASELINE_PIN_ID]["revision"]
     snap_dir = tmp_path / "docs" / "parity" / "upstream-snapshots"
@@ -389,6 +425,8 @@ def _write_host_baseline_snapshot(
                 f"<!-- GENERATED test fixture for {relative} pin={pin} -->\n",
                 encoding="utf-8",
             )
+        if write_binding_review:
+            _write_binding_host_review(tmp_path)
     return path
 
 
@@ -1724,6 +1762,8 @@ def test_pin_transition_rejects_parent_directory_symlink(tmp_path: Path) -> None
     # Move committed ledger into real store, then replace reviews/ with symlink.
     moved = real_store / path.name
     path.replace(moved)
+    for child in list(reviews_dir.iterdir()):
+        child.unlink()
     reviews_dir.rmdir()
     # Also keep a decoy copy under real_store that matches for content tricks.
     _init_git_repo(tmp_path)

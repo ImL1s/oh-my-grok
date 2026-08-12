@@ -19,6 +19,7 @@ Machine-readable claimability contract for oh-my-grok cross-runtime parity.
 | [`GAPS.md`](GAPS.md) | Generated open / tracked gaps |
 | [`upstream-snapshots/`](upstream-snapshots/) | Pinned upstream capability catalogues for release drift gate |
 | [`completeness-schema-v1.md`](completeness-schema-v1.md) | Completeness policy/proof schemas (promotion gate) |
+| [`issue-state/`](issue-state/) | Pinned offline GitHub issue-state evidence for `--strict` closure claims |
 | [`upstream-snapshots/grok-build.json`](upstream-snapshots/grok-build.json) | Independent Grok Build **host-baseline** catalogue (not a parity source) |
 | [`generated/host-baseline.md`](generated/host-baseline.md) | Generated host-baseline summary |
 | [`generated/host-capability-matrix.md`](generated/host-capability-matrix.md) | Generated host capability matrix |

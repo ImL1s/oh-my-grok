@@ -45,9 +45,21 @@ Refresh workflow: `omg parity refresh --source … --pin … --plan --catalog �
 - Classifications: `host_owned` \| `consumed_downstream` \| `irrelevant` (every release delta must be classified)
 - Generated docs: `docs/parity/generated/host-baseline.md`, `host-capability-matrix.md`
 - Pin transitions use the same committed ledger path as other sources:
-  `docs/parity/reviews/GROK_BUILD-<from>-<to>-<digest>.json` with a required `host_baseline` block (`snapshot_hash`, `reviewed_pin`, `generated_docs_hash`)
+  `docs/parity/reviews/GROK_BUILD-<from>-<to>-<digest>.json` with a required `host_baseline` block (`snapshot_hash`, `reviewed_pin`, `generated_docs_hash`). The filename digest for GROK_BUILD is content-bound (`change_digest` + current snapshot/docs hashes) so a new receipt can be added instead of rewriting an immutable ledger.
 
 Release gate (`check_parity_release_claims`) requires the host snapshot to match `FROZEN_PINS["GROK_BUILD"]` and `upstream_pins.GROK_BUILD.revision`, rejects symlink/malformed/stale snapshots, and fails closed when a `GROK_BUILD` pin moves without a matching review. `host_owned` rows must not claim OMG `omg_paths` as implementation evidence. Catalogue maturity starts at `catalogued`; do not overclaim live promotion here.
+
+## Issue-state evidence (closure-sensitive)
+
+Pinned offline receipt: [`issue-state/v1.json`](issue-state/v1.json)
+(`store_kind=parity-issue-state-evidence`, `schema_version` 1). `--strict`
+with `repo_root` binds Open-P0 owners to this digest-bound observation —
+no network. See [`issue-state/README.md`](issue-state/README.md).
+
+This is **bounded release-time** evidence, not live GitHub. Observed pin:
+`#67` / `#68` closed/completed; `#78` **open/reopened**, close pending
+PR 158. Do not treat the receipt as current GitHub truth.
+
 ## Validation entry points
 
 ```python
@@ -81,6 +93,7 @@ Under `--strict` (validator `repo_root` set):
 - Claimable classifications (`faithful` / `omg_native` / `antigravity_native`) require non-empty `omg_paths` that exist under the repo.
 - `healthy` / `live_verified` require `healthy_evidence` entries that are existing repo-relative paths (opaque strings like `"x"` fail closed).
 - Alias rows may not exceed canonical maturity per runtime; aliases of `host_impossible` / `excluded` / `optional_unclaimed` cannot claim positive maturity. Claim markers for aliases derive from the canonical target.
+- Closure-sensitive GitHub issue state is bound to [`issue-state/v1.json`](issue-state/v1.json) (offline `release_pin`; `#78` observed open/reopened). Schema-only checks without `repo_root` skip this file.
 
 ## Release check
 
