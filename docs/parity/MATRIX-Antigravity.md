@@ -7,7 +7,7 @@
 
 | Capability | Category | Classification | Maturity | Marker | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `antigravity.provider.adapter` | antigravity | antigravity_native | antigravity=catalogued, grok=catalogued | catalogued | A–D landed under closed #67 (probe/run/ask/Team envelope). Remaining authenticated Antigravity provider/live evidence is owned by #69. No live promotion. |
+| `antigravity.provider.adapter` | antigravity | antigravity_native | antigravity=catalogued, grok=catalogued | catalogued | A–D landed under closed #67 (probe/run/ask/Team envelope). Remaining authenticated Antigravity provider/live evidence is owned by #69; provider loading/doctor follow-up by #77. No live promotion. |
 | `antigravity.headless.structured_execution` | antigravity | optional_unclaimed | antigravity=catalogued, grok=catalogued | optional_unclaimed | Ask+Team envelope landed under closed #67-C/D. Remaining structured/live Antigravity execution and supervisor PTY/PID/readiness evidence is owned by #69. |
 | `antigravity.agents.markdown_custom` | agents_routing | omg_native | antigravity=catalogued, grok=catalogued | catalogued | Grok plugin markdown agents exist (historical #67). Antigravity-native agent catalog wiring is near-1:1 follow-up under #79, not a closed-#67 blocker. |
 | `antigravity.skills.hooks_subagents_plugins_mcp` | skills | omg_native | antigravity=catalogued, grok=catalogued | catalogued | OMG skills/hooks/agents/MCP exist on Grok (historical #67). Antigravity host plugin/MCP parity is near-1:1 follow-up under #79, not a closed-#67 blocker. |

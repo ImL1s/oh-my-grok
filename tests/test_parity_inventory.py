@@ -78,6 +78,34 @@ def test_closed_issues_67_68_cannot_be_open_p0_owners() -> None:
             assert owners & closed
 
 
+def test_open_gap_owners_cannot_disappear_from_capability_issues() -> None:
+    """Active gap owners must appear on related capability issues (FEATURE-MATRIX)."""
+    inventory = validate_parity_inventory(load_json_object(INVENTORY), repo_root=ROOT)
+    by_id = {row["id"]: row for row in inventory["capabilities"]}
+    for gap in inventory["gaps"]:
+        if gap["status"] != "open":
+            continue
+        owners = set(gap["issues"])
+        for cap_id in gap["capability_ids"]:
+            assert cap_id in by_id, cap_id
+            missing = owners - set(by_id[cap_id].get("issues") or [])
+            assert not missing, (
+                f"{gap['id']} owners {sorted(missing)} missing from {cap_id}.issues"
+            )
+    adapter_issues = by_id["antigravity.provider.adapter"]["issues"]
+    assert "#77" in adapter_issues
+    assert "#67" in adapter_issues
+    assert "#69" in adapter_issues
+    open_p0 = {
+        issue
+        for gap in inventory["gaps"]
+        if gap["status"] == "open" and gap["priority"] == "P0"
+        for issue in gap["issues"]
+    }
+    assert open_p0 == {"#69"}
+    assert inventory["inventory_status"] == "bootstrapping"
+
+
 def test_v1_migration_fixture_still_validates() -> None:
     inventory = validate_parity_inventory(load_json_object(V1_FIXTURE))
     assert inventory["schema_version"] == 1

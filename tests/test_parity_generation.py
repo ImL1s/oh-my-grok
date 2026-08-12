@@ -74,6 +74,10 @@ _GAPS_TABLE_ROW = re.compile(
     r"^\| `([^`]+)` \| (P[0-9]) \| (open|closed|deferred) \| ([^|]+) \|",
     re.MULTILINE,
 )
+_FEATURE_MATRIX_ROW = re.compile(
+    r"^\| `([^`]+)` \| [^|]+ \| [^|]+ \| [^|]+ \| [^|]+ \| ([^|]+) \|",
+    re.MULTILINE,
+)
 
 
 def _open_p0_section(text: str) -> str:
@@ -120,6 +124,47 @@ def test_generated_open_p0_section_excludes_closed_67_68_owners() -> None:
         )
     assert section_owners == {"#69"}
     assert not closed & section_owners
+
+
+def test_rendered_feature_matrix_includes_open_gap_owners() -> None:
+    """Open-gap owners must appear on related FEATURE-MATRIX issue cells."""
+    gen = _load_generator()
+    inventory = validate_parity_inventory(load_json_object(INVENTORY), repo_root=ROOT)
+    matrix = gen.render_feature_matrix(inventory)
+    issues_by_cap: dict[str, set[str]] = {}
+    for match in _FEATURE_MATRIX_ROW.finditer(matrix):
+        cap_id, issues_cell = match.groups()
+        issues_by_cap[cap_id] = {
+            item.strip() for item in issues_cell.split(",") if item.strip()
+        }
+    for gap in inventory["gaps"]:
+        if gap["status"] != "open":
+            continue
+        owners = set(gap["issues"])
+        for cap_id in gap["capability_ids"]:
+            assert cap_id in issues_by_cap, cap_id
+            missing = owners - issues_by_cap[cap_id]
+            assert not missing, (
+                f"{gap['id']} owners {sorted(missing)} missing from {cap_id} issues cell"
+            )
+    adapter_issues = issues_by_cap["antigravity.provider.adapter"]
+    assert {"#67", "#69", "#77"} <= adapter_issues
+    gaps_text = gen.render_gaps(inventory)
+    table_open_p0: set[str] = set()
+    for match in _GAPS_TABLE_ROW.finditer(gaps_text):
+        _gap_id, priority, status, issues = match.groups()
+        if status == "open" and priority == "P0":
+            table_open_p0.update(
+                item.strip() for item in issues.split(",") if item.strip()
+            )
+    assert table_open_p0 == {"#69"}
+    section_owners: set[str] = set()
+    for match in _OPEN_P0_BULLET.finditer(_open_p0_section(gaps_text)):
+        section_owners.update(
+            item.strip() for item in match.group(2).split(",") if item.strip()
+        )
+    assert section_owners == {"#69"}
+    assert inventory["inventory_status"] == "bootstrapping"
 
 
 def test_generated_per_source_matrices_are_current() -> None:

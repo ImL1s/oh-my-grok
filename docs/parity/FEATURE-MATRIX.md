@@ -7,7 +7,7 @@
 
 | Capability | Category | Classification | Maturity | Marker | Issues |
 | --- | --- | --- | --- | --- | --- |
-| `antigravity.provider.adapter` | antigravity | antigravity_native | antigravity=catalogued, grok=catalogued | catalogued | #67, #69 |
+| `antigravity.provider.adapter` | antigravity | antigravity_native | antigravity=catalogued, grok=catalogued | catalogued | #67, #69, #77 |
 | `jobs.durable_background` | jobs | omg_native | grok=catalogued | catalogued | #68, #69 |
 | `team.plane_v3` | team | omg_native | grok=catalogued | catalogued | #69 |
 | `parity.inventory.governance` | parity_governance | omg_native | grok=catalogued | catalogued | #78, #79 |

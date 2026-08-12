@@ -42,6 +42,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain on closed gaps and capability provenance. Closes #78. Refs #69
   #77 #79 (does not close #69/#77/#79).
 
+### Fixed
+- **Parity FEATURE-MATRIX / GAPS owner drift (#77):**
+  `antigravity.provider.adapter` now lists active owner `#77` (provider
+  loading/doctor via `gap.install.provider_doctor`) alongside historical
+  `#67` and remaining live/team `#69`, so generated FEATURE-MATRIX agrees
+  with GAPS. Inventory stays `bootstrapping`. Open P0 remains `#69` only.
+  No live promotion. Refs #77 #69 (does not close).
+
 ### Added
 - **#69 PR13 Composition Lane Worker Protocol V1:** shared worker-scoped
   `claim-lane` / `submit-lane-result` for Hyperplan and Security Research

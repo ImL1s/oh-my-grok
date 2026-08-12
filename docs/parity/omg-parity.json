@@ -119,9 +119,10 @@
       },
       "issues": [
         "#67",
-        "#69"
+        "#69",
+        "#77"
       ],
-      "gap": "A\u2013D landed under closed #67 (probe/run/ask/Team envelope). Remaining authenticated Antigravity provider/live evidence is owned by #69. No live promotion."
+      "gap": "A\u2013D landed under closed #67 (probe/run/ask/Team envelope). Remaining authenticated Antigravity provider/live evidence is owned by #69; provider loading/doctor follow-up by #77. No live promotion."
     },
     {
       "id": "jobs.durable_background",
