@@ -15,6 +15,8 @@ Scenarios via ``OMG_ACP_FAKE_SCENARIO``:
   exit_after_resume — exit immediately after resume (transient false success)
   resume_false     — resume result resumed=false (no receipt)
   resume_plus_oversize_suffix — valid resume result + unterminated oversize suffix in one write (OMG_ACP_FAKE_SUFFIX_BYTES, default 400)
+  resume_plus_oversize_terminated_frame — same as resume_plus_oversize_suffix but suffix is fully NL-terminated: resume_json + NL + x*n + NL (OMG_ACP_FAKE_SUFFIX_BYTES, default 400)
+  resume_plus_under_limit_frames — valid resume result + two complete 200-byte frames (combined payload 400 > typical max_line=256; each frame 200 < 256)
   resume_plus_chrome_plus_suffix — valid resume result + chrome session/update + unterminated oversize suffix in one write (OMG_ACP_FAKE_SUFFIX_BYTES, default 400)
   session_id_mismatch — resume result sessionId ≠ requested UUID
   resume_missing_flag — resume result omits resumed
@@ -183,6 +185,48 @@ def main() -> int:
             ).encode("utf-8")
             + b"\n"
             + b"x" * max(0, n)
+        )
+        sys.stdout.buffer.write(payload)
+        sys.stdout.buffer.flush()
+        time.sleep(60)
+        return 0
+
+    if scenario == "resume_plus_oversize_terminated_frame":
+        try:
+            n = int(os.environ.get("OMG_ACP_FAKE_SUFFIX_BYTES") or "400")
+        except ValueError:
+            n = 400
+        payload = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": resume["id"],
+                    "result": {"sessionId": sid, "resumed": True},
+                }
+            ).encode("utf-8")
+            + b"\n"
+            + b"x" * max(0, n)
+            + b"\n"
+        )
+        sys.stdout.buffer.write(payload)
+        sys.stdout.buffer.flush()
+        time.sleep(60)
+        return 0
+
+    if scenario == "resume_plus_under_limit_frames":
+        payload = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": resume["id"],
+                    "result": {"sessionId": sid, "resumed": True},
+                }
+            ).encode("utf-8")
+            + b"\n"
+            + b"y" * 200
+            + b"\n"
+            + b"z" * 200
+            + b"\n"
         )
         sys.stdout.buffer.write(payload)
         sys.stdout.buffer.flush()

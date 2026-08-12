@@ -16,6 +16,9 @@ from omg_cli.host_acp import (
     AcpError,
     AcpResumeReceipt,
     AcpStdioSession,
+    _incomplete_line_len,
+    _max_buffered_frame_len,
+    _raise_if_buffered_limits,
     _read_line,
     acp_stdio_argv,
     allowlisted_acp_env,
@@ -1114,3 +1117,247 @@ def test_handshake_zero_quiet_window_under_limit_succeeds(tmp_path: Path) -> Non
         assert sess._receipt is not None
     finally:
         sess.close()
+
+
+def test_handshake_zero_quiet_window_oversize_terminated_frame_writes_no_receipt(
+    tmp_path: Path,
+) -> None:
+    proc, argv = _spawn(
+        "resume_plus_oversize_terminated_frame",
+        tmp_path,
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "400"},
+    )
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    sess.max_line_bytes = 256
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "line overflow" in str(ei.value)
+        assert "byte overflow" not in str(ei.value)
+        assert sess._receipt is None
+        assert elapsed < 2.0
+    finally:
+        sess.close()
+
+
+def test_handshake_expired_deadline_oversize_terminated_frame_writes_no_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli import host_acp as host_acp_mod
+
+    proc, argv = _spawn(
+        "resume_plus_oversize_terminated_frame",
+        tmp_path,
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "400"},
+    )
+    sess = _session(proc, argv, tmp_path, quiet=0.5)
+    sess.max_line_bytes = 256
+    orig_await = sess._await_result
+    jump = {"on": False}
+
+    def _await_wrapper(*args: object, **kwargs: object):
+        result = orig_await(*args, **kwargs)
+        expect_id = args[0] if args else kwargs.get("expect_id")
+        if expect_id == 2:
+            jump["on"] = True
+        return result
+
+    monkeypatch.setattr(sess, "_await_result", _await_wrapper)
+    real_mono = host_acp_mod.time.monotonic
+
+    def _jumped_mono() -> float:
+        now = real_mono()
+        if jump["on"]:
+            return now + 10.0
+        return now
+
+    monkeypatch.setattr(host_acp_mod.time, "monotonic", _jumped_mono)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "line overflow" in str(ei.value)
+        assert "byte overflow" not in str(ei.value)
+        assert sess._receipt is None
+    finally:
+        sess.close()
+
+
+def test_try_read_message_expired_deadline_rejects_terminated_oversize_frame() -> None:
+    max_line = 256
+    r_fd, w_fd = os.pipe()
+    r_file = os.fdopen(r_fd, "rb", buffering=0)
+    w_file = os.fdopen(w_fd, "wb", buffering=0)
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.stdout = r_file
+            self.stdin = None
+            self.pid = None
+
+        def poll(self) -> None:
+            return None
+
+    proc = _FakeProc()
+    sid = str(uuid.uuid4())
+    sess = AcpStdioSession(
+        proc=proc,
+        argv=("fake",),
+        session_id=sid,
+        cwd=".",
+        job_id="20260101T000000Z-deadbeef",
+        attempt=1,
+        parent_run_id="run-1",
+        session_id_hash=hash_session_id(sid),
+        cwd_hash=hash_cwd("."),
+        max_line_bytes=max_line,
+        max_total_bytes=50_000,
+    )
+    sess._rx_buf.extend(b"x" * (max_line + 1) + b"\n")
+    assert _incomplete_line_len(sess._rx_buf) == 0
+    assert sess._byte_budget[0] + len(sess._rx_buf) < sess.max_total_bytes
+    try:
+        for allow_timeout in (True, False):
+            with pytest.raises(AcpError) as ei:
+                sess._try_read_message(
+                    deadline=time.monotonic() - 1.0,
+                    allow_timeout=allow_timeout,
+                    cancel_event=None,
+                )
+            assert ei.value.code == "E_ACP_OVERFLOW"
+            assert ei.value.code != "E_ACP_TIMEOUT"
+            assert "line overflow" in str(ei.value)
+            assert "byte overflow" not in str(ei.value)
+    finally:
+        r_file.close()
+        w_file.close()
+
+
+def test_handshake_zero_quiet_window_under_limit_multiple_frames_succeeds(
+    tmp_path: Path,
+) -> None:
+    proc, argv = _spawn("resume_plus_under_limit_frames", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    sess.max_line_bytes = 256
+    try:
+        receipt = sess.handshake(timeout_s=5.0)
+        assert receipt.resume_matched is True
+        assert sess._receipt is not None
+        leftover = bytes(sess._rx_buf)
+        assert leftover == b"y" * 200 + b"\n" + b"z" * 200 + b"\n"
+        assert len(leftover) - leftover.count(b"\n") == 400
+        assert 400 > sess.max_line_bytes
+        assert _max_buffered_frame_len(sess._rx_buf) == 200
+        assert _incomplete_line_len(sess._rx_buf) == 0
+    finally:
+        sess.close()
+
+
+def test_read_line_coalesced_valid_plus_terminated_oversize_extracts_first() -> None:
+    """One OS read: valid under-cap line + fully NL-terminated oversized frame.
+
+    Extract-first must return the valid frame; the leftover complete frame
+    overflows on the next read (not as a combined line on the first).
+    """
+    max_bytes = 32
+    valid = b'{"id":1,"result":{}}\n'
+    assert len(valid) - 1 < max_bytes
+    suffix = b"x" * (max_bytes + 1) + b"\n"
+    r_fd, w_fd = os.pipe()
+    r_file = os.fdopen(r_fd, "rb", buffering=0)
+    w_file = os.fdopen(w_fd, "wb", buffering=0)
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.stdout = r_file
+
+        def poll(self) -> None:
+            return None
+
+    proc = _FakeProc()
+    rx_buf = bytearray()
+    byte_budget = [0]
+    try:
+        w_file.write(valid + suffix)
+        w_file.flush()
+        w_file.close()
+        first = _read_line(
+            proc,
+            max_bytes=max_bytes,
+            deadline=time.monotonic() + 5.0,
+            byte_budget=byte_budget,
+            rx_buf=rx_buf,
+        )
+        assert first == valid[:-1]
+        assert bytes(rx_buf) == suffix
+        assert _incomplete_line_len(rx_buf) == 0
+        assert _max_buffered_frame_len(rx_buf) == max_bytes + 1
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            _read_line(
+                proc,
+                max_bytes=max_bytes,
+                deadline=time.monotonic() + 5.0,
+                byte_budget=byte_budget,
+                rx_buf=rx_buf,
+            )
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "line overflow" in str(ei.value)
+        assert elapsed < 0.5
+    finally:
+        r_file.close()
+        w_file.close()
+
+
+def test_raise_if_buffered_limits_complete_frame_flag() -> None:
+    max_line = 256
+    max_total = 50_000
+    terminated = bytearray(b"x" * (max_line + 1) + b"\n")
+    budget = [0]
+    assert _incomplete_line_len(terminated) == 0
+    assert _max_buffered_frame_len(terminated) == max_line + 1
+    assert _max_buffered_frame_len(bytearray()) == 0
+    # leftover-only documents the hole: complete oversized frame is invisible.
+    _raise_if_buffered_limits(
+        budget,
+        terminated,
+        max_line_bytes=max_line,
+        max_total_bytes=max_total,
+        include_complete_frames=False,
+    )
+    with pytest.raises(AcpError) as ei:
+        _raise_if_buffered_limits(
+            budget,
+            terminated,
+            max_line_bytes=max_line,
+            max_total_bytes=max_total,
+            include_complete_frames=True,
+        )
+    assert ei.value.code == "E_ACP_OVERFLOW"
+    assert "line overflow" in str(ei.value)
+    assert "byte overflow" not in str(ei.value)
+
+    two = bytearray(b"y" * 200 + b"\n" + b"z" * 200 + b"\n")
+    assert _max_buffered_frame_len(two) == 200
+    _raise_if_buffered_limits(
+        [0],
+        two,
+        max_line_bytes=256,
+        max_total_bytes=50_000,
+        include_complete_frames=True,
+    )
+    with pytest.raises(AcpError) as ei2:
+        _raise_if_buffered_limits(
+            [0],
+            two,
+            max_line_bytes=256,
+            max_total_bytes=len(two) - 1,
+            include_complete_frames=True,
+        )
+    assert ei2.value.code == "E_ACP_OVERFLOW"
+    assert "byte overflow" in str(ei2.value)
+    assert "line overflow" not in str(ei2.value)
