@@ -458,6 +458,51 @@ def load_team_meta(root: Path | str, run_id: str) -> dict[str, Any]:
     return data
 
 
+def _try_load_team_meta(root: Path | str, run_id: str) -> dict[str, Any] | None:
+    """Return team.json when present; ``None`` when absent. Fail closed if corrupt."""
+    path = team_meta_path(root, run_id)
+    try:
+        if not path.is_file() or path.is_symlink():
+            return None
+    except OSError as exc:
+        raise TeamError(f"team.json not usable for --run {run_id!r}: {exc}") from exc
+    return load_team_meta(root, run_id)
+
+
+def resolve_owner_token_for_start(
+    root: Path | str,
+    *,
+    run_id: str | None,
+    owner_token: str | None,
+) -> str:
+    """Resolve owner token for start/launch, preserving published authority on reuse.
+
+    When ``--run`` targets an existing run that already published
+    ``owner_token`` in team.json, reuse that token so pane supervisors
+    admit against the published identity. Explicit caller tokens that
+    conflict with the published value fail closed (no pane spawn).
+
+    New runs (or reuse without a published token) use the caller token
+    when provided, else a fresh hex token.
+    """
+    caller = str(owner_token or "").strip() or None
+    if not run_id:
+        return caller or uuid.uuid4().hex
+    meta = _try_load_team_meta(root, run_id)
+    if meta is None:
+        return caller or uuid.uuid4().hex
+    published = str(meta.get("owner_token") or "").strip() or None
+    if not published:
+        return caller or uuid.uuid4().hex
+    if caller and caller != published:
+        raise TeamError(
+            f"owner_token conflicts with published team.json for --run "
+            f"{run_id!r} (E_TEAM_OWNER_TOKEN_CONFLICT); omit --owner-token "
+            "or pass the published token to relaunch"
+        )
+    return published
+
+
 def _read_meta_generation(meta: Mapping[str, Any]) -> int:
     """Return current meta_generation (0 when absent on pre-#21 documents)."""
 
@@ -2993,7 +3038,6 @@ def start_team(
             f"unsupported team executor {executor!r} (supported: None / 'fixture')"
         )
     tid_plane = (team_id or "team").strip() or "team"
-    token = owner_token or uuid.uuid4().hex
     use_fixture_executor = executor_norm == "fixture"
 
     multi_cli = routing is not None
@@ -3088,6 +3132,16 @@ def start_team(
                 raise TeamError(str(exc)) from exc
             rid = str(run["run_id"])
             created_run = True
+
+        # Owner token after run identity is known: --run reuse must preserve
+        # published team.json authority so supervisors admit (PR #156 P1).
+        # Explicit conflicting caller token fails closed before any pane spawn.
+        # New runs resolve without consulting team.json (none yet).
+        token = resolve_owner_token_for_start(
+            root_path,
+            run_id=None if created_run else rid,
+            owner_token=owner_token,
+        )
 
         def _fail_start(exc: BaseException, *, extra: Sequence[str] = ()) -> TeamError:
             rb = _rollback_partial_team_start(
@@ -6966,6 +7020,7 @@ __all__ = [
     "mutate_team_meta",
     "refuse_nested_team_launch",
     "refuse_worker_operator_mutation",
+    "resolve_owner_token_for_start",
     "start_team",
     "status_locked_view",
     "stop_team",

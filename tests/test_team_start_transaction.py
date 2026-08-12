@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -443,3 +444,149 @@ def test_dry_run_reuse_run_compensate_preserves_active(
     active = load_active_run(tmp_path)
     assert active is not None
     assert str(active.get("run_id")) == rid
+
+
+# ---------------------------------------------------------------------------
+# PR #156: --run reuse preserves published owner_token
+# ---------------------------------------------------------------------------
+
+
+def test_run_reuse_preserves_published_owner_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Materialize then relaunch with --run must not mint a conflicting token."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team.plane import team_meta_path
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    first = start_team(
+        "materialize first",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        owner_token="published-owner-token-aaa",
+    )
+    rid = str(first["run_id"])
+    assert first["owner_token"] == "published-owner-token-aaa"
+    meta_path = team_meta_path(tmp_path, rid)
+    disk = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert disk["owner_token"] == "published-owner-token-aaa"
+    assert disk.get("writer") == CLI_WRITER
+
+    # Relaunch / materialize-to-live path: omit caller token → reuse published.
+    second = start_team(
+        "reuse without token",
+        TASKS,
+        root=tmp_path,
+        run_id=rid,
+        dry_run=True,
+    )
+    assert second["owner_token"] == "published-owner-token-aaa"
+    disk2 = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert disk2["owner_token"] == "published-owner-token-aaa"
+
+    # Explicit matching token also ok.
+    third = start_team(
+        "reuse matching token",
+        TASKS,
+        root=tmp_path,
+        run_id=rid,
+        dry_run=True,
+        owner_token="published-owner-token-aaa",
+    )
+    assert third["owner_token"] == "published-owner-token-aaa"
+
+
+def test_run_reuse_conflicting_caller_token_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Explicit conflicting owner_token must fail before pane/state mutation."""
+    from omg_cli.team.plane import team_meta_path
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    first = start_team(
+        "seed",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        owner_token="published-token-bbb",
+    )
+    rid = str(first["run_id"])
+    meta_path = team_meta_path(tmp_path, rid)
+    prior = meta_path.read_bytes()
+
+    # Boom if we ever reach tmux / materialize past token resolve.
+    monkeypatch.setattr(
+        plane,
+        "materialize_supervisor_pane_command",
+        lambda **_k: (_ for _ in ()).throw(AssertionError("must not materialize")),
+    )
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+
+    with pytest.raises(TeamError, match="E_TEAM_OWNER_TOKEN_CONFLICT"):
+        start_team(
+            "conflict",
+            TASKS,
+            root=tmp_path,
+            run_id=rid,
+            dry_run=False,
+            owner_token="attacker-fresh-token",
+            topology="windows",
+        )
+
+    # Unrelated published authority must remain intact.
+    assert meta_path.read_bytes() == prior
+    assert (
+        json.loads(prior.decode("utf-8"))["owner_token"] == "published-token-bbb"
+    )
+
+
+def test_resolve_owner_token_for_start_unit(tmp_path: Path) -> None:
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team.plane import (
+        resolve_owner_token_for_start,
+        team_meta_path,
+        _atomic_write_json,
+    )
+
+    (tmp_path / ".omg" / "state" / "runs" / "r1" / "team").mkdir(parents=True)
+    # No team.json → fresh or caller.
+    t1 = resolve_owner_token_for_start(tmp_path, run_id=None, owner_token=None)
+    assert len(t1) == 32
+    assert (
+        resolve_owner_token_for_start(tmp_path, run_id=None, owner_token="abc")
+        == "abc"
+    )
+    assert (
+        resolve_owner_token_for_start(tmp_path, run_id="r1", owner_token="xyz")
+        == "xyz"
+    )
+
+    _atomic_write_json(
+        team_meta_path(tmp_path, "r1"),
+        {
+            "writer": CLI_WRITER,
+            "run_id": "r1",
+            "team_id": "team",
+            "owner_token": "published-zzz",
+            "schema_version": 1,
+        },
+    )
+    assert (
+        resolve_owner_token_for_start(tmp_path, run_id="r1", owner_token=None)
+        == "published-zzz"
+    )
+    assert (
+        resolve_owner_token_for_start(
+            tmp_path, run_id="r1", owner_token="published-zzz"
+        )
+        == "published-zzz"
+    )
+    with pytest.raises(TeamError, match="E_TEAM_OWNER_TOKEN_CONFLICT"):
+        resolve_owner_token_for_start(
+            tmp_path, run_id="r1", owner_token="wrong"
+        )
