@@ -345,6 +345,47 @@ def test_validate_receipt_rejects_missing_resume_matched() -> None:
     assert ei.value.code == "E_ACP_RECEIPT"
 
 
+def test_validate_receipt_rejects_forged_resume_matched_wrong_session_hash() -> None:
+    # test_cancel_unproven_retains_binding_blocks_second_sidecar is not reopened.
+    rec = AcpResumeReceipt(
+        job_id="20260101T000000Z-deadbeef",
+        attempt=1,
+        parent_run_id="run-1",
+        session_id_hash=hash_session_id("sid"),
+        cwd_hash=hash_cwd("."),
+        resume_matched=True,
+        timestamp="2026-01-01T00:00:00+00:00",
+    )
+    expected_sid = rec.session_id_hash
+    expected_cwd = rec.cwd_hash
+    expected_parent = rec.parent_run_id
+    forged_sid = "a" * 64
+    forged_cwd = "b" * 64
+    assert forged_sid != expected_sid
+    assert forged_cwd != expected_cwd
+    for field, forged in (
+        ("session_id_hash", forged_sid),
+        ("cwd_hash", forged_cwd),
+        ("parent_run_id", "run-forged"),
+    ):
+        body = rec.to_dict()
+        assert body["resume_matched"] is True
+        body[field] = forged
+        core = {k: v for k, v in body.items() if k != "receipt_sha256"}
+        body["receipt_sha256"] = hashlib.sha256(
+            json.dumps(core, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        with pytest.raises(AcpError) as ei:
+            validate_receipt(
+                body,
+                session_id_hash=expected_sid,
+                cwd_hash=expected_cwd,
+                parent_run_id=expected_parent,
+            )
+        assert ei.value.code == "E_ACP_RECEIPT", field
+        assert field in str(ei.value)
+
+
 def test_build_receipt_from_dict_missing_resume_matched_is_not_true() -> None:
     rec = build_receipt_from_dict(
         {
@@ -378,6 +419,16 @@ def test_validate_resume_result_typed_errors() -> None:
             {"sessionId": sid, "session_id": sid, "resumed": True}, sid
         )
     assert dual_equal.value.code == "E_ACP_IDENTITY"
+    with pytest.raises(AcpError) as dual_unequal:
+        validate_resume_result(
+            {
+                "sessionId": sid,
+                "session_id": "00000000-0000-0000-0000-000000000000",
+                "resumed": True,
+            },
+            sid,
+        )
+    assert dual_unequal.value.code == "E_ACP_IDENTITY"
     with pytest.raises(AcpError) as missing:
         validate_resume_result({"sessionId": sid}, sid)
     assert missing.value.code == "E_ACP_RESUME"
