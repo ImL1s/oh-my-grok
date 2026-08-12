@@ -30,6 +30,12 @@ from omg_cli.contracts.path_keys import (
 from omg_cli.evidence import CLI_WRITER
 from omg_cli.redaction import redact_text
 from omg_cli.team import plane as plane_mod
+from omg_cli.team.io_capability import (
+    IoCapabilityRefuseError,
+    WorkerIoCapability,
+    assert_operator_input_allowed,
+    normalize_worker_io_capability,
+)
 from omg_cli.team.plane import (
     TeamError,
     load_team_meta,
@@ -910,6 +916,53 @@ def authorize_input(
     return live
 
 
+def load_worker_io_capability(
+    root: Path | str,
+    proof: ExactPaneProof,
+) -> WorkerIoCapability:
+    """Load CLI-authoritative I/O capability for a resolved worker proof.
+
+    Missing/legacy task fields normalize fail-closed (unproven/unsupported).
+    """
+    root_path = Path(root).resolve()
+    meta = load_team_meta(root_path, proof.run_id)
+    task: Mapping[str, Any] | None = None
+    for raw in meta.get("tasks") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        if str(raw.get("task_id") or "") == proof.worker_id:
+            task = raw
+            break
+    return normalize_worker_io_capability(
+        task,
+        attempt=proof.attempt,
+        generation=proof.generation,
+    )
+
+
+def _require_operator_io_capability(
+    root: Path | str,
+    proof: ExactPaneProof,
+    *,
+    action: str,
+) -> WorkerIoCapability:
+    """Capability gate before TTY policy / tmux send (override cannot bypass)."""
+    cap = load_worker_io_capability(root, proof)
+    try:
+        assert_operator_input_allowed(
+            cap,
+            action="key" if action == "key" else "input",
+        )
+    except IoCapabilityRefuseError as exc:
+        raise OperatorError(
+            str(exc),
+            code=exc.code,
+            exit_code=2,
+            details=exc.details,
+        ) from exc
+    return cap
+
+
 def audit_operator_event(
     root: Path | str,
     proof: ExactPaneProof,
@@ -921,6 +974,9 @@ def audit_operator_event(
     text_sha256: str | None = None,
     status: str | None = None,
     error_code: str | None = None,
+    io_mode: str | None = None,
+    operator_input_supported: bool | None = None,
+    input_ready: bool | None = None,
 ) -> dict[str, Any]:
     """Append a bounded operator audit row (never raw input text)."""
     root_path = Path(root).resolve()
@@ -949,6 +1005,9 @@ def audit_operator_event(
         "text_sha256": text_sha256,
         "status": status,
         "error_code": error_code,
+        "io_mode": io_mode,
+        "operator_input_supported": operator_input_supported,
+        "input_ready": input_ready,
     }
     line = json.dumps(event, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     line += "\n"
@@ -1189,6 +1248,8 @@ def key_worker(
         )
     proof = resolve_live_worker(root, identity, worker_id)
     key_name = _require_key_name(key)
+    # Capability refuse BEFORE TTY policy / send; override cannot bypass.
+    cap = _require_operator_io_capability(root, proof, action="key")
     tty = sys.stdin.isatty() if is_tty is None else bool(is_tty)
     if not operator_override and not tty:
         raise OperatorError(
@@ -1217,6 +1278,9 @@ def key_worker(
                 key_name=key_name,
                 status=exc.status,
                 error_code="E_OPERATOR_TOCTOU",
+                io_mode=cap.io_mode,
+                operator_input_supported=cap.operator_input_supported,
+                input_ready=cap.input_ready,
             )
         raise
     except TmuxTeamError as exc:
@@ -1228,6 +1292,9 @@ def key_worker(
             key_name=key_name,
             status=STATUS_LIVE,
             error_code="E_OPERATOR_TMUX",
+            io_mode=cap.io_mode,
+            operator_input_supported=cap.operator_input_supported,
+            input_ready=cap.input_ready,
         )
         raise OperatorError(str(exc), code="E_OPERATOR_TMUX", exit_code=1) from exc
     audit_operator_event(
@@ -1237,7 +1304,11 @@ def key_worker(
         ok=True,
         key_name=key_name,
         status=STATUS_LIVE,
+        io_mode=cap.io_mode,
+        operator_input_supported=cap.operator_input_supported,
+        input_ready=cap.input_ready,
     )
+    # Honest success: tmux accepted exact-pane submit, not provider ACK.
     return {
         "ok": True,
         "command": "team.key",
@@ -1248,7 +1319,11 @@ def key_worker(
         "generation": proof.generation,
         "pane_id": proof.pane_id,
         "key": key_name,
-        "delivered": True,
+        "submitted_to_exact_tty": True,
+        "acknowledged_by_provider": False,
+        "io_mode": cap.io_mode,
+        "input_ready": cap.input_ready,
+        "operator_input_supported": cap.operator_input_supported,
     }
 
 
@@ -1270,7 +1345,11 @@ def input_worker(
             exit_code=2,
         )
     proof = resolve_live_worker(root, identity, worker_id)
+    # Validate payload before capability so bad input still fails closed
+    # with a specific message when a future supported path exists.
     safe = _validate_literal_input(text)
+    # Capability refuse BEFORE TTY policy / send; override cannot bypass.
+    cap = _require_operator_io_capability(root, proof, action="input")
     tty = sys.stdin.isatty() if is_tty is None else bool(is_tty)
     # Mirror authorize_input TTY policy with injectable is_tty for tests.
     if not operator_override and not tty:
@@ -1307,6 +1386,9 @@ def input_worker(
                 text_sha256=text_hash,
                 status=exc.status,
                 error_code="E_OPERATOR_TOCTOU",
+                io_mode=cap.io_mode,
+                operator_input_supported=cap.operator_input_supported,
+                input_ready=cap.input_ready,
             )
         raise
     except TmuxTeamError as exc:
@@ -1319,6 +1401,9 @@ def input_worker(
             text_sha256=text_hash,
             status=STATUS_LIVE,
             error_code="E_OPERATOR_TMUX",
+            io_mode=cap.io_mode,
+            operator_input_supported=cap.operator_input_supported,
+            input_ready=cap.input_ready,
         )
         raise OperatorError(str(exc), code="E_OPERATOR_TMUX", exit_code=1) from exc
     audit_operator_event(
@@ -1329,7 +1414,11 @@ def input_worker(
         text_length=text_len,
         text_sha256=text_hash,
         status=STATUS_LIVE,
+        io_mode=cap.io_mode,
+        operator_input_supported=cap.operator_input_supported,
+        input_ready=cap.input_ready,
     )
+    # Honest success: exact-pane tmux submit only — never claim provider ACK.
     return {
         "ok": True,
         "command": "team.input",
@@ -1339,7 +1428,11 @@ def input_worker(
         "attempt": proof.attempt,
         "generation": proof.generation,
         "pane_id": proof.pane_id,
-        "delivered": True,
+        "submitted_to_exact_tty": True,
+        "acknowledged_by_provider": False,
+        "io_mode": cap.io_mode,
+        "input_ready": cap.input_ready,
+        "operator_input_supported": cap.operator_input_supported,
         "submitted": bool(submit),
         "text_length": text_len,
         "text_sha256": text_hash,
@@ -1546,6 +1639,7 @@ __all__ = [
     "input_worker",
     "key_worker",
     "list_panes",
+    "load_worker_io_capability",
     "plan_and_execute_team_view",
     "probe_exact_worker",
     "resolve_live_worker",
