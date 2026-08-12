@@ -883,3 +883,169 @@ def test_cli_normalize_reserves_operator_actions() -> None:
         assert name in RESERVED_ACTIONS
     out = normalize_team_argv(["team", "panes", "--json"])
     assert out[1] == "panes"
+
+
+# ---------------------------------------------------------------------------
+# PR #156: worker must not invoke leader/operator controls (zero side effects)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_worker_operator_mutations_refused_before_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """OMG_TEAM_WORKER=1 → input/key/focus/view refuse before project_root/tmux."""
+    import argparse
+
+    from omg_cli.commands.team import cmd_team
+    from omg_cli.team.plane import TEAM_WORKER_ENV
+
+    _enable_team(monkeypatch)
+    monkeypatch.setenv(TEAM_WORKER_ENV, "1")
+    monkeypatch.setenv("OMG_TEAM_WORKER_ID", "w1")
+
+    def _boom_root() -> Path:
+        raise AssertionError("project_root must not run for worker operator refuse")
+
+    monkeypatch.setattr("omg_cli.commands.team.project_root", _boom_root)
+
+    # If operator helpers are imported, they must never be called.
+    def _boom_op(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("operator helper must not run after worker refuse")
+
+    monkeypatch.setattr(operator, "input_worker", _boom_op)
+    monkeypatch.setattr(operator, "key_worker", _boom_op)
+    monkeypatch.setattr(operator, "focus_worker", _boom_op)
+    monkeypatch.setattr(operator, "list_panes", _boom_op)
+    monkeypatch.setattr(operator, "capture_worker", _boom_op)
+
+    cases = (
+        argparse.Namespace(
+            team_action="input",
+            team_identity=None,
+            run_id="run-x",
+            worker_id="w2",
+            input_text="hi",
+            input_submit=True,
+            operator_override=True,
+            as_json=False,
+            json_output=False,
+        ),
+        argparse.Namespace(
+            team_action="key",
+            team_identity=None,
+            run_id="run-x",
+            worker_id="w2",
+            key_name="Enter",
+            operator_override=True,
+            as_json=False,
+            json_output=False,
+        ),
+        argparse.Namespace(
+            team_action="focus",
+            team_identity=None,
+            run_id="run-x",
+            worker_id="w2",
+            focus_execute=True,
+            as_json=False,
+            json_output=False,
+        ),
+        argparse.Namespace(
+            team_action="view",
+            team_identity=None,
+            run_id="run-x",
+            worker_id=None,
+            view_print=False,
+            view_takeover=True,
+            as_json=False,
+            json_output=False,
+        ),
+    )
+    for args in cases:
+        code = cmd_team(args)
+        assert code == 2, args.team_action
+        err = capsys.readouterr().err
+        assert "E_TEAM_WORKER_OPERATION_REFUSED" in err, (
+            args.team_action,
+            err,
+        )
+
+
+def test_cli_worker_resume_still_nested_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """resume remains E_TEAM_NESTED_LAUNCH (lifecycle), not operator refuse."""
+    import argparse
+
+    from omg_cli.commands.team import cmd_team
+    from omg_cli.team.plane import TEAM_WORKER_ENV
+
+    _enable_team(monkeypatch)
+    monkeypatch.setenv(TEAM_WORKER_ENV, "1")
+
+    def _boom_root() -> Path:
+        raise AssertionError("project_root must not run for nested-launch refuse")
+
+    monkeypatch.setattr("omg_cli.commands.team.project_root", _boom_root)
+
+    args = argparse.Namespace(
+        team_action="resume",
+        team_identity=None,
+        run_id="run-x",
+        as_json=False,
+        json_output=False,
+        resume_view=True,
+        view_print=False,
+        view_takeover=True,
+        worker_id="w1",
+        provider_session=False,
+    )
+    code = cmd_team(args)
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "E_TEAM_NESTED_LAUNCH" in err
+    assert "E_TEAM_WORKER_OPERATION_REFUSED" not in err
+
+
+def test_cli_worker_read_only_reaches_operator_list_panes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read-only panes remains usable under OMG_TEAM_WORKER=1."""
+    import argparse
+
+    from omg_cli.commands.team import cmd_team
+    from omg_cli.team.plane import TEAM_WORKER_ENV
+
+    _enable_team(monkeypatch)
+    _init_repo(tmp_path)
+    monkeypatch.setenv(TEAM_WORKER_ENV, "1")
+    monkeypatch.setenv("OMG_TEAM_WORKER_ID", "w1")
+    monkeypatch.setattr(
+        "omg_cli.commands.team.project_root",
+        lambda: tmp_path,
+    )
+    called: list[tuple[Any, ...]] = []
+
+    def _fake_list(root: Path, identity: Any, **kwargs: Any) -> dict[str, Any]:
+        called.append((root, identity, kwargs))
+        return {
+            "ok": True,
+            "run_id": "run-ro",
+            "panes": [],
+            "note": "hermetic",
+        }
+
+    monkeypatch.setattr(operator, "list_panes", _fake_list)
+    args = argparse.Namespace(
+        team_action="panes",
+        team_identity=None,
+        run_id="run-ro",
+        as_json=True,
+        json_output=True,
+    )
+    code = cmd_team(args)
+    assert code == 0
+    assert called and called[0][0] == tmp_path

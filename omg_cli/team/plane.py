@@ -247,6 +247,44 @@ def refuse_nested_team_launch(
         )
 
 
+# Leader-only operator mutations (#101 / PR #156): workers must not drive
+# peer/leader panes. Identity-bound ``api`` and read-only ``status`` /
+# ``panes`` / ``capture`` remain usable from worker context.
+LEADER_ONLY_OPERATOR_ACTIONS: frozenset[str] = frozenset(
+    {
+        "input",
+        "key",
+        "focus",
+        "view",
+    }
+)
+
+
+def refuse_worker_operator_mutation(
+    env: Mapping[str, str] | None = None,
+    *,
+    action: str = "input",
+) -> None:
+    """Fail closed before operator/tmux mutations when already a worker.
+
+    Stable code: ``E_TEAM_WORKER_OPERATION_REFUSED``. Must run before
+    ``project_root`` discovery, operator helpers, tmux client focus/send, or
+    any worktree/state write. Does not authorize from command-text env
+    assignments.
+
+    Does **not** gate legal pane supervisor admission, identity-bound team
+    API, or genuinely read-only status/panes/capture paths.
+    """
+    if in_spawned_worker_context(env):
+        raise TeamGateError(
+            f"omg team {action} refused: worker processes cannot invoke "
+            f"leader/operator controls (E_TEAM_WORKER_OPERATION_REFUSED; "
+            f"one of {', '.join(WORKER_ENV_MARKERS)} is set). "
+            "Use identity-bound team API or read-only status/panes/capture.",
+            code="E_TEAM_WORKER_OPERATION_REFUSED",
+        )
+
+
 def in_non_team_spawn_context(env: Mapping[str, str] | None = None) -> bool:
     """True for process-fanout / spawned-subagent workers (not team panes)."""
     source = env if env is not None else os.environ
@@ -6825,9 +6863,11 @@ __all__ = [
     "experimental_enabled",
     "format_status_table",
     "in_spawned_worker_context",
+    "LEADER_ONLY_OPERATOR_ACTIONS",
     "load_team_meta",
     "mutate_team_meta",
     "refuse_nested_team_launch",
+    "refuse_worker_operator_mutation",
     "start_team",
     "status_locked_view",
     "stop_team",

@@ -27,6 +27,7 @@ from omg_cli.state import create_run, load_run
 from omg_cli.team import plane
 from omg_cli.team.plane import (
     EXPERIMENTAL_ENV,
+    LEADER_ONLY_OPERATOR_ACTIONS,
     STATUS_TASK_KEYS,
     STATUS_TOP_KEYS,
     TEAM_WORKER_ENV,
@@ -43,6 +44,7 @@ from omg_cli.team.plane import (
     prepare_native_spawn,
     reconcile_native_spawn,
     record_native_result,
+    refuse_worker_operator_mutation,
     start_team,
     status_locked_view,
     stop_team,
@@ -242,6 +244,32 @@ def test_start_refuses_inside_spawned_worker(
             dry_run=True,
             env={TEAM_WORKER_ENV: "1", "PATH": "/bin"},
         )
+
+
+def test_refuse_worker_operator_mutation_typed_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Workers cannot invoke leader operator controls (PR #156 P1)."""
+    monkeypatch.delenv(TEAM_WORKER_ENV, raising=False)
+    refuse_worker_operator_mutation(action="input")  # no-op outside worker
+    monkeypatch.setenv(TEAM_WORKER_ENV, "1")
+    for action in sorted(LEADER_ONLY_OPERATOR_ACTIONS):
+        with pytest.raises(
+            TeamGateError, match="E_TEAM_WORKER_OPERATION_REFUSED"
+        ) as ei:
+            refuse_worker_operator_mutation(action=action)
+        assert ei.value.code == "E_TEAM_WORKER_OPERATION_REFUSED"
+    # Explicit env mapping (not command-text) still refuses.
+    with pytest.raises(TeamGateError, match="E_TEAM_WORKER_OPERATION_REFUSED"):
+        refuse_worker_operator_mutation(
+            {TEAM_WORKER_ENV: "1", "PATH": "/bin"},
+            action="view",
+        )
+    # Absent marker allows (leader path).
+    refuse_worker_operator_mutation(
+        {"PATH": "/bin", "OMG_TEAM_WORKER": "0"},
+        action="key",
+    )
 
 
 def test_start_caps_at_hard_cap(

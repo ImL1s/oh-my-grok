@@ -337,11 +337,13 @@ def cmd_team(args: argparse.Namespace) -> int:
     never sets verified.
     """
     from omg_cli.team.plane import (
+        LEADER_ONLY_OPERATOR_ACTIONS,
         TeamError,
         TeamGateError,
         collect_team,
         format_status_table,
         refuse_nested_team_launch,
+        refuse_worker_operator_mutation,
         start_team,
         status_locked_view,
         stop_team,
@@ -381,6 +383,10 @@ def cmd_team(args: argparse.Namespace) -> int:
             "collect",
         ):
             refuse_nested_team_launch(action=str(action or "launch"))
+        # Leader-only operator mutations: workers must not input/key/focus/view
+        # peer or leader panes (PR #156). Refuse before project_root / tmux.
+        if action in LEADER_ONLY_OPERATOR_ACTIONS:
+            refuse_worker_operator_mutation(action=str(action))
         # #100: supervisor must not trigger generic project-root discovery via
         # project_root(); it consumes the validated leader root from env only.
         if action == "supervisor":
