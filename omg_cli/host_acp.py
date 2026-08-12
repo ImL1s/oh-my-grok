@@ -229,7 +229,9 @@ def validate_resume_result(result: Any, expected_session_id: str) -> None:
     Raises ``E_ACP_RESUME`` when the result is not a JSON object or ``resumed``
     is not JSON boolean true. Raises ``E_ACP_IDENTITY`` when the session id
     key is missing, not a string, or does not equal the requested UUID.
-    Allowed identity keys: ``sessionId`` or the single alias ``session_id``.
+    Allowed identity keys are exclusive-or: ``sessionId`` **or** the single
+    alias ``session_id`` only. Both present is an identity failure even when
+    the values are equal.
     """
     if not isinstance(result, dict):
         raise AcpError(
@@ -241,9 +243,10 @@ def validate_resume_result(result: Any, expected_session_id: str) -> None:
         raise AcpError(
             "ACP resume result missing session identity", code="E_ACP_IDENTITY"
         )
-    if has_camel and has_snake and result["sessionId"] != result["session_id"]:
+    if has_camel and has_snake:
         raise AcpError(
-            "ACP resume sessionId/session_id conflict", code="E_ACP_IDENTITY"
+            "ACP resume result must not include both sessionId and session_id",
+            code="E_ACP_IDENTITY",
         )
     sid = result["sessionId"] if has_camel else result["session_id"]
     if not isinstance(sid, str) or sid != expected_session_id:

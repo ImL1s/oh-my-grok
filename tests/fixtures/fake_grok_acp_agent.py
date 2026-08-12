@@ -17,6 +17,7 @@ Scenarios via ``OMG_ACP_FAKE_SCENARIO``:
   session_id_mismatch — resume result sessionId ≠ requested UUID
   resume_missing_flag — resume result omits resumed
   session_id_alias — resume result uses session_id alias only
+  session_id_dual  — resume result includes both sessionId and session_id (equal)
   stderr_flood     — flood stderr before handshake (PIPE deadlock probe)
   many_small_chrome — many chrome frames before resume result
 """
@@ -202,6 +203,8 @@ def main() -> int:
         time.sleep(delay)
     if scenario == "session_id_alias":
         resume_result: dict = {"session_id": sid, "resumed": True}
+    elif scenario == "session_id_dual":
+        resume_result = {"sessionId": sid, "session_id": sid, "resumed": True}
     else:
         resume_result = {"sessionId": sid, "resumed": True}
     _write(

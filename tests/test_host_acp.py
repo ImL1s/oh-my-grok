@@ -261,6 +261,18 @@ def test_acp_resume_session_id_alias_matches(tmp_path: Path) -> None:
         sess.close()
 
 
+def test_acp_resume_dual_identity_keys_rejected(tmp_path: Path) -> None:
+    proc, argv = _spawn("session_id_dual", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0.05)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_IDENTITY"
+        assert sess._receipt is None
+    finally:
+        sess.close()
+
+
 def test_acp_stderr_flood_does_not_timeout_handshake(tmp_path: Path) -> None:
     proc, argv = _spawn("stderr_flood", tmp_path)
     sess = _session(proc, argv, tmp_path, quiet=0.05)
@@ -361,6 +373,11 @@ def test_validate_resume_result_typed_errors() -> None:
     sid = str(uuid.uuid4())
     validate_resume_result({"sessionId": sid, "resumed": True}, sid)
     validate_resume_result({"session_id": sid, "resumed": True}, sid)
+    with pytest.raises(AcpError) as dual_equal:
+        validate_resume_result(
+            {"sessionId": sid, "session_id": sid, "resumed": True}, sid
+        )
+    assert dual_equal.value.code == "E_ACP_IDENTITY"
     with pytest.raises(AcpError) as missing:
         validate_resume_result({"sessionId": sid}, sid)
     assert missing.value.code == "E_ACP_RESUME"
