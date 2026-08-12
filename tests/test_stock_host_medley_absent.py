@@ -401,18 +401,18 @@ def _isolate_stock_host(monkeypatch, tmp_path: Path) -> _StockHostIsolation:
     return iso
 
 
-def _neutral_site_packages(tmp_path_factory) -> Path:
+def _injected_site_packages(tmp_path_factory) -> Path:
     """Vendor site-packages for the injected installable ``medley``.
 
-    Always use a factory temp whose basename is ``vendor`` (pytest still
-    cleans it up). Ancestor pathnames may contain the substring
-    ``medley``; absence is the import blocker, not a pathname filter.
+    Factory basename INTENTIONALLY contains ``medley`` so ancestor paths
+    always include the substring; isolation is the import blocker, not a
+    pathname filter.
     """
-    return tmp_path_factory.mktemp("vendor") / "lib" / "site-packages"
+    return tmp_path_factory.mktemp("medley-user") / "lib" / "site-packages"
 
 
 def _inject_fake_medley_package(monkeypatch, tmp_path_factory) -> Path:
-    site = _neutral_site_packages(tmp_path_factory)
+    site = _injected_site_packages(tmp_path_factory)
     pkg = site / "medley"
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text(
@@ -498,9 +498,6 @@ def _assert_medley_absent(home: Path) -> None:
     assert not leaked, f"medley leaked into sys.modules: {leaked}"
     assert not (home / ".medley").exists()
     assert not (home / "medley").exists()
-    if home.is_dir():
-        for child in home.iterdir():
-            assert "medley" not in child.name.lower(), child
     assert not any(k.upper().startswith("MEDLEY") for k in os.environ)
 
 
@@ -521,14 +518,32 @@ def _load_generator():
     return module
 
 
-def test_injected_medley_on_neutral_path_is_discoverable_without_blocker(
+def test_injected_medley_is_discoverable_when_ancestor_path_contains_medley(
     monkeypatch, tmp_path, tmp_path_factory
 ) -> None:
     iso = _isolate_stock_host(monkeypatch, tmp_path)
     _assert_hermetic_env(iso)
     site = _inject_fake_medley_package(monkeypatch, tmp_path_factory)
+    assert "medley" in str(site).lower()
     _assert_medley_discoverable(site)
     assert os.environ.get("PYTHONPATH") == str(site)
+
+
+def test_isolation_and_blocker_work_when_tmpdir_ancestor_contains_medley(
+    monkeypatch, tmp_path_factory
+) -> None:
+    base = tmp_path_factory.mktemp("user-medley")
+    iso = _isolate_stock_host(monkeypatch, base)
+    assert "medley" in str(iso.home).lower()
+    assert "medley" in str(iso.grok_home).lower()
+    _assert_hermetic_env(iso)
+    site = _inject_fake_medley_package(monkeypatch, tmp_path_factory)
+    assert "medley" in str(site).lower()
+    _assert_medley_discoverable(site)
+    _evict_medley_modules(monkeypatch)
+    _install_import_blocker(monkeypatch)
+    _assert_blocker_raises()
+    _assert_medley_absent(iso.home)
 
 
 def test_ordinary_omg_surfaces_work_with_medley_absent(
