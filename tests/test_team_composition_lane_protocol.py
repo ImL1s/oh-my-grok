@@ -834,3 +834,284 @@ def test_cli_claim_and_submit_lane(
         ]
     )
     _ = canonical_json_bytes
+
+
+def test_resultless_completed_dep_does_not_orphan_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P0: completed dep without result must not leave an active claim."""
+    run_id = _seed(tmp_path, monkeypatch)
+    materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    admitted = admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    env = _full_worker_env(tmp_path, run_id)
+    mapping = admitted["task_key_to_id"]
+
+    # Complete critics with honest results except leave one result-less.
+    for lane in ("critic.security", "critic.correctness", "critic.operability"):
+        claimed = claim_hyperplan_lane_v1(tmp_path, run_id, TEAM, lane, env=env)
+        dim = lane.split(".", 1)[1]
+        if lane == "critic.operability":
+            # Transition to completed with no result via direct write so the
+            # Team API still treats the dependency as completed.
+            task = team_api._read_task(tmp_path, run_id, TEAM, mapping[lane])
+            assert task is not None
+            team_api._write_task(
+                tmp_path,
+                run_id,
+                TEAM,
+                {
+                    **task,
+                    "status": "completed",
+                    "owner": WORKER,
+                    "claim": None,
+                    "result": None,
+                    "completed_at": "2026-08-11T00:00:00Z",
+                    "version": int(task["version"]) + 1,
+                },
+            )
+            # Release is unnecessary — we overwrote after claim; clear by rewrite.
+            continue
+        submit_hyperplan_lane_result_v1(
+            tmp_path,
+            run_id,
+            TEAM,
+            claim=claimed["claim"],
+            result={
+                "schema_version": 1,
+                "status": "complete",
+                "payload": {
+                    "dimension": dim,
+                    "findings": [],
+                    "severity": "info",
+                    "blocking": False,
+                },
+            },
+            env=env,
+        )
+
+    # For operability we claimed then overwrote — ensure no active claim there.
+    op_task = team_api._read_task(tmp_path, run_id, TEAM, mapping["critic.operability"])
+    assert op_task is not None
+    assert op_task["status"] == "completed"
+    assert op_task.get("result") is None
+    assert op_task.get("claim") is None
+
+    # Synthesize: API would allow claim (deps completed) but protocol refuses
+    # without leaving an orphaned claim.
+    with pytest.raises(HyperplanError, match="dependency|not ready|protocol"):
+        claim_hyperplan_lane_v1(tmp_path, run_id, TEAM, "synthesize", env=env)
+
+    synth = team_api._read_task(tmp_path, run_id, TEAM, mapping["synthesize"])
+    assert synth is not None
+    assert synth.get("claim") is None
+    assert synth["status"] != "in_progress"
+
+
+def test_forged_empty_deps_claim_cannot_submit_when_deps_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P0: forged claim with empty dependency_outputs must not terminal-submit."""
+    run_id = _seed(tmp_path, monkeypatch)
+    materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    admitted = admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    env = _full_worker_env(tmp_path, run_id)
+    mapping = admitted["task_key_to_id"]
+
+    # Honest claim on a root critic (no deps).
+    claimed = claim_hyperplan_lane_v1(
+        tmp_path, run_id, TEAM, "critic.security", env=env
+    )
+    # Forge a synthesize-shaped claim while synthesize is unclaimed and deps
+    # are incomplete: empty dependency_outputs + synthesize lane ids.
+    forged = dict(claimed["claim"])
+    forged["lane_id"] = "synthesize"
+    forged["task_id"] = mapping["synthesize"]
+    forged["dependency_outputs"] = []
+    forged["lane"] = {
+        "role": "planner",
+        "posture": "read-only",
+        "scope": {"kind": "lane", "value": "synthesize"},
+        "requires_code_change": False,
+        "allow_implementation": False,
+        "owned_files": [],
+        "expected_artifact": dict(
+            next(
+                row["expected_artifact"]
+                for row in materialize_hyperplan_v1(
+                    tmp_path, run_id, _hp_spec()
+                )["manifest"]["lanes"]
+                if row["lane_id"] == "synthesize"
+            )
+        ),
+    }
+    # Claim document must still parse; use a fresh active claim on synthesize
+    # via direct API after forging readiness incorrectly would fail — instead
+    # claim synthesize through API with leader env after marking critics
+    # completed without results so API readiness passes.
+    for lane in ("critic.security", "critic.correctness", "critic.operability"):
+        # Release security claim first if still held.
+        if lane == "critic.security":
+            execute_team_api(
+                "release-task-claim",
+                {
+                    "run_id": run_id,
+                    "team_id": TEAM,
+                    "task_id": mapping[lane],
+                    "claim_token": claimed["claim"]["claim_token"],
+                    "worker": WORKER,
+                },
+                root=tmp_path,
+                env=env,
+            )
+        task = team_api._read_task(tmp_path, run_id, TEAM, mapping[lane])
+        assert task is not None
+        team_api._write_task(
+            tmp_path,
+            run_id,
+            TEAM,
+            {
+                **task,
+                "status": "completed",
+                "owner": WORKER,
+                "claim": None,
+                "result": None,
+                "completed_at": "2026-08-11T00:00:00Z",
+                "version": int(task["version"]) + 1,
+            },
+        )
+
+    # API allows claiming synthesize (deps completed); protocol claim-lane
+    # refuses. Obtain an active claim via raw claim-task to simulate a forged
+    # envelope attacker who already holds a lease.
+    code, api_claim = execute_team_api(
+        "claim-task",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "task_id": mapping["synthesize"],
+            "worker": WORKER,
+        },
+        root=tmp_path,
+        env=env,
+    )
+    assert code == 0
+    token = api_claim["data"]["claimToken"]
+    task_version = int(api_claim["data"]["task"]["version"])
+    mat = materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    synth_lane = next(
+        row for row in mat["manifest"]["lanes"] if row["lane_id"] == "synthesize"
+    )
+    forged_claim = {
+        "kind": COMPOSITION_LANE_CLAIM_KIND,
+        "schema_version": 1,
+        "source_kind": "hyperplan_v1",
+        "run_id": run_id,
+        "team_id": TEAM,
+        "composition_id": mat["manifest"]["composition_id"],
+        "composition_digest": mat["manifest"]["digest"],
+        "batch_id": admitted["batch_id"],
+        "batch_digest": admitted["digest"],
+        "lane_id": "synthesize",
+        "task_id": mapping["synthesize"],
+        "worker_id": WORKER,
+        "task_version": task_version,
+        "claim_token": token,
+        "leased_until": api_claim["data"]["task"]["claim"]["leased_until"],
+        "lane": {
+            "role": synth_lane["role"],
+            "posture": synth_lane["posture"],
+            "scope": {"kind": "lane", "value": "synthesize"},
+            "requires_code_change": False,
+            "allow_implementation": False,
+            "owned_files": [],
+            "expected_artifact": dict(synth_lane["expected_artifact"]),
+        },
+        "input": {"goal": "ship a safe plan"},
+        "dependency_outputs": [],  # forged empty
+        "result_contract": {
+            "schema_version": 1,
+            "statuses": ["blocked", "complete", "rejected"],
+        },
+        "execution_supported": False,
+    }
+    with pytest.raises(HyperplanError, match="dependency|not ready"):
+        submit_hyperplan_lane_result_v1(
+            tmp_path,
+            run_id,
+            TEAM,
+            claim=forged_claim,
+            result={
+                "schema_version": 1,
+                "status": "complete",
+                "payload": {
+                    "summary": "forged",
+                    "merged_findings": [],
+                    "open_conflicts": [],
+                    "recommended_verdict": "approved",
+                },
+            },
+            env=env,
+        )
+    synth = team_api._read_task(tmp_path, run_id, TEAM, mapping["synthesize"])
+    assert synth is not None
+    assert synth["status"] == "in_progress"
+    assert synth.get("claim") is not None
+
+
+def test_invalid_lane_payload_submit_leaves_claim_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1: invalid lane payload must refuse before terminal transition."""
+    run_id = _seed(tmp_path, monkeypatch)
+    materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    env = _full_worker_env(tmp_path, run_id)
+
+    claimed = claim_hyperplan_lane_v1(
+        tmp_path, run_id, TEAM, "critic.security", env=env
+    )
+    with pytest.raises(HyperplanError, match="key mismatch|payload|dimension"):
+        submit_hyperplan_lane_result_v1(
+            tmp_path,
+            run_id,
+            TEAM,
+            claim=claimed["claim"],
+            result={
+                "schema_version": 1,
+                "status": "complete",
+                "payload": {},
+            },
+            env=env,
+        )
+    task = team_api._read_task(
+        tmp_path, run_id, TEAM, claimed["claim"]["task_id"]
+    )
+    assert task is not None
+    assert task["status"] == "in_progress"
+    assert task.get("claim") is not None
+    assert task["claim"]["token"] == claimed["claim"]["claim_token"]
+
+    # Retry with a valid payload still works on the same claim.
+    submit_hyperplan_lane_result_v1(
+        tmp_path,
+        run_id,
+        TEAM,
+        claim=claimed["claim"],
+        result={
+            "schema_version": 1,
+            "status": "complete",
+            "payload": {
+                "dimension": "security",
+                "findings": [],
+                "severity": "info",
+                "blocking": False,
+            },
+        },
+        env=env,
+    )
+    done = team_api._read_task(
+        tmp_path, run_id, TEAM, claimed["claim"]["task_id"]
+    )
+    assert done is not None
+    assert done["status"] == "completed"
+    assert done.get("claim") is None

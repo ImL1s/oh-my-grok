@@ -111,6 +111,15 @@ class CompositionTaskAdapter(Protocol):
         bundle: Mapping[str, Any],
     ) -> dict[str, Any]: ...
 
+    def validate_lane_task_result_payload(
+        self,
+        *,
+        lane: Mapping[str, Any],
+        lane_result: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Lane-specific payload validation (same rules as collect receipts)."""
+        ...
+
     def raise_error(
         self,
         message: str,

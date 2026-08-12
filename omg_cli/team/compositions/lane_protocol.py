@@ -505,12 +505,19 @@ def _load_dependency_outputs(
     team_id: str,
     lane: Mapping[str, Any],
     binding: Mapping[str, Any],
-) -> tuple[list[dict[str, Any]], bool]:
+) -> tuple[list[dict[str, Any]], str]:
     """Load validated dependency results in manifest depends_on order.
 
-    Returns ``(outputs, deps_ready)``. When not ready, outputs are empty and
-    the caller must still invoke ``claim-task`` so the authoritative
-    ``blocked_dependency`` fence applies.
+    Returns ``(outputs, state)`` where ``state`` is one of:
+
+    - ``ready`` — every dependency is completed, claim-free, and has a
+      parseable ``LaneTaskResultV1`` result;
+    - ``api_blocked`` — at least one dependency is missing or not
+      ``completed`` (Team API ``claim-task`` must return
+      ``blocked_dependency`` without mutating the target claim);
+    - ``protocol_gap`` — dependencies appear completed to the Team API but
+      lack a claim-free result (protocol refuses without claiming, or
+      releases if a claim somehow succeeded).
     """
     depends = lane.get("depends_on") or []
     if not isinstance(depends, list):
@@ -531,13 +538,10 @@ def _load_dependency_outputs(
             )
         task_id = str(mapping[dep_key])
         task = _read_task(root, run_id, team_id, task_id)
-        if (
-            task is None
-            or task.get("status") != "completed"
-            or task.get("claim") is not None
-            or task.get("result") is None
-        ):
-            return [], False
+        if task is None or task.get("status") != "completed":
+            return [], "api_blocked"
+        if task.get("claim") is not None or task.get("result") is None:
+            return [], "protocol_gap"
         try:
             assert_task_matches_lane_binding(
                 task,
@@ -556,7 +560,51 @@ def _load_dependency_outputs(
         if "reason" in lane_result:
             row["reason"] = lane_result["reason"]
         outputs.append(row)
-    return outputs, True
+    return outputs, "ready"
+
+
+def _release_orphaned_claim(
+    *,
+    root: Path,
+    run_id: str,
+    team_id: str,
+    task_id: str,
+    worker_id: str,
+    claim_token: str,
+    env: Mapping[str, str],
+) -> None:
+    """Best-effort release; fail closed if the claim remains active."""
+    code, envelope = execute_team_api(
+        "release-task-claim",
+        {
+            "run_id": run_id,
+            "team_id": team_id,
+            "task_id": task_id,
+            "claim_token": claim_token,
+            "worker": worker_id,
+        },
+        root=root,
+        env=env,
+    )
+    task = _read_task(root, run_id, team_id, task_id)
+    claim_cleared = (
+        task is not None
+        and task.get("claim") is None
+        and task.get("status") != "in_progress"
+    )
+    if code != 0 or not claim_cleared:
+        details = {
+            "error": "orphaned_claim_release_failed",
+            "task_id": task_id,
+            "release_exit_code": code,
+        }
+        if isinstance(envelope, Mapping) and isinstance(envelope.get("error"), Mapping):
+            details["release_error"] = dict(envelope["error"])
+        raise CompositionLaneProtocolError(
+            "failed to release orphaned claim after protocol dependency refusal",
+            code="E_TEAM_COMPOSITION_LANE_DEPS",
+            details=details,
+        )
 
 
 def _api_fail(
@@ -585,6 +633,32 @@ def _api_fail(
         code=err_code if err_code.startswith("E_") else "E_TEAM_COMPOSITION_LANE_API",
         details=details,
     )
+
+
+def _validate_adapter_lane_payload(
+    adapter: CompositionTaskAdapter,
+    *,
+    lane: Mapping[str, Any],
+    lane_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Run composition-specific receipt payload validation before terminal transition."""
+    try:
+        return adapter.validate_lane_task_result_payload(
+            lane=lane, lane_result=lane_result
+        )
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        if isinstance(code, str) and code.startswith("E_"):
+            raise CompositionLaneProtocolError(
+                str(exc),
+                code=code,
+                details={"error": "lane_payload_invalid"},
+            ) from exc
+        raise CompositionLaneProtocolError(
+            f"lane payload validation failed: {exc}",
+            code="E_TEAM_COMPOSITION_LANE_RESULT",
+            details={"error": "lane_payload_invalid"},
+        ) from exc
 
 
 def claim_composition_lane_v1(
@@ -648,20 +722,29 @@ def claim_composition_lane_v1(
             except CompositionTaskDriverError as exc:
                 raise _wrap_driver(exc) from exc
 
-            dep_outputs, deps_ready = _load_dependency_outputs(
+            dep_outputs, dep_state = _load_dependency_outputs(
                 leader_root,
                 run_id=lane_binding["run_id"],
                 team_id=lane_binding["team_id"],
                 lane=lane_binding["lane"],
                 binding=lane_binding,
             )
+            # Protocol-stricter gap: refuse without claiming so no orphan sticks.
+            if dep_state == "protocol_gap":
+                raise CompositionLaneProtocolError(
+                    "dependency outputs not ready for protocol claim "
+                    "(completed dependencies require a claim-free result)",
+                    code="E_TEAM_COMPOSITION_LANE_DEPS",
+                    details={"error": "protocol_dependency_gap"},
+                )
+
             lane_input = _bounded_lane_input(
                 source_kind=adapter.source_kind,
                 manifest=lane_binding["manifest"],
                 lane=lane_binding["lane"],
             )
             # Budget the would-be envelope before mutating (deps ready only).
-            if deps_ready:
+            if dep_state == "ready":
                 probe = {
                     "kind": COMPOSITION_LANE_CLAIM_KIND,
                     "schema_version": COMPOSITION_LANE_CLAIM_SCHEMA_VERSION,
@@ -720,6 +803,29 @@ def claim_composition_lane_v1(
                 root=leader_root,
                 env=worker_env,
             )
+
+            # Intentional API blocked_dependency path: must not leave a claim.
+            if dep_state == "api_blocked":
+                if code == 0:
+                    data = envelope.get("data") or {}
+                    token = data.get("claimToken") if isinstance(data, Mapping) else None
+                    if isinstance(token, str) and token.strip():
+                        _release_orphaned_claim(
+                            root=leader_root,
+                            run_id=lane_binding["run_id"],
+                            team_id=lane_binding["team_id"],
+                            task_id=lane_binding["task_id"],
+                            worker_id=worker_id,
+                            claim_token=token,
+                            env=worker_env,
+                        )
+                    raise CompositionLaneProtocolError(
+                        "dependencies not ready after claim",
+                        code="E_TEAM_COMPOSITION_LANE_DEPS",
+                        details={"error": "protocol_dependency_gap"},
+                    )
+                raise _api_fail("claim-task", code, envelope)
+
             if code != 0:
                 raise _api_fail("claim-task", code, envelope)
             data = envelope.get("data") or {}
@@ -759,14 +865,39 @@ def claim_composition_lane_v1(
                     expected_artifact=lane_binding["expected_artifact"],
                 )
             except CompositionTaskDriverError as exc:
+                _release_orphaned_claim(
+                    root=leader_root,
+                    run_id=lane_binding["run_id"],
+                    team_id=lane_binding["team_id"],
+                    task_id=lane_binding["task_id"],
+                    worker_id=worker_id,
+                    claim_token=token,
+                    env=worker_env,
+                )
                 raise _wrap_driver(exc) from exc
 
-            # Re-load deps after claim only when they were ready (stable).
-            if not deps_ready:
-                # claim-task should have failed; if it somehow succeeded, refuse.
+            # Defense in depth: re-check protocol deps after claim; never stick.
+            dep_outputs, dep_state_after = _load_dependency_outputs(
+                leader_root,
+                run_id=lane_binding["run_id"],
+                team_id=lane_binding["team_id"],
+                lane=lane_binding["lane"],
+                binding=lane_binding,
+            )
+            if dep_state_after != "ready":
+                _release_orphaned_claim(
+                    root=leader_root,
+                    run_id=lane_binding["run_id"],
+                    team_id=lane_binding["team_id"],
+                    task_id=lane_binding["task_id"],
+                    worker_id=worker_id,
+                    claim_token=token,
+                    env=worker_env,
+                )
                 raise CompositionLaneProtocolError(
                     "dependencies not ready after claim",
                     code="E_TEAM_COMPOSITION_LANE_DEPS",
+                    details={"error": "protocol_dependency_gap", "state": dep_state_after},
                 )
 
             claim = {
@@ -967,6 +1098,46 @@ def submit_composition_lane_result_v1(
                     code="E_TEAM_COMPOSITION_LANE_CLAIM",
                     details={"error": "claim_conflict"},
                 )
+
+            # Re-validate live dependency completion/outputs — never trust a
+            # forged claim envelope's dependency_outputs alone.
+            live_deps, live_state = _load_dependency_outputs(
+                leader_root,
+                run_id=lane_binding["run_id"],
+                team_id=lane_binding["team_id"],
+                lane=lane_binding["lane"],
+                binding=lane_binding,
+            )
+            if live_state != "ready":
+                raise CompositionLaneProtocolError(
+                    "live dependency outputs not ready for submit",
+                    code="E_TEAM_COMPOSITION_LANE_DEPS",
+                    details={"error": "protocol_dependency_gap", "state": live_state},
+                )
+            # Expected depends_on order must match live outputs (forged empty
+            # deps fail even when the claim document omitted them).
+            expected_dep_lanes = [
+                str(x) for x in (lane_binding["lane"].get("depends_on") or [])
+            ]
+            live_dep_lanes = [row["lane_id"] for row in live_deps]
+            if live_dep_lanes != expected_dep_lanes:
+                raise CompositionLaneProtocolError(
+                    "live dependency outputs order/coverage mismatch",
+                    code="E_TEAM_COMPOSITION_LANE_DEPS",
+                    details={
+                        "error": "dependency_outputs_mismatch",
+                        "expected": expected_dep_lanes,
+                        "actual": live_dep_lanes,
+                    },
+                )
+
+            # Lane-specific payload validation before terminal transition so
+            # invalid submissions leave the claim usable for retry.
+            _validate_adapter_lane_payload(
+                adapter,
+                lane=lane_binding["lane"],
+                lane_result=parsed_result,
+            )
 
             code, envelope = execute_team_api(
                 "transition-task-status",

@@ -1502,6 +1502,22 @@ class _HyperplanTaskAdapter:
             bundle=bundle,
         )
 
+    def validate_lane_task_result_payload(
+        self,
+        *,
+        lane: Mapping[str, Any],
+        lane_result: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        lane_id = str(lane["lane_id"])
+        artifact_kind = _expected_artifact_kind(lane_id, lane)
+        return _parse_receipt_payload(
+            lane_result.get("payload"),
+            lane_id=lane_id,
+            artifact_kind=artifact_kind,
+            lane_meta=lane,
+            label="LaneTaskResultV1.payload",
+        )
+
     def raise_error(
         self,
         message: str,
