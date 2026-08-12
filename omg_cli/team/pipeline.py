@@ -40,7 +40,6 @@ from omg_cli.team.plane import (
     TeamGateError,
     collect_team,
     experimental_enabled,
-    in_spawned_worker_context,
     mutate_team_meta,
     refuse_nested_team_launch,
     start_team,
