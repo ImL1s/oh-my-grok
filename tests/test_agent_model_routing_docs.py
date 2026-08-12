@@ -529,7 +529,12 @@ def test_purpose_is_independent_of_capability_posture() -> None:
     assert "implement work" not in row
     assert "may change" not in row
     assert "independent of read-only" in body
-    assert "**cannot** mutate" in body
+    assert "**cannot** mutate" not in body
+    assert "requested OMG posture" in body
+    assert "qualified enforcement" in body
+    assert "unproven" in body
+    assert "unsupported" in body
+    assert "blocked" in body
     assert "purpose = task_execution" in body
     assert "team_member" in body
     read_only = [name for name in CANONICAL_ROLES if role_posture(name) == "read-only"]

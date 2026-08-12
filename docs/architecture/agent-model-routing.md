@@ -320,10 +320,13 @@ Rules:
 - `team_member` is Team pane lifecycle (`purpose = task_execution`).
   Advisors are not Team members. `purpose = task_execution` does **not**
   grant mutation authority. Read-only / read-write **posture**
-  (`capability_mode` / role floor in `omg_cli/team/roles.py`) is a
-  separate axis: shipped read-only reviewer / verifier / planner Team
-  members **cannot** mutate. They still participate authoritatively in
-  the Team task (verdicts, gates), so they are not `advisory`.
+  (`capability_mode` / role floor in `omg_cli/team/roles.py`) is
+  **requested OMG posture**. It is only enforced where the selected
+  runtime/provider exposes qualified enforcement; otherwise the
+  capability is **unproven** / **unsupported**, or the route is blocked.
+  Do not treat the role floor as a sandbox guarantee.
+  They still participate authoritatively in the Team task (verdicts, gates),
+  so they are not `advisory`.
 
 Foreground ask writes the artifact and returns. Background ask creates a
 durable job and returns `job_id`; the job still has `purpose = advisory`
@@ -663,7 +666,10 @@ CI should eventually prove (and #133 acceptance requires):
 - `purpose = task_execution` is **authoritative task participation**,
   **independent of read-only** / read-write posture; the purpose table
   must **not** define it as mutation or implement authority; read-only
-  Team members **cannot** mutate;
+  / read-write posture is **requested OMG posture**, only enforced
+  where the selected runtime/provider exposes **qualified enforcement**;
+  otherwise the capability is **unproven** / **unsupported**, or the
+  route is blocked; do not treat the role floor as a sandbox guarantee;
 - links to Medley #207 / #287 / #289 / #290 and OMG #131 / #133 / #138 remain present;
 - maintained indexes and locales **point at** this page rather than forking the
   matrix into hand-maintained duplicates;
