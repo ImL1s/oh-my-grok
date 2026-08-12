@@ -795,15 +795,36 @@ def install_fixture_provider(
     """Redirect ``executor=fixture`` pane argv at a fake provider script."""
     from omg_cli.team import plane as plane_mod
 
-    def _build(*, descriptor_path: Path | str | None = None) -> str:
+    def _build(
+        *,
+        descriptor_path: Path | str | None = None,
+        leader_root: Path | str | None = None,
+        run_id: str | None = None,
+        team_id: str | None = None,
+        worker_id: str | None = None,
+        owner_token: str | None = None,
+        authority_generation: int = 0,
+        authority_attempt: int = 1,
+        publish_authority: bool = False,
+    ) -> str:
         if descriptor_path is None:
             raise plane_mod.TeamError("descriptor_path required")
+        # Forward every production authority kwarg. Do not accept **kwargs:
+        # unknown names must TypeError instead of being silently dropped.
         return plane_mod.materialize_supervisor_pane_command(
             descriptor_path=descriptor_path,
             provider=provider,
             argv=[sys.executable, str(script)],
             prompt_delivery="prompt-file",
             needs_pty=needs_pty,
+            leader_root=leader_root,
+            run_id=run_id,
+            team_id=team_id,
+            worker_id=worker_id,
+            owner_token=owner_token,
+            authority_generation=authority_generation,
+            authority_attempt=authority_attempt,
+            publish_authority=publish_authority,
         )
 
     monkeypatch.setattr(plane_mod, "build_fixture_pane_command", _build)
