@@ -7,6 +7,7 @@ intended resolution path.
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 from pathlib import Path
@@ -101,6 +102,20 @@ def _patch_refused_side_effects(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("omg_cli.team.tmux.os.killpg", _boom)
     monkeypatch.setattr("omg_cli.team.tmux.os.kill", _boom)
     monkeypatch.setattr("omg_cli.team.plane.mutate_team_meta", _boom)
+    monkeypatch.setattr("omg_cli.state.write_pid_metadata", _boom)
+    monkeypatch.setattr("omg_cli.state.prepare_leader_spawn", _boom)
+    monkeypatch.setattr("omg_cli.team.runtime.launch_team", _boom)
+
+    def _boom_popen(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError(
+            "subprocess.Popen / _SYSTEM_POPEN must not run after worker preflight"
+        )
+
+    monkeypatch.setattr("subprocess.Popen", _boom_popen)
+    monkeypatch.setattr("omg_cli.state.subprocess.Popen", _boom_popen)
+    monkeypatch.setattr("omg_cli.team.plane.subprocess.Popen", _boom_popen)
+    monkeypatch.setattr("omg_cli.team.tmux.subprocess.Popen", _boom_popen)
+    monkeypatch.setattr("omg_cli.state._SYSTEM_POPEN", _boom_popen)
 
 
 def _dummy_resolution(root: Path) -> ProjectRootResolution:
@@ -329,6 +344,45 @@ def test_main_worker_numeric_shorthand_nested_launch(
     _assert_typed(capsys.readouterr().err, "E_TEAM_NESTED_LAUNCH")
 
 
+def test_main_worker_prefix_project_root_form_b_shorthand(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--project-root /missing team fix …`` is Form B, not argparse SystemExit."""
+    monkeypatch.chdir(tmp_path)
+    _worker_env(monkeypatch)
+    _patch_refused_side_effects(monkeypatch)
+    rc = main(["--project-root", MISSING_ROOT, "team", "fix the flaky tests"])
+    assert rc == 2
+    _assert_typed(capsys.readouterr().err, "E_TEAM_NESTED_LAUNCH")
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        ["--json"],
+        ["--safe"],
+        ["--yolo"],
+        ["--json", "--safe"],
+        ["--project-root", MISSING_ROOT, "--json"],
+    ],
+)
+def test_main_worker_leading_globals_form_a_shorthand(
+    prefix: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Leading globals + Form A must gate before argparse SystemExit / side effects."""
+    monkeypatch.chdir(tmp_path)
+    _worker_env(monkeypatch)
+    _patch_refused_side_effects(monkeypatch)
+    rc = main([*prefix, "team", "3:executor", "fix the flaky tests"])
+    assert rc == 2
+    _assert_typed(capsys.readouterr().err, "E_TEAM_NESTED_LAUNCH")
+
+
 def test_main_worker_shutdown_alias_nested_launch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -454,7 +508,7 @@ def test_main_worker_api_catalog_skips_root_and_preflight(
     assert doc.get("kind") == "omg.team.operation_catalog"
 
 
-def test_main_worker_status_reaches_resolve_not_preflight_refuse(
+def test_main_worker_status_reaches_status_helper_not_preflight_refuse(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -467,14 +521,18 @@ def test_main_worker_status_reaches_resolve_not_preflight_refuse(
         called.append("resolve_project_root")
         return _dummy_resolution(tmp_path)
 
+    def _spy_status(*_a: Any, **_k: Any) -> dict[str, Any]:
+        called.append("status_for_identity")
+        return {"run_id": "r1", "tasks": []}
+
     monkeypatch.setattr("omg_cli.project_root.resolve_project_root", _spy_resolve)
+    monkeypatch.setattr("omg_cli.team.runtime.status_for_identity", _spy_status)
     rc = main(["team", "status", "--json"])
-    assert called == ["resolve_project_root"]
+    assert called == ["resolve_project_root", "status_for_identity"]
     err = capsys.readouterr().err
     assert "E_TEAM_NESTED_LAUNCH" not in err
     assert "E_TEAM_WORKER_OPERATION_REFUSED" not in err
-    # Missing team.json after preflight is OK; typed worker codes are not.
-    _ = rc
+    assert rc == 0
 
 
 def test_main_worker_supervisor_reaches_supervisor_root_not_nested(
@@ -505,7 +563,7 @@ def test_main_worker_supervisor_reaches_supervisor_root_not_nested(
     assert rc != 0  # missing descriptor / later bootstrap fail is OK
 
 
-def test_main_worker_panes_reaches_resolve_not_operator_refuse(
+def test_main_worker_panes_reaches_list_panes_not_operator_refuse(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -518,16 +576,21 @@ def test_main_worker_panes_reaches_resolve_not_operator_refuse(
         called.append("resolve_project_root")
         return _dummy_resolution(tmp_path)
 
+    def _spy_panes(*_a: Any, **_k: Any) -> dict[str, Any]:
+        called.append("list_panes")
+        return {"run_id": "r1", "command": "team.panes", "panes": [], "count": 0}
+
     monkeypatch.setattr("omg_cli.project_root.resolve_project_root", _spy_resolve)
+    monkeypatch.setattr("omg_cli.team.operator.list_panes", _spy_panes)
     rc = main(["team", "panes", "--json"])
-    assert called == ["resolve_project_root"]
+    assert called == ["resolve_project_root", "list_panes"]
     err = capsys.readouterr().err
     assert "E_TEAM_NESTED_LAUNCH" not in err
     assert "E_TEAM_WORKER_OPERATION_REFUSED" not in err
-    _ = rc
+    assert rc == 0
 
 
-def test_main_worker_capture_reaches_resolve_not_preflight_refuse(
+def test_main_worker_capture_reaches_capture_worker_not_preflight_refuse(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -540,16 +603,27 @@ def test_main_worker_capture_reaches_resolve_not_preflight_refuse(
         called.append("resolve_project_root")
         return _dummy_resolution(tmp_path)
 
+    def _spy_capture(*_a: Any, **_k: Any) -> dict[str, Any]:
+        called.append("capture_worker")
+        return {
+            "ok": True,
+            "command": "team.capture",
+            "status": "live",
+            "text": "",
+            "bytes": 0,
+        }
+
     monkeypatch.setattr("omg_cli.project_root.resolve_project_root", _spy_resolve)
+    monkeypatch.setattr("omg_cli.team.operator.capture_worker", _spy_capture)
     rc = main(["team", "capture", "--worker", "w1", "--json"])
-    assert called == ["resolve_project_root"]
+    assert called == ["resolve_project_root", "capture_worker"]
     err = capsys.readouterr().err
     assert "E_TEAM_NESTED_LAUNCH" not in err
     assert "E_TEAM_WORKER_OPERATION_REFUSED" not in err
-    _ = rc
+    assert rc == 0
 
 
-def test_main_worker_api_mailbox_list_reaches_resolve_not_preflight_refuse(
+def test_main_worker_api_mailbox_list_reaches_execute_api_not_preflight_refuse(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -562,7 +636,16 @@ def test_main_worker_api_mailbox_list_reaches_resolve_not_preflight_refuse(
         called.append("resolve_project_root")
         return _dummy_resolution(tmp_path)
 
+    def _spy_api(*_a: Any, **_k: Any) -> tuple[int, dict[str, Any]]:
+        called.append("execute_team_api")
+        return 0, {"ok": True, "operation": "mailbox-list"}
+
     monkeypatch.setattr("omg_cli.project_root.resolve_project_root", _spy_resolve)
+    monkeypatch.setattr(
+        "omg_cli.team.api.resolve_team_api_cli_root",
+        lambda *_a, **_k: tmp_path,
+    )
+    monkeypatch.setattr("omg_cli.team.api.execute_team_api", _spy_api)
     rc = main(
         [
             "team",
@@ -573,8 +656,69 @@ def test_main_worker_api_mailbox_list_reaches_resolve_not_preflight_refuse(
             "--json",
         ]
     )
-    assert called == ["resolve_project_root"]
+    assert called == ["resolve_project_root", "execute_team_api"]
     err = capsys.readouterr().err
     assert "E_TEAM_NESTED_LAUNCH" not in err
     assert "E_TEAM_WORKER_OPERATION_REFUSED" not in err
-    _ = rc
+    assert rc == 0
+
+
+def test_cmd_team_launch_did_nested_before_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Direct cmd_team(launch) refuses before project_root / launch_team."""
+    from omg_cli.commands.team import cmd_team
+
+    monkeypatch.chdir(tmp_path)
+    _worker_env(monkeypatch)
+    _patch_refused_side_effects(monkeypatch)
+    monkeypatch.setattr("omg_cli.commands.team.project_root", _boom)
+    args = argparse.Namespace(
+        team_action="launch",
+        goal="x",
+        workers=1,
+        role="executor",
+        routing=None,
+        plan_only=False,
+        dry_run=False,
+        materialize_only=False,
+        detach=False,
+        dedicated_window=False,
+        force=False,
+        yolo=False,
+        safe=False,
+        run_id=None,
+        worker_topology=None,
+        as_json=False,
+        json_output=False,
+    )
+    rc = cmd_team(args)
+    assert rc == 2
+    _assert_typed(capsys.readouterr().err, "E_TEAM_NESTED_LAUNCH")
+
+
+def test_leading_globals_do_not_host_launch_bypass() -> None:
+    """Supported CLI forms stay on the typed gate; they are not host-launch."""
+    from omg_cli.command_registry import KNOWN_SUBCOMMANDS
+    from omg_cli.host_launcher import should_host_launch
+
+    assert (
+        should_host_launch(
+            ["--json", "team", "3:executor", "fix"], KNOWN_SUBCOMMANDS
+        )
+        is False
+    )
+    assert (
+        should_host_launch(
+            ["--project-root", MISSING_ROOT, "team", "fix it"],
+            KNOWN_SUBCOMMANDS,
+        )
+        is False
+    )
+    assert (
+        should_host_launch(["--safe", "team", "3:executor", "x"], KNOWN_SUBCOMMANDS)
+        is False
+    )
+    assert should_host_launch(["--yolo", "team", "fix it"], KNOWN_SUBCOMMANDS) is False
