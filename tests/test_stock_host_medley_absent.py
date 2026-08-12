@@ -17,13 +17,16 @@ site-packages and PYTHONPATH are not inherited.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib
 import importlib.abc
 import importlib.util
 import json
 import os
+import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -35,6 +38,12 @@ from typing import NamedTuple
 import pytest
 
 from omg_cli import doctor
+from omg_cli.hook_install import (
+    STANDALONE_BASENAME,
+    _stage_file,
+    committed_standalone,
+    launcher_command,
+)
 from omg_cli.setup_cmd import compute_package_identity, run_setup
 from omg_cli.team.roles import CANONICAL_ROLES
 from omg_cli.workflows.schema import compile_workflow
@@ -234,61 +243,86 @@ def _is_fake_grok_argv0(raw: str, bin_dir: Path) -> bool:
         return False
 
 
-def _is_reviewed_python_argv(args: Sequence[object], raw: str, bin_dir: Path) -> bool:
-    """Hook smoke only: ``python3 -I -S <standalone.py>``."""
-    if Path(raw).name not in {"python3", "python"}:
+_STAGE_BASENAME_RE = re.compile(
+    r"^\.omg_pretool_deny_standalone\.py\.stage\.[a-z0-9_]+\.tmp$"
+)
+
+
+def _usable_grok_home(grok_home: Path | None) -> Path | None:
+    if grok_home is None:
+        return None
+    try:
+        gh = Path(grok_home)
+        if not str(gh).strip():
+            return None
+        return gh
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _is_reviewed_python_argv(args: Sequence[object], raw: str, grok_home: Path) -> bool:
+    """Hook-install staged smoke: exact ``python3 -I -S <stage.tmp>``."""
+    if raw != "python3" or len(args) != 4:
         return False
-    if raw in {"python3", "python"}:
-        exe_ok = True
-    else:
-        try:
-            resolved = Path(raw).resolve()
-        except OSError:
+    if str(args[1]) != "-I" or str(args[2]) != "-S":
+        return False
+    gh = _usable_grok_home(grok_home)
+    if gh is None:
+        return False
+    candidate = Path(str(args[3]))
+    if _STAGE_BASENAME_RE.fullmatch(candidate.name) is None:
+        return False
+    try:
+        if candidate.parent.resolve() != (gh / "hooks").resolve():
             return False
-        exe_ok = (
-            resolved == Path(sys.executable).resolve()
-            or resolved.parent == bin_dir.resolve()
+        st = os.lstat(candidate)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+            return False
+        actual = hashlib.sha256(candidate.read_bytes()).digest()
+        expected = hashlib.sha256(committed_standalone().read_bytes()).digest()
+    except (OSError, TypeError, ValueError):
+        return False
+    return actual == expected
+
+
+def _is_reviewed_hook_shell_argv(args: Sequence[object], raw: str, grok_home: Path) -> bool:
+    """Doctor hook smoke: exact ``/bin/sh -c`` + ``launcher_command`` tuple."""
+    if raw != "/bin/sh" or len(args) != 3:
+        return False
+    gh = _usable_grok_home(grok_home)
+    if gh is None:
+        return False
+    try:
+        expected = (
+            "/bin/sh",
+            "-c",
+            launcher_command(gh / "hooks" / STANDALONE_BASENAME),
         )
-    if not exe_ok:
+    except (OSError, TypeError, ValueError):
         return False
-    script = str(args[3]) if len(args) == 4 else ""
-    return (
-        len(args) == 4
-        and str(args[1]) == "-I"
-        and str(args[2]) == "-S"
-        and bool(script)
-        and (os.sep in script or script.endswith(".py"))
-    )
+    return tuple(str(a) for a in args) == expected
 
 
-def _is_reviewed_hook_shell_argv(args: Sequence[object], raw: str) -> bool:
-    """Doctor hook smoke: ``/bin/sh -c 'python3 -I -S <abs> || true'``."""
-    if raw not in {"/bin/sh", "/usr/bin/sh"}:
-        return False
-    if len(args) != 3 or str(args[1]) != "-c":
-        return False
-    command = str(args[2])
-    return "python3 -I -S" in command and "|| true" in command
-
-
-def _allowed_subprocess_argv(args: Sequence[object] | str | None, bin_dir: Path) -> bool:
+def _allowed_subprocess_argv(
+    args: Sequence[object] | str | None, bin_dir: Path, grok_home: Path
+) -> bool:
     if args is None or isinstance(args, str) or not args:
         return False
     raw = str(args[0])
     if _is_fake_grok_argv0(raw, bin_dir):
         return True
-    if _is_reviewed_python_argv(args, raw, bin_dir):
+    if _is_reviewed_python_argv(args, raw, grok_home):
         return True
-    if _is_reviewed_hook_shell_argv(args, raw):
+    if _is_reviewed_hook_shell_argv(args, raw, grok_home):
         return True
     return False
 
 
-def _install_subprocess_guard(monkeypatch, bin_dir: Path) -> None:
+def _install_subprocess_guard(monkeypatch, bin_dir: Path, grok_home: Path) -> None:
     real_popen = subprocess.Popen
 
     def guarded_popen(args, *rest, **kwargs):  # noqa: ANN001
-        if not _allowed_subprocess_argv(args, bin_dir):
+        if not _allowed_subprocess_argv(args, bin_dir, grok_home):
             raise PermissionError(f"{_SUBPROCESS_DENIED}: {args!r}")
         return real_popen(args, *rest, **kwargs)
 
@@ -361,9 +395,10 @@ def _isolate_stock_host(monkeypatch, tmp_path: Path) -> _StockHostIsolation:
     monkeypatch.setattr(sys, "path", _runtime_sys_path())
     monkeypatch.delenv("PYTHONPATH", raising=False)
     _install_network_denial(monkeypatch)
-    _install_subprocess_guard(monkeypatch, bin_dir)
+    iso = _StockHostIsolation(home, grok_home, bin_dir, xdg, grok)
+    _install_subprocess_guard(monkeypatch, iso.bin_dir, iso.grok_home)
     importlib.invalidate_caches()
-    return _StockHostIsolation(home, grok_home, bin_dir, xdg, grok)
+    return iso
 
 
 def _neutral_site_packages(tmp_path_factory) -> Path:
@@ -688,3 +723,105 @@ def test_unexpected_subprocess_and_exec_are_denied(monkeypatch, tmp_path) -> Non
         check=False,
     )
     assert allowed.returncode == 0
+
+
+def test_reviewed_hook_shell_argv_accepts_exact_launcher_tuple(
+    tmp_path, monkeypatch
+) -> None:
+    grok_home = tmp_path / "grok"
+    grok_home.mkdir()
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    expected = launcher_command(grok_home / "hooks" / STANDALONE_BASENAME)
+    args = ["/bin/sh", "-c", expected]
+    assert _is_reviewed_hook_shell_argv(args, "/bin/sh", grok_home) is True
+    assert _allowed_subprocess_argv(args, tmp_path / "bin", grok_home) is True
+
+
+def test_reviewed_hook_shell_argv_rejects_injections_and_lookalikes(
+    tmp_path, monkeypatch
+) -> None:
+    grok_home = tmp_path / "grok"
+    grok_home.mkdir()
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    installed = grok_home / "hooks" / STANDALONE_BASENAME
+    expected = launcher_command(installed)
+    assert expected.endswith(" || true")
+    quoted_path = expected[len("python3 -I -S ") : -len(" || true")]
+    cases: list[tuple[str, list[str]]] = [
+        ("prefix true", ["/bin/sh", "-c", "true; " + expected]),
+        ("prefix echo", ["/bin/sh", "-c", "echo hi; " + expected]),
+        ("suffix", ["/bin/sh", "-c", expected + "; echo pwned"]),
+        ("semicolon appended", ["/bin/sh", "-c", expected + ";"]),
+        ("semicolon inside", ["/bin/sh", "-c", expected.replace(" || true", "; || true")]),
+        ("newline", ["/bin/sh", "-c", expected + "\necho pwned"]),
+        ("cmd subst suffix", ["/bin/sh", "-c", expected + " $(echo pwned)"]),
+        ("cmd subst path", ["/bin/sh", "-c", expected.replace(quoted_path, "$(echo pwned)")]),
+        ("backticks", ["/bin/sh", "-c", expected + " `echo pwned`"]),
+        ("altered path", ["/bin/sh", "-c", launcher_command(grok_home / "hooks" / "other.py")]),
+        ("missing || true", ["/bin/sh", "-c", expected[: -len(" || true")]]),
+        ("extra || true", ["/bin/sh", "-c", expected + " || true"]),
+        ("usr bin sh", ["/usr/bin/sh", "-c", expected]),
+        ("bash", ["/bin/bash", "-c", expected]),
+    ]
+    for label, argv in cases:
+        assert _is_reviewed_hook_shell_argv(argv, str(argv[0]), grok_home) is False, label
+
+
+def test_reviewed_python_argv_accepts_real_stage_file(tmp_path, monkeypatch) -> None:
+    grok_home = tmp_path / "grok"
+    grok_home.mkdir()
+    (grok_home / "hooks").mkdir()
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    staged = _stage_file(
+        grok_home / "hooks" / STANDALONE_BASENAME,
+        committed_standalone().read_text(encoding="utf-8"),
+        mode=0o644,
+    )
+    argv = ["python3", "-I", "-S", str(staged)]
+    assert _is_reviewed_python_argv(argv, "python3", grok_home) is True
+    assert _allowed_subprocess_argv(argv, bin_dir, grok_home) is True
+
+
+def test_reviewed_python_argv_rejects_unrelated_and_lookalikes(
+    tmp_path, monkeypatch
+) -> None:
+    grok_home = tmp_path / "grok"
+    grok_home.mkdir()
+    hooks = grok_home / "hooks"
+    hooks.mkdir()
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    committed = committed_standalone().read_bytes()
+    staged = _stage_file(
+        grok_home / "hooks" / STANDALONE_BASENAME,
+        committed_standalone().read_text(encoding="utf-8"),
+        mode=0o644,
+    )
+    other = tmp_path / "other.py"
+    other.write_bytes(committed)
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside = outside_dir / ".omg_pretool_deny_standalone.py.stage.abc123xy.tmp"
+    outside.write_bytes(committed)
+    link = hooks / ".omg_pretool_deny_standalone.py.stage.symlink1.tmp"
+    link.symlink_to(committed_standalone().resolve())
+    wrong = hooks / ".omg_pretool_deny_standalone.py.stage.wrongbyte.tmp"
+    wrong.write_text("not the committed standalone\n", encoding="utf-8")
+    final = hooks / STANDALONE_BASENAME
+    final.write_bytes(committed)
+    cases: list[tuple[str, list[str]]] = [
+        ("unrelated", ["python3", "-I", "-S", str(other)]),
+        ("devnull", ["python3", "-I", "-S", "/dev/null"]),
+        ("outside same name", ["python3", "-I", "-S", str(outside)]),
+        ("symlink", ["python3", "-I", "-S", str(link)]),
+        ("wrong bytes", ["python3", "-I", "-S", str(wrong)]),
+        ("python argv0", ["python", "-I", "-S", str(staged)]),
+        ("sys.executable", [sys.executable, "-I", "-S", str(staged)]),
+        ("/usr/bin/python3", ["/usr/bin/python3", "-I", "-S", str(staged)]),
+        ("extra flags", ["python3", "-I", "-S", "-B", str(staged)]),
+        ("extra args", ["python3", "-I", "-S", str(staged), "extra"]),
+        ("final hook", ["python3", "-I", "-S", str(final)]),
+    ]
+    for label, argv in cases:
+        assert _is_reviewed_python_argv(argv, str(argv[0]), grok_home) is False, label
