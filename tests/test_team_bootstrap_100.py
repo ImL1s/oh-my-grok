@@ -190,6 +190,12 @@ def test_supervisor_cli_silent_success_no_warning_no_json(
         argv=[sys.executable, str(script)],
         cwd=worktree,
     )
+    _publish_test_authority(
+        leader,
+        run_id="run-silent",
+        worker_id="w1",
+        descriptor=desc,
+    )
     monkeypatch.chdir(worktree)
     _bind_supervisor_env(monkeypatch, leader, run_id="run-silent")
     monkeypatch.setenv("OMG_TEAM_PROVIDER_STRATEGY", "fake-ready")
@@ -329,6 +335,28 @@ def _minimal_team_meta(
     return path
 
 
+def _publish_test_authority(
+    leader: Path,
+    *,
+    run_id: str,
+    worker_id: str,
+    descriptor: Path,
+    team_id: str = "team",
+    owner_token: str = "owner-token-test",
+) -> Path:
+    """CLI-style prepublish for tests that admit before team.json exists."""
+    from omg_cli.team.supervisor import publish_supervisor_authority
+
+    return publish_supervisor_authority(
+        leader_root=leader,
+        run_id=run_id,
+        team_id=team_id,
+        worker_id=worker_id,
+        owner_token=owner_token,
+        descriptor_path=descriptor,
+    )
+
+
 def _assert_no_supervisor_side_effects(
     leader: Path, *, run_id: str, team_id: str = "team", worker_id: str = "w1"
 ) -> None:
@@ -364,6 +392,13 @@ def test_supervisor_legal_worker_context_not_nested_refused(
         provider="fixture",
         argv=[sys.executable, str(script)],
         cwd=worktree,
+    )
+    # Prepublish required when team.json is absent (PR #156 fail-closed).
+    _publish_test_authority(
+        leader,
+        run_id="run-legal",
+        worker_id="w1",
+        descriptor=desc,
     )
     monkeypatch.chdir(worktree)
     _bind_supervisor_env(monkeypatch, leader, run_id="run-legal")
@@ -680,3 +715,218 @@ def test_symlink_state_root_rejected(tmp_path: Path) -> None:
                 "OMG_TEAM_STATE_ROOT": str(foreign / "state"),
             }
         )
+
+
+# ---------------------------------------------------------------------------
+# PR #156: fail-closed prepublish authority (team.json missing ≠ allow)
+# ---------------------------------------------------------------------------
+
+
+def test_supervisor_forged_env_no_prepublish_zero_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Attacker env + schema-valid descriptor without prepublish cannot spawn."""
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-forged-auth"
+    desc = write_provider_descriptor(
+        tmp_path / "evil.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print('pwned')"],
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id)
+    clear_resolved_project_root()
+    # No team.json, no prepublish — must refuse before provider/bootstrap writes.
+    rc = main(["team", "supervisor", "--descriptor", str(desc)])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "failed to initialize" in err
+    assert "Traceback" not in err
+    _assert_no_supervisor_side_effects(leader, run_id=run_id)
+    # No authority dir invented under a forged launch either.
+    from omg_cli.team.supervisor import supervisor_prepublish_dir
+
+    auth_dir = supervisor_prepublish_dir(leader, run_id)
+    assert not auth_dir.exists() or not any(auth_dir.glob("*.json"))
+
+
+def test_supervisor_valid_prepublish_admits_without_team_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Valid CLI prepublish binds descriptor digest + owner token before team.json."""
+    from omg_cli.team.supervisor import admit_pane_supervisor
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-prepub-ok"
+    desc = write_provider_descriptor(
+        leader / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    _publish_test_authority(
+        leader, run_id=run_id, worker_id="w1", descriptor=desc
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id)
+    clear_resolved_project_root()
+    rid, tid, wid, root = admit_pane_supervisor(desc)
+    assert rid == run_id
+    assert tid == "team"
+    assert wid == "w1"
+    assert root == leader.resolve()
+
+
+def test_supervisor_tampered_descriptor_digest_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Mutating descriptor after prepublish fails closed (zero side effects)."""
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-tamper-desc"
+    desc = write_provider_descriptor(
+        leader / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    _publish_test_authority(
+        leader, run_id=run_id, worker_id="w1", descriptor=desc
+    )
+    # Tamper descriptor bytes after authority was bound to the digest.
+    desc.write_text(
+        desc.read_text(encoding="utf-8").replace("print(1)", "print(2)"),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id)
+    clear_resolved_project_root()
+    rc = main(["team", "supervisor", "--descriptor", str(desc)])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "failed to initialize" in err
+    _assert_no_supervisor_side_effects(leader, run_id=run_id)
+
+
+def test_supervisor_tampered_prepublish_token_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-tamper-tok"
+    desc = write_provider_descriptor(
+        leader / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    _publish_test_authority(
+        leader,
+        run_id=run_id,
+        worker_id="w1",
+        descriptor=desc,
+        owner_token="published-token",
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id)
+    monkeypatch.setenv("OMG_TEAM_OWNER_TOKEN", "attacker-token")
+    clear_resolved_project_root()
+    rc = main(["team", "supervisor", "--descriptor", str(desc)])
+    assert rc != 0
+    _assert_no_supervisor_side_effects(leader, run_id=run_id)
+
+
+def test_supervisor_wrong_worker_prepublish_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.team.supervisor import SupervisorError, admit_pane_supervisor
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-wrong-worker"
+    desc = write_provider_descriptor(
+        leader / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    # Authority published for w1, env claims w2.
+    _publish_test_authority(
+        leader, run_id=run_id, worker_id="w1", descriptor=desc
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id, worker_id="w2")
+    clear_resolved_project_root()
+    with pytest.raises(SupervisorError, match="prepublish|authority|missing"):
+        admit_pane_supervisor(desc)
+
+
+def test_start_team_live_publishes_then_clears_prepublish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live start materializes prepublish before panes; team.json clears it."""
+    import subprocess as sp
+
+    from omg_cli.team import plane
+    from omg_cli.team.plane import EXPERIMENTAL_ENV, start_team, team_meta_path
+    from omg_cli.team.supervisor import supervisor_prepublish_dir
+
+    def _git(cwd: Path, *args: str) -> None:
+        sp.run(
+            ["git", *args],
+            cwd=str(cwd),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.email", "omg-test@example.com")
+    _git(tmp_path, "config", "user.name", "omg-test")
+    _git(tmp_path, "config", "commit.gpgsign", "false")
+    (tmp_path / "README.md").write_text("base\n", encoding="utf-8")
+    _git(tmp_path, "add", "README.md")
+    _git(tmp_path, "commit", "-m", "initial")
+
+    monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
+    monkeypatch.delenv("OMG_DISABLE_TMUX_TEAM", raising=False)
+    # dry_run: no prepublish (supervisor never runs)
+    meta = start_team(
+        "prepub dry",
+        [{"task_id": "w1", "owned_files": ["a.py"]}],
+        root=tmp_path,
+        dry_run=True,
+        owner_token="tok-dry",
+    )
+    rid = str(meta["run_id"])
+    auth_dir = supervisor_prepublish_dir(tmp_path, rid)
+    assert not auth_dir.exists() or not any(auth_dir.glob("*.json"))
+    assert team_meta_path(tmp_path, rid).is_file()
+
+    # materialize + publish without live tmux: exercise publish path directly
+    from omg_cli.team.plane import materialize_supervisor_pane_command
+    from omg_cli.team.supervisor import (
+        clear_supervisor_prepublish_authorities,
+        supervisor_prepublish_path,
+    )
+
+    tdir = plane.team_dir(tmp_path, rid)
+    desc_path = tdir / "w2.provider.json"
+    materialize_supervisor_pane_command(
+        descriptor_path=desc_path,
+        provider="fixture",
+        argv=[sys.executable, "-c", "print('x')"],
+        leader_root=tmp_path,
+        run_id=rid,
+        team_id="team",
+        worker_id="w2",
+        owner_token="tok-live",
+        publish_authority=True,
+    )
+    pre = supervisor_prepublish_path(tmp_path, rid, "w2")
+    assert pre.is_file()
+    clear_supervisor_prepublish_authorities(tmp_path, rid)
+    assert not pre.is_file()

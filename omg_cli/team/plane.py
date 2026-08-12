@@ -1082,11 +1082,30 @@ def materialize_supervisor_pane_command(
     identity_basenames: Sequence[str] | None = None,
     provider_strategy: str | None = None,
     startup_strategy: str | None = None,
+    # Prepublish authority (CLI launch intent) — required before live panes
+    # when team.json is not yet authoritative.
+    leader_root: Path | str | None = None,
+    run_id: str | None = None,
+    team_id: str | None = None,
+    worker_id: str | None = None,
+    owner_token: str | None = None,
+    authority_generation: int = 0,
+    authority_attempt: int = 1,
+    publish_authority: bool = False,
 ) -> str:
-    """Write provider descriptor and return supervisor pane command."""
-    from omg_cli.team.supervisor import write_provider_descriptor
+    """Write provider descriptor (+ optional prepublish authority) and pane cmd.
 
-    write_provider_descriptor(
+    When ``publish_authority`` is true, binds root/run/team/worker, owner
+    token, and descriptor path+digest under the team tree **before** the
+    caller spawns panes. Supervisor admission fails closed without this
+    record when ``team.json`` is absent.
+    """
+    from omg_cli.team.supervisor import (
+        publish_supervisor_authority,
+        write_provider_descriptor,
+    )
+
+    written = write_provider_descriptor(
         descriptor_path,
         provider=provider,
         argv=argv,
@@ -1098,12 +1117,50 @@ def materialize_supervisor_pane_command(
         provider_strategy=provider_strategy,
         startup_strategy=startup_strategy,
     )
+    if publish_authority:
+        if (
+            leader_root is None
+            or not run_id
+            or not team_id
+            or not worker_id
+            or not owner_token
+        ):
+            raise TeamError(
+                "materialize_supervisor_pane_command publish_authority "
+                "requires leader_root, run_id, team_id, worker_id, owner_token"
+            )
+        try:
+            publish_supervisor_authority(
+                leader_root=leader_root,
+                run_id=str(run_id),
+                team_id=str(team_id),
+                worker_id=str(worker_id),
+                owner_token=str(owner_token),
+                descriptor_path=written,
+                generation=int(authority_generation),
+                attempt=int(authority_attempt),
+            )
+        except Exception as exc:
+            # Surface supervisor typed failures as TeamError for start/scale.
+            from omg_cli.team.supervisor import SupervisorError
+
+            if isinstance(exc, SupervisorError):
+                raise TeamError(str(exc)) from exc
+            raise
     return wrap_pane_with_supervisor(descriptor_path)
 
 
 def build_fixture_pane_command(
     *,
     descriptor_path: Path | str | None = None,
+    leader_root: Path | str | None = None,
+    run_id: str | None = None,
+    team_id: str | None = None,
+    worker_id: str | None = None,
+    owner_token: str | None = None,
+    authority_generation: int = 0,
+    authority_attempt: int = 1,
+    publish_authority: bool = False,
 ) -> str:
     """Pane command for hermetic transport smoke (ACK fixture; no grok).
 
@@ -1135,6 +1192,14 @@ def build_fixture_pane_command(
         argv=[sys.executable, str(fixture)],
         prompt_delivery="prompt-file",
         needs_pty=False,
+        leader_root=leader_root,
+        run_id=run_id,
+        team_id=team_id,
+        worker_id=worker_id,
+        owner_token=owner_token,
+        authority_generation=authority_generation,
+        authority_attempt=authority_attempt,
+        publish_authority=publish_authority,
     )
 
 # ---------------------------------------------------------------------------
@@ -3159,6 +3224,8 @@ def start_team(
                     posture = inv.posture
                     prompt_delivery = inv.prompt_delivery
                     desc_path = tdir / f"{tid}.provider.json"
+                    # Live panes need prepublish before team.json; dry_run
+                    # never runs supervisor so skip authority publication.
                     pane_cmd = materialize_supervisor_pane_command(
                         descriptor_path=desc_path,
                         provider=provider,
@@ -3170,6 +3237,12 @@ def start_team(
                         identity_basenames=inv.identity_basenames or None,
                         provider_strategy=inv.provider_strategy or None,
                         startup_strategy=inv.startup_strategy or None,
+                        leader_root=root_path,
+                        run_id=rid,
+                        team_id=tid_plane,
+                        worker_id=tid,
+                        owner_token=token,
+                        publish_authority=not dry_run,
                     )
                 else:
                     # D1 zero-config path — identical to pre-D3 behavior.
@@ -3206,12 +3279,26 @@ def start_team(
                         prompt_file=prompt_path_d1,
                         needs_pty=False,
                         cwd=wt,
+                        leader_root=root_path,
+                        run_id=rid,
+                        team_id=tid_plane,
+                        worker_id=tid,
+                        owner_token=token,
+                        publish_authority=not dry_run,
                     )
 
                 if use_fixture_executor:
                     # Hermetic transport override — keep argv record for diagnostics.
                     desc_path = tdir / f"{tid}.provider.json"
-                    pane_cmd = build_fixture_pane_command(descriptor_path=desc_path)
+                    pane_cmd = build_fixture_pane_command(
+                        descriptor_path=desc_path,
+                        leader_root=root_path,
+                        run_id=rid,
+                        team_id=tid_plane,
+                        worker_id=tid,
+                        owner_token=token,
+                        publish_authority=not dry_run,
+                    )
                     provider = "fixture"
 
                 # Job-backed workers may take an explicit jobs-admitted provider
@@ -3447,6 +3534,11 @@ def start_team(
                             )
                             task.setdefault("attempt", 1)
                     _atomic_write_json(team_meta_path(root_path, rid), meta)
+                    from omg_cli.team.supervisor import (
+                        clear_supervisor_prepublish_authorities,
+                    )
+
+                    clear_supervisor_prepublish_authorities(root_path, rid)
                     write_status(
                         root_path,
                         rid,
@@ -3821,6 +3913,12 @@ def start_team(
                 # the intent WAL as a sweep gate. Clear is terminal for the
                 # intent — after it succeeds, do not roll back authority files.
                 _atomic_write_json(team_meta_path(root_path, rid), meta)
+                # Authoritative team.json supersedes prepublish launch intents.
+                from omg_cli.team.supervisor import (
+                    clear_supervisor_prepublish_authorities,
+                )
+
+                clear_supervisor_prepublish_authorities(root_path, rid)
                 if launch_intent_path:
                     committed = load_team_meta(root_path, rid)
                     verified = _load_team_launch_receipt(root_path, rid, committed)

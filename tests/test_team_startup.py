@@ -40,6 +40,7 @@ from omg_cli.team.startup import (
 )
 from omg_cli.team.supervisor import (
     load_provider_descriptor,
+    publish_supervisor_authority,
     run_supervisor,
     write_provider_descriptor,
 )
@@ -112,6 +113,7 @@ def _bind_env(
     *,
     worker_id: str = "w1",
     run_id: str = "run-sup",
+    owner_token: str = "owner-token-test",
 ) -> None:
     (tmp_path / ".omg").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".omg" / "state").mkdir(parents=True, exist_ok=True)
@@ -120,7 +122,27 @@ def _bind_env(
     monkeypatch.setenv("OMG_TEAM_ID", "team")
     monkeypatch.setenv("OMG_TEAM_LEADER_ROOT", str(tmp_path))
     monkeypatch.setenv("OMG_TEAM_STATE_ROOT", str(tmp_path / ".omg" / "state"))
+    monkeypatch.setenv("OMG_TEAM_OWNER_TOKEN", owner_token)
     monkeypatch.setenv("OMG_TEAM_SUPERVISOR_READY_S", "5")
+
+
+def _prepublish(
+    tmp_path: Path,
+    *,
+    desc: Path,
+    worker_id: str = "w1",
+    run_id: str = "run-sup",
+    owner_token: str = "owner-token-test",
+) -> Path:
+    """CLI prepublish required for ``omg team supervisor`` when team.json absent."""
+    return publish_supervisor_authority(
+        leader_root=tmp_path,
+        run_id=run_id,
+        team_id="team",
+        worker_id=worker_id,
+        owner_token=owner_token,
+        descriptor_path=desc,
+    )
 
 
 def test_legacy_v1_receipt_cannot_make_running(tmp_path: Path) -> None:
@@ -832,6 +854,7 @@ def test_supervisor_ready_path(
         provider="fake-ready",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-sup")
     # Run supervisor in a child so we can still assert receipts while it holds.
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
@@ -990,6 +1013,7 @@ def test_supervisor_auth_blocked(
         provider="grok",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-auth")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -1052,6 +1076,7 @@ def test_supervisor_signal_forwards_and_reaps(
         provider="fake-ready",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-sig")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -1736,6 +1761,7 @@ def test_supervisor_tees_provider_stdout(
         provider="grok",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-tee")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""

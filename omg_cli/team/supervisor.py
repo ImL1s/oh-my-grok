@@ -7,6 +7,7 @@ readiness so read-only workers do not need mailbox ACK.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -15,14 +16,19 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from omg_cli.contracts.path_keys import (
     DATA_FILE_MODE,
+    ContractPathError,
     atomic_write_bytes,
     ensure_managed_dir,
+    safe_path_key,
 )
+from omg_cli.contracts.state_schemas import require_safe_id
+from omg_cli.evidence import CLI_WRITER
 from omg_cli.team.provider_ready import get_readiness_strategy
 from omg_cli.team.startup import (
     EvidenceCode,
@@ -34,6 +40,11 @@ from omg_cli.team.startup import (
 
 DESCRIPTOR_SCHEMA_VERSION = 1
 DESCRIPTOR_KIND = "team_provider_descriptor"
+# CLI-published launch intent for pane supervisors before team.json exists.
+# Lives under the existing team/ tree (not a parallel truth store).
+PREPUBLISH_SCHEMA_VERSION = 1
+PREPUBLISH_KIND = "team_supervisor_prepublish"
+PREPUBLISH_DIRNAME = "supervisor-authority"
 DEFAULT_READY_WAIT_S = 30.0
 # After provisional ready (process_stable or weak TUI idle), keep watching
 # for delayed auth/trust before finalizing provider_ready.
@@ -93,10 +104,13 @@ def admit_pane_supervisor(
     1. A present, schema-valid provider descriptor (read-only load).
     2. Run / team / worker identity plus a validated canonical leader root
        (``bootstrap_env_identity`` / ``validate_canonical_leader_root``).
-    3. When authoritative ``team.json`` already exists for the run, binding of
-       ``team_id`` and (when published) ``owner_token`` — rejecting stale or
-       forged pane authority with no provider spawn, tmux mutation, or state
-       writes.
+    3. Durable CLI authority:
+       - When authoritative ``team.json`` exists: bind ``team_id`` and
+         (when published) ``owner_token``.
+       - When ``team.json`` is absent: require a CLI-prepublished supervisor
+         authority record binding root/run/team/worker, owner token, and the
+         exact descriptor path + content digest. Metadata absence never
+         authorizes execution.
 
     Raises:
         SupervisorError / BootstrapError: fail-closed before side effects.
@@ -120,10 +134,291 @@ def admit_pane_supervisor(
         leader,
         run_id=run_id,
         team_id=team_id,
+        worker_id=worker_id,
+        descriptor_path=Path(descriptor_path),
         env=source,
         owner_token_env=TEAM_OWNER_TOKEN_ENV,
     )
     return run_id, team_id, worker_id, leader
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def supervisor_prepublish_dir(root: Path | str, run_id: str) -> Path:
+    """Directory for per-worker prepublish authority under the team tree."""
+    from omg_cli.team.plane import team_dir
+
+    rid = require_safe_id(run_id, label="run_id")
+    return team_dir(root, rid) / PREPUBLISH_DIRNAME
+
+
+def supervisor_prepublish_path(
+    root: Path | str, run_id: str, worker_id: str
+) -> Path:
+    """Path for one worker's prepublish authority (hashed worker key)."""
+    wid = require_safe_id(worker_id, label="worker_id")
+    key = safe_path_key(wid, namespace="worker")
+    return supervisor_prepublish_dir(root, run_id) / f"{key}.json"
+
+
+def descriptor_content_digest(path: Path | str) -> str:
+    """SHA-256 of descriptor file bytes (fail-closed on unreadable)."""
+    target = Path(path)
+    try:
+        raw = target.read_bytes()
+    except OSError as exc:
+        raise SupervisorError(
+            f"provider descriptor unreadable for digest: {exc}",
+            exit_code=2,
+        ) from exc
+    return hashlib.sha256(raw).hexdigest()
+
+
+def publish_supervisor_authority(
+    *,
+    leader_root: Path | str,
+    run_id: str,
+    team_id: str,
+    worker_id: str,
+    owner_token: str,
+    descriptor_path: Path | str,
+    generation: int = 0,
+    attempt: int = 1,
+) -> Path:
+    """Atomically publish CLI-owned supervisor prepublish authority.
+
+    Must run **after** the provider descriptor is written and **before** pane
+    / provider spawn. Uses managed-file path protections under the existing
+    team directory (no parallel truth tree).
+    """
+    leader = Path(leader_root).resolve()
+    rid = require_safe_id(run_id, label="run_id")
+    tid = require_safe_id(team_id, label="team_id")
+    wid = require_safe_id(worker_id, label="worker_id")
+    token = str(owner_token or "").strip()
+    if not token:
+        raise SupervisorError(
+            "supervisor prepublish requires non-empty owner_token",
+            exit_code=2,
+        )
+    desc = Path(descriptor_path).resolve()
+    if not desc.is_file():
+        raise SupervisorError(
+            "supervisor prepublish requires an existing descriptor file",
+            exit_code=2,
+        )
+    digest = descriptor_content_digest(desc)
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 0
+    ):
+        raise SupervisorError(
+            "supervisor prepublish generation must be a non-negative int",
+            exit_code=2,
+        )
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+        raise SupervisorError(
+            "supervisor prepublish attempt must be an int >= 1",
+            exit_code=2,
+        )
+    target = supervisor_prepublish_path(leader, rid, wid)
+    try:
+        ensure_managed_dir(target.parent)
+    except ContractPathError as exc:
+        raise SupervisorError(
+            f"supervisor prepublish dir refused: {exc}",
+            exit_code=2,
+        ) from exc
+    payload: dict[str, Any] = {
+        "schema_version": PREPUBLISH_SCHEMA_VERSION,
+        "kind": PREPUBLISH_KIND,
+        "writer": CLI_WRITER,
+        "run_id": rid,
+        "team_id": tid,
+        "worker_id": wid,
+        "leader_root": str(leader),
+        "owner_token": token,
+        "descriptor_path": str(desc),
+        "descriptor_sha256": digest,
+        "generation": int(generation),
+        "attempt": int(attempt),
+        "published_at": _utc_now_iso(),
+    }
+    body = (
+        json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    try:
+        atomic_write_bytes(target, body, mode=DATA_FILE_MODE, replace=True)
+    except ContractPathError as exc:
+        raise SupervisorError(
+            f"supervisor prepublish write refused: {exc}",
+            exit_code=2,
+        ) from exc
+    return target
+
+
+def clear_supervisor_prepublish_authorities(
+    root: Path | str, run_id: str
+) -> None:
+    """Best-effort remove prepublish records after authoritative team.json."""
+    try:
+        directory = supervisor_prepublish_dir(root, run_id)
+    except (SupervisorError, ValueError, TypeError):
+        return
+    try:
+        if not directory.is_dir() or directory.is_symlink():
+            return
+    except OSError:
+        return
+    try:
+        for child in directory.iterdir():
+            try:
+                if child.is_symlink():
+                    continue
+                if child.is_file():
+                    child.unlink(missing_ok=True)
+            except OSError:
+                continue
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    except OSError:
+        return
+
+
+def _load_prepublish_authority(
+    leader: Path,
+    *,
+    run_id: str,
+    worker_id: str,
+) -> dict[str, Any]:
+    path = supervisor_prepublish_path(leader, run_id, worker_id)
+    try:
+        if not path.is_file() or path.is_symlink():
+            raise SupervisorError(
+                "supervisor prepublish authority missing "
+                "(team.json absent; forged env+descriptor cannot authorize)",
+                exit_code=2,
+            )
+    except OSError as exc:
+        raise SupervisorError(
+            "supervisor prepublish authority not usable",
+            exit_code=2,
+        ) from exc
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SupervisorError(
+            "supervisor prepublish authority unreadable",
+            exit_code=2,
+        ) from exc
+    if not isinstance(data, dict):
+        raise SupervisorError(
+            "supervisor prepublish authority must be a JSON object",
+            exit_code=2,
+        )
+    if data.get("schema_version") != PREPUBLISH_SCHEMA_VERSION:
+        raise SupervisorError(
+            "supervisor prepublish schema_version mismatch",
+            exit_code=2,
+        )
+    if data.get("kind") != PREPUBLISH_KIND:
+        raise SupervisorError(
+            "supervisor prepublish kind mismatch",
+            exit_code=2,
+        )
+    if data.get("writer") != CLI_WRITER:
+        raise SupervisorError(
+            "supervisor prepublish lacks CLI writer authority",
+            exit_code=2,
+        )
+    return data
+
+
+def _validate_prepublish_authority(
+    leader: Path,
+    *,
+    run_id: str,
+    team_id: str,
+    worker_id: str,
+    descriptor_path: Path,
+    env: Mapping[str, str],
+    owner_token_env: str,
+) -> None:
+    """Fail-closed when team.json is absent: require matching prepublish."""
+    data = _load_prepublish_authority(leader, run_id=run_id, worker_id=worker_id)
+    if str(data.get("run_id") or "").strip() != run_id:
+        raise SupervisorError(
+            "supervisor prepublish run_id mismatch "
+            "(stale or forged pane authority)",
+            exit_code=2,
+        )
+    if str(data.get("team_id") or "").strip() != team_id:
+        raise SupervisorError(
+            "supervisor prepublish team_id mismatch "
+            "(stale or forged pane authority)",
+            exit_code=2,
+        )
+    if str(data.get("worker_id") or "").strip() != worker_id:
+        raise SupervisorError(
+            "supervisor prepublish worker_id mismatch "
+            "(stale or forged pane authority)",
+            exit_code=2,
+        )
+    auth_root = str(data.get("leader_root") or "").strip()
+    try:
+        leader_resolved = str(leader.resolve())
+    except OSError as exc:
+        raise SupervisorError(
+            "supervisor leader root not resolvable",
+            exit_code=2,
+        ) from exc
+    if not auth_root or auth_root != leader_resolved:
+        raise SupervisorError(
+            "supervisor prepublish leader_root mismatch "
+            "(stale or forged pane authority)",
+            exit_code=2,
+        )
+    meta_token = str(data.get("owner_token") or "").strip()
+    env_token = (env.get(owner_token_env) or "").strip()
+    if not meta_token or not env_token or env_token != meta_token:
+        raise SupervisorError(
+            "supervisor prepublish owner_token mismatch or missing "
+            "(stale or forged pane authority)",
+            exit_code=2,
+        )
+    try:
+        desc_resolved = str(Path(descriptor_path).resolve())
+    except OSError as exc:
+        raise SupervisorError(
+            "supervisor descriptor path not resolvable",
+            exit_code=2,
+        ) from exc
+    auth_desc = str(data.get("descriptor_path") or "").strip()
+    if not auth_desc or auth_desc != desc_resolved:
+        raise SupervisorError(
+            "supervisor prepublish descriptor_path mismatch "
+            "(stale or forged pane authority)",
+            exit_code=2,
+        )
+    expected_digest = str(data.get("descriptor_sha256") or "").strip().lower()
+    if not expected_digest or len(expected_digest) != 64:
+        raise SupervisorError(
+            "supervisor prepublish descriptor_sha256 missing or malformed",
+            exit_code=2,
+        )
+    actual = descriptor_content_digest(desc_resolved)
+    if actual != expected_digest:
+        raise SupervisorError(
+            "supervisor prepublish descriptor digest mismatch "
+            "(tampered or stale descriptor)",
+            exit_code=2,
+        )
 
 
 def _validate_supervisor_team_binding(
@@ -131,23 +426,35 @@ def _validate_supervisor_team_binding(
     *,
     run_id: str,
     team_id: str,
+    worker_id: str,
+    descriptor_path: Path,
     env: Mapping[str, str],
     owner_token_env: str,
 ) -> None:
-    """When team.json exists, require run/team/owner binding (zero side effects)."""
+    """Require team.json binding or fail-closed prepublish authority."""
     # Lazy import avoids plane↔supervisor import cycles at module load.
     from omg_cli.team.plane import team_meta_path
 
     path = team_meta_path(leader, run_id)
     try:
-        if not path.is_file():
-            # Pre-publication / unit fixtures: identity+descriptor already gate.
-            return
+        meta_present = path.is_file() and not path.is_symlink()
     except OSError as exc:
         raise SupervisorError(
             "supervisor team meta is not usable",
             exit_code=2,
         ) from exc
+    if not meta_present:
+        # Metadata absence never authorizes — require CLI prepublish.
+        _validate_prepublish_authority(
+            leader,
+            run_id=run_id,
+            team_id=team_id,
+            worker_id=worker_id,
+            descriptor_path=descriptor_path,
+            env=env,
+            owner_token_env=owner_token_env,
+        )
+        return
     try:
         raw = path.read_text(encoding="utf-8")
         data = json.loads(raw)
@@ -177,6 +484,17 @@ def _validate_supervisor_team_binding(
         )
     meta_token = str(data.get("owner_token") or "").strip()
     if not meta_token:
+        # team.json present but token unpublished: still require prepublish
+        # so forged env alone cannot authorize mid-transition.
+        _validate_prepublish_authority(
+            leader,
+            run_id=run_id,
+            team_id=team_id,
+            worker_id=worker_id,
+            descriptor_path=descriptor_path,
+            env=env,
+            owner_token_env=owner_token_env,
+        )
         return
     env_token = (env.get(owner_token_env) or "").strip()
     if not env_token or env_token != meta_token:
@@ -1417,12 +1735,20 @@ def run_supervisor(
 __all__ = [
     "DESCRIPTOR_SCHEMA_VERSION",
     "DESCRIPTOR_KIND",
+    "PREPUBLISH_DIRNAME",
+    "PREPUBLISH_KIND",
+    "PREPUBLISH_SCHEMA_VERSION",
     "SupervisorError",
     "admit_pane_supervisor",
+    "clear_supervisor_prepublish_authorities",
+    "descriptor_content_digest",
     "write_provider_descriptor",
     "load_provider_descriptor",
     "expected_identity_basenames",
     "provider_binary_identity_matches",
+    "publish_supervisor_authority",
     "resolve_provider_child_pid",
     "run_supervisor",
+    "supervisor_prepublish_dir",
+    "supervisor_prepublish_path",
 ]
