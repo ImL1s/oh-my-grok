@@ -22,7 +22,7 @@ _非官方社群 plugin — 與 xAI / OMC 維護者無關。_
 
 _不必背完整 Grok flag。用 `omg` + skills：釐清 → 計畫 → 執行 → 驗證。_
 
-**文件：** [Skills 目錄](../skills.zh-TW.md) · [Autopilot](../autopilot.zh-TW.md) · [文件索引](../README.zh-TW.md) · [安全模型](../security-model.zh-TW.md) · [Agent 模型路由（英文 canonical）](../architecture/agent-model-routing.md) · [Changelog](../../CHANGELOG.md)
+**文件：** [Skills 目錄](../skills.zh-TW.md) · [Autopilot](../autopilot.zh-TW.md) · [文件索引](../README.zh-TW.md) · [安全模型](../security-model.zh-TW.md) · [Agent 模型路由（投影）](../architecture/agent-model-routing.zh-TW.md) · [英文 canonical](../architecture/agent-model-routing.md) · [Changelog](../../CHANGELOG.md)
 
 ---
 

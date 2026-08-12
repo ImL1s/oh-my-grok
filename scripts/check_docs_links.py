@@ -27,8 +27,10 @@ REQUIRED = [
     "docs/security-model.md",
     "docs/security-model.zh.md",
     "docs/security-model.zh-TW.md",
-    # Canonical dual-host architecture (EN only; locales link here — #133)
+    # Canonical dual-host architecture + locale projections (EN remains normative — #133)
     "docs/architecture/agent-model-routing.md",
+    "docs/architecture/agent-model-routing.zh.md",
+    "docs/architecture/agent-model-routing.zh-TW.md",
     "docs/RELEASE.md",
     "docs/RELEASE.zh.md",
     "docs/RELEASE.zh-TW.md",
@@ -71,6 +73,51 @@ MARKERS = [
         "docs/architecture/agent-model-routing.md",
         "ImL1s/medley#289",
     ),
+    (
+        "docs/architecture/agent-model-routing.md",
+        "agent-model-routing.zh.md",
+    ),
+    (
+        "docs/architecture/agent-model-routing.md",
+        "agent-model-routing.zh-TW.md",
+    ),
+    (
+        "docs/architecture/agent-model-routing.zh.md",
+        "agent-model-routing.md",
+    ),
+    (
+        "docs/architecture/agent-model-routing.zh.md",
+        "first-class baseline",
+    ),
+    (
+        "docs/architecture/agent-model-routing.zh.md",
+        "ImL1s/medley#287",
+    ),
+    (
+        "docs/architecture/agent-model-routing.zh.md",
+        "ImL1s/medley#289",
+    ),
+    (
+        "docs/architecture/agent-model-routing.zh-TW.md",
+        "agent-model-routing.md",
+    ),
+    (
+        "docs/architecture/agent-model-routing.zh-TW.md",
+        "first-class baseline",
+    ),
+    (
+        "docs/architecture/agent-model-routing.zh-TW.md",
+        "ImL1s/medley#287",
+    ),
+    (
+        "docs/architecture/agent-model-routing.zh-TW.md",
+        "ImL1s/medley#289",
+    ),
+    ("docs/README.md", "agent-model-routing.zh-TW.md"),
+    ("docs/README.zh.md", "agent-model-routing.zh.md"),
+    ("docs/README.zh-TW.md", "agent-model-routing.zh-TW.md"),
+    ("docs/readme/README.md", "agent-model-routing.zh.md"),
+    ("docs/readme/README.md", "agent-model-routing.zh-TW.md"),
 ]
 
 

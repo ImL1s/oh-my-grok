@@ -1,7 +1,9 @@
 # Dual-host agent model routing
 
-English (canonical) · Localized indexes link here rather than maintaining a second
-architecture matrix — see [docs/README.md](../README.md).
+English (canonical) · [简体中文（投影）](./agent-model-routing.zh.md) · [繁體中文（投影）](./agent-model-routing.zh-TW.md)
+
+Localized indexes and locale pages are projections — do not fork the
+architecture matrix. See [docs/README.md](../README.md).
 
 **Status:** Normative architecture (documentation contract)
 

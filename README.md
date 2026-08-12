@@ -27,9 +27,9 @@ _Don't learn every Grok flag. Use `omg` + skills: clarify → plan → execute �
 
 **Docs (EN):** [Skills catalog](docs/skills.md) · [Autopilot](docs/autopilot.md) · [Security model](docs/security-model.md) · [Agent model routing](docs/architecture/agent-model-routing.md) · [Docs index](docs/README.md) · [Changelog](CHANGELOG.md)
 
-**文件（繁中）:** [Skills 目錄](docs/skills.zh-TW.md) · [Autopilot](docs/autopilot.zh-TW.md) · [安全模型](docs/security-model.zh-TW.md) · [Agent 模型路由（英文 canonical）](docs/architecture/agent-model-routing.md) · [文件索引](docs/README.zh-TW.md) · [README 繁中](docs/readme/README.zh-TW.md)
+**文件（繁中）:** [Skills 目錄](docs/skills.zh-TW.md) · [Autopilot](docs/autopilot.zh-TW.md) · [安全模型](docs/security-model.zh-TW.md) · [Agent 模型路由（投影）](docs/architecture/agent-model-routing.zh-TW.md) · [英文 canonical](docs/architecture/agent-model-routing.md) · [文件索引](docs/README.zh-TW.md) · [README 繁中](docs/readme/README.zh-TW.md)
 
-**文档（简体）:** [Skills 目录](docs/skills.zh.md) · [Autopilot](docs/autopilot.zh.md) · [安全模型](docs/security-model.zh.md) · [Agent 模型路由（英文 canonical）](docs/architecture/agent-model-routing.md) · [文档索引](docs/README.zh.md) · [README 简体](docs/readme/README.zh.md)
+**文档（简体）:** [Skills 目录](docs/skills.zh.md) · [Autopilot](docs/autopilot.zh.md) · [安全模型](docs/security-model.zh.md) · [Agent 模型路由（投影）](docs/architecture/agent-model-routing.zh.md) · [英文 canonical](docs/architecture/agent-model-routing.md) · [文档索引](docs/README.zh.md) · [README 简体](docs/readme/README.zh.md)
 
 ---
 

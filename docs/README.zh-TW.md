@@ -20,7 +20,7 @@ Grok Build plugin + `omg` CLI 的使用者文件。
 | [workflows.zh-TW.md](./workflows.zh-TW.md) | 版本化 repository workflows、receipt 與 ship gate |
 | [workflows.md](./workflows.md) | Repository workflows（英文） |
 | [security-model.md](./security-model.md) · [security-model.zh.md](./security-model.zh.md) · [security-model.zh-TW.md](./security-model.zh-TW.md) | 隔離誠實說明 |
-| [architecture/agent-model-routing.md](./architecture/agent-model-routing.md) | **Canonical** 雙主機 agent/model 路由（英文正文；請勿另維一份 matrix） |
+| [architecture/agent-model-routing.zh-TW.md](./architecture/agent-model-routing.zh-TW.md) · [architecture/agent-model-routing.md](./architecture/agent-model-routing.md) · [architecture/agent-model-routing.zh.md](./architecture/agent-model-routing.zh.md) | 繁中**投影**；英文為 **canonical**；請勿另維一份 matrix |
 | [RELEASE.md](./RELEASE.md) · [RELEASE.zh.md](./RELEASE.zh.md) · [RELEASE.zh-TW.md](./RELEASE.zh-TW.md) | 維護者發版流程 |
 
 ## Skills 快速對照
