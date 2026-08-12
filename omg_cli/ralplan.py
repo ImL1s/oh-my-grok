@@ -919,15 +919,12 @@ def _validate_v2_proposal(
     invocation_id: str,
     session_id: str,
     input_sha256: str,
-    started_at: datetime,
 ) -> dict[str, Any]:
     """Validate one current JSON proposal and add a distinct CLI stamp."""
 
     proposal_path = stage_artifact_json_path(root, run_id, stage, round_n)
     if not proposal_path.is_file():
         raise ValueError(f"missing structured {stage} proposal")
-    if proposal_path.stat().st_mtime < started_at.timestamp():
-        raise ValueError(f"stale {stage} proposal predates current invocation")
     try:
         payload = json.loads(proposal_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -1149,7 +1146,6 @@ def _run_ralplan_v2(
                         },
                         lease=lease,
                     )
-                    started_at = datetime.now(timezone.utc)
                     rc = int(
                         executor(
                             stage,
@@ -1181,7 +1177,6 @@ def _run_ralplan_v2(
                                 invocation_id=invocation_id,
                                 session_id=session_id,
                                 input_sha256=input_sha256,
-                                started_at=started_at,
                             )
                         except (OSError, TypeError, ValueError) as exc:
                             error = str(exc)

@@ -9,6 +9,18 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Fixed
+- **#159 ralplan staged-proposal mtime freshness flake:**
+  `_validate_v2_proposal` no longer treats filesystem `st_mtime` vs
+  invocation wall-clock as authorization. Coarse timestamps / clock
+  drift no longer reject a newly written identity-bound proposal.
+  Exact `invocation_id`, `session_id`, `input_sha256`, `run_id`,
+  `stage`, and `round` bindings still fail closed (replayed artifacts
+  cannot match a fresh invocation). `_atomic_write_json` unlink and
+  identity error strings unchanged. Hermetic coverage in
+  `tests/test_ralplan.py` (forced-old mtime accept; per-binding
+  mismatch reject with fresh mtime; no sleep / tolerance). Closes #159.
+
 ### Added
 - **#69 PR13 Composition Lane Worker Protocol V1:** shared worker-scoped
   `claim-lane` / `submit-lane-result` for Hyperplan and Security Research

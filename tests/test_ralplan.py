@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 from omg_cli.ralplan import (
     DEFAULT_MAX_ROUNDS,
     READ_ONLY_STAGES,
+    _validate_v2_proposal,
+    _v2_stamp_path,
     artifact_contains_approve,
     build_stage_prompt,
     invalidate_ralplan_consensus,
@@ -134,6 +140,138 @@ def _v2_full_approve_executor():
         return 0
 
     return execute
+
+
+def test_validate_v2_proposal_accepts_matching_identity_despite_stale_mtime(tmp_path):
+    """Exact identity binds authorization; coarse/old mtime is not a signal."""
+    run_id = "run-mtime"
+    stage = "planner"
+    round_n = 1
+    identity = {
+        "invocation_id": "inv-mtime",
+        "session_id": "sess-mtime",
+        "input_sha256": "a" * 64,
+    }
+    payload = _v2_approve_payload(stage, run_id=run_id, round_n=round_n, **identity)
+    path = stage_artifact_json_path(tmp_path, run_id, stage, round_n)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    os.utime(path, (1_700_000_000, 1_700_000_000))
+    assert path.stat().st_mtime < datetime.now(timezone.utc).timestamp()
+
+    stamp = _validate_v2_proposal(
+        tmp_path,
+        run_id,
+        stage,
+        round_n,
+        invocation_id=identity["invocation_id"],
+        session_id=identity["session_id"],
+        input_sha256=identity["input_sha256"],
+    )
+
+    assert stamp["writer"] == "omg-cli"
+    assert stamp["schema_version"] == 2
+    assert stamp["run_id"] == run_id
+    assert stamp["stage"] == stage
+    assert stamp["role"] == stage
+    assert stamp["round"] == round_n
+    assert stamp["invocation_id"] == identity["invocation_id"]
+    assert stamp["session_id"] == identity["session_id"]
+    assert stamp["input_sha256"] == identity["input_sha256"]
+    assert _v2_stamp_path(tmp_path, run_id, stage, round_n).is_file()
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "invocation_id",
+        "session_id",
+        "input_sha256",
+        "run_id",
+        "stage",
+        "round",
+    ),
+)
+def test_validate_v2_proposal_rejects_identity_mismatch_despite_fresh_mtime(
+    tmp_path, field
+):
+    """Binding mismatches stay rejected even when filesystem mtime is fresh."""
+    run_id = "run-bind"
+    stage = "planner"
+    round_n = 1
+    identity = {
+        "invocation_id": "inv-good",
+        "session_id": "sess-good",
+        "input_sha256": "b" * 64,
+    }
+    if field == "stage":
+        payload = _v2_approve_payload(
+            "architect", run_id=run_id, round_n=round_n, **identity
+        )
+    else:
+        payload = _v2_approve_payload(
+            stage, run_id=run_id, round_n=round_n, **identity
+        )
+        if field == "round":
+            payload["round"] = 99
+        elif field == "run_id":
+            payload["run_id"] = "other-run"
+        else:
+            payload[field] = f"wrong-{field}"
+
+    path = stage_artifact_json_path(tmp_path, run_id, stage, round_n)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    future = datetime.now(timezone.utc).timestamp() + 1_000_000
+    os.utime(path, (future, future))
+
+    stamp_path = _v2_stamp_path(tmp_path, run_id, stage, round_n)
+    with pytest.raises(ValueError, match=f"identity mismatch for {field}"):
+        _validate_v2_proposal(
+            tmp_path,
+            run_id,
+            stage,
+            round_n,
+            invocation_id=identity["invocation_id"],
+            session_id=identity["session_id"],
+            input_sha256=identity["input_sha256"],
+        )
+    assert not stamp_path.is_file()
+
+
+def test_run_ralplan_accepts_valid_payloads_with_coarse_past_mtime(tmp_path):
+    """CI flake reproduction: coarse past mtime must not block consensus."""
+    from omg_cli.state import create_run
+
+    goal = "coarse mtime still accepts"
+    run = create_run(
+        tmp_path,
+        mode="ralplan",
+        goal=goal,
+        extra={"schema_version": 2, "lifecycle_version": 2},
+    )
+    run_id = run["run_id"]
+    inner = _v2_full_approve_executor()
+
+    def execute(stage, **kwargs):
+        rc = inner(stage, **kwargs)
+        artifact = stage_artifact_json_path(
+            Path(kwargs["root"]), kwargs["run_id"], stage, kwargs["round_n"]
+        )
+        os.utime(artifact, (1_700_000_000, 1_700_000_000))
+        return rc
+
+    rc = run_ralplan(
+        goal,
+        root=tmp_path,
+        existing_run_id=run_id,
+        dry_run=True,
+        stage_executor=execute,
+    )
+    assert rc == 0
+    state = load_ralplan_state(tmp_path, run_id)
+    assert state is not None
+    assert state["accepted"] is True
 
 
 def test_fresh_accept_clears_invalidation_strict_v2(tmp_path):
