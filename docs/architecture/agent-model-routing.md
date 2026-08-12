@@ -54,14 +54,18 @@ external CLI executable at once.
 | **host runtime** | Process that runs native child sessions and exposes host APIs |
 | **host capability** | Versioned, machine-negotiated feature the host advertises or probes |
 | **OMG agent/profile policy** | Portable OMG intent: role, preference order, prompt family, floors |
-| **native model route** | Host-executed child session/model selection (`kind: native`) |
+| **native model route** | Host-executed child session/model selection (`kind: native`) — a **policy route class**, not a default Team status `--json` field |
 | **original Grok Build baseline** | Tier A — required stock host support |
 | **Medley extension** | Tier B — optional enhanced native-route contract |
-| **external executor route** | OMG-launched/supervised CLI worker (`kind: external_executor`) |
+| **external executor route** | OMG-launched/supervised CLI worker (`kind: external_executor`) — a **policy route class**, not a default Team status `--json` field |
 | **requested policy** | What OMG asked for (exact, inherit, candidates, floors) |
 | **effective route** | What actually ran after host negotiation |
 | **route receipt** | Secret-free host-owned proof of selected route/attempt facts |
 | **selection/fallback attempt** | One bounded try: select, retry, fall back, or replace |
+
+`kind: native` and `kind: external_executor` name **policy route classes** on
+this page (the #131 documentation contract). They are **not** keys on the
+default locked `omg team status --json` payload.
 
 ## Support states
 
@@ -159,7 +163,7 @@ with a slash. Neither is installation **failed**.
 
 ## Native model route vs external executor
 
-Two **non-overlapping** route kinds:
+Two **non-overlapping** **policy** route kinds (`native` and `external_executor`):
 
 ```text
 native
@@ -169,11 +173,28 @@ external_executor
   OMG launches and supervises a CLI (e.g. codex, agy, cursor, gemini)
 ```
 
+These are documentation-contract **policy route classes**. They are not default
+Team status `--json` fields, and they do **not** invent a shipped native
+execution runtime.
+
+### Policy class vs shipped Team Presentation `route.kind`
+
+| Policy route class (this page / #131 contract) | Shipped Team Presentation `route.kind` | Default `omg team status --json` |
+|---|---|---|
+| `native` | **not shipped as this string**. Closest exported value is `native_host_receipt` (optional receipt passthrough only; not native execution) | no route field |
+| `external_executor` | `external_executor` (exported `ROUTE_KIND_EXTERNAL`) | no route field |
+| (legacy / unlabeled) | `unknown` | no route field |
+
 Rules:
 
+- Do **not** treat policy `native` as equal to Presentation `native_host_receipt`.
+- Do **not** invent `external_cli_executor` or `execution_kind`. There is **no**
+  shipped `route.kind = "native"`.
+- Default locked status JSON does **not** label route kind. Route labeling is
+  Presentation State V1 (`omg team status --presentation`) and remains a
+  dual-host **contract target** for evidence/status completeness.
 - a Medley API **provider** is **not** an OMG external executor;
 - an external CLI executable is **not** a Medley credential/access route;
-- Team JSON/status and evidence must label **route kind**;
 - legacy external `provider` naming remains readable through a documented
   migration path toward `executor` (schema-versioned; implementation #131/Team);
 - native catalog identifiers are **not** passed into external argv builders
@@ -238,16 +259,183 @@ plus host-native projections.
 
 | Surface | Status relative to this architecture page |
 |---------|-------------------------------------------|
-| `omg doctor [--strict]` | **Shipped** — host/compat/probe honesty for **current host/session capabilities**; does **not** negotiate Medley/model-routing enhancements today; enhanced fields must not false-green |
-| `omg team status [--json]` | **Shipped** — Team status; route kind labeling is the dual-host contract target |
-| `omg agents list [--json]` | **Contract** — host-neutral agent/policy catalog; delivery under #131 / #134 |
-| `omg agents explain <id> [--json]` | **Contract** — policy vs effective route/receipt; delivery under #131 / #134 |
+| `omg doctor` / `omg doctor --strict` / `omg doctor --json` (also `omg --json doctor`) | **Shipped** — host/compat/probe honesty for **current host/session capabilities** only; does **not** negotiate Medley/model-routing enhancements today; enhanced fields must not false-green |
+| `omg team status [--json]` | **Shipped** — locked `--json` view (no `route` / `route.kind`). Route kind labeling is a dual-host **contract target** and appears only on Presentation V1 (`--presentation`) |
+| `omg agents list [--json]` | **Contract** — host-neutral agent/policy catalog; planned #131/#134; **not runnable today** |
+| `omg agents explain <agent-or-profile> [--json]` | **Contract** — policy vs effective route/receipt; planned #131/#134; **not runnable today** |
 
 Human and JSON views of the same facts must agree when those commands ship.
 On original Grok Build, explain/list must show which enhanced facts are
 unavailable. On Medley, they must separate **requested policy** from **effective
 route** and receipt provenance. Opening diagnostics must not perform paid
 provider probes or print secrets.
+
+### Current vs contract examples (abbreviated)
+
+Paired human + JSON sketches. Clearly abbreviated (`…`). Fictional ids only
+(`run-example-1`, `t1`). No secrets, credential values, account ids, or
+private origins.
+
+#### `omg doctor` / `omg doctor --json` — SHIPPED
+
+Human (resembles the real printer). Host capabilities today are
+session/resume/close (plus `uuid_search`) only — **no** Medley/model-routing
+registry:
+
+```text
+oh-my-grok doctor
+------------------------------------------------
+host: grok … compat=… tested=…
+------------------------------------------------
+[OK  ] grok on PATH: …
+[OK  ] grok version (Stop gate): …
+…
+note: PreToolUse is fail-open soft-gate; not hard guarantee.
+```
+
+JSON success envelope is **top-level** (not nested under `data`):
+
+```json
+{
+  "ok": true,
+  "schema_version": 1,
+  "command": "doctor",
+  "strict": false,
+  "failed": 0,
+  "soft_warns": 0,
+  "project_root": { "path": "…" },
+  "host": {
+    "binary": "grok",
+    "compatibility": "…",
+    "capabilities": {
+      "session_resume": true,
+      "session_close": true,
+      "restore_code_explicit": false,
+      "uuid_search": false
+    }
+  },
+  "checks": [{ "name": "…", "ok": true, "detail": "…" }],
+  "soft_checks": [{ "name": "…", "level": "ok", "detail": "…" }],
+  "compat": { "has_risks": false, "strict_fail": false },
+  "note": "PreToolUse is fail-open soft-gate; not hard guarantee."
+}
+```
+
+#### `omg team status` / `omg team status --json` — SHIPPED (locked)
+
+Human (resembles `format_status_table`):
+
+```text
+run_id:         run-example-1
+session:        …
+dry_run:        false
+workspace_mode: worktree
+
+task_id               win alive  status       worktree
+------------------------------------------------------------------------
+t1                       1 True   running      …
+```
+
+JSON via `emit_data` wraps the locked view. `data` contains **only** locked
+keys — no `route`:
+
+```json
+{
+  "ok": true,
+  "schema_version": 1,
+  "command": "team",
+  "data": {
+    "run_id": "run-example-1",
+    "session": "…",
+    "dry_run": false,
+    "workspace_mode": "worktree",
+    "tasks": [
+      {
+        "task_id": "t1",
+        "window_index": 1,
+        "worktree": "…",
+        "status": "running",
+        "alive": true
+      }
+    ]
+  }
+}
+```
+
+`omg team status --presentation` is Presentation State V1, **not** default
+status. It may show `route.kind` of `external_executor` | `unknown` |
+`native_host_receipt`. New start/scale stamps `external_executor`. Legacy rows
+render `unknown`. `native_host_receipt` is optional receipt passthrough
+(`receipt_ref` + sha256 digest), **not** a native execution runtime:
+
+```json
+{ "schema": 1, "kind": "external_executor", "executor": "fixture", "provider": "fake", "role": "executor", "posture": "read-write" }
+```
+
+#### `omg agents list [--json]` — CONTRACT-ONLY, planned #131/#134, **NOT runnable today**
+
+**Not registered. Do not run.** Human + JSON below are **illustrative contract
+targets** only. On a stock host, a Medley-only capability outcome is
+**unsupported**; route-specific facts are **unavailable**.
+
+```text
+omg agents list   (not registered — contract target)
+
+id                     requested policy     host facts
+omg-verifier-example   inherit / exact      Medley-only capability: unsupported
+                                            route-specific facts: unavailable
+```
+
+```json
+{
+  "ok": true,
+  "schema_version": 1,
+  "command": "agents.list",
+  "data": {
+    "agents": [
+      {
+        "id": "omg-verifier-example",
+        "requested_policy": { "binding": "inherit" },
+        "host_facts": {
+          "medley_capability_outcome": "unsupported",
+          "route_specific_facts": "unavailable"
+        }
+      }
+    ]
+  }
+}
+```
+
+#### `omg agents explain <agent-or-profile> [--json]` — CONTRACT-ONLY, same honesty
+
+**Not a current CLI.** Separate requested policy from effective route. Same
+**unsupported** / **unavailable** distinction. Fictional id only.
+
+```text
+omg agents explain omg-verifier-example   (not registered — contract target)
+
+requested policy: inherit parent model (no provider credentials in OMG state)
+effective route:  (none labeled on stock host; not a shipped native runtime)
+Medley-only capability outcome: unsupported
+route-specific facts: unavailable
+```
+
+```json
+{
+  "ok": true,
+  "schema_version": 1,
+  "command": "agents.explain",
+  "data": {
+    "id": "omg-verifier-example",
+    "requested_policy": { "binding": "inherit" },
+    "effective_route": null,
+    "host_facts": {
+      "medley_capability_outcome": "unsupported",
+      "route_specific_facts": "unavailable"
+    }
+  }
+}
+```
 
 ## Installation and compatibility language
 
@@ -290,7 +478,11 @@ CI should eventually prove (and #133 acceptance requires):
 - support matrix / capability vocabulary stay aligned with the versioned registry
   when it lands (#131);
 - documented **shipped** CLI names match registered commands;
-- route-kind names (`native`, `external_executor`) match schemas when present;
+- policy route-class names (`native`, `external_executor`) stay the
+  documentation contract; do not equate policy `native` with Presentation
+  `native_host_receipt`; shipped Presentation `route.kind` is only
+  `external_executor` | `unknown` | `native_host_receipt`; default locked
+  `omg team status --json` has no route field;
 - links to Medley #287 / #289 and OMG #131 / #133 remain present;
 - maintained indexes and locales **point at** this page rather than forking the
   matrix into hand-maintained duplicates;
