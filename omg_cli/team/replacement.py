@@ -1330,6 +1330,17 @@ def _commit_team_task_replacement(
             if api_task_id:
                 binding["api_task_id"] = api_task_id
             row["binding"] = binding
+            # #147: relaunch invalidates prior interaction_evidence; re-stamp
+            # fail-closed I/O for the new attempt (topology-aware defaults).
+            from omg_cli.team.io_capability import (
+                io_defaults_for_worker_topology,
+                stamp_io_capability,
+            )
+
+            topo = handle.topology or row.get("worker_topology") or WORKER_TOPOLOGY_PANE
+            if topo not in (WORKER_TOPOLOGY_PANE, WORKER_TOPOLOGY_JOB):
+                topo = WORKER_TOPOLOGY_PANE
+            stamp_io_capability(row, io_defaults_for_worker_topology(str(topo)))
             from omg_cli.team.presentation import stamp_route_on_task
 
             stamp_route_on_task(

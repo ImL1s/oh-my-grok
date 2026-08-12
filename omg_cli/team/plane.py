@@ -3547,6 +3547,16 @@ def start_team(
                         owner_token=token,
                     ),
                 }
+                # #147 PR1: CLI-authoritative I/O capability on new task rows.
+                # Independent of needs_pty / provider name / startup status.
+                from omg_cli.team.io_capability import (
+                    io_defaults_for_worker_topology,
+                    stamp_io_capability,
+                )
+
+                stamp_io_capability(
+                    rec, io_defaults_for_worker_topology(worker_topo)
+                )
                 from omg_cli.team.presentation import stamp_route_on_task
 
                 stamp_route_on_task(

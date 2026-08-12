@@ -119,6 +119,39 @@ def unproven_io_defaults() -> WorkerIoCapability:
     )
 
 
+def stamp_io_capability(
+    target: dict[str, Any],
+    cap: WorkerIoCapability | None = None,
+) -> dict[str, Any]:
+    """Write flat I/O fields onto a CLI-owned dict (descriptor / task row).
+
+    Mutates *target* in place and returns it. Callers must only use this from
+    leader/CLI write paths — never from worker self-report.
+    """
+    resolved = cap if cap is not None else supervisor_pane_io_defaults()
+    target["io_mode"] = resolved.io_mode
+    target["provider_tty_owner"] = resolved.provider_tty_owner
+    target["input_ready"] = bool(resolved.input_ready)
+    target["operator_input_supported"] = bool(resolved.operator_input_supported)
+    target["interaction_evidence"] = resolved.interaction_evidence
+    return target
+
+
+def io_defaults_for_worker_topology(topology: str | None) -> WorkerIoCapability:
+    """Map launch topology → PR1 writer defaults (independent of pane visibility).
+
+    ``pane`` (supervisor-owned) → headless_stream / supervisor.
+    ``job`` → background_job / none.
+    Anything else / missing → unproven (readers still fail closed).
+    """
+    key = str(topology or "").strip().lower()
+    if key in {"pane", "tmux", "supervisor"}:
+        return supervisor_pane_io_defaults()
+    if key in {"job", "background", "background_job"}:
+        return background_job_io_defaults()
+    return unproven_io_defaults()
+
+
 def _as_bool(value: Any, *, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -373,8 +406,10 @@ __all__ = [
     "WorkerIoCapability",
     "assert_operator_input_allowed",
     "background_job_io_defaults",
+    "io_defaults_for_worker_topology",
     "normalize_worker_io_capability",
     "operator_input_refusal",
+    "stamp_io_capability",
     "supervisor_pane_io_defaults",
     "unproven_io_defaults",
 ]

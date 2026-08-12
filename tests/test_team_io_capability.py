@@ -199,3 +199,129 @@ def test_as_public_dict_bounded() -> None:
         "operator_input_supported",
         "interaction_evidence",
     }
+
+
+def test_stamp_io_capability_and_topology_defaults() -> None:
+    from omg_cli.team.io_capability import (
+        io_defaults_for_worker_topology,
+        stamp_io_capability,
+    )
+
+    row: dict = {"task_id": "w1"}
+    stamp_io_capability(row)  # default supervisor
+    assert row["io_mode"] == IO_MODE_HEADLESS_STREAM
+    assert row["provider_tty_owner"] == TTY_OWNER_SUPERVISOR
+    assert row["input_ready"] is False
+    assert row["operator_input_supported"] is False
+    assert row["interaction_evidence"] is None
+
+    job: dict = {}
+    stamp_io_capability(job, io_defaults_for_worker_topology("job"))
+    assert job["io_mode"] == IO_MODE_BACKGROUND_JOB
+    assert job["provider_tty_owner"] == TTY_OWNER_NONE
+    assert job["operator_input_supported"] is False
+
+    assert io_defaults_for_worker_topology("pane").io_mode == IO_MODE_HEADLESS_STREAM
+    assert io_defaults_for_worker_topology(None).io_mode == IO_MODE_UNPROVEN
+
+
+def test_write_provider_descriptor_stamps_headless_io(tmp_path: Path) -> None:
+    """New descriptors are CLI-stamped headless; needs_pty does not promote."""
+    from omg_cli.team.io_capability import normalize_worker_io_capability
+    from omg_cli.team.supervisor import (
+        DESCRIPTOR_SCHEMA_VERSION,
+        load_provider_descriptor,
+        write_provider_descriptor,
+    )
+
+    path = tmp_path / "w1.provider.json"
+    write_provider_descriptor(
+        path,
+        provider="agy",
+        argv=["agy", "-p", "hi"],
+        needs_pty=True,
+    )
+    data = load_provider_descriptor(path)
+    assert data["schema_version"] == DESCRIPTOR_SCHEMA_VERSION
+    assert data["needs_pty"] is True
+    assert data["io_mode"] == IO_MODE_HEADLESS_STREAM
+    assert data["provider_tty_owner"] == TTY_OWNER_SUPERVISOR
+    assert data["input_ready"] is False
+    assert data["operator_input_supported"] is False
+    assert data["interaction_evidence"] is None
+    cap = normalize_worker_io_capability(data)
+    assert cap.operator_input_supported is False
+
+
+def test_legacy_descriptor_without_io_keys_still_loads(tmp_path: Path) -> None:
+    """Backcompat: old descriptors load; normalize → unsupported."""
+    import json
+
+    from omg_cli.team.io_capability import normalize_worker_io_capability
+    from omg_cli.team.supervisor import DESCRIPTOR_KIND, load_provider_descriptor
+
+    path = tmp_path / "legacy.provider.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": DESCRIPTOR_KIND,
+                "provider": "grok",
+                "argv": ["grok", "--prompt-file", "x"],
+                "prompt_delivery": "prompt-file",
+                "needs_pty": False,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    data = load_provider_descriptor(path)
+    assert "io_mode" not in data
+    cap = normalize_worker_io_capability(data)
+    assert cap.io_mode == IO_MODE_UNPROVEN
+    assert cap.operator_input_supported is False
+
+
+def test_start_team_dry_run_stamps_task_io(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Launch writers stamp headless I/O on pane task rows."""
+    import subprocess
+
+    from omg_cli.team.plane import EXPERIMENTAL_ENV, start_team
+
+    monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
+    monkeypatch.delenv("OMG_DISABLE_TMUX_TEAM", raising=False)
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "README.md").write_text("x\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "README.md"], cwd=tmp_path, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "i"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    meta = start_team(
+        "io stamp",
+        [{"task_id": "t1", "owned_files": ["README.md"]}],
+        root=tmp_path,
+        dry_run=True,
+    )
+    task = meta["tasks"][0]
+    assert task["io_mode"] == IO_MODE_HEADLESS_STREAM
+    assert task["provider_tty_owner"] == TTY_OWNER_SUPERVISOR
+    assert task["input_ready"] is False
+    assert task["operator_input_supported"] is False
+    assert task["interaction_evidence"] is None
+    # Descriptor written for dry-run path also carries I/O stamp.
+    from omg_cli.team.plane import team_dir
+    from omg_cli.team.supervisor import load_provider_descriptor
+
+    desc = team_dir(tmp_path, meta["run_id"]) / "t1.provider.json"
+    assert desc.is_file()
+    d = load_provider_descriptor(desc)
+    assert d["io_mode"] == IO_MODE_HEADLESS_STREAM
+    assert d["operator_input_supported"] is False
