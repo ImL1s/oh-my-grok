@@ -13,9 +13,13 @@ from pathlib import Path
 import pytest
 
 from omg_cli.host_acp import (
+    DEFAULT_DRAIN_MAX_BYTES,
+    DEFAULT_MAX_LINE_BYTES,
     AcpError,
     AcpResumeReceipt,
     AcpStdioSession,
+    _STDOUT_READ_CHUNK,
+    _absorb_pending_continuation,
     _incomplete_line_len,
     _max_buffered_frame_len,
     _raise_if_buffered_limits,
@@ -73,6 +77,33 @@ def _peer_response_frame(*, rpc_id: int, result: dict) -> bytes:
     return (json.dumps({"jsonrpc": "2.0", "id": rpc_id, "result": result}) + "\n").encode(
         "utf-8"
     )
+
+
+def _first_leftover_after_resume(session_id: str) -> tuple[bytes, int]:
+    resume_frame = _peer_response_frame(
+        rpc_id=2, result={"sessionId": session_id, "resumed": True}
+    )
+    first_leftover = _STDOUT_READ_CHUNK - len(resume_frame)
+    assert first_leftover > 0
+    assert first_leftover < DEFAULT_MAX_LINE_BYTES
+    return resume_frame, first_leftover
+
+
+def _pipe_proc():
+    r_fd, w_fd = os.pipe()
+    r_file = os.fdopen(r_fd, "rb", buffering=0)
+    w_file = os.fdopen(w_fd, "wb", buffering=0)
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.stdout = r_file
+            self.stdin = None
+            self.pid = None
+
+        def poll(self) -> None:
+            return None
+
+    return _FakeProc(), r_file, w_file
 
 
 def test_acp_initialize_precedes_session_resume(tmp_path: Path) -> None:
@@ -1361,3 +1392,193 @@ def test_raise_if_buffered_limits_complete_frame_flag() -> None:
     assert ei2.value.code == "E_ACP_OVERFLOW"
     assert "byte overflow" in str(ei2.value)
     assert "line overflow" not in str(ei2.value)
+
+
+def test_handshake_zero_quiet_window_default_cap_300k_suffix_writes_no_receipt(
+    tmp_path: Path,
+) -> None:
+    sid = str(uuid.uuid4())
+    _, first_leftover = _first_leftover_after_resume(sid)
+    suffix_len = 300_000
+    assert suffix_len > DEFAULT_MAX_LINE_BYTES
+    assert first_leftover < DEFAULT_MAX_LINE_BYTES
+    proc, argv = _spawn(
+        "resume_plus_oversize_suffix",
+        tmp_path,
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "300000"},
+    )
+    sess = _session(proc, argv, tmp_path, quiet=0, session_id=sid)
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "line overflow" in str(ei.value)
+        assert "byte overflow" not in str(ei.value)
+        assert sess._receipt is None
+        assert elapsed < 2.0
+    finally:
+        sess.close()
+
+
+def test_absorb_pending_continuation_line_cap_boundary() -> None:
+    max_line = DEFAULT_MAX_LINE_BYTES
+    tail = _STDOUT_READ_CHUNK
+    already = max_line - tail
+
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray(b"x" * already)
+    budget = [0]
+    try:
+        w_file.write(b"x" * tail)
+        w_file.flush()
+        w_file.close()
+        _absorb_pending_continuation(
+            proc,
+            budget,
+            rx_buf,
+            max_line_bytes=max_line,
+            max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+            deadline=time.monotonic() + 5.0,
+        )
+        assert len(rx_buf) == max_line
+        _raise_if_buffered_limits(
+            budget,
+            rx_buf,
+            max_line_bytes=max_line,
+            max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+            include_complete_frames=True,
+        )
+    finally:
+        r_file.close()
+
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray(b"x" * already)
+    budget = [0]
+    try:
+        w_file.write(b"x" * (tail + 1))
+        w_file.flush()
+        w_file.close()
+        with pytest.raises(AcpError) as ei:
+            _absorb_pending_continuation(
+                proc,
+                budget,
+                rx_buf,
+                max_line_bytes=max_line,
+                max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+                deadline=time.monotonic() + 5.0,
+            )
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "line overflow" in str(ei.value)
+        assert "byte overflow" not in str(ei.value)
+        assert len(rx_buf) == max_line + 1
+    finally:
+        r_file.close()
+
+
+def test_absorb_pending_continuation_partial_beyond_first_chunk() -> None:
+    sid = str(uuid.uuid4())
+    _, first_leftover = _first_leftover_after_resume(sid)
+    suffix_len = 8000
+    assert suffix_len < DEFAULT_MAX_LINE_BYTES
+    assert first_leftover < suffix_len
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray(b"x" * first_leftover)
+    budget = [0]
+    try:
+        w_file.write(b"x" * (suffix_len - first_leftover))
+        w_file.flush()
+        w_file.close()
+        t0 = time.monotonic()
+        _absorb_pending_continuation(
+            proc,
+            budget,
+            rx_buf,
+            max_line_bytes=DEFAULT_MAX_LINE_BYTES,
+            max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+            deadline=time.monotonic() + 5.0,
+        )
+        elapsed = time.monotonic() - t0
+        assert elapsed < 1.0
+        assert bytes(rx_buf) == b"x" * suffix_len
+        assert budget[0] == 0
+        _raise_if_buffered_limits(
+            budget,
+            rx_buf,
+            max_line_bytes=DEFAULT_MAX_LINE_BYTES,
+            max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+            include_complete_frames=True,
+        )
+    finally:
+        r_file.close()
+
+
+def test_absorb_pending_continuation_expired_deadline_returns_quickly() -> None:
+    sid = str(uuid.uuid4())
+    _, first_leftover = _first_leftover_after_resume(sid)
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray(b"x" * first_leftover)
+    budget = [0]
+    try:
+        t0 = time.monotonic()
+        _absorb_pending_continuation(
+            proc,
+            budget,
+            rx_buf,
+            max_line_bytes=DEFAULT_MAX_LINE_BYTES,
+            max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+            deadline=time.monotonic() - 1.0,
+        )
+        elapsed = time.monotonic() - t0
+        assert elapsed < 0.5
+        assert bytes(rx_buf) == b"x" * first_leftover
+        assert first_leftover < DEFAULT_MAX_LINE_BYTES
+        _raise_if_buffered_limits(
+            budget,
+            rx_buf,
+            max_line_bytes=DEFAULT_MAX_LINE_BYTES,
+            max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+            include_complete_frames=True,
+        )
+    finally:
+        w_file.close()
+        r_file.close()
+
+
+def test_handshake_zero_quiet_window_derived_total_suffix_writes_no_receipt(
+    tmp_path: Path,
+) -> None:
+    sid = str(uuid.uuid4())
+    resume_frame, first_leftover = _first_leftover_after_resume(sid)
+    suffix_len = 8000
+    assert suffix_len > first_leftover
+    assert suffix_len < DEFAULT_MAX_LINE_BYTES
+    suffix_env = str(suffix_len)
+    init_frame = _peer_response_frame(
+        rpc_id=1,
+        result={"protocolVersion": 1, "agentInfo": {"name": "fake-acp"}},
+    )
+    completed = len(init_frame) + len(resume_frame)
+    max_total = completed + suffix_len - 1
+    assert completed + first_leftover <= max_total
+    assert completed + suffix_len > max_total
+    proc, argv = _spawn(
+        "resume_plus_oversize_suffix",
+        tmp_path,
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": suffix_env},
+    )
+    sess = _session(proc, argv, tmp_path, quiet=0, session_id=sid)
+    sess.max_total_bytes = max_total
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "byte overflow" in str(ei.value)
+        assert "line overflow" not in str(ei.value)
+        assert sess._receipt is None
+        assert elapsed < 2.0
+    finally:
+        sess.close()

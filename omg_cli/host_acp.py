@@ -44,6 +44,7 @@ DEFAULT_QUIET_WINDOW_S = 0.12
 DEFAULT_MAX_LINE_BYTES = 256_000
 DEFAULT_DRAIN_MAX_BYTES = 2_000_000
 _STDERR_DRAIN_CHUNK = 8192
+_STDOUT_READ_CHUNK = 4096
 
 
 class AcpError(RuntimeError):
@@ -384,6 +385,67 @@ def _raise_if_buffered_limits(
         raise AcpError("ACP byte overflow", code="E_ACP_OVERFLOW")
 
 
+def _absorb_pending_continuation(
+    proc: subprocess.Popen[bytes],
+    byte_budget: list[int],
+    rx_buf: bytearray,
+    *,
+    max_line_bytes: int,
+    max_total_bytes: int,
+    deadline: float,
+    cancel_event: threading.Event | None = None,
+) -> None:
+    """Drain pending incomplete-frame bytes still in the OS pipe.
+
+    Stops on overflow, leftover completion (empty or NL-terminated),
+    stdout EOF, or handshake deadline after a non-blocking drain of
+    already-queued bytes. Does not extract frames or increment
+    *byte_budget*.
+    """
+    if proc.stdout is None:
+        raise AcpError("ACP stdout missing", code="E_ACP_IO")
+    import select
+
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            raise AcpError("ACP handshake cancelled", code="E_ACP_CANCELLED")
+        _raise_if_buffered_limits(
+            byte_budget,
+            rx_buf,
+            max_line_bytes=max_line_bytes,
+            max_total_bytes=max_total_bytes,
+            include_complete_frames=True,
+        )
+        if _incomplete_line_len(rx_buf) == 0:
+            return
+        remaining = deadline - time.monotonic()
+        timeout = remaining if remaining > 0 else 0.0
+        try:
+            ready, _, _ = select.select([proc.stdout], [], [], timeout)
+            if not ready:
+                _raise_if_buffered_limits(
+                    byte_budget,
+                    rx_buf,
+                    max_line_bytes=max_line_bytes,
+                    max_total_bytes=max_total_bytes,
+                    include_complete_frames=True,
+                )
+                return
+            chunk = proc.stdout.read(_STDOUT_READ_CHUNK)
+        except (OSError, ValueError) as exc:
+            raise AcpError(f"ACP read failed: {exc}", code="E_ACP_IO") from exc
+        if chunk is None or chunk == b"":
+            _raise_if_buffered_limits(
+                byte_budget,
+                rx_buf,
+                max_line_bytes=max_line_bytes,
+                max_total_bytes=max_total_bytes,
+                include_complete_frames=True,
+            )
+            return
+        rx_buf.extend(chunk)
+
+
 def _read_line(
     proc: subprocess.Popen[bytes],
     *,
@@ -449,7 +511,7 @@ def _read_line(
                     )
                 continue
             # Read available bytes (pipe may return short); retain partials in rx_buf.
-            chunk = proc.stdout.read(4096)
+            chunk = proc.stdout.read(_STDOUT_READ_CHUNK)
         except (OSError, ValueError) as exc:
             raise AcpError(f"ACP read failed: {exc}", code="E_ACP_IO") from exc
         if chunk is None or chunk == b"":
@@ -631,6 +693,13 @@ class AcpStdioSession:
                 code="E_ACP_EOF",
             )
 
+        # First 4096-byte read can leave most of a large suffix in the OS
+        # pipe; absorb pending incomplete continuation so default
+        # max_line_bytes overflow is observed before receipt.
+        self._absorb_pending_continuation(
+            deadline=deadline, cancel_event=cancel_event
+        )
+
         # Pre-receipt: every complete+incomplete frame vs line/total caps
         # (quiet_window_s=0 or exhausted). Leftover-only would miss a
         # fully NL-terminated oversized frame already in _rx_buf.
@@ -752,6 +821,22 @@ class AcpStdioSession:
             max_line_bytes=self.max_line_bytes,
             max_total_bytes=self.max_total_bytes,
             include_complete_frames=include_complete_frames,
+        )
+
+    def _absorb_pending_continuation(
+        self,
+        *,
+        deadline: float,
+        cancel_event: threading.Event | None,
+    ) -> None:
+        _absorb_pending_continuation(
+            self.proc,
+            self._byte_budget,
+            self._rx_buf,
+            max_line_bytes=self.max_line_bytes,
+            max_total_bytes=self.max_total_bytes,
+            deadline=deadline,
+            cancel_event=cancel_event,
         )
 
     def _try_read_message(
