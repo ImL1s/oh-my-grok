@@ -1338,13 +1338,28 @@ def _executable_basename(raw_word: str) -> str | None:
 
     Resolves bare names, absolute/relative path prefixes, and quoted forms the
     bounded decoder already understands. Returns ``None`` when the word is not
-    a single concrete executable token (dynamic / multi-word).
+    a concrete executable token.
+
+    Also strips shell redirections glued to the head (``omc>out``,
+    ``omg</dev/null``): real shells tokenize those as executable + redir, but
+    ``_SHELL_WORD`` keeps ``<``/``>`` inside the match. Linear quote-aware
+    boundary insert + first-token basename; trailing redir noise is ignored.
     """
 
-    words = _decode_shell_words(raw_word)
-    if len(words) != 1:
+    if not raw_word:
         return None
-    base = words[0].rsplit("/", 1)[-1].lower()
+    # Split glued redirs (and any other unquoted shell ops) before shlex so
+    # basename is the executable, not ``omc>out`` / path ending in ``null``.
+    normalized = _insert_unquoted_shell_boundaries(raw_word)
+    words = _decode_shell_words(normalized)
+    if not words:
+        return None
+    first = words[0]
+    if not first or first in _SHELL_COMMAND_SEPARATORS or first in ("(", ")"):
+        return None
+    if _is_shell_redirect_token(first):
+        return None
+    base = first.rsplit("/", 1)[-1].lower()
     return base or None
 
 
@@ -1567,6 +1582,12 @@ def _is_shell_redirect_token(word: str) -> bool:
     return False
 
 
+def _is_bare_shell_fd_token(word: str) -> bool:
+    """True for a bare decimal FD number (prefix of ``2>out`` / ``2>&1``)."""
+
+    return bool(word) and word.isdecimal() and len(word) <= 4
+
+
 def _next_decoded_words(command: str, start: int, *, limit: int = 4) -> list[str]:
     """Decode at most *limit* **semantic** argv words from a bounded tail.
 
@@ -1574,6 +1595,11 @@ def _next_decoded_words(command: str, start: int, *, limit: int = 4) -> list[str
     no-space forms like ``team>out`` / ``team;echo`` still yield ``team`` as
     the first word. Shared by foreign ``omc team`` and first-party nested
     classification.
+
+    Also skips redirections *between* the executable and later argv
+    (``omc 2>out team``, ``omg >out team launch``): after boundary insert,
+    FD-prefixed forms become ``2`` + ``>`` + target — the bare FD must not
+    become a semantic argv word that masks ``team``.
     """
 
     if start >= len(command):
@@ -1587,7 +1613,11 @@ def _next_decoded_words(command: str, start: int, *, limit: int = 4) -> list[str
     # need the full post-``team`` argv (nested-launch op classification).
     semantic: list[str] = []
     skip_next = False
-    for word in raw_words:
+    index = 0
+    n_raw = len(raw_words)
+    while index < n_raw:
+        word = raw_words[index]
+        index += 1
         if skip_next:
             skip_next = False
             continue
@@ -1595,7 +1625,17 @@ def _next_decoded_words(command: str, start: int, *, limit: int = 4) -> list[str
             break
         if word in ("(", ")"):
             break
+        # FD prefix of a redirection: ``2`` then ``>`` / ``>&`` / ``>out`` …
+        if _is_bare_shell_fd_token(word) and index < n_raw:
+            following = raw_words[index]
+            if _is_shell_redirect_token(following):
+                # Drop the FD; the next loop iteration consumes the redir.
+                continue
         if _is_shell_redirect_token(word):
+            # Pure ops (``>``, ``2>``, ``>&``) take a following target word.
+            # Glued forms (``>out``, ``2>out``) already include the target.
+            # Duplication ``>&1`` / ``2>&1`` is pure after boundary split as
+            # ``>&`` + ``1`` (or still glued as ``2>&1`` via _SHELL_REDIR_GLUED).
             if word in _SHELL_REDIR_OPS or _SHELL_REDIR_PURE.match(word):
                 skip_next = True
             continue
@@ -1611,7 +1651,8 @@ def _has_foreign_omc_team(command: str) -> bool:
     Covers bare, path-prefixed, wrapper (``env``/``command``/``exec``/…), and
     forms already exposed as executable heads by the bounded parser. Recursive
     ``sh|bash|zsh -c/-lc`` bodies are handled by the existing shell-c walk.
-    Also covers no-space shell boundaries (``omc team>out``, ``omc team;echo``).
+    Also covers no-space shell boundaries after *or before* ``team``
+    (``omc team>out``, ``omc>out team``, ``omc 2>&1 team``, ``omc team;echo``).
     """
 
     search_position = 0
@@ -1655,7 +1696,8 @@ def _iter_first_party_team_argvs(command: str):
     short-circuit later launch/supervise heads in the same command string.
 
     Shell metacharacter boundaries are normalized so no-space forms such as
-    ``omg team>out launch`` and ``omg team;echo`` classify correctly.
+    ``omg team>out launch``, ``omg>out team launch``, ``omg 2>&1 team launch``,
+    and ``omg team;echo`` classify correctly.
     """
 
     search_position = 0

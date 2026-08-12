@@ -16,6 +16,18 @@ ROOT = Path(__file__).resolve().parents[1]
 PRE_TOOL = ROOT / "hooks" / "bin" / "pre_tool_use_deny.py"
 
 
+@pytest.fixture(autouse=True)
+def _scrub_omg_allow_external_cli(monkeypatch):
+    """Keep focused deny suite hermetic against broker parent env.
+
+    Parent shells (``omg ask`` / CI agents) may export ``OMG_ALLOW_EXTERNAL_CLI=1``.
+    Tests that need the break-glass path must re-set it explicitly after this scrub.
+    Does not change child capability behavior of the production classifier.
+    """
+
+    monkeypatch.delenv("OMG_ALLOW_EXTERNAL_CLI", raising=False)
+
+
 @pytest.mark.parametrize("cmd", [
     "claude -p 'hi'",
     "codex exec foo",
@@ -631,6 +643,8 @@ def test_omc_team_shell_metachar_boundary_no_space_denied():
 
     Real shells treat ``omc team>out`` as ``omc team`` + redirect; a pure
     shlex tail decode sees one token ``team>out`` and would allow the command.
+    Also covers redirs *between* executable and ``team`` (Codex exact-head P1):
+    ``omc>out team`` is valid simple-command syntax for ``omc team``.
     """
     deny_cmds = (
         "omc team>out 2:codex x",
@@ -650,6 +664,20 @@ def test_omc_team_shell_metachar_boundary_no_space_denied():
         "env omc team|cat",
         "bash -lc 'omc team>out 2:codex x'",
         "bash -lc 'omc team;echo'",
+        # before-team redirections (exact Codex probes + equivalents)
+        "omc>out team",
+        "omc</dev/null team",
+        "omc 2>out team",
+        "omc 2>&1 team",
+        "omc >out team",
+        "/usr/bin/omc>out team",
+        "command omc</dev/null team",
+        "env omc 2>out team",
+        'bash -lc "omc>out team"',
+        "bash -lc 'omc 2>&1 team x'",
+        # reversed multi-head: safe-looking then foreign with mid-redir
+        "true; omc>out team",
+        "echo hi && omc 2>out team 2:codex x",
     )
     for cmd in deny_cmds:
         assert should_deny_command(cmd) is True, cmd
@@ -660,6 +688,8 @@ def test_omc_team_shell_metachar_boundary_no_space_denied():
         "echo omc team>not-a-command",  # omc not in command position
         "true; echo omc team",
         "printf '%s' 'omc team>out'",
+        'printf "%s" "omc>out team"',
+        "echo omc>out team",  # omc not command-position head
     )
     for cmd in allow_cmds:
         assert should_deny_command(cmd) is False, cmd
@@ -682,6 +712,18 @@ def test_worker_nested_team_shell_metachar_boundary(monkeypatch):
         "bash -lc 'omg team>out launch --goal x'",
         "/opt/omg/bin/omg team>/dev/null start --goal x",
         "command omg team;scale --add 1",
+        # before-team redirections (exact Codex worker probes)
+        "omg>out team launch",
+        "omg</dev/null team launch",
+        "omg 2>out team launch",
+        "omg 2>&1 team launch",
+        "omg >out team launch",
+        "/opt/omg/bin/omg>out team start --goal x",
+        "command omg</dev/null team scale --add 1",
+        "bash -lc 'omg>out team launch --goal x'",
+        # multi-head: status then nested launch with mid-redir
+        "omg team api catalog; omg>out team launch --goal x",
+        "omg team status\nomg 2>&1 team launch --goal x",
     )
     for cmd in deny_cmds:
         assert is_first_party_team_nested_launch(cmd) is True, cmd
@@ -695,8 +737,13 @@ def test_worker_nested_team_shell_metachar_boundary(monkeypatch):
     allow_cmds = (
         "omg team api catalog",
         "omg team status r",
-        "omg team>out api catalog",  # redir only; op remains api
+        "omg team>out api catalog",  # redir after team; op remains api
         "omg team>/dev/null status",
+        # legal status/api with mid-redir still not nested launch
+        "omg>out team api catalog",
+        "omg</dev/null team status",
+        "omg 2>out team api claim-task --input '{}'",
+        "omg 2>&1 team status r",
         'echo "omg team launch"',
     )
     for cmd in allow_cmds:
