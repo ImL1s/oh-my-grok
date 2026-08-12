@@ -10,6 +10,9 @@ on ``sys.path`` / ``PYTHONPATH``. An injected installable ``medley`` stays
 discoverable until that blocker is installed. Ancestor pathnames may
 contain the substring ``medley``; the blocker never inspects them.
 
+The four ordinary OMG surfaces run in an isolated subprocess that
+installs the import blocker before any omg_cli import.
+
 The smoke process is an explicit allowlisted environment: fake HOME /
 GROK_HOME / XDG dirs, scrubbed credentials, bounded PATH, fail-closed
 fake grok, network denial, and subprocess/exec guards. Ambient
@@ -17,69 +20,43 @@ site-packages and PYTHONPATH are not inherited.
 """
 from __future__ import annotations
 
-import hashlib
+import ast
 import importlib
-import importlib.abc
 import importlib.util
 import json
 import os
-import re
 import shutil
 import socket
-import stat
 import subprocess
 import sys
-from collections.abc import Sequence
-from importlib.machinery import ModuleSpec
 from pathlib import Path
-from types import ModuleType
-from typing import NamedTuple
 
 import pytest
 
-from omg_cli import doctor
-from omg_cli.hook_install import (
-    STANDALONE_BASENAME,
-    _stage_file,
-    committed_standalone,
-    launcher_command,
-)
-from omg_cli.setup_cmd import compute_package_identity, run_setup
-from omg_cli.team.roles import CANONICAL_ROLES
-from omg_cli.workflows.schema import compile_workflow
-
-ROOT = Path(__file__).resolve().parents[1]
-GEN_SCRIPT = ROOT / "scripts" / "generate_capabilities_lock.py"
-HOST_FIXTURE = ROOT / "tests" / "fixtures" / "host" / "0.2.121.json"
-WORKFLOW_FIXTURE = (
-    ROOT / "tests" / "fixtures" / "workflow" / "production-safety-review-v1.json"
-)
-_BLOCKER_MSG = "stock-host import blocker"
-
-_REQUIRE_MEDLEY_CLAIMS = (
-    "requires medley",
-    "require medley",
-    "medley required",
-    "medley is required",
-    "must install medley",
-    "need medley",
-    "routing-availability",
-    "routing availability",
+from tests.stock_host_medley_absent_support import (
+    REQUIRED_DOCTOR_CHECKS,
+    ROOT,
+    SMOKE_IMPORTED,
+    SMOKE_SURFACES,
+    _ALLOWED_ENV,
+    _BLOCKER_MSG,
+    _CREDENTIAL_MARKERS,
+    _FAKE_GROK_UNEXPECTED,
+    _StockHostIsolation,
+    _StockHostMedleyImportBlocker,
+    _allowlisted_env,
+    _allowed_subprocess_argv,
+    _install_fake_grok,
+    _install_network_denial,
+    _install_subprocess_guard,
+    _is_reviewed_hook_shell_argv,
+    _is_reviewed_python_argv,
+    _link_python,
+    _runtime_sys_path,
+    assert_blocker_raises,
 )
 
-
-class _StockHostMedleyImportBlocker(importlib.abc.MetaPathFinder):
-    """Raise for ``medley`` / ``medley.*`` so an installed optional copy is hidden."""
-
-    def find_spec(
-        self,
-        fullname: str,
-        path: Sequence[str] | None,
-        target: ModuleType | None = None,
-    ) -> ModuleSpec | None:
-        if fullname == "medley" or fullname.startswith("medley."):
-            raise ModuleNotFoundError(f"{_BLOCKER_MSG}: {fullname}", name=fullname)
-        return None
+BOOTSTRAP = Path(__file__).resolve().parent / "stock_host_medley_absent_smoke_bootstrap.py"
 
 
 def _this_file_does_not_import_medley() -> None:
@@ -91,56 +68,87 @@ def _this_file_does_not_import_medley() -> None:
             assert not stripped.startswith("from medley")
 
 
-_CREDENTIAL_MARKERS = (
-    "API_KEY",
-    "APIKEY",
-    "TOKEN",
-    "SECRET",
-    "PASSWORD",
-    "PASSWD",
-    "CREDENTIAL",
-    "AUTHORIZATION",
-    "BEARER",
-)
-_ALLOWED_ENV = frozenset(
-    {
-        "HOME",
-        "GROK_HOME",
-        "PATH",
-        "TMPDIR",
-        "TMP",
-        "TEMP",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "TZ",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "XDG_CACHE_HOME",
-        "XDG_STATE_HOME",
-        "XDG_RUNTIME_DIR",
-        "PYTHONDONTWRITEBYTECODE",
-        "PYTHONNOUSERSITE",
-        "PYTHONPATH",
-    }
-)
-_NETWORK_DENIED = "stock-host smoke: network denied"
-_SUBPROCESS_DENIED = "stock-host smoke: subprocess denied"
-_EXEC_DENIED = "stock-host smoke: process-exec denied"
-_FAKE_GROK_UNEXPECTED = "stock-host fake grok: unexpected argv"
+def _module_level_omg_cli_imports(path: Path) -> list[str]:
+    src = path.read_text(encoding="utf-8")
+    hits: list[str] = []
+    tree = ast.parse(src)
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "omg_cli" or alias.name.startswith("omg_cli."):
+                    hits.append(f"{node.lineno}:import {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod == "omg_cli" or mod.startswith("omg_cli."):
+                hits.append(f"{node.lineno}:from {mod}")
+    for lineno, line in enumerate(src.splitlines(), start=1):
+        code = line.split("#", 1)[0]
+        if code.startswith("import omg_cli") or code.startswith("from omg_cli"):
+            hits.append(f"{lineno}:{code.strip()}")
+    return hits
 
 
-class _StockHostIsolation(NamedTuple):
-    home: Path
-    grok_home: Path
-    bin_dir: Path
-    xdg: Path
-    grok: Path
+def _assert_blocker_before_first_omg_cli_import(path: Path) -> None:
+    src = path.read_text(encoding="utf-8")
+    blocker_line: int | None = None
+    omg_line: int | None = None
+    for lineno, line in enumerate(src.splitlines(), start=1):
+        code = line.split("#", 1)[0]
+        if blocker_line is None and (
+            "install_blocker(" in code
+            or ("meta_path" in code and "insert" in code)
+        ):
+            blocker_line = lineno
+        stripped = code.lstrip()
+        if omg_line is None and (
+            stripped.startswith("import omg_cli") or stripped.startswith("from omg_cli")
+        ):
+            omg_line = lineno
+    assert blocker_line is not None, f"no install_blocker/meta_path insert in {path}"
+    assert omg_line is not None, f"no omg_cli import in {path}"
+    assert blocker_line < omg_line, (
+        f"omg_cli import at line {omg_line} before blocker at {blocker_line} in {path}"
+    )
 
-
-def _evict_medley_modules(monkeypatch) -> None:
-    for key in [k for k in sys.modules if k == "medley" or k.startswith("medley.")]:
-        monkeypatch.delitem(sys.modules, key)
+    tree = ast.parse(src)
+    blocker_pos: tuple[int, int] | None = None
+    omg_pos: tuple[int, int] | None = None
+    for node in ast.walk(tree):
+        lineno = getattr(node, "lineno", None)
+        col = getattr(node, "col_offset", 0)
+        if lineno is None:
+            continue
+        pos = (lineno, col)
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = None
+            if isinstance(func, ast.Name):
+                name = func.id
+            elif isinstance(func, ast.Attribute):
+                name = func.attr
+                if name == "insert":
+                    value = func.value
+                    if isinstance(value, ast.Attribute) and value.attr == "meta_path":
+                        if blocker_pos is None or pos < blocker_pos:
+                            blocker_pos = pos
+            if name == "install_blocker":
+                if blocker_pos is None or pos < blocker_pos:
+                    blocker_pos = pos
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "omg_cli" or alias.name.startswith("omg_cli."):
+                    if omg_pos is None or pos < omg_pos:
+                        omg_pos = pos
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod == "omg_cli" or mod.startswith("omg_cli."):
+                if omg_pos is None or pos < omg_pos:
+                    omg_pos = pos
+    assert blocker_pos is not None
+    assert omg_pos is not None
+    assert blocker_pos < omg_pos, (
+        f"AST omg_cli import {omg_pos} is not after blocker {blocker_pos} in {path}"
+    )
 
 
 def _is_credential_key(name: str) -> bool:
@@ -148,72 +156,6 @@ def _is_credential_key(name: str) -> bool:
     if upper.startswith("MEDLEY"):
         return True
     return any(marker in upper for marker in _CREDENTIAL_MARKERS)
-
-
-def _runtime_sys_path() -> list[str]:
-    """Stdlib + this checkout only. Do not filter names for ``medley``.
-
-    Compare realpaths so Homebrew Cellar vs opt prefixes still keep stdlib.
-    Drop inherited ``site-packages`` / ``dist-packages``; the injected vendor
-    site is prepended separately and is never inferred from path names.
-    """
-    prefixes: list[str] = []
-    for raw in (
-        sys.base_prefix,
-        sys.base_exec_prefix,
-        sys.prefix,
-        sys.exec_prefix,
-        str(ROOT),
-    ):
-        if raw:
-            prefixes.append(os.path.realpath(raw))
-    kept: list[str] = []
-    seen: set[str] = set()
-    for part in sys.path:
-        if not part:
-            continue
-        real = os.path.realpath(part)
-        if real in seen:
-            continue
-        base = os.path.basename(real.rstrip(os.sep))
-        if base in {"site-packages", "dist-packages"}:
-            continue
-        if any(real == prefix or real.startswith(prefix + os.sep) for prefix in prefixes):
-            kept.append(part)
-            seen.add(real)
-    return kept
-
-
-def _allowlisted_env(*, home: Path, grok_home: Path, xdg: Path, bin_dir: Path) -> dict[str, str]:
-    tmp = xdg / "tmp"
-    runtime = xdg / "runtime"
-    for path in (
-        xdg / "config",
-        xdg / "data",
-        xdg / "cache",
-        xdg / "state",
-        runtime,
-        tmp,
-    ):
-        path.mkdir(parents=True, exist_ok=True)
-    return {
-        "HOME": str(home),
-        "GROK_HOME": str(grok_home),
-        "PATH": str(bin_dir),
-        "TMPDIR": str(tmp),
-        "TMP": str(tmp),
-        "TEMP": str(tmp),
-        "LANG": "C",
-        "LC_ALL": "C",
-        "TZ": "UTC",
-        "XDG_CONFIG_HOME": str(xdg / "config"),
-        "XDG_DATA_HOME": str(xdg / "data"),
-        "XDG_CACHE_HOME": str(xdg / "cache"),
-        "XDG_STATE_HOME": str(xdg / "state"),
-        "XDG_RUNTIME_DIR": str(runtime),
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONNOUSERSITE": "1",
-    }
 
 
 def _replace_environ(monkeypatch, env: dict[str, str]) -> None:
@@ -224,157 +166,9 @@ def _replace_environ(monkeypatch, env: dict[str, str]) -> None:
         monkeypatch.setenv(key, value)
 
 
-def _link_python(bin_dir: Path) -> None:
-    target = Path(sys.executable).resolve()
-    python3 = bin_dir / "python3"
-    python = bin_dir / "python"
-    if not python3.exists():
-        python3.symlink_to(target)
-    if not python.exists():
-        python.symlink_to(target)
-
-
-def _is_fake_grok_argv0(raw: str, bin_dir: Path) -> bool:
-    if raw == "grok":
-        return True
-    try:
-        return Path(raw).resolve() == (bin_dir / "grok").resolve()
-    except OSError:
-        return False
-
-
-_STAGE_BASENAME_RE = re.compile(
-    r"^\.omg_pretool_deny_standalone\.py\.stage\.[a-z0-9_]+\.tmp$"
-)
-
-
-def _usable_grok_home(grok_home: Path | None) -> Path | None:
-    if grok_home is None:
-        return None
-    try:
-        gh = Path(grok_home)
-        if not str(gh).strip():
-            return None
-        return gh
-    except (OSError, TypeError, ValueError):
-        return None
-
-
-def _is_reviewed_python_argv(args: Sequence[object], raw: str, grok_home: Path) -> bool:
-    """Hook-install staged smoke: exact ``python3 -I -S <stage.tmp>``."""
-    if raw != "python3" or len(args) != 4:
-        return False
-    if str(args[1]) != "-I" or str(args[2]) != "-S":
-        return False
-    gh = _usable_grok_home(grok_home)
-    if gh is None:
-        return False
-    candidate = Path(str(args[3]))
-    if _STAGE_BASENAME_RE.fullmatch(candidate.name) is None:
-        return False
-    try:
-        if candidate.parent.resolve() != (gh / "hooks").resolve():
-            return False
-        st = os.lstat(candidate)
-        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
-            return False
-        actual = hashlib.sha256(candidate.read_bytes()).digest()
-        expected = hashlib.sha256(committed_standalone().read_bytes()).digest()
-    except (OSError, TypeError, ValueError):
-        return False
-    return actual == expected
-
-
-def _is_reviewed_hook_shell_argv(args: Sequence[object], raw: str, grok_home: Path) -> bool:
-    """Doctor hook smoke: exact ``/bin/sh -c`` + ``launcher_command`` tuple."""
-    if raw != "/bin/sh" or len(args) != 3:
-        return False
-    gh = _usable_grok_home(grok_home)
-    if gh is None:
-        return False
-    try:
-        expected = (
-            "/bin/sh",
-            "-c",
-            launcher_command(gh / "hooks" / STANDALONE_BASENAME),
-        )
-    except (OSError, TypeError, ValueError):
-        return False
-    return tuple(str(a) for a in args) == expected
-
-
-def _allowed_subprocess_argv(
-    args: Sequence[object] | str | None, bin_dir: Path, grok_home: Path
-) -> bool:
-    if args is None or isinstance(args, str) or not args:
-        return False
-    raw = str(args[0])
-    if _is_fake_grok_argv0(raw, bin_dir):
-        return True
-    if _is_reviewed_python_argv(args, raw, grok_home):
-        return True
-    if _is_reviewed_hook_shell_argv(args, raw, grok_home):
-        return True
-    return False
-
-
-def _install_subprocess_guard(monkeypatch, bin_dir: Path, grok_home: Path) -> None:
-    real_popen = subprocess.Popen
-
-    def guarded_popen(args, *rest, **kwargs):  # noqa: ANN001
-        if not _allowed_subprocess_argv(args, bin_dir, grok_home):
-            raise PermissionError(f"{_SUBPROCESS_DENIED}: {args!r}")
-        return real_popen(args, *rest, **kwargs)
-
-    def denied_system(cmd: object) -> int:
-        raise PermissionError(f"{_SUBPROCESS_DENIED}: {cmd!r}")
-
-    def denied_exec(*_a: object, **_k: object) -> None:
-        raise PermissionError(_EXEC_DENIED)
-
-    monkeypatch.setattr(subprocess, "Popen", guarded_popen)
-    monkeypatch.setattr(os, "system", denied_system)
-    if hasattr(os, "popen"):
-        monkeypatch.setattr(os, "popen", denied_system)
-    # Gate children at Popen. Do not replace posix_spawn — CPython 3.14 on
-    # Darwin uses it inside Popen for absolute executables (cwd is None).
-    for name in (
-        "execv",
-        "execve",
-        "execvp",
-        "execvpe",
-        "execl",
-        "execle",
-        "execlp",
-        "execlpe",
-        "spawnv",
-        "spawnve",
-        "spawnvp",
-        "spawnvpe",
-    ):
-        if hasattr(os, name):
-            monkeypatch.setattr(os, name, denied_exec)
-
-
-def _install_network_denial(monkeypatch) -> None:
-    import urllib.request
-
-    def denied_socket(*_a: object, **_k: object) -> socket.socket:
-        raise OSError(_NETWORK_DENIED)
-
-    def denied_connect(*_a: object, **_k: object) -> tuple:
-        raise OSError(_NETWORK_DENIED)
-
-    def denied_getaddrinfo(*_a: object, **_k: object) -> list:
-        raise OSError(_NETWORK_DENIED)
-
-    def denied_urlopen(*_a: object, **_k: object) -> object:
-        raise OSError(_NETWORK_DENIED)
-
-    monkeypatch.setattr(socket, "socket", denied_socket)
-    monkeypatch.setattr(socket, "create_connection", denied_connect)
-    monkeypatch.setattr(socket, "getaddrinfo", denied_getaddrinfo)
-    monkeypatch.setattr(urllib.request, "urlopen", denied_urlopen)
+def _evict_medley_modules(monkeypatch) -> None:
+    for key in [k for k in sys.modules if k == "medley" or k.startswith("medley.")]:
+        monkeypatch.delitem(sys.modules, key)
 
 
 def _isolate_stock_host(monkeypatch, tmp_path: Path) -> _StockHostIsolation:
@@ -394,9 +188,9 @@ def _isolate_stock_host(monkeypatch, tmp_path: Path) -> _StockHostIsolation:
     _evict_medley_modules(monkeypatch)
     monkeypatch.setattr(sys, "path", _runtime_sys_path())
     monkeypatch.delenv("PYTHONPATH", raising=False)
-    _install_network_denial(monkeypatch)
+    _install_network_denial(assign=monkeypatch.setattr)
     iso = _StockHostIsolation(home, grok_home, bin_dir, xdg, grok)
-    _install_subprocess_guard(monkeypatch, iso.bin_dir, iso.grok_home)
+    _install_subprocess_guard(iso.bin_dir, iso.grok_home, assign=monkeypatch.setattr)
     importlib.invalidate_caches()
     return iso
 
@@ -448,28 +242,7 @@ def _assert_blocker_raises() -> None:
         importlib.util.find_spec("medley.native")
     with pytest.raises(ModuleNotFoundError, match=_BLOCKER_MSG):
         importlib.import_module("medley.native")
-
-
-def _install_fake_grok(bin_dir: Path) -> Path:
-    """Tiny local grok: version / --version only. Unexpected argv exits 2."""
-    path = bin_dir / "grok"
-    path.write_text(
-        f"#!{sys.executable}\n"
-        "import sys\n"
-        "args = sys.argv[1:]\n"
-        "allowed = {('--version',), ('version',), ('version', '--json')}\n"
-        "if tuple(args) not in allowed:\n"
-        "    print('stock-host fake grok: unexpected argv', args, file=sys.stderr)\n"
-        "    raise SystemExit(2)\n"
-        "if '--json' in args:\n"
-        "    print('{\"currentVersion\":\"0.2.121\"}')\n"
-        "else:\n"
-        "    print('0.2.121')\n"
-        "raise SystemExit(0)\n",
-        encoding="utf-8",
-    )
-    path.chmod(0o755)
-    return path
+    assert_blocker_raises()
 
 
 def _assert_hermetic_env(iso: _StockHostIsolation) -> None:
@@ -501,23 +274,6 @@ def _assert_medley_absent(home: Path) -> None:
     assert not any(k.upper().startswith("MEDLEY") for k in os.environ)
 
 
-def _fake_host_report():
-    from omg_cli.host_probe import host_report_for_doctor, probe_host_from_fixture
-
-    report = probe_host_from_fixture(HOST_FIXTURE)
-    return report, host_report_for_doctor(report)
-
-
-def _load_generator():
-    spec = importlib.util.spec_from_file_location(
-        "generate_capabilities_lock_stock_host_test", GEN_SCRIPT
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_injected_medley_is_discoverable_when_ancestor_path_contains_medley(
     monkeypatch, tmp_path, tmp_path_factory
 ) -> None:
@@ -546,82 +302,52 @@ def test_isolation_and_blocker_work_when_tmpdir_ancestor_contains_medley(
     _assert_medley_absent(iso.home)
 
 
-def test_ordinary_omg_surfaces_work_with_medley_absent(
-    monkeypatch, tmp_path, tmp_path_factory, capsys
-) -> None:
-    iso = _isolate_stock_host(monkeypatch, tmp_path)
-    _assert_hermetic_env(iso)
-    home = iso.home
-    site = _inject_fake_medley_package(monkeypatch, tmp_path_factory)
-    _assert_medley_discoverable(site)
-    _evict_medley_modules(monkeypatch)
-    _install_import_blocker(monkeypatch)
-    _assert_blocker_raises()
-    _assert_medley_absent(home)
+def test_stock_host_module_has_no_collection_time_omg_cli_import() -> None:
+    here = Path(__file__)
+    support = here.with_name("stock_host_medley_absent_support.py")
+    assert _module_level_omg_cli_imports(here) == []
+    assert _module_level_omg_cli_imports(support) == []
+    assert "stock_host_medley_absent_smoke_bootstrap" not in sys.modules
 
-    # 1. Package projection / setup
-    identity = compute_package_identity(ROOT)
-    assert identity.get("digest")
-    assert identity.get("version")
-    inventory_paths = {row["path"] for row in identity["inventory"]}
-    assert "bin/omg" in inventory_paths
 
-    project = tmp_path / "project"
-    project.mkdir()
-    assert run_setup(project, install_rules=True, install_hook=True) == 0
-    assert (project / ".omg").is_dir()
-    capsys.readouterr()
+def test_ordinary_omg_surfaces_work_with_medley_absent(tmp_path) -> None:
+    here = Path(__file__)
+    assert _module_level_omg_cli_imports(here) == []
+    assert BOOTSTRAP.is_file()
+    _assert_blocker_before_first_omg_cli_import(BOOTSTRAP)
+    assert "stock_host_medley_absent_smoke_bootstrap" not in sys.modules
 
-    # 2. Current doctor (fixture host probe; no live grok inspect / network)
-    monkeypatch.setattr(doctor, "_canonical_host_probe", _fake_host_report)
-    rc = doctor.run_doctor(strict=False, project_root=project, json_output=True)
-    out = capsys.readouterr().out
-    payload = json.loads(out)
-    assert rc == 0
-    assert payload["command"] == "doctor"
-    host = payload.get("host") or {}
-    assert host.get("binary") == "grok" or "binary" in host
-    blob = out.lower()
-    for banned in _REQUIRE_MEDLEY_CLAIMS:
-        assert banned not in blob, banned
-
-    hard = {row["name"]: row for row in payload.get("checks") or []}
-    for name in (
-        "plugin.json",
-        "skills omg-*",
-        "agents",
-        "deny module",
-        "hooks scripts",
-        "PreToolUse hook",
-        "global PreToolUse soft-gate",
-    ):
-        assert name in hard, name
-        assert hard[name]["ok"] is True, hard[name]
-
-    assert doctor.check_plugin_json()[1] is True
-    assert doctor.check_agents_present()[1] is True
-    assert doctor.check_skills_omg_prefix()[1] is True
-    assert doctor.check_deny_importable()[1] is True
-
-    # 3. Ordinary agent / profile discovery (taxonomy only — no routing)
-    gen = _load_generator()
-    surface = gen.discover_session_surface(ROOT)
-    agent_names = {item["name"] for item in surface["agents"]}
-    skill_names = {item["name"] for item in surface["skills"]}
-    assert "omg-executor" in agent_names or "omg-verifier" in agent_names
-    assert "omg-using" in skill_names or "omg-ralph" in skill_names
-    assert "executor" in CANONICAL_ROLES
-    assert "verifier" in CANONICAL_ROLES
-
-    # 4. Ordinary workflow parser / inventory (no network)
-    compiled = compile_workflow(WORKFLOW_FIXTURE)
-    assert compiled.get("stages")
-    assert compiled.get("name") or compiled.get("contract") or compiled.get("definition")
-
-    _assert_medley_absent(home)
-    _assert_blocker_raises()
-    assert str(site) in sys.path
-    _assert_hermetic_env(iso)
+    result_path = tmp_path / "result.json"
+    work = tmp_path / "work"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(BOOTSTRAP),
+            "--root",
+            str(ROOT),
+            "--work",
+            str(work),
+            "--result",
+            str(result_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc.returncode == 0, (
+        f"bootstrap rc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )
+    assert result_path.is_file(), proc.stderr
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    assert payload["ok"] is True
+    assert payload["blocker_installed_before_omg_cli"] is True
+    assert payload["imported"] == list(SMOKE_IMPORTED)
+    assert payload["surfaces"] == list(SMOKE_SURFACES)
+    assert payload["doctor_checks_ok"] == list(REQUIRED_DOCTOR_CHECKS)
+    assert payload["setup_omg_dir"] is True
+    assert payload["blocker_raises"] is True
+    assert "stock_host_medley_absent_smoke_bootstrap" not in sys.modules
 
 
 def test_ambient_site_packages_and_pythonpath_are_not_inherited(
@@ -743,6 +469,8 @@ def test_unexpected_subprocess_and_exec_are_denied(monkeypatch, tmp_path) -> Non
 def test_reviewed_hook_shell_argv_accepts_exact_launcher_tuple(
     tmp_path, monkeypatch
 ) -> None:
+    from omg_cli.hook_install import STANDALONE_BASENAME, launcher_command
+
     grok_home = tmp_path / "grok"
     grok_home.mkdir()
     monkeypatch.setenv("GROK_HOME", str(grok_home))
@@ -755,6 +483,8 @@ def test_reviewed_hook_shell_argv_accepts_exact_launcher_tuple(
 def test_reviewed_hook_shell_argv_rejects_injections_and_lookalikes(
     tmp_path, monkeypatch
 ) -> None:
+    from omg_cli.hook_install import STANDALONE_BASENAME, launcher_command
+
     grok_home = tmp_path / "grok"
     grok_home.mkdir()
     monkeypatch.setenv("GROK_HOME", str(grok_home))
@@ -783,6 +513,8 @@ def test_reviewed_hook_shell_argv_rejects_injections_and_lookalikes(
 
 
 def test_reviewed_python_argv_accepts_real_stage_file(tmp_path, monkeypatch) -> None:
+    from omg_cli.hook_install import STANDALONE_BASENAME, _stage_file, committed_standalone
+
     grok_home = tmp_path / "grok"
     grok_home.mkdir()
     (grok_home / "hooks").mkdir()
@@ -802,6 +534,8 @@ def test_reviewed_python_argv_accepts_real_stage_file(tmp_path, monkeypatch) -> 
 def test_reviewed_python_argv_rejects_unrelated_and_lookalikes(
     tmp_path, monkeypatch
 ) -> None:
+    from omg_cli.hook_install import STANDALONE_BASENAME, _stage_file, committed_standalone
+
     grok_home = tmp_path / "grok"
     grok_home.mkdir()
     hooks = grok_home / "hooks"

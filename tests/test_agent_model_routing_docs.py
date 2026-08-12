@@ -432,6 +432,7 @@ def test_stock_host_medley_absent_smoke_is_documented_and_present() -> None:
         "explicit import blocker",
         "no credentials or live network",
         "XDG",
+        "isolated subprocess",
     ):
         assert snippet in body, snippet
     for path in (ARCH_ZH, ARCH_ZH_TW):

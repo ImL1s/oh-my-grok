@@ -49,8 +49,10 @@ Rules:
   may contain the substring `medley`). An injected installable
   `medley` is otherwise discoverable, then blocked. It exercises setup
   / package projection, current `omg doctor`, ordinary agent/profile
-  discovery, and an ordinary workflow parser/inventory surface. It
-  does **not** implement routing; no credentials or live network.
+  discovery, and an ordinary workflow parser/inventory surface. The
+  Medley-absent smoke installs the import blocker in an isolated subprocess
+  before any `omg_cli` import. It does **not** implement routing;
+  no credentials or live network.
 - Installing OMG does **not** install Medley; installing Medley is **not**
   required for standard OMG agents/workflows.
 - External Team CLI executors (codex, agy, cursor, gemini, …) are **separate**
