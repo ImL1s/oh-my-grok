@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -68,6 +69,19 @@ def test_generated_feature_matrix_is_current() -> None:
         assert f"`{row['id']}`" in text
 
 
+_OPEN_P0_BULLET = re.compile(r"^- `([^`]+)` \(([^)]+)\):", re.MULTILINE)
+_GAPS_TABLE_ROW = re.compile(
+    r"^\| `([^`]+)` \| (P[0-9]) \| (open|closed|deferred) \| ([^|]+) \|",
+    re.MULTILINE,
+)
+
+
+def _open_p0_section(text: str) -> str:
+    _, found, rest = text.partition("## Open P0")
+    assert found, "generated GAPS.md missing ## Open P0"
+    return rest
+
+
 def test_generated_gap_report_contains_open_p0s() -> None:
     result = _run_generate_check()
     assert result.returncode == 0, result.stderr
@@ -82,6 +96,30 @@ def test_generated_gap_report_contains_open_p0s() -> None:
         "gap.parity.governance.remaining",
     ):
         assert gap_id in text
+    assert "| `gap.antigravity.provider` | P0 | closed | #67 |" in text
+    assert "| `gap.jobs.durable` | P0 | closed | #68 |" in text
+    assert "| `gap.parity.governance.remaining` | P0 | closed | #78 |" in text
+
+
+def test_generated_open_p0_section_excludes_closed_67_68_owners() -> None:
+    result = _run_generate_check()
+    assert result.returncode == 0, result.stderr
+    text = GAPS.read_text(encoding="utf-8")
+    closed = {"#67", "#68", "#78"}
+    table_open_p0: set[str] = set()
+    for match in _GAPS_TABLE_ROW.finditer(text):
+        _gap_id, priority, status, issues = match.groups()
+        if status == "open" and priority == "P0":
+            table_open_p0.update(item.strip() for item in issues.split(",") if item.strip())
+    assert table_open_p0 == {"#69"}
+    assert not closed & table_open_p0
+    section_owners: set[str] = set()
+    for match in _OPEN_P0_BULLET.finditer(_open_p0_section(text)):
+        section_owners.update(
+            item.strip() for item in match.group(2).split(",") if item.strip()
+        )
+    assert section_owners == {"#69"}
+    assert not closed & section_owners
 
 
 def test_generated_per_source_matrices_are_current() -> None:

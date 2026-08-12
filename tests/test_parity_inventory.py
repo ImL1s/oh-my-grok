@@ -43,9 +43,39 @@ def test_checked_in_inventory_is_exact_and_machine_validated() -> None:
         if gap["status"] == "open"
         for issue in gap["issues"]
     }
-    assert {"#67", "#68", "#69", "#78"} <= open_issues
+    open_p0_issues = {
+        issue
+        for gap in inventory["gaps"]
+        if gap["status"] == "open" and gap["priority"] == "P0"
+        for issue in gap["issues"]
+    }
+    assert {"#69", "#77", "#79"} <= open_issues
+    assert "#78" not in open_issues
+    assert open_p0_issues == {"#69"}
+    assert not {"#67", "#68", "#78"} & open_p0_issues
     for row in inventory["capabilities"]:
         assert all(level == "catalogued" for level in row["maturity"].values())
+
+
+def test_closed_issues_67_68_cannot_be_open_p0_owners() -> None:
+    """Closed GitHub issues stay legal historically but must not own open P0 gaps."""
+    inventory = validate_parity_inventory(load_json_object(INVENTORY), repo_root=ROOT)
+    closed = {"#67", "#68", "#78"}
+    all_gap_issues = {
+        issue for gap in inventory["gaps"] for issue in gap["issues"]
+    }
+    assert closed <= all_gap_issues
+    for gap in inventory["gaps"]:
+        owners = set(gap["issues"])
+        if gap["status"] == "open" and gap["priority"] == "P0":
+            assert not closed & owners, gap["id"]
+        if gap["id"] in {
+            "gap.antigravity.provider",
+            "gap.jobs.durable",
+            "gap.parity.governance.remaining",
+        }:
+            assert gap["status"] == "closed"
+            assert owners & closed
 
 
 def test_v1_migration_fixture_still_validates() -> None:

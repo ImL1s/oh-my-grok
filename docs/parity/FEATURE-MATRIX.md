@@ -7,23 +7,23 @@
 
 | Capability | Category | Classification | Maturity | Marker | Issues |
 | --- | --- | --- | --- | --- | --- |
-| `antigravity.provider.adapter` | antigravity | antigravity_native | antigravity=catalogued, grok=catalogued | catalogued | #67 |
-| `jobs.durable_background` | jobs | omg_native | grok=catalogued | catalogued | #68 |
+| `antigravity.provider.adapter` | antigravity | antigravity_native | antigravity=catalogued, grok=catalogued | catalogued | #67, #69 |
+| `jobs.durable_background` | jobs | omg_native | grok=catalogued | catalogued | #68, #69 |
 | `team.plane_v3` | team | omg_native | grok=catalogued | catalogued | #69 |
-| `parity.inventory.governance` | parity_governance | omg_native | grok=catalogued | catalogued | #78 |
+| `parity.inventory.governance` | parity_governance | omg_native | grok=catalogued | catalogued | #78, #79 |
 | `omc.cli.session_surfaces` | runtime_orchestration | omg_native | grok=catalogued | catalogued | #78 |
 | `omc.agents.catalog_routing` | agents_routing | omg_native | grok=catalogued | catalogued | #78 |
 | `omc.skills.catalog_aliases` | skills | omg_native | grok=catalogued | catalogued | #78 |
-| `omc.team.worktrees_mailbox` | team | alias | grok=catalogued | catalogued | #69, #78 |
+| `omc.team.worktrees_mailbox` | team | alias | grok=catalogued | catalogued | #69 |
 | `omc.hooks.lifecycle` | hooks | omg_native | grok=catalogued | catalogued | #78 |
 | `omc.tools.lsp_ast` | tools_mcp | omg_native | grok=catalogued | catalogued | #78 |
 | `omc.session.search_replay` | state_memory_observability | omg_native | grok=catalogued | catalogued | #78 |
 | `omc.memory.wiki_hud_notify` | state_memory_observability | omg_native | grok=catalogued | catalogued | #78 |
 | `omc.goal.ralph_autopilot_ultra` | runtime_orchestration | omg_native | grok=catalogued | catalogued | #78 |
 | `omc.quality.visual_release` | quality_visual_edit_safety | omg_native | grok=catalogued | catalogued | #78 |
-| `omx.launch.worktree_tmux_hud` | state_memory_observability | omg_native | grok=catalogued | catalogued | #69, #78 |
+| `omx.launch.worktree_tmux_hud` | state_memory_observability | omg_native | grok=catalogued | catalogued | #69 |
 | `omx.workflow.deep_interview_ralplan` | runtime_orchestration | omg_native | grok=catalogued | catalogued | #78 |
-| `omx.research.modes` | runtime_orchestration | optional_unclaimed | grok=catalogued | optional_unclaimed | #78 |
+| `omx.research.modes` | runtime_orchestration | optional_unclaimed | grok=catalogued | optional_unclaimed | #79 |
 | `omx.team.worker_mailbox_question` | team | omg_native | grok=catalogued | catalogued | #69, #78 |
 | `omx.agents.reviewer_product_catalog` | agents_routing | omg_native | grok=catalogued | catalogued | #78 |
 | `omx.goal.stop_lock_recovery` | runtime_orchestration | omg_native | grok=catalogued | catalogued | #78 |
@@ -31,21 +31,21 @@
 | `omx.quality.visual_modes` | quality_visual_edit_safety | omg_native | grok=catalogued | catalogued | #78 |
 | `omo.agents.discipline_routing` | agents_routing | omg_native | grok=catalogued | catalogued | #78 |
 | `omo.rules.intent_gate` | hooks | omg_native | grok=catalogued | catalogued | #78 |
-| `omo.agents.background` | jobs | optional_unclaimed | grok=catalogued | optional_unclaimed | #68, #78 |
-| `omo.team.hyperplan_security` | team | omg_native | grok=catalogued | catalogued | #69, #78 |
-| `omo.goal.todo_continuation` | runtime_orchestration | host_impossible | grok=catalogued | host_impossible | #78 |
-| `omo.edit.hash_anchored` | quality_visual_edit_safety | optional_unclaimed | grok=catalogued | optional_unclaimed | #78 |
+| `omo.agents.background` | jobs | optional_unclaimed | grok=catalogued | optional_unclaimed | #68, #69 |
+| `omo.team.hyperplan_security` | team | omg_native | grok=catalogued | catalogued | #69 |
+| `omo.goal.todo_continuation` | runtime_orchestration | host_impossible | grok=catalogued | host_impossible | #79 |
+| `omo.edit.hash_anchored` | quality_visual_edit_safety | optional_unclaimed | grok=catalogued | optional_unclaimed | #79 |
 | `omo.tools.lsp_ast_codegraph_mcp` | tools_mcp | omg_native | grok=catalogued | catalogued | #78 |
-| `omo.quality.comment_hygiene` | quality_visual_edit_safety | optional_unclaimed | grok=catalogued | optional_unclaimed | #78 |
+| `omo.quality.comment_hygiene` | quality_visual_edit_safety | optional_unclaimed | grok=catalogued | optional_unclaimed | #79 |
 | `omo.ulw.ultrawork_loop` | runtime_orchestration | omg_native | grok=catalogued | catalogued | #78 |
 | `omo.compat.tmux_plugin` | team | omg_native | grok=catalogued | catalogued | #69, #78 |
-| `antigravity.headless.structured_execution` | antigravity | optional_unclaimed | antigravity=catalogued, grok=catalogued | optional_unclaimed | #67, #78 |
-| `antigravity.agents.markdown_custom` | agents_routing | omg_native | antigravity=catalogued, grok=catalogued | catalogued | #67, #78 |
-| `antigravity.skills.hooks_subagents_plugins_mcp` | skills | omg_native | antigravity=catalogued, grok=catalogued | catalogued | #67, #78 |
-| `antigravity.jobs.background_tasks` | jobs | optional_unclaimed | antigravity=catalogued, grok=catalogued | optional_unclaimed | #68, #78 |
-| `antigravity.runtime.model_effort_mode_perms` | antigravity | host_owned | antigravity=catalogued, grok=catalogued | catalogued | #67, #78 |
-| `antigravity.session.history_resume` | state_memory_observability | omg_native | antigravity=catalogued, grok=catalogued | catalogued | #67, #78 |
-| `antigravity.platform.version_matrix` | platform_live_evidence | omg_native | antigravity=catalogued, grok=catalogued | catalogued | #78 |
+| `antigravity.headless.structured_execution` | antigravity | optional_unclaimed | antigravity=catalogued, grok=catalogued | optional_unclaimed | #67, #69 |
+| `antigravity.agents.markdown_custom` | agents_routing | omg_native | antigravity=catalogued, grok=catalogued | catalogued | #67, #79 |
+| `antigravity.skills.hooks_subagents_plugins_mcp` | skills | omg_native | antigravity=catalogued, grok=catalogued | catalogued | #67, #79 |
+| `antigravity.jobs.background_tasks` | jobs | optional_unclaimed | antigravity=catalogued, grok=catalogued | optional_unclaimed | #68, #69 |
+| `antigravity.runtime.model_effort_mode_perms` | antigravity | host_owned | antigravity=catalogued, grok=catalogued | catalogued | #79 |
+| `antigravity.session.history_resume` | state_memory_observability | omg_native | antigravity=catalogued, grok=catalogued | catalogued | #67, #79 |
+| `antigravity.platform.version_matrix` | platform_live_evidence | omg_native | antigravity=catalogued, grok=catalogued | catalogued | #77, #78, #79 |
 
 ## Category status
 

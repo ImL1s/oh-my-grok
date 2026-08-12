@@ -148,7 +148,9 @@ def test_parity_check_uses_global_json_envelope(
         for gap in gaps_payload["data"]["gaps"]
         for issue in gap["issues"]
     }
-    assert {"#67", "#68", "#69", "#78"} <= issues
+    assert issues == {"#69"}
+    assert not {"#67", "#68", "#78"} & issues
+    assert all(gap["priority"] == "P0" for gap in gaps_payload["data"]["gaps"])
 
 
 def test_parity_check_strict_invokes_shared_gate(

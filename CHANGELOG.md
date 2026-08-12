@@ -29,6 +29,19 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   exact identity/schema bindings with fresh mtime; no sleep /
   tolerance). Closes #159.
 
+### Changed
+- **#78 GAPS governance reconciliation:** closed GitHub issues #67/#68 are
+  no longer open P0 owners in `docs/parity/omg-parity.json` or generated
+  `GAPS.md` Open P0. `gap.parity.governance.remaining` is closed: pinned
+  inventory, CI claim gates, and generated docs exist. Remaining
+  authenticated Antigravity live evidence, Team job-backed workers, and
+  host prompt-queue/fan-out consume stay on #69; provider loading/doctor
+  follow-up on #77; near-1:1 leftovers (including host-owned typed AG
+  model/effort/mode) on #79. Inventory stays `bootstrapping`. No
+  `live_verified` or completeness promotion. Historical #67/#68/#78 links
+  remain on closed gaps and capability provenance. Closes #78. Refs #69
+  #77 #79 (does not close #69/#77/#79).
+
 ### Added
 - **#69 PR13 Composition Lane Worker Protocol V1:** shared worker-scoped
   `claim-lane` / `submit-lane-result` for Hyperplan and Security Research

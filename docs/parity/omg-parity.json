@@ -118,9 +118,10 @@
         "live": []
       },
       "issues": [
-        "#67"
+        "#67",
+        "#69"
       ],
-      "gap": "Probe + headless run + ask + Team launch envelope (#67-A/B/C/D)."
+      "gap": "A\u2013D landed under closed #67 (probe/run/ask/Team envelope). Remaining authenticated Antigravity provider/live evidence is owned by #69. No live promotion."
     },
     {
       "id": "jobs.durable_background",
@@ -161,9 +162,10 @@
         "live": []
       },
       "issues": [
-        "#68"
+        "#68",
+        "#69"
       ],
-      "gap": "PR5 bounded auto-retry scheduler landed (caller-driven tick over explicit retry path). Authenticated live Antigravity evidence and Team job-backed workers (#69) remain open (#68)."
+      "gap": "PR1\u2013PR5 durable jobs plane landed under closed #68. Remaining authenticated Antigravity live evidence and Team job-backed workers are owned by #69. No live promotion."
     },
     {
       "id": "team.plane_v3",
@@ -206,7 +208,7 @@
       "issues": [
         "#69"
       ],
-      "gap": "PR4 job-backed workers + PR5 identity-fenced replace-worker + PR6 Presentation State V1 + PR7 Hyperplan V1 scaffolding + PR8 Security Research V1 scaffolding + PR9 Security Research hermetic result production + PR10 Hyperplan hermetic result production + PR11 catalog v4 atomic task-batch DAG admission + PR12 shared composition task driver (admit/collect) + PR13 composition lane worker protocol (claim-lane/submit-lane-result) landed (execution_supported=false; partial catalog, not full OMX). Hyperplan/Security Research auto-worker execution, live Antigravity proof, and full OMX operation surface remain open (#69). No maturity promotion; external-runtime evidence empty."
+      "gap": "PR4 job-backed workers + PR5 identity-fenced replace-worker + PR6 Presentation State V1 + PR7 Hyperplan V1 scaffolding + PR8 Security Research V1 scaffolding + PR9 Security Research hermetic result production + PR10 Hyperplan hermetic result production + PR11 catalog v4 atomic task-batch DAG admission + PR12 shared composition task driver (admit/collect) + PR13 composition lane worker protocol (claim-lane/submit-lane-result) landed (execution_supported=false; partial catalog, not full OMX). Hyperplan/Security Research auto-worker execution, authenticated Antigravity live evidence, Team job-backed/live workers, and host prompt-queue/fan-out consume remain open (#69). No maturity promotion; external-runtime evidence empty."
     },
     {
       "id": "parity.inventory.governance",
@@ -248,9 +250,10 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#78",
+        "#79"
       ],
-      "gap": "#78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; #78-E README\u2194JSON managed-snapshot drift gate landed; #78-F/#78-G/#78-H/#78-I real pinned OMC+OMX+OmO+Antigravity discovery policy/mapping/proof landed; promotion remains unperformed and is proof-gated; Antigravity pin is documentation/catalog seed only (stronger upstream still needed for implementation-level completeness)."
+      "gap": "#78-B catalogue inventory landed; #78-C refresh+claim gate landed; #78-D completeness proof gate landed; #78-E README\u2194JSON managed-snapshot drift gate landed; #78-F/#78-G/#78-H/#78-I real pinned OMC+OMX+OmO+Antigravity discovery policy/mapping/proof landed. Inventory stays bootstrapping. #78 close gates are met (pinned inventory, CI claim gates, generated docs, GAPS no longer lists closed #67/#68 as open P0). Completeness promotion and near-1:1 belong to #79. No live promotion or release promotion."
     },
     {
       "id": "omc.cli.session_surfaces",
@@ -437,8 +440,7 @@
         "live": []
       },
       "issues": [
-        "#69",
-        "#78"
+        "#69"
       ],
       "gap": "Catalogue alias of team.plane_v3; Team v3 gaps remain under #69."
     },
@@ -782,10 +784,9 @@
         "live": []
       },
       "issues": [
-        "#69",
-        "#78"
+        "#69"
       ],
-      "gap": "HUD/worktree/tmux substitutes exist; OMX launch UX polish and Team v3 remain under #69/#78."
+      "gap": "HUD/worktree/tmux substitutes exist; OMX launch UX polish and Team v3 remain under #69."
     },
     {
       "id": "omx.workflow.deep_interview_ralplan",
@@ -868,9 +869,9 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#79"
       ],
-      "gap": "No first-class OMX-style research/autoresearch mode in OMG; ulw/ralph/ralplan/autopilot only (#78)."
+      "gap": "No first-class OMX-style research/autoresearch mode in OMG; ulw/ralph/ralplan/autopilot only. Near-1:1 leftover owned by #79, not #78."
     },
     {
       "id": "omx.team.worker_mailbox_question",
@@ -1212,9 +1213,9 @@
       },
       "issues": [
         "#68",
-        "#78"
+        "#69"
       ],
-      "gap": "No OmO-style background agents; durable jobs plane tracked under #68 (jobs.durable_background)."
+      "gap": "No OmO-style background agents. Durable jobs plane landed under closed #68 (jobs.durable_background); remaining job-backed/live Team evidence is owned by #69."
     },
     {
       "id": "omo.team.hyperplan_security",
@@ -1264,10 +1265,9 @@
         "live": []
       },
       "issues": [
-        "#69",
-        "#78"
+        "#69"
       ],
-      "gap": "Hyperplan V1 hermetic result production + Security Research V1 hermetic result production + catalog v4 atomic task-batch DAG admission + shared composition task driver (admit/collect) + composition lane worker protocol (claim-lane/submit-lane-result) landed (#69 PR7/PR8/PR9/PR10/PR11/PR12/PR13; execution_supported=false; partial catalog, not full OMX). Hyperplan/Security Research auto-worker execution, live Antigravity, and full OMX remain open under Team v3 (#69)."
+      "gap": "Hyperplan V1 hermetic result production + Security Research V1 hermetic result production + catalog v4 atomic task-batch DAG admission + shared composition task driver (admit/collect) + composition lane worker protocol (claim-lane/submit-lane-result) landed (#69 PR7\u2013PR13; execution_supported=false; partial catalog, not full OMX). Hyperplan/Security Research auto-worker execution, live Antigravity, and full OMX remain open under Team v3 (#69)."
     },
     {
       "id": "omo.goal.todo_continuation",
@@ -1294,9 +1294,9 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#79"
       ],
-      "gap": "OmO client session.prompt inject has no Grok host equivalent; Stop soft-pin is not todo-continuation (#78)."
+      "gap": "OmO client session.prompt inject has no Grok host equivalent; Stop soft-pin is not todo-continuation. Catalogued as host_impossible; leftover owned by #79."
     },
     {
       "id": "omo.edit.hash_anchored",
@@ -1321,9 +1321,9 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#79"
       ],
-      "gap": "No hash-anchored edit surface in OMG; host edit tools are used as-is (#78)."
+      "gap": "No hash-anchored edit surface in OMG; host edit tools are used as-is. Near-1:1 leftover owned by #79, not #78."
     },
     {
       "id": "omo.tools.lsp_ast_codegraph_mcp",
@@ -1386,9 +1386,9 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#79"
       ],
-      "gap": "No dedicated OmO-style comment-hygiene checker claimed in OMG (#78)."
+      "gap": "No dedicated OmO-style comment-hygiene checker claimed in OMG. Near-1:1 leftover owned by #79, not #78."
     },
     {
       "id": "omo.ulw.ultrawork_loop",
@@ -1513,9 +1513,9 @@
       },
       "issues": [
         "#67",
-        "#78"
+        "#69"
       ],
-      "gap": "#67-D: Team AGY panes use adapter build_launch_envelope; supervisor still owns PTY/PID/readiness."
+      "gap": "Ask+Team envelope landed under closed #67-C/D. Remaining structured/live Antigravity execution and supervisor PTY/PID/readiness evidence is owned by #69."
     },
     {
       "id": "antigravity.agents.markdown_custom",
@@ -1556,9 +1556,9 @@
       },
       "issues": [
         "#67",
-        "#78"
+        "#79"
       ],
-      "gap": "Grok plugin markdown agents exist; Antigravity-native agent catalog wiring remains under #67/#78."
+      "gap": "Grok plugin markdown agents exist (historical #67). Antigravity-native agent catalog wiring is near-1:1 follow-up under #79, not a closed-#67 blocker."
     },
     {
       "id": "antigravity.skills.hooks_subagents_plugins_mcp",
@@ -1604,9 +1604,9 @@
       },
       "issues": [
         "#67",
-        "#78"
+        "#79"
       ],
-      "gap": "OMG skills/hooks/agents/MCP exist on Grok; Antigravity host plugin/MCP parity is not claimed (#67/#78)."
+      "gap": "OMG skills/hooks/agents/MCP exist on Grok (historical #67). Antigravity host plugin/MCP parity is near-1:1 follow-up under #79, not a closed-#67 blocker."
     },
     {
       "id": "antigravity.jobs.background_tasks",
@@ -1642,9 +1642,9 @@
       },
       "issues": [
         "#68",
-        "#78"
+        "#69"
       ],
-      "gap": "No Antigravity background-task plane; durable jobs tracked under #68 (jobs.durable_background)."
+      "gap": "No Antigravity-native background-task plane. Durable jobs landed under closed #68; remaining job-backed/live evidence is owned by #69 (jobs.durable_background)."
     },
     {
       "id": "antigravity.runtime.model_effort_mode_perms",
@@ -1679,10 +1679,9 @@
         "live": []
       },
       "issues": [
-        "#67",
-        "#78"
+        "#79"
       ],
-      "gap": "Model/effort/mode/perms are host-owned (Grok/Antigravity CLI); OMG does not claim a typed AG runtime control plane (#67/#78)."
+      "gap": "Model/effort/mode/perms are host-owned (Grok/Antigravity CLI). OMG does not claim a typed AG runtime control plane; not owned by closed #67. Any future wrap belongs to near-1:1 #79."
     },
     {
       "id": "antigravity.session.history_resume",
@@ -1725,9 +1724,9 @@
       },
       "issues": [
         "#67",
-        "#78"
+        "#79"
       ],
-      "gap": "OMG resume/recovery substitutes exist for Grok; Antigravity-native history APIs are not wired (#67/#78)."
+      "gap": "OMG resume/recovery substitutes exist for Grok (historical #67). Antigravity-native history APIs are near-1:1 follow-up under #79."
     },
     {
       "id": "antigravity.platform.version_matrix",
@@ -1769,35 +1768,37 @@
         "live": []
       },
       "issues": [
-        "#78"
+        "#77",
+        "#78",
+        "#79"
       ],
-      "gap": "Doctor/version/pin catalogue exists; #78-C refresh+claim gate landed; #78-I Antigravity docs-only completeness triple landed (unpromoted); completeness promotion still manual."
+      "gap": "Doctor/version/pin catalogue exists; #78-C refresh+claim gate landed; #78-I Antigravity docs-only completeness triple landed (unpromoted). Provider loading/doctor follow-up is owned by #77. Explicit completeness promotion belongs to #79 and is not a #78 close gate."
     }
   ],
   "gaps": [
     {
       "id": "gap.antigravity.provider",
       "priority": "P0",
-      "status": "open",
+      "status": "closed",
       "issues": [
         "#67"
       ],
       "capability_ids": [
         "antigravity.provider.adapter"
       ],
-      "summary": "A\u2013D landed (probe/run/ask/Team envelope); dual review+CI before close"
+      "summary": "Closed #67: A\u2013D landed (probe/run/ask/Team envelope). Remaining authenticated Antigravity provider/live evidence is owned by #69; provider loading/doctor follow-up by #77."
     },
     {
       "id": "gap.jobs.durable",
       "priority": "P0",
-      "status": "open",
+      "status": "closed",
       "issues": [
         "#68"
       ],
       "capability_ids": [
         "jobs.durable_background"
       ],
-      "summary": "PR5 bounded auto-retry scheduler landed (caller-driven tick over explicit retry path). Authenticated live Antigravity evidence and Team job-backed workers (#69) remain open (#68)."
+      "summary": "Closed #68: PR1\u2013PR5 durable jobs plane landed. Remaining authenticated Antigravity live evidence and Team job-backed workers are owned by #69."
     },
     {
       "id": "gap.team.v3",
@@ -1809,82 +1810,113 @@
       "capability_ids": [
         "team.plane_v3"
       ],
-      "summary": "PR4 job-backed workers + PR5 identity-fenced replace-worker + PR6 Presentation State V1 + PR7 Hyperplan V1 scaffolding + PR8 Security Research V1 scaffolding + PR9 Security Research hermetic result production + PR10 Hyperplan hermetic result production + PR11 catalog v4 atomic task-batch DAG admission + PR12 shared composition task driver (admit/collect) + PR13 composition lane worker protocol (claim-lane/submit-lane-result) landed (execution_supported=false; partial catalog, not full OMX). Hyperplan/Security Research auto-worker execution, live Antigravity proof, and full OMX operation surface remain open (#69). Depends on #67/#68 for remainder."
+      "summary": "PR4\u2013PR13 Team v3 slices landed (execution_supported=false; partial catalog, not full OMX). Remaining: Hyperplan/Security Research auto-worker execution, authenticated Antigravity live evidence, Team job-backed/live workers, and host prompt-queue/fan-out consume (#69)."
     },
     {
       "id": "gap.parity.governance.remaining",
       "priority": "P0",
-      "status": "open",
+      "status": "closed",
       "issues": [
         "#78"
       ],
       "capability_ids": [
         "parity.inventory.governance"
       ],
-      "summary": "#78-F/#78-G/#78-H/#78-I real pinned OMC+OMX+OmO+Antigravity discovery policy/mapping/proof landed; Antigravity remains documentation/catalog seed only (unpromoted); all explicit status promotions remain open"
+      "summary": "Closed #78: pinned inventory, CI claim gates, and generated docs exist; GAPS no longer lists closed #67/#68 as open P0. Inventory stays bootstrapping. Completeness promotion and near-1:1 belong to #79."
     },
     {
       "id": "gap.parity.platform_live_evidence",
       "priority": "P1",
       "status": "open",
       "issues": [
-        "#78"
+        "#77",
+        "#79"
       ],
       "capability_ids": [
         "antigravity.platform.version_matrix"
       ],
-      "summary": "Platform/runtime live-evidence gate shipped (#78-C); #78-I Antigravity docs-only proof landed (unpromoted); completeness promotion still manual"
+      "summary": "Platform/runtime live-evidence gate shipped (#78-C); #78-I Antigravity docs-only proof landed (unpromoted). Provider loading/doctor follow-up is owned by #77. Completeness promotion belongs to #79 and is not a #78 close gate."
     },
     {
       "id": "gap.omo.todo_continuation",
       "priority": "P1",
       "status": "open",
       "issues": [
-        "#78"
+        "#79"
       ],
       "capability_ids": [
         "omo.goal.todo_continuation"
       ],
-      "summary": "OmO todo-continuation inject is host_impossible on Grok (no session.prompt API)"
+      "summary": "OmO todo-continuation inject is host_impossible on Grok (no session.prompt API). Leftover owned by #79, not #78."
     },
     {
       "id": "gap.antigravity.headless_execution",
       "priority": "P2",
       "status": "open",
       "issues": [
-        "#67",
-        "#78"
+        "#69"
       ],
       "capability_ids": [
-        "antigravity.headless.structured_execution",
-        "antigravity.runtime.model_effort_mode_perms"
+        "antigravity.headless.structured_execution"
       ],
-      "summary": "Ask+Team routed (#67-C/D); typed runtime model/effort/mode controls still unclaimed"
+      "summary": "Historical #67-C/D landed. Remaining structured/live Antigravity execution is owned by #69. Typed model/effort/mode is host-owned and tracked under #79 (gap.parity.near_1_1), not closed #67 and not a #78 implementation slice."
     },
     {
       "id": "gap.omx.research.modes",
       "priority": "P2",
       "status": "open",
       "issues": [
-        "#78"
+        "#79"
       ],
       "capability_ids": [
         "omx.research.modes"
       ],
-      "summary": "OMX-style dedicated research/autoresearch mode surface unclaimed"
+      "summary": "OMX-style dedicated research/autoresearch mode surface unclaimed; leftover owned by #79."
     },
     {
       "id": "gap.omo.edit_and_hygiene",
       "priority": "P2",
       "status": "open",
       "issues": [
-        "#78"
+        "#79"
       ],
       "capability_ids": [
         "omo.edit.hash_anchored",
         "omo.quality.comment_hygiene"
       ],
-      "summary": "OmO hash-anchored edit and comment-hygiene quality surfaces unclaimed"
+      "summary": "OmO hash-anchored edit and comment-hygiene quality surfaces unclaimed; leftover owned by #79."
+    },
+    {
+      "id": "gap.install.provider_doctor",
+      "priority": "P1",
+      "status": "open",
+      "issues": [
+        "#77"
+      ],
+      "capability_ids": [
+        "antigravity.provider.adapter",
+        "antigravity.platform.version_matrix"
+      ],
+      "summary": "Transactional Grok + Antigravity plugin setup, migration, and provider loading/doctor remain under #77."
+    },
+    {
+      "id": "gap.parity.near_1_1",
+      "priority": "P2",
+      "status": "open",
+      "issues": [
+        "#79"
+      ],
+      "capability_ids": [
+        "antigravity.runtime.model_effort_mode_perms",
+        "antigravity.agents.markdown_custom",
+        "antigravity.skills.hooks_subagents_plugins_mcp",
+        "antigravity.session.history_resume",
+        "omx.research.modes",
+        "omo.edit.hash_anchored",
+        "omo.quality.comment_hygiene",
+        "omo.goal.todo_continuation"
+      ],
+      "summary": "Near-1:1 leftovers (typed AG host-owned controls, Antigravity-native catalog/history, optional research/edit/hygiene, host_impossible todo-continuation) belong to #79. Not #78 close work."
     }
   ]
 }

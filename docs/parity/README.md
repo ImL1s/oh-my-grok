@@ -46,8 +46,8 @@ Projected from the canonical inventory. Tokens below are schema vocabulary, not 
 | `inventory_status` | `bootstrapping` |
 | `live_evidence_max_age_days` | `30` |
 | Capabilities catalogued | 39 |
-| Open gaps | 9 |
-| Open P0 gaps | 4 |
+| Open gaps | 8 |
+| Open P0 gaps | 1 |
 
 ### Source status
 

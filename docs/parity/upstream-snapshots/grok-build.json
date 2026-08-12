@@ -499,7 +499,6 @@
         "notes": "Parent-continue reminder; does not replace OMG jobs."
       },
       "downstream_issues": [
-        "#68",
         "#69"
       ]
     },
@@ -520,7 +519,6 @@
         "notes": "Cancel must not restart model turn."
       },
       "downstream_issues": [
-        "#68",
         "#69"
       ]
     },
@@ -541,7 +539,6 @@
         "notes": "Host parallel child cap; OMG still owns admission."
       },
       "downstream_issues": [
-        "#68",
         "#69"
       ]
     },
@@ -583,7 +580,6 @@
         "notes": "Lossless ordered queue under wait."
       },
       "downstream_issues": [
-        "#68",
         "#69"
       ]
     },
@@ -604,7 +600,6 @@
         "notes": "Queue visibility while waiting on subagents."
       },
       "downstream_issues": [
-        "#68",
         "#69"
       ]
     },
@@ -625,7 +620,6 @@
         "notes": "Host queue reorder UX/contract."
       },
       "downstream_issues": [
-        "#68",
         "#69"
       ]
     },
@@ -646,7 +640,7 @@
         "notes": "Recap must not interleave busy turns."
       },
       "downstream_issues": [
-        "#68"
+        "#69"
       ]
     },
     {

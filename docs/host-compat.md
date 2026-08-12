@@ -127,5 +127,6 @@ adoption (`#103`, `#74`, …) — this document does not claim live verification
   `session/load`, cross-directory UUID search, child-session / plan-mode
   restore, host background queue/fan-out, and live-host evidence.
 
-Related trackers `#103` / `#68` / `#69` / `#74` **consume** host gates here
-but are **not** completed by this PR.
+Related trackers `#103` / `#69` / `#74` **consume** host gates here
+but are **not** completed by this PR. Closed `#68` is historical;
+prompt-queue / fan-out consume is `#69`.
