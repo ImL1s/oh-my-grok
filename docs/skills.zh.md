@@ -338,13 +338,17 @@ omg pipeline "goal" --skip-plan --implement ulw
 |--|--|
 | **何时** | Codex / Claude / Gemini 第二意见 |
 | **呼叫** | `ask codex …` · `/oh-my-grok:omg-ask` |
-| **CLI** | `omg ask codex\|claude\|gemini\|agy "…"` |
+| **CLI** | `omg ask list-advisors` · `omg ask explain <id>` · `omg ask codex\|claude\|gemini\|agy "…"` |
 | **SKILL** | [`skills/omg-ask/SKILL.md`](../skills/omg-ask/SKILL.md) |
 
 ```bash
+omg ask list-advisors
+omg ask explain fable
 omg ask codex "review this patch"
 omg ask claude "對這份 plan 的第二意見"
 ```
+
+`list-advisors` / `explain` 是**离线注册表**目录事实（每个 harness 都是 `unproven`；二进制为 `not_probed`）。不宣称合格，也不执行 provider。
 
 **不是** 预设产品 worker。使用者没要求时 agent 不应自行 shell 顾问 CLI。
 

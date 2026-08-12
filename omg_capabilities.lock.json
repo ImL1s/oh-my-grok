@@ -14,7 +14,7 @@
     "agents/omg-test-engineer.md": "945c46a304df1ec9b6f518c30f7f38d1e010a997fe0a723730aeeda227495e2a",
     "agents/omg-verifier.md": "8f410b7d8b43b0bef32f27b05d9cce2d7409f638babc396d4e1f4926be10816c",
     "agents/omg-writer.md": "4609b70f3e027f71d6cd93ddd1036dbdd10ca7e82216e5607361479fdba751f9",
-    "skills/omg-ask/SKILL.md": "eaf2a797dce3063077ed8e7a8a8f3c8f9ab8b9d14ee9cded3f95a9a8f8cb0ed2",
+    "skills/omg-ask/SKILL.md": "b1e8be52a75ff5f026441211562e70d5b19af41d749c55314f88fd68de32b277",
     "skills/omg-autopilot/SKILL.md": "ab19f8a00cfad781cadc06af8fc7129b4299d130af2ae9475924fae5869726c5",
     "skills/omg-cancel/SKILL.md": "cc60cbe53fceac3bdbda0df29743c51f464e35c61f74ec150a8aa4a2bfa8a93f",
     "skills/omg-deep-interview/SKILL.md": "4a9c414bed13559a264c5bbc20c6bdc04456cb767300c02578c870117c158daf",
@@ -31,14 +31,14 @@
     "skills/omg-using/SKILL.md": "304eb43595340e4897c72b2529d02b36a28ce17c860bfaa2ac03af76f7465e0e",
     "skills/omg-wiki/SKILL.md": "bd8f8f4fd809ffc1bde337ab4ec81c5d81eb90adea9dd4dfb83861afa79c6ac9"
   },
-  "aggregate": "4c46a872910a28cd512f7a67bee282c657b97226de4c718cc5c67502d3f6bdc9",
+  "aggregate": "1c171eebd143ec154196f055f11793ce9eb36b9b9428bc39642038e1ed47471e",
   "session_surface": {
     "schema": "omg-plugin-session-surface/v1",
     "skills": [
       {
         "name": "omg-ask",
         "path": "skills/omg-ask/SKILL.md",
-        "sha256": "eaf2a797dce3063077ed8e7a8a8f3c8f9ab8b9d14ee9cded3f95a9a8f8cb0ed2",
+        "sha256": "b1e8be52a75ff5f026441211562e70d5b19af41d749c55314f88fd68de32b277",
         "metadata_status": "valid"
       },
       {
@@ -379,5 +379,5 @@
     },
     "issues": []
   },
-  "session_surface_aggregate": "a44210036a5309729aeef16d4503c3ee851a28966ec1758fa5ee3b84f63e7f36"
+  "session_surface_aggregate": "b5860d88e4cce4771328ff1684a13923076f8dc5da1078e418cd05a26df25ff3"
 }

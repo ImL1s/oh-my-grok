@@ -52,7 +52,7 @@ Related: [cli-contract.md](./cli-contract.md) (exit codes + JSON envelopes).
 | `ulw` | modes | ultrawork fan-out |
 | `ralph` | modes | ralph persistence loop |
 | `ralplan` | modes | ralplan consensus |
-| `ask` | modes | human-only external advisor broker |
+| `ask` | modes | human-only external advisor broker (offline list-advisors/explain catalog; unproven) |
 | `pipeline` | modes | plan→implement→verify FSM |
 | `dual-review` | modes | critic then verifier |
 | `mcp-server` | mcp | stdio MCP server |

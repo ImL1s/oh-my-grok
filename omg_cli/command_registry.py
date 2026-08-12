@@ -72,7 +72,11 @@ COMMAND_SPECS: Final[tuple[CommandSpec, ...]] = (
     CommandSpec("ulw", "ultrawork fan-out", "modes"),
     CommandSpec("ralph", "ralph persistence loop", "modes"),
     CommandSpec("ralplan", "ralplan consensus", "modes"),
-    CommandSpec("ask", "human-only external advisor broker", "modes"),
+    CommandSpec(
+        "ask",
+        "human-only external advisor broker (offline list-advisors/explain catalog; unproven)",
+        "modes",
+    ),
     CommandSpec("pipeline", "plan→implement→verify FSM", "modes"),
     CommandSpec("dual-review", "critic then verifier", "modes"),
     CommandSpec("mcp-server", "stdio MCP server", "mcp"),

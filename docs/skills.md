@@ -432,13 +432,17 @@ Prefer **`omg-autopilot`** for in-session multi-phase with human-in-the-loop cha
 |--|--|
 | **When** | Codex / Claude / Gemini second opinion |
 | **Invoke** | `ask codex …` · `/oh-my-grok:omg-ask` |
-| **CLI** | `omg ask codex\|claude\|gemini\|agy "…"` |
+| **CLI** | `omg ask list-advisors` · `omg ask explain <id>` · `omg ask codex\|claude\|gemini\|agy "…"` |
 | **SKILL** | [`skills/omg-ask/SKILL.md`](../skills/omg-ask/SKILL.md) |
 
 ```bash
+omg ask list-advisors
+omg ask explain fable
 omg ask codex "review this patch"
 omg ask claude "second opinion on the plan"
 ```
+
+`list-advisors` / `explain` are an **offline registry** of catalog facts (every harness is `unproven`; binaries are `not_probed`). They do not qualify a harness and do not run a provider.
 
 **Never** a default product worker. Agents must not shell advisors unless the **user** asked.
 

@@ -129,6 +129,24 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   No live promotion. Refs #77 #69 (does not close).
 
 ### Added
+- **#138 Slice A external-advisor contracts + offline catalog:** versioned
+  taxonomy (`runtime_kind=external_cli`, `purpose=advisory`,
+  `lifecycle=foreground|background_job`), canonical harness registry
+  (`claude-cli` / `codex-cli` / `grok-cli` / `cursor-cli` /
+  `antigravity-cli` / `gemini-cli`; `fable`→`claude-cli`,
+  `agy`/`antigravity`→`antigravity-cli`), fail-closed
+  `AdvisorHarnessSpecV1` plus Consultation/Council V1 documents, and a
+  legacy ask-meta mapper (`legacy_field=true`; never Team/Medley/native).
+  Every listed harness stays `advisor_read_only=unproven` with no
+  identity/version/behavior fixture. Offline CLI: `omg ask list-advisors`
+  and `omg ask explain <id>` (human + global `--json`; unknown id exit 1
+  `E_ADVISOR_NOT_FOUND`; usage exit 2). No PATH/binary/network probe, no
+  execution-path change, no consultation store. Docs: `skills/omg-ask`,
+  `docs/skills.md` (+ zh / zh-TW), `docs/cli-contract.md`. Tests:
+  `tests/test_advisor_registry.py`, `tests/test_consultation_legacy.py`,
+  `tests/test_ask_catalog.py`. Does **not** close #138.
+
+### Added
 - **#69 PR13 Composition Lane Worker Protocol V1:** shared worker-scoped
   `claim-lane` / `submit-lane-result` for Hyperplan and Security Research
   (`omg_cli/team/compositions/lane_protocol.py`). Resolves `lane_id` →
