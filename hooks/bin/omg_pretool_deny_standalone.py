@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "26951e7884c9521a1b367ec1fb7e2694017782b84b31bf5ea134aa4fc71d708f"
+_OMG_GENERATED_FROM_SHA = "215f52123122654e9c49ac11f1591e098048a64b9eeb46fa6d0220fd8d48e11f"
 _OMG_PLUGIN_VERSION = "0.8.0"
 
 
@@ -77,7 +77,6 @@ _WRAPPER_NAMES = frozenset(
 _ENV_WRAPPER_FLAGS = frozenset({"-i", "--ignore-environment"})
 _ENV_WRAPPER_VALUE_OPTS = frozenset({"-u", "--unset"})
 _ENV_WRAPPER_VALUE_EQ = "--unset="
-_COMMAND_WRAPPER_FLAGS = frozenset({"-p", "-v", "-V"})
 _NICE_WRAPPER_VALUE_OPTS = frozenset({"-n", "--adjustment"})
 _NICE_WRAPPER_VALUE_EQ = "--adjustment="
 _NICE_ADJ_TOKEN = re.compile(r"^[+-]?\d+$")
@@ -1958,6 +1957,25 @@ def _glued_nice_adjustment(token: str) -> bool:
     return token.startswith("-n") and _NICE_ADJ_TOKEN.match(token[2:]) is not None
 
 
+def _command_option_kind(token: str) -> str | None:
+    """Classify a POSIX ``command`` short option.
+
+    ``discovery``: ``-v`` / ``-V`` or a ``p``/``v``/``V`` cluster that
+    contains ``v`` or ``V`` (lookup; the following name is not executed).
+    ``exec``: ``-p`` or a cluster of only ``p`` (default PATH, then execute).
+    ``None``: not a recognized ``command`` option.
+    """
+
+    if len(token) < 2 or token[0] != "-" or token.startswith("--"):
+        return None
+    letters = token[1:]
+    if not all(ch in "pvV" for ch in letters):
+        return None
+    if "v" in letters or "V" in letters:
+        return "discovery"
+    return "exec"
+
+
 def _parse_env_split_string(raw: str) -> list[str] | None:
     """Bounded BSD/GNU ``env -S`` split. ``None`` is indeterminate (fail closed)."""
 
@@ -2044,7 +2062,10 @@ def _peel_one_wrapper(words: list[str]) -> list[str] | None:
     malformed option so the caller can fail-closed on residue flags.
     Returns ``None`` when *words* does not start with a wrapper name.
     ``env -S`` / ``--split-string`` expand once (fail closed if recursive
-    or indeterminate).
+    or indeterminate). ``command -p`` is an execution wrapper;
+    ``command -v`` / ``-V`` (and ``-pv`` clusters) are discovery and
+    consume the rest of this invocation so the looked-up name is not a
+    wrapped executable.
     """
 
     if not words:
@@ -2111,7 +2132,12 @@ def _peel_one_wrapper(words: list[str]) -> list[str] | None:
                 continue
             break
         if name == "command":
-            if token in _COMMAND_WRAPPER_FLAGS:
+            kind = _command_option_kind(token)
+            if kind == "discovery":
+                # Lookup only: do not wrap the following name, and do not
+                # leave ``-v`` for residue-skip to promote a deny-bin head.
+                return []
+            if kind == "exec":
                 index += 1
                 continue
             break

@@ -1127,6 +1127,60 @@ def test_worker_wrapper_options_before_wrapped_command(monkeypatch):
     assert leader["decision"] == "allow"
 
 
+def test_command_v_is_discovery_not_wrapper(monkeypatch):
+    """#146 F12: command -v/-V is lookup; do not peel the following name."""
+    from omg_cli.deny import is_first_party_team_nested_launch
+
+    allow_cmds = (
+        "command -v claude",
+        "command -V claude",
+        "command -v /usr/bin/claude",
+        "command -v omc",
+        "command -v omc team",
+        "command -v omg",
+        "command -pv claude",
+        "command -vp claude",
+        "command -p -v claude",
+        "command -v -p claude",
+        "which claude",
+        "type -a claude",
+        "command -v omg team launch",
+    )
+    for cmd in allow_cmds:
+        assert should_deny_command(cmd) is False, cmd
+        assert is_first_party_team_nested_launch(cmd) is False, cmd
+
+    deny_cmds = (
+        "command -p claude -p x",
+        "command claude",
+        "command -- claude",
+        "command -p omc team x",
+        "command omc team x",
+    )
+    for cmd in deny_cmds:
+        assert should_deny_command(cmd) is True, cmd
+
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    nested = decide_pre_tool_use(
+        {
+            "toolName": "run_terminal_command",
+            "toolInput": {"command": "command -p omg team launch"},
+        }
+    )
+    assert is_first_party_team_nested_launch("command -p omg team launch") is True
+    assert nested["decision"] == "deny"
+    assert "E_TEAM_NESTED_LAUNCH" in (nested.get("reason") or "")
+
+    discovery = decide_pre_tool_use(
+        {
+            "toolName": "run_terminal_command",
+            "toolInput": {"command": "command -v omg team launch"},
+        }
+    )
+    assert is_first_party_team_nested_launch("command -v omg team launch") is False
+    assert discovery["decision"] == "allow"
+
+
 def test_env_split_string_peel(monkeypatch):
     """#146 F9: env -S / --split-string must expand so hidden heads classify."""
     from omg_cli.deny import is_first_party_team_nested_launch
