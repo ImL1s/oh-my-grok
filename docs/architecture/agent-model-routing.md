@@ -13,6 +13,8 @@ architecture matrix. See [docs/README.md](../README.md).
 
 **Related UX (not claimed by this page):** [oh-my-grok#134](https://github.com/ImL1s/oh-my-grok/issues/134)
 
+**Related consultation plane (docs only; not a Team executor):** [oh-my-grok#138](https://github.com/ImL1s/oh-my-grok/issues/138)
+
 **Delivery sequence (non-normative):** [plans/2026-08-09-dual-host-agent-model-routing.md](../plans/2026-08-09-dual-host-agent-model-routing.md)
 
 **Security honesty:** verified / OMG ownership — [primary product contract](../security-model.md#primary-product-contract) · [acceptance policy (summary)](../security-model.md#acceptance-policy-summary); Team isolation is not a sandbox — [team integration isolation](../security-model.md#team-integration-isolation); host probe notes: [host-compat.md](../host-compat.md)
@@ -154,6 +156,7 @@ with a slash. Neither is installation **failed**.
 - model preference order and prompt-family policy;
 - workflow selection and explanation;
 - external executor routing and Team topology ([#69](https://github.com/ImL1s/oh-my-grok/issues/69));
+- the advisory broker (`omg ask`) and its non-authoritative artifacts ([#138](https://github.com/ImL1s/oh-my-grok/issues/138)); they never set `verified`;
 - acceptance/evidence policy and sole authority over `verified`.
 
 ### OMG never owns
@@ -174,6 +177,10 @@ native
 external_executor
   OMG launches and supervises a CLI (e.g. codex, agy, cursor, gemini)
 ```
+
+`external_executor` is the **task_execution** policy class for OMG-launched
+CLI **workers**. It does **not** include the advisory broker (`omg ask`).
+See [Advisory plane vs task execution](#advisory-plane-vs-task-execution).
 
 These are documentation-contract **policy route classes**. They are not default
 Team status `--json` fields, and they do **not** invent a shipped native
@@ -196,6 +203,7 @@ Rules:
   Presentation State V1 (`omg team status --presentation`) and remains a
   dual-host **contract target** for evidence/status completeness.
 - a Medley API **provider** is **not** an OMG external executor;
+- an advisory `external_cli` (`omg ask`) is **not** an OMG external executor;
 - an external CLI executable is **not** a Medley credential/access route;
 - legacy external `provider` naming remains readable through a documented
   migration path toward `executor` (schema-versioned; implementation #131/Team);
@@ -204,6 +212,52 @@ Rules:
 
 Integration isolation (worktrees, seal, integrate) is **not** an execution
 sandbox — see [team integration isolation](../security-model.md#team-integration-isolation).
+
+## Advisory plane vs task execution
+
+Policy route classes `native` and `external_executor` classify **task
+execution**. They do **not** classify every OMG-supervised CLI. Shipped
+`omg ask` is an **advisory** broker: it is **not** an external Team
+executor and **not** a native host route.
+
+Issue [#138](https://github.com/ImL1s/oh-my-grok/issues/138) requires three
+**orthogonal** dimensions. Combine them; do not collapse them into one
+`external_executor` label.
+
+| Dimension | Values | Meaning |
+|-----------|--------|---------|
+| `runtime_kind` | `native_host` \| `external_cli` | Who runs the process: the native host session, or an OMG-owned external CLI |
+| `purpose` | `advisory` \| `task_execution` | Whether the process may change product state / implement work, or only produce non-authoritative advice |
+| `lifecycle` | `foreground` \| `background_job` \| `team_member` | How the process is awaited: synchronous broker, durable job, or Team pane/member |
+
+### Shipped advisory broker
+
+Shipped `omg ask` is:
+
+- `runtime_kind = external_cli`
+- `purpose = advisory`
+- `lifecycle = foreground` by default
+- `lifecycle = background_job` when invoked as `omg ask <provider> --background` (durable-job seam; background admits `fake` and `agy` only)
+
+Rules:
+
+- `external_cli` **plus** `advisory` is **not** an external Team executor.
+  Do **not** stamp Presentation `route.kind = external_executor` for ask.
+- `omg ask` artifacts (`.omg/artifacts/ask-*.md` and sidecar `.meta.json`)
+  are **advisory and non-authoritative**. They never write acceptance
+  results and never set `verified` / `passes`.
+- Durable **consultation / council** artifacts, when present under
+  `.omg/artifacts/`, stay on the same advisory plane. This page does
+  **not** claim a shipped council runtime or a Team-executor council.
+- A Medley API / catalog / access **route** remains a host-owned native
+  fact. It is not `omg ask`, not a Team executor, and not an advisory
+  artifact.
+- `team_member` is Team pane lifecycle (`purpose = task_execution`).
+  Advisors are not Team members.
+
+Foreground ask writes the artifact and returns. Background ask creates a
+durable job and returns `job_id`; the job still has `purpose = advisory`
+and **never** grants `verified`.
 
 ## Initial selection, retry, route fallback, worker replacement
 
@@ -262,6 +316,7 @@ plus host-native projections.
 | Surface | Status relative to this architecture page |
 |---------|-------------------------------------------|
 | `omg doctor` / `omg doctor --strict` / `omg doctor --json` (also `omg --json doctor`) | **Shipped** — host/compat/probe honesty for **current host/session capabilities** only; does **not** negotiate Medley/model-routing enhancements today; enhanced fields must not false-green |
+| `omg ask <provider>` / `omg ask <provider> --background` | **Shipped** — advisory broker only (`purpose = advisory`); not a Team executor; artifacts never set `verified` |
 | `omg team status [--json]` | **Shipped** — locked `--json` view (no `route` / `route.kind`). Route kind labeling is a dual-host **contract target** and appears only on Presentation V1 (`--presentation`) |
 | `omg agents list [--json]` | **Contract** — host-neutral agent/policy catalog; planned #131/#134; **not runnable today** |
 | `omg agents explain <agent-or-profile> [--json]` | **Contract** — policy vs effective route/receipt; planned #131/#134; **not runnable today** |
@@ -461,6 +516,7 @@ Use stable GitHub URLs for other repos; relative links inside this repository.
 | OMG architecture/docs (this issue) | [#133](https://github.com/ImL1s/oh-my-grok/issues/133) |
 | OMG implementation plan | [#131](https://github.com/ImL1s/oh-my-grok/issues/131) |
 | OMG dual-host UX | [#134](https://github.com/ImL1s/oh-my-grok/issues/134) |
+| OMG external consultation plane | [#138](https://github.com/ImL1s/oh-my-grok/issues/138) |
 | OMG agent taxonomy | [#71](https://github.com/ImL1s/oh-my-grok/issues/71) |
 | OMG Team runtime | [#69](https://github.com/ImL1s/oh-my-grok/issues/69) |
 | Medley optional host-contract plan | [ImL1s/medley#287](https://github.com/ImL1s/medley/issues/287) |
@@ -485,7 +541,10 @@ CI should eventually prove (and #133 acceptance requires):
   `native_host_receipt`; shipped Presentation `route.kind` is only
   `external_executor` | `unknown` | `native_host_receipt`; default locked
   `omg team status --json` has no route field;
-- links to Medley #287 / #289 and OMG #131 / #133 remain present;
+- policy `external_executor` must stay distinct from advisory `omg ask`;
+  the three dimension names (`runtime_kind`, `purpose`, `lifecycle`) must
+  remain present;
+- links to Medley #287 / #289 and OMG #131 / #133 / #138 remain present;
 - maintained indexes and locales **point at** this page rather than forking the
   matrix into hand-maintained duplicates;
 - no secret/header/query/account sentinel in examples;
@@ -502,4 +561,4 @@ hand-maintained normative source.
 - no runtime benchmark/ranking claims;
 - no claim that worktree/Team isolation is an execution sandbox;
 - no implication of affiliation between OMG, Medley, or xAI;
-- no runtime implementation of #131 or #134 on this documentation page alone.
+- no runtime implementation of #131, #134, or #138 on this documentation page alone.

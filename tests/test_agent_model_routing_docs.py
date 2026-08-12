@@ -78,6 +78,8 @@ SHIPPED_OMG_COMMANDS: tuple[str, ...] = (
     "omg team status",
     "omg team status --json",
     "omg team status --presentation",
+    "omg ask fake",
+    "omg ask fake --background",
 )
 
 # Normative fragments that must appear on the English architecture page.
@@ -102,6 +104,17 @@ ARCH_REQUIRED_SNIPPETS: tuple[str, ...] = (
     "oh-my-grok#131",
     "oh-my-grok#133",
     "oh-my-grok#134",
+    "oh-my-grok#138",
+    "runtime_kind",
+    "native_host",
+    "external_cli",
+    "purpose",
+    "advisory",
+    "task_execution",
+    "lifecycle",
+    "foreground",
+    "background_job",
+    "team_member",
     "ImL1s/medley#287",
     "ImL1s/medley#289",
     "omg doctor",
@@ -211,7 +224,9 @@ def _try_parse_argv(argv: list[str]) -> bool:
 
 def _expand_optional_groups(command: str) -> list[str]:
     """Expand ``[--json]`` / ``[--strict]`` (any ``[--flag]``) into variants."""
-    seed = command.replace("<agent-or-profile>", "omg-verifier-example")
+    seed = command.replace("<agent-or-profile>", "omg-verifier-example").replace(
+        "<provider>", "fake"
+    )
     variants = [seed]
     expanded: list[str] = []
 
@@ -339,6 +354,38 @@ def test_architecture_does_not_claim_medley_required() -> None:
     assert "never" in body.lower()
 
 
+def test_architecture_distinguishes_advisory_from_task_execution() -> None:
+    body = ARCH.read_text(encoding="utf-8")
+    for token in (
+        "runtime_kind",
+        "purpose",
+        "lifecycle",
+        "native_host",
+        "external_cli",
+        "advisory",
+        "task_execution",
+        "foreground",
+        "background_job",
+        "team_member",
+    ):
+        assert token in body, f"architecture missing dimension token {token!r}"
+    assert (
+        "not** an external Team executor" in body
+        or "not an external Team executor" in body
+        or "is **not** an external Team" in body
+    ), "architecture must negate advisory/omg ask as a Team executor"
+    assert "never set `verified`" in body, (
+        "architecture must say ask artifacts never set verified"
+    )
+    assert (
+        "does **not** claim a shipped council runtime" in body
+        or "not** claim a shipped council" in body
+    ), "architecture must not claim a shipped council runtime"
+    assert "Medley API" in body
+    assert "#138" in body
+    assert "oh-my-grok#138" in body
+
+
 def test_architecture_distinguishes_native_and_external_routes() -> None:
     body = ARCH.read_text(encoding="utf-8")
     assert "kind: native" in body or "`native`" in body or "kind: native" in body.replace("`", "")
@@ -413,6 +460,10 @@ def test_locale_architecture_projection_honesty() -> None:
         ):
             assert needle in text, f"{rel} missing {needle!r}"
         assert "#131" in text, f"{rel} missing #131"
+        assert "#138" in text, f"{rel} missing #138"
+        assert "runtime_kind" in text, f"{rel} missing runtime_kind"
+        assert "advisory" in text, f"{rel} missing advisory"
+        assert "omg ask" in text, f"{rel} missing omg ask"
         assert (
             "尚未出貨" in text or "尚未出货" in text or "planned" in text
         ), f"{rel} missing planned-extension honesty"
@@ -439,7 +490,7 @@ def test_shipped_cli_names_in_architecture_are_registered() -> None:
         if getattr(act, "choices", None):
             top.update(act.choices.keys())
     body = ARCH.read_text(encoding="utf-8")
-    for cmd in ("doctor", "team"):
+    for cmd in ("doctor", "team", "ask"):
         assert cmd in top
         assert f"omg {cmd}" in body
     # Contract surfaces may be mentioned but must not be claimed as shipped-only.
@@ -463,6 +514,15 @@ def test_documented_omg_command_shapes_match_parser() -> None:
     for command in _documented_omg_commands(body):
         argv = _argv_for(command)
         verb = _first_verb(argv)
+        if verb == "ask":
+            try:
+                ask_at = argv.index("ask")
+            except ValueError:
+                ask_at = -1
+            if ask_at >= 0 and not any(
+                not tok.startswith("-") for tok in argv[ask_at + 1 :]
+            ):
+                argv.insert(ask_at + 1, "fake")
         if verb == "agents":
             assert not _try_parse_argv(argv), f"contract-only command parsed: {command}"
             continue
@@ -601,4 +661,5 @@ def test_check_docs_links_source_lists_architecture() -> None:
     assert "ROUTING_DOCS" in src
     assert "REQUIRED_EXTERNAL" in src
     assert "https://github.com/ImL1s/oh-my-grok/issues/131" in src
+    assert "https://github.com/ImL1s/oh-my-grok/issues/138" in src
     assert "https://github.com/ImL1s/medley/issues/287" in src

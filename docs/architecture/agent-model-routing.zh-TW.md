@@ -10,9 +10,10 @@
 - [英文支援矩陣（唯一規範表）](./agent-model-routing.md#normative-support-matrix)
 - [Ownership boundary](./agent-model-routing.md#ownership-boundary)
 - [Native model route vs external executor](./agent-model-routing.md#native-model-route-vs-external-executor)
+- [Advisory plane vs task execution](./agent-model-routing.md#advisory-plane-vs-task-execution)
 - [CLI / UX surfaces honesty](./agent-model-routing.md#cli--ux-surfaces-honesty)
 
-**追蹤：** [oh-my-grok#133](https://github.com/ImL1s/oh-my-grok/issues/133) · 實作（本頁不宣稱已出貨）：[#131](https://github.com/ImL1s/oh-my-grok/issues/131) · UX：[#134](https://github.com/ImL1s/oh-my-grok/issues/134)
+**追蹤：** [oh-my-grok#133](https://github.com/ImL1s/oh-my-grok/issues/133) · 實作（本頁不宣稱已出貨）：[#131](https://github.com/ImL1s/oh-my-grok/issues/131) · UX：[#134](https://github.com/ImL1s/oh-my-grok/issues/134) · 顧問平面：[#138](https://github.com/ImL1s/oh-my-grok/issues/138)
 
 ## 這是什麼
 
@@ -65,6 +66,20 @@ Stock Grok Build 是 **supported**，不是 legacy 或降級模式。本文件�
 
 HTTP `429` 不得單獨授權換 provider 重送。細節見英文頁 [Initial selection, retry, route fallback, worker replacement](./agent-model-routing.md#initial-selection-retry-route-fallback-worker-replacement)。
 
+## 顧問平面 vs 任務執行
+
+政策 `native` / `external_executor` 只分類 **task_execution**，不是每一個 OMG 監督的 CLI。已出貨的 `omg ask` 是 **advisory**，不是 Team executor，也不是 Medley API route。
+
+三個正交維度（規範以英文為準）：
+
+- `runtime_kind` = `native_host` | `external_cli`
+- `purpose` = `advisory` | `task_execution`
+- `lifecycle` = `foreground` | `background_job` | `team_member`
+
+`external_cli` + `advisory` **不是** external Team executor。`omg ask` 產物（`.omg/artifacts/ask-*.md`）與 consultation／council 產物都是 advisory／非權威，**永不**寫入 acceptance / `verified`。本頁不宣稱已出貨 council runtime。
+
+英文規範：[Advisory plane vs task execution](./agent-model-routing.md#advisory-plane-vs-task-execution)。追蹤：[oh-my-grok#138](https://github.com/ImL1s/oh-my-grok/issues/138)。
+
 ## CLI 誠實（shipped vs contract-only）
 
 | 表面 | 狀態 |
@@ -85,6 +100,7 @@ Issue（穩定 GitHub URL）：
 - [oh-my-grok#133](https://github.com/ImL1s/oh-my-grok/issues/133)
 - [oh-my-grok#131](https://github.com/ImL1s/oh-my-grok/issues/131)
 - [oh-my-grok#134](https://github.com/ImL1s/oh-my-grok/issues/134)
+- [oh-my-grok#138](https://github.com/ImL1s/oh-my-grok/issues/138)
 - [ImL1s/medley#287](https://github.com/ImL1s/medley/issues/287)
 - [ImL1s/medley#289](https://github.com/ImL1s/medley/issues/289)
 

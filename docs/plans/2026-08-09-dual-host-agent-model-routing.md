@@ -14,6 +14,7 @@ anchors. Do not copy their tables, ownership lists, or capability catalogs here:
 - [Normative support matrix](../architecture/agent-model-routing.md#normative-support-matrix)
 - [Ownership boundary](../architecture/agent-model-routing.md#ownership-boundary)
 - [Native vs external executor](../architecture/agent-model-routing.md#native-model-route-vs-external-executor)
+- [Advisory plane vs task execution](../architecture/agent-model-routing.md#advisory-plane-vs-task-execution)
 - [Selection / retry / fallback / replacement](../architecture/agent-model-routing.md#initial-selection-retry-route-fallback-worker-replacement)
 - [CLI / UX honesty](../architecture/agent-model-routing.md#cli--ux-surfaces-honesty)
 - [Installation / compatibility](../architecture/agent-model-routing.md#installation-and-compatibility-language)
@@ -24,6 +25,7 @@ anchors. Do not copy their tables, ownership lists, or capability catalogs here:
 - https://github.com/ImL1s/oh-my-grok/issues/133 (architecture/docs)
 - https://github.com/ImL1s/oh-my-grok/issues/131 (implementation)
 - https://github.com/ImL1s/oh-my-grok/issues/134 (UX)
+- https://github.com/ImL1s/oh-my-grok/issues/138 (consultation / advisory plane; not a Team executor)
 - https://github.com/ImL1s/medley/issues/287
 - https://github.com/ImL1s/medley/issues/289
 
