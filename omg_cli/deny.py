@@ -53,8 +53,9 @@ _COMMAND_LEAD = (
 )
 # Leading redirections before the executable (``>out cmd``, ``2>/dev/null env …``).
 # Adjacent FD digits of any shell-valid length; spaced ``2 >out`` is not leading.
+# Longest operator first: ``<<<`` before ``<<``, ``<>`` before ``<``/``>``.
 _LEADING_REDIR_UNIT = (
-    r"(?:\d*)(?:>>|<<|>&|<&|>\||&>|&>>|[<>])"
+    r"(?:\d*)(?:<<<|>>|<<|<>|>&|<&|>\||&>|&>>|[<>])"
     r"(?:\\.|[^\s;&|()'\"`\\]+|'[^']*'|\"(?:\\.|[^\"\\])*\")*"
 )
 _LEADING_REDIRS = rf"(?:{_LEADING_REDIR_UNIT}\s+)*"
@@ -1560,12 +1561,18 @@ _HEAD_TAIL_RAW_SCAN_CAP = 64
 _SHELL_COMMAND_SEPARATORS = frozenset({";", "&", "&&", "|", "||", "\n", "\r"})
 # Pure redirection operators that take a following word as the target when
 # not already glued (``> out`` vs ``>out``).
-_SHELL_REDIR_OPS = frozenset({">", ">>", "<", "<<", ">&", "<&", ">|", "&>", "&>>"})
-_SHELL_REDIR_GLUED = re.compile(r"^(?:\d*)(?:>>|<<|>&|<&|>\||&>|&>>|[<>]).+")
-_SHELL_REDIR_PURE = re.compile(r"^(?:\d*)(?:>>|<<|>&|<&|>\||&>|&>>|[<>])$")
+_SHELL_REDIR_OPS = frozenset(
+    {">", ">>", "<", "<<", "<>", "<<<", ">&", "<&", ">|", "&>", "&>>"}
+)
+_SHELL_REDIR_GLUED = re.compile(
+    r"^(?:\d*)(?:<<<|>>|<<|<>|>&|<&|>\||&>|&>>|[<>]).+"
+)
+_SHELL_REDIR_PURE = re.compile(
+    r"^(?:\d*)(?:<<<|>>|<<|<>|>&|<&|>\||&>|&>>|[<>])$"
+)
 # Redirection operators that may take an adjacent FD digit prefix (``2>``,
-# ``2>&``). Control operators ``&&`` / ``||`` are not included.
-_SHELL_REDIR_TWOCHAR = frozenset({">>", "<<", ">&", "<&", ">|", "&>"})
+# ``2>&``, ``2<>``). Control operators ``&&`` / ``||`` are not included.
+_SHELL_REDIR_TWOCHAR = frozenset({">>", "<<", "<>", ">&", "<&", ">|", "&>"})
 
 
 # Shell allows multi-digit FDs; keep a hard upper bound only as DoS guard
@@ -1689,7 +1696,7 @@ def _insert_unquoted_shell_boundaries(text: str) -> str:
             continue
         # Multi-character operators first (longest match).
         three = text[index : index + 3]
-        if three == "&>>":
+        if three in ("&>>", "<<<"):
             _emit_redir_op(out, text, index, 3)
             index += 3
             continue
@@ -1729,7 +1736,13 @@ def _is_shell_redirect_token(word: str) -> bool:
     return False
 
 
-def _next_decoded_words(command: str, start: int, *, limit: int = 4) -> list[str]:
+def _next_decoded_words(
+    command: str,
+    start: int,
+    *,
+    limit: int = 4,
+    raise_on_budget: bool = False,
+) -> list[str]:
     """Decode at most *limit* **semantic** argv words from a bounded tail.
 
     Applies a linear shell-operator boundary correction before shlex so
@@ -1738,25 +1751,34 @@ def _next_decoded_words(command: str, start: int, *, limit: int = 4) -> list[str
     classification.
 
     Skips redirections *between* the executable and later argv (``omc 2>out
-    team``, ``omg 0</dev/null 1>out 2>&1 team``). FD-prefixed redirs stay a
-    single redirect token when originally adjacent (``2>out``); a spaced
+    team``, ``omg 0</dev/null 1>out 2>&1 team``, ``omc <>out team``,
+    ``omc <<<payload team``). FD-prefixed redirs stay a single redirect
+    token when originally adjacent (``2>out``, ``2<>out``); a spaced
     numeric argv (``2 >out``) remains a semantic word. Raw tokens are **not**
     truncated before redirect-dropping — only the 512-char fragment bound and
     :data:`_HEAD_TAIL_RAW_SCAN_CAP` apply — so multi-redir sequences cannot
     starve ``team``.
+
+    When *raise_on_budget* is true, character or raw-token budget exhaustion
+    before a separator or *limit* semantic words raises
+    :class:`_ShellParseBudgetExceeded` (indeterminate). Callers must enable
+    that only for orchestrator / nested-Team candidates.
     """
 
     if start >= len(command):
         return []
+    char_truncated = start + _HEAD_TAIL_DECODE_LIMIT < len(command)
     end = min(len(command), start + _HEAD_TAIL_DECODE_LIMIT)
     fragment = _insert_unquoted_shell_boundaries(command[start:end])
     # Decode the whole bounded fragment; drop redirs while scanning so a long
     # redirect sequence never cuts ``team`` off before semantic collection.
     raw_words = _decode_shell_words(fragment)
+    token_truncated = len(raw_words) > _HEAD_TAIL_RAW_SCAN_CAP
     semantic: list[str] = []
     skip_next = False
     index = 0
     n_raw = min(len(raw_words), _HEAD_TAIL_RAW_SCAN_CAP)
+    hit_separator = False
     while index < n_raw:
         word = raw_words[index]
         index += 1
@@ -1764,18 +1786,27 @@ def _next_decoded_words(command: str, start: int, *, limit: int = 4) -> list[str
             skip_next = False
             continue
         if word in _SHELL_COMMAND_SEPARATORS:
+            hit_separator = True
             break
         if word in ("(", ")"):
+            hit_separator = True
             break
         if _is_shell_redirect_token(word):
-            # Pure ops (``>``, ``2>``, ``>&``, ``2>&``) take a following target.
-            # Glued forms (``>out``, ``2>out``) already include the target.
+            # Pure ops (``>``, ``2>``, ``<>``, ``<<<``, ``>&``) take a
+            # following target. Glued forms already include the target.
             if word in _SHELL_REDIR_OPS or _SHELL_REDIR_PURE.match(word):
                 skip_next = True
             continue
         semantic.append(word)
         if len(semantic) >= limit:
             break
+    if (
+        raise_on_budget
+        and len(semantic) < limit
+        and not hit_separator
+        and (char_truncated or token_truncated)
+    ):
+        raise _ShellParseBudgetExceeded
     return semantic
 
 
@@ -1877,7 +1908,11 @@ def _peel_wrapper_chain(words: list[str]) -> list[str]:
 
 
 def _semantic_words_from_head_match(
-    command: str, match: re.Match[str], *, limit: int
+    command: str,
+    match: re.Match[str],
+    *,
+    limit: int,
+    raise_on_budget: bool = False,
 ) -> list[str]:
     """Wrapper tokens in the match plus a bounded tail after the captured head.
 
@@ -1899,7 +1934,15 @@ def _semantic_words_from_head_match(
                 skip_next = True
             continue
         cleaned.append(word)
-    tail = _next_decoded_words(command, match.end(), limit=limit)
+    remain = max(0, limit - len(cleaned))
+    if remain == 0:
+        return cleaned
+    tail = _next_decoded_words(
+        command,
+        match.end(),
+        limit=remain,
+        raise_on_budget=raise_on_budget,
+    )
     return [*cleaned, *tail]
 
 
@@ -1972,13 +2015,17 @@ def _has_foreign_omc_team(command: str) -> bool:
             raw_word = match.group("word")
             base = _executable_basename(raw_word)
             if base in _FOREIGN_ORCHESTRATOR_BINS:
-                tail = _next_decoded_words(command, match.end(), limit=1)
+                tail = _next_decoded_words(
+                    command, match.end(), limit=1, raise_on_budget=True
+                )
                 if tail and tail[0].lower() == "team":
                     return True
             elif _looks_like_wrapper_option_residue(base or raw_word) or (
                 base in _WRAPPER_NAMES
             ):
-                words = _semantic_words_from_head_match(command, match, limit=8)
+                words = _semantic_words_from_head_match(
+                    command, match, limit=8, raise_on_budget=True
+                )
                 remaining = _peel_wrapper_chain(words)
                 if (
                     remaining
@@ -2036,7 +2083,9 @@ def _iter_first_party_team_argvs(command: str):
             raw_word = match.group("word")
             base = _executable_basename(raw_word)
             if base == _FIRST_PARTY_TEAM_BIN:
-                tail = _next_decoded_words(command, match.end(), limit=10)
+                tail = _next_decoded_words(
+                    command, match.end(), limit=10, raise_on_budget=True
+                )
                 rest = _peel_supported_team_leading_globals(tail)
                 if rest and rest[0].lower() == "team":
                     yield [w.lower() for w in rest[1:]]
@@ -2044,7 +2093,10 @@ def _iter_first_party_team_argvs(command: str):
                 base in _WRAPPER_NAMES
             ):
                 words = _semantic_words_from_head_match(
-                    command, match, limit=_HEAD_TAIL_TEAM_LIMIT
+                    command,
+                    match,
+                    limit=_HEAD_TAIL_TEAM_LIMIT,
+                    raise_on_budget=True,
                 )
                 argv = _team_argv_from_semantic_words(words)
                 if argv is not None:

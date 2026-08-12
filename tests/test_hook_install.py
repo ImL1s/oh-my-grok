@@ -557,6 +557,93 @@ def test_standalone_denies_omc_team_and_worker_nested_launch():
         body = json.loads(out)
         assert body["decision"] == "deny", (cmd, body)
         assert "E_TEAM_NESTED_LAUNCH" in body.get("reason", ""), (cmd, body)
+
+
+def test_standalone_readwrite_herestring_and_budget():
+    """F4 standalone parity: ``<>`` / ``<<<``, wrappers, FD, multi-head, budget."""
+    from omg_cli.deny import _HEAD_TAIL_DECODE_LIMIT, _HEAD_TAIL_RAW_SCAN_CAP
+
+    deny_cmds = (
+        "omc <>out team launch",
+        "omc <<<payload team launch",
+        "omc 2<>out team",
+        "omc 0<<<payload team",
+        "<>out omc team",
+        "<<<payload omc team",
+        "env -i omc <>out team",
+        "command -p omc <<<payload team",
+        "true; omc <>out team",
+        "echo hi && omc <<<payload team",
+        " ".join(["omc"] + [f"1>x{i}" for i in range(_HEAD_TAIL_RAW_SCAN_CAP)] + ["team"]),
+        f"omc >{'A' * (_HEAD_TAIL_DECODE_LIMIT + 64)} team",
+    )
+    for cmd in deny_cmds:
+        payload = json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": cmd},
+            }
+        )
+        rc, out = _run_standalone(payload)
+        assert rc == 0, cmd
+        assert json.loads(out)["decision"] == "deny", cmd
+
+    allow_cmds = (
+        "echo omc <>out team",
+        "echo omc <<<payload team",
+        "omc 2 <>out team",
+        "omc 2 <<<payload team",
+        "git commit -m '" + ("omc team " * 80) + "'",
+        " ".join(["echo"] + [f"1>x{i}" for i in range(_HEAD_TAIL_RAW_SCAN_CAP)] + ["omc", "team"]),
+    )
+    for cmd in allow_cmds:
+        payload = json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": cmd},
+            }
+        )
+        rc, out = _run_standalone(payload)
+        assert rc == 0, cmd
+        assert json.loads(out)["decision"] == "allow", cmd
+
+    worker_deny = (
+        "omg <>out team launch",
+        "omg <<<payload team launch",
+        "env -i omg <>out team launch",
+        "true; omg <<<payload team launch --goal x",
+    )
+    for cmd in worker_deny:
+        payload = json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": cmd},
+            }
+        )
+        rc, out = _run_standalone(payload, env_extra={"OMG_TEAM_WORKER": "1"})
+        assert rc == 0, cmd
+        body = json.loads(out)
+        assert body["decision"] == "deny", (cmd, body)
+        assert "E_TEAM_NESTED_LAUNCH" in body.get("reason", ""), (cmd, body)
+
+    worker_allow = (
+        "omg <>out team api catalog",
+        "echo omg <>out team launch",
+        "omg 2 <>out team launch",
+    )
+    for cmd in worker_allow:
+        payload = json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": cmd},
+            }
+        )
+        rc, out = _run_standalone(
+            payload,
+            env_extra={"OMG_TEAM_WORKER": "1", "OMG_TEAM_WORKER_ID": "w1"},
+        )
+        assert rc == 0, cmd
+        assert json.loads(out)["decision"] == "allow", cmd
     rc, out = _run_standalone(
         '{"tool_name":"run_terminal_command","tool_input":{"command":"env -i omg team api catalog"}}',
         env_extra={"OMG_TEAM_WORKER": "1", "OMG_TEAM_WORKER_ID": "w1"},

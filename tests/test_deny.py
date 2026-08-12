@@ -1196,3 +1196,165 @@ def test_leading_redirect_and_long_fd_prefix(monkeypatch):
             {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
         )
         assert d["decision"] == "allow", cmd
+
+
+def _redir_token_prefix(count: int) -> str:
+    """Short FD redirects that blow the raw-token scan cap (2 tokens each)."""
+
+    return " ".join(f"1>x{i}" for i in range(count))
+
+
+def test_readwrite_and_herestring_redirects_denied():
+    """F4: POSIX ``<>`` and bash ``<<<`` are real redirects, not argv soup."""
+    from omg_cli.deny import is_first_party_team_nested_launch
+
+    deny_cmds = (
+        "omc <>out team launch",
+        "omc <<<payload team launch",
+        "omc<>out team",
+        "omc<<<payload team",
+        "omc 2<>out team",
+        "omc 0<<<payload team",
+        "<>out omc team",
+        "<<<payload omc team",
+        "2<>/dev/null omc team",
+        "0<<<x omc team",
+        "env omc <>out team",
+        "command omc <<<payload team",
+        "env -i omc <>out team",
+        "command -p omc <<<payload team",
+        "nice -n 5 omc <>out team",
+        "bash -lc 'omc <>out team x'",
+        "bash -lc 'omc <<<payload team launch'",
+        "/usr/bin/omc <>out team",
+        "true; omc <>out team",
+        "echo hi && omc <<<payload team",
+        "omc 0</dev/null <>out 2>&1 team",
+    )
+    for cmd in deny_cmds:
+        assert should_deny_command(cmd) is True, cmd
+
+    allow_cmds = (
+        "echo omc <>out team",
+        "echo omc <<<payload team",
+        "omc 2 <>out team",
+        "omc 2 <<<payload team",
+        'printf "%s" "omc <>out team"',
+        'printf "%s" "omc <<<payload team"',
+        "omc >team status",
+        "omc <>out\nteam",
+        "omc <<<payload\nteam",
+    )
+    for cmd in allow_cmds:
+        assert should_deny_command(cmd) is False, cmd
+        assert is_first_party_team_nested_launch(cmd) is False, cmd
+
+
+def test_worker_readwrite_and_herestring_nested_launch(monkeypatch):
+    """F4: worker DiD sees nested launch through ``<>`` / ``<<<``."""
+    from omg_cli.deny import is_first_party_team_nested_launch
+
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    deny_cmds = (
+        "omg <>out team launch",
+        "omg <<<payload team launch",
+        "omg<>out team launch",
+        "omg<<<payload team start --goal x",
+        "omg 2<>out team launch",
+        "omg 0<<<payload team launch",
+        "<>out omg team launch",
+        "<<<payload omg team launch",
+        "env -i omg <>out team launch",
+        "command -p omg <<<payload team launch",
+        "bash -lc 'omg <>out team launch --goal x'",
+        "/opt/omg/bin/omg <>out team start --goal x",
+        "omg team api catalog; omg <>out team launch --goal x",
+        "true; omg <<<payload team launch --goal x",
+    )
+    for cmd in deny_cmds:
+        assert is_first_party_team_nested_launch(cmd) is True, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "deny", cmd
+        assert "E_TEAM_NESTED_LAUNCH" in (d.get("reason") or ""), cmd
+
+    allow_cmds = (
+        "omg <>out team api catalog",
+        "omg <<<payload team status r",
+        "omg 2 <>out team launch",
+        "echo omg <>out team launch",
+        "2<>/dev/null omg team api catalog",
+        "omg <>out\nteam launch",
+    )
+    for cmd in allow_cmds:
+        assert is_first_party_team_nested_launch(cmd) is False, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "allow", cmd
+
+
+def test_head_tail_budget_fail_closed_for_orchestrator_candidates():
+    """F4: char/token budget is indeterminate — fail closed only for omc/omg."""
+    from omg_cli.deny import (
+        _HEAD_TAIL_DECODE_LIMIT,
+        _HEAD_TAIL_RAW_SCAN_CAP,
+        is_first_party_team_nested_launch,
+    )
+
+    token_prefix = _redir_token_prefix(_HEAD_TAIL_RAW_SCAN_CAP)
+    assert should_deny_command(f"omc {token_prefix} team") is True
+    assert should_deny_command(f"omc {token_prefix} team launch") is True
+    assert should_deny_command(f"env -i omc {token_prefix} team") is True
+    assert should_deny_command(f"command omc {token_prefix} team") is True
+    assert should_deny_command(f"true; omc {token_prefix} team") is True
+
+    long_target = "A" * (_HEAD_TAIL_DECODE_LIMIT + 64)
+    assert should_deny_command(f"omc >{long_target} team") is True
+    assert should_deny_command(f"omc <>{long_target} team") is True
+    assert should_deny_command(f"omc <<<{long_target} team") is True
+
+    # Non-candidates / non-command-position stay fail-open (no narrative deny).
+    assert should_deny_command(f"echo {token_prefix} omc team") is False
+    assert should_deny_command(f"echo >{long_target} omc team") is False
+    assert should_deny_command("git commit -m '" + ("omc team " * 80) + "'") is False
+    assert is_first_party_team_nested_launch(f"echo {token_prefix} omg team launch") is False
+
+
+def test_head_tail_budget_fail_closed_for_nested_team(monkeypatch):
+    """F4: worker nested-Team candidates fail closed when the tail is truncated."""
+    from omg_cli.deny import (
+        _HEAD_TAIL_DECODE_LIMIT,
+        _HEAD_TAIL_RAW_SCAN_CAP,
+        is_first_party_team_nested_launch,
+    )
+
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    token_prefix = _redir_token_prefix(_HEAD_TAIL_RAW_SCAN_CAP)
+    long_target = "A" * (_HEAD_TAIL_DECODE_LIMIT + 64)
+    deny_cmds = (
+        f"omg {token_prefix} team launch",
+        f"omg >{long_target} team launch",
+        f"omg <>{long_target} team launch",
+        f"env -i omg {token_prefix} team launch",
+        f"omg team api catalog; omg {token_prefix} team launch",
+    )
+    for cmd in deny_cmds:
+        assert is_first_party_team_nested_launch(cmd) is True, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "deny", cmd
+        assert "E_TEAM_NESTED_LAUNCH" in (d.get("reason") or ""), cmd
+
+    # Safe op still visible inside the budget is not nested launch.
+    assert is_first_party_team_nested_launch("omg team api catalog") is False
+    # Narrative / non-command-position stays allowed.
+    d = decide_pre_tool_use(
+        {
+            "toolName": "run_terminal_command",
+            "toolInput": {"command": f"echo {token_prefix} omg team launch"},
+        }
+    )
+    assert d["decision"] == "allow"
