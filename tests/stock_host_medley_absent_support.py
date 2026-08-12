@@ -64,6 +64,30 @@ SMOKE_IMPORTED = (
     "omg_cli.workflows.schema",
 )
 
+# Exact identity fields from tests/fixtures/host/0.2.121.json as they appear
+# on the doctor host block (host_report_for_doctor). Extra host keys are ok.
+EXPECTED_DOCTOR_HOST_IDENTITY = {
+    "binary": "grok",
+    "version": "0.2.121",
+    "tested_min": "0.2.107",
+    "tested_max": "0.2.121",
+    "compatibility": "compatible",
+    "binary_found": True,
+    "schema": "omg-host-capabilities/v1",
+}
+
+
+def doctor_host_identity_matches(host: object) -> bool:
+    """True only when *host* is grok with the exact 0.2.121 fixture identity."""
+    if not isinstance(host, Mapping):
+        return False
+    if host.get("binary") != "grok":
+        return False
+    return all(
+        host.get(key) == expected
+        for key, expected in EXPECTED_DOCTOR_HOST_IDENTITY.items()
+    )
+
 _CREDENTIAL_MARKERS = (
     "API_KEY",
     "APIKEY",

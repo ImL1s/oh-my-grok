@@ -35,6 +35,7 @@ from pathlib import Path
 import pytest
 
 from tests.stock_host_medley_absent_support import (
+    EXPECTED_DOCTOR_HOST_IDENTITY,
     REQUIRED_DOCTOR_CHECKS,
     ROOT,
     SMOKE_IMPORTED,
@@ -55,6 +56,7 @@ from tests.stock_host_medley_absent_support import (
     _link_python,
     _runtime_sys_path,
     assert_blocker_raises,
+    doctor_host_identity_matches,
 )
 
 BOOTSTRAP = Path(__file__).resolve().parent / "stock_host_medley_absent_smoke_bootstrap.py"
@@ -309,6 +311,39 @@ def test_stock_host_module_has_no_collection_time_omg_cli_import() -> None:
     assert _module_level_omg_cli_imports(here) == []
     assert _module_level_omg_cli_imports(support) == []
     assert "stock_host_medley_absent_smoke_bootstrap" not in sys.modules
+
+
+def test_doctor_host_identity_requires_exact_grok_binary() -> None:
+    good = dict(EXPECTED_DOCTOR_HOST_IDENTITY)
+    assert doctor_host_identity_matches(good) is True
+
+    for binary in ("claude", "cursor-agent", "not-grok"):
+        bad = dict(EXPECTED_DOCTOR_HOST_IDENTITY)
+        bad["binary"] = binary
+        assert doctor_host_identity_matches(bad) is False
+
+    missing_binary = {
+        key: value
+        for key, value in EXPECTED_DOCTOR_HOST_IDENTITY.items()
+        if key != "binary"
+    }
+    assert doctor_host_identity_matches(missing_binary) is False
+
+    # Old hole: any dict with a binary key (even non-grok) was accepted.
+    assert doctor_host_identity_matches({"binary": "cursor-agent"}) is False
+
+    for key, wrong in (
+        ("version", "0.0.0"),
+        ("compatibility", "incompatible"),
+        ("binary_found", False),
+        ("schema", "wrong-schema"),
+    ):
+        bad = dict(EXPECTED_DOCTOR_HOST_IDENTITY)
+        bad[key] = wrong
+        assert doctor_host_identity_matches(bad) is False
+
+    assert doctor_host_identity_matches(None) is False
+    assert doctor_host_identity_matches([]) is False
 
 
 def test_ordinary_omg_surfaces_work_with_medley_absent(tmp_path) -> None:

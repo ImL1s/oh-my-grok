@@ -100,8 +100,8 @@ def main(argv: list[str] | None = None) -> int:
         if payload.get("command") != "doctor":
             return _fail(f"doctor payload command={payload.get('command')!r}")
         host = payload.get("host") or {}
-        if not (host.get("binary") == "grok" or "binary" in host):
-            return _fail(f"doctor host block missing binary: {host!r}")
+        if not support.doctor_host_identity_matches(host):
+            return _fail(f"doctor host identity mismatch: {host!r}")
         blob = out.lower()
         for banned in support._REQUIRE_MEDLEY_CLAIMS:
             if banned in blob:
