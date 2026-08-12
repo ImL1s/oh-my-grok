@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Sanity-check user docs exist and zh / zh-TW cross-links are present."""
+"""Sanity-check user docs exist, zh / zh-TW cross-links, and routing-doc hrefs."""
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -120,6 +121,105 @@ MARKERS = [
     ("docs/readme/README.md", "agent-model-routing.zh-TW.md"),
 ]
 
+ROUTING_DOCS = [
+    "docs/architecture/agent-model-routing.md",
+    "docs/architecture/agent-model-routing.zh.md",
+    "docs/architecture/agent-model-routing.zh-TW.md",
+    "docs/plans/2026-08-09-dual-host-agent-model-routing.md",
+]
+REQUIRED_EXTERNAL = {
+    "https://github.com/ImL1s/oh-my-grok/issues/131",
+    "https://github.com/ImL1s/oh-my-grok/issues/133",
+    "https://github.com/ImL1s/oh-my-grok/issues/134",
+    "https://github.com/ImL1s/medley/issues/287",
+    "https://github.com/ImL1s/medley/issues/289",
+}
+_ROUTING_REQUIRE_EXTERNAL = (
+    "docs/architecture/agent-model-routing.md",
+    "docs/architecture/agent-model-routing.zh.md",
+    "docs/architecture/agent-model-routing.zh-TW.md",
+)
+
+# Markdown links [text](dest) — not images ![alt](dest).
+_MD_LINK = re.compile(r"(?<!!)\[([^\]]*)\]\(([^)]+)\)")
+_BARE_GITHUB = re.compile(r"https://github.com/[^\s)\]>'\"`]+")
+
+
+def _clean_href(raw: str) -> str:
+    dest = raw.strip()
+    if dest.startswith("<") and ">" in dest:
+        dest = dest[1 : dest.index(">")].strip()
+    if not dest:
+        return dest
+    # Optional markdown title: dest "title" / dest 'title'
+    if dest[0] in {'"', "'"}:
+        return dest
+    return dest.split()[0]
+
+
+def markdown_hrefs(text: str) -> list[str]:
+    """Return dest strings from non-image markdown links."""
+    return [_clean_href(m.group(2)) for m in _MD_LINK.finditer(text)]
+
+
+def bare_github_urls(text: str) -> list[str]:
+    """Return bare https://github.com/... URLs (trailing punct stripped)."""
+    out: list[str] = []
+    for m in _BARE_GITHUB.finditer(text):
+        url = m.group(0).rstrip(".,;:'\"")
+        if url:
+            out.append(url)
+    return out
+
+
+def collect_https(text: str) -> set[str]:
+    """Exact https hrefs from markdown links plus bare GitHub URLs."""
+    found: set[str] = set()
+    for href in markdown_hrefs(text):
+        if href.lower().startswith("https://"):
+            found.add(href)
+    found.update(bare_github_urls(text))
+    return found
+
+
+def is_remote_dest(dest: str) -> bool:
+    low = dest.lower()
+    return low.startswith(("http://", "https://", "mailto:"))
+
+
+def local_target(src_file: Path, dest: str) -> Path:
+    """Resolve a local markdown dest (fragment stripped) against *src_file*."""
+    path_part = dest.split("#", 1)[0]
+    if not path_part:
+        return src_file
+    return (src_file.parent / path_part).resolve()
+
+
+def check_routing_docs(*, root: Path = ROOT) -> list[str]:
+    """Validate routing-doc local targets and required public issue URLs."""
+    errors: list[str] = []
+    for rel in ROUTING_DOCS:
+        path = root / rel
+        if not path.is_file():
+            errors.append(f"missing {rel}")
+            continue
+        text = path.read_text(encoding="utf-8")
+        hrefs = markdown_hrefs(text)
+        https = collect_https(text)
+        for dest in hrefs:
+            if not dest or is_remote_dest(dest):
+                continue
+            target = local_target(path, dest)
+            if not target.is_file():
+                errors.append(f"{rel}: missing local target {dest!r} -> {target}")
+        if rel in _ROUTING_REQUIRE_EXTERNAL:
+            missing = sorted(REQUIRED_EXTERNAL - https)
+            if missing:
+                errors.append(
+                    f"{rel}: missing exact external href/URL {missing}"
+                )
+    return errors
+
 
 def main() -> int:
     errors: list[str] = []
@@ -134,6 +234,7 @@ def main() -> int:
         text = p.read_text(encoding="utf-8")
         if needle not in text:
             errors.append(f"{rel}: missing marker {needle!r}")
+    errors.extend(check_routing_docs())
     # 16 skills
     skills = sorted(p.name for p in (ROOT / "skills").iterdir() if p.is_dir())
     if len(skills) != 16:

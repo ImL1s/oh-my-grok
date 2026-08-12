@@ -1,17 +1,31 @@
 """Drift guards for dual-host agent model routing architecture (#133).
 
 English page is canonical. Maintained indexes/locales must link to it rather
-than forking a second support matrix. No runtime claims in this module.
+than forking a second support matrix. Tests bind documented CLI shapes and
+Presentation route.kind strings to shipped parser/constants; they do not
+implement routing runtime.
 """
 from __future__ import annotations
 
+import argparse
+import importlib.util
 import re
 import subprocess
 import sys
 from pathlib import Path
 
+from omg_cli.main import build_parser
+from omg_cli.team.plane import STATUS_TOP_KEYS
+from omg_cli.team.presentation import (
+    ROUTE_KIND_EXTERNAL,
+    ROUTE_KIND_NATIVE_RECEIPT,
+    ROUTE_KIND_UNKNOWN,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 ARCH = ROOT / "docs" / "architecture" / "agent-model-routing.md"
+ARCH_ZH = ROOT / "docs" / "architecture" / "agent-model-routing.zh.md"
+ARCH_ZH_TW = ROOT / "docs" / "architecture" / "agent-model-routing.zh-TW.md"
 PLAN = ROOT / "docs" / "plans" / "2026-08-09-dual-host-agent-model-routing.md"
 CHECK_DOCS = ROOT / "scripts" / "check_docs_links.py"
 
@@ -24,6 +38,46 @@ INDEX_LINKS: tuple[tuple[str, str], ...] = (
     ("docs/readme/README.md", "architecture/agent-model-routing.md"),
     ("docs/readme/README.zh.md", "architecture/agent-model-routing.md"),
     ("docs/readme/README.zh-TW.md", "architecture/agent-model-routing.md"),
+)
+
+INDEX_FILES: tuple[str, ...] = (
+    "README.md",
+    "docs/README.md",
+    "docs/README.zh.md",
+    "docs/README.zh-TW.md",
+    "docs/readme/README.md",
+    "docs/readme/README.zh.md",
+    "docs/readme/README.zh-TW.md",
+)
+
+LOCALE_FORK_FILES: tuple[str, ...] = (
+    "docs/README.zh.md",
+    "docs/README.zh-TW.md",
+    "docs/architecture/agent-model-routing.zh.md",
+    "docs/architecture/agent-model-routing.zh-TW.md",
+    "docs/readme/README.zh.md",
+    "docs/readme/README.zh-TW.md",
+)
+
+SECRET_SCAN_FILES: tuple[Path, ...] = (
+    ARCH,
+    PLAN,
+    ROOT / "README.md",
+    ROOT / "docs" / "readme" / "README.md",
+    ROOT / "docs" / "readme" / "README.zh.md",
+    ROOT / "docs" / "readme" / "README.zh-TW.md",
+    ARCH_ZH,
+    ARCH_ZH_TW,
+)
+
+SHIPPED_OMG_COMMANDS: tuple[str, ...] = (
+    "omg doctor",
+    "omg doctor --strict",
+    "omg doctor --json",
+    "omg --json doctor",
+    "omg team status",
+    "omg team status --json",
+    "omg team status --presentation",
 )
 
 # Normative fragments that must appear on the English architecture page.
@@ -39,6 +93,7 @@ ARCH_REQUIRED_SNIPPETS: tuple[str, ...] = (
     "unknown",
     "external_executor",
     "native",
+    "native_host_receipt",
     "Initial candidate selection",
     "Retry within one route",
     "Fallback to another native route",
@@ -58,22 +113,207 @@ _MEDLEY_REQUIRED_PHRASE = re.compile(
     r"Medley is required for baseline"
     r"|must install Medley"
     r"|Medley is a hard dependency"
-    r"|requires Medley to run OMG",
+    r"|requires Medley to run OMG"
+    r"|Medley 是硬依赖"
+    r"|Medley 是硬依賴"
+    r"|必须安装 Medley"
+    r"|必須安裝 Medley"
+    r"|hard dependency",
     re.IGNORECASE,
 )
 _NEGATION_WINDOW = re.compile(
     r"(?i)(no statement that|must not|must \*\*not\*\*|never|not required"
-    r"|\*\*no\*\*|do not claim|does \*\*not\*\*|is \*\*not\*\*)"
+    r"|\*\*no\*\*|do not claim|does \*\*not\*\*|is \*\*not\*\*"
+    r"|不是|并非|並非|不要求)"
 )
 
-# Secret / account shaped tokens that must not appear in architecture examples.
+_NATIVE_RECEIPT_NEGATION = re.compile(
+    r"not equal|not shipped|not\b|不等於|不等于|≠",
+    re.IGNORECASE,
+)
+_INVENTED_KIND_NEGATION = re.compile(
+    r"not invent|do not invent|must not|never|not shipped|not\b|不要发明|不要發明",
+    re.IGNORECASE,
+)
+
+# Secret / account shaped tokens. Matches inside github.com/ URLs are ignored.
 _SECRETISH = re.compile(
-    r"(?i)(api[_-]?key\s*[:=]\s*['\"][^'\"]+['\"]"
+    r"(?i)("
+    r"api[_-]?key\s*[:=]\s*['\"][^'\"]+['\"]"
     r"|sk-[A-Za-z0-9]{10,}"
     r"|Bearer\s+[A-Za-z0-9\-._~+/]+=*"
+    r"|Authorization\s*:\s*\S+"
     r"|xox[baprs]-[A-Za-z0-9-]+"
-    r"|-----BEGIN (?:RSA |EC )?PRIVATE KEY-----)"
+    r"|-----BEGIN (?:RSA |EC )?PRIVATE KEY-----"
+    r"|[?&](?:token|access_token|auth)=[^\s&\"']+"
+    r"|account_id\s*=\s*\S+"
+    r"|acct_[A-Za-z0-9]+"
+    r"|http://(?:10\.|192\.168\.)\S*(?::\d+|/\S*)"
+    r"|http://127\.0\.0\.1(?::\d+|/\S*)"
+    r")"
 )
+_GITHUB_URL_SPAN = re.compile(
+    r"https?://(?:www\.)?github\.com/[^\s)\]>'\"`]+",
+    re.IGNORECASE,
+)
+
+_BACKTICK_OMG = re.compile(r"`(omg\s+[^`]+)`")
+_OPTIONAL_FLAG = re.compile(r"\[(--[A-Za-z0-9-]+)\]")
+_AGENTS_MENTION = re.compile(r"omg agents")
+_429_NEGATION = re.compile(
+    r"alone|not authorize|must not|never|no documentation may imply|不得",
+    re.IGNORECASE,
+)
+_MD_LINK = re.compile(r"(?<!!)\[([^\]]*)\]\(([^)]+)\)")
+_HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
+_A_ID = re.compile(r"<a\s+[^>]*\bid=['\"]([^'\"]+)['\"]", re.IGNORECASE)
+_PUNCT_FOR_SLUG = re.compile(r"[^\w\s\-]", re.UNICODE)
+
+_AGENTS_CONTRACT_WINDOW = 320
+_KIND_WINDOW = 160
+_429_WINDOW = 120
+
+
+def _load_docs_checker():
+    spec = importlib.util.spec_from_file_location("check_docs_links", CHECK_DOCS)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _top_level_choices(parser: argparse.ArgumentParser) -> set[str]:
+    found: set[str] = set()
+    for act in parser._actions:
+        if isinstance(act, argparse._SubParsersAction):
+            found.update(act.choices.keys())
+    return found
+
+
+def _nested_choices(parser: argparse.ArgumentParser, dest_cmd: str) -> set[str]:
+    for act in parser._actions:
+        if isinstance(act, argparse._SubParsersAction) and dest_cmd in act.choices:
+            for a2 in act.choices[dest_cmd]._actions:
+                if isinstance(a2, argparse._SubParsersAction):
+                    return set(a2.choices.keys())
+    return set()
+
+
+def _try_parse_argv(argv: list[str]) -> bool:
+    """Parse *argv* (no leading ``omg``) without calling ``sys.exit``."""
+    parser = build_parser()
+    try:
+        parser.parse_args(argv)
+    except SystemExit:
+        return False
+    return True
+
+
+def _expand_optional_groups(command: str) -> list[str]:
+    """Expand ``[--json]`` / ``[--strict]`` (any ``[--flag]``) into variants."""
+    seed = command.replace("<agent-or-profile>", "omg-verifier-example")
+    variants = [seed]
+    expanded: list[str] = []
+
+    def rec(cmd: str) -> None:
+        m = _OPTIONAL_FLAG.search(cmd)
+        if m is None:
+            cleaned = re.sub(r"\s+", " ", cmd).strip()
+            if cleaned:
+                expanded.append(cleaned)
+            return
+        rec(cmd[: m.start()] + m.group(1) + cmd[m.end() :])
+        rec(cmd[: m.start()] + cmd[m.end() :])
+
+    for item in variants:
+        rec(item)
+    # Preserve order, drop dupes.
+    return list(dict.fromkeys(expanded))
+
+
+def _documented_omg_commands(body: str) -> list[str]:
+    found: list[str] = []
+    for m in _BACKTICK_OMG.finditer(body):
+        raw = m.group(1).strip()
+        found.extend(_expand_optional_groups(raw))
+    return list(dict.fromkeys(found))
+
+
+def _argv_for(command: str) -> list[str]:
+    parts = command.split()
+    if not parts or parts[0] != "omg":
+        raise AssertionError(f"not an omg command: {command!r}")
+    return parts[1:]
+
+
+def _first_verb(argv: list[str]) -> str | None:
+    for tok in argv:
+        if not tok.startswith("-"):
+            return tok
+    return None
+
+
+def _window(text: str, start: int, end: int, radius: int) -> str:
+    return text[max(0, start - radius) : min(len(text), end + radius)]
+
+
+def _inside_github_url(text: str, start: int, end: int) -> bool:
+    for m in _GITHUB_URL_SPAN.finditer(text):
+        if m.start() <= start and end <= m.end():
+            return True
+    return False
+
+
+def _secretish_hits(text: str) -> list[str]:
+    hits: list[str] = []
+    for m in _SECRETISH.finditer(text):
+        if _inside_github_url(text, m.start(), m.end()):
+            continue
+        hits.append(m.group(0))
+    return hits
+
+
+def _heading_slug(heading: str) -> str:
+    """GitHub-style slug: each remaining space becomes a hyphen (keep ``--``)."""
+    s = heading.strip().lower().replace("`", "")
+    s = _PUNCT_FOR_SLUG.sub("", s)
+    return s.replace(" ", "-").strip("-")
+
+
+def _fragments_for(path: Path) -> set[str]:
+    text = path.read_text(encoding="utf-8")
+    found = {m.group(1) for m in _A_ID.finditer(text)}
+    found.update(_heading_slug(m.group(1)) for m in _HEADING.finditer(text))
+    return found
+
+
+def _clean_md_dest(raw: str) -> str:
+    dest = raw.strip()
+    if dest.startswith("<") and ">" in dest:
+        dest = dest[1 : dest.index(">")].strip()
+    if dest and dest[0] not in {'"', "'"}:
+        dest = dest.split()[0]
+    return dest
+
+
+def _md_hrefs(text: str) -> list[str]:
+    return [_clean_md_dest(m.group(2)) for m in _MD_LINK.finditer(text)]
+
+
+def _is_remote(dest: str) -> bool:
+    return dest.lower().startswith(("http://", "https://", "mailto:"))
+
+
+def _assert_local_dest_resolves(src: Path, dest: str, *, check_fragment: bool) -> None:
+    path_part, frag = (dest.split("#", 1) + [""])[:2]
+    target = src if not path_part else (src.parent / path_part)
+    assert target.is_file(), f"{src.relative_to(ROOT)}: missing local target {dest!r}"
+    if not check_fragment or not frag:
+        return
+    frags = _fragments_for(target)
+    assert frag in frags, (
+        f"{src.relative_to(ROOT)}: fragment {frag!r} not in {target.relative_to(ROOT)}"
+    )
 
 
 def test_canonical_architecture_page_exists() -> None:
@@ -119,14 +359,25 @@ def test_architecture_separates_selection_retry_fallback_replacement() -> None:
 
 def test_architecture_forbids_generic_429_failover() -> None:
     body = ARCH.read_text(encoding="utf-8")
-    assert "429" in body
-    low = body.lower()
-    assert "alone" in low or "not authorize" in low or "prohibited" in low
+    matches = list(re.finditer(r"429", body))
+    assert matches, "architecture page must mention 429"
+    for m in matches:
+        window = _window(body, m.start(), m.end(), _429_WINDOW)
+        assert _429_NEGATION.search(window), (
+            f"429 without local negation window: {window!r}"
+        )
 
 
 def test_architecture_has_no_secretish_tokens() -> None:
     body = ARCH.read_text(encoding="utf-8")
-    assert _SECRETISH.search(body) is None, "secret-like token in architecture docs"
+    hits = _secretish_hits(body)
+    assert not hits, f"secret-like token in architecture docs: {hits}"
+
+
+def test_routing_related_docs_have_no_secretish_tokens() -> None:
+    for path in SECRET_SCAN_FILES:
+        hits = _secretish_hits(path.read_text(encoding="utf-8"))
+        assert not hits, f"secret-like token in {path.relative_to(ROOT)}: {hits}"
 
 
 def test_plan_points_at_canonical_architecture() -> None:
@@ -141,18 +392,47 @@ def test_maintained_indexes_link_to_canonical_page() -> None:
 
 
 def test_locale_indexes_do_not_fork_support_matrix() -> None:
-    """zh / zh-TW indexes must link, not re-author the normative matrix heading."""
-    for rel in ("docs/README.zh.md", "docs/README.zh-TW.md"):
+    """zh / zh-TW indexes and locale architecture must not fork the matrix."""
+    for rel in LOCALE_FORK_FILES:
         text = (ROOT / rel).read_text(encoding="utf-8")
-        assert "architecture/agent-model-routing.md" in text
+        assert "agent-model-routing.md" in text, f"{rel} missing canonical pointer"
         assert "Normative support matrix" not in text
         assert "host.native-exact-model.v1" not in text
 
 
+def test_locale_architecture_projection_honesty() -> None:
+    for path in (ARCH_ZH, ARCH_ZH_TW):
+        text = path.read_text(encoding="utf-8")
+        rel = path.relative_to(ROOT).as_posix()
+        for needle in (
+            "first-class baseline",
+            "hard dependency",
+            "unsupported",
+            "unavailable",
+            "agent-model-routing.md",
+        ):
+            assert needle in text, f"{rel} missing {needle!r}"
+        assert "#131" in text, f"{rel} missing #131"
+        assert (
+            "尚未出貨" in text or "尚未出货" in text or "planned" in text
+        ), f"{rel} missing planned-extension honesty"
+        assert "contract-only" in text, f"{rel} missing contract-only"
+        assert (
+            "不可跑" in text or "不可运行" in text or "not runnable" in text
+        ), f"{rel} missing not-runnable honesty"
+        assert "host.native-exact-model.v1" not in text
+        assert "Normative support matrix" not in text
+        for banned in ("可解鎖增強", "可解锁增强", "can unlock enhanced"):
+            assert banned not in text, f"{rel} ships routing phrase {banned!r}"
+        for m in _MEDLEY_REQUIRED_PHRASE.finditer(text):
+            window = text[max(0, m.start() - 100) : m.end() + 20]
+            assert _NEGATION_WINDOW.search(window), (
+                f"{rel}: Medley-required claim without negation: {window!r}"
+            )
+
+
 def test_shipped_cli_names_in_architecture_are_registered() -> None:
     """Only assert CLI verbs already registered; agents* remain contract-only."""
-    from omg_cli.main import build_parser
-
     parser = build_parser()
     top: set[str] = set()
     for act in parser._actions:
@@ -165,6 +445,139 @@ def test_shipped_cli_names_in_architecture_are_registered() -> None:
     # Contract surfaces may be mentioned but must not be claimed as shipped-only.
     if "omg agents" in body:
         assert "Contract" in body or "contract" in body
+
+
+def test_documented_omg_command_shapes_match_parser() -> None:
+    """Backtick ``omg …`` shapes must parse if shipped, and agents must not."""
+    body = ARCH.read_text(encoding="utf-8")
+    parser = build_parser()
+    top = _top_level_choices(parser)
+    assert "doctor" in top
+    assert "team" in top
+    assert "agents" not in top
+    assert "status" in _nested_choices(parser, "team")
+
+    for shipped in SHIPPED_OMG_COMMANDS:
+        assert _try_parse_argv(_argv_for(shipped)), f"shipped command failed parse: {shipped}"
+
+    for command in _documented_omg_commands(body):
+        argv = _argv_for(command)
+        verb = _first_verb(argv)
+        if verb == "agents":
+            assert not _try_parse_argv(argv), f"contract-only command parsed: {command}"
+            continue
+        assert _try_parse_argv(argv), f"documented shipped shape failed parse: {command}"
+
+
+def test_omg_agents_mentions_are_contract_only() -> None:
+    body = ARCH.read_text(encoding="utf-8")
+    mentions = list(_AGENTS_MENTION.finditer(body))
+    assert mentions, "architecture must mention omg agents as contract-only"
+    honesty = re.compile(r"not runnable|not registered", re.IGNORECASE)
+    for m in mentions:
+        window = _window(body, m.start(), m.end(), _AGENTS_CONTRACT_WINDOW)
+        assert re.search(r"contract", window, re.IGNORECASE), (
+            f"omg agents without nearby 'contract': {window!r}"
+        )
+        assert honesty.search(window), (
+            f"omg agents without nearby not-runnable/not-registered: {window!r}"
+        )
+
+
+def test_route_kind_constants_match_architecture() -> None:
+    assert ROUTE_KIND_EXTERNAL == "external_executor"
+    assert ROUTE_KIND_NATIVE_RECEIPT == "native_host_receipt"
+    assert ROUTE_KIND_UNKNOWN == "unknown"
+    body = ARCH.read_text(encoding="utf-8")
+    for kind in (
+        ROUTE_KIND_EXTERNAL,
+        ROUTE_KIND_NATIVE_RECEIPT,
+        ROUTE_KIND_UNKNOWN,
+    ):
+        assert kind in body, f"architecture missing shipped route.kind {kind!r}"
+    hits = list(re.finditer(r"native_host_receipt", body))
+    assert hits, "architecture must mention native_host_receipt"
+    assert any(
+        _NATIVE_RECEIPT_NEGATION.search(_window(body, m.start(), m.end(), _KIND_WINDOW))
+        for m in hits
+    ), "architecture must negate policy native == native_host_receipt"
+
+
+def test_architecture_mentions_external_cli_executor_only_as_unshipped() -> None:
+    body = ARCH.read_text(encoding="utf-8")
+    hits = list(re.finditer(r"external_cli_executor", body))
+    assert hits, "architecture must mention external_cli_executor as not invented"
+    for m in hits:
+        window = _window(body, m.start(), m.end(), _KIND_WINDOW)
+        assert _INVENTED_KIND_NEGATION.search(window), (
+            f"external_cli_executor without negation: {window!r}"
+        )
+
+
+def test_presentation_has_no_unshipped_route_kind_exports() -> None:
+    import omg_cli.team.presentation as pres
+
+    assert not hasattr(pres, "execution_kind")
+    assert not hasattr(pres, "ROUTE_KIND_NATIVE")
+    assert not hasattr(pres, "external_cli_executor")
+    exported = set(getattr(pres, "__all__", ()))
+    assert "execution_kind" not in exported
+    assert "ROUTE_KIND_NATIVE" not in exported
+    assert "external_cli_executor" not in exported
+    assert getattr(pres, "ROUTE_KIND_NATIVE_RECEIPT", None) != "native"
+
+
+def test_status_json_top_keys_have_no_route() -> None:
+    assert STATUS_TOP_KEYS == (
+        "run_id",
+        "session",
+        "dry_run",
+        "workspace_mode",
+        "tasks",
+    )
+    body = ARCH.read_text(encoding="utf-8")
+    assert "omg team status --json" in body
+    assert re.search(r"no `route`|has no route field|没有.*route|沒有.*route", body)
+
+
+def test_routing_docs_local_markdown_links_resolve() -> None:
+    checker = _load_docs_checker()
+    for rel in checker.ROUTING_DOCS:
+        src = ROOT / rel
+        assert src.is_file(), f"missing {rel}"
+        for dest in _md_hrefs(src.read_text(encoding="utf-8")):
+            if not dest or _is_remote(dest):
+                continue
+            _assert_local_dest_resolves(src, dest, check_fragment=True)
+
+
+def test_routing_docs_have_required_external_issue_urls() -> None:
+    checker = _load_docs_checker()
+    required = set(checker.REQUIRED_EXTERNAL)
+    for rel in (
+        "docs/architecture/agent-model-routing.md",
+        "docs/architecture/agent-model-routing.zh.md",
+        "docs/architecture/agent-model-routing.zh-TW.md",
+    ):
+        https = checker.collect_https((ROOT / rel).read_text(encoding="utf-8"))
+        missing = sorted(required - https)
+        assert not missing, f"{rel} missing exact external URL {missing}"
+
+
+def test_index_agent_model_routing_links_resolve() -> None:
+    for rel in INDEX_FILES:
+        src = ROOT / rel
+        text = src.read_text(encoding="utf-8")
+        for dest in _md_hrefs(text):
+            if "agent-model-routing" not in dest:
+                continue
+            if _is_remote(dest):
+                continue
+            path_part = dest.split("#", 1)[0]
+            target = src if not path_part else (src.parent / path_part)
+            assert target.is_file(), (
+                f"{rel}: agent-model-routing dest missing {dest!r}"
+            )
 
 
 def test_check_docs_links_includes_architecture() -> None:
@@ -185,3 +598,7 @@ def test_check_docs_links_source_lists_architecture() -> None:
     assert '"docs/README.md", "architecture/agent-model-routing.md"' in src or (
         "architecture/agent-model-routing.md" in src and "docs/README.md" in src
     )
+    assert "ROUTING_DOCS" in src
+    assert "REQUIRED_EXTERNAL" in src
+    assert "https://github.com/ImL1s/oh-my-grok/issues/131" in src
+    assert "https://github.com/ImL1s/medley/issues/287" in src
