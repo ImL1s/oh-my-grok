@@ -27,6 +27,8 @@ REQUIRED = [
     "docs/security-model.md",
     "docs/security-model.zh.md",
     "docs/security-model.zh-TW.md",
+    # Canonical dual-host architecture (EN only; locales link here — #133)
+    "docs/architecture/agent-model-routing.md",
     "docs/RELEASE.md",
     "docs/RELEASE.zh.md",
     "docs/RELEASE.zh-TW.md",
@@ -39,7 +41,11 @@ MARKERS = [
     ("README.md", "docs/readme/README.zh-TW.md"),
     ("README.md", "docs/readme/README.zh.md"),
     ("README.md", "docs/skills.zh-TW.md"),
+    ("README.md", "docs/architecture/agent-model-routing.md"),
     ("docs/readme/README.zh-TW.md", "skills.zh-TW.md"),
+    ("docs/readme/README.zh-TW.md", "architecture/agent-model-routing.md"),
+    ("docs/readme/README.zh.md", "architecture/agent-model-routing.md"),
+    ("docs/readme/README.md", "architecture/agent-model-routing.md"),
     ("docs/skills.md", "skills.zh-TW.md"),
     ("docs/skills.md", "skills.zh.md"),
     ("docs/skills.zh-TW.md", "skills.md"),
@@ -49,7 +55,22 @@ MARKERS = [
     ("docs/security-model.md", "security-model.zh-TW.md"),
     ("docs/RELEASE.md", "RELEASE.zh-TW.md"),
     ("docs/README.md", "README.zh-TW.md"),
+    ("docs/README.md", "architecture/agent-model-routing.md"),
+    ("docs/README.zh.md", "architecture/agent-model-routing.md"),
+    ("docs/README.zh-TW.md", "architecture/agent-model-routing.md"),
     ("docs/README.zh-TW.md", "skills.zh-TW.md"),
+    (
+        "docs/architecture/agent-model-routing.md",
+        "first-class baseline",
+    ),
+    (
+        "docs/architecture/agent-model-routing.md",
+        "ImL1s/medley#287",
+    ),
+    (
+        "docs/architecture/agent-model-routing.md",
+        "ImL1s/medley#289",
+    ),
 ]
 
 
