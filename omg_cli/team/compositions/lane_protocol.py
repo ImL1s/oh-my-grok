@@ -505,19 +505,22 @@ def _load_dependency_outputs(
     team_id: str,
     lane: Mapping[str, Any],
     binding: Mapping[str, Any],
+    adapter: CompositionTaskAdapter,
 ) -> tuple[list[dict[str, Any]], str]:
     """Load validated dependency results in manifest depends_on order.
 
     Returns ``(outputs, state)`` where ``state`` is one of:
 
     - ``ready`` — every dependency is completed, claim-free, and has a
-      parseable ``LaneTaskResultV1`` result;
+      parseable ``LaneTaskResultV1`` whose payload passes the composition
+      lane-specific receipt validator;
     - ``api_blocked`` — at least one dependency is missing or not
       ``completed`` (Team API ``claim-task`` must return
       ``blocked_dependency`` without mutating the target claim);
     - ``protocol_gap`` — dependencies appear completed to the Team API but
-      lack a claim-free result (protocol refuses without claiming, or
-      releases if a claim somehow succeeded).
+      lack a claim-free result, or the stored result fails lane-specific
+      payload validation (protocol refuses without claiming, or releases if
+      a claim somehow succeeded).
     """
     depends = lane.get("depends_on") or []
     if not isinstance(depends, list):
@@ -528,12 +531,22 @@ def _load_dependency_outputs(
     mapping = binding["task_key_to_id"]
     compiled = binding["compiled"]
     tasks_by_key = binding["tasks_by_key"]
+    lanes_by_id = {
+        str(row["lane_id"]): row
+        for row in binding["manifest"]["lanes"]
+        if isinstance(row, Mapping) and "lane_id" in row
+    }
     outputs: list[dict[str, Any]] = []
     for dep_lane_id in depends:
         dep_key = str(dep_lane_id)
         if dep_key not in mapping:
             raise CompositionLaneProtocolError(
                 f"dependency lane {dep_key!r} missing from batch mapping",
+                code="E_TEAM_COMPOSITION_LANE_DEPS",
+            )
+        if dep_key not in lanes_by_id:
+            raise CompositionLaneProtocolError(
+                f"dependency lane {dep_key!r} missing from manifest",
                 code="E_TEAM_COMPOSITION_LANE_DEPS",
             )
         task_id = str(mapping[dep_key])
@@ -552,6 +565,16 @@ def _load_dependency_outputs(
             lane_result = parse_lane_task_result_v1(task.get("result"))
         except CompositionTaskDriverError as exc:
             raise _wrap_driver(exc) from exc
+        # Lane-invalid payloads (e.g. critic payload={}) are protocol gaps —
+        # never mark ready or proceed to claim/submit.
+        try:
+            _validate_adapter_lane_payload(
+                adapter,
+                lane=lanes_by_id[dep_key],
+                lane_result=lane_result,
+            )
+        except CompositionLaneProtocolError:
+            return [], "protocol_gap"
         row: dict[str, Any] = {
             "lane_id": dep_key,
             "status": lane_result["status"],
@@ -728,6 +751,7 @@ def claim_composition_lane_v1(
                 team_id=lane_binding["team_id"],
                 lane=lane_binding["lane"],
                 binding=lane_binding,
+                adapter=adapter,
             )
             # Protocol-stricter gap: refuse without claiming so no orphan sticks.
             if dep_state == "protocol_gap":
@@ -883,6 +907,7 @@ def claim_composition_lane_v1(
                 team_id=lane_binding["team_id"],
                 lane=lane_binding["lane"],
                 binding=lane_binding,
+                adapter=adapter,
             )
             if dep_state_after != "ready":
                 _release_orphaned_claim(
@@ -1107,6 +1132,7 @@ def submit_composition_lane_result_v1(
                 team_id=lane_binding["team_id"],
                 lane=lane_binding["lane"],
                 binding=lane_binding,
+                adapter=adapter,
             )
             if live_state != "ready":
                 raise CompositionLaneProtocolError(

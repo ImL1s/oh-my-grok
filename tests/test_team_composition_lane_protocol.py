@@ -1115,3 +1115,112 @@ def test_invalid_lane_payload_submit_leaves_claim_active(
     assert done is not None
     assert done["status"] == "completed"
     assert done.get("claim") is None
+
+
+def test_invalid_dep_lane_payload_blocks_claim_without_orphan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P1: lane-invalid dep payloads are protocol gaps, not ready."""
+    run_id = _seed(tmp_path, monkeypatch)
+    materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    admitted = admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    env = _full_worker_env(tmp_path, run_id)
+    mapping = admitted["task_key_to_id"]
+
+    # Complete two critics honestly; third gets a structurally valid but
+    # lane-invalid payload (empty object / missing dimension).
+    for lane in ("critic.security", "critic.correctness"):
+        claimed = claim_hyperplan_lane_v1(tmp_path, run_id, TEAM, lane, env=env)
+        dim = lane.split(".", 1)[1]
+        submit_hyperplan_lane_result_v1(
+            tmp_path,
+            run_id,
+            TEAM,
+            claim=claimed["claim"],
+            result={
+                "schema_version": 1,
+                "status": "complete",
+                "payload": {
+                    "dimension": dim,
+                    "findings": [],
+                    "severity": "info",
+                    "blocking": False,
+                },
+            },
+            env=env,
+        )
+
+    bad_lane = "critic.operability"
+    claimed_bad = claim_hyperplan_lane_v1(
+        tmp_path, run_id, TEAM, bad_lane, env=env
+    )
+    # Bypass submit validation: write terminal task with invalid lane payload.
+    task = team_api._read_task(tmp_path, run_id, TEAM, mapping[bad_lane])
+    assert task is not None
+    team_api._write_task(
+        tmp_path,
+        run_id,
+        TEAM,
+        {
+            **task,
+            "status": "completed",
+            "owner": WORKER,
+            "claim": None,
+            "result": json.dumps(
+                {
+                    "schema_version": 1,
+                    "status": "complete",
+                    "payload": {},
+                },
+                separators=(",", ":"),
+            ),
+            "completed_at": "2026-08-11T00:00:00Z",
+            "version": int(task["version"]) + 1,
+        },
+    )
+    # Drop the unused claim token reference (task already terminalized).
+    assert claimed_bad["claim"]["claim_token"]
+
+    with pytest.raises(HyperplanError, match="dependency|not ready|protocol"):
+        claim_hyperplan_lane_v1(tmp_path, run_id, TEAM, "synthesize", env=env)
+
+    synth = team_api._read_task(tmp_path, run_id, TEAM, mapping["synthesize"])
+    assert synth is not None
+    assert synth.get("claim") is None
+    assert synth["status"] != "in_progress"
+
+    # Recoverable: fix the invalid dep result, then synthesize becomes claimable.
+    fixed = team_api._read_task(tmp_path, run_id, TEAM, mapping[bad_lane])
+    assert fixed is not None
+    team_api._write_task(
+        tmp_path,
+        run_id,
+        TEAM,
+        {
+            **fixed,
+            "result": json.dumps(
+                {
+                    "schema_version": 1,
+                    "status": "complete",
+                    "payload": {
+                        "dimension": "operability",
+                        "findings": [],
+                        "severity": "info",
+                        "blocking": False,
+                    },
+                },
+                separators=(",", ":"),
+            ),
+            "version": int(fixed["version"]) + 1,
+        },
+    )
+    recovered = claim_hyperplan_lane_v1(
+        tmp_path, run_id, TEAM, "synthesize", env=env
+    )
+    assert recovered["ok"] is True
+    assert recovered["claim"]["lane_id"] == "synthesize"
+    assert recovered["claim"]["dependency_outputs"]
+    assert all(
+        row["lane_id"].startswith("critic.")
+        for row in recovered["claim"]["dependency_outputs"]
+    )
