@@ -1,14 +1,17 @@
 """Drift guards for dual-host agent model routing architecture (#133).
 
 English page is canonical. Maintained indexes/locales must link to it rather
-than forking a second support matrix. Tests bind documented CLI shapes and
-Presentation route.kind strings to shipped parser/constants; they do not
-implement routing runtime.
+than forking a second support matrix. The eight-row Normative support matrix
+is bound to tests/fixtures/docs/normative_support_matrix_v1.json until the
+#131 capability registry replaces that docs contract. Tests bind documented
+CLI shapes and Presentation route.kind strings to shipped parser/constants;
+they do not implement routing runtime.
 """
 from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -28,6 +31,11 @@ ARCH_ZH = ROOT / "docs" / "architecture" / "agent-model-routing.zh.md"
 ARCH_ZH_TW = ROOT / "docs" / "architecture" / "agent-model-routing.zh-TW.md"
 PLAN = ROOT / "docs" / "plans" / "2026-08-09-dual-host-agent-model-routing.md"
 CHECK_DOCS = ROOT / "scripts" / "check_docs_links.py"
+SUPPORT_MATRIX_FIXTURE = (
+    ROOT / "tests" / "fixtures" / "docs" / "normative_support_matrix_v1.json"
+)
+_MATRIX_TABLE_HEADER = "| Capability | Original Grok Build | Medley |"
+_MATRIX_FIRST_CAPABILITY = "OMG agents, skills, workflows, acceptance"
 
 # Entry points that must surface the canonical page (relative path as linked).
 INDEX_LINKS: tuple[tuple[str, str], ...] = (
@@ -324,6 +332,60 @@ def _is_remote(dest: str) -> bool:
     return dest.lower().startswith(("http://", "https://", "mailto:"))
 
 
+def _strip_md_cell(text: str) -> str:
+    """Strip whitespace and surrounding ``**`` emphasis."""
+    cell = text.strip()
+    if len(cell) >= 4 and cell.startswith("**") and cell.endswith("**"):
+        cell = cell[2:-2].strip()
+    return cell
+
+
+def _parse_md_table_rows(section: str) -> list[list[str]]:
+    """Split markdown pipe rows; skip ``-`` / ``:`` / space separator rows."""
+    rows: list[list[str]] = []
+    for line in section.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        parts = stripped.split("|")
+        if parts and parts[0].strip() == "":
+            parts = parts[1:]
+        if parts and parts[-1].strip() == "":
+            parts = parts[:-1]
+        if not parts:
+            continue
+        if all(part.strip() and set(part.strip()) <= set("-: ") for part in parts):
+            continue
+        rows.append([_strip_md_cell(part) for part in parts])
+    return rows
+
+
+def _normative_matrix_section(body: str) -> str:
+    """Slice ``## Normative support matrix`` up to the next ``## `` heading."""
+    lines = body.splitlines(keepends=True)
+    start: int | None = None
+    end: int | None = None
+    for i, line in enumerate(lines):
+        if line.startswith("## Normative support matrix"):
+            start = i
+            continue
+        if start is not None and line.startswith("## "):
+            end = i
+            break
+    assert start is not None, "missing ## Normative support matrix"
+    return "".join(lines[start:end])
+
+
+def _load_support_matrix_fixture() -> dict:
+    data = json.loads(SUPPORT_MATRIX_FIXTURE.read_text(encoding="utf-8"))
+    assert data.get("schema") == "omg.docs.support_matrix/v1", data.get("schema")
+    header = data.get("header")
+    rows = data.get("rows")
+    assert isinstance(header, list) and len(header) == 3, header
+    assert isinstance(rows, list) and len(rows) == 8, rows
+    return data
+
+
 def _assert_local_dest_resolves(src: Path, dest: str, *, check_fragment: bool) -> None:
     path_part, frag = (dest.split("#", 1) + [""])[:2]
     target = src if not path_part else (src.parent / path_part)
@@ -486,7 +548,68 @@ def test_locale_indexes_do_not_fork_support_matrix() -> None:
         text = (ROOT / rel).read_text(encoding="utf-8")
         assert "agent-model-routing.md" in text, f"{rel} missing canonical pointer"
         assert "Normative support matrix" not in text
+        assert _MATRIX_TABLE_HEADER not in text
+        assert _MATRIX_FIRST_CAPABILITY not in text
         assert "host.native-exact-model.v1" not in text
+
+
+def test_normative_support_matrix_matches_managed_fixture() -> None:
+    fixture = _load_support_matrix_fixture()
+    assert len(fixture["rows"]) == 8
+    body = ARCH.read_text(encoding="utf-8")
+    parsed = _parse_md_table_rows(_normative_matrix_section(body))
+    assert parsed, "normative matrix section has no table rows"
+    header, *rows = parsed
+    assert header == [_strip_md_cell(cell) for cell in fixture["header"]]
+    assert header == fixture["header"]
+    assert len(rows) == 8
+    assert rows == fixture["rows"]
+    for row in fixture["rows"]:
+        assert len(row) == 3
+
+
+def test_normative_support_matrix_rejects_removal_reorder_or_weaken() -> None:
+    """Comparison stays exact: removal, reorder, or weaken must not equal."""
+    fixture = _load_support_matrix_fixture()
+    expected = fixture["rows"]
+    assert len(expected) == 8
+    parsed_rows = _parse_md_table_rows(
+        _normative_matrix_section(ARCH.read_text(encoding="utf-8"))
+    )[1:]
+    assert parsed_rows == fixture["rows"]
+
+    for i in range(len(expected)):
+        removed = [list(row) for row in expected]
+        del removed[i]
+        assert removed != fixture["rows"]
+
+    swapped = [list(row) for row in expected]
+    swapped[0], swapped[1] = swapped[1], swapped[0]
+    assert swapped != fixture["rows"]
+
+    weaken_required = [list(row) for row in expected]
+    assert weaken_required[0][1] == "Required"
+    weaken_required[0][1] = "Optional"
+    assert weaken_required != fixture["rows"]
+
+    weaken_assumed = [list(row) for row in expected]
+    assert weaken_assumed[3][1] == "Not assumed"
+    weaken_assumed[3][1] = "Assumed"
+    assert weaken_assumed != fixture["rows"]
+
+    weaken_owned = [list(row) for row in expected]
+    assert weaken_owned[7][1] == "OMG-owned"
+    weaken_owned[7][1] = "Host-owned"
+    assert weaken_owned != fixture["rows"]
+
+    # Row 2 has three distinct cells; swapping any pair changes equality.
+    cell_reordered = [list(row) for row in expected]
+    cell_reordered[2] = [
+        cell_reordered[2][1],
+        cell_reordered[2][2],
+        cell_reordered[2][0],
+    ]
+    assert cell_reordered != fixture["rows"]
 
 
 def test_locale_architecture_projection_honesty() -> None:
@@ -522,6 +645,8 @@ def test_locale_architecture_projection_honesty() -> None:
         ), f"{rel} missing not-runnable honesty"
         assert "host.native-exact-model.v1" not in text
         assert "Normative support matrix" not in text
+        assert _MATRIX_TABLE_HEADER not in text
+        assert _MATRIX_FIRST_CAPABILITY not in text
         for banned in ("可解鎖增強", "可解锁增强", "can unlock enhanced"):
             assert banned not in text, f"{rel} ships routing phrase {banned!r}"
         for m in _MEDLEY_REQUIRED_PHRASE.finditer(text):

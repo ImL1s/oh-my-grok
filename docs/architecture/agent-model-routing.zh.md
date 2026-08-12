@@ -7,7 +7,7 @@
 支持矩阵、capability id、ownership 清单、route-kind 对照、human+JSON 示例一律以英文为准：
 
 - [Decision（必备基线）](./agent-model-routing.md#decision-mandatory-baseline)
-- [英文支持矩阵（唯一规范表）](./agent-model-routing.md#normative-support-matrix)
+- [英文支持矩阵（唯一规范表）](./agent-model-routing.md#normative-support-matrix) — 八行表格仅英文页维护，本投影不复制
 - [Ownership boundary](./agent-model-routing.md#ownership-boundary)
 - [Native model route vs external executor](./agent-model-routing.md#native-model-route-vs-external-executor)
 - [Advisory plane vs task execution](./agent-model-routing.md#advisory-plane-vs-task-execution)

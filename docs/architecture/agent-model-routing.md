@@ -138,6 +138,11 @@ with a slash. Neither is installation **failed**.
 | Replay-safe cross-route runtime fallback | Not claimed | Only through Medley admission contract |
 | External CLI Team executors | OMG-owned | OMG-owned |
 
+This table is the single hand-maintained normative matrix. Tests bind it to
+[`tests/fixtures/docs/normative_support_matrix_v1.json`](../../tests/fixtures/docs/normative_support_matrix_v1.json)
+until the #131 capability registry replaces this docs contract. Do not fork it
+into locale pages.
+
 ## Ownership boundary
 
 ### Original Grok Build / compatible host owns
@@ -575,6 +580,9 @@ paths.
 
 CI should eventually prove (and #133 acceptance requires):
 
+- the eight-row Normative support matrix must match
+  [`tests/fixtures/docs/normative_support_matrix_v1.json`](../../tests/fixtures/docs/normative_support_matrix_v1.json)
+  (temporary docs contract until the #131 capability registry replaces it);
 - support matrix / capability vocabulary stay aligned with the versioned registry
   when it lands (#131);
 - documented **shipped** CLI names match registered commands;
