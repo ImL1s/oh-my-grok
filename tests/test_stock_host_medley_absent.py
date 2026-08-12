@@ -469,12 +469,16 @@ def test_unexpected_subprocess_and_exec_are_denied(monkeypatch, tmp_path) -> Non
 def test_reviewed_hook_shell_argv_accepts_exact_launcher_tuple(
     tmp_path, monkeypatch
 ) -> None:
-    from omg_cli.hook_install import STANDALONE_BASENAME, launcher_command
+    from omg_cli.hook_install import STANDALONE_BASENAME, committed_standalone, launcher_command
 
     grok_home = tmp_path / "grok"
     grok_home.mkdir()
+    hooks = grok_home / "hooks"
+    hooks.mkdir()
+    installed = hooks / STANDALONE_BASENAME
+    installed.write_bytes(committed_standalone().read_bytes())
     monkeypatch.setenv("GROK_HOME", str(grok_home))
-    expected = launcher_command(grok_home / "hooks" / STANDALONE_BASENAME)
+    expected = launcher_command(installed)
     args = ["/bin/sh", "-c", expected]
     assert _is_reviewed_hook_shell_argv(args, "/bin/sh", grok_home) is True
     assert _allowed_subprocess_argv(args, tmp_path / "bin", grok_home) is True
@@ -510,6 +514,48 @@ def test_reviewed_hook_shell_argv_rejects_injections_and_lookalikes(
     ]
     for label, argv in cases:
         assert _is_reviewed_hook_shell_argv(argv, str(argv[0]), grok_home) is False, label
+
+
+def test_reviewed_hook_shell_argv_rejects_bad_installed_hook(
+    tmp_path, monkeypatch
+) -> None:
+    from omg_cli.hook_install import STANDALONE_BASENAME, committed_standalone, launcher_command
+
+    grok_home = tmp_path / "grok"
+    grok_home.mkdir()
+    hooks = grok_home / "hooks"
+    hooks.mkdir()
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    installed = hooks / STANDALONE_BASENAME
+    args = ["/bin/sh", "-c", launcher_command(installed)]
+    bin_dir = tmp_path / "bin"
+
+    def reject(label: str) -> None:
+        assert _is_reviewed_hook_shell_argv(args, "/bin/sh", grok_home) is False, label
+        assert _allowed_subprocess_argv(args, bin_dir, grok_home) is False, label
+
+    reject("missing")
+
+    installed.symlink_to(committed_standalone().resolve())
+    reject("symlink")
+    installed.unlink()
+
+    installed.mkdir()
+    reject("directory")
+    installed.rmdir()
+
+    try:
+        os.mkfifo(installed)
+    except (AttributeError, OSError, NotImplementedError):
+        pass
+    else:
+        try:
+            reject("fifo")
+        finally:
+            installed.unlink()
+
+    installed.write_text("not the committed standalone\n", encoding="utf-8")
+    reject("stale bytes")
 
 
 def test_reviewed_python_argv_accepts_real_stage_file(tmp_path, monkeypatch) -> None:

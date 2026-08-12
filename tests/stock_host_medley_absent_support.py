@@ -296,23 +296,31 @@ def _is_reviewed_python_argv(args: Sequence[object], raw: str, grok_home: Path) 
 
 
 def _is_reviewed_hook_shell_argv(args: Sequence[object], raw: str, grok_home: Path) -> bool:
-    """Doctor hook smoke: exact ``/bin/sh -c`` + ``launcher_command`` tuple."""
+    """Doctor hook smoke: exact ``/bin/sh -c`` launcher plus matching installed standalone."""
     if raw != "/bin/sh" or len(args) != 3:
         return False
     gh = _usable_grok_home(grok_home)
     if gh is None:
         return False
     try:
-        from omg_cli.hook_install import STANDALONE_BASENAME, launcher_command
+        from omg_cli.hook_install import STANDALONE_BASENAME, committed_standalone, launcher_command
 
-        expected = (
-            "/bin/sh",
-            "-c",
-            launcher_command(gh / "hooks" / STANDALONE_BASENAME),
-        )
+        expected_path = gh / "hooks" / STANDALONE_BASENAME
+        expected = ("/bin/sh", "-c", launcher_command(expected_path))
+        if tuple(str(a) for a in args) != expected:
+            return False
+        if expected_path.name != STANDALONE_BASENAME:
+            return False
+        if expected_path.parent.resolve() != (gh / "hooks").resolve():
+            return False
+        st = os.lstat(expected_path)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+            return False
+        actual = hashlib.sha256(expected_path.read_bytes()).digest()
+        wanted = hashlib.sha256(committed_standalone().read_bytes()).digest()
     except (OSError, TypeError, ValueError):
         return False
-    return tuple(str(a) for a in args) == expected
+    return actual == wanted
 
 
 def _allowed_subprocess_argv(
