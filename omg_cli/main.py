@@ -314,6 +314,23 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(raw)
     args.raw_argv = list(raw)
+    # Immediately after parse (normalize already ran). Skip when command is
+    # missing/empty so the existing no-command help path is unchanged.
+    if getattr(args, "command", None) == "team":
+        from omg_cli.team.plane import (
+            TeamGateError,
+            preflight_team_worker_parsed_argv,
+        )
+
+        try:
+            team_action = getattr(args, "team_action", None)
+            preflight_team_worker_parsed_argv(
+                team_action if team_action is None else str(team_action),
+                command="team",
+            )
+        except TeamGateError as exc:
+            print(f"omg team: {exc}", file=sys.stderr)
+            return 2
     apply_safe_yolo_flags(parser, args)
     apply_output_flags(parser, args)
     # Bridge: legacy dest names used by team/ask handlers
@@ -349,20 +366,6 @@ def main(argv: list[str] | None = None) -> int:
     team_api_catalog = (
         command == "team" and team_action == "api" and api_op == "catalog"
     )
-    if command == "team":
-        from omg_cli.team.plane import (
-            TeamGateError,
-            preflight_team_worker_parsed_argv,
-        )
-
-        try:
-            preflight_team_worker_parsed_argv(
-                team_action if team_action is None else str(team_action),
-                command=command,
-            )
-        except TeamGateError as exc:
-            print(f"omg team: {exc}", file=sys.stderr)
-            return 2
     clear_resolved_project_root()
     root_path: Path | None = None
     if command not in _INSTALL_SCOPED and not team_api_catalog:
