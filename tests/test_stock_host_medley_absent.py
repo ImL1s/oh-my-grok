@@ -225,27 +225,61 @@ def _link_python(bin_dir: Path) -> None:
         python.symlink_to(target)
 
 
+def _is_fake_grok_argv0(raw: str, bin_dir: Path) -> bool:
+    if raw == "grok":
+        return True
+    try:
+        return Path(raw).resolve() == (bin_dir / "grok").resolve()
+    except OSError:
+        return False
+
+
+def _is_reviewed_python_argv(args: Sequence[object], raw: str, bin_dir: Path) -> bool:
+    """Hook smoke only: ``python3 -I -S <standalone.py>``."""
+    if Path(raw).name not in {"python3", "python"}:
+        return False
+    if raw in {"python3", "python"}:
+        exe_ok = True
+    else:
+        try:
+            resolved = Path(raw).resolve()
+        except OSError:
+            return False
+        exe_ok = (
+            resolved == Path(sys.executable).resolve()
+            or resolved.parent == bin_dir.resolve()
+        )
+    if not exe_ok:
+        return False
+    script = str(args[3]) if len(args) == 4 else ""
+    return (
+        len(args) == 4
+        and str(args[1]) == "-I"
+        and str(args[2]) == "-S"
+        and bool(script)
+        and (os.sep in script or script.endswith(".py"))
+    )
+
+
+def _is_reviewed_hook_shell_argv(args: Sequence[object], raw: str) -> bool:
+    """Doctor hook smoke: ``/bin/sh -c 'python3 -I -S <abs> || true'``."""
+    if raw not in {"/bin/sh", "/usr/bin/sh"}:
+        return False
+    if len(args) != 3 or str(args[1]) != "-c":
+        return False
+    command = str(args[2])
+    return "python3 -I -S" in command and "|| true" in command
+
+
 def _allowed_subprocess_argv(args: Sequence[object] | str | None, bin_dir: Path) -> bool:
     if args is None or isinstance(args, str) or not args:
         return False
     raw = str(args[0])
-    name = Path(raw).name
-    bin_dir_r = bin_dir.resolve()
-    try:
-        resolved = Path(raw).resolve() if os.sep in raw or raw.startswith(".") else None
-    except OSError:
-        resolved = None
-    if name == "grok":
-        if raw == "grok":
-            return True
-        return resolved == (bin_dir_r / "grok")
-    if name in {"python3", "python"}:
-        if raw in {"python3", "python"}:
-            return True
-        if resolved is None:
-            return False
-        return resolved == Path(sys.executable).resolve() or resolved.parent == bin_dir_r
-    if raw in {"/bin/sh", "/usr/bin/sh"}:
+    if _is_fake_grok_argv0(raw, bin_dir):
+        return True
+    if _is_reviewed_python_argv(args, raw, bin_dir):
+        return True
+    if _is_reviewed_hook_shell_argv(args, raw):
         return True
     return False
 
@@ -268,6 +302,8 @@ def _install_subprocess_guard(monkeypatch, bin_dir: Path) -> None:
     monkeypatch.setattr(os, "system", denied_system)
     if hasattr(os, "popen"):
         monkeypatch.setattr(os, "popen", denied_system)
+    # Gate children at Popen. Do not replace posix_spawn — CPython 3.14 on
+    # Darwin uses it inside Popen for absolute executables (cwd is None).
     for name in (
         "execv",
         "execve",
@@ -281,8 +317,6 @@ def _install_subprocess_guard(monkeypatch, bin_dir: Path) -> None:
         "spawnve",
         "spawnvp",
         "spawnvpe",
-        "posix_spawn",
-        "posix_spawnp",
     ):
         if hasattr(os, name):
             monkeypatch.setattr(os, name, denied_exec)
@@ -635,6 +669,12 @@ def test_unexpected_subprocess_and_exec_are_denied(monkeypatch, tmp_path) -> Non
         subprocess.run(["curl", "https://example.com"], check=False)
     with pytest.raises(PermissionError, match="subprocess denied"):
         subprocess.run(["/usr/bin/grok", "--version"], check=False)
+    with pytest.raises(PermissionError, match="subprocess denied"):
+        subprocess.run(["python3", "-c", "import socket; socket.create_connection(('example.com', 443))"])
+    with pytest.raises(PermissionError, match="subprocess denied"):
+        subprocess.run(["/bin/sh", "-c", "curl https://example.com"])
+    with pytest.raises(PermissionError, match="subprocess denied"):
+        subprocess.run([sys.executable, "-c", "print(1)"])
     with pytest.raises(PermissionError, match="subprocess denied"):
         subprocess.Popen(["ssh", "example.com"])
     with pytest.raises(PermissionError, match="subprocess denied"):
