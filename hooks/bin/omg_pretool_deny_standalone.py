@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "37497fdd8cd9d357504bf4fd1aa829d30a9bbf1b352594bcc7e66323db4a428b"
+_OMG_GENERATED_FROM_SHA = "7b0bbac9e2aae2d6f86a69a65f5fd87bb4046cb4b82cb4f0432beb7412d2b3ea"
 _OMG_PLUGIN_VERSION = "0.8.0"
 
 
@@ -137,6 +137,12 @@ _TEAM_NON_LAUNCH_OPS = frozenset(
         "--help",
     }
 )
+# Same supported leading globals as ``omg_cli.team.cli.split_supported_leading_globals``.
+# Duplicated here: deny.py is stdlib-only for standalone embed. Drift is locked
+# by tests/test_deny.py::test_deny_leading_globals_match_cli_normalize.
+_TEAM_LEADING_FLAG_OPTS = frozenset({"--json", "--safe", "--yolo"})
+_TEAM_LEADING_VALUE_OPTS = frozenset({"--project-root"})
+_TEAM_LEADING_VALUE_EQ_PREFIX = "--project-root="
 # Shorthand ``omg team N[:role] "goal"`` — first token after ``team`` is N or N:role.
 _TEAM_SHORTHAND_WORKERS = re.compile(r"^\d+(?::[A-Za-z0-9_-]+)?$")
 # Process-env markers for worker depth-1 (must match team.plane WORKER_ENV_MARKERS).
@@ -1855,10 +1861,40 @@ def _iter_first_party_team_argvs(command: str):
         if _shell_context_is_executable(command, match.start()) is True:
             base = _executable_basename(match.group("word"))
             if base == _FIRST_PARTY_TEAM_BIN:
-                tail = _next_decoded_words(command, match.end(), limit=4)
-                if tail and tail[0].lower() == "team":
-                    yield [w.lower() for w in tail[1:]]
+                # Extra words so ``--json --project-root PATH team N:role``
+                # still sees ``team`` after peeling supported globals.
+                tail = _next_decoded_words(command, match.end(), limit=10)
+                rest = _peel_supported_team_leading_globals(tail)
+                if rest and rest[0].lower() == "team":
+                    yield [w.lower() for w in rest[1:]]
         search_position = match.start() + 1
+
+
+def _peel_supported_team_leading_globals(words: list[str]) -> list[str]:
+    """Drop supported CLI globals that may sit between ``omg`` and ``team``.
+
+    Mirrors ``split_supported_leading_globals`` arity: ``--json`` / ``--safe``
+    / ``--yolo`` take no value; ``--project-root`` takes one PATH (or
+    ``--project-root=PATH``). Unknown tokens stop the peel so arbitrary
+    payloads are not scanned.
+    """
+    i = 0
+    n = len(words)
+    while i < n:
+        tok = words[i]
+        if tok in _TEAM_LEADING_FLAG_OPTS:
+            i += 1
+            continue
+        if tok in _TEAM_LEADING_VALUE_OPTS:
+            if i + 1 >= n:
+                break
+            i += 2
+            continue
+        if tok.startswith(_TEAM_LEADING_VALUE_EQ_PREFIX):
+            i += 1
+            continue
+        break
+    return words[i:]
 
 
 def _first_party_team_argv(command: str) -> list[str] | None:

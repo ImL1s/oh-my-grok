@@ -968,6 +968,68 @@ def test_worker_goal_shorthand_and_shutdown_classified(monkeypatch):
         assert d["decision"] == "allow", cmd
 
 
+def test_deny_leading_globals_match_cli_normalize() -> None:
+    """deny peel set must stay identical to team.cli (standalone cannot import)."""
+    from omg_cli.deny import (
+        _TEAM_LEADING_FLAG_OPTS,
+        _TEAM_LEADING_VALUE_EQ_PREFIX,
+        _TEAM_LEADING_VALUE_OPTS,
+    )
+    from omg_cli.team.cli import (
+        _LEADING_FLAG_OPTS,
+        _LEADING_VALUE_EQ_PREFIXES,
+        _LEADING_VALUE_OPTS,
+    )
+
+    assert _TEAM_LEADING_FLAG_OPTS == _LEADING_FLAG_OPTS
+    assert _TEAM_LEADING_VALUE_OPTS == _LEADING_VALUE_OPTS
+    assert (_TEAM_LEADING_VALUE_EQ_PREFIX,) == _LEADING_VALUE_EQ_PREFIXES
+
+
+def test_worker_leading_globals_before_team_classified(monkeypatch):
+    """PR #156 SA4: omg --json/--safe/--yolo/--project-root PATH team … DiD."""
+    from omg_cli.deny import is_first_party_team_nested_launch
+
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+
+    deny_cmds = (
+        "omg --json team 3:executor fix",
+        "omg --safe team 3:executor fix",
+        "omg --yolo team fix the flaky tests",
+        "omg --project-root /missing team 3:executor fix",
+        "omg --project-root=/missing team fix the flaky tests",
+        "omg --json --project-root /missing team 3:executor fix",
+        "/opt/omg/bin/omg --json team 3:executor fix",
+        "env omg --yolo team 3:executor fix",
+        "bash -lc 'omg --json team 3:executor fix'",
+    )
+    for cmd in deny_cmds:
+        assert is_first_party_team_nested_launch(cmd) is True, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "deny", cmd
+        assert "E_TEAM_NESTED_LAUNCH" in (d.get("reason") or ""), cmd
+
+    allow_cmds = (
+        "omg --json team api catalog",
+        "omg --json team status r",
+        "omg --json team panes --json",
+        "omg --project-root /x team capture --worker w1",
+        "omg --safe team watch",
+        "omg --yolo team hyperplan plan",
+        "omg --json team security-research plan",
+        # unknown flag is not peeled — do not scan arbitrary payloads
+        "omg --unknown team 3:executor fix",
+    )
+    for cmd in allow_cmds:
+        assert is_first_party_team_nested_launch(cmd) is False, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "allow", cmd
+
+
 def test_team_op_vocab_matches_cli_grammar():
     """deny.py launch/non-launch vocab must cover team.cli RESERVED_ACTIONS."""
     from omg_cli.deny import _TEAM_NESTED_LAUNCH_OPS, _TEAM_NON_LAUNCH_OPS

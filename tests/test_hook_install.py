@@ -524,6 +524,20 @@ def test_standalone_denies_omc_team_and_worker_nested_launch():
         env_extra={"OMG_TEAM_WORKER": "1", "OMG_TEAM_WORKER_ID": "w1"},
     )
     assert rc == 0 and json.loads(out)["decision"] == "allow"
+    # Leading globals before team must still classify as nested launch.
+    rc, out = _run_standalone(
+        '{"tool_name":"run_terminal_command","tool_input":{"command":"omg --json team 3:executor fix"}}',
+        env_extra={"OMG_TEAM_WORKER": "1"},
+    )
+    assert rc == 0
+    body = json.loads(out)
+    assert body["decision"] == "deny"
+    assert "E_TEAM_NESTED_LAUNCH" in body.get("reason", "")
+    rc, out = _run_standalone(
+        '{"tool_name":"run_terminal_command","tool_input":{"command":"omg --json team api catalog"}}',
+        env_extra={"OMG_TEAM_WORKER": "1", "OMG_TEAM_WORKER_ID": "w1"},
+    )
+    assert rc == 0 and json.loads(out)["decision"] == "allow"
 
 
 # ------------------------------------------------- ORIGINAL regression: fail-open launcher
