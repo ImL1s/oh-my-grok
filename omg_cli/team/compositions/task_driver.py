@@ -111,6 +111,15 @@ class CompositionTaskAdapter(Protocol):
         bundle: Mapping[str, Any],
     ) -> dict[str, Any]: ...
 
+    def validate_lane_task_result_payload(
+        self,
+        *,
+        lane: Mapping[str, Any],
+        lane_result: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Lane-specific payload validation (same rules as collect receipts)."""
+        ...
+
     def raise_error(
         self,
         message: str,
@@ -697,53 +706,27 @@ def collect_composition_tasks_v1(
     lock = adapter.composition_lock_path(root_path, rid)
 
     with exclusive_lock(lock):
-        plane = _require_team_plane(root_path, rid)
-        _require_matching_team_id(tid, plane)
-        manifest = adapter.load_manifest(root_path, rid)
-        if manifest.get("execution_supported") is not False:
-            raise CompositionTaskDriverError(
-                "execution_supported must be false",
-                code="E_TEAM_COMPOSITION_TASK_MANIFEST",
-            )
-        compiled = compile_composition_task_batch_v1(
-            manifest,
+        # Resolve batch_id before acquiring the batch lock (idempotency key is
+        # deterministic from the materialized composition).
+        preview = adapter.load_manifest(root_path, rid)
+        preview_compiled = compile_composition_task_batch_v1(
+            preview,
             run_id=rid,
             team_id=tid,
             source_kind=adapter.source_kind,
         )
-        expected_source = dict(compiled["source"])
         batch_path = batch_record_path(
-            root_path, rid, tid, str(compiled["idempotency_key"])
+            root_path, rid, tid, str(preview_compiled["idempotency_key"])
         )
 
         with exclusive_lock(batch_path.with_suffix(".lock")):
-            record = _load_committed_batch(
-                root_path,
-                run_id=rid,
-                team_id=tid,
-                idempotency_key=str(compiled["idempotency_key"]),
-                expected_digest=str(compiled["digest"]),
-                expected_batch_id=str(compiled["batch_id"]),
-                expected_source=expected_source,
+            binding = resolve_composition_batch_binding_v1(
+                root_path, rid, tid, adapter
             )
-            mapping = dict(record["task_key_to_id"])
-            lane_ids = [str(lane["lane_id"]) for lane in manifest["lanes"]]
-            if set(mapping) != set(lane_ids):
-                raise CompositionTaskDriverError(
-                    "committed batch lane coverage mismatch",
-                    code="E_TEAM_COMPOSITION_TASK_BATCH",
-                    details={
-                        "expected": sorted(lane_ids),
-                        "actual": sorted(mapping),
-                    },
-                )
-            if list(record.get("topo_order") or []) != list(compiled["topo_order"]):
-                raise CompositionTaskDriverError(
-                    "committed batch topo_order mismatch",
-                    code="E_TEAM_COMPOSITION_TASK_BATCH",
-                )
-
-            tasks_by_key = {t["task_key"]: t for t in compiled["tasks"]}
+            manifest = binding["manifest"]
+            compiled = binding["compiled"]
+            mapping = binding["task_key_to_id"]
+            tasks_by_key = binding["tasks_by_key"]
             ordered_ids = _sorted_task_ids(mapping)
             with _ordered_task_locks(root_path, rid, tid, ordered_ids):
                 receipts: list[dict[str, Any]] = []
@@ -846,15 +829,182 @@ def _assert_task_ready_for_collect(
         )
 
 
+def resolve_composition_batch_binding_v1(
+    root: Path | str,
+    run_id: str,
+    team_id: str,
+    adapter: CompositionTaskAdapter,
+) -> dict[str, Any]:
+    """Read-only: live run + matching team + manifest + committed batch binding.
+
+    Caller must already hold the composition lock (and typically the batch
+    lock). Does **not** claim or write tasks. Shared by collect and the PR13
+    lane worker protocol.
+    """
+    root_path = Path(root).resolve()
+    rid = _safe_run_id(run_id)
+    try:
+        tid = require_safe_id(team_id, label="team_id")
+    except ContractValidationError as exc:
+        raise CompositionTaskDriverError(
+            str(exc),
+            code="E_TEAM_COMPOSITION_TASK_INVALID",
+        ) from exc
+
+    _require_live_run(root_path, rid)
+    plane = _require_team_plane(root_path, rid)
+    _require_matching_team_id(tid, plane)
+
+    manifest = adapter.load_manifest(root_path, rid)
+    if manifest.get("execution_supported") is not False:
+        raise CompositionTaskDriverError(
+            "execution_supported must be false",
+            code="E_TEAM_COMPOSITION_TASK_MANIFEST",
+        )
+    compiled = compile_composition_task_batch_v1(
+        manifest,
+        run_id=rid,
+        team_id=tid,
+        source_kind=adapter.source_kind,
+    )
+    expected_source = dict(compiled["source"])
+    record = _load_committed_batch(
+        root_path,
+        run_id=rid,
+        team_id=tid,
+        idempotency_key=str(compiled["idempotency_key"]),
+        expected_digest=str(compiled["digest"]),
+        expected_batch_id=str(compiled["batch_id"]),
+        expected_source=expected_source,
+    )
+    mapping = dict(record["task_key_to_id"])
+    lane_ids = [str(lane["lane_id"]) for lane in manifest["lanes"]]
+    if set(mapping) != set(lane_ids):
+        raise CompositionTaskDriverError(
+            "committed batch lane coverage mismatch",
+            code="E_TEAM_COMPOSITION_TASK_BATCH",
+            details={
+                "expected": sorted(lane_ids),
+                "actual": sorted(mapping),
+            },
+        )
+    if list(record.get("topo_order") or []) != list(compiled["topo_order"]):
+        raise CompositionTaskDriverError(
+            "committed batch topo_order mismatch",
+            code="E_TEAM_COMPOSITION_TASK_BATCH",
+        )
+    tasks_by_key = {t["task_key"]: t for t in compiled["tasks"]}
+    return {
+        "root": root_path,
+        "run_id": rid,
+        "team_id": tid,
+        "source_kind": adapter.source_kind,
+        "manifest": manifest,
+        "compiled": compiled,
+        "batch_record": record,
+        "task_key_to_id": mapping,
+        "tasks_by_key": tasks_by_key,
+        "execution_supported": False,
+    }
+
+
+def resolve_composition_lane_binding_v1(
+    binding: Mapping[str, Any],
+    lane_id: str,
+) -> dict[str, Any]:
+    """Resolve one ``lane_id`` against a committed composition batch binding."""
+    try:
+        lid = require_safe_id(lane_id, label="lane_id")
+    except ContractValidationError as exc:
+        raise CompositionTaskDriverError(
+            str(exc),
+            code="E_TEAM_COMPOSITION_TASK_INVALID",
+        ) from exc
+    mapping = dict(binding["task_key_to_id"])
+    if lid not in mapping:
+        raise CompositionTaskDriverError(
+            f"unknown composition lane_id {lid!r}",
+            code="E_TEAM_COMPOSITION_TASK_LANE",
+            details={"lane_id": lid},
+        )
+    matches = [k for k in mapping if k == lid]
+    if len(matches) != 1:
+        raise CompositionTaskDriverError(
+            f"lane_id {lid!r} must resolve to exactly one task",
+            code="E_TEAM_COMPOSITION_TASK_LANE",
+            details={"lane_id": lid, "matches": matches},
+        )
+    manifest = binding["manifest"]
+    lane_rows = [row for row in manifest["lanes"] if str(row["lane_id"]) == lid]
+    if len(lane_rows) != 1:
+        raise CompositionTaskDriverError(
+            f"manifest lane_id {lid!r} is not unique",
+            code="E_TEAM_COMPOSITION_TASK_LANE",
+            details={"lane_id": lid},
+        )
+    lane = dict(lane_rows[0])
+    task_id = str(mapping[lid])
+    if not task_id.isdigit():
+        raise CompositionTaskDriverError(
+            f"task id must be numeric: {task_id!r}",
+            code="E_TEAM_COMPOSITION_TASK_BATCH",
+        )
+    compiled = binding["compiled"]
+    tasks_by_key = binding["tasks_by_key"]
+    expected_artifact = dict(tasks_by_key[lid]["expected_artifact"])
+    expected_batch = _batch_binding(compiled, task_key=lid)
+    return {
+        **dict(binding),
+        "lane_id": lid,
+        "lane": lane,
+        "task_id": task_id,
+        "expected_artifact": expected_artifact,
+        "expected_batch": expected_batch,
+    }
+
+
+def assert_task_matches_lane_binding(
+    task: Mapping[str, Any] | None,
+    *,
+    lane_id: str,
+    expected_batch: Mapping[str, Any],
+    expected_artifact: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Fail closed when a Team task drifts from the immutable lane binding."""
+    if task is None:
+        raise CompositionTaskDriverError(
+            f"mapped task missing for lane {lane_id!r}",
+            code="E_TEAM_COMPOSITION_TASK_LANE",
+            details={"lane_id": lane_id},
+        )
+    if dict(task.get("batch") or {}) != dict(expected_batch):
+        raise CompositionTaskDriverError(
+            f"task for lane {lane_id!r} batch binding mismatch",
+            code="E_TEAM_COMPOSITION_TASK_BATCH",
+            details={"lane_id": lane_id},
+        )
+    if dict(task.get("expected_artifact") or {}) != dict(expected_artifact):
+        raise CompositionTaskDriverError(
+            f"task for lane {lane_id!r} expected_artifact mismatch",
+            code="E_TEAM_COMPOSITION_TASK_BATCH",
+            details={"lane_id": lane_id},
+        )
+    return task
+
+
 __all__ = [
     "CompositionTaskAdapter",
     "CompositionTaskDriverError",
     "LANE_TASK_RESULT_SCHEMA_VERSION",
+    "MAX_INLINE_JSON_BYTES",
     "SOURCE_KIND_HYPERPLAN",
     "SOURCE_KIND_SECURITY_RESEARCH",
     "admit_composition_tasks_v1",
+    "assert_task_matches_lane_binding",
     "collect_composition_tasks_v1",
     "compile_composition_task_batch_v1",
     "composition_batch_ids",
     "parse_lane_task_result_v1",
+    "resolve_composition_batch_binding_v1",
+    "resolve_composition_lane_binding_v1",
 ]

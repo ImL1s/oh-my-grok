@@ -1,9 +1,9 @@
 """Team composition contracts (hermetic Hyperplan + Security Research produce).
 
 Hyperplan V1 and Security Research V1 (contract + hermetic result production +
-shared composition task driver admission/collection) live here. Automatic
-worker/pane/Jobs/provider execution remains out of scope
-(``execution_supported=false``).
+shared composition task driver admission/collection + composition lane worker
+protocol claim/submit) live here. Automatic worker/pane/Jobs/provider execution
+remains out of scope (``execution_supported=false``).
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from omg_cli.team.compositions.hyperplan import (
     HYPERPLAN_SCHEMA_VERSION,
     HyperplanError,
     admit_hyperplan_tasks_v1,
+    claim_hyperplan_lane_v1,
     collect_hyperplan_tasks_v1,
     compile_hyperplan_decision_v1,
     compile_hyperplan_v1,
@@ -25,6 +26,7 @@ from omg_cli.team.compositions.hyperplan import (
     materialize_hyperplan_v1,
     parse_hyperplan_spec_v1,
     produce_hyperplan_decision_v1,
+    submit_hyperplan_lane_result_v1,
     validate_hyperplan_decision_v1,
 )
 from omg_cli.team.compositions.security_research import (
@@ -34,6 +36,7 @@ from omg_cli.team.compositions.security_research import (
     SECURITY_RESEARCH_SCHEMA_VERSION,
     SecurityResearchError,
     admit_security_research_tasks_v1,
+    claim_security_research_lane_v1,
     collect_security_research_tasks_v1,
     compile_security_research_report_v1,
     compile_security_research_v1,
@@ -44,6 +47,7 @@ from omg_cli.team.compositions.security_research import (
     security_research_manifest_path,
     security_research_report_path,
     security_research_result_bundle_path,
+    submit_security_research_lane_result_v1,
     validate_security_research_report_v1,
 )
 
@@ -60,6 +64,8 @@ __all__ = [
     "SecurityResearchError",
     "admit_hyperplan_tasks_v1",
     "admit_security_research_tasks_v1",
+    "claim_hyperplan_lane_v1",
+    "claim_security_research_lane_v1",
     "collect_hyperplan_tasks_v1",
     "collect_security_research_tasks_v1",
     "compile_hyperplan_decision_v1",
@@ -80,6 +86,8 @@ __all__ = [
     "security_research_manifest_path",
     "security_research_report_path",
     "security_research_result_bundle_path",
+    "submit_hyperplan_lane_result_v1",
+    "submit_security_research_lane_result_v1",
     "validate_hyperplan_decision_v1",
     "validate_security_research_report_v1",
 ]

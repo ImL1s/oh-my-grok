@@ -298,6 +298,72 @@ def _complete_lane_tasks(
         )
 
 
+def _full_worker_env(root: Path, run_id: str, worker_id: str = "t-a") -> dict[str, str]:
+    leader = str(root.resolve())
+    return {
+        EXPERIMENTAL_ENV: "1",
+        "OMG_TEAM_WORKER": "1",
+        "OMG_TEAM_WORKER_ID": worker_id,
+        "OMG_TEAM_RUN_ID": run_id,
+        "OMG_TEAM_ID": TEAM,
+        "OMG_TEAM_LEADER_ROOT": leader,
+        "OMG_TEAM_STATE_ROOT": str((root / ".omg" / "state").resolve()),
+        "OMG_TEAM_OWNER_TOKEN": "test-owner-token",
+        "OMG_PROJECT_ROOT": leader,
+    }
+
+
+def _complete_lane_tasks_public(
+    root: Path,
+    *,
+    run_id: str,
+    team_id: str,
+    topo_order: list[str],
+    bundle: dict[str, Any],
+    source: str,
+) -> None:
+    """Primary e2e completion path: public claim-lane + submit-lane-result."""
+    from omg_cli.team.compositions.hyperplan import (
+        claim_hyperplan_lane_v1,
+        submit_hyperplan_lane_result_v1,
+    )
+    from omg_cli.team.compositions.security_research import (
+        claim_security_research_lane_v1,
+        submit_security_research_lane_result_v1,
+    )
+
+    env = _full_worker_env(root, run_id)
+    by_lane = {r["lane_id"]: r for r in bundle["receipts"]}
+    claim_fn = (
+        claim_hyperplan_lane_v1
+        if source == "hyperplan"
+        else claim_security_research_lane_v1
+    )
+    submit_fn = (
+        submit_hyperplan_lane_result_v1
+        if source == "hyperplan"
+        else submit_security_research_lane_result_v1
+    )
+    for lane_id in topo_order:
+        claimed = claim_fn(root, run_id, team_id, lane_id, env=env)
+        receipt = by_lane[lane_id]
+        lane_result: dict[str, Any] = {
+            "schema_version": 1,
+            "status": receipt["status"],
+            "payload": receipt["payload"],
+        }
+        if "reason" in receipt:
+            lane_result["reason"] = receipt["reason"]
+        submit_fn(
+            root,
+            run_id,
+            team_id,
+            claim=claimed["claim"],
+            result=lane_result,
+            env=env,
+        )
+
+
 def _patch_no_exec(monkeypatch: pytest.MonkeyPatch) -> None:
     def _boom(*_a: Any, **_k: Any) -> None:
         raise AssertionError("execution surface touched")
@@ -652,12 +718,13 @@ def test_collection_parity_and_idempotent(
     manifest = mat["manifest"]
     bundle = _hp_bundle(manifest)
     admitted = admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
-    _complete_lane_tasks(
+    _complete_lane_tasks_public(
         tmp_path,
         run_id=run_id,
         team_id=TEAM,
-        mapping=admitted["task_key_to_id"],
+        topo_order=list(admitted["topo_order"]),
         bundle=bundle,
+        source="hyperplan",
     )
     collected = collect_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
     assert collected["ok"] is True
@@ -688,12 +755,13 @@ def test_collection_parity_and_idempotent(
     sr_manifest = mat_sr["manifest"]
     sr_bundle = _sr_bundle(sr_manifest)
     sr_adm = admit_security_research_tasks_v1(tmp_path / "sr", run_sr, TEAM)
-    _complete_lane_tasks(
+    _complete_lane_tasks_public(
         tmp_path / "sr",
         run_id=run_sr,
         team_id=TEAM,
-        mapping=sr_adm["task_key_to_id"],
+        topo_order=list(sr_adm["topo_order"]),
         bundle=sr_bundle,
+        source="security_research",
     )
     sr_collected = collect_security_research_tasks_v1(tmp_path / "sr", run_sr, TEAM)
     assert sr_collected["report"]["verdict"] == "pass"

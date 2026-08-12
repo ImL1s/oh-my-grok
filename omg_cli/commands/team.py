@@ -1038,10 +1038,12 @@ def cmd_team(args: argparse.Namespace) -> int:
             from omg_cli.team.compositions.hyperplan import (
                 HyperplanError,
                 admit_hyperplan_tasks_v1,
+                claim_hyperplan_lane_v1,
                 collect_hyperplan_tasks_v1,
                 compile_hyperplan_v1,
                 materialize_hyperplan_v1,
                 produce_hyperplan_decision_v1,
+                submit_hyperplan_lane_result_v1,
                 validate_hyperplan_decision_v1,
             )
             from omg_cli.team.plane import TeamGateError, experimental_enabled
@@ -1205,6 +1207,71 @@ def cmd_team(args: argparse.Namespace) -> int:
                             file=sys.stderr,
                         )
                     return 0
+                if hp_action == "claim-lane":
+                    from omg_cli.team.compositions.lane_protocol import (
+                        redact_claim_token,
+                    )
+
+                    team_id = getattr(args, "team_id", None)
+                    lane_id = getattr(args, "lane_id", None)
+                    if not run_id or not team_id or not lane_id:
+                        print(
+                            "omg team hyperplan claim-lane: "
+                            "--run, --team-id, and --lane-id required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    result = claim_hyperplan_lane_v1(
+                        root, str(run_id), str(team_id), str(lane_id)
+                    )
+                    emit_data(args, "team.hyperplan", result)
+                    if not wants_json(args):
+                        claim = redact_claim_token(result.get("claim") or {})
+                        print(
+                            f"hyperplan claim-lane lane={claim.get('lane_id')} "
+                            f"task={claim.get('task_id')} "
+                            f"worker={claim.get('worker_id')} "
+                            f"claim_token=<redacted> "
+                            f"execution_supported={result.get('execution_supported')}",
+                            file=sys.stderr,
+                        )
+                    return 0
+                if hp_action == "submit-lane-result":
+                    team_id = getattr(args, "team_id", None)
+                    claim_file = getattr(args, "claim_file", None)
+                    result_file = getattr(args, "result_file", None)
+                    if not run_id or not team_id or not claim_file or not result_file:
+                        print(
+                            "omg team hyperplan submit-lane-result: "
+                            "--run, --team-id, --claim-file, and --result required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    claim_doc = _load_json_file(
+                        str(claim_file), label="claim-file"
+                    )
+                    result_doc = _load_json_file(
+                        str(result_file), label="result"
+                    )
+                    result = submit_hyperplan_lane_result_v1(
+                        root,
+                        str(run_id),
+                        str(team_id),
+                        claim=claim_doc,
+                        result=result_doc,
+                    )
+                    emit_data(args, "team.hyperplan", result)
+                    if not wants_json(args):
+                        tag = "idempotent" if result.get("idempotent") else "submitted"
+                        print(
+                            f"hyperplan submit-lane-result {tag} "
+                            f"lane={result.get('lane_id')} "
+                            f"task={result.get('task_id')} "
+                            f"lane_status={result.get('lane_result_status')} "
+                            f"execution_supported={result.get('execution_supported')}",
+                            file=sys.stderr,
+                        )
+                    return 0
                 print(
                     f"omg team hyperplan: unknown action {hp_action!r}",
                     file=sys.stderr,
@@ -1227,10 +1294,12 @@ def cmd_team(args: argparse.Namespace) -> int:
             from omg_cli.team.compositions.security_research import (
                 SecurityResearchError,
                 admit_security_research_tasks_v1,
+                claim_security_research_lane_v1,
                 collect_security_research_tasks_v1,
                 compile_security_research_v1,
                 materialize_security_research_v1,
                 produce_security_research_report_v1,
+                submit_security_research_lane_result_v1,
                 validate_security_research_report_v1,
             )
             from omg_cli.team.plane import TeamGateError, experimental_enabled
@@ -1394,6 +1463,72 @@ def cmd_team(args: argparse.Namespace) -> int:
                             f"security-research collect-tasks {tag} "
                             f"verdict={report.get('verdict')} "
                             f"path={result.get('path')}",
+                            file=sys.stderr,
+                        )
+                    return 0
+                if sr_action == "claim-lane":
+                    from omg_cli.team.compositions.lane_protocol import (
+                        redact_claim_token,
+                    )
+
+                    team_id = getattr(args, "team_id", None)
+                    lane_id = getattr(args, "lane_id", None)
+                    if not run_id or not team_id or not lane_id:
+                        print(
+                            "omg team security-research claim-lane: "
+                            "--run, --team-id, and --lane-id required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    result = claim_security_research_lane_v1(
+                        root, str(run_id), str(team_id), str(lane_id)
+                    )
+                    emit_data(args, "team.security_research", result)
+                    if not wants_json(args):
+                        claim = redact_claim_token(result.get("claim") or {})
+                        print(
+                            f"security-research claim-lane "
+                            f"lane={claim.get('lane_id')} "
+                            f"task={claim.get('task_id')} "
+                            f"worker={claim.get('worker_id')} "
+                            f"claim_token=<redacted> "
+                            f"execution_supported={result.get('execution_supported')}",
+                            file=sys.stderr,
+                        )
+                    return 0
+                if sr_action == "submit-lane-result":
+                    team_id = getattr(args, "team_id", None)
+                    claim_file = getattr(args, "claim_file", None)
+                    result_file = getattr(args, "result_file", None)
+                    if not run_id or not team_id or not claim_file or not result_file:
+                        print(
+                            "omg team security-research submit-lane-result: "
+                            "--run, --team-id, --claim-file, and --result required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    claim_doc = _load_sr_json_file(
+                        str(claim_file), label="claim-file"
+                    )
+                    result_doc = _load_sr_json_file(
+                        str(result_file), label="result"
+                    )
+                    result = submit_security_research_lane_result_v1(
+                        root,
+                        str(run_id),
+                        str(team_id),
+                        claim=claim_doc,
+                        result=result_doc,
+                    )
+                    emit_data(args, "team.security_research", result)
+                    if not wants_json(args):
+                        tag = "idempotent" if result.get("idempotent") else "submitted"
+                        print(
+                            f"security-research submit-lane-result {tag} "
+                            f"lane={result.get('lane_id')} "
+                            f"task={result.get('task_id')} "
+                            f"lane_status={result.get('lane_result_status')} "
+                            f"execution_supported={result.get('execution_supported')}",
                             file=sys.stderr,
                         )
                     return 0
@@ -2677,9 +2812,10 @@ def register_team_parsers(
         "hyperplan",
         parents=[common],
         help=(
-            "Hyperplan Composition Contract V1 (hermetic produce + task driver; "
-            "non-executing): plan|materialize|validate-decision|produce-decision|"
-            "admit-tasks|collect-tasks (#69 PR12)"
+            "Hyperplan Composition Contract V1 (hermetic produce + task driver + "
+            "lane worker protocol; non-executing): plan|materialize|"
+            "validate-decision|produce-decision|admit-tasks|collect-tasks|"
+            "claim-lane|submit-lane-result (#69 PR13)"
         ),
     )
     hp_sub = p_t_hp.add_subparsers(dest="hyperplan_action")
@@ -2824,13 +2960,84 @@ def register_team_parsers(
         hyperplan_action="collect-tasks",
     )
 
+    p_hp_claim = hp_sub.add_parser(
+        "claim-lane",
+        parents=[common],
+        help=(
+            "worker-only: claim one Hyperplan lane via claim-task "
+            "(CompositionLaneClaimV1; execution_supported=false)"
+        ),
+    )
+    p_hp_claim.add_argument(
+        "--run",
+        dest="run_id",
+        required=True,
+        help="run_id with admitted Hyperplan task batch",
+    )
+    p_hp_claim.add_argument(
+        "--team-id",
+        dest="team_id",
+        required=True,
+        help="Team API team_id (must match worker env)",
+    )
+    p_hp_claim.add_argument(
+        "--lane-id",
+        dest="lane_id",
+        required=True,
+        help="composition lane_id (e.g. critic.security)",
+    )
+    p_hp_claim.set_defaults(
+        func=cmd_team,
+        team_action="hyperplan",
+        hyperplan_action="claim-lane",
+    )
+
+    p_hp_submit = hp_sub.add_parser(
+        "submit-lane-result",
+        parents=[common],
+        help=(
+            "worker-only: submit LaneTaskResultV1 via transition-task-status "
+            "(consumes claim-file; no --claim-token argv)"
+        ),
+    )
+    p_hp_submit.add_argument(
+        "--run",
+        dest="run_id",
+        required=True,
+        help="run_id with admitted Hyperplan task batch",
+    )
+    p_hp_submit.add_argument(
+        "--team-id",
+        dest="team_id",
+        required=True,
+        help="Team API team_id (must match worker env)",
+    )
+    p_hp_submit.add_argument(
+        "--claim-file",
+        dest="claim_file",
+        required=True,
+        help="path to CompositionLaneClaimV1 JSON from claim-lane",
+    )
+    p_hp_submit.add_argument(
+        "--result",
+        dest="result_file",
+        required=True,
+        help="path to LaneTaskResultV1 JSON",
+    )
+    p_hp_submit.set_defaults(
+        func=cmd_team,
+        team_action="hyperplan",
+        hyperplan_action="submit-lane-result",
+    )
+
     p_t_sr = team_sub.add_parser(
         "security-research",
         parents=[common],
         help=(
             "Security Research Composition Contract V1 (hermetic produce + task "
-            "driver; non-executing): plan|materialize|validate-report|"
-            "produce-report|admit-tasks|collect-tasks (#69 PR12)"
+            "driver + lane worker protocol; non-executing): plan|materialize|"
+            "validate-report|produce-report|admit-tasks|collect-tasks|"
+            "claim-lane|submit-lane-result (#69 PR13)"
         ),
     )
     sr_sub = p_t_sr.add_subparsers(dest="security_research_action")
@@ -2983,6 +3190,76 @@ def register_team_parsers(
         func=cmd_team,
         team_action="security-research",
         security_research_action="collect-tasks",
+    )
+
+    p_sr_claim = sr_sub.add_parser(
+        "claim-lane",
+        parents=[common],
+        help=(
+            "worker-only: claim one Security Research lane via claim-task "
+            "(CompositionLaneClaimV1; execution_supported=false)"
+        ),
+    )
+    p_sr_claim.add_argument(
+        "--run",
+        dest="run_id",
+        required=True,
+        help="run_id with admitted Security Research task batch",
+    )
+    p_sr_claim.add_argument(
+        "--team-id",
+        dest="team_id",
+        required=True,
+        help="Team API team_id (must match worker env)",
+    )
+    p_sr_claim.add_argument(
+        "--lane-id",
+        dest="lane_id",
+        required=True,
+        help="composition lane_id (e.g. hunt.auth)",
+    )
+    p_sr_claim.set_defaults(
+        func=cmd_team,
+        team_action="security-research",
+        security_research_action="claim-lane",
+    )
+
+    p_sr_submit = sr_sub.add_parser(
+        "submit-lane-result",
+        parents=[common],
+        help=(
+            "worker-only: submit LaneTaskResultV1 via transition-task-status "
+            "(consumes claim-file; no --claim-token argv)"
+        ),
+    )
+    p_sr_submit.add_argument(
+        "--run",
+        dest="run_id",
+        required=True,
+        help="run_id with admitted Security Research task batch",
+    )
+    p_sr_submit.add_argument(
+        "--team-id",
+        dest="team_id",
+        required=True,
+        help="Team API team_id (must match worker env)",
+    )
+    p_sr_submit.add_argument(
+        "--claim-file",
+        dest="claim_file",
+        required=True,
+        help="path to CompositionLaneClaimV1 JSON from claim-lane",
+    )
+    p_sr_submit.add_argument(
+        "--result",
+        dest="result_file",
+        required=True,
+        help="path to LaneTaskResultV1 JSON",
+    )
+    p_sr_submit.set_defaults(
+        func=cmd_team,
+        team_action="security-research",
+        security_research_action="submit-lane-result",
     )
 
     p_team.set_defaults(func=cmd_team)

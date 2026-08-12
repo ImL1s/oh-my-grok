@@ -10,6 +10,27 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#69 PR13 Composition Lane Worker Protocol V1:** shared worker-scoped
+  `claim-lane` / `submit-lane-result` for Hyperplan and Security Research
+  (`omg_cli/team/compositions/lane_protocol.py`). Resolves `lane_id` →
+  immutable PR12/PR11 task binding, claims via existing `claim-task`, returns
+  bounded `CompositionLaneClaimV1` (goal/target + validated dependency
+  outputs; never leader conversation), and submits `LaneTaskResultV1` via
+  `transition-task-status`. Leader-only `collect-tasks` unchanged.
+  `execution_supported=false` retained. No scheduler / launcher / mailbox
+  dispatcher / provider callback / Catalog V5 / MCP mutation. CLI:
+  `omg team hyperplan|security-research claim-lane|submit-lane-result`.
+  Hermetic coverage in `tests/test_team_composition_lane_protocol.py`. Does
+  **not** close #69 (no composition execution / Antigravity live evidence /
+  full OMX / maturity promotion / `live_*` / `execution_supported=true`).
+
+### Fixed
+- **Parity OMC/OmO coverage_digest after #69 PR13 GAPS sync:** refresh proof
+  `coverage_digest` values only after gap.team.v3 +
+  `omo.team.hyperplan_security` text update for composition lane worker
+  protocol (no policy/mapping/status changes). Refs #69 (does not close).
+
+### Added
 - **#69 PR12 Shared Composition Task Driver V1:** one hermetic bridge
   (`omg_cli/team/compositions/task_driver.py`) admits materialized Hyperplan
   / Security Research manifests into PR11 `TaskBatchV1` and collects

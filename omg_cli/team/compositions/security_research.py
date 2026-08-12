@@ -2063,6 +2063,62 @@ def collect_security_research_tasks_v1(
         raise SecurityResearchError(str(exc), code=exc.code) from exc
 
 
+def claim_security_research_lane_v1(
+    root: Path | str,
+    run_id: str,
+    team_id: str,
+    lane_id: str,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Worker-only: claim one Security Research lane via Lane Protocol V1."""
+    from omg_cli.team.compositions.lane_protocol import (
+        CompositionLaneProtocolError,
+        claim_composition_lane_v1,
+    )
+
+    try:
+        return claim_composition_lane_v1(
+            root,
+            run_id,
+            team_id,
+            lane_id,
+            _SecurityResearchTaskAdapter(),
+            env=env,
+        )
+    except CompositionLaneProtocolError as exc:
+        raise SecurityResearchError(str(exc), code=exc.code) from exc
+
+
+def submit_security_research_lane_result_v1(
+    root: Path | str,
+    run_id: str,
+    team_id: str,
+    *,
+    claim: Mapping[str, Any] | Any,
+    result: Mapping[str, Any] | Any,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Worker-only: submit Security Research ``LaneTaskResultV1``."""
+    from omg_cli.team.compositions.lane_protocol import (
+        CompositionLaneProtocolError,
+        submit_composition_lane_result_v1,
+    )
+
+    try:
+        return submit_composition_lane_result_v1(
+            root,
+            run_id,
+            team_id,
+            _SecurityResearchTaskAdapter(),
+            claim=claim,
+            result=result,
+            env=env,
+        )
+    except CompositionLaneProtocolError as exc:
+        raise SecurityResearchError(str(exc), code=exc.code) from exc
+
+
 class _SecurityResearchTaskAdapter:
     source_kind = "security_research_v1"
     result_bundle_kind = SECURITY_RESEARCH_RESULT_BUNDLE_KIND
@@ -2094,6 +2150,22 @@ class _SecurityResearchTaskAdapter:
             rid=run_id,
             manifest=manifest,
             bundle=bundle,
+        )
+
+    def validate_lane_task_result_payload(
+        self,
+        *,
+        lane: Mapping[str, Any],
+        lane_result: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        lane_id = str(lane["lane_id"])
+        artifact_kind = _expected_artifact_kind(lane_id, lane)
+        return _parse_receipt_payload(
+            lane_result.get("payload"),
+            lane_id=lane_id,
+            artifact_kind=artifact_kind,
+            lane_meta=lane,
+            label="LaneTaskResultV1.payload",
         )
 
     def raise_error(

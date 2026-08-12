@@ -154,18 +154,20 @@ New start/scale also stamp an additive `route` descriptor
   model synthesis / PoC running
   (Security Research hermetic result production landed in PR9;
   Hyperplan hermetic result production landed in PR10;
-  catalog v4 task-batch admission (PR11) + composition task driver admit/collect (PR12) landed — partial
+  catalog v4 task-batch admission (PR11) + composition task driver admit/collect (PR12) +
+  composition lane worker protocol claim/submit (PR13) landed — partial
   catalog, not full OMX)
 - No automatic replacement policy / retry scheduler / attempt budgets
 - No pane↔job migration during replacement
 - No TUI / native execution path
 - Does **not** close #69
 
-## Hyperplan V1 (hermetic produce + task driver)
+## Hyperplan V1 (hermetic produce + task driver + lane protocol)
 
 See `docs/team-hyperplan-v1.md`. Contract + hermetic result production +
-shared composition task-driver admission/collection landed; automatic
-worker/provider/pane/Jobs execution remains open (`execution_supported=false`).
+shared composition task-driver admission/collection + worker-scoped
+claim-lane / submit-lane-result landed; automatic worker/provider/pane/Jobs
+execution remains open (`execution_supported=false`).
 
 ```bash
 omg team hyperplan plan --spec SPEC.json --json
@@ -174,13 +176,16 @@ omg team hyperplan validate-decision --run RUN --input DECISION.json
 omg team hyperplan produce-decision --run RUN --input RESULT_BUNDLE.json
 omg team hyperplan admit-tasks --run RUN --team-id TEAM
 omg team hyperplan collect-tasks --run RUN --team-id TEAM
+omg team hyperplan claim-lane --run RUN --team-id TEAM --lane-id LANE
+omg team hyperplan submit-lane-result --run RUN --team-id TEAM --claim-file CLAIM.json --result RESULT.json
 ```
 
-## Security Research V1 (hermetic produce + task driver)
+## Security Research V1 (hermetic produce + task driver + lane protocol)
 
 See `docs/team-security-research-v1.md`. Contract + hermetic result production
-+ shared composition task-driver admission/collection landed; composition
-execution / PoC running remain open (`execution_supported=false`).
++ shared composition task-driver admission/collection + worker-scoped
+claim-lane / submit-lane-result landed; composition execution / PoC running
+remain open (`execution_supported=false`).
 
 ```bash
 omg team security-research plan --spec SPEC.json --json
@@ -189,6 +194,8 @@ omg team security-research validate-report --run RUN --input REPORT.json
 omg team security-research produce-report --run RUN --input RESULT_BUNDLE.json
 omg team security-research admit-tasks --run RUN --team-id TEAM
 omg team security-research collect-tasks --run RUN --team-id TEAM
+omg team security-research claim-lane --run RUN --team-id TEAM --lane-id LANE
+omg team security-research submit-lane-result --run RUN --team-id TEAM --claim-file CLAIM.json --result RESULT.json
 ```
 
 Refs #69.
