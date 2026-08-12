@@ -3461,6 +3461,9 @@ def start_team(
                     role=role,
                     posture=posture,
                 )
+                from omg_cli.team.supervisor import stamp_task_descriptor_digest
+
+                stamp_task_descriptor_digest(rec, desc_path)
                 task_records.append(rec)
 
             routing_payload = resolved.to_dict() if resolved is not None else None

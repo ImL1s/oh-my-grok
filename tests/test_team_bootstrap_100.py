@@ -1054,8 +1054,48 @@ def test_supervisor_team_json_published_descriptor_admits(
     # Use atomic path via plane helper.
     from omg_cli.team.plane import _atomic_write_json
 
+    from omg_cli.team.supervisor import descriptor_content_digest
+
+    digest = descriptor_content_digest(desc)
     _atomic_write_json(
         path,
+        {
+            "writer": CLI_WRITER,
+            "run_id": run_id,
+            "team_id": "team",
+            "owner_token": "owner-token-test",
+            "schema_version": 1,
+            "tasks": [{"task_id": "w1", "descriptor_sha256": digest}],
+        },
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id, worker_id="w1")
+    clear_resolved_project_root()
+    rid, tid, wid, root = admit_pane_supervisor(desc)
+    assert rid == run_id and wid == "w1" and tid == "team"
+    assert root == leader.resolve()
+
+
+def test_supervisor_team_json_missing_digest_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Post-publication path+task bind without digest is fail-closed."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team.plane import team_dir, team_meta_path, _atomic_write_json
+    from omg_cli.team.supervisor import SupervisorError, admit_pane_supervisor
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-no-digest"
+    tdir = team_dir(leader, run_id)
+    tdir.mkdir(parents=True, exist_ok=True)
+    desc = write_provider_descriptor(
+        tdir / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    _atomic_write_json(
+        team_meta_path(leader, run_id),
         {
             "writer": CLI_WRITER,
             "run_id": run_id,
@@ -1068,6 +1108,168 @@ def test_supervisor_team_json_published_descriptor_admits(
     monkeypatch.chdir(tmp_path)
     _bind_supervisor_env(monkeypatch, leader, run_id=run_id, worker_id="w1")
     clear_resolved_project_root()
-    rid, tid, wid, root = admit_pane_supervisor(desc)
-    assert rid == run_id and wid == "w1" and tid == "team"
-    assert root == leader.resolve()
+    with pytest.raises(SupervisorError, match="descriptor_sha256"):
+        admit_pane_supervisor(desc)
+
+
+def test_supervisor_postpublish_replacement_cannot_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Altered descriptor bytes after team.json digest bind must not spawn."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team.plane import team_dir, team_meta_path, _atomic_write_json
+    from omg_cli.team.supervisor import descriptor_content_digest
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-replace-race"
+    tdir = team_dir(leader, run_id)
+    tdir.mkdir(parents=True, exist_ok=True)
+    desc = write_provider_descriptor(
+        tdir / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print('good')"],
+    )
+    digest = descriptor_content_digest(desc)
+    _atomic_write_json(
+        team_meta_path(leader, run_id),
+        {
+            "writer": CLI_WRITER,
+            "run_id": run_id,
+            "team_id": "team",
+            "owner_token": "owner-token-test",
+            "schema_version": 1,
+            "tasks": [{"task_id": "w1", "descriptor_sha256": digest}],
+        },
+    )
+    # Deterministic replacement: same path, different argv bytes.
+    write_provider_descriptor(
+        desc,
+        provider="fixture",
+        argv=[sys.executable, "-c", "print('evil')"],
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id, worker_id="w1")
+    clear_resolved_project_root()
+    rc = main(["team", "supervisor", "--descriptor", str(desc)])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "failed to initialize" in err
+    _assert_no_supervisor_side_effects(leader, run_id=run_id)
+
+
+def test_supervisor_admitted_bytes_survive_post_admit_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spawn uses the admitted mapping; a replaced file is never reopened."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team import supervisor as sup
+    from omg_cli.team.plane import team_dir, team_meta_path, _atomic_write_json
+    from omg_cli.team.supervisor import (
+        admit_pane_supervisor_binding,
+        descriptor_content_digest,
+        run_supervisor,
+    )
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-carry"
+    tdir = team_dir(leader, run_id)
+    tdir.mkdir(parents=True, exist_ok=True)
+    desc = write_provider_descriptor(
+        tdir / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print('good')"],
+    )
+    digest = descriptor_content_digest(desc)
+    _atomic_write_json(
+        team_meta_path(leader, run_id),
+        {
+            "writer": CLI_WRITER,
+            "run_id": run_id,
+            "team_id": "team",
+            "owner_token": "owner-token-test",
+            "schema_version": 1,
+            "tasks": [{"task_id": "w1", "descriptor_sha256": digest}],
+        },
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id, worker_id="w1")
+    clear_resolved_project_root()
+    binding = admit_pane_supervisor_binding(desc)
+    assert binding.descriptor["argv"][-1] == "print('good')"
+    write_provider_descriptor(
+        desc,
+        provider="fixture",
+        argv=[sys.executable, "-c", "print('evil')"],
+    )
+    reads: list[str] = []
+    original = sup._read_provider_descriptor_bytes
+
+    def _spy(path: object) -> tuple[bytes, str]:
+        reads.append(str(path))
+        return original(path)
+
+    monkeypatch.setattr(sup, "_read_provider_descriptor_bytes", _spy)
+    # Identity-only spawn: admitted mapping is used; file must not be reopened.
+    # Fake an immediate identity failure so we never exec either argv.
+    monkeypatch.setattr(
+        sup,
+        "resolve_provider_child_pid",
+        lambda *_a, **_k: (None, "needs_pty: provider child identity unresolved"),
+    )
+    rc = run_supervisor(
+        descriptor_path=desc,
+        ready_timeout_s=0.2,
+        admitted_descriptor=binding.descriptor,
+        expected_digest=binding.descriptor_sha256,
+    )
+    assert rc == 1
+    assert reads == []
+    assert binding.descriptor["argv"][-1] == "print('good')"
+
+
+def test_start_team_dry_run_stamps_task_descriptor_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Authoritative team.json task rows bind SHA-256 of the published file."""
+    import subprocess as sp
+
+    from omg_cli.team.plane import EXPERIMENTAL_ENV, start_team, team_dir
+    from omg_cli.team.supervisor import descriptor_content_digest
+
+    def _git(cwd: Path, *args: str) -> None:
+        sp.run(
+            ["git", *args],
+            cwd=str(cwd),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.email", "omg-test@example.com")
+    _git(tmp_path, "config", "user.name", "omg-test")
+    _git(tmp_path, "config", "commit.gpgsign", "false")
+    (tmp_path / "README.md").write_text("base\n", encoding="utf-8")
+    _git(tmp_path, "add", "README.md")
+    _git(tmp_path, "commit", "-m", "initial")
+
+    monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
+    monkeypatch.delenv("OMG_DISABLE_TMUX_TEAM", raising=False)
+    meta = start_team(
+        "digest stamp",
+        [{"task_id": "w1", "owned_files": ["a.py"]}],
+        root=tmp_path,
+        dry_run=True,
+        owner_token="tok-digest",
+    )
+    tasks = list(meta.get("tasks") or [])
+    assert len(tasks) == 1
+    digest = str(tasks[0].get("descriptor_sha256") or "")
+    assert len(digest) == 64
+    desc = team_dir(tmp_path, str(meta["run_id"])) / "w1.provider.json"
+    assert descriptor_content_digest(desc) == digest

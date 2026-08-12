@@ -716,6 +716,9 @@ def _build_pane_record(
         role=role,
         posture=posture,
     )
+    from omg_cli.team.supervisor import stamp_task_descriptor_digest
+
+    stamp_task_descriptor_digest(record, desc_path)
     return record
 
 
@@ -971,6 +974,9 @@ def _reuse_prepared_pane_record(
         role=role,
         posture=posture,
     )
+    from omg_cli.team.supervisor import stamp_task_descriptor_digest
+
+    stamp_task_descriptor_digest(record, desc_path)
     return record
 
 

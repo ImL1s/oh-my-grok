@@ -977,7 +977,7 @@ def cmd_team(args: argparse.Namespace) -> int:
             )
             from omg_cli.team.supervisor import (
                 SupervisorError,
-                admit_pane_supervisor,
+                admit_pane_supervisor_binding,
                 run_supervisor,
             )
 
@@ -988,7 +988,13 @@ def cmd_team(args: argparse.Namespace) -> int:
             try:
                 # Identity + descriptor + optional team binding BEFORE any
                 # bootstrap log / provider / startup-phase side effects.
-                run_id, team_id, worker_id, leader = admit_pane_supervisor(desc)
+                binding = admit_pane_supervisor_binding(desc)
+                run_id, team_id, worker_id, leader = (
+                    binding.run_id,
+                    binding.team_id,
+                    binding.worker_id,
+                    binding.leader,
+                )
                 admitted = True
                 append_bootstrap_log(
                     leader,
@@ -1006,13 +1012,15 @@ def cmd_team(args: argparse.Namespace) -> int:
                     phase="ROOT_VALIDATED",
                     code="SUPERVISOR",
                 )
-                # run_supervisor owns pane-facing failure lines for its errors.
+                # Spawn the admitted mapping only — never reopen a replaced file.
                 return int(
                     run_supervisor(
                         descriptor_path=desc,
                         ready_timeout_s=getattr(
                             args, "supervisor_ready_timeout_s", None
                         ),
+                        admitted_descriptor=binding.descriptor,
+                        expected_digest=binding.descriptor_sha256,
                     )
                 )
             except (BootstrapError, SupervisorError) as exc:
