@@ -14,12 +14,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `_validate_v2_proposal` no longer treats filesystem `st_mtime` vs
   invocation wall-clock as authorization. Coarse timestamps / clock
   drift no longer reject a newly written identity-bound proposal.
-  Exact `invocation_id`, `session_id`, `input_sha256`, `run_id`,
-  `stage`, and `round` bindings still fail closed (replayed artifacts
-  cannot match a fresh invocation). `_atomic_write_json` unlink and
-  identity error strings unchanged. Hermetic coverage in
-  `tests/test_ralplan.py` (forced-old mtime accept; per-binding
-  mismatch reject with fresh mtime; no sleep / tolerance). Closes #159.
+  Exact `schema_version`, `run_id`, `stage`, `role`, `round`,
+  `invocation_id`, `session_id`, and `input_sha256` bindings still
+  fail closed (replayed artifacts cannot match a fresh invocation).
+  `_atomic_write_json` unlink and identity error strings unchanged.
+  Hermetic coverage in `tests/test_ralplan.py` (forced-old mtime
+  accept; independent one-at-a-time mismatch reject for all eight
+  exact identity/schema bindings with fresh mtime; no sleep /
+  tolerance). Closes #159.
 
 ### Added
 - **#69 PR13 Composition Lane Worker Protocol V1:** shared worker-scoped

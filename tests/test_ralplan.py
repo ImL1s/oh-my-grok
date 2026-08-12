@@ -184,12 +184,14 @@ def test_validate_v2_proposal_accepts_matching_identity_despite_stale_mtime(tmp_
 @pytest.mark.parametrize(
     "field",
     (
+        "schema_version",
+        "run_id",
+        "stage",
+        "role",
+        "round",
         "invocation_id",
         "session_id",
         "input_sha256",
-        "run_id",
-        "stage",
-        "round",
     ),
 )
 def test_validate_v2_proposal_rejects_identity_mismatch_despite_fresh_mtime(
@@ -204,20 +206,20 @@ def test_validate_v2_proposal_rejects_identity_mismatch_despite_fresh_mtime(
         "session_id": "sess-good",
         "input_sha256": "b" * 64,
     }
-    if field == "stage":
-        payload = _v2_approve_payload(
-            "architect", run_id=run_id, round_n=round_n, **identity
-        )
-    else:
-        payload = _v2_approve_payload(
-            stage, run_id=run_id, round_n=round_n, **identity
-        )
-        if field == "round":
-            payload["round"] = 99
-        elif field == "run_id":
-            payload["run_id"] = "other-run"
-        else:
-            payload[field] = f"wrong-{field}"
+    payload = _v2_approve_payload(
+        stage, run_id=run_id, round_n=round_n, **identity
+    )
+    mismatches = {
+        "schema_version": 1,
+        "run_id": "other-run",
+        "stage": "architect",
+        "role": "architect",
+        "round": 99,
+        "invocation_id": "wrong-invocation_id",
+        "session_id": "wrong-session_id",
+        "input_sha256": "wrong-input_sha256",
+    }
+    payload[field] = mismatches[field]
 
     path = stage_artifact_json_path(tmp_path, run_id, stage, round_n)
     path.parent.mkdir(parents=True, exist_ok=True)
