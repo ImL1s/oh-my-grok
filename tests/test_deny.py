@@ -1127,6 +1127,82 @@ def test_worker_wrapper_options_before_wrapped_command(monkeypatch):
     assert leader["decision"] == "allow"
 
 
+def test_env_split_string_peel(monkeypatch):
+    """#146 F9: env -S / --split-string must expand so hidden heads classify."""
+    from omg_cli.deny import is_first_party_team_nested_launch
+
+    foreign_deny = (
+        "env -S '-i PATH=/usr/bin /usr/bin/omc team x'",
+        "env -S '-i PATH=/usr/bin omc team x'",
+        "env --split-string='-i PATH=/usr/bin omc team x'",
+        "env --split-string '-i PATH=/usr/bin omc team x'",
+        "env -S-i PATH=/usr/bin omc team x",
+        "env -iS 'PATH=/usr/bin omc team x'",
+        "env --S 'omc team x'",
+        "env -S 'claude -p x'",
+        "/usr/bin/env -S 'omc team x'",
+        "bash -c \"env -S 'omc team x'\"",
+    )
+    for cmd in foreign_deny:
+        assert should_deny_command(cmd) is True, cmd
+
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    worker_deny = (
+        "env -S 'omg team launch'",
+        "env --split-string='omg team launch --goal x'",
+        "env -iS 'omg team launch'",
+        "env -S 'omg team 2:executor x'",
+        "bash -c \"env -S 'omg team launch'\"",
+    )
+    for cmd in worker_deny:
+        assert is_first_party_team_nested_launch(cmd) is True, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "deny", cmd
+        assert "E_TEAM_NESTED_LAUNCH" in (d.get("reason") or ""), cmd
+
+    allow_cmds = (
+        "env -S 'echo omc team x'",
+        "env -S 'echo hello'",
+        "env -S 'omg team api catalog'",
+        "env -S 'omg team hyperplan plan'",
+        "env -S 'omg team status r'",
+        "env FOO=1 BAR=2 true",
+        "env -i omg team api catalog",
+        "env -u SECRET omg team api catalog",
+        "env --weird echo omg team launch",
+    )
+    for cmd in allow_cmds:
+        assert should_deny_command(cmd) is False, cmd
+        assert is_first_party_team_nested_launch(cmd) is False, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "allow", cmd
+
+    fail_closed = (
+        "env -S '${PATH} omc team x'",
+        "env -S '-S omc team x'",
+        "env -S=omc team x",
+        "env -S",
+        "env -S '" + ("x" * 580) + " omc team'",
+    )
+    for cmd in fail_closed:
+        assert should_deny_command(cmd) is True, cmd
+
+    monkeypatch.delenv("OMG_TEAM_WORKER", raising=False)
+    assert should_deny_command("env -S 'omg team launch'") is False
+    assert is_first_party_team_nested_launch("env -S 'omg team launch'") is True
+    leader = decide_pre_tool_use(
+        {
+            "toolName": "run_terminal_command",
+            "toolInput": {"command": "env -S 'omg team launch'"},
+        }
+    )
+    assert leader["decision"] == "allow"
+
+
 def test_worker_composition_publication_classified_as_nested_launch(monkeypatch):
     """#146 F8: worker nested-launch DiD for leader composition publication."""
     from omg_cli.deny import (

@@ -39,6 +39,10 @@ _NICE_WRAPPER_VALUE_OPTS = frozenset({"-n", "--adjustment"})
 _NICE_WRAPPER_VALUE_EQ = "--adjustment="
 _NICE_ADJ_TOKEN = re.compile(r"^[+-]?\d+$")
 _ENV_ASSIGN_TOKEN = re.compile(r"^[A-Za-z_][\w]*=")
+# Bounded env -S / --split-string (BSD + GNU). One expansion per env wrapper.
+_ENV_SPLIT_CHAR_CAP = 512
+_ENV_SPLIT_TOKEN_CAP = 16
+_ENV_SPLIT_COMBINED_SHORT = re.compile(r"^-[iv]+S$")
 _PATH_PREFIX = r"(?:\S*/)?"
 _SHELL_WORD = r"""(?:\\.|[^\s;&|()'"`\\]+|'[^']*'|"(?:\\.|[^"\\])*")+"""
 _CONTROL_COMMAND_WORD = r"(?:if|elif|while|until|then|else|do|coproc|!)"
@@ -1543,9 +1547,7 @@ def _has_denied_decoded_command_head(command: str) -> bool:
             if _decoded_shell_word_is_denied(raw_word):
                 return True
             base = _executable_basename(raw_word)
-            if _looks_like_wrapper_option_residue(base or raw_word) or (
-                base in _WRAPPER_NAMES
-            ):
+            if _should_peel_wrapper_head(raw_word, base):
                 words = _semantic_words_from_head_match(command, match, limit=8)
                 remaining = _peel_wrapper_chain(words)
                 if remaining and _decoded_shell_word_is_denied(remaining[0]):
@@ -1831,6 +1833,21 @@ def _looks_like_wrapper_option_residue(token: str) -> bool:
     return bool(token) and token.startswith("-") and token != "-"
 
 
+def _should_peel_wrapper_head(raw_word: str, base: str | None) -> bool:
+    """Peel when the captured head is a wrapper or a leftover option.
+
+    Residue must be checked on the raw word first: ``env --split-string='…/usr/bin…'``
+    makes ``_executable_basename`` take the path inside the option value, so a
+    basename-only ``-…`` check would miss GNU ``--split-string=``.
+    """
+
+    return (
+        _looks_like_wrapper_option_residue(raw_word)
+        or _looks_like_wrapper_option_residue(base or "")
+        or base in _WRAPPER_NAMES
+    )
+
+
 def _is_env_assign_token(token: str) -> bool:
     return bool(token) and _ENV_ASSIGN_TOKEN.match(token) is not None
 
@@ -1841,12 +1858,93 @@ def _glued_nice_adjustment(token: str) -> bool:
     return token.startswith("-n") and _NICE_ADJ_TOKEN.match(token[2:]) is not None
 
 
+def _parse_env_split_string(raw: str) -> list[str] | None:
+    """Bounded BSD/GNU ``env -S`` split. ``None`` is indeterminate (fail closed)."""
+
+    if "${" in raw or len(raw) > _ENV_SPLIT_CHAR_CAP:
+        return None
+    tokens: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    started = False
+    index = 0
+    length = len(raw)
+
+    def flush() -> bool:
+        nonlocal started
+        if not started:
+            return True
+        if len(tokens) >= _ENV_SPLIT_TOKEN_CAP:
+            return False
+        tokens.append("".join(buf))
+        buf.clear()
+        started = False
+        return True
+
+    while index < length:
+        char = raw[index]
+        following = raw[index + 1] if index + 1 < length else ""
+        if quote is None and char in " \t":
+            if not flush():
+                return None
+            index += 1
+            continue
+        if quote is None and char == "#" and not started:
+            break
+        if quote is None and char.isspace():
+            return None
+        if char == "\\":
+            if not following:
+                return None
+            if following == "c":
+                if not flush():
+                    return None
+                return tokens
+            if quote is None and following in {" ", "t", "_"}:
+                if not flush():
+                    return None
+                index += 2
+                continue
+            if following in {"\\", "'", '"', "$", "#"}:
+                buf.append(following)
+                started = True
+                index += 2
+                continue
+            if quote is not None and following in {" ", "t"}:
+                buf.append(" " if following == " " else "\t")
+                started = True
+                index += 2
+                continue
+            return None
+        if quote is None and char in {"'", '"'}:
+            quote = char
+            started = True
+            index += 1
+            continue
+        if quote is not None and char == quote:
+            quote = None
+            index += 1
+            continue
+        if quote is None and char == "$":
+            return None
+        buf.append(char)
+        started = True
+        index += 1
+    if quote is not None:
+        return None
+    if not flush():
+        return None
+    return tokens
+
+
 def _peel_one_wrapper(words: list[str]) -> list[str] | None:
     """Peel one supported wrapper and its bounded options.
 
     Returns remaining words after the wrapper. Stops before an unknown or
     malformed option so the caller can fail-closed on residue flags.
     Returns ``None`` when *words* does not start with a wrapper name.
+    ``env -S`` / ``--split-string`` expand once (fail closed if recursive
+    or indeterminate).
     """
 
     if not words:
@@ -1856,12 +1954,45 @@ def _peel_one_wrapper(words: list[str]) -> list[str] | None:
         return None
     index = 1
     n_words = len(words)
+    split_used = False
     while index < n_words:
         token = words[index]
         if token == "--":
             index += 1
             break
         if name == "env":
+            # One -S / --split-string per env wrapper. Splice in place; do
+            # not skip the first expanded token so inner -i / NAME= still peel.
+            split_raw: str | None = None
+            split_extra = 0
+            if token.startswith("-S=") or token.startswith("--S="):
+                raise _ShellParseBudgetExceeded
+            if token in {"-S", "--S", "--split-string"}:
+                if index + 1 >= n_words:
+                    raise _ShellParseBudgetExceeded
+                split_raw = words[index + 1]
+                split_extra = 1
+            elif token.startswith("--split-string="):
+                split_raw = token[len("--split-string=") :]
+                if not split_raw:
+                    raise _ShellParseBudgetExceeded
+            elif _ENV_SPLIT_COMBINED_SHORT.fullmatch(token):
+                if index + 1 >= n_words:
+                    raise _ShellParseBudgetExceeded
+                split_raw = words[index + 1]
+                split_extra = 1
+            elif token.startswith("-S") and len(token) > 2 and token[2] != "=":
+                split_raw = token[2:]
+            if split_raw is not None:
+                if split_used:
+                    raise _ShellParseBudgetExceeded
+                split_used = True
+                parsed = _parse_env_split_string(split_raw)
+                if parsed is None:
+                    raise _ShellParseBudgetExceeded
+                words = words[:index] + parsed + words[index + 1 + split_extra :]
+                n_words = len(words)
+                continue
             if token in _ENV_WRAPPER_FLAGS:
                 index += 1
                 continue
@@ -2031,9 +2162,7 @@ def _has_foreign_omc_team(command: str) -> bool:
                 )
                 if tail and tail[0].lower() == "team":
                     return True
-            elif _looks_like_wrapper_option_residue(base or raw_word) or (
-                base in _WRAPPER_NAMES
-            ):
+            elif _should_peel_wrapper_head(raw_word, base):
                 words = _semantic_words_from_head_match(
                     command, match, limit=8, raise_on_budget=True
                 )
@@ -2081,8 +2210,8 @@ def _iter_first_party_team_argvs(command: str):
     ``omg team>out launch``, ``omg>out team launch``, ``omg 2>&1 team launch``,
     and ``omg team;echo`` classify correctly.
 
-    Known wrapper options (``env -i``, ``command -p``, ``nice -n 5``) are
-    consumed by :data:`_WRAPPERS` before the head token. Unknown/malformed
+    Known wrapper options (``env -i`` / ``-S``, ``command -p``, ``nice -n 5``)
+    are consumed by :data:`_WRAPPERS` before the head token. Unknown/malformed
     wrapper flags leave a ``-…`` residue head; those fail closed by scanning
     later tokens for ``omg`` + ``team`` (not an unbounded payload scan after a
     non-flag head such as ``echo``).
@@ -2100,9 +2229,7 @@ def _iter_first_party_team_argvs(command: str):
                 rest = _peel_supported_team_leading_globals(tail)
                 if rest and rest[0].lower() == "team":
                     yield [w.lower() for w in rest[1:]]
-            elif _looks_like_wrapper_option_residue(base or raw_word) or (
-                base in _WRAPPER_NAMES
-            ):
+            elif _should_peel_wrapper_head(raw_word, base):
                 words = _semantic_words_from_head_match(
                     command,
                     match,
@@ -2206,9 +2333,7 @@ def is_first_party_team_nested_launch(command: str, depth: int = 0) -> bool:
             if _shell_context_is_executable(command, match.start()) is True:
                 raw_word = match.group("word")
                 base = _executable_basename(raw_word)
-                if _looks_like_wrapper_option_residue(base or raw_word) or (
-                    base in _WRAPPER_NAMES
-                ):
+                if _should_peel_wrapper_head(raw_word, base):
                     words = _semantic_words_from_head_match(
                         command, match, limit=_HEAD_TAIL_TEAM_LIMIT
                     )

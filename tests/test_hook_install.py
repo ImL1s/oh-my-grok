@@ -657,6 +657,15 @@ def test_standalone_readwrite_herestring_and_budget():
         '{"tool_name":"run_terminal_command","tool_input":{"command":"env -i omc team x"}}'
     )
     assert rc == 0 and json.loads(out)["decision"] == "deny"
+    rc, out = _run_standalone(
+        '{"tool_name":"run_terminal_command","tool_input":{"command":"env -S \'omc team x\'"}}'
+    )
+    assert rc == 0 and json.loads(out)["decision"] == "deny"
+    rc, out = _run_standalone(
+        '{"tool_name":"run_terminal_command","tool_input":{"command":"env -S \'omg team api catalog\'"}}',
+        env_extra={"OMG_TEAM_WORKER": "1", "OMG_TEAM_WORKER_ID": "w1"},
+    )
+    assert rc == 0 and json.loads(out)["decision"] == "allow"
 
 
 # ------------------------------------------------- ORIGINAL regression: fail-open launcher
