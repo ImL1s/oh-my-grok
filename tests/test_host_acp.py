@@ -16,6 +16,7 @@ from omg_cli.host_acp import (
     AcpResumeReceipt,
     AcpStdioSession,
     acp_stdio_argv,
+    bind_constructor_identity,
     build_receipt_from_dict,
     classify_session_update,
     hash_cwd,
@@ -236,6 +237,76 @@ def test_acp_resume_session_id_mismatch_does_not_match(tmp_path: Path) -> None:
         assert sess._receipt is None
     finally:
         sess.close()
+
+
+def test_handshake_rejects_forged_session_id_hash_writes_no_receipt(
+    tmp_path: Path,
+) -> None:
+    proc, argv = _spawn("success", tmp_path)
+    sid = str(uuid.uuid4())
+    forged = "a" * 64
+    assert forged != hash_session_id(sid)
+    sess = AcpStdioSession(
+        proc=proc,
+        argv=argv,
+        session_id=sid,
+        cwd=str(tmp_path.resolve()),
+        job_id="20260101T000000Z-deadbeef",
+        attempt=1,
+        parent_run_id="run-1",
+        session_id_hash=forged,
+        cwd_hash=hash_cwd(tmp_path),
+        quiet_window_s=0.05,
+    )
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_IDENTITY"
+        assert "session identity hash" in str(ei.value)
+        assert sess._receipt is None
+    finally:
+        sess.close()
+
+
+def test_handshake_rejects_forged_cwd_hash_writes_no_receipt(tmp_path: Path) -> None:
+    proc, argv = _spawn("success", tmp_path)
+    sid = str(uuid.uuid4())
+    forged = "b" * 64
+    assert forged != hash_cwd(tmp_path)
+    sess = AcpStdioSession(
+        proc=proc,
+        argv=argv,
+        session_id=sid,
+        cwd=str(tmp_path.resolve()),
+        job_id="20260101T000000Z-deadbeef",
+        attempt=1,
+        parent_run_id="run-1",
+        session_id_hash=hash_session_id(sid),
+        cwd_hash=forged,
+        quiet_window_s=0.05,
+    )
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_IDENTITY"
+        assert "cwd identity hash" in str(ei.value)
+        assert sess._receipt is None
+    finally:
+        sess.close()
+
+
+def test_bind_constructor_identity_match_and_mismatch(tmp_path: Path) -> None:
+    sid = str(uuid.uuid4())
+    cwd = str(tmp_path.resolve())
+    sid_hash = hash_session_id(sid)
+    cwd_h = hash_cwd(cwd)
+    assert bind_constructor_identity(sid, sid_hash, cwd, cwd_h) == (sid_hash, cwd_h)
+    with pytest.raises(AcpError) as sid_mismatch:
+        bind_constructor_identity(sid, "a" * 64, cwd, cwd_h)
+    assert sid_mismatch.value.code == "E_ACP_IDENTITY"
+    with pytest.raises(AcpError) as cwd_mismatch:
+        bind_constructor_identity(sid, sid_hash, cwd, "b" * 64)
+    assert cwd_mismatch.value.code == "E_ACP_IDENTITY"
 
 
 def test_acp_resume_missing_resumed_does_not_write_receipt(tmp_path: Path) -> None:

@@ -124,6 +124,32 @@ def hash_cwd(cwd: str | Path) -> str:
     return hashlib.sha256(resolved.encode("utf-8")).hexdigest()
 
 
+def bind_constructor_identity(
+    session_id: str,
+    session_id_hash: str,
+    cwd: str | Path,
+    cwd_hash: str,
+) -> tuple[str, str]:
+    """Fail closed when constructor hashes diverge from UUID/cwd.
+
+    Returns the derived ``(session_id_hash, cwd_hash)`` pair so receipts
+    cannot carry independently supplied identity hashes.
+    """
+    derived_sid_hash = hash_session_id(session_id)
+    derived_cwd_hash = hash_cwd(cwd)
+    if session_id_hash != derived_sid_hash:
+        raise AcpError(
+            "constructor session identity hash mismatch",
+            code="E_ACP_IDENTITY",
+        )
+    if cwd_hash != derived_cwd_hash:
+        raise AcpError(
+            "constructor cwd identity hash mismatch",
+            code="E_ACP_IDENTITY",
+        )
+    return derived_sid_hash, derived_cwd_hash
+
+
 def discover_grok_binary() -> str:
     """Resolve canonical Grok binary (argv[0] for ``agent stdio``)."""
     override = (os.environ.get("OMG_GROK_BIN") or "").strip()
@@ -478,6 +504,12 @@ class AcpStdioSession:
             require_object=True,
         )
         validate_resume_result(resume_result, self.session_id)
+        derived_sid_hash, derived_cwd_hash = bind_constructor_identity(
+            self.session_id,
+            self.session_id_hash,
+            self.cwd,
+            self.cwd_hash,
+        )
 
         # Quiet window: reject late conversation replay before ready.
         quiet_deadline = time.monotonic() + max(0.0, float(self.quiet_window_s))
@@ -510,8 +542,8 @@ class AcpStdioSession:
             job_id=self.job_id,
             attempt=self.attempt,
             parent_run_id=self.parent_run_id,
-            session_id_hash=self.session_id_hash,
-            cwd_hash=self.cwd_hash,
+            session_id_hash=derived_sid_hash,
+            cwd_hash=derived_cwd_hash,
             resume_matched=True,
             host_version=self.host_version,
             host_capability_source=self.host_capability_source,
@@ -523,8 +555,8 @@ class AcpStdioSession:
             job_id=receipt.job_id,
             attempt=receipt.attempt,
             parent_run_id=receipt.parent_run_id,
-            session_id_hash=receipt.session_id_hash,
-            cwd_hash=receipt.cwd_hash,
+            session_id_hash=derived_sid_hash,
+            cwd_hash=derived_cwd_hash,
             resume_matched=True,
             host_version=receipt.host_version,
             host_capability_source=receipt.host_capability_source,
@@ -809,6 +841,7 @@ __all__ = [
     "AcpStdioSession",
     "acp_stdio_argv",
     "allowlisted_acp_env",
+    "bind_constructor_identity",
     "build_receipt_from_dict",
     "classify_session_update",
     "discover_grok_binary",
