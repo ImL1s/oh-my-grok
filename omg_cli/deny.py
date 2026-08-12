@@ -37,6 +37,13 @@ _COMMAND_LEAD = (
     rf"|\{{\s+"
     rf"|{_FUNCTION_GROUP_LEAD})*"
 )
+# Leading redirections before the executable (``>out cmd``, ``2>/dev/null env …``).
+# Adjacent FD digits of any shell-valid length; spaced ``2 >out`` is not leading.
+_LEADING_REDIR_UNIT = (
+    r"(?:\d*)(?:>>|<<|>&|<&|>\||&>|&>>|[<>])"
+    r"(?:\\.|[^\s;&|()'\"`\\]+|'[^']*'|\"(?:\\.|[^\"\\])*\")*"
+)
+_LEADING_REDIRS = rf"(?:{_LEADING_REDIR_UNIT}\s+)*"
 _DENIED_BIN_NAMES = frozenset(
     {"claude", "codex", "omx", "agy", "cursor-agent", "kimi"}
 )
@@ -97,18 +104,20 @@ _WORKER_ENV_MARKERS = (
 )
 
 _DENY_AT_CMD_POS = re.compile(
-    rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}{_PATH_PREFIX}{_DENY_BINS}\b",
+    rf"{_CMD_POS}\s*{_COMMAND_LEAD}{_LEADING_REDIRS}"
+    rf"{_ENV_ASSIGNS}{_WRAPPERS}{_PATH_PREFIX}{_DENY_BINS}\b",
     re.IGNORECASE,
 )
 _DECODED_COMMAND_HEAD = re.compile(
     rf"{_CMD_POS}\s*"
     rf"{_COMMAND_LEAD}"
+    rf"{_LEADING_REDIRS}"
     rf"{_ENV_ASSIGNS}{_WRAPPERS}"
     rf"(?P<word>{_SHELL_WORD})",
     re.IGNORECASE,
 )
 _DYNAMIC_COMMAND_PREFIX = re.compile(
-    rf"{_CMD_POS}\s*{_COMMAND_LEAD}{_ENV_ASSIGNS}{_WRAPPERS}",
+    rf"{_CMD_POS}\s*{_COMMAND_LEAD}{_LEADING_REDIRS}{_ENV_ASSIGNS}{_WRAPPERS}",
     re.IGNORECASE,
 )
 _CASE_HEAD = re.compile(
@@ -1532,20 +1541,31 @@ _SHELL_REDIR_PURE = re.compile(r"^(?:\d*)(?:>>|<<|>&|<&|>\||&>|&>>|[<>])$")
 _SHELL_REDIR_TWOCHAR = frozenset({">>", "<<", ">&", "<&", ">|", "&>"})
 
 
+# Shell allows multi-digit FDs; keep a hard upper bound only as DoS guard
+# (old arbitrary 4-digit cap false-negatived ``12345>/dev/null …``).
+_MAX_ADJACENT_FD_DIGITS = 64
+
+
 def _adjacent_fd_prefix(text: str, op_index: int) -> str:
     """Return bare FD digits immediately before *op_index*, else ``""``.
 
-    Preserves token adjacency: ``2>out`` has prefix ``2``; ``2 >out`` does not.
-    Digits that are part of a larger word (``echo2>out``) are not an FD prefix.
+    Preserves token adjacency: ``2>out`` / ``12345>/dev/null`` have prefix
+    digits; spaced ``2 >out`` does not. Digits that are part of a larger word
+    (``echo2>out``) are not an FD prefix. Any shell-valid digit length is
+    accepted up to :data:`_MAX_ADJACENT_FD_DIGITS`.
     """
 
     if op_index <= 0:
         return ""
     start = op_index
-    while start > 0 and text[start - 1].isdigit() and op_index - (start - 1) <= 4:
+    while (
+        start > 0
+        and text[start - 1].isdigit()
+        and op_index - (start - 1) <= _MAX_ADJACENT_FD_DIGITS
+    ):
         start -= 1
     digits = text[start:op_index]
-    if not digits or not digits.isdecimal() or len(digits) > 4:
+    if not digits or not digits.isdecimal():
         return ""
     if start > 0:
         before = text[start - 1]

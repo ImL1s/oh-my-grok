@@ -985,3 +985,68 @@ def test_team_op_vocab_matches_cli_grammar():
     from omg_cli.deny import is_first_party_team_nested_launch
 
     assert is_first_party_team_nested_launch('omg team "not-a-reserved-op"') is True
+
+
+def test_leading_redirect_and_long_fd_prefix(monkeypatch):
+    """PR #156 residual: leading redirs before exec + unbounded adjacent FD."""
+    from omg_cli.deny import is_first_party_team_nested_launch
+
+    # Foreign omc: leading redir must still deny (not only bare omc team).
+    foreign_deny = (
+        ">out omc team",
+        "2>/dev/null omc team x",
+        "2>/dev/null env /opt/omc team",
+        ">out omc team 2:codex x",
+        "99999>/dev/null omc team",
+        "12345>/dev/null omc team launch",
+        "omc 12345>/dev/null team",
+        "omc 2>out team",
+    )
+    for cmd in foreign_deny:
+        assert should_deny_command(cmd) is True, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "deny", cmd
+
+    # Spaced FD remains argv — not a redir prefix (false-positive guard).
+    foreign_allow = (
+        "omc 2 >out team",
+        "omc 2 >out team 2:codex x",
+    )
+    for cmd in foreign_allow:
+        assert should_deny_command(cmd) is False, cmd
+
+    # Worker nested launch through leading redir + long FD.
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    worker_deny = (
+        ">out omg team launch",
+        '2>/dev/null omg team "fix tests"',
+        "2>/dev/null env omg team launch",
+        "12345>/dev/null omg team start --goal x",
+        "omg 12345>/dev/null team launch",
+        "omg 99999>/dev/null team shutdown",
+        "bash -lc '2>/dev/null omg team \"fix tests\"'",
+        "/opt/omg/bin/omg 12345>/dev/null team scale --add 1",
+    )
+    for cmd in worker_deny:
+        assert is_first_party_team_nested_launch(cmd) is True, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "deny", cmd
+        assert "E_TEAM_NESTED_LAUNCH" in (d.get("reason") or ""), cmd
+
+    worker_allow = (
+        "omg 2 >out team launch",  # spaced: not FD redir → not omg team launch
+        "omg>out\nteam launch",  # newline separator (prior)
+        "omg 2 >out team api catalog",
+        "2>/dev/null omg team api catalog",
+        "2>/dev/null omg team status r",
+    )
+    for cmd in worker_allow:
+        assert is_first_party_team_nested_launch(cmd) is False, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "allow", cmd
