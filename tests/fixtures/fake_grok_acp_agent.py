@@ -16,8 +16,11 @@ Scenarios via ``OMG_ACP_FAKE_SCENARIO``:
   resume_false     — resume result resumed=false (no receipt)
   resume_plus_oversize_suffix — valid resume result + unterminated oversize suffix in one write (OMG_ACP_FAKE_SUFFIX_BYTES, default 400)
   resume_plus_oversize_terminated_frame — same as resume_plus_oversize_suffix but suffix is fully NL-terminated: resume_json + NL + x*n + NL (OMG_ACP_FAKE_SUFFIX_BYTES, default 400)
-  resume_plus_under_limit_frames — valid resume result + two complete 200-byte frames (combined payload 400 > typical max_line=256; each frame 200 < 256)
+  resume_plus_under_limit_frames — valid resume result + two complete 200-byte chrome frames (combined payload 400 > typical max_line=256; each frame 200 < 256)
   resume_plus_chrome_plus_suffix — valid resume result + chrome session/update + unterminated oversize suffix in one write (OMG_ACP_FAKE_SUFFIX_BYTES, default 400)
+  resume_plus_replay_coalesced — valid resume result + forbidden agent_message_chunk in one write
+  resume_plus_malformed_coalesced — valid resume result + non-JSON complete frame in one write
+  resume_plus_unknown_coalesced — valid resume result + unknown session/update in one write
   session_id_mismatch — resume result sessionId ≠ requested UUID
   resume_missing_flag — resume result omits resumed
   session_id_alias — resume result uses session_id alias only
@@ -55,6 +58,39 @@ def _notify_update(kind: str, **extra: object) -> None:
             "params": {"update": update},
         }
     )
+
+
+def _padded_chrome_frame(pad_char: str, payload_len: int) -> bytes:
+    """Compact chrome session/update whose JSON payload is exactly *payload_len*."""
+
+    def _encode(pad: str) -> bytes:
+        return json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "current_mode_update",
+                        "mode": "default",
+                        "pad": pad,
+                    }
+                },
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    empty = _encode("")
+    need = payload_len - len(empty)
+    if need < 0:
+        raise RuntimeError(
+            f"chrome frame empty len {len(empty)} exceeds target {payload_len}"
+        )
+    out = _encode(pad_char * need)
+    if len(out) != payload_len:
+        raise RuntimeError(
+            f"padded chrome frame len {len(out)} != target {payload_len}"
+        )
+    return out
 
 
 def main() -> int:
@@ -223,9 +259,77 @@ def main() -> int:
                 }
             ).encode("utf-8")
             + b"\n"
-            + b"y" * 200
+            + _padded_chrome_frame("y", 200)
             + b"\n"
-            + b"z" * 200
+            + _padded_chrome_frame("z", 200)
+            + b"\n"
+        )
+        sys.stdout.buffer.write(payload)
+        sys.stdout.buffer.flush()
+        time.sleep(60)
+        return 0
+
+    if scenario == "resume_plus_replay_coalesced":
+        replay = {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "SECRET_REPLAY_BODY"},
+                }
+            },
+        }
+        payload = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": resume["id"],
+                    "result": {"sessionId": sid, "resumed": True},
+                }
+            ).encode("utf-8")
+            + b"\n"
+            + json.dumps(replay).encode("utf-8")
+            + b"\n"
+        )
+        sys.stdout.buffer.write(payload)
+        sys.stdout.buffer.flush()
+        time.sleep(60)
+        return 0
+
+    if scenario == "resume_plus_malformed_coalesced":
+        payload = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": resume["id"],
+                    "result": {"sessionId": sid, "resumed": True},
+                }
+            ).encode("utf-8")
+            + b"\n"
+            + b"not-json{{{\n"
+        )
+        sys.stdout.buffer.write(payload)
+        sys.stdout.buffer.flush()
+        time.sleep(60)
+        return 0
+
+    if scenario == "resume_plus_unknown_coalesced":
+        unknown = {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {"update": {"sessionUpdate": "not_a_real_kind"}},
+        }
+        payload = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": resume["id"],
+                    "result": {"sessionId": sid, "resumed": True},
+                }
+            ).encode("utf-8")
+            + b"\n"
+            + json.dumps(unknown).encode("utf-8")
             + b"\n"
         )
         sys.stdout.buffer.write(payload)

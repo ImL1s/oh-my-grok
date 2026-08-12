@@ -20,6 +20,7 @@ from omg_cli.host_acp import (
     AcpStdioSession,
     _STDOUT_READ_CHUNK,
     _absorb_pending_continuation,
+    _extract_complete_frame,
     _incomplete_line_len,
     _max_buffered_frame_len,
     _raise_if_buffered_limits,
@@ -1278,10 +1279,8 @@ def test_handshake_zero_quiet_window_under_limit_multiple_frames_succeeds(
         assert receipt.resume_matched is True
         assert sess._receipt is not None
         leftover = bytes(sess._rx_buf)
-        assert leftover == b"y" * 200 + b"\n" + b"z" * 200 + b"\n"
-        assert len(leftover) - leftover.count(b"\n") == 400
-        assert 400 > sess.max_line_bytes
-        assert _max_buffered_frame_len(sess._rx_buf) == 200
+        assert leftover == b""
+        assert _max_buffered_frame_len(sess._rx_buf) == 0
         assert _incomplete_line_len(sess._rx_buf) == 0
     finally:
         sess.close()
@@ -1544,6 +1543,129 @@ def test_absorb_pending_continuation_expired_deadline_returns_quickly() -> None:
     finally:
         w_file.close()
         r_file.close()
+
+
+def test_handshake_zero_quiet_window_coalesced_replay_writes_no_receipt(
+    tmp_path: Path,
+) -> None:
+    """Exact F9: one os.write of resume + agent_message_chunk, quiet=0.
+
+    Quiet loop never runs; leftover complete replay must still raise
+    E_ACP_REPLAY and must not materialize a receipt.
+    """
+    proc, argv = _spawn("resume_plus_replay_coalesced", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_REPLAY"
+        assert sess._receipt is None
+        assert elapsed < 2.0
+    finally:
+        sess.close()
+
+
+def test_handshake_zero_quiet_window_coalesced_malformed_writes_no_receipt(
+    tmp_path: Path,
+) -> None:
+    proc, argv = _spawn("resume_plus_malformed_coalesced", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_MALFORMED"
+        assert sess._receipt is None
+    finally:
+        sess.close()
+
+
+def test_handshake_zero_quiet_window_coalesced_unknown_writes_no_receipt(
+    tmp_path: Path,
+) -> None:
+    proc, argv = _spawn("resume_plus_unknown_coalesced", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_PROTOCOL"
+        assert sess._receipt is None
+    finally:
+        sess.close()
+
+
+def test_drain_complete_buffered_frames_rejects_replay_malformed_unknown() -> None:
+    proc, r_file, w_file = _pipe_proc()
+    sid = str(uuid.uuid4())
+    sess = AcpStdioSession(
+        proc=proc,
+        argv=("fake",),
+        session_id=sid,
+        cwd=".",
+        job_id="20260101T000000Z-deadbeef",
+        attempt=1,
+        parent_run_id="run-1",
+        session_id_hash=hash_session_id(sid),
+        cwd_hash=hash_cwd("."),
+        quiet_window_s=0,
+    )
+    replay = (
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {"update": {"sessionUpdate": "agent_message_chunk"}},
+            }
+        ).encode("utf-8")
+        + b"\n"
+    )
+    malformed = b"not-json{{{\n"
+    unknown = (
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {"update": {"sessionUpdate": "not_a_real_kind"}},
+            }
+        ).encode("utf-8")
+        + b"\n"
+    )
+    try:
+        sess._rx_buf.extend(replay)
+        with pytest.raises(AcpError) as ei:
+            sess._drain_complete_buffered_frames(phase="pre-receipt")
+        assert ei.value.code == "E_ACP_REPLAY"
+        assert sess._receipt is None
+
+        sess._rx_buf.clear()
+        sess._rx_buf.extend(malformed)
+        with pytest.raises(AcpError) as ei2:
+            sess._drain_complete_buffered_frames(phase="pre-receipt")
+        assert ei2.value.code == "E_ACP_MALFORMED"
+        assert sess._receipt is None
+
+        sess._rx_buf.clear()
+        sess._rx_buf.extend(unknown)
+        with pytest.raises(AcpError) as ei3:
+            sess._drain_complete_buffered_frames(phase="pre-receipt")
+        assert ei3.value.code == "E_ACP_PROTOCOL"
+        assert sess._receipt is None
+    finally:
+        w_file.close()
+        r_file.close()
+
+
+def test_extract_complete_frame_pops_only_first_nl() -> None:
+    rx_buf = bytearray(b"abc\ndef")
+    budget = [0]
+    first = _extract_complete_frame(rx_buf, budget, max_line_bytes=256)
+    assert first == b"abc"
+    assert bytes(rx_buf) == b"def"
+    assert budget[0] == 4
+    assert _extract_complete_frame(rx_buf, budget, max_line_bytes=256) is None
+    assert bytes(rx_buf) == b"def"
+    assert budget[0] == 4
 
 
 def test_handshake_zero_quiet_window_derived_total_suffix_writes_no_receipt(

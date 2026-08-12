@@ -331,6 +331,28 @@ def _incomplete_line_len(rx_buf: bytearray) -> int:
     return len(rx_buf) - (nl + 1)
 
 
+def _extract_complete_frame(
+    rx_buf: bytearray,
+    byte_budget: list[int],
+    *,
+    max_line_bytes: int,
+) -> bytes | None:
+    """Pop one complete NL-terminated frame, or ``None`` if none complete.
+
+    Increments *byte_budget* only when a frame is extracted so leftover
+    is not double-counted. Does not read the pipe.
+    """
+    nl = rx_buf.find(b"\n")
+    if nl < 0:
+        return None
+    line = bytes(rx_buf[:nl])
+    del rx_buf[: nl + 1]
+    byte_budget[0] += len(line) + 1
+    if len(line) > max_line_bytes:
+        raise AcpError("ACP line overflow", code="E_ACP_OVERFLOW")
+    return line
+
+
 def _max_buffered_frame_len(rx_buf: bytearray) -> int:
     """Max payload of every complete frame and the incomplete suffix.
 
@@ -479,14 +501,11 @@ def _read_line(
     if proc.stdout is None:
         raise AcpError("ACP stdout missing", code="E_ACP_IO")
     while True:
-        nl = rx_buf.find(b"\n")
-        if nl >= 0:
-            line = bytes(rx_buf[:nl])
-            del rx_buf[: nl + 1]
-            byte_budget[0] += len(line) + 1
-            if len(line) > max_bytes:
-                raise AcpError("ACP line overflow", code="E_ACP_OVERFLOW")
-            return line
+        extracted = _extract_complete_frame(
+            rx_buf, byte_budget, max_line_bytes=max_bytes
+        )
+        if extracted is not None:
+            return extracted
 
         # Fail closed on leftover over-limit incomplete frames before poll/timeout.
         _raise_if_buffered_limits(
@@ -705,6 +724,12 @@ class AcpStdioSession:
         # fully NL-terminated oversized frame already in _rx_buf.
         self._raise_if_rx_over_limits(include_complete_frames=True)
 
+        # Quiet loop is skipped when quiet_window_s=0 (or already
+        # exhausted). A peer may coalesce the resume result plus a
+        # complete notification in one os.write; leftover complete
+        # frames must be parsed before any receipt.
+        self._drain_complete_buffered_frames(phase="pre-receipt")
+
         receipt = AcpResumeReceipt(
             job_id=self.job_id,
             attempt=self.attempt,
@@ -838,6 +863,34 @@ class AcpStdioSession:
             deadline=deadline,
             cancel_event=cancel_event,
         )
+
+    def _drain_complete_buffered_frames(self, *, phase: str) -> None:
+        """Parse every complete NL frame already in ``_rx_buf``.
+
+        Does not wait on the pipe. Incomplete suffix stays buffered.
+        Overflow of a complete frame is classified by the caller
+        (``include_complete_frames=True``) before this runs; extract
+        still re-checks the per-line cap. Forbidden conversation
+        updates raise ``E_ACP_REPLAY``; malformed JSON raises
+        ``E_ACP_MALFORMED``; unknown / unexpected frames raise
+        ``E_ACP_PROTOCOL``.
+        """
+        while True:
+            line = _extract_complete_frame(
+                self._rx_buf,
+                self._byte_budget,
+                max_line_bytes=self.max_line_bytes,
+            )
+            if line is None:
+                return
+            msg = _parse_rpc(line)
+            if "method" in msg and "id" not in msg:
+                self._handle_notification_or_reject(msg, phase=phase)
+                continue
+            raise AcpError(
+                f"ACP unexpected frame after resume (phase={phase})",
+                code="E_ACP_PROTOCOL",
+            )
 
     def _try_read_message(
         self,
