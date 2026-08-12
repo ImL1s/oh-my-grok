@@ -1,14 +1,25 @@
 # Dual-host agent model routing for Grok Build and Medley
 
-**Status:** Proposed  
-**Date:** 2026-08-09  
-**Target branch:** `main`  
-**Tracking issue:** [ImL1s/oh-my-grok#131](https://github.com/ImL1s/oh-my-grok/issues/131)  
-**Architecture/docs issue:** [ImL1s/oh-my-grok#133](https://github.com/ImL1s/oh-my-grok/issues/133)  
-**Dual-host UX:** [ImL1s/oh-my-grok#134](https://github.com/ImL1s/oh-my-grok/issues/134)  
-**Optional Medley host contract:** [ImL1s/medley#287](https://github.com/ImL1s/medley/issues/287)  
-**Medley architecture/docs:** [ImL1s/medley#289](https://github.com/ImL1s/medley/issues/289)  
-**Medley TUI/UX:** [ImL1s/medley#290](https://github.com/ImL1s/medley/issues/290)  
+**Status:** Proposed (implementation planning)
+
+**Date:** 2026-08-09
+
+**Target branch:** `main`
+
+**Normative architecture (canonical):** [`docs/architecture/agent-model-routing.md`](../architecture/agent-model-routing.md) — **read that page for the support matrix, ownership boundary, route kinds, and fallback safety.** This plan remains the delivery-sequence / program-definition companion and must not diverge on baseline-vs-Medley dependency claims.
+
+**Tracking issue:** [ImL1s/oh-my-grok#131](https://github.com/ImL1s/oh-my-grok/issues/131)
+
+**Architecture/docs issue:** [ImL1s/oh-my-grok#133](https://github.com/ImL1s/oh-my-grok/issues/133)
+
+**Dual-host UX:** [ImL1s/oh-my-grok#134](https://github.com/ImL1s/oh-my-grok/issues/134)
+
+**Optional Medley host contract:** [ImL1s/medley#287](https://github.com/ImL1s/medley/issues/287)
+
+**Medley architecture/docs:** [ImL1s/medley#289](https://github.com/ImL1s/medley/issues/289)
+
+**Medley TUI/UX:** [ImL1s/medley#290](https://github.com/ImL1s/medley/issues/290)
+
 **Counterpart plan PR:** [ImL1s/medley#288](https://github.com/ImL1s/medley/pull/288)
 
 ## Decision
