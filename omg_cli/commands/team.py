@@ -337,13 +337,11 @@ def cmd_team(args: argparse.Namespace) -> int:
     never sets verified.
     """
     from omg_cli.team.plane import (
-        LEADER_ONLY_OPERATOR_ACTIONS,
         TeamError,
         TeamGateError,
         collect_team,
         format_status_table,
-        refuse_nested_team_launch,
-        refuse_worker_operator_mutation,
+        preflight_team_worker_parsed_argv,
         start_team,
         status_locked_view,
         stop_team,
@@ -366,27 +364,15 @@ def cmd_team(args: argparse.Namespace) -> int:
         return 0
 
     try:
-        # Authoritative nested-launch gate before root discovery / side effects
-        # for lifecycle verbs that create or control a team. Identity-bound
+        # Authoritative parsed-argv worker preflight before root discovery /
+        # side effects (defense-in-depth for direct Python callers; main()
+        # already ran the same gate before project-root / git). Identity-bound
         # ``api`` is excluded so worker ops reach the runtime operation matrix.
-        # ``supervisor`` is NOT here: legal panes intentionally set
-        # OMG_TEAM_WORKER=1 and run ``omg team supervisor --descriptor …``;
+        # ``supervisor`` is NOT a nested-launch verb: legal panes intentionally
+        # set OMG_TEAM_WORKER=1 and run ``omg team supervisor --descriptor …``;
         # admission is identity/descriptor/owner-token bound (see
         # admit_pane_supervisor) rather than blanket nested-launch refuse.
-        if action in (
-            "launch",
-            "start",
-            "run",
-            "scale",
-            "resume",
-            "stop",
-            "collect",
-        ):
-            refuse_nested_team_launch(action=str(action or "launch"))
-        # Leader-only operator mutations: workers must not input/key/focus/view
-        # peer or leader panes (PR #156). Refuse before project_root / tmux.
-        if action in LEADER_ONLY_OPERATOR_ACTIONS:
-            refuse_worker_operator_mutation(action=str(action))
+        preflight_team_worker_parsed_argv(action)
         # #100: supervisor must not trigger generic project-root discovery via
         # project_root(); it consumes the validated leader root from env only.
         if action == "supervisor":

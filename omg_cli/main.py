@@ -349,6 +349,20 @@ def main(argv: list[str] | None = None) -> int:
     team_api_catalog = (
         command == "team" and team_action == "api" and api_op == "catalog"
     )
+    if command == "team":
+        from omg_cli.team.plane import (
+            TeamGateError,
+            preflight_team_worker_parsed_argv,
+        )
+
+        try:
+            preflight_team_worker_parsed_argv(
+                team_action if team_action is None else str(team_action),
+                command=command,
+            )
+        except TeamGateError as exc:
+            print(f"omg team: {exc}", file=sys.stderr)
+            return 2
     clear_resolved_project_root()
     root_path: Path | None = None
     if command not in _INSTALL_SCOPED and not team_api_catalog:

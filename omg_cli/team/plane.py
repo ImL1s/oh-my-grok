@@ -247,6 +247,23 @@ def refuse_nested_team_launch(
         )
 
 
+# Lifecycle verbs that create or control a team. ``shutdown`` is the OMX
+# alias ``normalize_team_argv`` rewrites to ``stop``. ``supervisor`` is
+# intentionally absent: legal pane supervisors are identity-admitted.
+NESTED_LAUNCH_ACTIONS: frozenset[str] = frozenset(
+    {
+        "launch",
+        "start",
+        "run",
+        "scale",
+        "resume",
+        "stop",
+        "collect",
+        "shutdown",  # OMX alias; normalize_team_argv rewrites to stop
+    }
+)
+
+
 # Leader-only operator mutations (#101 / PR #156): workers must not drive
 # peer/leader panes. Identity-bound ``api`` and read-only ``status`` /
 # ``panes`` / ``capture`` remain usable from worker context.
@@ -283,6 +300,30 @@ def refuse_worker_operator_mutation(
             "Use identity-bound team API or read-only status/panes/capture.",
             code="E_TEAM_WORKER_OPERATION_REFUSED",
         )
+
+
+def preflight_team_worker_parsed_argv(
+    action: str | None,
+    *,
+    env: Mapping[str, str] | None = None,
+    command: str | None = None,
+) -> None:
+    """Canonical parsed-argv Team worker preflight. No I/O.
+
+    Call from main() immediately after argparse / normalize_team_argv and
+    BEFORE clear_resolved_project_root / resolve_project_root /
+    resolve_supervisor_project_root / git / tmux / state / process writers.
+
+    Reuses refuse_nested_team_launch / refuse_worker_operator_mutation
+    (process env only — command-text assignments never authorize).
+    """
+    if command is not None and command != "team":
+        return
+    act = (action or "").strip()
+    if act in NESTED_LAUNCH_ACTIONS or not act:
+        refuse_nested_team_launch(env, action=act or "launch")
+    elif act in LEADER_ONLY_OPERATOR_ACTIONS:
+        refuse_worker_operator_mutation(env, action=act)
 
 
 def in_non_team_spawn_context(env: Mapping[str, str] | None = None) -> bool:
@@ -7016,8 +7057,10 @@ __all__ = [
     "format_status_table",
     "in_spawned_worker_context",
     "LEADER_ONLY_OPERATOR_ACTIONS",
+    "NESTED_LAUNCH_ACTIONS",
     "load_team_meta",
     "mutate_team_meta",
+    "preflight_team_worker_parsed_argv",
     "refuse_nested_team_launch",
     "refuse_worker_operator_mutation",
     "resolve_owner_token_for_start",
