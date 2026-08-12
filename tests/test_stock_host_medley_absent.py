@@ -6,8 +6,9 @@ ordinary agent/profile discovery, ordinary workflow parser/inventory). It
 is not a routing implementation and does not exercise #131 / #134 / #138.
 
 Absence is an explicit import blocker, never inferred from directory names
-on ``sys.path`` / ``PYTHONPATH``. An injected installable ``medley`` on a
-neutral path stays discoverable until that blocker is installed.
+on ``sys.path`` / ``PYTHONPATH``. An injected installable ``medley`` stays
+discoverable until that blocker is installed. Ancestor pathnames may
+contain the substring ``medley``; the blocker never inspects them.
 """
 from __future__ import annotations
 
@@ -102,23 +103,18 @@ def _isolate_stock_host(monkeypatch, tmp_path: Path) -> tuple[Path, Path]:
     return home, grok_home
 
 
-def _neutral_site_packages(tmp_path: Path, tmp_path_factory) -> Path:
-    """Install parent whose pathname does not contain ``medley``.
+def _neutral_site_packages(tmp_path_factory) -> Path:
+    """Vendor site-packages for the injected installable ``medley``.
 
-    Pytest names ``tmp_path`` after the test function, so the required
-    smoke/discoverability names embed ``medley``. Use a factory temp
-    whose basename is ``vendor`` — still under pytest cleanup.
+    Always use a factory temp whose basename is ``vendor`` (pytest still
+    cleans it up). Ancestor pathnames may contain the substring
+    ``medley``; absence is the import blocker, not a pathname filter.
     """
-    site = tmp_path / "opt" / "lib" / "site-packages"
-    if "medley" not in str(site).lower():
-        return site
-    site = tmp_path_factory.mktemp("vendor") / "lib" / "site-packages"
-    assert "medley" not in str(site).lower(), site
-    return site
+    return tmp_path_factory.mktemp("vendor") / "lib" / "site-packages"
 
 
-def _inject_fake_medley_package(monkeypatch, tmp_path: Path, tmp_path_factory) -> Path:
-    site = _neutral_site_packages(tmp_path, tmp_path_factory)
+def _inject_fake_medley_package(monkeypatch, tmp_path_factory) -> Path:
+    site = _neutral_site_packages(tmp_path_factory)
     pkg = site / "medley"
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text(
@@ -140,7 +136,6 @@ def _install_import_blocker(monkeypatch) -> _StockHostMedleyImportBlocker:
 
 
 def _assert_medley_discoverable(site: Path) -> None:
-    assert "medley" not in str(site).lower(), site
     spec = importlib.util.find_spec("medley")
     assert spec is not None
     assert spec.origin is not None
@@ -212,7 +207,7 @@ def test_injected_medley_on_neutral_path_is_discoverable_without_blocker(
     monkeypatch, tmp_path, tmp_path_factory
 ) -> None:
     _isolate_stock_host(monkeypatch, tmp_path)
-    site = _inject_fake_medley_package(monkeypatch, tmp_path, tmp_path_factory)
+    site = _inject_fake_medley_package(monkeypatch, tmp_path_factory)
     _assert_medley_discoverable(site)
 
 
@@ -220,7 +215,7 @@ def test_ordinary_omg_surfaces_work_with_medley_absent(
     monkeypatch, tmp_path, tmp_path_factory, capsys
 ) -> None:
     home, _grok_home = _isolate_stock_host(monkeypatch, tmp_path)
-    site = _inject_fake_medley_package(monkeypatch, tmp_path, tmp_path_factory)
+    site = _inject_fake_medley_package(monkeypatch, tmp_path_factory)
     _assert_medley_discoverable(site)
     _evict_medley_modules(monkeypatch)
     _install_import_blocker(monkeypatch)
@@ -288,5 +283,4 @@ def test_ordinary_omg_surfaces_work_with_medley_absent(
 
     _assert_medley_absent(home)
     _assert_blocker_raises()
-    assert "medley" not in str(site).lower()
     assert str(site) in sys.path
