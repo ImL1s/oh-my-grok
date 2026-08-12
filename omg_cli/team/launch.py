@@ -482,7 +482,14 @@ def stamp_execution_on_task(
 
 
 def worker_status_view(task: Mapping[str, Any]) -> dict[str, Any]:
-    """Build the status ``worker:`` slice from a team.json task row."""
+    """Build the status ``worker:`` slice from a team.json task row.
+
+    Includes fail-closed I/O capability projection (#147). Topology / pane
+    presence never implies operator interactivity; missing I/O fields normalize
+    to unproven/unsupported.
+    """
+    from omg_cli.team.io_capability import normalize_worker_io_capability
+
     execution = task.get("execution")
     if isinstance(execution, Mapping) and execution.get("topology"):
         try:
@@ -496,18 +503,21 @@ def worker_status_view(task: Mapping[str, Any]) -> dict[str, Any]:
             view["pane_id"] = rec["pane_id"]
         elif rec.get("topology") == WORKER_TOPOLOGY_PANE and task.get("pane_id"):
             view["pane_id"] = task["pane_id"]
-        return view
-    # Legacy pane tasks without an execution stamp.
-    if task.get("pane_id"):
-        return {"topology": WORKER_TOPOLOGY_PANE, "pane_id": task["pane_id"]}
-    if task.get("job_id"):
-        return {"topology": WORKER_TOPOLOGY_JOB, "job_id": task["job_id"]}
-    topo = task.get("worker_topology") or WORKER_TOPOLOGY_PANE
-    try:
-        topo_n = normalize_worker_topology(topo)
-    except WorkerLaunchError:
-        topo_n = WORKER_TOPOLOGY_PANE
-    return {"topology": topo_n}
+    elif task.get("pane_id"):
+        # Legacy pane tasks without an execution stamp.
+        view = {"topology": WORKER_TOPOLOGY_PANE, "pane_id": task["pane_id"]}
+    elif task.get("job_id"):
+        view = {"topology": WORKER_TOPOLOGY_JOB, "job_id": task["job_id"]}
+    else:
+        topo = task.get("worker_topology") or WORKER_TOPOLOGY_PANE
+        try:
+            topo_n = normalize_worker_topology(topo)
+        except WorkerLaunchError:
+            topo_n = WORKER_TOPOLOGY_PANE
+        view = {"topology": topo_n}
+    # Additive I/O block (not part of status_locked_view task keys).
+    view["io"] = normalize_worker_io_capability(task).as_public_dict()
+    return view
 
 
 @dataclass(frozen=True, slots=True)

@@ -355,6 +355,11 @@ def _build_members(
                 f"member {tid!r} has no attempt lineage",
                 code="E_TEAM_PRESENTATION_ATTEMPT",
             )
+        # #147: honest I/O capability (fail-closed). Additive under schema v1;
+        # missing historical rows normalize to unproven/unsupported.
+        from omg_cli.team.io_capability import normalize_worker_io_capability
+
+        io_cap = normalize_worker_io_capability(task).as_public_dict()
         members.append(
             {
                 "logical_worker_id": logical,
@@ -365,6 +370,7 @@ def _build_members(
                 "capability_floor": capability_floor,
                 "route": route,
                 "worktree": worktree,
+                "io": io_cap,
                 "current_attempt": current,
                 "attempts": attempts,
             }

@@ -283,6 +283,25 @@ def test_legacy_descriptor_without_io_keys_still_loads(tmp_path: Path) -> None:
     assert cap.operator_input_supported is False
 
 
+def test_legacy_task_row_io_projects_unproven_in_status_view() -> None:
+    """Missing I/O on a task still projects unproven via worker_status_view."""
+    from omg_cli.team.launch import worker_status_view
+
+    view = worker_status_view(
+        {
+            "task_id": "legacy",
+            "status": "running",
+            "pane_id": "%10",
+            "provider": "grok",
+            "needs_pty": True,
+        }
+    )
+    assert view["topology"] == "pane"
+    assert view["io"]["io_mode"] == IO_MODE_UNPROVEN
+    assert view["io"]["operator_input_supported"] is False
+    assert view["io"]["input_ready"] is False
+
+
 def test_start_team_dry_run_stamps_task_io(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
