@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "cbd53f9ff39993195863ea93a69554da6cab2c0563702b0feedfba77fd60b4fa"
+_OMG_GENERATED_FROM_SHA = "316c438fe42e6e768895537e7a58759c8dc7a2b490f2eb2f371232741b4271c6"
 _OMG_PLUGIN_VERSION = "0.8.0"
 
 
@@ -2172,19 +2172,6 @@ def _peel_supported_team_leading_globals(words: list[str]) -> list[str]:
             continue
         break
     return words[i:]
-
-
-def _first_party_team_argv(command: str) -> list[str] | None:
-    """If an executable head is first-party ``omg team …``, return argv after ``team``.
-
-    Returns the *first* match (or ``None``). Nested-launch classification must
-    use :func:`_iter_first_party_team_argvs` so a safe head cannot mask a later
-    forbidden head.
-    """
-
-    for argv in _iter_first_party_team_argvs(command):
-        return argv
-    return None
 
 
 def _team_argv_is_nested_launch(argv: list[str]) -> bool:

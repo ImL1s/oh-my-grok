@@ -927,6 +927,19 @@ def test_worker_multi_head_nested_launch_classifier_and_budget(monkeypatch):
     assert is_first_party_team_nested_launch(huge) is True
 
 
+def test_first_party_team_argv_first_match_helper_removed():
+    """#146 F6: first-match helper is dead; iterator is the only argv contract."""
+    import omg_cli.deny as deny
+
+    assert not hasattr(deny, "_first_party_team_argv")
+    iter_fn = deny._iter_first_party_team_argvs
+    safe_then_launch = list(
+        iter_fn("omg team api catalog; omg team launch --goal x")
+    )
+    assert safe_then_launch == [["api", "catalog"], ["launch", "--goal", "x"]]
+    assert list(iter_fn("echo omg team launch")) == []
+
+
 def test_worker_goal_shorthand_and_shutdown_classified(monkeypatch):
     """PR #156 P2: normalize_team_argv Form B + shutdown alias match hook DiD."""
     from omg_cli.deny import is_first_party_team_nested_launch

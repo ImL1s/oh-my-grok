@@ -2131,19 +2131,6 @@ def _peel_supported_team_leading_globals(words: list[str]) -> list[str]:
     return words[i:]
 
 
-def _first_party_team_argv(command: str) -> list[str] | None:
-    """If an executable head is first-party ``omg team …``, return argv after ``team``.
-
-    Returns the *first* match (or ``None``). Nested-launch classification must
-    use :func:`_iter_first_party_team_argvs` so a safe head cannot mask a later
-    forbidden head.
-    """
-
-    for argv in _iter_first_party_team_argvs(command):
-        return argv
-    return None
-
-
 def _team_argv_is_nested_launch(argv: list[str]) -> bool:
     """Match ``normalize_team_argv`` launch forms for soft-gate DiD.
 
