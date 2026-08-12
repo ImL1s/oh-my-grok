@@ -143,6 +143,8 @@ ARCH_REQUIRED_SNIPPETS: tuple[str, ...] = (
     "ROUTE_SCHEMA",
     "dual-carried",
     "never infer",
+    "explicitly stamped",
+    "never guessed",
     "versioned migration",
 )
 
@@ -808,6 +810,41 @@ def test_architecture_binds_legacy_provider_migration_to_presentation_exports() 
     assert "unknown_route" in body or "`unknown`" in body
     assert "versioned migration" in body
     assert "implementation #131/Team" not in body
+
+
+def test_legacy_provider_readability_is_stamped_v1_dual_carry_only() -> None:
+    """Unstamped rows stay unknown/null; only stamped v1 dual-carry is readable."""
+    unknown = unknown_route()
+    assert unknown["kind"] == ROUTE_KIND_UNKNOWN
+    assert unknown["provider"] is None
+    assert unknown["executor"] is None
+    stamped = build_external_route(
+        executor="fixture",
+        provider="fake",
+        role="executor",
+        posture="read-write",
+    )
+    assert stamped["kind"] == ROUTE_KIND_EXTERNAL
+    assert stamped["provider"] == "fake"
+    assert stamped["schema"] == ROUTE_SCHEMA
+
+    body = ARCH.read_text(encoding="utf-8")
+    assert "explicitly stamped" in body
+    assert "never guessed" in body
+    assert "unstamped" in body
+    readable = list(re.finditer(r"remains readable|naming is readable", body))
+    assert readable, "architecture must still mention provider readability"
+    for match in readable:
+        window = _window(body, match.start(), match.end(), 220)
+        assert re.search(r"stamped|dual-carr", window, re.IGNORECASE), window
+        assert re.search(
+            r"unstamped|unknown|null|never guessed", window, re.IGNORECASE
+        ), window
+    # Unqualified blanket claim must not survive.
+    assert not re.search(
+        r"legacy `provider` naming is readable via the shipped Presentation",
+        body,
+    )
 
 
 def test_architecture_mentions_external_cli_executor_only_as_unshipped() -> None:

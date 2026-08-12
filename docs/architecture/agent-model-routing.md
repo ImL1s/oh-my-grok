@@ -224,8 +224,10 @@ Rules:
 - a Medley API **provider** is **not** an OMG external executor;
 - an advisory `external_cli` (`omg ask`) is **not** an OMG external executor;
 - an external CLI executable is **not** a Medley credential/access route;
-- legacy `provider` naming is readable via the shipped Presentation migration
-  rules below (not a #131 runtime);
+- legacy `provider` naming is readable **only** on **explicitly stamped**
+  v1 routes that **dual-carry** `provider`; unstamped legacy rows project
+  `unknown` with `provider` null and are **never guessed** (not a #131
+  runtime);
 - native catalog identifiers are **not** passed into external argv builders
   without an explicit adapter mapping.
 
@@ -246,8 +248,10 @@ not a future #131 registry.
   `build_external_route`) when they can. They do **not** infer `route.kind`
   from `provider` text.
 - For compatibility, existing descriptor fields `executor` and `provider` may
-  be **dual-carried** on the same route object. `provider` remains readable;
-  it is not a kind.
+  be **dual-carried** on the same **explicitly stamped** v1 route object.
+  `provider` remains readable **only** on those stamped dual-carry routes;
+  it is not a kind. Unstamped legacy rows are **not** readable as provider
+  names — they project `unknown` / `provider` null and are **never guessed**.
 - **Readers** that see a persisted task **without** a `route` object project
   `unknown_route()`: `kind` is `unknown`, and `executor` / `provider` / `role`
   / `posture` are `None`. Legacy unstamped rows stay unknown.
@@ -648,6 +652,9 @@ CI should eventually prove (and #133 acceptance requires):
   bound to `omg_cli.team.presentation` exports (`ROUTE_SCHEMA`,
   `ROUTE_KIND_EXTERNAL`, `ROUTE_KIND_UNKNOWN`, `ROUTE_KIND_NATIVE_RECEIPT`,
   `unknown_route`, `build_external_route`);
+- legacy `provider` readability applies **only** to **explicitly stamped**
+  v1 dual-carry routes; unstamped rows stay `unknown` / `provider` null
+  and are **never guessed**;
 - policy `external_executor` must stay distinct from advisory `omg ask`;
   the three dimension names (`runtime_kind`, `purpose`, `lifecycle`) must
   remain present;

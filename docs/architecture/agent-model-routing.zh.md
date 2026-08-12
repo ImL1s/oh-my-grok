@@ -72,7 +72,9 @@ HTTP `429` 不得单独授权换 provider 重送。细节见英文页 [Initial s
 ## Legacy provider 与 route schema v1
 
 已出货 Presentation（不是 #131）：`route.schema` = 1；`route.kind` 才是判别栏。
-`executor` 与 `provider` 可 **dual-carried**。没有 stamp 的旧列投影 `unknown`。
+`executor` 与 `provider` 可 **dual-carried**。`provider` **仅**在已 stamp 的
+v1 dual-carry 路由可读；没有 stamp 的旧列投影 `unknown` / `provider` null，
+**永不猜测**。
 **永不**从 provider 文字推断 native／external。Reader 保留 unknown。
 schema 变更需要另一次 versioned migration。
 
