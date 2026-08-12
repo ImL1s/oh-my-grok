@@ -18,6 +18,7 @@ from omg_cli.host_acp import (
     AcpStdioSession,
     _read_line,
     acp_stdio_argv,
+    allowlisted_acp_env,
     bind_constructor_identity,
     build_receipt_from_dict,
     classify_session_update,
@@ -593,12 +594,35 @@ def test_read_line_coalesced_valid_plus_oversize_suffix_overflows_before_timeout
         w_file.close()
 
 
+def test_allowlisted_acp_env_preserves_exact_suffix_bytes() -> None:
+    forwarded = allowlisted_acp_env(
+        {
+            "OMG_ACP_FAKE_SUFFIX_BYTES": "317",
+            "AWS_SECRET_ACCESS_KEY": "nope",
+        }
+    )
+    assert forwarded["OMG_ACP_FAKE_SUFFIX_BYTES"] == "317"
+    assert "317" != "400"
+    assert "AWS_SECRET_ACCESS_KEY" not in forwarded
+    empty = allowlisted_acp_env({"OMG_ACP_FAKE_SUFFIX_BYTES": ""})
+    assert "OMG_ACP_FAKE_SUFFIX_BYTES" not in empty
+
+
 def test_handshake_coalesced_oversize_suffix_writes_no_receipt(tmp_path: Path) -> None:
     # Cap must admit initialize/resume frames but reject the leftover suffix.
+    # Non-default 317: fixture default is 400; missing allowlist would hide this.
+    assert 317 != 400
+    assert 317 > 256
+    assert (
+        allowlisted_acp_env({"OMG_ACP_FAKE_SUFFIX_BYTES": "317"})[
+            "OMG_ACP_FAKE_SUFFIX_BYTES"
+        ]
+        == "317"
+    )
     proc, argv = _spawn(
         "resume_plus_oversize_suffix",
         tmp_path,
-        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "400"},
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "317"},
     )
     sess = _session(proc, argv, tmp_path, quiet=0.3)
     sess.max_line_bytes = 256
@@ -832,6 +856,15 @@ def test_handshake_committed_plus_buffered_suffix_writes_no_receipt(
     sess = _session(proc, argv, tmp_path, quiet=0.3)
     sess.max_line_bytes = 256
     sess.max_total_bytes = 220
+    # Default fixture suffix 400 would be a line overflow, not a total overflow.
+    assert int("80") < sess.max_line_bytes
+    assert 400 > sess.max_line_bytes
+    assert (
+        allowlisted_acp_env({"OMG_ACP_FAKE_SUFFIX_BYTES": "80"})[
+            "OMG_ACP_FAKE_SUFFIX_BYTES"
+        ]
+        == "80"
+    )
     try:
         t0 = time.monotonic()
         with pytest.raises(AcpError) as ei:
