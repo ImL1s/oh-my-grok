@@ -22,7 +22,7 @@ _非官方社群 plugin — 与 xAI / OMC 维护者无关。_
 
 _不必背完整 Grok flag。用 `omg` + skills：厘清 → 计划 → 执行 → 验证。_
 
-**文件：** [Skills 目录](../skills.zh.md) · [Autopilot](../autopilot.zh.md) · [文档索引](../README.zh.md) · [安全模型](../security-model.zh.md) · [Changelog](../../CHANGELOG.md)
+**文件：** [Skills 目录](../skills.zh.md) · [Autopilot](../autopilot.zh.md) · [文档索引](../README.zh.md) · [安全模型](../security-model.zh.md) · [Agent 模型路由（英文 canonical）](../architecture/agent-model-routing.md) · [Changelog](../../CHANGELOG.md)
 
 ---
 
@@ -49,6 +49,8 @@ Workers 只经 Grok **`spawn_subagent`**（depth 1）。
 ## 快速安装
 
 **需求：** [Grok Build CLI](https://github.com/xai-org/grok-build)（`grok` 在 PATH）· Python **3.11+**
+
+**主机兼容：** **原版 Grok Build 是必备、first-class baseline。** 没有 Medley 时，OMG 的 agents / skills / workflows / evidence / acceptance 仍可正常使用。[Medley](https://github.com/ImL1s/medley) 是**可选**兼容主机（可解锁增强 native 路由）；安装 OMG **不会**安装 Medley，Medley **不是** hard dependency。Team 外部 CLI executor 是另一组可选依赖。细节见英文 canonical 页：[`docs/architecture/agent-model-routing.md`](../architecture/agent-model-routing.md)。
 
 OMG 有 **两个表面**：Grok **plugin**（skills/agents/hooks）+ **`omg` CLI**（状态、accept、verified）。完整产品两个都要。
 
