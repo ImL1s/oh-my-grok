@@ -525,6 +525,13 @@ def _read_line(
             ready, _, _ = select.select([proc.stdout], [], [], 0.05)
             if not ready:
                 if proc.poll() is not None:
+                    _raise_if_buffered_limits(
+                        byte_budget,
+                        rx_buf,
+                        max_line_bytes=max_bytes,
+                        max_total_bytes=max_total_bytes,
+                        include_complete_frames=True,
+                    )
                     raise AcpError(
                         "ACP process exited before complete line", code="E_ACP_EOF"
                     )
@@ -535,6 +542,13 @@ def _read_line(
             raise AcpError(f"ACP read failed: {exc}", code="E_ACP_IO") from exc
         if chunk is None or chunk == b"":
             if proc.poll() is not None:
+                _raise_if_buffered_limits(
+                    byte_budget,
+                    rx_buf,
+                    max_line_bytes=max_bytes,
+                    max_total_bytes=max_total_bytes,
+                    include_complete_frames=True,
+                )
                 if rx_buf:
                     raise AcpError(
                         "ACP EOF with incomplete frame", code="E_ACP_EOF"
@@ -691,6 +705,10 @@ class AcpStdioSession:
             if cancel_event is not None and cancel_event.is_set():
                 raise AcpError("ACP handshake cancelled", code="E_ACP_CANCELLED")
             if self.proc.poll() is not None:
+                # Overflow beats EOF so an exited peer with an already
+                # buffered oversized complete/incomplete frame cannot
+                # be classified as a transient handshake failure.
+                self._raise_if_rx_over_limits(include_complete_frames=True)
                 raise AcpError(
                     "ACP process exited during quiet window", code="E_ACP_EOF"
                 )
@@ -706,22 +724,12 @@ class AcpStdioSession:
                 continue
             self._handle_notification_or_reject(msg, phase="quiet")
 
-        if self.proc.poll() is not None:
-            raise AcpError(
-                "ACP process exited before readiness (transient handshake)",
-                code="E_ACP_EOF",
-            )
-
-        # First 4096-byte read can leave most of a large suffix in the OS
-        # pipe; absorb pending incomplete continuation so default
-        # max_line_bytes overflow is observed before receipt.
+        # Absorb + overflow BEFORE poll→EOF. An exited peer may have
+        # already written an oversized complete or incomplete leftover;
+        # classifying exit first would mask E_ACP_OVERFLOW as E_ACP_EOF.
         self._absorb_pending_continuation(
             deadline=deadline, cancel_event=cancel_event
         )
-
-        # Pre-receipt: every complete+incomplete frame vs line/total caps
-        # (quiet_window_s=0 or exhausted). Leftover-only would miss a
-        # fully NL-terminated oversized frame already in _rx_buf.
         self._raise_if_rx_over_limits(include_complete_frames=True)
 
         # Quiet loop is skipped when quiet_window_s=0 (or already
@@ -729,6 +737,12 @@ class AcpStdioSession:
         # complete notification in one os.write; leftover complete
         # frames must be parsed before any receipt.
         self._drain_complete_buffered_frames(phase="pre-receipt")
+
+        if self.proc.poll() is not None:
+            raise AcpError(
+                "ACP process exited before readiness (transient handshake)",
+                code="E_ACP_EOF",
+            )
 
         receipt = AcpResumeReceipt(
             job_id=self.job_id,

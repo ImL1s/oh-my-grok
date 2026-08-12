@@ -1805,3 +1805,140 @@ def test_handshake_zero_quiet_window_derived_total_suffix_writes_no_receipt(
         assert elapsed < 2.0
     finally:
         sess.close()
+
+
+def test_handshake_exited_peer_complete_oversize_is_overflow_not_eof(
+    tmp_path: Path,
+) -> None:
+    """F11: peer exits after writing resume + NL-terminated oversized frame."""
+    proc, argv = _spawn(
+        "resume_plus_oversize_terminated_frame_then_exit",
+        tmp_path,
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "400"},
+    )
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    sess.max_line_bytes = 256
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert ei.value.code != "E_ACP_EOF"
+        assert "line overflow" in str(ei.value)
+        assert "byte overflow" not in str(ei.value)
+        assert sess._receipt is None
+        assert elapsed < 2.0
+    finally:
+        sess.close()
+
+
+def test_handshake_exited_peer_incomplete_oversize_is_overflow_not_eof(
+    tmp_path: Path,
+) -> None:
+    """F11: peer exits after writing resume + unterminated oversized leftover."""
+    proc, argv = _spawn(
+        "resume_plus_oversize_suffix_then_exit",
+        tmp_path,
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "400"},
+    )
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    sess.max_line_bytes = 256
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert ei.value.code != "E_ACP_EOF"
+        assert "line overflow" in str(ei.value)
+        assert "byte overflow" not in str(ei.value)
+        assert sess._receipt is None
+        assert elapsed < 2.0
+    finally:
+        sess.close()
+
+
+def test_handshake_exit_after_resume_under_limit_is_eof_no_receipt(
+    tmp_path: Path,
+) -> None:
+    """Under-limit peer exit stays transient EOF (no overflow, no receipt).
+
+    A short quiet window observes ``poll()`` without racing ``quiet=0``.
+    """
+    proc, argv = _spawn("exit_after_resume", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0.2)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_EOF"
+        assert ei.value.code != "E_ACP_OVERFLOW"
+        assert sess._receipt is None
+    finally:
+        sess.close()
+
+
+def test_read_line_exited_peer_complete_oversize_is_overflow_not_eof() -> None:
+    max_bytes = 32
+    r_fd, w_fd = os.pipe()
+    r_file = os.fdopen(r_fd, "rb", buffering=0)
+    w_file = os.fdopen(w_fd, "wb", buffering=0)
+
+    class _ExitedProc:
+        def __init__(self) -> None:
+            self.stdout = r_file
+
+        def poll(self) -> int:
+            return 0
+
+    proc = _ExitedProc()
+    rx_buf = bytearray(b"x" * (max_bytes + 1) + b"\n")
+    budget = [0]
+    try:
+        w_file.close()
+        with pytest.raises(AcpError) as ei:
+            _read_line(
+                proc,
+                max_bytes=max_bytes,
+                deadline=time.monotonic() + 5.0,
+                byte_budget=budget,
+                rx_buf=rx_buf,
+            )
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert ei.value.code != "E_ACP_EOF"
+        assert "line overflow" in str(ei.value)
+    finally:
+        r_file.close()
+
+
+def test_read_line_exited_peer_incomplete_oversize_is_overflow_not_eof() -> None:
+    max_bytes = 32
+    r_fd, w_fd = os.pipe()
+    r_file = os.fdopen(r_fd, "rb", buffering=0)
+    w_file = os.fdopen(w_fd, "wb", buffering=0)
+
+    class _ExitedProc:
+        def __init__(self) -> None:
+            self.stdout = r_file
+
+        def poll(self) -> int:
+            return 0
+
+    proc = _ExitedProc()
+    rx_buf = bytearray(b"x" * (max_bytes + 1))
+    budget = [0]
+    try:
+        w_file.close()
+        with pytest.raises(AcpError) as ei:
+            _read_line(
+                proc,
+                max_bytes=max_bytes,
+                deadline=time.monotonic() + 5.0,
+                byte_budget=budget,
+                rx_buf=rx_buf,
+            )
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert ei.value.code != "E_ACP_EOF"
+        assert "line overflow" in str(ei.value)
+    finally:
+        r_file.close()
