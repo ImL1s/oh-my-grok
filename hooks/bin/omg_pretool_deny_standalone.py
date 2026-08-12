@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "7b0bbac9e2aae2d6f86a69a65f5fd87bb4046cb4b82cb4f0432beb7412d2b3ea"
+_OMG_GENERATED_FROM_SHA = "26d1e8ead89da3c78acead39f3590c27866866ae12832b9187ba6ea2765cda76"
 _OMG_PLUGIN_VERSION = "0.8.0"
 
 
@@ -66,8 +66,22 @@ _ENV_ASSIGNS = r"(?:(?:[A-Za-z_][\w]*=\S*\s+)*)"
 # After each wrapper, reuse leading-style env assigns so forms like
 # ``env OMG_TEAM_WORKER=0 omg team launch`` still resolve the real head
 # (not the assignment token).
+# Option arity is NOT in this regex (ReDoS): token walk peels env -i /
+# command -p / nice -n N. Keep this pattern a single bounded wrapper name.
 _WRAPPER_BIN = r"(?:(?:\S*/)?(?:env|command|xargs|nice|nohup|sudo|time|exec))"
 _WRAPPERS = rf"(?:{_WRAPPER_BIN}\s+(?:--\s+)*{_ENV_ASSIGNS})*"
+_HEAD_TAIL_TEAM_LIMIT = 14
+_WRAPPER_NAMES = frozenset(
+    {"env", "command", "xargs", "nice", "nohup", "sudo", "time", "exec"}
+)
+_ENV_WRAPPER_FLAGS = frozenset({"-i", "--ignore-environment"})
+_ENV_WRAPPER_VALUE_OPTS = frozenset({"-u", "--unset"})
+_ENV_WRAPPER_VALUE_EQ = "--unset="
+_COMMAND_WRAPPER_FLAGS = frozenset({"-p", "-v", "-V"})
+_NICE_WRAPPER_VALUE_OPTS = frozenset({"-n", "--adjustment"})
+_NICE_WRAPPER_VALUE_EQ = "--adjustment="
+_NICE_ADJ_TOKEN = re.compile(r"^[+-]?\d+$")
+_ENV_ASSIGN_TOKEN = re.compile(r"^[A-Za-z_][\w]*=")
 _PATH_PREFIX = r"(?:\S*/)?"
 _SHELL_WORD = r"""(?:\\.|[^\s;&|()'"`\\]+|'[^']*'|"(?:\\.|[^"\\])*")+"""
 _CONTROL_COMMAND_WORD = r"(?:if|elif|while|until|then|else|do|coproc|!)"
@@ -1555,11 +1569,18 @@ def _has_denied_decoded_command_head(command: str) -> bool:
 
     search_position = 0
     while match := _DECODED_COMMAND_HEAD.search(command, search_position):
-        if (
-            _shell_context_is_executable(command, match.start()) is True
-            and _decoded_shell_word_is_denied(match.group("word"))
-        ):
-            return True
+        if _shell_context_is_executable(command, match.start()) is True:
+            raw_word = match.group("word")
+            if _decoded_shell_word_is_denied(raw_word):
+                return True
+            base = _executable_basename(raw_word)
+            if _looks_like_wrapper_option_residue(base or raw_word) or (
+                base in _WRAPPER_NAMES
+            ):
+                words = _semantic_words_from_head_match(command, match, limit=8)
+                remaining = _peel_wrapper_chain(words)
+                if remaining and _decoded_shell_word_is_denied(remaining[0]):
+                    return True
         search_position = match.start() + 1
     return False
 
@@ -1801,6 +1822,181 @@ def _next_decoded_words(command: str, start: int, *, limit: int = 4) -> list[str
     return semantic
 
 
+def _token_basename(word: str) -> str:
+    return word.rsplit("/", 1)[-1].lower() if word else ""
+
+
+def _looks_like_wrapper_option_residue(token: str) -> bool:
+    """True for a leftover wrapper flag used as the decoded command head."""
+
+    return bool(token) and token.startswith("-") and token != "-"
+
+
+def _is_env_assign_token(token: str) -> bool:
+    return bool(token) and _ENV_ASSIGN_TOKEN.match(token) is not None
+
+
+def _glued_nice_adjustment(token: str) -> bool:
+    """``-n5`` / ``-n-5`` — short niceness glued to ``-n``."""
+
+    return token.startswith("-n") and _NICE_ADJ_TOKEN.match(token[2:]) is not None
+
+
+def _peel_one_wrapper(words: list[str]) -> list[str] | None:
+    """Peel one supported wrapper and its bounded options.
+
+    Returns remaining words after the wrapper. Stops before an unknown or
+    malformed option so the caller can fail-closed on residue flags.
+    Returns ``None`` when *words* does not start with a wrapper name.
+    """
+
+    if not words:
+        return None
+    name = _token_basename(words[0])
+    if name not in _WRAPPER_NAMES:
+        return None
+    index = 1
+    n_words = len(words)
+    while index < n_words:
+        token = words[index]
+        if token == "--":
+            index += 1
+            break
+        if name == "env":
+            if token in _ENV_WRAPPER_FLAGS:
+                index += 1
+                continue
+            if token in _ENV_WRAPPER_VALUE_OPTS:
+                if index + 1 >= n_words:
+                    break
+                index += 2
+                continue
+            if token.startswith(_ENV_WRAPPER_VALUE_EQ) and len(token) > len(
+                _ENV_WRAPPER_VALUE_EQ
+            ):
+                index += 1
+                continue
+            if _is_env_assign_token(token):
+                index += 1
+                continue
+            break
+        if name == "command":
+            if token in _COMMAND_WRAPPER_FLAGS:
+                index += 1
+                continue
+            break
+        if name == "nice":
+            if _glued_nice_adjustment(token):
+                index += 1
+                continue
+            if token in _NICE_WRAPPER_VALUE_OPTS:
+                if index + 1 >= n_words or not _NICE_ADJ_TOKEN.match(words[index + 1]):
+                    break
+                index += 2
+                continue
+            if token.startswith(_NICE_WRAPPER_VALUE_EQ) and _NICE_ADJ_TOKEN.match(
+                token[len(_NICE_WRAPPER_VALUE_EQ) :]
+            ):
+                index += 1
+                continue
+            break
+        if _is_env_assign_token(token):
+            index += 1
+            continue
+        break
+    return words[index:]
+
+
+def _peel_wrapper_chain(words: list[str]) -> list[str]:
+    """Peel stacked supported wrappers, then skip leftover unknown flags."""
+
+    remaining = words
+    while remaining:
+        peeled = _peel_one_wrapper(remaining)
+        if peeled is None:
+            break
+        remaining = peeled
+    return _after_wrapper_option_residue(remaining)
+
+
+def _semantic_words_from_head_match(
+    command: str, match: re.Match[str], *, limit: int
+) -> list[str]:
+    """Wrapper tokens in the match plus a bounded tail after the captured head.
+
+    ``_WRAPPERS`` consumes only the wrapper *name*, so ``env -i omg`` captures
+    ``-i``. Decoding the full match recovers ``env`` so option arity can peel.
+    """
+
+    raw = _decode_shell_words(_insert_unquoted_shell_boundaries(match.group(0)))
+    cleaned: list[str] = []
+    skip_next = False
+    for word in raw:
+        if skip_next:
+            skip_next = False
+            continue
+        if word in _SHELL_COMMAND_SEPARATORS or word in ("(", ")"):
+            continue
+        if _is_shell_redirect_token(word):
+            if word in _SHELL_REDIR_OPS or _SHELL_REDIR_PURE.match(word):
+                skip_next = True
+            continue
+        cleaned.append(word)
+    tail = _next_decoded_words(command, match.end(), limit=limit)
+    return [*cleaned, *tail]
+
+
+def _after_wrapper_option_residue(words: list[str]) -> list[str]:
+    """Skip leftover wrapper flags; return words from the first non-flag token.
+
+    Fail-closed look-ahead only. Does not skip a following value token, so
+    ``env --weird echo omg team`` does not treat later ``omg`` as the head.
+    """
+
+    if not words or not _looks_like_wrapper_option_residue(words[0]):
+        return words
+    index = 0
+    while index < len(words) and _looks_like_wrapper_option_residue(words[index]):
+        index += 1
+    return words[index:]
+
+
+def _shell_c_bodies_from_head_words(words: list[str]) -> list[str]:
+    """If peeled wrappers leave ``sh|bash|zsh -c``, yield the command body."""
+
+    remaining = _peel_wrapper_chain(words)
+    if not remaining:
+        return []
+    bodies: list[str] = []
+    if (
+        _token_basename(remaining[0]) in {"sh", "bash", "zsh"}
+        and len(remaining) >= 3
+        and remaining[1].startswith("-")
+        and "c" in remaining[1]
+    ):
+        bodies.append(remaining[2])
+    return bodies
+
+
+def _team_argv_from_semantic_words(words: list[str]) -> list[str] | None:
+    """Return argv-after-``team`` after peeling wrappers / option residue.
+
+    Unknown/malformed wrapper flags fail closed only when the next non-flag
+    token is ``omg``. A non-flag head that is not ``omg`` is not scanned
+    (avoids ``echo omg team``).
+    """
+
+    remaining = _peel_wrapper_chain(words)
+    if not remaining:
+        return None
+    if _token_basename(remaining[0]) != _FIRST_PARTY_TEAM_BIN:
+        return None
+    rest = _peel_supported_team_leading_globals(remaining[1:])
+    if rest and rest[0].lower() == "team":
+        return [w.lower() for w in rest[1:]]
+    return None
+
+
 def _has_foreign_omc_team(command: str) -> bool:
     """True when a foreign ``omc team`` orchestration CLI is in command position.
 
@@ -1809,15 +2005,30 @@ def _has_foreign_omc_team(command: str) -> bool:
     ``sh|bash|zsh -c/-lc`` bodies are handled by the existing shell-c walk.
     Also covers no-space shell boundaries after *or before* ``team``
     (``omc team>out``, ``omc>out team``, ``omc 2>&1 team``, ``omc team;echo``).
+    Wrapper-option residue (``env --weird omc team``) fail-closes by scanning
+    later tokens for ``omc`` + ``team``.
     """
 
     search_position = 0
     while match := _DECODED_COMMAND_HEAD.search(command, search_position):
         if _shell_context_is_executable(command, match.start()) is True:
-            base = _executable_basename(match.group("word"))
+            raw_word = match.group("word")
+            base = _executable_basename(raw_word)
             if base in _FOREIGN_ORCHESTRATOR_BINS:
                 tail = _next_decoded_words(command, match.end(), limit=1)
                 if tail and tail[0].lower() == "team":
+                    return True
+            elif _looks_like_wrapper_option_residue(base or raw_word) or (
+                base in _WRAPPER_NAMES
+            ):
+                words = _semantic_words_from_head_match(command, match, limit=8)
+                remaining = _peel_wrapper_chain(words)
+                if (
+                    remaining
+                    and _token_basename(remaining[0]) in _FOREIGN_ORCHESTRATOR_BINS
+                    and len(remaining) >= 2
+                    and remaining[1].lower() == "team"
+                ):
                     return True
         search_position = match.start() + 1
     return False
@@ -1854,19 +2065,33 @@ def _iter_first_party_team_argvs(command: str):
     Shell metacharacter boundaries are normalized so no-space forms such as
     ``omg team>out launch``, ``omg>out team launch``, ``omg 2>&1 team launch``,
     and ``omg team;echo`` classify correctly.
+
+    Known wrapper options (``env -i``, ``command -p``, ``nice -n 5``) are
+    consumed by :data:`_WRAPPERS` before the head token. Unknown/malformed
+    wrapper flags leave a ``-…`` residue head; those fail closed by scanning
+    later tokens for ``omg`` + ``team`` (not an unbounded payload scan after a
+    non-flag head such as ``echo``).
     """
 
     search_position = 0
     while match := _DECODED_COMMAND_HEAD.search(command, search_position):
         if _shell_context_is_executable(command, match.start()) is True:
-            base = _executable_basename(match.group("word"))
+            raw_word = match.group("word")
+            base = _executable_basename(raw_word)
             if base == _FIRST_PARTY_TEAM_BIN:
-                # Extra words so ``--json --project-root PATH team N:role``
-                # still sees ``team`` after peeling supported globals.
                 tail = _next_decoded_words(command, match.end(), limit=10)
                 rest = _peel_supported_team_leading_globals(tail)
                 if rest and rest[0].lower() == "team":
                     yield [w.lower() for w in rest[1:]]
+            elif _looks_like_wrapper_option_residue(base or raw_word) or (
+                base in _WRAPPER_NAMES
+            ):
+                words = _semantic_words_from_head_match(
+                    command, match, limit=_HEAD_TAIL_TEAM_LIMIT
+                )
+                argv = _team_argv_from_semantic_words(words)
+                if argv is not None:
+                    yield argv
         search_position = match.start() + 1
 
 
@@ -1963,6 +2188,25 @@ def is_first_party_team_nested_launch(command: str, depth: int = 0) -> bool:
                 body = words[0] if words else ""
                 if body and is_first_party_team_nested_launch(body, depth + 1):
                     return True
+            search_position = match.start() + 1
+        # Wrapper options before ``bash -c`` (``env -i bash -c '…'``) are not
+        # visible to :data:`_SHELL_C_HEAD`; peel then inspect the body.
+        search_position = 0
+        while match := _DECODED_COMMAND_HEAD.search(command, search_position):
+            if _shell_context_is_executable(command, match.start()) is True:
+                raw_word = match.group("word")
+                base = _executable_basename(raw_word)
+                if _looks_like_wrapper_option_residue(base or raw_word) or (
+                    base in _WRAPPER_NAMES
+                ):
+                    words = _semantic_words_from_head_match(
+                        command, match, limit=_HEAD_TAIL_TEAM_LIMIT
+                    )
+                    for body in _shell_c_bodies_from_head_words(words):
+                        if body and is_first_party_team_nested_launch(
+                            body, depth + 1
+                        ):
+                            return True
             search_position = match.start() + 1
     except _ShellParseBudgetExceeded:
         # Fail closed on nested-launch classification only when already in worker

@@ -67,6 +67,13 @@ def _scrub_omg_allow_external_cli(monkeypatch):
     "env nohup claude -p x",
     # path-prefixed env / shell / eval
     "/usr/bin/env claude -p x",
+    "env -i claude -p x",
+    "env --ignore-environment claude -p x",
+    "command -p claude -p x",
+    "nice -n 5 claude -p x",
+    "/usr/bin/env -i claude -p x",
+    "env -i omc team x",
+    "env --weird claude -p x",
     "/bin/bash -c 'claude -p x'",
     "/bin/bash -lc \"codex exec foo\"",
     "eval claude -p x",
@@ -1028,6 +1035,83 @@ def test_worker_leading_globals_before_team_classified(monkeypatch):
             {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
         )
         assert d["decision"] == "allow", cmd
+
+
+def test_worker_wrapper_options_before_wrapped_command(monkeypatch):
+    """PR #156 P1: env -i / command -p / nice -n N must not hide omg team.
+
+    discussion_r3768385334: wrapper classified but options not consumed, so
+    ``-i`` became the head and the hook allowed the launch. ``env -i`` also
+    strips worker markers, so runtime preflight is bypassed unless the hook
+    denies.
+    """
+    from omg_cli.deny import is_first_party_team_nested_launch
+
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+
+    deny_cmds = (
+        "env -i omg team launch --goal x",
+        "env --ignore-environment omg team launch --goal x",
+        "command -p omg team launch --goal x",
+        "nice -n 5 omg team launch --goal x",
+        "nice -n -5 omg team start --goal x",
+        "nice --adjustment 5 omg team launch --goal x",
+        "nice --adjustment=5 omg team launch --goal x",
+        "/usr/bin/env -i omg team launch --goal x",
+        "env -i command -p omg team start --goal x",
+        "env -i nice -n 5 omg team scale --add 1",
+        "env -i bash -lc 'omg team launch --goal x'",
+        "env -i /opt/omg/bin/omg team 2:executor \"x\"",
+        "env -i omg team shutdown",
+        "env -i omg team \"fix tests\"",
+        # unknown / malformed wrapper flags fail closed when launch remains
+        "env --weird omg team launch --goal x",
+        "env -u SECRET omg team launch --goal x",
+        "nice -n omg team launch --goal x",
+        "env --weird bash -c 'omg team launch --goal x'",
+        # multi-head: safe then wrapped launch
+        "omg team api catalog; env -i omg team launch --goal x",
+    )
+    for cmd in deny_cmds:
+        assert is_first_party_team_nested_launch(cmd) is True, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "deny", cmd
+        assert "E_TEAM_NESTED_LAUNCH" in (d.get("reason") or ""), cmd
+        assert "omg ask" not in (d.get("reason") or ""), cmd
+
+    allow_cmds = (
+        "env -i omg team api catalog",
+        "env -i omg team status r",
+        "env -i omg team watch",
+        "env -i omg team hyperplan plan",
+        "env -i omg team security-research plan",
+        "command -p omg team panes --json",
+        "nice -n 5 omg team capture --worker w1",
+        # unknown flags without a team launch must not false-positive
+        "env --weird echo hello",
+        "nice -n 5 pytest tests/",
+        "env -i echo omg team launch",
+        # do not scan past a non-flag head after residue (no broad FP)
+        "env --weird echo omg team launch",
+    )
+    for cmd in allow_cmds:
+        assert is_first_party_team_nested_launch(cmd) is False, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "allow", cmd
+
+    # Leader (no worker marker): first-party team still not an external deny.
+    monkeypatch.delenv("OMG_TEAM_WORKER", raising=False)
+    leader = decide_pre_tool_use(
+        {
+            "toolName": "run_terminal_command",
+            "toolInput": {"command": "env -i omg team launch --goal x"},
+        }
+    )
+    assert leader["decision"] == "allow"
 
 
 def test_team_op_vocab_matches_cli_grammar():

@@ -538,6 +538,38 @@ def test_standalone_denies_omc_team_and_worker_nested_launch():
         env_extra={"OMG_TEAM_WORKER": "1", "OMG_TEAM_WORKER_ID": "w1"},
     )
     assert rc == 0 and json.loads(out)["decision"] == "allow"
+    # Wrapper options must be consumed (env -i / command -p / nice -n).
+    for cmd in (
+        "env -i omg team launch --goal x",
+        "env --ignore-environment omg team launch --goal x",
+        "command -p omg team launch --goal x",
+        "nice -n 5 omg team launch --goal x",
+        "env --weird omg team launch --goal x",
+    ):
+        payload = json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": cmd},
+            }
+        )
+        rc, out = _run_standalone(payload, env_extra={"OMG_TEAM_WORKER": "1"})
+        assert rc == 0, cmd
+        body = json.loads(out)
+        assert body["decision"] == "deny", (cmd, body)
+        assert "E_TEAM_NESTED_LAUNCH" in body.get("reason", ""), (cmd, body)
+    rc, out = _run_standalone(
+        '{"tool_name":"run_terminal_command","tool_input":{"command":"env -i omg team api catalog"}}',
+        env_extra={"OMG_TEAM_WORKER": "1", "OMG_TEAM_WORKER_ID": "w1"},
+    )
+    assert rc == 0 and json.loads(out)["decision"] == "allow"
+    rc, out = _run_standalone(
+        '{"tool_name":"run_terminal_command","tool_input":{"command":"env -i claude -p x"}}'
+    )
+    assert rc == 0 and json.loads(out)["decision"] == "deny"
+    rc, out = _run_standalone(
+        '{"tool_name":"run_terminal_command","tool_input":{"command":"env -i omc team x"}}'
+    )
+    assert rc == 0 and json.loads(out)["decision"] == "deny"
 
 
 # ------------------------------------------------- ORIGINAL regression: fail-open launcher
