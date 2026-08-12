@@ -918,3 +918,70 @@ def test_worker_multi_head_nested_launch_classifier_and_budget(monkeypatch):
     # Oversized shell-c body still fail-closes via parse budget (or classifies).
     huge = "omg team api catalog; " * 2000 + "omg team launch --goal x"
     assert is_first_party_team_nested_launch(huge) is True
+
+
+def test_worker_goal_shorthand_and_shutdown_classified(monkeypatch):
+    """PR #156 P2: normalize_team_argv Form B + shutdown alias match hook DiD."""
+    from omg_cli.deny import is_first_party_team_nested_launch
+
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+
+    deny_cmds = (
+        'omg team "fix tests"',
+        "omg team fix tests",
+        "omg team ship-it",
+        "omg team shutdown",
+        "omg team shutdown alpha",
+        "/opt/omg/bin/omg team \"fix tests\"",
+        "command omg team fix flaky",
+        "env omg team shutdown",
+        "bash -lc 'omg team \"fix tests\"'",
+        "bash -c 'omg team shutdown'",
+        # multi-head: safe then goal shorthand
+        'omg team api catalog; omg team "fix tests"',
+        "omg team status\nomg team shutdown",
+        # path + wrapper
+        "/usr/local/bin/omg team 3:executor fix",
+        "nice omg team \"goal only\"",
+    )
+    for cmd in deny_cmds:
+        assert is_first_party_team_nested_launch(cmd) is True, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "deny", cmd
+        assert "E_TEAM_NESTED_LAUNCH" in (d.get("reason") or ""), cmd
+
+    allow_cmds = (
+        "omg team api catalog",
+        "omg team status r",
+        "omg team panes --json",
+        "omg team capture --worker w1",
+        "omg team api claim-task --input '{}'",
+        # leader bare (non-worker) still allows first-party team
+    )
+    for cmd in allow_cmds:
+        assert is_first_party_team_nested_launch(cmd) is False, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "allow", cmd
+
+
+def test_team_op_vocab_matches_cli_grammar():
+    """deny.py launch/non-launch vocab must cover team.cli RESERVED_ACTIONS."""
+    from omg_cli.deny import _TEAM_NESTED_LAUNCH_OPS, _TEAM_NON_LAUNCH_OPS
+    from omg_cli.team.cli import RESERVED_ACTIONS
+
+    classified = _TEAM_NESTED_LAUNCH_OPS | _TEAM_NON_LAUNCH_OPS
+    missing = RESERVED_ACTIONS - classified
+    assert not missing, f"deny vocab missing reserved ops: {sorted(missing)}"
+    overlap = _TEAM_NESTED_LAUNCH_OPS & _TEAM_NON_LAUNCH_OPS
+    assert not overlap, f"ops in both nested and non-launch: {sorted(overlap)}"
+    # shutdown is lifecycle alias, not a safe op
+    assert "shutdown" in _TEAM_NESTED_LAUNCH_OPS
+    assert "shutdown" not in _TEAM_NON_LAUNCH_OPS
+    # Form B goals are not reserved — classifier must still catch them
+    from omg_cli.deny import is_first_party_team_nested_launch
+
+    assert is_first_party_team_nested_launch('omg team "not-a-reserved-op"') is True

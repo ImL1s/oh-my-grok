@@ -46,8 +46,12 @@ _FOREIGN_ORCHESTRATOR_BINS = frozenset({"omc"})
 # First-party Team binary basename. Soft-gate does NOT own its authorization;
 # OMG Team runtime does (actor, operation, identity, nested-launch admission).
 _FIRST_PARTY_TEAM_BIN = "omg"
-# Nested launch / supervise verbs denied as defense-in-depth when the *process*
+# Nested launch / lifecycle verbs denied as defense-in-depth when the *process*
 # environment is a worker (never from command-text env assignments).
+# Keep in lockstep with ``omg_cli.team.cli`` lifecycle + ``shutdown`` alias;
+# tests/test_deny.py::test_team_op_vocab_matches_cli_grammar guards drift.
+# ``supervisor`` stays here for host-shell DiD; legal pane supervisors are
+# launched by tmux (not PreToolUse) and admitted by identity-bound runtime.
 _TEAM_NESTED_LAUNCH_OPS = frozenset(
     {
         "launch",
@@ -57,7 +61,30 @@ _TEAM_NESTED_LAUNCH_OPS = frozenset(
         "resume",
         "supervisor",
         "stop",
+        "shutdown",  # OMX alias → stop (normalize_team_argv)
         "collect",
+    }
+)
+# Non-launch reserved ops that must still reach Team runtime under worker env
+# (identity-bound api / read-only / operator; runtime may still refuse some).
+# Mirror ``omg_cli.team.cli.RESERVED_ACTIONS`` minus nested-launch set.
+_TEAM_NON_LAUNCH_OPS = frozenset(
+    {
+        "api",
+        "status",
+        "panes",
+        "capture",
+        "focus",
+        "key",
+        "input",
+        "watch",
+        "view",
+        "worker-ready",
+        "hyperplan",
+        "security-research",
+        "help",
+        "-h",
+        "--help",
     }
 )
 # Shorthand ``omg team N[:role] "goal"`` — first token after ``team`` is N or N:role.
@@ -1785,6 +1812,12 @@ def _first_party_team_argv(command: str) -> list[str] | None:
 
 
 def _team_argv_is_nested_launch(argv: list[str]) -> bool:
+    """Match ``normalize_team_argv`` launch forms for soft-gate DiD.
+
+    Lifecycle verbs + ``shutdown`` alias, numeric ``N[:role]`` shorthand, and
+    bare goal strings (any non-reserved non-flag token) rewrite to ``team
+    launch`` at the CLI. Identity-bound / read-only reserved ops stay false.
+    """
     if not argv:
         # bare ``omg team`` — treat as launch surface (shorthand incomplete)
         return True
@@ -1793,7 +1826,13 @@ def _team_argv_is_nested_launch(argv: list[str]) -> bool:
         return True
     if _TEAM_SHORTHAND_WORKERS.match(op):
         return True
-    return False
+    # Flags after bare ``team`` are not Form B goals (normalize leaves raw).
+    if op.startswith("-") and op not in _TEAM_NON_LAUNCH_OPS:
+        return False
+    if op in _TEAM_NON_LAUNCH_OPS:
+        return False
+    # Form B: ``omg team "fix tests"`` / ``omg team fix tests`` → launch.
+    return True
 
 
 def is_first_party_team_nested_launch(command: str, depth: int = 0) -> bool:
