@@ -277,6 +277,22 @@ LEADER_ONLY_OPERATOR_ACTIONS: frozenset[str] = frozenset(
 )
 
 
+# Leader-owned hyperplan / security-research publication and decision.
+# Workers keep identity-bound ``claim-lane`` / ``submit-lane-result``.
+# Zero-mutation ``plan`` is not gated here.
+LEADER_ONLY_COMPOSITION_ACTIONS: frozenset[str] = frozenset(
+    {
+        "materialize",
+        "validate-decision",
+        "validate-report",
+        "produce-decision",
+        "produce-report",
+        "admit-tasks",
+        "collect-tasks",
+    }
+)
+
+
 def refuse_worker_operator_mutation(
     env: Mapping[str, str] | None = None,
     *,
@@ -302,11 +318,39 @@ def refuse_worker_operator_mutation(
         )
 
 
+def refuse_worker_composition_publication(
+    env: Mapping[str, str] | None = None,
+    *,
+    action: str = "hyperplan",
+    composition_action: str = "materialize",
+) -> None:
+    """Fail closed before composition publication/decision when already a worker.
+
+    Stable code: ``E_TEAM_WORKER_OPERATION_REFUSED``. Must run before
+    ``project_root`` discovery, JSON loads, or persist. Process env only —
+    command-text assignments never authorize.
+
+    Does **not** gate zero-mutation ``plan`` or identity-bound
+    ``claim-lane`` / ``submit-lane-result``.
+    """
+    if in_spawned_worker_context(env):
+        raise TeamGateError(
+            f"omg team {action} {composition_action} refused: worker processes "
+            "cannot invoke leader-owned composition publication/decision "
+            f"(E_TEAM_WORKER_OPERATION_REFUSED; "
+            f"one of {', '.join(WORKER_ENV_MARKERS)} is set). "
+            "Use identity-bound claim-lane / submit-lane-result or "
+            "zero-mutation plan.",
+            code="E_TEAM_WORKER_OPERATION_REFUSED",
+        )
+
+
 def preflight_team_worker_parsed_argv(
     action: str | None,
     *,
     env: Mapping[str, str] | None = None,
     command: str | None = None,
+    composition_action: str | None = None,
 ) -> None:
     """Canonical parsed-argv Team worker preflight. No I/O.
 
@@ -314,8 +358,9 @@ def preflight_team_worker_parsed_argv(
     BEFORE clear_resolved_project_root / resolve_project_root /
     resolve_supervisor_project_root / git / tmux / state / process writers.
 
-    Reuses refuse_nested_team_launch / refuse_worker_operator_mutation
-    (process env only — command-text assignments never authorize).
+    Reuses refuse_nested_team_launch / refuse_worker_operator_mutation /
+    refuse_worker_composition_publication (process env only — command-text
+    assignments never authorize).
     """
     if command is not None and command != "team":
         return
@@ -324,6 +369,12 @@ def preflight_team_worker_parsed_argv(
         refuse_nested_team_launch(env, action=act or "launch")
     elif act in LEADER_ONLY_OPERATOR_ACTIONS:
         refuse_worker_operator_mutation(env, action=act)
+    elif act in {"hyperplan", "security-research"}:
+        sub = (composition_action or "").strip()
+        if sub in LEADER_ONLY_COMPOSITION_ACTIONS:
+            refuse_worker_composition_publication(
+                env, action=act, composition_action=sub
+            )
 
 
 def in_non_team_spawn_context(env: Mapping[str, str] | None = None) -> bool:
@@ -7103,6 +7154,7 @@ __all__ = [
     "experimental_enabled",
     "format_status_table",
     "in_spawned_worker_context",
+    "LEADER_ONLY_COMPOSITION_ACTIONS",
     "LEADER_ONLY_OPERATOR_ACTIONS",
     "NESTED_LAUNCH_ACTIONS",
     "load_authoritative_team_meta",
@@ -7111,6 +7163,7 @@ __all__ = [
     "team_meta_lstat",
     "preflight_team_worker_parsed_argv",
     "refuse_nested_team_launch",
+    "refuse_worker_composition_publication",
     "refuse_worker_operator_mutation",
     "resolve_owner_token_for_start",
     "start_team",

@@ -109,6 +109,17 @@ _TEAM_NON_LAUNCH_OPS = frozenset(
         "--help",
     }
 )
+# Leader-owned hyperplan / security-research publication and decision.
+# Duplicated (stdlib-only standalone embed). Drift locked by F8 tests.
+_TEAM_LEADER_COMPOSITION_OPS = frozenset({
+    "materialize",
+    "validate-decision",
+    "validate-report",
+    "produce-decision",
+    "produce-report",
+    "admit-tasks",
+    "collect-tasks",
+})
 # Same supported leading globals as ``omg_cli.team.cli.split_supported_leading_globals``.
 # Duplicated here: deny.py is stdlib-only for standalone embed. Drift is locked
 # by tests/test_deny.py::test_deny_leading_globals_match_cli_normalize.
@@ -2149,6 +2160,9 @@ def _team_argv_is_nested_launch(argv: list[str]) -> bool:
     # Flags after bare ``team`` are not Form B goals (normalize leaves raw).
     if op.startswith("-") and op not in _TEAM_NON_LAUNCH_OPS:
         return False
+    if op in ("hyperplan", "security-research"):
+        sub = argv[1] if len(argv) > 1 else ""
+        return sub in _TEAM_LEADER_COMPOSITION_OPS
     if op in _TEAM_NON_LAUNCH_OPS:
         return False
     # Form B: ``omg team "fix tests"`` / ``omg team fix tests`` → launch.

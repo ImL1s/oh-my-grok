@@ -21,6 +21,7 @@ from omg_cli.project_root import ProjectRootResolution
 from omg_cli.team.cli import RESERVED_ACTIONS
 from omg_cli.team.plane import (
     EXPERIMENTAL_ENV,
+    LEADER_ONLY_COMPOSITION_ACTIONS,
     LEADER_ONLY_OPERATOR_ACTIONS,
     NESTED_LAUNCH_ACTIONS,
     TEAM_WORKER_ENV,
@@ -147,6 +148,8 @@ def test_nested_launch_actions_vocab_lock() -> None:
         }
     )
     assert NESTED_LAUNCH_ACTIONS.isdisjoint(LEADER_ONLY_OPERATOR_ACTIONS)
+    assert LEADER_ONLY_COMPOSITION_ACTIONS.isdisjoint(NESTED_LAUNCH_ACTIONS)
+    assert LEADER_ONLY_COMPOSITION_ACTIONS.isdisjoint(LEADER_ONLY_OPERATOR_ACTIONS)
     assert "supervisor" not in NESTED_LAUNCH_ACTIONS
     assert NESTED_LAUNCH_ACTIONS <= _TEAM_NESTED_LAUNCH_OPS
     leftover = RESERVED_ACTIONS - (
@@ -204,6 +207,53 @@ def test_preflight_legal_actions_pass_in_worker(
         "help",
     ):
         preflight_team_worker_parsed_argv(action, command="team")
+
+
+_LEADER_COMPOSITION_ACTIONS = (
+    "materialize",
+    "validate-decision",
+    "validate-report",
+    "produce-decision",
+    "produce-report",
+    "admit-tasks",
+    "collect-tasks",
+)
+
+
+@pytest.mark.parametrize("action", ("hyperplan", "security-research"))
+@pytest.mark.parametrize("composition_action", _LEADER_COMPOSITION_ACTIONS)
+def test_preflight_worker_refuses_leader_composition_publication(
+    action: str,
+    composition_action: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(TEAM_WORKER_ENV, "1")
+    with pytest.raises(TeamGateError) as ei:
+        preflight_team_worker_parsed_argv(
+            action,
+            command="team",
+            composition_action=composition_action,
+        )
+    assert ei.value.code == "E_TEAM_WORKER_OPERATION_REFUSED"
+    assert "leader-owned composition publication/decision" in str(ei.value)
+
+
+@pytest.mark.parametrize("action", ("hyperplan", "security-research"))
+@pytest.mark.parametrize(
+    "composition_action",
+    (None, "", "   ", "plan", "claim-lane", "submit-lane-result", "unknown-sub"),
+)
+def test_preflight_worker_allows_non_leader_composition_subactions(
+    action: str,
+    composition_action: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(TEAM_WORKER_ENV, "1")
+    preflight_team_worker_parsed_argv(
+        action,
+        command="team",
+        composition_action=composition_action,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -661,6 +711,119 @@ def test_main_worker_api_mailbox_list_reaches_execute_api_not_preflight_refuse(
     assert "E_TEAM_NESTED_LAUNCH" not in err
     assert "E_TEAM_WORKER_OPERATION_REFUSED" not in err
     assert rc == 0
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["team", "hyperplan", "materialize", "--spec", "x.json", "--run", "r1"],
+        [
+            "team",
+            "hyperplan",
+            "validate-decision",
+            "--run",
+            "r1",
+            "--input",
+            "d.json",
+        ],
+        [
+            "team",
+            "hyperplan",
+            "produce-decision",
+            "--run",
+            "r1",
+            "--input",
+            "b.json",
+        ],
+        ["team", "hyperplan", "admit-tasks", "--run", "r1", "--team-id", "t"],
+        ["team", "hyperplan", "collect-tasks", "--run", "r1", "--team-id", "t"],
+        [
+            "team",
+            "security-research",
+            "materialize",
+            "--spec",
+            "x.json",
+            "--run",
+            "r1",
+        ],
+        [
+            "team",
+            "security-research",
+            "validate-report",
+            "--run",
+            "r1",
+            "--input",
+            "d.json",
+        ],
+        [
+            "team",
+            "security-research",
+            "produce-report",
+            "--run",
+            "r1",
+            "--input",
+            "b.json",
+        ],
+        [
+            "team",
+            "security-research",
+            "admit-tasks",
+            "--run",
+            "r1",
+            "--team-id",
+            "t",
+        ],
+        [
+            "team",
+            "security-research",
+            "collect-tasks",
+            "--run",
+            "r1",
+            "--team-id",
+            "t",
+        ],
+    ],
+)
+def test_main_worker_composition_publication_refused_before_side_effects(
+    argv: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _worker_env(monkeypatch)
+    _patch_refused_side_effects(monkeypatch)
+    rc = main(argv)
+    assert rc == 2
+    err = capsys.readouterr().err
+    _assert_typed(err, "E_TEAM_WORKER_OPERATION_REFUSED")
+    assert "E_TEAM_NESTED_LAUNCH" not in err
+    assert "leader-owned composition publication/decision" in err
+
+
+def test_cmd_team_hyperplan_materialize_did_before_project_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Direct cmd_team(hyperplan materialize) refuses before project_root."""
+    from omg_cli.commands.team import cmd_team
+
+    monkeypatch.chdir(tmp_path)
+    _worker_env(monkeypatch)
+    _patch_refused_side_effects(monkeypatch)
+    monkeypatch.setattr("omg_cli.commands.team.project_root", _boom)
+    args = argparse.Namespace(
+        team_action="hyperplan",
+        hyperplan_action="materialize",
+        hyperplan_spec="x.json",
+        run_id="r1",
+        as_json=False,
+        json_output=False,
+    )
+    rc = cmd_team(args)
+    assert rc == 2
+    _assert_typed(capsys.readouterr().err, "E_TEAM_WORKER_OPERATION_REFUSED")
 
 
 def test_cmd_team_launch_did_nested_before_side_effects(

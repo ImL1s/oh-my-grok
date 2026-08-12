@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "316c438fe42e6e768895537e7a58759c8dc7a2b490f2eb2f371232741b4271c6"
+_OMG_GENERATED_FROM_SHA = "44878984db72c87ce1d0e4aa90477ed4d349d10aed45b08b6fde2a15a96cdaf7"
 _OMG_PLUGIN_VERSION = "0.8.0"
 
 
@@ -152,6 +152,17 @@ _TEAM_NON_LAUNCH_OPS = frozenset(
         "--help",
     }
 )
+# Leader-owned hyperplan / security-research publication and decision.
+# Duplicated (stdlib-only standalone embed). Drift locked by F8 tests.
+_TEAM_LEADER_COMPOSITION_OPS = frozenset({
+    "materialize",
+    "validate-decision",
+    "validate-report",
+    "produce-decision",
+    "produce-report",
+    "admit-tasks",
+    "collect-tasks",
+})
 # Same supported leading globals as ``omg_cli.team.cli.split_supported_leading_globals``.
 # Duplicated here: deny.py is stdlib-only for standalone embed. Drift is locked
 # by tests/test_deny.py::test_deny_leading_globals_match_cli_normalize.
@@ -2192,6 +2203,9 @@ def _team_argv_is_nested_launch(argv: list[str]) -> bool:
     # Flags after bare ``team`` are not Form B goals (normalize leaves raw).
     if op.startswith("-") and op not in _TEAM_NON_LAUNCH_OPS:
         return False
+    if op in ("hyperplan", "security-research"):
+        sub = argv[1] if len(argv) > 1 else ""
+        return sub in _TEAM_LEADER_COMPOSITION_OPS
     if op in _TEAM_NON_LAUNCH_OPS:
         return False
     # Form B: ``omg team "fix tests"`` / ``omg team fix tests`` → launch.

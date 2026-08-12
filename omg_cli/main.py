@@ -327,6 +327,10 @@ def main(argv: list[str] | None = None) -> int:
             preflight_team_worker_parsed_argv(
                 team_action if team_action is None else str(team_action),
                 command="team",
+                composition_action=(
+                    getattr(args, "hyperplan_action", None)
+                    or getattr(args, "security_research_action", None)
+                ),
             )
         except TeamGateError as exc:
             print(f"omg team: {exc}", file=sys.stderr)

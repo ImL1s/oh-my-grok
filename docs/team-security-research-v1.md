@@ -21,7 +21,11 @@ omg team security-research claim-lane --run RUN_ID --team-id TEAM_ID --lane-id L
 omg team security-research submit-lane-result --run RUN_ID --team-id TEAM_ID --claim-file CLAIM.json --result RESULT.json [--json]
 ```
 
-`plan` performs **zero** filesystem mutation. `materialize` atomically writes
+`plan` performs **zero** filesystem mutation. `materialize`,
+`validate-report`, `produce-report`, `admit-tasks`, and `collect-tasks` are
+**leader-only** and fail closed for a worker process or nested first-party
+launch **before persist**; `claim-lane` / `submit-lane-result` remain
+**worker-only**. `materialize` atomically writes
 only:
 
 `.omg/state/runs/<run>/team/compositions/security-research-v1.json`

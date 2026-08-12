@@ -37,7 +37,7 @@ from omg_cli.team.operation_catalog import (
     catalog_document_json,
     serialize_operation_catalog,
 )
-from omg_cli.team.plane import EXPERIMENTAL_ENV
+from omg_cli.team.plane import EXPERIMENTAL_ENV, WORKER_ENV_MARKERS
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN_MANIFEST = ROOT / "tests" / "golden" / "team_hyperplan_v1_manifest.json"
@@ -71,6 +71,14 @@ def _tree_digest(root: Path) -> str:
             body = path.read_bytes()
             rows.append(f"{rel}:{hashlib.sha256(body).hexdigest()}")
     return hashlib.sha256("\n".join(rows).encode()).hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def _scrub_worker_markers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leader persist now consults process env; keep this file hermetic."""
+    for key in WORKER_ENV_MARKERS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("OMG_TEAM_WORKER_ID", raising=False)
 
 
 def _env_on(monkeypatch: pytest.MonkeyPatch) -> None:

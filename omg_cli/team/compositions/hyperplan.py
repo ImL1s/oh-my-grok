@@ -308,10 +308,25 @@ def compile_hyperplan_v1(spec: Mapping[str, Any] | Any) -> dict[str, Any]:
     return manifest
 
 
+def _require_leader_publication_env(env: Mapping[str, str] | None = None) -> None:
+    """Refuse persist writers from worker / incomplete worker env."""
+    from omg_cli.team.compositions.task_driver import (
+        CompositionTaskDriverError,
+        _require_leader_only_env,
+    )
+
+    try:
+        _require_leader_only_env(env)
+    except CompositionTaskDriverError as exc:
+        raise HyperplanError(str(exc), code=exc.code) from exc
+
+
 def materialize_hyperplan_v1(
     root: Path | str,
     run_id: str,
     spec: Mapping[str, Any] | Any,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Atomically persist a compiled Hyperplan manifest under the Team run root.
 
@@ -319,6 +334,7 @@ def materialize_hyperplan_v1(
     different digest is refused. Corrupt / symlink / foreign-writer artifacts
     fail closed. Never launches execution surfaces.
     """
+    _require_leader_publication_env(env)
     root_path = Path(root)
     rid = _safe_run_id(run_id)
     _require_live_run(root_path, rid)
@@ -405,12 +421,15 @@ def validate_hyperplan_decision_v1(
     decision: Mapping[str, Any] | Any,
     *,
     persist: bool = True,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Validate a HyperplanDecisionV1 against the materialized manifest.
 
     Never invents or silently approves a decision. ``verdict=approved`` requires
     complete lane coverage plus empty conflicts/repairs/unresolved risks.
     """
+    if persist:
+        _require_leader_publication_env(env)
     root_path = Path(root)
     rid = _safe_run_id(run_id)
     _require_live_run(root_path, rid)
@@ -1246,6 +1265,8 @@ def produce_hyperplan_decision_v1(
     root: Path | str,
     run_id: str,
     bundle: Mapping[str, Any] | Any,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Persist result bundle then decision under the composition lock.
 
@@ -1254,6 +1275,7 @@ def produce_hyperplan_decision_v1(
     production is idempotent; conflicts / path attacks leave no authoritative
     decision. Never mutates ``status.json`` / ``passes`` / ``verified``.
     """
+    _require_leader_publication_env(env)
     root_path = Path(root)
     rid = _safe_run_id(run_id)
     _require_live_run(root_path, rid)

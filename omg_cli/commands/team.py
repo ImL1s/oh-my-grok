@@ -372,7 +372,13 @@ def cmd_team(args: argparse.Namespace) -> int:
         # set OMG_TEAM_WORKER=1 and run ``omg team supervisor --descriptor …``;
         # admission is identity/descriptor/owner-token bound (see
         # admit_pane_supervisor) rather than blanket nested-launch refuse.
-        preflight_team_worker_parsed_argv(action)
+        preflight_team_worker_parsed_argv(
+            action,
+            composition_action=(
+                getattr(args, "hyperplan_action", None)
+                or getattr(args, "security_research_action", None)
+            ),
+        )
         # #100: supervisor must not trigger generic project-root discovery via
         # project_root(); it consumes the validated leader root from env only.
         if action == "supervisor":

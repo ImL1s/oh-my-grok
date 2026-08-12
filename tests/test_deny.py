@@ -1127,6 +1127,82 @@ def test_worker_wrapper_options_before_wrapped_command(monkeypatch):
     assert leader["decision"] == "allow"
 
 
+def test_worker_composition_publication_classified_as_nested_launch(monkeypatch):
+    """#146 F8: worker nested-launch DiD for leader composition publication."""
+    from omg_cli.deny import (
+        _TEAM_LEADER_COMPOSITION_OPS,
+        is_first_party_team_nested_launch,
+    )
+    from omg_cli.team.plane import LEADER_ONLY_COMPOSITION_ACTIONS
+
+    assert _TEAM_LEADER_COMPOSITION_OPS == LEADER_ONLY_COMPOSITION_ACTIONS
+
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+
+    deny_cmds = (
+        "omg team hyperplan materialize --spec s.json --run r1",
+        "omg team hyperplan produce-decision --run r1 --input b.json",
+        "omg team hyperplan validate-decision --run r1 --input d.json",
+        "omg team hyperplan admit-tasks --run r1 --team-id t",
+        "omg team hyperplan collect-tasks --run r1 --team-id t",
+        "omg team security-research materialize --spec s.json --run r1",
+        "omg team security-research produce-report --run r1 --input b.json",
+        "omg team security-research validate-report --run r1 --input d.json",
+        "omg team security-research admit-tasks --run r1 --team-id t",
+        "omg team security-research collect-tasks --run r1 --team-id t",
+        "env omg team hyperplan materialize --spec s --run r",
+        "bash -c 'omg team hyperplan materialize --spec s --run r'",
+        "bash -c 'omg team security-research admit-tasks --run r --team-id t'",
+        "env omg team security-research produce-report --run r --input b.json",
+    )
+    for cmd in deny_cmds:
+        assert is_first_party_team_nested_launch(cmd) is True, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "deny", cmd
+        assert "E_TEAM_NESTED_LAUNCH" in (d.get("reason") or ""), cmd
+
+    allow_cmds = (
+        "omg team hyperplan plan --spec s.json",
+        "omg team hyperplan claim-lane --run r --team-id t --lane-id L",
+        (
+            "omg team hyperplan submit-lane-result --run r --team-id t "
+            "--claim-file c --result r.json"
+        ),
+        "omg team security-research plan --spec s.json",
+        "omg team security-research claim-lane --run r --team-id t --lane-id L",
+        (
+            "omg team security-research submit-lane-result --run r --team-id t "
+            "--claim-file c --result r.json"
+        ),
+        "omg team hyperplan",
+        "omg team security-research",
+        "omg team api catalog",
+        "omg team status r",
+        "omg team panes --json",
+        "omg team capture --worker w1",
+    )
+    for cmd in allow_cmds:
+        assert is_first_party_team_nested_launch(cmd) is False, cmd
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "allow", cmd
+
+    monkeypatch.delenv("OMG_TEAM_WORKER", raising=False)
+    for cmd in (
+        "omg team hyperplan materialize --spec s.json --run r1",
+        "omg team security-research admit-tasks --run r1 --team-id t",
+        "omg team hyperplan plan --spec s.json",
+        "omg team api catalog",
+    ):
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "allow", cmd
+
+
 def test_team_op_vocab_matches_cli_grammar():
     """deny.py launch/non-launch vocab must cover team.cli RESERVED_ACTIONS."""
     from omg_cli.deny import _TEAM_NESTED_LAUNCH_OPS, _TEAM_NON_LAUNCH_OPS
