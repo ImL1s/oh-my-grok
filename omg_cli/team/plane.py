@@ -435,8 +435,6 @@ def _atomic_write_json_at(parent_fd: int, name: str, data: Mapping[str, Any]) ->
 def _load_team_meta_from_fd(parent_fd: int, *, run_id: str) -> dict[str, Any]:
     """Load ``team.json`` relative to a pinned team-directory descriptor."""
 
-    from omg_cli.contracts.path_keys import DATA_FILE_MODE
-
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open("team.json", flags, dir_fd=parent_fd)
@@ -456,14 +454,7 @@ def _load_team_meta_from_fd(parent_fd: int, *, run_id: str) -> dict[str, Any]:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-    if not isinstance(data, dict):
-        raise TeamError("team.json must be a JSON object")
-    _require_cli_writer(data, label="team.json")
-    if stat.S_IMODE(info.st_mode) != DATA_FILE_MODE:
-        raise TeamError(
-            f"team.json mode must be {DATA_FILE_MODE:04o}, got {stat.S_IMODE(info.st_mode):04o}"
-        )
-    return data
+    return _finish_secure_team_meta(data, info)
 
 
 def load_team_meta(root: Path | str, run_id: str) -> dict[str, Any]:
@@ -475,8 +466,6 @@ def load_team_meta(root: Path | str, run_id: str) -> dict[str, Any]:
         raise TeamError(f"team.json missing for run {run_id}")
     except OSError as exc:
         raise TeamError(f"team.json secure open refused: {exc}") from exc
-    from omg_cli.contracts.path_keys import DATA_FILE_MODE
-
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
@@ -489,6 +478,15 @@ def load_team_meta(root: Path | str, run_id: str) -> dict[str, Any]:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+    return _finish_secure_team_meta(data, info)
+
+
+def _finish_secure_team_meta(
+    data: object, info: os.stat_result
+) -> dict[str, Any]:
+    """Shared post-open checks for the canonical team.json loader."""
+    from omg_cli.contracts.path_keys import DATA_FILE_MODE
+
     if not isinstance(data, dict):
         raise TeamError("team.json must be a JSON object")
     _require_cli_writer(data, label="team.json")
@@ -499,14 +497,53 @@ def load_team_meta(root: Path | str, run_id: str) -> dict[str, Any]:
     return data
 
 
-def _try_load_team_meta(root: Path | str, run_id: str) -> dict[str, Any] | None:
-    """Return team.json when present; ``None`` when absent. Fail closed if corrupt."""
+def team_meta_lstat(root: Path | str, run_id: str) -> os.stat_result | None:
+    """``lstat`` team.json without following. ``None`` only on ENOENT."""
     path = team_meta_path(root, run_id)
     try:
-        if not path.is_file() or path.is_symlink():
-            return None
+        return os.lstat(path)
+    except FileNotFoundError:
+        return None
     except OSError as exc:
-        raise TeamError(f"team.json not usable for --run {run_id!r}: {exc}") from exc
+        raise TeamError(f"team.json not usable for run {run_id}: {exc}") from exc
+
+
+def load_authoritative_team_meta(
+    root: Path | str,
+    run_id: str,
+    *,
+    team_id: str,
+) -> dict[str, Any]:
+    """Admission-grade team.json: canonical secure load plus identity binds.
+
+    Reuses :func:`load_team_meta` (O_NOFOLLOW, regular file, mode 0600, CLI
+    writer) and additionally requires a known ``schema_version``, exact
+    ``run_id`` / ``team_id``, and a published owner token. Callers that
+    need worker identity (supervisor) bind that separately.
+    """
+    data = load_team_meta(root, run_id)
+    schema = data.get("schema_version")
+    if schema not in {LEGACY_TEAM_META_SCHEMA_VERSION, SCHEMA_VERSION}:
+        raise TeamError(f"team.json schema_version unsupported: {schema!r}")
+    meta_run = str(data.get("run_id") or "").strip()
+    if meta_run != run_id:
+        raise TeamError(
+            f"team.json run_id mismatch (file={meta_run!r} path={run_id!r})"
+        )
+    meta_team = str(data.get("team_id") or "").strip()
+    if meta_team != team_id:
+        raise TeamError(
+            f"team.json team_id mismatch (file={meta_team!r} expected={team_id!r})"
+        )
+    if not str(data.get("owner_token") or "").strip():
+        raise TeamError("team.json owner_token missing")
+    return data
+
+
+def _try_load_team_meta(root: Path | str, run_id: str) -> dict[str, Any] | None:
+    """Return team.json when present; ``None`` when absent. Fail closed if corrupt."""
+    if team_meta_lstat(root, run_id) is None:
+        return None
     return load_team_meta(root, run_id)
 
 
@@ -7068,8 +7105,10 @@ __all__ = [
     "in_spawned_worker_context",
     "LEADER_ONLY_OPERATOR_ACTIONS",
     "NESTED_LAUNCH_ACTIONS",
+    "load_authoritative_team_meta",
     "load_team_meta",
     "mutate_team_meta",
+    "team_meta_lstat",
     "preflight_team_worker_parsed_argv",
     "refuse_nested_team_launch",
     "refuse_worker_operator_mutation",

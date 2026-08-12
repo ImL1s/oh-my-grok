@@ -312,26 +312,28 @@ def _minimal_team_meta(
     run_id: str,
     team_id: str = "team",
     owner_token: str = "owner-token-test",
+    schema_version: int = 1,
+    writer: str | None = None,
+    tasks: list | None = None,
+    extra: dict | None = None,
 ) -> Path:
-    """Write a lightweight team.json for supervisor authority tests."""
-    from omg_cli.team.plane import team_meta_path
+    """Write a CLI-style 0600 team.json for supervisor authority tests."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team.plane import _atomic_write_json, team_meta_path
 
     path = team_meta_path(leader, run_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "run_id": run_id,
-                "team_id": team_id,
-                "owner_token": owner_token,
-                "schema_version": 1,
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    body: dict = {
+        "writer": CLI_WRITER if writer is None else writer,
+        "run_id": run_id,
+        "team_id": team_id,
+        "owner_token": owner_token,
+        "schema_version": schema_version,
+        "tasks": [] if tasks is None else tasks,
+    }
+    if extra:
+        body.update(extra)
+    _atomic_write_json(path, body)
     return path
 
 
@@ -976,31 +978,17 @@ def test_supervisor_team_json_unknown_worker_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Published task list must exclude unknown worker_ids even with token."""
-    from omg_cli.evidence import CLI_WRITER
-    from omg_cli.team.plane import team_dir, team_meta_path
+    from omg_cli.team.plane import team_dir
     from omg_cli.team.supervisor import SupervisorError, admit_pane_supervisor
 
     leader = _leader_root(tmp_path / "leader")
     run_id = "run-unknown-w"
     tdir = team_dir(leader, run_id)
     tdir.mkdir(parents=True, exist_ok=True)
-    # team.json with tasks listing only w1
-    path = team_meta_path(leader, run_id)
-    path.write_text(
-        json.dumps(
-            {
-                "writer": CLI_WRITER,
-                "run_id": run_id,
-                "team_id": "team",
-                "owner_token": "owner-token-test",
-                "schema_version": 1,
-                "tasks": [{"task_id": "w1", "status": "running"}],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    _minimal_team_meta(
+        leader,
+        run_id=run_id,
+        tasks=[{"task_id": "w1", "status": "running"}],
     )
     # Attacker forges w2 descriptor path under team dir.
     desc = write_provider_descriptor(
@@ -1228,6 +1216,219 @@ def test_supervisor_admitted_bytes_survive_post_admit_replacement(
     assert rc == 1
     assert reads == []
     assert binding.descriptor["argv"][-1] == "print('good')"
+
+
+def _admit_with_team_meta(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    run_id: str,
+    worker_id: str = "w1",
+    team_id: str = "team",
+    meta_kwargs: dict | None = None,
+    chmod: int | None = None,
+    symlink_to: Path | None = None,
+    publish_prepublish: bool = False,
+):
+    """Build a published worker descriptor + team.json, then admit."""
+    from omg_cli.team.plane import team_dir, team_meta_path
+    from omg_cli.team.supervisor import (
+        SupervisorError,
+        admit_pane_supervisor,
+        descriptor_content_digest,
+    )
+
+    leader = _leader_root(tmp_path / "leader")
+    tdir = team_dir(leader, run_id)
+    tdir.mkdir(parents=True, exist_ok=True)
+    desc = write_provider_descriptor(
+        tdir / f"{worker_id}.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    digest = descriptor_content_digest(desc)
+    tasks = [{"task_id": worker_id, "descriptor_sha256": digest, "status": "running"}]
+    kwargs: dict = {"tasks": tasks, "team_id": team_id}
+    if meta_kwargs:
+        kwargs.update(meta_kwargs)
+    if symlink_to is not None:
+        path = team_meta_path(leader, run_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() or path.is_symlink():
+            path.unlink()
+        path.symlink_to(symlink_to)
+    else:
+        path = _minimal_team_meta(leader, run_id=run_id, **kwargs)
+        if chmod is not None:
+            os.chmod(path, chmod)
+    if publish_prepublish:
+        _publish_test_authority(
+            leader, run_id=run_id, worker_id=worker_id, descriptor=desc, team_id=team_id
+        )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(
+        monkeypatch, leader, run_id=run_id, worker_id=worker_id, team_id=team_id
+    )
+    clear_resolved_project_root()
+    try:
+        return admit_pane_supervisor(desc), desc, leader
+    except SupervisorError:
+        raise
+
+
+def test_supervisor_team_json_forged_writer_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.supervisor import SupervisorError
+
+    with pytest.raises(SupervisorError, match="CLI writer|refused"):
+        _admit_with_team_meta(
+            tmp_path,
+            monkeypatch,
+            run_id="run-forged-writer",
+            meta_kwargs={"writer": "agent"},
+        )
+
+
+def test_supervisor_team_json_symlink_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.supervisor import SupervisorError
+
+    target = tmp_path / "forged-team.json"
+    target.write_text('{"writer":"omg-cli","run_id":"run-symlink"}\n', encoding="utf-8")
+    with pytest.raises(SupervisorError, match="symlink|secure open|refused"):
+        _admit_with_team_meta(
+            tmp_path,
+            monkeypatch,
+            run_id="run-symlink",
+            symlink_to=target,
+            publish_prepublish=True,
+        )
+
+
+def test_supervisor_team_json_wrong_mode_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.supervisor import SupervisorError
+
+    with pytest.raises(SupervisorError, match="mode must be 0600|refused"):
+        _admit_with_team_meta(
+            tmp_path,
+            monkeypatch,
+            run_id="run-bad-mode",
+            chmod=0o644,
+        )
+
+
+def test_supervisor_team_json_wrong_schema_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.supervisor import SupervisorError
+
+    with pytest.raises(SupervisorError, match="schema_version|refused"):
+        _admit_with_team_meta(
+            tmp_path,
+            monkeypatch,
+            run_id="run-bad-schema",
+            meta_kwargs={"schema_version": 99},
+        )
+
+
+def test_supervisor_team_json_wrong_run_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.supervisor import SupervisorError
+
+    with pytest.raises(SupervisorError, match="run_id mismatch|refused"):
+        _admit_with_team_meta(
+            tmp_path,
+            monkeypatch,
+            run_id="run-wrong-run",
+            meta_kwargs={"extra": {"run_id": "other-run"}},
+        )
+
+
+def test_supervisor_team_json_wrong_team_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.supervisor import SupervisorError
+
+    with pytest.raises(SupervisorError, match="team_id mismatch|refused"):
+        _admit_with_team_meta(
+            tmp_path,
+            monkeypatch,
+            run_id="run-wrong-team",
+            meta_kwargs={"team_id": "other-team"},
+        )
+
+
+def test_supervisor_team_json_missing_owner_token_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.supervisor import SupervisorError
+
+    with pytest.raises(SupervisorError, match="owner_token missing|refused"):
+        _admit_with_team_meta(
+            tmp_path,
+            monkeypatch,
+            run_id="run-no-token",
+            meta_kwargs={"owner_token": ""},
+            publish_prepublish=True,
+        )
+
+
+def test_supervisor_team_json_inactive_worker_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.supervisor import SupervisorError, descriptor_content_digest
+    from omg_cli.team.plane import team_dir
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-inactive"
+    tdir = team_dir(leader, run_id)
+    tdir.mkdir(parents=True, exist_ok=True)
+    desc = write_provider_descriptor(
+        tdir / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    digest = descriptor_content_digest(desc)
+    _minimal_team_meta(
+        leader,
+        run_id=run_id,
+        tasks=[
+            {
+                "task_id": "w1",
+                "descriptor_sha256": digest,
+                "status": "scaled_down",
+            }
+        ],
+    )
+    _publish_test_authority(
+        leader, run_id=run_id, worker_id="w1", descriptor=desc
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id)
+    clear_resolved_project_root()
+    with pytest.raises(SupervisorError, match="not an active published team task"):
+        from omg_cli.team.supervisor import admit_pane_supervisor
+
+        admit_pane_supervisor(desc)
+
+
+def test_supervisor_team_json_missing_tasks_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.supervisor import SupervisorError
+
+    with pytest.raises(SupervisorError, match="tasks missing|not a published"):
+        _admit_with_team_meta(
+            tmp_path,
+            monkeypatch,
+            run_id="run-no-tasks",
+            meta_kwargs={"tasks": None, "extra": {"tasks": "nope"}},
+        )
 
 
 def test_start_team_dry_run_stamps_task_descriptor_digest(

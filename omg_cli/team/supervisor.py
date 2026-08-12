@@ -47,6 +47,8 @@ DESCRIPTOR_KIND = "team_provider_descriptor"
 PREPUBLISH_SCHEMA_VERSION = 1
 PREPUBLISH_KIND = "team_supervisor_prepublish"
 PREPUBLISH_DIRNAME = "supervisor-authority"
+# Published team.json task statuses that must not authorize pane spawn.
+_INACTIVE_WORKER_STATUSES = frozenset({"scaled_down", "stopped", "cancelled"})
 DEFAULT_READY_WAIT_S = 30.0
 # After provisional ready (process_stable or weak TUI idle), keep watching
 # for delayed auth/trust before finalizing provider_ready.
@@ -133,16 +135,19 @@ def admit_pane_supervisor_binding(
     2. Run / team / worker identity plus a validated canonical leader root
        (``bootstrap_env_identity`` / ``validate_canonical_leader_root``).
     3. Durable CLI authority:
-       - When authoritative ``team.json`` exists: bind ``team_id``,
-         (when published) ``owner_token``, the per-worker CLI-published
-         provider descriptor path, **and** ``descriptor_sha256`` on the
-         matching task (or a surviving prepublish digest record).
-         A shared owner token alone must never authorize an arbitrary
-         schema-valid descriptor or unknown worker id.
-       - When ``team.json`` is absent: require a CLI-prepublished supervisor
-         authority record binding root/run/team/worker, owner token, and the
-         exact descriptor path + content digest. Metadata absence never
-         authorizes execution.
+       - When authoritative ``team.json`` exists: load it only through the
+         canonical secure reader (O_NOFOLLOW, regular file, mode 0600, CLI
+         writer, known schema, exact run/team, published owner token). Bind
+         the worker as an active published task, then the per-worker
+         CLI-published descriptor path **and** ``descriptor_sha256`` on that
+         task (or a surviving prepublish digest record). A shared owner
+         token alone must never authorize an arbitrary schema-valid
+         descriptor, unknown worker id, or inactive worker. A present but
+         invalid team.json never falls back to prepublish.
+       - When ``team.json`` is absent (ENOENT only): require a CLI-prepublished
+         supervisor authority record binding root/run/team/worker, owner
+         token, and the exact descriptor path + content digest. Metadata
+         absence never authorizes execution.
 
     The returned :class:`PaneSupervisorAdmission` carries the immutable
     parsed descriptor. Spawn must use that mapping and must not reopen a
@@ -538,6 +543,41 @@ def _validate_prepublish_authority(
         )
 
 
+def _require_active_published_worker(
+    meta: Mapping[str, Any], *, worker_id: str
+) -> Mapping[str, Any]:
+    """Fail closed unless worker_id is a published, non-inactive task row."""
+    tasks = meta.get("tasks")
+    if not isinstance(tasks, list):
+        raise SupervisorError(
+            "supervisor team meta tasks missing "
+            "(stale or forged pane authority)",
+            exit_code=2,
+        )
+    matching: Mapping[str, Any] | None = None
+    for item in tasks:
+        if not isinstance(item, dict):
+            continue
+        tid = str(item.get("task_id") or item.get("id") or "").strip()
+        if tid == worker_id:
+            matching = item
+            break
+    if matching is None:
+        raise SupervisorError(
+            "supervisor worker_id is not a published team task "
+            "(stale or forged pane authority)",
+            exit_code=2,
+        )
+    status = str(matching.get("status") or "").strip()
+    if status in _INACTIVE_WORKER_STATUSES:
+        raise SupervisorError(
+            "supervisor worker_id is not an active published team task "
+            f"(status={status!r})",
+            exit_code=2,
+        )
+    return matching
+
+
 def _published_worker_descriptor_path(
     leader: Path, run_id: str, worker_id: str
 ) -> Path:
@@ -600,28 +640,9 @@ def _validate_published_worker_descriptor(
             "CLI-published worker provider descriptor not usable",
             exit_code=2,
         ) from exc
-    # When team meta lists tasks, worker_id must be one of them, and the
-    # matching row must bind the exact descriptor content digest.
-    tasks = meta.get("tasks")
-    matching: Mapping[str, Any] | None = None
-    if isinstance(tasks, list) and tasks:
-        known: set[str] = set()
-        for item in tasks:
-            if not isinstance(item, dict):
-                continue
-            tid = str(item.get("task_id") or item.get("id") or "").strip()
-            if tid:
-                known.add(tid)
-            if tid == worker_id:
-                matching = item
-        if known and worker_id not in known:
-            raise SupervisorError(
-                "supervisor worker_id is not a published team task "
-                "(stale or forged pane authority)",
-                exit_code=2,
-            )
+    matching = _require_active_published_worker(meta, worker_id=worker_id)
     expected_digest = _require_descriptor_digest(
-        None if matching is None else matching.get("descriptor_sha256"),
+        matching.get("descriptor_sha256"),
         label="supervisor published task",
     )
     if actual_digest != expected_digest:
@@ -645,17 +666,20 @@ def _validate_supervisor_team_binding(
 ) -> None:
     """Require team.json binding or fail-closed prepublish authority."""
     # Lazy import avoids plane↔supervisor import cycles at module load.
-    from omg_cli.team.plane import team_meta_path
+    from omg_cli.team.plane import (
+        TeamError,
+        load_authoritative_team_meta,
+        team_meta_lstat,
+    )
 
-    path = team_meta_path(leader, run_id)
     try:
-        meta_present = path.is_file() and not path.is_symlink()
-    except OSError as exc:
+        meta_stat = team_meta_lstat(leader, run_id)
+    except TeamError as exc:
         raise SupervisorError(
             "supervisor team meta is not usable",
             exit_code=2,
         ) from exc
-    if not meta_present:
+    if meta_stat is None:
         # Metadata absence never authorizes — require CLI prepublish.
         _validate_prepublish_authority(
             leader,
@@ -669,47 +693,13 @@ def _validate_supervisor_team_binding(
         )
         return
     try:
-        raw = path.read_text(encoding="utf-8")
-        data = json.loads(raw)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        data = load_authoritative_team_meta(leader, run_id, team_id=team_id)
+    except TeamError as exc:
         raise SupervisorError(
-            "supervisor team meta unreadable",
+            f"supervisor team meta refused: {exc}",
             exit_code=2,
         ) from exc
-    if not isinstance(data, dict):
-        raise SupervisorError(
-            "supervisor team meta must be a JSON object",
-            exit_code=2,
-        )
-    meta_run = str(data.get("run_id") or "").strip()
-    if meta_run and meta_run != run_id:
-        raise SupervisorError(
-            "supervisor run_id does not match team meta "
-            "(stale or forged pane authority)",
-            exit_code=2,
-        )
-    meta_team = str(data.get("team_id") or "team").strip() or "team"
-    if meta_team != team_id:
-        raise SupervisorError(
-            "supervisor team_id does not match team meta "
-            "(stale or forged pane authority)",
-            exit_code=2,
-        )
     meta_token = str(data.get("owner_token") or "").strip()
-    if not meta_token:
-        # team.json present but token unpublished: still require prepublish
-        # so forged env alone cannot authorize mid-transition.
-        _validate_prepublish_authority(
-            leader,
-            run_id=run_id,
-            team_id=team_id,
-            worker_id=worker_id,
-            descriptor_path=descriptor_path,
-            env=env,
-            owner_token_env=owner_token_env,
-            actual_digest=actual_digest,
-        )
-        return
     env_token = (env.get(owner_token_env) or "").strip()
     if not env_token or env_token != meta_token:
         raise SupervisorError(
@@ -717,7 +707,10 @@ def _validate_supervisor_team_binding(
             "(stale or forged pane authority)",
             exit_code=2,
         )
-    # Token alone is insufficient: re-bind worker + descriptor digest.
+    # Token + secure meta is still insufficient: worker must be an
+    # active published task. Stale prepublish cannot revive scaled-down
+    # / stopped / cancelled workers.
+    _require_active_published_worker(data, worker_id=worker_id)
     # Prefer a surviving prepublish record (stronger digest bind); else
     # require CLI-published ``{worker_id}.provider.json`` **and** the
     # task-row ``descriptor_sha256`` under team.json.
