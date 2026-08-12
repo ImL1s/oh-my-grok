@@ -39,14 +39,18 @@ Rules:
 - Absence of Medley must **not** disable ordinary OMG operation.
   Hermetic evidence lives in
   [`tests/test_stock_host_medley_absent.py`](../../tests/test_stock_host_medley_absent.py):
-  fake/temp HOME and GROK_HOME, scrubbed Medley env/config, and an
-  **explicit import blocker** (the test never infers absence from
-  directory names; ancestor pathnames may contain the substring
-  `medley`). An injected installable `medley` is otherwise discoverable,
-  then blocked. It exercises setup / package
-  projection, current `omg doctor`, ordinary agent/profile discovery,
-  and an ordinary workflow parser/inventory surface. It does **not**
-  implement routing; no credentials or live network.
+  an explicit **allowlisted** process environment (fake/temp HOME,
+  GROK_HOME, and XDG dirs), scrubbed credentials/tokens/API keys and
+  Medley env/config, a bounded PATH with a **fail-closed** fake `grok`
+  (unexpected argv exits non-zero), deterministic network denial, and
+  subprocess/process-exec guards that allow only reviewed local
+  commands. Absence of Medley is an **explicit import blocker** (the
+  test never infers absence from directory names; ancestor pathnames
+  may contain the substring `medley`). An injected installable
+  `medley` is otherwise discoverable, then blocked. It exercises setup
+  / package projection, current `omg doctor`, ordinary agent/profile
+  discovery, and an ordinary workflow parser/inventory surface. It
+  does **not** implement routing; no credentials or live network.
 - Installing OMG does **not** install Medley; installing Medley is **not**
   required for standard OMG agents/workflows.
 - External Team CLI executors (codex, agy, cursor, gemini, …) are **separate**

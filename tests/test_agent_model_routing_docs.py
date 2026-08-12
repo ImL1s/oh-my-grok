@@ -136,6 +136,8 @@ ARCH_REQUIRED_SNIPPETS: tuple[str, ...] = (
     "route kind",
     "test_stock_host_medley_absent",
     "explicit import blocker",
+    "allowlisted",
+    "fail-closed",
     "ROUTE_SCHEMA",
     "dual-carried",
     "never infer",
@@ -420,6 +422,14 @@ def test_stock_host_medley_absent_smoke_is_documented_and_present() -> None:
     body = ARCH.read_text(encoding="utf-8")
     assert "test_stock_host_medley_absent.py" in body
     assert (ROOT / "tests" / "test_stock_host_medley_absent.py").is_file()
+    for snippet in (
+        "allowlisted",
+        "fail-closed",
+        "explicit import blocker",
+        "no credentials or live network",
+        "XDG",
+    ):
+        assert snippet in body, snippet
     for path in (ARCH_ZH, ARCH_ZH_TW):
         text = path.read_text(encoding="utf-8")
         assert "test_stock_host_medley_absent.py" in text, path.name

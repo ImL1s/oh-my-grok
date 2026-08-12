@@ -9,6 +9,11 @@ Absence is an explicit import blocker, never inferred from directory names
 on ``sys.path`` / ``PYTHONPATH``. An injected installable ``medley`` stays
 discoverable until that blocker is installed. Ancestor pathnames may
 contain the substring ``medley``; the blocker never inspects them.
+
+The smoke process is an explicit allowlisted environment: fake HOME /
+GROK_HOME / XDG dirs, scrubbed credentials, bounded PATH, fail-closed
+fake grok, network denial, and subprocess/exec guards. Ambient
+site-packages and PYTHONPATH are not inherited.
 """
 from __future__ import annotations
 
@@ -17,11 +22,15 @@ import importlib.abc
 import importlib.util
 import json
 import os
+import shutil
+import socket
+import subprocess
 import sys
 from collections.abc import Sequence
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from types import ModuleType
+from typing import NamedTuple
 
 import pytest
 
@@ -73,34 +82,254 @@ def _this_file_does_not_import_medley() -> None:
             assert not stripped.startswith("from medley")
 
 
+_CREDENTIAL_MARKERS = (
+    "API_KEY",
+    "APIKEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "AUTHORIZATION",
+    "BEARER",
+)
+_ALLOWED_ENV = frozenset(
+    {
+        "HOME",
+        "GROK_HOME",
+        "PATH",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TZ",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTHONNOUSERSITE",
+        "PYTHONPATH",
+    }
+)
+_NETWORK_DENIED = "stock-host smoke: network denied"
+_SUBPROCESS_DENIED = "stock-host smoke: subprocess denied"
+_EXEC_DENIED = "stock-host smoke: process-exec denied"
+_FAKE_GROK_UNEXPECTED = "stock-host fake grok: unexpected argv"
+
+
+class _StockHostIsolation(NamedTuple):
+    home: Path
+    grok_home: Path
+    bin_dir: Path
+    xdg: Path
+    grok: Path
+
+
 def _evict_medley_modules(monkeypatch) -> None:
     for key in [k for k in sys.modules if k == "medley" or k.startswith("medley.")]:
         monkeypatch.delitem(sys.modules, key)
 
 
-def _isolate_stock_host(monkeypatch, tmp_path: Path) -> tuple[Path, Path]:
-    """Fake/temp HOME + GROK_HOME; scrub MEDLEY* env; evict medley*; local grok."""
+def _is_credential_key(name: str) -> bool:
+    upper = name.upper()
+    if upper.startswith("MEDLEY"):
+        return True
+    return any(marker in upper for marker in _CREDENTIAL_MARKERS)
+
+
+def _runtime_sys_path() -> list[str]:
+    """Stdlib + this checkout only. Do not filter names for ``medley``.
+
+    Compare realpaths so Homebrew Cellar vs opt prefixes still keep stdlib.
+    Drop inherited ``site-packages`` / ``dist-packages``; the injected vendor
+    site is prepended separately and is never inferred from path names.
+    """
+    prefixes: list[str] = []
+    for raw in (
+        sys.base_prefix,
+        sys.base_exec_prefix,
+        sys.prefix,
+        sys.exec_prefix,
+        str(ROOT),
+    ):
+        if raw:
+            prefixes.append(os.path.realpath(raw))
+    kept: list[str] = []
+    seen: set[str] = set()
+    for part in sys.path:
+        if not part:
+            continue
+        real = os.path.realpath(part)
+        if real in seen:
+            continue
+        base = os.path.basename(real.rstrip(os.sep))
+        if base in {"site-packages", "dist-packages"}:
+            continue
+        if any(real == prefix or real.startswith(prefix + os.sep) for prefix in prefixes):
+            kept.append(part)
+            seen.add(real)
+    return kept
+
+
+def _allowlisted_env(*, home: Path, grok_home: Path, xdg: Path, bin_dir: Path) -> dict[str, str]:
+    tmp = xdg / "tmp"
+    runtime = xdg / "runtime"
+    for path in (
+        xdg / "config",
+        xdg / "data",
+        xdg / "cache",
+        xdg / "state",
+        runtime,
+        tmp,
+    ):
+        path.mkdir(parents=True, exist_ok=True)
+    return {
+        "HOME": str(home),
+        "GROK_HOME": str(grok_home),
+        "PATH": str(bin_dir),
+        "TMPDIR": str(tmp),
+        "TMP": str(tmp),
+        "TEMP": str(tmp),
+        "LANG": "C",
+        "LC_ALL": "C",
+        "TZ": "UTC",
+        "XDG_CONFIG_HOME": str(xdg / "config"),
+        "XDG_DATA_HOME": str(xdg / "data"),
+        "XDG_CACHE_HOME": str(xdg / "cache"),
+        "XDG_STATE_HOME": str(xdg / "state"),
+        "XDG_RUNTIME_DIR": str(runtime),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONNOUSERSITE": "1",
+    }
+
+
+def _replace_environ(monkeypatch, env: dict[str, str]) -> None:
+    for key in list(os.environ):
+        if key not in env:
+            monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+
+def _link_python(bin_dir: Path) -> None:
+    target = Path(sys.executable).resolve()
+    python3 = bin_dir / "python3"
+    python = bin_dir / "python"
+    if not python3.exists():
+        python3.symlink_to(target)
+    if not python.exists():
+        python.symlink_to(target)
+
+
+def _allowed_subprocess_argv(args: Sequence[object] | str | None, bin_dir: Path) -> bool:
+    if args is None or isinstance(args, str) or not args:
+        return False
+    raw = str(args[0])
+    name = Path(raw).name
+    bin_dir_r = bin_dir.resolve()
+    try:
+        resolved = Path(raw).resolve() if os.sep in raw or raw.startswith(".") else None
+    except OSError:
+        resolved = None
+    if name == "grok":
+        if raw == "grok":
+            return True
+        return resolved == (bin_dir_r / "grok")
+    if name in {"python3", "python"}:
+        if raw in {"python3", "python"}:
+            return True
+        if resolved is None:
+            return False
+        return resolved == Path(sys.executable).resolve() or resolved.parent == bin_dir_r
+    if raw in {"/bin/sh", "/usr/bin/sh"}:
+        return True
+    return False
+
+
+def _install_subprocess_guard(monkeypatch, bin_dir: Path) -> None:
+    real_popen = subprocess.Popen
+
+    def guarded_popen(args, *rest, **kwargs):  # noqa: ANN001
+        if not _allowed_subprocess_argv(args, bin_dir):
+            raise PermissionError(f"{_SUBPROCESS_DENIED}: {args!r}")
+        return real_popen(args, *rest, **kwargs)
+
+    def denied_system(cmd: object) -> int:
+        raise PermissionError(f"{_SUBPROCESS_DENIED}: {cmd!r}")
+
+    def denied_exec(*_a: object, **_k: object) -> None:
+        raise PermissionError(_EXEC_DENIED)
+
+    monkeypatch.setattr(subprocess, "Popen", guarded_popen)
+    monkeypatch.setattr(os, "system", denied_system)
+    if hasattr(os, "popen"):
+        monkeypatch.setattr(os, "popen", denied_system)
+    for name in (
+        "execv",
+        "execve",
+        "execvp",
+        "execvpe",
+        "execl",
+        "execle",
+        "execlp",
+        "execlpe",
+        "spawnv",
+        "spawnve",
+        "spawnvp",
+        "spawnvpe",
+        "posix_spawn",
+        "posix_spawnp",
+    ):
+        if hasattr(os, name):
+            monkeypatch.setattr(os, name, denied_exec)
+
+
+def _install_network_denial(monkeypatch) -> None:
+    import urllib.request
+
+    def denied_socket(*_a: object, **_k: object) -> socket.socket:
+        raise OSError(_NETWORK_DENIED)
+
+    def denied_connect(*_a: object, **_k: object) -> tuple:
+        raise OSError(_NETWORK_DENIED)
+
+    def denied_getaddrinfo(*_a: object, **_k: object) -> list:
+        raise OSError(_NETWORK_DENIED)
+
+    def denied_urlopen(*_a: object, **_k: object) -> object:
+        raise OSError(_NETWORK_DENIED)
+
+    monkeypatch.setattr(socket, "socket", denied_socket)
+    monkeypatch.setattr(socket, "create_connection", denied_connect)
+    monkeypatch.setattr(socket, "getaddrinfo", denied_getaddrinfo)
+    monkeypatch.setattr(urllib.request, "urlopen", denied_urlopen)
+
+
+def _isolate_stock_host(monkeypatch, tmp_path: Path) -> _StockHostIsolation:
+    """Allowlisted env, bounded PATH, fail-closed grok, network/exec guards."""
     home = tmp_path / "home"
     grok_home = tmp_path / "grok"
     bin_dir = tmp_path / "bin"
+    xdg = tmp_path / "xdg"
     home.mkdir()
     grok_home.mkdir()
     bin_dir.mkdir()
 
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("GROK_HOME", str(grok_home))
-
-    for key in [k for k in os.environ if k.upper().startswith("MEDLEY")]:
-        monkeypatch.delenv(key, raising=False)
-
+    _link_python(bin_dir)
+    grok = _install_fake_grok(bin_dir)
+    env = _allowlisted_env(home=home, grok_home=grok_home, xdg=xdg, bin_dir=bin_dir)
+    _replace_environ(monkeypatch, env)
     _evict_medley_modules(monkeypatch)
-
-    monkeypatch.setenv(
-        "PATH",
-        str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
-    )
-    _install_fake_grok(bin_dir)
-    return home, grok_home
+    monkeypatch.setattr(sys, "path", _runtime_sys_path())
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    _install_network_denial(monkeypatch)
+    _install_subprocess_guard(monkeypatch, bin_dir)
+    importlib.invalidate_caches()
+    return _StockHostIsolation(home, grok_home, bin_dir, xdg, grok)
 
 
 def _neutral_site_packages(tmp_path_factory) -> Path:
@@ -121,10 +350,8 @@ def _inject_fake_medley_package(monkeypatch, tmp_path_factory) -> Path:
         '"""Test-only installable medley stand-in."""\n',
         encoding="utf-8",
     )
-    monkeypatch.setattr(sys, "path", [str(site), *sys.path])
-    prior = os.environ.get("PYTHONPATH", "")
-    prepended = str(site) if not prior else str(site) + os.pathsep + prior
-    monkeypatch.setenv("PYTHONPATH", prepended)
+    monkeypatch.setattr(sys, "path", [str(site), *_runtime_sys_path()])
+    monkeypatch.setenv("PYTHONPATH", str(site))
     importlib.invalidate_caches()
     return site
 
@@ -155,22 +382,44 @@ def _assert_blocker_raises() -> None:
 
 
 def _install_fake_grok(bin_dir: Path) -> Path:
-    """Tiny local grok: --version / version → 0.2.121; otherwise exit 0. No network."""
+    """Tiny local grok: version / --version only. Unexpected argv exits 2."""
     path = bin_dir / "grok"
     path.write_text(
         f"#!{sys.executable}\n"
         "import sys\n"
         "args = sys.argv[1:]\n"
-        "if '--version' in args or (args and args[0] == 'version'):\n"
-        "    if '--json' in args:\n"
-        "        print('{\"currentVersion\":\"0.2.121\"}')\n"
-        "    else:\n"
-        "        print('0.2.121')\n"
+        "allowed = {('--version',), ('version',), ('version', '--json')}\n"
+        "if tuple(args) not in allowed:\n"
+        "    print('stock-host fake grok: unexpected argv', args, file=sys.stderr)\n"
+        "    raise SystemExit(2)\n"
+        "if '--json' in args:\n"
+        "    print('{\"currentVersion\":\"0.2.121\"}')\n"
+        "else:\n"
+        "    print('0.2.121')\n"
         "raise SystemExit(0)\n",
         encoding="utf-8",
     )
     path.chmod(0o755)
     return path
+
+
+def _assert_hermetic_env(iso: _StockHostIsolation) -> None:
+    assert os.environ.get("HOME") == str(iso.home)
+    assert os.environ.get("GROK_HOME") == str(iso.grok_home)
+    assert os.environ.get("PATH") == str(iso.bin_dir)
+    assert os.environ.get("XDG_CONFIG_HOME") == str(iso.xdg / "config")
+    assert os.environ.get("XDG_DATA_HOME") == str(iso.xdg / "data")
+    assert os.environ.get("XDG_CACHE_HOME") == str(iso.xdg / "cache")
+    assert os.environ.get("XDG_STATE_HOME") == str(iso.xdg / "state")
+    leaked = [key for key in os.environ if _is_credential_key(key)]
+    assert not leaked, f"credential env survived isolation: {leaked}"
+    extra = [key for key in os.environ if key not in _ALLOWED_ENV]
+    assert not extra, f"non-allowlisted env survived isolation: {extra}"
+    found = shutil.which("grok")
+    assert found is not None
+    assert Path(found).resolve() == iso.grok.resolve()
+    assert shutil.which("curl") is None
+    assert shutil.which("ssh") is None
 
 
 def _assert_medley_absent(home: Path) -> None:
@@ -206,15 +455,19 @@ def _load_generator():
 def test_injected_medley_on_neutral_path_is_discoverable_without_blocker(
     monkeypatch, tmp_path, tmp_path_factory
 ) -> None:
-    _isolate_stock_host(monkeypatch, tmp_path)
+    iso = _isolate_stock_host(monkeypatch, tmp_path)
+    _assert_hermetic_env(iso)
     site = _inject_fake_medley_package(monkeypatch, tmp_path_factory)
     _assert_medley_discoverable(site)
+    assert os.environ.get("PYTHONPATH") == str(site)
 
 
 def test_ordinary_omg_surfaces_work_with_medley_absent(
     monkeypatch, tmp_path, tmp_path_factory, capsys
 ) -> None:
-    home, _grok_home = _isolate_stock_host(monkeypatch, tmp_path)
+    iso = _isolate_stock_host(monkeypatch, tmp_path)
+    _assert_hermetic_env(iso)
+    home = iso.home
     site = _inject_fake_medley_package(monkeypatch, tmp_path_factory)
     _assert_medley_discoverable(site)
     _evict_medley_modules(monkeypatch)
@@ -284,3 +537,114 @@ def test_ordinary_omg_surfaces_work_with_medley_absent(
     _assert_medley_absent(home)
     _assert_blocker_raises()
     assert str(site) in sys.path
+    _assert_hermetic_env(iso)
+
+
+def test_ambient_site_packages_and_pythonpath_are_not_inherited(
+    monkeypatch, tmp_path, tmp_path_factory
+) -> None:
+    monkeypatch.setenv("PYTHONPATH", "/tmp/ambient-extra-site:/usr/local/lib/python")
+    iso = _isolate_stock_host(monkeypatch, tmp_path)
+    _assert_hermetic_env(iso)
+    assert "PYTHONPATH" not in os.environ
+    inherited_sites = [
+        part
+        for part in sys.path
+        if os.path.basename(os.path.realpath(part).rstrip(os.sep))
+        in {"site-packages", "dist-packages"}
+    ]
+    assert inherited_sites == [], inherited_sites
+    site = _inject_fake_medley_package(monkeypatch, tmp_path_factory)
+    sites = [
+        Path(os.path.realpath(part))
+        for part in sys.path
+        if os.path.basename(os.path.realpath(part).rstrip(os.sep))
+        in {"site-packages", "dist-packages"}
+    ]
+    assert sites == [site.resolve()]
+    assert os.environ.get("PYTHONPATH") == str(site)
+    _assert_medley_discoverable(site)
+
+
+def test_credential_env_is_scrubbed_by_isolation(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("XAI_API_KEY", "secret-should-not-survive")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-plant")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp-test-plant")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-test-plant")
+    monkeypatch.setenv("MEDLEY_API_TOKEN", "medley-test-plant")
+    monkeypatch.setenv("MEDLEY_HOME", str(tmp_path / "ambient-medley"))
+    iso = _isolate_stock_host(monkeypatch, tmp_path)
+    _assert_hermetic_env(iso)
+    for key in (
+        "XAI_API_KEY",
+        "OPENAI_API_KEY",
+        "GITHUB_TOKEN",
+        "AWS_SECRET_ACCESS_KEY",
+        "MEDLEY_API_TOKEN",
+        "MEDLEY_HOME",
+    ):
+        assert key not in os.environ, key
+    assert os.environ.get("XDG_CONFIG_HOME") == str(iso.xdg / "config")
+    assert not (iso.xdg / "config" / "medley").exists()
+
+
+def test_unexpected_grok_argv_fails_closed(monkeypatch, tmp_path) -> None:
+    iso = _isolate_stock_host(monkeypatch, tmp_path)
+    version = subprocess.run(
+        [str(iso.grok), "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert version.returncode == 0
+    assert "0.2.121" in (version.stdout or "")
+    unexpected = subprocess.run(
+        [str(iso.grok), "inspect", "--json"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert unexpected.returncode != 0
+    assert _FAKE_GROK_UNEXPECTED in (unexpected.stderr or "")
+    plugin = subprocess.run(
+        ["grok", "plugin", "list", "--json"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert plugin.returncode != 0
+
+
+def test_unexpected_network_is_denied(monkeypatch, tmp_path) -> None:
+    import urllib.request
+
+    _isolate_stock_host(monkeypatch, tmp_path)
+    with pytest.raises(OSError, match="network denied"):
+        socket.create_connection(("example.com", 443), timeout=0.1)
+    with pytest.raises(OSError, match="network denied"):
+        socket.getaddrinfo("example.com", 443)
+    with pytest.raises(OSError, match="network denied"):
+        socket.socket()
+    with pytest.raises(OSError, match="network denied"):
+        urllib.request.urlopen("https://example.com", timeout=0.1)
+
+
+def test_unexpected_subprocess_and_exec_are_denied(monkeypatch, tmp_path) -> None:
+    iso = _isolate_stock_host(monkeypatch, tmp_path)
+    with pytest.raises(PermissionError, match="subprocess denied"):
+        subprocess.run(["curl", "https://example.com"], check=False)
+    with pytest.raises(PermissionError, match="subprocess denied"):
+        subprocess.run(["/usr/bin/grok", "--version"], check=False)
+    with pytest.raises(PermissionError, match="subprocess denied"):
+        subprocess.Popen(["ssh", "example.com"])
+    with pytest.raises(PermissionError, match="subprocess denied"):
+        os.system("curl https://example.com")
+    with pytest.raises(PermissionError, match="process-exec denied"):
+        os.execv("/usr/bin/curl", ["curl", "https://example.com"])
+    allowed = subprocess.run(
+        [str(iso.grok), "version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert allowed.returncode == 0
