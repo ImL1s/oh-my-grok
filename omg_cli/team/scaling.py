@@ -462,6 +462,7 @@ def _publish_scale_supervisor_authorities(
     """
     from omg_cli.team.supervisor import (
         SupervisorError,
+        clear_attempt_supervisor_prepublish_authorities,
         publish_supervisor_authority,
     )
 
@@ -471,24 +472,45 @@ def _publish_scale_supervisor_authorities(
             "scale-up refused: owner_token required to publish "
             "supervisor authority before pane spawn"
         )
-    for rec in records:
-        tid = str(rec["task_id"])
-        desc_path = team_dir(root, run_id) / f"{tid}.provider.json"
-        if not desc_path.is_file():
-            raise TeamError(f"scale-up supervisor descriptor missing task={tid}")
-        try:
-            publish_supervisor_authority(
-                leader_root=root,
-                run_id=run_id,
-                team_id=str(team_id or "team"),
-                worker_id=tid,
-                owner_token=token,
-                descriptor_path=desc_path,
-                generation=int(generation),
-                attempt=int(rec.get("attempt") or 1),
+    published: list[tuple[str, int]] = []
+    try:
+        for rec in records:
+            tid = str(rec["task_id"])
+            attempt = int(rec.get("attempt") or 1)
+            desc_path = team_dir(root, run_id) / f"{tid}.provider.json"
+            if not desc_path.is_file():
+                raise TeamError(
+                    f"scale-up supervisor descriptor missing task={tid}"
+                )
+            try:
+                publish_supervisor_authority(
+                    leader_root=root,
+                    run_id=run_id,
+                    team_id=str(team_id or "team"),
+                    worker_id=tid,
+                    owner_token=token,
+                    descriptor_path=desc_path,
+                    generation=int(generation),
+                    attempt=attempt,
+                )
+            except SupervisorError as exc:
+                raise TeamError(str(exc)) from exc
+            published.append((tid, attempt))
+    except TeamError as exc:
+        if not published:
+            raise
+        rollback_errors = clear_attempt_supervisor_prepublish_authorities(
+            root,
+            run_id,
+            generation=int(generation),
+            attempts=published,
+        )
+        detail = str(exc)
+        if rollback_errors:
+            detail += "; authority rollback incomplete: " + "; ".join(
+                rollback_errors
             )
-        except SupervisorError as exc:
-            raise TeamError(str(exc)) from exc
+        raise TeamError(detail) from exc
 
 
 def _build_pane_record(
@@ -3989,6 +4011,8 @@ def _scale_up(
     windows_created = False
     receipt_bound = pending_scale is not None
     receipt_attempted = False
+    authorities_published: list[tuple[str, int]] = []
+    authority_generation = pending_generation
     scale_wal: dict[str, Any] | None = None
     scale_wal_sha256: str | None = None
     try:
@@ -4140,6 +4164,11 @@ def _scale_up(
                     generation=pending_generation,
                     records=new_records,
                 )
+                authorities_published = [
+                    (str(rec["task_id"]), int(rec.get("attempt") or 1))
+                    for rec in new_records
+                ]
+                authority_generation = pending_generation
 
             if not effective_dry:
                 assert authority is not None
@@ -4254,11 +4283,29 @@ def _scale_up(
             if windows_created and not receipt_bound
             else []
         )
+        authority_rollback_errors: list[str] = []
+        if authorities_published and not receipt_bound:
+            from omg_cli.team.supervisor import (
+                clear_attempt_supervisor_prepublish_authorities,
+            )
+
+            authority_rollback_errors = (
+                clear_attempt_supervisor_prepublish_authorities(
+                    root,
+                    run_id,
+                    generation=authority_generation,
+                    attempts=authorities_published,
+                )
+            )
         detail = str(exc)
         if receipt_bound:
             detail += "; receipt-bound windows preserved for retry"
         if rollback_errors:
             detail += "; rollback incomplete: " + "; ".join(rollback_errors)
+        if authority_rollback_errors:
+            detail += "; authority rollback incomplete: " + "; ".join(
+                authority_rollback_errors
+            )
         if isinstance(exc, TeamError):
             raise TeamError(detail) from exc
         raise TeamError(f"scale-up tmux launch failed: {detail}") from exc

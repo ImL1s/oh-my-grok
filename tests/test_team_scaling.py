@@ -2211,7 +2211,7 @@ def test_scale_up_reuse_path_republishes_authority_before_pane(
     with pytest.raises(TeamError, match="pane binding failure"):
         scale_team(tmp_path, rid, add=1)
     auth_path = supervisor_prepublish_path(tmp_path, rid, "scale-2")
-    assert auth_path.is_file()
+    assert not auth_path.exists()
 
     out = scale_team(tmp_path, rid, add=1)
 
@@ -2221,6 +2221,285 @@ def test_scale_up_reuse_path_republishes_authority_before_pane(
     assert not auth_path.exists()
     disk = load_team_meta(tmp_path, rid)
     assert [row["task_id"] for row in disk["tasks"]].count("scale-2") == 1
+
+
+def test_scale_up_pane_binding_failure_removes_attempt_owned_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.team.supervisor import (
+        publish_supervisor_authority,
+        supervisor_prepublish_path,
+        write_provider_descriptor,
+    )
+
+    rid, _live = _prepare_live_scale_team(monkeypatch, tmp_path)
+    tdir = plane.team_dir(tmp_path, rid)
+    leftover_desc = write_provider_descriptor(
+        tdir / "scale-1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print('leftover')"],
+    )
+    leftover = publish_supervisor_authority(
+        leader_root=tmp_path,
+        run_id=rid,
+        team_id="team-1",
+        worker_id="scale-1",
+        owner_token="owner-1",
+        descriptor_path=leftover_desc,
+        generation=99,
+        attempt=1,
+    )
+    leftover_body = leftover.read_bytes()
+
+    def fail_launch(*, session: str, records: Any, **_kwargs: Any) -> None:
+        assert session == "omg-workers"
+        rec = records[0]
+        tid = str(rec["task_id"])
+        auth_path = supervisor_prepublish_path(tmp_path, rid, tid)
+        assert auth_path.is_file()
+        raise TeamError("pane binding failure")
+
+    monkeypatch.setattr(scaling, "_add_tmux_windows", fail_launch)
+    monkeypatch.setattr(scaling, "_read_scaled_pane_pid", lambda **_kwargs: 10002)
+    monkeypatch.setattr(scaling, "_pgid_for_pid", lambda _pid: 20002)
+    monkeypatch.setattr(scaling, "_pid_start_identity", lambda _pid: "start-10002")
+
+    with pytest.raises(TeamError, match="^pane binding failure$") as exc_info:
+        scale_team(tmp_path, rid, add=1)
+    assert "authority rollback incomplete" not in str(exc_info.value)
+    assert not supervisor_prepublish_path(tmp_path, rid, "scale-2").exists()
+    assert leftover.is_file()
+    assert leftover.read_bytes() == leftover_body
+
+
+def test_publish_scale_supervisor_authorities_partial_failure_rolls_back_prefix(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.team.supervisor import (
+        SupervisorError,
+        publish_supervisor_authority,
+        supervisor_prepublish_path,
+        write_provider_descriptor,
+    )
+
+    rid, _live = _prepare_live_scale_team(monkeypatch, tmp_path)
+    tdir = plane.team_dir(tmp_path, rid)
+    records: list[dict[str, Any]] = []
+    for tid in ("scale-2", "scale-3"):
+        write_provider_descriptor(
+            tdir / f"{tid}.provider.json",
+            provider="fixture",
+            argv=[sys.executable, "-c", "print('x')"],
+        )
+        records.append({"task_id": tid, "attempt": 1})
+
+    calls = 0
+
+    def flaky_publish(**kwargs: Any) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return publish_supervisor_authority(**kwargs)
+        raise SupervisorError("simulated second-worker publish failure")
+
+    monkeypatch.setattr(
+        "omg_cli.team.supervisor.publish_supervisor_authority",
+        flaky_publish,
+    )
+
+    with pytest.raises(
+        TeamError, match="simulated second-worker publish failure"
+    ) as exc_info:
+        scaling._publish_scale_supervisor_authorities(
+            tmp_path,
+            rid,
+            team_id="team-1",
+            owner_token="owner-1",
+            generation=1,
+            records=records,
+        )
+    assert str(exc_info.value).startswith(
+        "simulated second-worker publish failure"
+    )
+    assert "authority rollback incomplete" not in str(exc_info.value)
+    assert calls == 2
+    assert not supervisor_prepublish_path(tmp_path, rid, "scale-2").exists()
+    assert not supervisor_prepublish_path(tmp_path, rid, "scale-3").exists()
+
+
+def test_scale_up_receipt_bound_preserves_attempt_prepublish(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.team.supervisor import (
+        clear_attempt_supervisor_prepublish_authorities,
+        supervisor_prepublish_path,
+    )
+
+    rid, live = _prepare_live_scale_team(monkeypatch, tmp_path)
+    clears: list[Any] = []
+    real_clear = clear_attempt_supervisor_prepublish_authorities
+
+    def spy_clear(*args: Any, **kwargs: Any) -> list[str]:
+        clears.append((args, kwargs))
+        return real_clear(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "omg_cli.team.supervisor.clear_attempt_supervisor_prepublish_authorities",
+        spy_clear,
+    )
+
+    def capture_add(*, session: str, records: Any, **_kwargs: Any) -> None:
+        records[0].update(
+            {
+                "window_index": 7,
+                "window_id": "@17",
+                "window_nonce": "c" * 32,
+                "pane_id": "%27",
+            }
+        )
+
+    real_persist = scaling._persist_team_identity_receipt
+
+    def publish_then_lose(*args: Any, **kwargs: Any) -> Any:
+        real_persist(*args, **kwargs)
+        raise OSError("simulated receipt publication result loss")
+
+    monkeypatch.setattr(scaling, "_add_tmux_windows", capture_add)
+    monkeypatch.setattr(scaling, "_read_scaled_pane_pid", lambda **_kwargs: 10002)
+    monkeypatch.setattr(scaling, "_pgid_for_pid", lambda _pid: 20002)
+    monkeypatch.setattr(scaling, "_pid_start_identity", lambda _pid: "start-10002")
+    monkeypatch.setattr(
+        scaling,
+        "_rollback_created_tmux_windows",
+        lambda _records: [],
+    )
+    monkeypatch.setattr(
+        scaling,
+        "_read_tmux_session_identity",
+        lambda _session: (live["session"], "$7"),
+    )
+    monkeypatch.setattr(plane, "_read_tmux_launch_nonce", lambda _session: "a" * 32)
+    monkeypatch.setattr(scaling, "_persist_team_identity_receipt", publish_then_lose)
+
+    with pytest.raises(TeamError, match="receipt-bound windows preserved"):
+        scale_team(tmp_path, rid, add=1)
+
+    assert clears == []
+    auth_path = supervisor_prepublish_path(tmp_path, rid, "scale-2")
+    assert auth_path.is_file()
+
+
+def test_clear_attempt_supervisor_prepublish_authorities_skips_mismatches(
+    tmp_path: Path,
+) -> None:
+    from omg_cli.contracts.path_keys import (
+        DATA_FILE_MODE,
+        atomic_write_bytes,
+        ensure_managed_dir,
+    )
+    from omg_cli.team.supervisor import (
+        PREPUBLISH_KIND,
+        clear_attempt_supervisor_prepublish_authorities,
+        publish_supervisor_authority,
+        supervisor_prepublish_path,
+        write_provider_descriptor,
+    )
+
+    rid = "run-f10"
+    tdir = plane.team_dir(tmp_path, rid)
+    desc = write_provider_descriptor(
+        tdir / "owned.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print('owned')"],
+    )
+    owned = publish_supervisor_authority(
+        leader_root=tmp_path,
+        run_id=rid,
+        team_id="team",
+        worker_id="scale-2",
+        owner_token="owner-1",
+        descriptor_path=desc,
+        generation=1,
+        attempt=1,
+    )
+    sibling = publish_supervisor_authority(
+        leader_root=tmp_path,
+        run_id=rid,
+        team_id="team",
+        worker_id="scale-1",
+        owner_token="owner-1",
+        descriptor_path=desc,
+        generation=99,
+        attempt=1,
+    )
+    sibling_body = sibling.read_bytes()
+
+    forged = supervisor_prepublish_path(tmp_path, rid, "forged")
+    ensure_managed_dir(forged.parent)
+    atomic_write_bytes(
+        forged,
+        (
+            json.dumps(
+                {
+                    "kind": PREPUBLISH_KIND,
+                    "writer": "not-cli",
+                    "run_id": rid,
+                    "worker_id": "forged",
+                    "generation": 1,
+                    "attempt": 1,
+                }
+            )
+            + "\n"
+        ).encode("utf-8"),
+        mode=DATA_FILE_MODE,
+        replace=True,
+    )
+    corrupt = supervisor_prepublish_path(tmp_path, rid, "corrupt")
+    atomic_write_bytes(
+        corrupt,
+        b"{not-json",
+        mode=DATA_FILE_MODE,
+        replace=True,
+    )
+    linked = supervisor_prepublish_path(tmp_path, rid, "linked")
+    outside = tmp_path / "outside-auth.json"
+    outside.write_text(
+        json.dumps(
+            {
+                "kind": PREPUBLISH_KIND,
+                "writer": CLI_WRITER,
+                "run_id": rid,
+                "worker_id": "linked",
+                "generation": 1,
+                "attempt": 1,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    linked.symlink_to(outside)
+
+    errors = clear_attempt_supervisor_prepublish_authorities(
+        tmp_path,
+        rid,
+        generation=1,
+        attempts=[
+            ("scale-2", 1),
+            ("scale-1", 1),
+            ("forged", 1),
+            ("corrupt", 1),
+            ("linked", 1),
+            ("missing", 1),
+        ],
+    )
+    assert errors == []
+    assert not owned.exists()
+    assert sibling.is_file()
+    assert sibling.read_bytes() == sibling_body
+    assert forged.is_file()
+    assert corrupt.is_file()
+    assert linked.is_symlink()
+    assert outside.is_file()
 
 
 def test_scale_up_partial_atomic_preparation_crash_repairs_without_rebuild(
@@ -2740,6 +3019,7 @@ def test_scale_up_receipt_contract_path_error_rolls_back_created_window(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from omg_cli.contracts.path_keys import ContractPathError
+    from omg_cli.team.supervisor import supervisor_prepublish_path
 
     rid, _live = _prepare_live_scale_team(monkeypatch, tmp_path)
 
@@ -2774,6 +3054,7 @@ def test_scale_up_receipt_contract_path_error_rolls_back_created_window(
 
     assert rollbacks == [["@17"]]
     assert load_team_meta(tmp_path, rid)["identity_generation"] == 0
+    assert not supervisor_prepublish_path(tmp_path, rid, "scale-2").exists()
 
 
 def test_scale_up_meta_publish_then_raise_preserves_committed_identity(
@@ -2822,6 +3103,8 @@ def test_scale_up_meta_publish_then_raise_preserves_committed_identity(
 def test_scale_up_unknown_meta_readback_preserves_windows_and_receipt(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    from omg_cli.team.supervisor import supervisor_prepublish_path
+
     rid, _live = _prepare_live_scale_team(monkeypatch, tmp_path)
 
     def capture_add(*, session: str, records: Any, **_kwargs: Any) -> None:
@@ -2863,6 +3146,7 @@ def test_scale_up_unknown_meta_readback_preserves_windows_and_receipt(
 
     assert rollbacks == []
     assert plane.team_identity_receipt_path(tmp_path, rid, 1).is_file()
+    assert supervisor_prepublish_path(tmp_path, rid, "scale-2").is_file()
     disk = load_team_meta(tmp_path, rid)
     scaled = next(task for task in disk["tasks"] if task["task_id"] == "scale-2")
     assert scaled["window_id"] == "@99"

@@ -414,6 +414,84 @@ def clear_supervisor_prepublish_authorities(
         return
 
 
+def _is_exact_nonbool_int(value: Any, expected: int) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, int)
+        and value == expected
+    )
+
+
+def clear_attempt_supervisor_prepublish_authorities(
+    root: Path | str,
+    run_id: str,
+    *,
+    generation: int,
+    attempts: Sequence[tuple[str, int]],
+) -> list[str]:
+    """Remove only this attempt's matching supervisor prepublish files.
+
+    Fail closed on identity: unlink a path only when it is a regular
+    non-symlink file whose JSON matches ``kind`` / ``writer`` / ``run_id`` /
+    ``worker_id`` / ``generation`` / ``attempt`` exactly (ints, not bools).
+    Fail open on missing, symlink, mismatch, or unreadable records.
+    Never raises; unlink failures are returned as human error strings.
+    """
+    errors: list[str] = []
+    if isinstance(generation, bool) or not isinstance(generation, int):
+        return errors
+    try:
+        rid = require_safe_id(run_id, label="run_id")
+    except (ValueError, TypeError):
+        return errors
+    for item in attempts:
+        if not isinstance(item, (tuple, list)) or len(item) != 2:
+            continue
+        worker_id, attempt = item
+        if isinstance(attempt, bool) or not isinstance(attempt, int):
+            continue
+        try:
+            wid = require_safe_id(worker_id, label="worker_id")
+            path = supervisor_prepublish_path(root, rid, wid)
+        except (ValueError, TypeError, ContractPathError):
+            continue
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            errors.append(f"{wid}: lstat failed: {exc}")
+            continue
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            continue
+        try:
+            raw = read_managed_regular_bytes(path)
+        except (OSError, ValueError, ContractPathError):
+            continue
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if (
+            data.get("kind") != PREPUBLISH_KIND
+            or data.get("writer") != CLI_WRITER
+            or data.get("run_id") != rid
+            or data.get("worker_id") != wid
+            or not _is_exact_nonbool_int(data.get("generation"), generation)
+            or not _is_exact_nonbool_int(data.get("attempt"), attempt)
+        ):
+            continue
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            errors.append(f"{wid}: unlink failed: {exc}")
+    return errors
+
+
 def _load_prepublish_authority(
     leader: Path,
     *,
@@ -1986,6 +2064,7 @@ __all__ = [
     "PaneSupervisorAdmission",
     "admit_pane_supervisor",
     "admit_pane_supervisor_binding",
+    "clear_attempt_supervisor_prepublish_authorities",
     "clear_supervisor_prepublish_authorities",
     "descriptor_content_digest",
     "stamp_task_descriptor_digest",
