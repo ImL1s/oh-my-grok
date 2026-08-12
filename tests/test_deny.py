@@ -25,8 +25,16 @@ PRE_TOOL = ROOT / "hooks" / "bin" / "pre_tool_use_deny.py"
     "sh -c 'claude -p x'",
     "command codex exec",
     "xargs claude",
+    # foreign orchestration (omc team) — bare + path + wrappers + shell-c
     "omc team 2:codex 'x'",
-    "omg team start --goal x",
+    "/usr/bin/omc team 2:codex 'x'",
+    "command omc team x",
+    "env omc team x",
+    "command /usr/bin/omc team x",
+    "env /opt/bin/omc team x",
+    "nohup omc team x",
+    "exec omc team x",
+    "bash -lc 'omc team x'",
     "agy -p x",
     "cursor-agent -p x",
     # -lc / login-command forms
@@ -69,11 +77,25 @@ def test_deny_external_cli(cmd):
     "nohup sleep 1",
     "sudo apt update",
     "time make",
-    # omg subcommands that are NOT team must stay allowed
+    # omg subcommands (including first-party Team) must stay allowed
     "omg doctor",
     "omg accept --run x",
     "omg setup",
     "omg worker seal",
+    "omg team start --goal x",
+    "omg team 2:executor \"fix tests\"",
+    "omg team launch --workers 2 --role executor --goal \"fix tests\"",
+    "omg team status run-1",
+    "omg team stop run-1",
+    "omg team api get-summary",
+    "/opt/omg/bin/omg team 2:executor \"x\"",
+    "./venv/bin/omg team launch --workers 1 --goal x",
+    "command /opt/omg/bin/omg team status r",
+    "env /opt/omg/bin/omg team api get-summary",
+    "bash -lc '/opt/omg/bin/omg team launch --workers 1 --goal x'",
+    # command-text env must NOT grant/deny Team (process env owns worker gate)
+    "OMG_TEAM_WORKER=0 omg team start --goal x",
+    "OMG_TEAM_WORKER=1 omg team api claim-task",
     # quoted/arg mention of omg team (mirror: echo "run omc team" is not denied)
     'echo "run omg team"',
 ])
@@ -567,8 +589,8 @@ def test_multiline_command_deny_not_bypassed_by_newline():
     assert should_deny_command("cd /tmp\ncodex exec foo") is True
     assert should_deny_command("set -e\n\n  agy -p go") is True
     assert should_deny_command("echo a\r\ncursor-agent --print x") is True
-    # omg team / omc team on their own line (command-position includes newline)
-    assert should_deny_command("echo hi\nomg team start --goal x") is True
+    # first-party omg team allowed; foreign omc team still denied on its own line
+    assert should_deny_command("echo hi\nomg team start --goal x") is False
     assert should_deny_command("echo hi\nomc team 2:codex 'x'") is True
     # sanity: a plain multi-line script with no denied bin is still allowed
     assert should_deny_command("echo start\necho done") is False
@@ -582,16 +604,68 @@ def test_multiline_command_deny_not_bypassed_by_newline():
     assert decide_pre_tool_use(ev)["decision"] == "deny"
 
 
-def test_omg_team_command_position_denied():
-    """omg team at command position is denied (symmetric with omc team)."""
-    assert should_deny_command("omg team start --goal x") is True
-    assert should_deny_command("omg team") is True
-    assert should_deny_command("echo hi\nomg team start --goal x") is True
+def test_omg_team_first_party_allowed_omc_team_denied():
+    """#146: first-party omg team is not an external CLI; omc team still is."""
+    assert should_deny_command("omg team start --goal x") is False
+    assert should_deny_command("omg team") is False
+    assert should_deny_command("echo hi\nomg team start --goal x") is False
+    assert should_deny_command("/opt/omg/bin/omg team launch --goal x") is False
+    # foreign orchestration remains denied across equivalent heads
+    assert should_deny_command("omc team 2:codex 'x'") is True
+    assert should_deny_command("/usr/bin/omc team x") is True
+    assert should_deny_command("command omc team x") is True
+    assert should_deny_command("env /opt/bin/omc team x") is True
+    assert should_deny_command("bash -lc 'omc team x'") is True
     # other omg subcommands not denied
     assert should_deny_command("omg doctor") is False
     assert should_deny_command("omg accept --run x") is False
     assert should_deny_command("omg setup") is False
     assert should_deny_command("omg worker seal") is False
-    # arg/quoted mention stays allowed (same posture as omc team)
+    # arg/quoted mention stays allowed
     assert should_deny_command('echo "run omg team"') is False
     assert should_deny_command('echo "run omc team"') is False
+
+
+def test_first_party_team_not_mislabeled_as_external_cli():
+    """decide_pre_tool_use must allow bare omg team without advisor messaging."""
+    ev = {
+        "toolName": "run_terminal_command",
+        "toolInput": {"command": "omg team 2:executor \"fix tests\""},
+    }
+    decision = decide_pre_tool_use(ev)
+    assert decision["decision"] == "allow"
+
+
+def test_worker_nested_team_launch_denied_with_team_reason(monkeypatch):
+    """Process-env worker markers block nested launch; reason is Team-specific."""
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    # command-text cannot clear the process marker
+    ev = {
+        "toolName": "run_terminal_command",
+        "toolInput": {
+            "command": "OMG_TEAM_WORKER=0 omg team launch --workers 2 --goal x"
+        },
+    }
+    decision = decide_pre_tool_use(ev)
+    assert decision["decision"] == "deny"
+    reason = decision.get("reason") or ""
+    assert "E_TEAM_NESTED_LAUNCH" in reason
+    assert "omg ask" not in reason
+    # identity-bound api still allowed through the soft-gate
+    api_ev = {
+        "toolName": "run_terminal_command",
+        "toolInput": {"command": "omg team api claim-task --input '{}'"},
+    }
+    assert decide_pre_tool_use(api_ev)["decision"] == "allow"
+    # path/wrapper/shell-c forms of nested launch also blocked
+    for cmd in (
+        "/opt/omg/bin/omg team start --goal x",
+        "command omg team scale --add 1",
+        "bash -lc 'omg team launch --goal x'",
+        "omg team 2:executor \"x\"",
+    ):
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "deny", cmd
+        assert "E_TEAM_NESTED_LAUNCH" in (d.get("reason") or "")

@@ -37,6 +37,34 @@ _COMMAND_LEAD = (
 _DENIED_BIN_NAMES = frozenset(
     {"claude", "codex", "omx", "agy", "cursor-agent", "kimi"}
 )
+# Foreign orchestration CLIs (not first-party ``omg``). Basename only —
+# path-prefixed / wrapped heads resolve via :func:`_executable_basename`.
+_FOREIGN_ORCHESTRATOR_BINS = frozenset({"omc"})
+# First-party Team binary basename. Soft-gate does NOT own its authorization;
+# OMG Team runtime does (actor, operation, identity, nested-launch admission).
+_FIRST_PARTY_TEAM_BIN = "omg"
+# Nested launch / supervise verbs denied as defense-in-depth when the *process*
+# environment is a worker (never from command-text env assignments).
+_TEAM_NESTED_LAUNCH_OPS = frozenset(
+    {
+        "launch",
+        "start",
+        "run",
+        "scale",
+        "resume",
+        "supervisor",
+        "stop",
+        "collect",
+    }
+)
+# Shorthand ``omg team N[:role] "goal"`` — first token after ``team`` is N or N:role.
+_TEAM_SHORTHAND_WORKERS = re.compile(r"^\d+(?::[A-Za-z0-9_-]+)?$")
+# Process-env markers for worker depth-1 (must match team.plane WORKER_ENV_MARKERS).
+_WORKER_ENV_MARKERS = (
+    "OMG_TEAM_WORKER",
+    "OMG_PROCESS_FANOUT_WORKER",
+    "OMG_SPAWNED_WORKER",
+)
 
 _DENY_AT_CMD_POS = re.compile(
     rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}{_PATH_PREFIX}{_DENY_BINS}\b",
@@ -73,9 +101,6 @@ _CONDITIONAL_OPEN_AT_END = re.compile(
 _ARRAY_ASSIGNMENT_AT_END = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\r\n]*\])?\+?=\Z"
 )
-_OMC_TEAM = re.compile(rf"{_CMD_POS}\s*omc\s+team\b", re.IGNORECASE)
-_OMG_TEAM = re.compile(rf"{_CMD_POS}\s*omg\s+team\b", re.IGNORECASE)
-
 # eval claude ... (command-position eval of a deny bin)
 _EVAL = re.compile(
     rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}(?:\S*/)?eval\s+(?:['\"]?){_PATH_PREFIX}{_DENY_BINS}\b",
@@ -1305,12 +1330,24 @@ def _decode_shell_words(raw_body: str) -> list[str]:
     return words
 
 
-def _decoded_shell_word_is_denied(raw_word: str) -> bool:
+def _executable_basename(raw_word: str) -> str | None:
+    """Normalize a command-head word to its executable basename.
+
+    Resolves bare names, absolute/relative path prefixes, and quoted forms the
+    bounded decoder already understands. Returns ``None`` when the word is not
+    a single concrete executable token (dynamic / multi-word).
+    """
+
     words = _decode_shell_words(raw_word)
     if len(words) != 1:
-        return False
-    executable = words[0].rsplit("/", 1)[-1].lower()
-    return executable in _DENIED_BIN_NAMES
+        return None
+    base = words[0].rsplit("/", 1)[-1].lower()
+    return base or None
+
+
+def _decoded_shell_word_is_denied(raw_word: str) -> bool:
+    executable = _executable_basename(raw_word)
+    return executable in _DENIED_BIN_NAMES if executable else False
 
 
 def _starts_shell_expansion(char: str) -> bool:
@@ -1421,6 +1458,127 @@ def _has_denied_decoded_command_head(command: str) -> bool:
         ):
             return True
         search_position = match.start() + 1
+    return False
+
+
+# Bound how much trailing text we decode after a matched executable head when
+# classifying ``omc team`` / ``omg team`` — avoids O(n²) shlex on huge scripts.
+_HEAD_TAIL_DECODE_LIMIT = 512
+
+
+def _next_decoded_words(command: str, start: int, *, limit: int = 4) -> list[str]:
+    """Decode at most *limit* words from a bounded slice after *start*."""
+
+    if start >= len(command):
+        return []
+    end = min(len(command), start + _HEAD_TAIL_DECODE_LIMIT)
+    words = _decode_shell_words(command[start:end])
+    return words[:limit]
+
+
+def _has_foreign_omc_team(command: str) -> bool:
+    """True when a foreign ``omc team`` orchestration CLI is in command position.
+
+    Covers bare, path-prefixed, wrapper (``env``/``command``/``exec``/…), and
+    forms already exposed as executable heads by the bounded parser. Recursive
+    ``sh|bash|zsh -c/-lc`` bodies are handled by the existing shell-c walk.
+    """
+
+    search_position = 0
+    while match := _DECODED_COMMAND_HEAD.search(command, search_position):
+        if _shell_context_is_executable(command, match.start()) is True:
+            base = _executable_basename(match.group("word"))
+            if base in _FOREIGN_ORCHESTRATOR_BINS:
+                tail = _next_decoded_words(command, match.end(), limit=1)
+                if tail and tail[0].lower() == "team":
+                    return True
+        search_position = match.start() + 1
+    return False
+
+
+def _truthy_process_env(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def in_worker_process_context() -> bool:
+    """True when the *process* environment marks a depth-1 worker.
+
+    Command-text assignments such as ``OMG_TEAM_WORKER=0 omg team …`` must never
+    authorize or clear this — only real process env is consulted.
+    """
+
+    return any(_truthy_process_env(key) for key in _WORKER_ENV_MARKERS)
+
+
+def _first_party_team_argv(command: str) -> list[str] | None:
+    """If an executable head is first-party ``omg team …``, return argv after ``team``.
+
+    Returns ``None`` when no first-party Team head is present. Does not interpret
+    command-text env assignments as process identity. Only a few words after
+    ``team`` are decoded (op classification is shallow).
+    """
+
+    search_position = 0
+    while match := _DECODED_COMMAND_HEAD.search(command, search_position):
+        if _shell_context_is_executable(command, match.start()) is True:
+            base = _executable_basename(match.group("word"))
+            if base == _FIRST_PARTY_TEAM_BIN:
+                tail = _next_decoded_words(command, match.end(), limit=3)
+                if tail and tail[0].lower() == "team":
+                    return [w.lower() for w in tail[1:]]
+        search_position = match.start() + 1
+    return None
+
+
+def _team_argv_is_nested_launch(argv: list[str]) -> bool:
+    if not argv:
+        # bare ``omg team`` — treat as launch surface (shorthand incomplete)
+        return True
+    op = argv[0]
+    if op in _TEAM_NESTED_LAUNCH_OPS:
+        return True
+    if _TEAM_SHORTHAND_WORKERS.match(op):
+        return True
+    return False
+
+
+def is_first_party_team_nested_launch(command: str, depth: int = 0) -> bool:
+    """Classify obviously nested Team launch/supervise verbs for soft defense-in-depth.
+
+    Authoritative admission remains the OMG Team runtime (``E_TEAM_NESTED_LAUNCH``).
+    The hook only recognizes clear launch/lifecycle forms so identity-bound
+    ``omg team api …`` still reaches runtime validation. Recurses into
+    ``sh|bash|zsh -c/-lc`` bodies for equivalent path/wrapper forms.
+    """
+
+    if not command or not isinstance(command, str):
+        return False
+    try:
+        command = _collapse_line_continuations(command)
+        argv = _first_party_team_argv(command)
+        if argv is not None and _team_argv_is_nested_launch(argv):
+            return True
+        if depth >= 8:
+            return False
+        search_position = 0
+        while match := _SHELL_C_HEAD.search(command, search_position):
+            if _shell_context_is_executable(command, match.start()) is True:
+                words = _decode_shell_words(
+                    _eval_argument_tail(command, match.end())
+                )
+                body = words[0] if words else ""
+                if body and is_first_party_team_nested_launch(body, depth + 1):
+                    return True
+            search_position = match.start() + 1
+    except _ShellParseBudgetExceeded:
+        # Fail closed on nested-launch classification only when already in worker
+        # process context (caller still gates on that).
+        return True
     return False
 
 
@@ -1625,9 +1783,9 @@ def _should_deny_command(command: str, eval_depth: int) -> bool:
             return True
         if _has_denied_case_command_head(command):
             return True
-        if _has_executable_match(_OMC_TEAM, command) or _has_executable_match(
-            _OMG_TEAM, command
-        ):
+        # Foreign orchestration only (``omc team``). First-party ``omg team`` is
+        # intentionally NOT an external-CLI deny — runtime owns Team admission.
+        if _has_foreign_omc_team(command):
             return True
         # sh/bash/zsh -c/-lc command strings are recursively inspected.
         if _has_denied_shell_c_body(command, eval_depth):
@@ -2206,6 +2364,18 @@ def decide_pre_tool_use(event: dict[str, Any]) -> dict[str, str]:
         cmd = tin.get("command") if isinstance(tin, dict) else None
         if not isinstance(cmd, str):
             return {"decision": "allow"}
+        # Nested Team launch defense-in-depth: process env ONLY (never command-text
+        # assignments). Not bypassable via OMG_ALLOW_EXTERNAL_CLI (that escape is
+        # for advisors under omg ask children, not first-party Team).
+        if in_worker_process_context() and is_first_party_team_nested_launch(cmd):
+            return {
+                "decision": "deny",
+                "reason": (
+                    "oh-my-grok: nested omg team launch blocked in worker context "
+                    "(E_TEAM_NESTED_LAUNCH; OMG Team runtime also refuses before "
+                    "side effects — not an external advisor CLI)"
+                ),
+            }
         # ONLY process environment — never parse env from command string
         if os.environ.get("OMG_ALLOW_EXTERNAL_CLI") == "1":
             return {"decision": "allow"}

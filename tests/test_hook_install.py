@@ -24,7 +24,9 @@ MATRIX = [
     ('{"tool_name":"run_terminal_command","tool_input":{"command":"ls -la"}}', "allow"),
     ('{"tool_name":"run_terminal_command","tool_input":{"command":"claude -p hi"}}', "deny"),
     ('{"tool_name":"run_terminal_command","tool_input":{"command":"echo x; codex exec y"}}', "deny"),
-    ('{"tool_name":"run_terminal_command","tool_input":{"command":"omg team start"}}', "deny"),
+    ('{"tool_name":"run_terminal_command","tool_input":{"command":"omg team start"}}', "allow"),
+    ('{"tool_name":"run_terminal_command","tool_input":{"command":"omc team 2:codex x"}}', "deny"),
+    ('{"tool_name":"run_terminal_command","tool_input":{"command":"/opt/omg/bin/omg team launch --goal x"}}', "allow"),
     ('{"tool_name":"run_terminal_command","tool_input":{"command":"bash -c \'claude\'"}}', "deny"),
     ('{"tool_name":"run_terminal_command","tool_input":{"command":"git commit -m \\"fix(kimi): stream\\""}}', "allow"),
     ('{"tool_name":"run_terminal_command","tool_input":{"command":"echo \\"$(kimi --version)\\""}}', "deny"),
@@ -472,6 +474,54 @@ def test_standalone_allow_external_cli_env(monkeypatch):
     rc, out = _run_standalone(
         '{"tool_name":"run_terminal_command","tool_input":{"command":"claude -p x"}}',
         env_extra={"OMG_ALLOW_EXTERNAL_CLI": "1"},
+    )
+    assert rc == 0 and json.loads(out)["decision"] == "allow"
+
+
+def test_standalone_allows_first_party_omg_team_leader():
+    """#146: installed standalone must allow bare omg team (no absolute-path rewrite)."""
+    for cmd in (
+        "omg team 2:executor \"fix tests\"",
+        "omg team launch --workers 2 --goal x",
+        "/opt/omg/bin/omg team status r",
+        "command env /opt/omg/bin/omg team api get-summary",
+        "bash -lc 'omg team launch --goal x'",
+    ):
+        payload = json.dumps(
+            {
+                "tool_name": "run_terminal_command",
+                "tool_input": {"command": cmd},
+            }
+        )
+        rc, out = _run_standalone(payload)
+        assert rc == 0, cmd
+        body = json.loads(out)
+        assert body["decision"] == "allow", (cmd, body)
+
+
+def test_standalone_denies_omc_team_and_worker_nested_launch():
+    rc, out = _run_standalone(
+        '{"tool_name":"run_terminal_command","tool_input":{"command":"omc team 2:codex x"}}'
+    )
+    assert rc == 0 and json.loads(out)["decision"] == "deny"
+    rc, out = _run_standalone(
+        '{"tool_name":"run_terminal_command","tool_input":{"command":"/usr/bin/omc team x"}}'
+    )
+    assert rc == 0 and json.loads(out)["decision"] == "deny"
+    # process-env worker marker → nested launch denied with Team reason
+    rc, out = _run_standalone(
+        '{"tool_name":"run_terminal_command","tool_input":{"command":"omg team launch --goal x"}}',
+        env_extra={"OMG_TEAM_WORKER": "1"},
+    )
+    assert rc == 0
+    body = json.loads(out)
+    assert body["decision"] == "deny"
+    assert "E_TEAM_NESTED_LAUNCH" in body.get("reason", "")
+    assert "omg ask" not in body.get("reason", "")
+    # identity-bound api still allowed through the soft-gate
+    rc, out = _run_standalone(
+        '{"tool_name":"run_terminal_command","tool_input":{"command":"omg team api claim-task"}}',
+        env_extra={"OMG_TEAM_WORKER": "1", "OMG_TEAM_WORKER_ID": "w1"},
     )
     assert rc == 0 and json.loads(out)["decision"] == "allow"
 
