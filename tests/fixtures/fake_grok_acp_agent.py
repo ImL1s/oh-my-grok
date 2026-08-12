@@ -15,6 +15,7 @@ Scenarios via ``OMG_ACP_FAKE_SCENARIO``:
   exit_after_resume — exit immediately after resume (transient false success)
   resume_false     — resume result resumed=false (no receipt)
   resume_plus_oversize_suffix — valid resume result + unterminated oversize suffix in one write (OMG_ACP_FAKE_SUFFIX_BYTES, default 400)
+  resume_plus_chrome_plus_suffix — valid resume result + chrome session/update + unterminated oversize suffix in one write (OMG_ACP_FAKE_SUFFIX_BYTES, default 400)
   session_id_mismatch — resume result sessionId ≠ requested UUID
   resume_missing_flag — resume result omits resumed
   session_id_alias — resume result uses session_id alias only
@@ -180,6 +181,37 @@ def main() -> int:
                     "result": {"sessionId": sid, "resumed": True},
                 }
             ).encode("utf-8")
+            + b"\n"
+            + b"x" * max(0, n)
+        )
+        sys.stdout.buffer.write(payload)
+        sys.stdout.buffer.flush()
+        time.sleep(60)
+        return 0
+
+    if scenario == "resume_plus_chrome_plus_suffix":
+        try:
+            n = int(os.environ.get("OMG_ACP_FAKE_SUFFIX_BYTES") or "400")
+        except ValueError:
+            n = 400
+        # Same chrome shape as _notify_update("current_mode_update", mode="default").
+        chrome = {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": {"sessionUpdate": "current_mode_update", "mode": "default"}
+            },
+        }
+        payload = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": resume["id"],
+                    "result": {"sessionId": sid, "resumed": True},
+                }
+            ).encode("utf-8")
+            + b"\n"
+            + json.dumps(chrome).encode("utf-8")
             + b"\n"
             + b"x" * max(0, n)
         )

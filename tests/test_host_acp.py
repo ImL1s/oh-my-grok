@@ -844,3 +844,145 @@ def test_handshake_committed_plus_buffered_suffix_writes_no_receipt(
         assert elapsed < 2.0
     finally:
         sess.close()
+
+
+def test_handshake_zero_quiet_window_oversize_suffix_writes_no_receipt(
+    tmp_path: Path,
+) -> None:
+    proc, argv = _spawn(
+        "resume_plus_oversize_suffix",
+        tmp_path,
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "400"},
+    )
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    sess.max_line_bytes = 256
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "line overflow" in str(ei.value)
+        assert sess._receipt is None
+        assert elapsed < 2.0
+    finally:
+        sess.close()
+
+
+def test_try_read_message_expired_deadline_rejects_line_overflow() -> None:
+    max_line = 256
+    r_fd, w_fd = os.pipe()
+    r_file = os.fdopen(r_fd, "rb", buffering=0)
+    w_file = os.fdopen(w_fd, "wb", buffering=0)
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.stdout = r_file
+            self.stdin = None
+            self.pid = None
+
+        def poll(self) -> None:
+            return None
+
+    proc = _FakeProc()
+    sid = str(uuid.uuid4())
+    sess = AcpStdioSession(
+        proc=proc,
+        argv=("fake",),
+        session_id=sid,
+        cwd=".",
+        job_id="20260101T000000Z-deadbeef",
+        attempt=1,
+        parent_run_id="run-1",
+        session_id_hash=hash_session_id(sid),
+        cwd_hash=hash_cwd("."),
+        max_line_bytes=max_line,
+        max_total_bytes=50_000,
+    )
+    sess._rx_buf.extend(b"x" * (max_line + 1))
+    assert sess._byte_budget[0] + len(sess._rx_buf) < sess.max_total_bytes
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess._try_read_message(
+                deadline=time.monotonic() - 1.0,
+                allow_timeout=True,
+                cancel_event=None,
+            )
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "line overflow" in str(ei.value)
+    finally:
+        r_file.close()
+        w_file.close()
+
+
+def test_handshake_expired_deadline_oversize_suffix_writes_no_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli import host_acp as host_acp_mod
+
+    proc, argv = _spawn(
+        "resume_plus_oversize_suffix",
+        tmp_path,
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "400"},
+    )
+    sess = _session(proc, argv, tmp_path, quiet=0.5)
+    sess.max_line_bytes = 256
+    orig_await = sess._await_result
+    jump = {"on": False}
+
+    def _await_wrapper(*args: object, **kwargs: object):
+        result = orig_await(*args, **kwargs)
+        expect_id = args[0] if args else kwargs.get("expect_id")
+        if expect_id == 2:
+            jump["on"] = True
+        return result
+
+    monkeypatch.setattr(sess, "_await_result", _await_wrapper)
+    real_mono = host_acp_mod.time.monotonic
+
+    def _jumped_mono() -> float:
+        now = real_mono()
+        if jump["on"]:
+            return now + 10.0
+        return now
+
+    monkeypatch.setattr(host_acp_mod.time, "monotonic", _jumped_mono)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "line overflow" in str(ei.value)
+        assert sess._receipt is None
+    finally:
+        sess.close()
+
+
+def test_handshake_final_chrome_exhausts_quiet_window_oversize_suffix_writes_no_receipt(
+    tmp_path: Path,
+) -> None:
+    proc, argv = _spawn(
+        "resume_plus_chrome_plus_suffix",
+        tmp_path,
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "400"},
+    )
+    sess = _session(proc, argv, tmp_path, quiet=0.001)
+    sess.max_line_bytes = 256
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "line overflow" in str(ei.value)
+        assert sess._receipt is None
+    finally:
+        sess.close()
+
+
+def test_handshake_zero_quiet_window_under_limit_succeeds(tmp_path: Path) -> None:
+    proc, argv = _spawn("success", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    try:
+        receipt = sess.handshake(timeout_s=5.0)
+        assert receipt.resume_matched is True
+        assert sess._receipt is not None
+    finally:
+        sess.close()
