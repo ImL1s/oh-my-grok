@@ -1,8 +1,9 @@
-"""Strict ACP stdio initialize + session/resume client (#105 PR4).
+"""Strict ACP stdio initialize + session/resume client (#105 PR4/PR5).
 
 Owns the JSON-RPC wire for ``grok agent stdio`` (argv-only, shell=False).
 Does **not** set verified/passes, replay transcripts, or call session/close.
 Conversation-content ``session/update`` notifications fail closed (no-replay).
+Resume identity is checked before any receipt; peer stderr is drained.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ DEFAULT_HANDSHAKE_TIMEOUT_S = 15.0
 DEFAULT_QUIET_WINDOW_S = 0.12
 DEFAULT_MAX_LINE_BYTES = 256_000
 DEFAULT_DRAIN_MAX_BYTES = 2_000_000
+_STDERR_DRAIN_CHUNK = 8192
 
 
 class AcpError(RuntimeError):
@@ -66,7 +68,7 @@ class AcpResumeReceipt:
     cwd_hash: str
     transport: str = TRANSPORT_KIND
     initialized: bool = True
-    resume_matched: bool = True
+    resume_matched: bool = False
     no_replay_observed: bool = True
     restore_code_requested: bool = False
     connection_owned: bool = True
@@ -85,7 +87,7 @@ class AcpResumeReceipt:
             "cwd_hash": self.cwd_hash,
             "transport": self.transport,
             "initialized": bool(self.initialized),
-            "resume_matched": bool(self.resume_matched),
+            "resume_matched": self.resume_matched is True,
             "no_replay_observed": bool(self.no_replay_observed),
             "restore_code_requested": bool(self.restore_code_requested),
             "connection_owned": bool(self.connection_owned),
@@ -167,6 +169,7 @@ def allowlisted_acp_env(base: Mapping[str, str] | None = None) -> dict[str, str]
         "OMG_GROK_BIN",
         "OMG_ACP_FAKE_SCENARIO",
         "OMG_ACP_FAKE_DELAY_S",
+        "OMG_ACP_FAKE_CHROME_COUNT",
     ):
         val = src.get(key)
         if isinstance(val, str) and val:
@@ -220,6 +223,72 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def validate_resume_result(result: Any, expected_session_id: str) -> None:
+    """Fail-closed identity check on ``session/resume`` result.
+
+    Raises ``E_ACP_RESUME`` when the result is not a JSON object or ``resumed``
+    is not JSON boolean true. Raises ``E_ACP_IDENTITY`` when the session id
+    key is missing, not a string, or does not equal the requested UUID.
+    Allowed identity keys: ``sessionId`` or the single alias ``session_id``.
+    """
+    if not isinstance(result, dict):
+        raise AcpError(
+            "ACP resume result must be a JSON object", code="E_ACP_RESUME"
+        )
+    has_camel = "sessionId" in result
+    has_snake = "session_id" in result
+    if not has_camel and not has_snake:
+        raise AcpError(
+            "ACP resume result missing session identity", code="E_ACP_IDENTITY"
+        )
+    if has_camel and has_snake and result["sessionId"] != result["session_id"]:
+        raise AcpError(
+            "ACP resume sessionId/session_id conflict", code="E_ACP_IDENTITY"
+        )
+    sid = result["sessionId"] if has_camel else result["session_id"]
+    if not isinstance(sid, str) or sid != expected_session_id:
+        raise AcpError(
+            "ACP resume session identity mismatch", code="E_ACP_IDENTITY"
+        )
+    if "resumed" not in result:
+        raise AcpError(
+            "ACP resume result missing resumed", code="E_ACP_RESUME"
+        )
+    if result["resumed"] is not True:
+        raise AcpError(
+            "ACP resume result resumed is not true", code="E_ACP_RESUME"
+        )
+
+
+def _start_stderr_drain(proc: subprocess.Popen[bytes]) -> threading.Thread:
+    """Daemon-read peer stderr so a PIPE cannot deadlock the handshake.
+
+    Bytes are discarded immediately. Never written to artifacts.
+    """
+
+    def _drain() -> None:
+        stream = proc.stderr
+        if stream is None:
+            return
+        try:
+            while True:
+                chunk = stream.read(_STDERR_DRAIN_CHUNK)
+                if not chunk:
+                    break
+                # Discard immediately — never persist or retain token-bearing bytes.
+                del chunk
+        except (OSError, ValueError):
+            return
+
+    thread = threading.Thread(
+        target=_drain,
+        name=f"acp-stderr-drain-{getattr(proc, 'pid', 0)}",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 def _read_line(
     proc: subprocess.Popen[bytes],
     *,
@@ -229,6 +298,9 @@ def _read_line(
     rx_buf: bytearray,
 ) -> bytes:
     """Read one NL-terminated frame; fail on timeout/EOF/overflow.
+
+    *max_bytes* is the **per-line** cap only. Cumulative ``byte_budget`` is
+    incremented here and compared to ``max_total_bytes`` by the caller.
 
     Partial bytes are retained in *rx_buf* across calls so a quiet-window /
     poll timeout mid-frame cannot drop already-consumed bytes and turn a later
@@ -242,8 +314,6 @@ def _read_line(
             line = bytes(rx_buf[:nl])
             del rx_buf[: nl + 1]
             byte_budget[0] += len(line) + 1
-            if byte_budget[0] > max_bytes:
-                raise AcpError("ACP byte overflow", code="E_ACP_OVERFLOW")
             if len(line) > max_bytes:
                 raise AcpError("ACP line overflow", code="E_ACP_OVERFLOW")
             return line
@@ -276,7 +346,9 @@ def _read_line(
             time.sleep(0.01)
             continue
         rx_buf.extend(chunk)
-        if len(rx_buf) > max_bytes:
+        # Incomplete-frame cap only: many complete small lines may share a
+        # read chunk; do not treat their combined size as one-line overflow.
+        if b"\n" not in rx_buf and len(rx_buf) > max_bytes:
             raise AcpError("ACP line overflow", code="E_ACP_OVERFLOW")
 
 
@@ -396,7 +468,13 @@ class AcpStdioSession:
                 },
             },
         )
-        self._await_result(resume_id, deadline=deadline, cancel_event=cancel_event)
+        resume_result = self._await_result(
+            resume_id,
+            deadline=deadline,
+            cancel_event=cancel_event,
+            require_object=True,
+        )
+        validate_resume_result(resume_result, self.session_id)
 
         # Quiet window: reject late conversation replay before ready.
         quiet_deadline = time.monotonic() + max(0.0, float(self.quiet_window_s))
@@ -431,6 +509,7 @@ class AcpStdioSession:
             parent_run_id=self.parent_run_id,
             session_id_hash=self.session_id_hash,
             cwd_hash=self.cwd_hash,
+            resume_matched=True,
             host_version=self.host_version,
             host_capability_source=self.host_capability_source,
             timestamp=_utc_now(),
@@ -443,6 +522,7 @@ class AcpStdioSession:
             parent_run_id=receipt.parent_run_id,
             session_id_hash=receipt.session_id_hash,
             cwd_hash=receipt.cwd_hash,
+            resume_matched=True,
             host_version=receipt.host_version,
             host_capability_source=receipt.host_capability_source,
             timestamp=body["timestamp"],
@@ -487,6 +567,7 @@ class AcpStdioSession:
         *,
         deadline: float,
         cancel_event: threading.Event | None,
+        require_object: bool = False,
     ) -> dict[str, Any]:
         while True:
             if cancel_event is not None and cancel_event.is_set():
@@ -517,6 +598,13 @@ class AcpStdioSession:
             if "result" not in msg:
                 raise AcpError("ACP response missing result", code="E_ACP_PROTOCOL")
             result = msg["result"]
+            if require_object:
+                if not isinstance(result, dict):
+                    raise AcpError(
+                        "ACP resume result must be a JSON object",
+                        code="E_ACP_RESUME",
+                    )
+                return result
             if not isinstance(result, dict):
                 # initialize may return non-dict in some peers — accept null/object.
                 if result is None:
@@ -624,6 +712,7 @@ def spawn_acp_stdio(
     proc: subprocess.Popen[bytes] | None = None
     try:
         proc = subprocess.Popen(**popen_kwargs)  # noqa: S603 — argv list, no shell
+        _start_stderr_drain(proc)
         if on_process_started is not None:
             on_process_started(proc)
         return proc, argv
@@ -641,7 +730,7 @@ def build_receipt_from_dict(data: Mapping[str, Any]) -> AcpResumeReceipt:
         cwd_hash=str(data.get("cwd_hash") or ""),
         transport=str(data.get("transport") or TRANSPORT_KIND),
         initialized=bool(data.get("initialized", True)),
-        resume_matched=bool(data.get("resume_matched", True)),
+        resume_matched=data.get("resume_matched") is True,
         no_replay_observed=bool(data.get("no_replay_observed", True)),
         restore_code_requested=bool(data.get("restore_code_requested", False)),
         connection_owned=bool(data.get("connection_owned", True)),
@@ -680,6 +769,8 @@ def validate_receipt(
         raise AcpError("receipt restore_code must be false", code="E_ACP_RECEIPT")
     if data.get("connection_owned") is not True:
         raise AcpError("receipt connection_owned required", code="E_ACP_RECEIPT")
+    if data.get("resume_matched") is not True:
+        raise AcpError("receipt resume_matched must be true", code="E_ACP_RECEIPT")
     # Forbidden content keys
     for banned in (
         "transcript",
@@ -722,4 +813,5 @@ __all__ = [
     "hash_session_id",
     "spawn_acp_stdio",
     "validate_receipt",
+    "validate_resume_result",
 ]

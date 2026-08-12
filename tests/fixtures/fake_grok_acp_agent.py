@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hermetic line-delimited JSON-RPC ACP peer for #105 PR4 tests.
+"""Hermetic line-delimited JSON-RPC ACP peer for #105 PR4/PR5 tests.
 
 Scenarios via ``OMG_ACP_FAKE_SCENARIO``:
 
@@ -13,6 +13,12 @@ Scenarios via ``OMG_ACP_FAKE_SCENARIO``:
   rpc_error        — resume returns RPC error
   malformed        — emit non-JSON frame
   exit_after_resume — exit immediately after resume (transient false success)
+  resume_false     — resume result resumed=false (no receipt)
+  session_id_mismatch — resume result sessionId ≠ requested UUID
+  resume_missing_flag — resume result omits resumed
+  session_id_alias — resume result uses session_id alias only
+  stderr_flood     — flood stderr before handshake (PIPE deadlock probe)
+  many_small_chrome — many chrome frames before resume result
 """
 
 from __future__ import annotations
@@ -49,6 +55,17 @@ def _notify_update(kind: str, **extra: object) -> None:
 def main() -> int:
     scenario = (os.environ.get("OMG_ACP_FAKE_SCENARIO") or "success").strip().lower()
     delay = float(os.environ.get("OMG_ACP_FAKE_DELAY_S") or "0")
+
+    if scenario == "stderr_flood":
+        # Fill an undrained stderr PIPE before reading stdin so handshake
+        # deadlocks unless the client drains. Never write this to stdout.
+        blob = b"x" * 65536
+        for _ in range(64):
+            try:
+                sys.stderr.buffer.write(blob)
+                sys.stderr.buffer.flush()
+            except BrokenPipeError:
+                break
 
     if scenario == "hang":
         while True:
@@ -135,13 +152,63 @@ def main() -> int:
         time.sleep(60)
         return 0
 
+    sid = params.get("sessionId")
+
+    if scenario == "resume_false":
+        _write(
+            {
+                "jsonrpc": "2.0",
+                "id": resume["id"],
+                "result": {"sessionId": sid, "resumed": False},
+            }
+        )
+        time.sleep(60)
+        return 0
+
+    if scenario == "session_id_mismatch":
+        _write(
+            {
+                "jsonrpc": "2.0",
+                "id": resume["id"],
+                "result": {
+                    "sessionId": "00000000-0000-0000-0000-000000000000",
+                    "resumed": True,
+                },
+            }
+        )
+        time.sleep(60)
+        return 0
+
+    if scenario == "resume_missing_flag":
+        _write(
+            {
+                "jsonrpc": "2.0",
+                "id": resume["id"],
+                "result": {"sessionId": sid},
+            }
+        )
+        time.sleep(60)
+        return 0
+
+    if scenario == "many_small_chrome":
+        try:
+            count = int(os.environ.get("OMG_ACP_FAKE_CHROME_COUNT") or "80")
+        except ValueError:
+            count = 80
+        for i in range(max(0, count)):
+            _notify_update("current_mode_update", mode=f"m{i:04d}")
+
     if delay:
         time.sleep(delay)
+    if scenario == "session_id_alias":
+        resume_result: dict = {"session_id": sid, "resumed": True}
+    else:
+        resume_result = {"sessionId": sid, "resumed": True}
     _write(
         {
             "jsonrpc": "2.0",
             "id": resume["id"],
-            "result": {"sessionId": params.get("sessionId"), "resumed": True},
+            "result": resume_result,
         }
     )
 
