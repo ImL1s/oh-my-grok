@@ -669,3 +669,97 @@ def test_worker_nested_team_launch_denied_with_team_reason(monkeypatch):
         )
         assert d["decision"] == "deny", cmd
         assert "E_TEAM_NESTED_LAUNCH" in (d.get("reason") or "")
+
+
+def test_worker_safe_first_team_head_does_not_mask_later_launch(monkeypatch):
+    """#146 STOP-5: safe/api/status first head must not mask later launch/start.
+
+    Independently reproduced bypass matrix under real process OMG_TEAM_WORKER=1.
+    """
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+
+    # Four independently reproduced allow-bypass commands (must deny).
+    deny_cmds = (
+        "omg team api catalog; OMG_TEAM_WORKER=0 omg team launch --workers 1 --goal x",
+        "omg team status r; OMG_TEAM_WORKER=0 omg team start --goal x",
+        "omg team api catalog; env OMG_TEAM_WORKER=0 omg team launch --workers 1 --goal x",
+        "bash -lc 'omg team api catalog; OMG_TEAM_WORKER=0 omg team launch --workers 1 --goal x'",
+        # reversed order (launch first still denies)
+        "omg team launch --workers 1 --goal x; omg team api catalog",
+        "OMG_TEAM_WORKER=0 omg team start --goal x; omg team status r",
+        # multiple safe heads then forbidden
+        "omg team api catalog; omg team status r; omg team api claim-task; omg team launch --goal x",
+        # separators / newlines
+        "omg team api catalog\nomg team launch --workers 1 --goal x",
+        "omg team status r && OMG_TEAM_WORKER=0 omg team run --goal x",
+        "omg team api catalog || omg team resume",
+        # path / wrapper heads after safe
+        "omg team api catalog; /opt/omg/bin/omg team launch --goal x",
+        "omg team status r; command omg team scale --add 1",
+        "omg team api catalog; env omg team stop",
+        "omg team api catalog; exec omg team collect",
+        # shorthand after safe
+        "omg team api catalog; omg team 2:executor \"x\"",
+        # nested shell with newline-separated multi-head body
+        "bash -c 'omg team status r\nOMG_TEAM_WORKER=0 omg team supervisor'",
+    )
+    for cmd in deny_cmds:
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "deny", cmd
+        reason = d.get("reason") or ""
+        assert "E_TEAM_NESTED_LAUNCH" in reason, cmd
+        assert "omg ask" not in reason
+
+    # Preserve identity-bound api + genuine status-only when no forbidden head.
+    allow_cmds = (
+        "omg team api catalog",
+        "omg team api claim-task --input '{}'",
+        "omg team status r",
+        "omg team status",
+        "omg team api catalog; omg team status r",
+        "omg team api catalog\nomg team api claim-task",
+        "bash -lc 'omg team api catalog; omg team status r'",
+        "/opt/omg/bin/omg team api catalog",
+        "command omg team status r",
+        "env omg team api catalog",
+    )
+    for cmd in allow_cmds:
+        d = decide_pre_tool_use(
+            {"toolName": "run_terminal_command", "toolInput": {"command": cmd}}
+        )
+        assert d["decision"] == "allow", cmd
+
+
+def test_worker_multi_head_nested_launch_classifier_and_budget(monkeypatch):
+    """Direct classifier coverage: multi-head + bounded adversarial size."""
+    from omg_cli.deny import is_first_party_team_nested_launch
+
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+
+    assert is_first_party_team_nested_launch(
+        "omg team api catalog; omg team launch --goal x"
+    )
+    assert is_first_party_team_nested_launch(
+        "omg team status r; omg team start --goal x"
+    )
+    assert not is_first_party_team_nested_launch("omg team api catalog")
+    assert not is_first_party_team_nested_launch(
+        "omg team api catalog; omg team status r"
+    )
+    # Command-text env never changes classification when process is worker
+    # (caller gates on process env; classifier itself is command-only).
+    assert is_first_party_team_nested_launch(
+        "OMG_TEAM_WORKER=0 omg team launch --goal x"
+    )
+
+    # Bounded/adversarial size: many safe heads then one launch (linear scan).
+    many_safe = "; ".join(["omg team api catalog"] * 64)
+    assert not is_first_party_team_nested_launch(many_safe)
+    assert is_first_party_team_nested_launch(
+        many_safe + "; omg team launch --workers 1 --goal x"
+    )
+    # Oversized shell-c body still fail-closes via parse budget (or classifies).
+    huge = "omg team api catalog; " * 2000 + "omg team launch --goal x"
+    assert is_first_party_team_nested_launch(huge) is True

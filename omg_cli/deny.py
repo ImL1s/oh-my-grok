@@ -20,8 +20,11 @@ _CMD_POS = r"(?:^|[;&|(`\n\r]|\|\||&&)"
 _ENV_ASSIGNS = r"(?:(?:[A-Za-z_][\w]*=\S*\s+)*)"
 # Wrappers that still leave the denied bin in command position after them.
 # Path-prefixed env/exec allowed: /usr/bin/env claude, /bin/exec codex.
+# After each wrapper, reuse leading-style env assigns so forms like
+# ``env OMG_TEAM_WORKER=0 omg team launch`` still resolve the real head
+# (not the assignment token).
 _WRAPPER_BIN = r"(?:(?:\S*/)?(?:env|command|xargs|nice|nohup|sudo|time|exec))"
-_WRAPPERS = rf"(?:{_WRAPPER_BIN}\s+(?:--\s+)*)*"
+_WRAPPERS = rf"(?:{_WRAPPER_BIN}\s+(?:--\s+)*{_ENV_ASSIGNS})*"
 _PATH_PREFIX = r"(?:\S*/)?"
 _SHELL_WORD = r"""(?:\\.|[^\s;&|()'"`\\]+|'[^']*'|"(?:\\.|[^"\\])*")+"""
 _CONTROL_COMMAND_WORD = r"(?:if|elif|while|until|then|else|do|coproc|!)"
@@ -1515,12 +1518,14 @@ def in_worker_process_context() -> bool:
     return any(_truthy_process_env(key) for key in _WORKER_ENV_MARKERS)
 
 
-def _first_party_team_argv(command: str) -> list[str] | None:
-    """If an executable head is first-party ``omg team …``, return argv after ``team``.
+def _iter_first_party_team_argvs(command: str):
+    """Yield argv-after-``team`` for every executable first-party ``omg team`` head.
 
-    Returns ``None`` when no first-party Team head is present. Does not interpret
-    command-text env assignments as process identity. Only a few words after
-    ``team`` are decoded (op classification is shallow).
+    Does not interpret command-text env assignments as process identity. Only a
+    few words after ``team`` are decoded (op classification is shallow).
+
+    Important (#146 multi-occurrence STOP): a safe/read-only/api head must never
+    short-circuit later launch/supervise heads in the same command string.
     """
 
     search_position = 0
@@ -1530,8 +1535,20 @@ def _first_party_team_argv(command: str) -> list[str] | None:
             if base == _FIRST_PARTY_TEAM_BIN:
                 tail = _next_decoded_words(command, match.end(), limit=3)
                 if tail and tail[0].lower() == "team":
-                    return [w.lower() for w in tail[1:]]
+                    yield [w.lower() for w in tail[1:]]
         search_position = match.start() + 1
+
+
+def _first_party_team_argv(command: str) -> list[str] | None:
+    """If an executable head is first-party ``omg team …``, return argv after ``team``.
+
+    Returns the *first* match (or ``None``). Nested-launch classification must
+    use :func:`_iter_first_party_team_argvs` so a safe head cannot mask a later
+    forbidden head.
+    """
+
+    for argv in _iter_first_party_team_argvs(command):
+        return argv
     return None
 
 
@@ -1552,17 +1569,19 @@ def is_first_party_team_nested_launch(command: str, depth: int = 0) -> bool:
 
     Authoritative admission remains the OMG Team runtime (``E_TEAM_NESTED_LAUNCH``).
     The hook only recognizes clear launch/lifecycle forms so identity-bound
-    ``omg team api …`` still reaches runtime validation. Recurses into
-    ``sh|bash|zsh -c/-lc`` bodies for equivalent path/wrapper forms.
+    ``omg team api …`` still reaches runtime validation. Inspects **every**
+    executable first-party Team head in the command (safe first head must not
+    mask a later launch), and recurses into ``sh|bash|zsh -c/-lc`` bodies for
+    equivalent path/wrapper forms.
     """
 
     if not command or not isinstance(command, str):
         return False
     try:
         command = _collapse_line_continuations(command)
-        argv = _first_party_team_argv(command)
-        if argv is not None and _team_argv_is_nested_launch(argv):
-            return True
+        for argv in _iter_first_party_team_argvs(command):
+            if _team_argv_is_nested_launch(argv):
+                return True
         if depth >= 8:
             return False
         search_position = 0
